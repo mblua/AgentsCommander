@@ -1538,7 +1538,7 @@ html.light-theme .root-agent-avatar {
 .agent-update-progress { height: 4px; border-radius: 2px; background: var(--sidebar-border); overflow: hidden; }
 .agent-update-progress-fill { height: 100%; background: var(--accent-color, #0a84ff); transition: width 0.4s ease; }
 .agent-update-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; max-height: 50vh; overflow-y: auto; }
-.agent-update-node { position: relative; display: grid; grid-template-columns: 22px 1fr; gap: 0 10px; padding: 6px 8px; border-radius: 6px; border-left: 2px solid transparent; font-family: var(--font-ui); color: var(--sidebar-fg); }
+.agent-update-node { position: relative; display: grid; grid-template-columns: 22px 1fr auto; gap: 0 10px; padding: 6px 8px; border-radius: 6px; border-left: 2px solid transparent; font-family: var(--font-ui); color: var(--sidebar-fg); align-items: start; }
 .agent-update-node::before { content: ""; position: absolute; left: 18px; top: 28px; bottom: -6px; width: 2px; background: var(--sidebar-border); }
 .agent-update-node:last-child::before { display: none; }
 .agent-update-node[data-ac-state="updating"] { background: var(--sidebar-active); border-left-color: var(--accent-color, #0a84ff); }
@@ -1556,14 +1556,40 @@ html.light-theme .root-agent-avatar {
 .agent-update-node[data-ac-state="updating"] .agent-update-node-line { color: var(--sidebar-fg); }
 .agent-update-node[data-ac-state="ok"] .agent-update-node-line { color: var(--status-waiting); }
 .agent-update-node[data-ac-state="failed"] .agent-update-node-line { color: var(--status-exited); }
+/* #1691 - the two new nonterminal states keep the running row's emphasis (the pass is still
+   working on them); a cancelled row is terminal but neutral: it is not a failure. */
+.agent-update-node[data-ac-state="verifying"] { background: var(--sidebar-active); border-left-color: var(--accent-color, #0a84ff); }
+.agent-update-node[data-ac-state="verifying"] .agent-update-node-line { color: var(--sidebar-fg); }
+.agent-update-node[data-ac-state="verifying"] .agent-update-node-marker { border-top-color: var(--accent-color, #0a84ff); animation: agent-update-spin 0.9s linear infinite; }
+.agent-update-node[data-ac-state="cancelling"] .agent-update-node-line { color: var(--sidebar-fg); }
+.agent-update-node[data-ac-state="cancelling"] .agent-update-node-state { font-style: italic; }
+.agent-update-node[data-ac-state="cancelled"] .agent-update-node-line { color: var(--sidebar-fg-dim); }
+.agent-update-node[data-ac-state="cancelled"] .agent-update-node-label { color: var(--sidebar-fg-dim); }
+.agent-update-node[data-ac-state="cancelled"] .agent-update-node-marker { border-color: var(--sidebar-fg-dim); background: var(--sidebar-fg-dim); color: var(--sidebar-bg); }
 .agent-update-node-command code { display: block; margin-top: 2px; font-family: "Cascadia Code", "JetBrains Mono", monospace; font-size: 10px; color: var(--sidebar-fg-dim); overflow-wrap: anywhere; }
 .agent-update-node-bar { height: 3px; margin-top: 5px; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--accent-color, #0a84ff), transparent); background-size: 200% 100%; animation: agent-update-shimmer 1.2s linear infinite; }
 @keyframes agent-update-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 .agent-update-summary-actions { display: flex; justify-content: flex-end; }
+/* #1691 - the prompt callout now sits BETWEEN the header/progress and the timeline, so the
+   question and the cancellation controls are on screen together. */
+.agent-update-prompt { display: flex; flex-direction: column; gap: var(--spacing-md); padding: var(--spacing-md); border-radius: 6px; border: 1px solid var(--sidebar-border); background: var(--sidebar-active); }
+.agent-update-prompt .agent-update-prompt-text { text-align: left; }
+/* #1691 - compact row action: one per nonterminal row, visible-disabled once requested. */
+.agent-update-node-cancel { align-self: center; flex: none; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--sidebar-border); background: transparent; color: var(--sidebar-fg); font-family: var(--font-ui); font-size: var(--font-size-sm); line-height: 1.6; cursor: pointer; }
+.agent-update-node-cancel:hover:not(:disabled) { background: var(--sidebar-hover); }
+.agent-update-node-cancel:disabled { opacity: 0.5; cursor: default; }
+/* #1691 - the bottom batch action, visible while any node is unfinished. */
+.agent-update-batch-actions { display: flex; justify-content: flex-end; }
+.agent-update-cancel-all { padding: 4px 12px; border-radius: 4px; border: 1px solid var(--sidebar-border); background: transparent; color: var(--sidebar-fg); font-family: var(--font-ui); font-size: var(--font-size-sm); cursor: pointer; }
+.agent-update-cancel-all:hover:not(:disabled) { background: var(--sidebar-hover); }
+.agent-update-cancel-all:disabled { opacity: 0.5; cursor: default; }
+/* #1691 - keyboard reachability is the point of these controls: the focus ring is never removed. */
+.agent-update-node-cancel:focus-visible, .agent-update-cancel-all:focus-visible { outline: 2px solid var(--accent-color, #0a84ff); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   .agent-update-spinner, .agent-update-node[data-ac-state="updating"] .agent-update-node-marker { animation: none; }
   .agent-update-spinner { border-top-color: var(--accent-color, #0a84ff); border-right-color: var(--accent-color, #0a84ff); }
   .agent-update-node[data-ac-state="updating"] .agent-update-node-marker { border-top-color: var(--accent-color, #0a84ff); border-right-color: var(--accent-color, #0a84ff); }
+  .agent-update-node[data-ac-state="verifying"] .agent-update-node-marker { animation: none; border-top-color: var(--accent-color, #0a84ff); border-right-color: var(--accent-color, #0a84ff); }
   .agent-update-node-bar { animation: none; background: var(--accent-color, #0a84ff); opacity: 0.5; }
   .agent-update-progress-fill { transition: none; }
 }
@@ -3206,6 +3232,15 @@ html.light-theme .settings-api-client-warning {
   height: 14px;
   display: block;
 }
+
+/* #1708 - the row detach button now holds DetachIcon/ReattachIcon, not a text
+   glyph. Mirrors .session-item-telegram svg above. The colour is NOT set here:
+   the button's own color (dim, accent on hover) still tints the icon. */
+.session-item-detach svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
 /* Bot selection dropdown on session item */
 .session-item-bot-menu {
   position: absolute;
@@ -3323,12 +3358,14 @@ html.light-theme .settings-api-client-warning {
 /* #987 - fixed-width gutter slot for context-menu glyphs. The menu mixes 14px
    SVGs with entities and emoji, whose advance widths all differ, so an unwrapped
    glyph starts every label at a different x. Centering each glyph in this slot
-   lands every label on the same x. Rows with no icon (Add to Group) carry an
-   empty slot.
+   lands every label on the same x. #1708 filled the last empty slot (Add to
+   Group); the slot keeps its fixed width, so an iconless row would still align.
 
    The 16px box is a CENTRING ANCHOR, NOT A FIT. Measured at the 13px this slot
    sets: the emoji (U+1F916, U+1F4C2, U+1F9F9) advance 17.86px, so they overflow
-   the box by ~0.93px per side; the SVGs are 14px, U+29C9 is 13px, U+21BA is 10px.
+   the box by ~0.93px per side; U+1F465 (#1708) is emoji-presentation like them
+   and was not re-measured; the SVGs are 14px and U+21BA is 10px (#1708 put a
+   14px SVG where the former detach glyph was).
    The overflow is deliberate and harmless: the box does not clip, the bleed is
    symmetric (every glyph's centre lands on the same axis) and it spills into the
    row's 12px padding and 8px gap, where nothing is drawn.
@@ -3472,6 +3509,24 @@ html.light-theme .session-context-title-btn:hover:not(:disabled) {
   height: 14px;
   flex: 0 0 14px;
   color: var(--danger, #ef4444);
+}
+
+/* #1708 - detach/re-attach icon in the session context menu. Geometry mirrors
+   .session-context-matrix-icon above. The colour is the TOKEN, not the raw
+   #00d4ff: that literal is only the dark value (variables.css:6) and renders at
+   contrast 1.49 on the light --sidebar-surface (#ebebf0). */
+.session-context-detach-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: var(--sidebar-accent);
+}
+
+/* #1708 - the Edit TASK title pencil, pairing it with the Clear task title broom
+   below it. Token, not the raw #eab308: that literal is only the dark value
+   (variables.css:18) and renders at contrast 1.61 on #ebebf0. */
+.session-context-task-icon {
+  color: var(--status-pending);
 }
 
 .session-context-trash-icon {

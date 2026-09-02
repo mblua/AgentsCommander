@@ -24,7 +24,7 @@ import { automationIdPart } from "./replica-repo-badges";
 // before/between launches.
 //   - gray (no session): Coding Agent + Matrix folder + Replica folder + broom menu.
 //   - red (exited): the FULL active-replica menu (Restart Session, Coding Agent,
-//     Matrix/Replica folders, Open in new window) PLUS the clear-task broom (#545 rework).
+//     Matrix/Replica folders, Detach session) PLUS the clear-task broom (#545 rework).
 //   - green (running): the full menu, including the broom.
 
 const projectPath = "C:\\Project";
@@ -388,7 +388,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     });
     const menu = replicaMenu()!;
     expect(menu.textContent).not.toContain("Restart Session");
-    expect(menu.textContent).not.toContain("Open in new window");
+    expect(menu.textContent).not.toContain("Detach session");
   });
 
   it("preserves the native context menu inside the project regex filter row", async () => {
@@ -551,7 +551,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       "cli",
       "Open Matrix folder",
       "Close Session",
-      "Open in new window",
+      "Detach session",
       "Attach Telegram",
       "Add to Group",
       "Edit TASK title",
@@ -1042,7 +1042,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(menu!.textContent).toContain("Restart Session");
       expect(menu!.textContent).toContain("Coding Agent");
       expect(menu!.textContent).toContain("Open Replica's Folder");
-      expect(menu!.textContent).toContain("Open in new window");
+      expect(menu!.textContent).toContain("Detach session");
       // ...and gains the broom (#545 rework).
       expect(menu!.textContent).toContain("Clear task title");
     });
@@ -1119,7 +1119,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     const menu = replicaMenu()!;
     expect(menu.textContent).toContain("Coding Agent");
     expect(menu.textContent).toContain("Open Replica's Folder");
-    expect(menu.textContent).toContain("Open in new window");
+    expect(menu.textContent).toContain("Detach session");
     // #545: the broom now renders in EVERY dot state, including green.
     expect(menu.textContent).toContain("Clear task title");
   });
@@ -1439,18 +1439,27 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       let menu = await openMenu(coordinatorRow);
       const matrix = findExactMenuButton(menu, "Open Matrix folder")!;
       const close = findExactMenuButton(menu, "Close Session")!;
-      const open = findExactMenuButton(menu, "Open in new window")!;
+      const open = findExactMenuButton(menu, "Detach session")!;
       const attach = findExactMenuButton(menu, "Attach Telegram")!;
       const add = findExactMenuButton(menu, "Add to Group")!;
 
       expect(matrix.nextElementSibling).toBe(close);
       expect(close.nextElementSibling?.classList.contains("context-separator")).toBe(true);
       const labels = menuButtonLabels(menu);
-      expect(labels.indexOf("Attach Telegram")).toBe(labels.indexOf("Open in new window") + 1);
+      expect(labels.indexOf("Attach Telegram")).toBe(labels.indexOf("Detach session") + 1);
       expect(labels.indexOf("Add to Group")).toBe(labels.indexOf("Attach Telegram") + 1);
       expect(open).not.toBeNull();
       expect(add).not.toBeNull();
       expect(attach.querySelector("svg")).not.toBeNull();
+      // #1708 - Add to Group fills its icon gutter like every other entry.
+      expect(add.querySelector(".session-context-option-icon")?.textContent).toBe("\u{1F465}");
+      // #1708 - the detach entry carries the sized, tinted SVG, not a text glyph.
+      expect(open.querySelector(".session-context-detach-icon")).not.toBeNull();
+      // #1708 - with no bridge the Telegram icon falls back to the Telegram blue.
+      // jsdom's cssstyle may normalise the hex to rgb(), so accept either form.
+      const attachIconColor =
+        attach.querySelector<HTMLElement>(".session-context-option-icon")!.style.color;
+      expect(["#0088cc", "rgb(0, 136, 204)"]).toContain(attachIconColor);
       expect(close.classList.contains("context-option-danger")).toBe(true);
 
       dispatchDismiss("click");
@@ -1458,17 +1467,19 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       detachedSpy.mockReturnValue(true);
 
       menu = await openMenu(coordinatorRow);
-      const reattach = findExactMenuButton(menu, "Re-attach to main")!;
+      const reattach = findExactMenuButton(menu, "Re-attach session")!;
       const detachedAttach = findExactMenuButton(menu, "Attach Telegram")!;
       const detachedLabels = menuButtonLabels(menu);
       expect(detachedLabels.indexOf("Attach Telegram")).toBe(
-        detachedLabels.indexOf("Re-attach to main") + 1,
+        detachedLabels.indexOf("Re-attach session") + 1,
       );
       expect(detachedLabels.indexOf("Add to Group")).toBe(
         detachedLabels.indexOf("Attach Telegram") + 1,
       );
       expect(reattach).not.toBeNull();
       expect(detachedAttach).not.toBeNull();
+      // #1708 - the detached state shows the mirrored icon, also sized and tinted.
+      expect(reattach.querySelector(".session-context-detach-icon")).not.toBeNull();
     } finally {
       if (replicaMenu()) dispatchDismiss("click");
       detachedSpy.mockRestore();

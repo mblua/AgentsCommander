@@ -11,6 +11,8 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use futures::future::{BoxFuture, Shared};
+use futures::FutureExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -23,13 +25,41 @@ pub const INSTALL_CACHE_TTL: Duration = Duration::from_secs(600);
 pub const PROBE_OUTPUT_CAP: usize = 4 * 1024;
 /// Sanitized diagnostic length, in characters.
 pub const DETAIL_MAX_CHARS: usize = 160;
-/// Bounded wait for the pipe readers to finish draining.
-const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// One cleanup attempt may spend this long proving the native tree empty. A
+/// missed window records a defect but does not permit a terminal return; the
+/// owned reaper starts another attempt and remains nonterminal until proof.
+const ACTIVE_SETTLEMENT_WINDOW: Duration = Duration::from_secs(10);
+const ACTIVE_SETTLEMENT_POLL: Duration = Duration::from_millis(25);
+
+#[cfg(test)]
+tokio::task_local! {
+    static VERSION_PROBE_ARGS_OVERRIDE: (&'static str, &'static [&'static str]);
+}
+
+#[cfg(test)]
+pub(crate) async fn with_version_probe_args_for_test<F>(
+    stem: &'static str,
+    args: &'static [&'static str],
+    future: F,
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    VERSION_PROBE_ARGS_OVERRIDE
+        .scope((stem, args), future)
+        .await
+}
 
 /// #1551 - fixed probe argv per known program stem (lowercase, extension stripped).
 /// No catalog/user/project string ever reaches argv. Cursor (`agent`) is absent on
 /// purpose: it has no update command and its bare name collides with other vendors.
 pub fn version_probe_args(program_stem: &str) -> Option<&'static [&'static str]> {
+    #[cfg(test)]
+    if let Ok((stem, args)) = VERSION_PROBE_ARGS_OVERRIDE.try_with(|override_| *override_) {
+        if program_stem == stem {
+            return Some(args);
+        }
+    }
     match program_stem {
         "claude" | "codex" | "hermes" | "pi" | "opencode" | "agy" => Some(&["--version"]),
         _ => None,
@@ -217,13 +247,49 @@ pub enum ProbeOutcome {
     Failed(String),
 }
 
+/// Outcome of a probe whose process owner observes a retained cancellation
+/// signal. Cancelled and CleanupFailed are returned only after every native
+/// process/handle and pipe reader is definitively settled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CancellableProbeOutcome {
+    Completed(ProbeOutcome),
+    Cancelled,
+    CleanupFailed(String),
+}
+
+struct RecoverableProbeReader {
+    completion: Shared<BoxFuture<'static, Result<Vec<u8>, String>>>,
+    abort: tokio::task::AbortHandle,
+    abort_requested: bool,
+    #[cfg(test)]
+    settlement_hook: Option<ProbeReaderSettlementHook>,
+}
+
+#[cfg(test)]
+pub(crate) struct ProbeReaderSettlementHook {
+    pub(crate) hold_completion: Option<tokio::sync::oneshot::Receiver<()>>,
+    pub(crate) before_panic: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) release_panic: Option<tokio::sync::oneshot::Receiver<()>>,
+    pub(crate) retry_started: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
 /// Drain a pipe to EOF but retain only the first `PROBE_OUTPUT_CAP` bytes.
-fn spawn_capped_reader<R>(mut reader: R) -> tokio::sync::oneshot::Receiver<Vec<u8>>
+fn spawn_capped_reader<R>(
+    mut reader: R,
+    #[cfg(test)] mut settlement_hook: Option<ProbeReaderSettlementHook>,
+) -> RecoverableProbeReader
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
+    #[cfg(test)]
+    let hold_completion = settlement_hook
+        .as_mut()
+        .and_then(|hook| hook.hold_completion.take());
+    let reader = tokio::spawn(async move {
+        #[cfg(test)]
+        if let Some(hold_completion) = hold_completion {
+            let _ = hold_completion.await;
+        }
         let mut kept: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 4096];
         loop {
@@ -237,24 +303,649 @@ where
                 }
             }
         }
-        let _ = tx.send(kept);
+        kept
     });
-    rx
+    let abort = reader.abort_handle();
+    let completion = async move { reader.await.map_err(|error| error.to_string()) }
+        .boxed()
+        .shared();
+    RecoverableProbeReader {
+        completion,
+        abort,
+        abort_requested: false,
+        #[cfg(test)]
+        settlement_hook,
+    }
 }
 
-async fn collect_probe_output(
-    stdout_rx: &mut Option<tokio::sync::oneshot::Receiver<Vec<u8>>>,
-    stderr_rx: &mut Option<tokio::sync::oneshot::Receiver<Vec<u8>>>,
-) -> (Vec<u8>, Vec<u8>) {
-    let stdout = match stdout_rx {
-        Some(rx) => rx.await.unwrap_or_default(),
-        None => Vec::new(),
+fn record_probe_attempt_expiry(defects: &mut Vec<String>, stage: &str) {
+    let detail = format!("settlement attempt deadline exceeded during {stage}");
+    if !defects.iter().any(|defect| defect == &detail) {
+        defects.push(detail);
+    }
+}
+
+async fn settle_probe_reader(
+    reader: &mut Option<RecoverableProbeReader>,
+    defects: &mut Vec<String>,
+    attempt: &mut crate::pty::job::SettlementAttempt,
+) -> Vec<u8> {
+    let Some(reader) = reader.as_mut() else {
+        return Vec::new();
     };
-    let stderr = match stderr_rx {
-        Some(rx) => rx.await.unwrap_or_default(),
-        None => Vec::new(),
-    };
-    (stdout, stderr)
+    let completion = reader.completion.clone();
+    #[cfg(test)]
+    if let Some(hook) = reader.settlement_hook.as_mut() {
+        if let Some(release_panic) = hook.release_panic.take() {
+            if let Some(before_panic) = hook.before_panic.take() {
+                let _ = before_panic.send(());
+            }
+            let _ = release_panic.await;
+            panic!("injected probe panic during reader settlement");
+        }
+        if let Some(retry_started) = hook.retry_started.take() {
+            let _ = retry_started.send(());
+        }
+    }
+    if reader.abort_requested {
+        reader.abort.abort();
+        let _ = completion.await;
+        return Vec::new();
+    }
+    if attempt.expired() {
+        record_probe_attempt_expiry(defects, "reader settlement");
+        attempt.restart();
+    }
+    match tokio::time::timeout(attempt.remaining(), completion.clone()).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => {
+            let detail = format!("reader join failed: {error}");
+            if !defects.iter().any(|defect| defect == &detail) {
+                defects.push(detail);
+            }
+            Vec::new()
+        }
+        Err(_) => {
+            record_probe_attempt_expiry(defects, "reader settlement");
+            reader.abort_requested = true;
+            reader.abort.abort();
+            let _ = completion.await;
+            attempt.restart();
+            Vec::new()
+        }
+    }
+}
+
+enum ProbeWait {
+    Exited(std::io::Result<std::process::ExitStatus>),
+    TimedOut,
+    Cancelled,
+}
+
+struct ProbeSettlement {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    defects: Vec<String>,
+}
+
+#[cfg(test)]
+pub(crate) struct ProbeSettlementHook {
+    pub(crate) before_native_proof: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) release_native_proof: Option<tokio::sync::oneshot::Receiver<()>>,
+    pub(crate) settlement_window: Option<Duration>,
+    pub(crate) native_observations: std::collections::VecDeque<ProbeNativeObservation>,
+    pub(crate) panic_after_native_proof_release: bool,
+    pub(crate) panic_after_native_query_defect: bool,
+    pub(crate) stdout_reader: Option<ProbeReaderSettlementHook>,
+}
+
+#[cfg(test)]
+pub(crate) enum ProbeNativeObservation {
+    Empty,
+    Active,
+    Error(&'static str),
+}
+
+#[cfg(test)]
+struct ProbeSettlementHookScope {
+    remaining_spawns: usize,
+    hook: Option<ProbeSettlementHook>,
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static PROBE_SETTLEMENT_HOOK: std::cell::RefCell<ProbeSettlementHookScope>;
+}
+
+#[cfg(test)]
+pub(crate) async fn with_probe_settlement_hook<F>(hook: ProbeSettlementHook, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    PROBE_SETTLEMENT_HOOK
+        .scope(
+            std::cell::RefCell::new(ProbeSettlementHookScope {
+                remaining_spawns: 0,
+                hook: Some(hook),
+            }),
+            future,
+        )
+        .await
+}
+
+#[cfg(test)]
+pub(crate) async fn with_probe_settlement_hook_after_spawns<F>(
+    remaining_spawns: usize,
+    hook: ProbeSettlementHook,
+    future: F,
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    PROBE_SETTLEMENT_HOOK
+        .scope(
+            std::cell::RefCell::new(ProbeSettlementHookScope {
+                remaining_spawns,
+                hook: Some(hook),
+            }),
+            future,
+        )
+        .await
+}
+
+struct ProbeProcessOwner {
+    child: Option<tokio::process::Child>,
+    stdout: Option<RecoverableProbeReader>,
+    stderr: Option<RecoverableProbeReader>,
+    defects: Vec<String>,
+    #[cfg(windows)]
+    job: Option<crate::pty::job::JobObject>,
+    #[cfg(unix)]
+    pgid: i32,
+    #[cfg(test)]
+    settlement_hook: Option<ProbeSettlementHook>,
+}
+
+impl ProbeProcessOwner {
+    async fn spawn(command: &mut tokio::process::Command) -> Result<Self, CancellableProbeOutcome> {
+        #[cfg(windows)]
+        let (mut child, job) = match crate::pty::job::spawn_suspended_contained(command).await {
+            Ok(pair) => pair,
+            Err(crate::pty::job::ContainedSpawnError::Spawn(error)) => {
+                return Err(CancellableProbeOutcome::Completed(ProbeOutcome::Failed(
+                    format!("spawn failed: {error}"),
+                )))
+            }
+            Err(crate::pty::job::ContainedSpawnError::Containment(reason)) => {
+                log::warn!(
+                    "[agent-version] contained probe launch rejected: process containment failed at {reason}"
+                );
+                return Err(CancellableProbeOutcome::Completed(ProbeOutcome::Failed(
+                    "Version probe process-tree containment unavailable.".to_string(),
+                )));
+            }
+            Err(crate::pty::job::ContainedSpawnError::Cleanup(detail)) => {
+                log::warn!("[agent-version] contained probe launch cleanup defective: {detail}");
+                return Err(CancellableProbeOutcome::CleanupFailed(detail));
+            }
+        };
+
+        #[cfg(not(windows))]
+        let mut child = command.spawn().map_err(|error| {
+            CancellableProbeOutcome::Completed(ProbeOutcome::Failed(format!(
+                "spawn failed: {error}"
+            )))
+        })?;
+
+        #[cfg(unix)]
+        let pgid = child
+            .id()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .unwrap_or(0);
+        #[cfg(test)]
+        let mut settlement_hook = PROBE_SETTLEMENT_HOOK
+            .try_with(|scope| {
+                let mut scope = scope.borrow_mut();
+                if scope.remaining_spawns == 0 {
+                    scope.hook.take()
+                } else {
+                    scope.remaining_spawns -= 1;
+                    None
+                }
+            })
+            .ok()
+            .flatten();
+        #[cfg(test)]
+        let stdout_reader_hook = settlement_hook
+            .as_mut()
+            .and_then(|hook| hook.stdout_reader.take());
+        #[cfg(test)]
+        let stdout = child
+            .stdout
+            .take()
+            .map(move |reader| spawn_capped_reader(reader, stdout_reader_hook));
+        #[cfg(test)]
+        let stderr = child
+            .stderr
+            .take()
+            .map(|reader| spawn_capped_reader(reader, None));
+        #[cfg(not(test))]
+        let stdout = child.stdout.take().map(spawn_capped_reader);
+        #[cfg(not(test))]
+        let stderr = child.stderr.take().map(spawn_capped_reader);
+        Ok(Self {
+            child: Some(child),
+            stdout,
+            stderr,
+            defects: Vec::new(),
+            #[cfg(windows)]
+            job: Some(job),
+            #[cfg(unix)]
+            pgid,
+            #[cfg(test)]
+            settlement_hook,
+        })
+    }
+
+    async fn wait(
+        &mut self,
+        timeout: Duration,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> ProbeWait {
+        let child = self.child.as_mut().expect("probe child owner");
+        tokio::select! {
+            result = child.wait() => ProbeWait::Exited(result),
+            _ = tokio::time::sleep(timeout) => ProbeWait::TimedOut,
+            _ = wait_for_probe_cancellation(cancel) => ProbeWait::Cancelled,
+        }
+    }
+
+    async fn settle(&mut self, wait: &ProbeWait) -> ProbeSettlement {
+        #[cfg(test)]
+        let settlement_window = self
+            .settlement_hook
+            .as_ref()
+            .and_then(|hook| hook.settlement_window)
+            .unwrap_or(ACTIVE_SETTLEMENT_WINDOW);
+        #[cfg(not(test))]
+        let settlement_window = ACTIVE_SETTLEMENT_WINDOW;
+        let mut attempt = crate::pty::job::SettlementAttempt::new(settlement_window);
+        let defects = &mut self.defects;
+        let cleanup_required = !matches!(wait, ProbeWait::Exited(Ok(_)));
+
+        #[cfg(windows)]
+        if cleanup_required {
+            if let Some(job) = self.job.as_ref() {
+                if let Err(error) = job.terminate_checked() {
+                    defects.push(format!("job termination failed: {error}"));
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        if cleanup_required && self.pgid > 0 {
+            // SAFETY: this is the positive process-group id created by
+            // `Command::process_group(0)` for this probe owner.
+            let killed = unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
+            if killed != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+                defects.push(format!(
+                    "process-group termination failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+
+        if cleanup_required {
+            if let Some(child) = self.child.as_mut() {
+                if let Err(error) = child.start_kill() {
+                    defects.push(format!("direct child termination failed: {error}"));
+                }
+            }
+        }
+
+        if cleanup_required {
+            if let Some(child) = self.child.as_mut() {
+                let mut wait_defect_recorded = false;
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) => {}
+                        Err(error) => {
+                            if !wait_defect_recorded {
+                                defects.push(format!("direct child wait failed: {error}"));
+                                wait_defect_recorded = true;
+                            }
+                        }
+                    }
+                    if attempt.expired() {
+                        record_probe_attempt_expiry(defects, "direct-child settlement");
+                        #[cfg(windows)]
+                        if let Some(job) = self.job.as_ref() {
+                            let _ = job.terminate_checked();
+                        }
+                        #[cfg(unix)]
+                        if self.pgid > 0 {
+                            // SAFETY: this remains the retained group identity.
+                            unsafe {
+                                libc::kill(-self.pgid, libc::SIGKILL);
+                            }
+                        }
+                        let _ = child.start_kill();
+                        attempt.restart();
+                    }
+                    tokio::time::sleep(ACTIVE_SETTLEMENT_POLL.min(attempt.remaining())).await;
+                }
+            }
+        }
+
+        // Release Tokio's direct process handle before the first native
+        // emptiness query that is eligible to prove settlement.
+        drop(self.child.take());
+
+        #[cfg(windows)]
+        if !cleanup_required {
+            if let Some(job) = self.job.as_ref() {
+                job.terminate();
+            }
+        }
+        #[cfg(unix)]
+        if !cleanup_required && self.pgid > 0 {
+            // SAFETY: same owned positive group identity as above.
+            unsafe {
+                libc::kill(-self.pgid, libc::SIGKILL);
+            }
+        }
+
+        let stdout = settle_probe_reader(&mut self.stdout, defects, &mut attempt).await;
+        let stderr = settle_probe_reader(&mut self.stderr, defects, &mut attempt).await;
+
+        #[cfg(test)]
+        {
+            let (ready, mut release) = self
+                .settlement_hook
+                .as_mut()
+                .map(|hook| {
+                    (
+                        hook.before_native_proof.take(),
+                        hook.release_native_proof.take(),
+                    )
+                })
+                .unwrap_or((None, None));
+            if let Some(ready) = ready {
+                let _ = ready.send(());
+            }
+            if let Some(release) = release.as_mut() {
+                loop {
+                    if attempt.expired() {
+                        record_probe_attempt_expiry(defects, "native-proof barrier");
+                        attempt.restart();
+                    }
+                    match tokio::time::timeout(attempt.remaining(), &mut *release).await {
+                        Ok(_) => break,
+                        Err(_) => {
+                            record_probe_attempt_expiry(defects, "native-proof barrier");
+                            attempt.restart();
+                        }
+                    }
+                }
+            }
+            let panic_after_release = self
+                .settlement_hook
+                .as_mut()
+                .is_some_and(|hook| std::mem::take(&mut hook.panic_after_native_proof_release));
+            if panic_after_release {
+                panic!("injected probe panic during native settlement");
+            }
+        }
+
+        #[cfg(windows)]
+        if let Some(job) = self.job.as_ref() {
+            let mut query_defect_recorded = false;
+            loop {
+                #[cfg(test)]
+                let proof = match self
+                    .settlement_hook
+                    .as_mut()
+                    .and_then(|hook| hook.native_observations.pop_front())
+                {
+                    Some(observation) => match observation {
+                        ProbeNativeObservation::Empty => Ok(true),
+                        ProbeNativeObservation::Active => Ok(false),
+                        ProbeNativeObservation::Error(detail) => Err(detail.to_string()),
+                    },
+                    None => job
+                        .active_processes()
+                        .map(|active| active == 0)
+                        .map_err(|error| error.to_string()),
+                };
+                #[cfg(not(test))]
+                let proof = job
+                    .active_processes()
+                    .map(|active| active == 0)
+                    .map_err(|error| error.to_string());
+                match proof {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(error) => {
+                        if !query_defect_recorded {
+                            defects.push(format!("job accounting failed: {error}"));
+                            query_defect_recorded = true;
+                        }
+                        #[cfg(test)]
+                        if self.settlement_hook.as_mut().is_some_and(|hook| {
+                            std::mem::take(&mut hook.panic_after_native_query_defect)
+                        }) {
+                            panic!("injected probe panic after native query defect");
+                        }
+                    }
+                }
+                if attempt.expired() {
+                    record_probe_attempt_expiry(defects, "job accounting proof");
+                    let _ = job.terminate_checked();
+                    attempt.restart();
+                }
+                tokio::time::sleep(ACTIVE_SETTLEMENT_POLL.min(attempt.remaining())).await;
+            }
+        }
+
+        #[cfg(unix)]
+        if self.pgid > 0 {
+            let mut errno_defect_recorded = false;
+            loop {
+                #[cfg(test)]
+                let proof = match self
+                    .settlement_hook
+                    .as_mut()
+                    .and_then(|hook| hook.native_observations.pop_front())
+                {
+                    Some(observation) => match observation {
+                        ProbeNativeObservation::Empty => Ok(true),
+                        ProbeNativeObservation::Active => Ok(false),
+                        ProbeNativeObservation::Error(detail) => Err(detail.to_string()),
+                    },
+                    None => {
+                        // SAFETY: signal zero performs no mutation and checks the retained PGID.
+                        let result = unsafe { libc::kill(-self.pgid, 0) };
+                        if result == -1 {
+                            let error = std::io::Error::last_os_error();
+                            if error.raw_os_error() == Some(libc::ESRCH) {
+                                Ok(true)
+                            } else {
+                                Err(error.to_string())
+                            }
+                        } else {
+                            Ok(false)
+                        }
+                    }
+                };
+                #[cfg(not(test))]
+                let proof = {
+                    // SAFETY: signal zero performs no mutation and checks the retained PGID.
+                    let result = unsafe { libc::kill(-self.pgid, 0) };
+                    if result == -1 {
+                        let error = std::io::Error::last_os_error();
+                        if error.raw_os_error() == Some(libc::ESRCH) {
+                            Ok(true)
+                        } else {
+                            Err(error.to_string())
+                        }
+                    } else {
+                        Ok(false)
+                    }
+                };
+                match proof {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(error) => {
+                        if !errno_defect_recorded {
+                            defects.push(format!("process-group accounting failed: {error}"));
+                            errno_defect_recorded = true;
+                        }
+                        #[cfg(test)]
+                        if self.settlement_hook.as_mut().is_some_and(|hook| {
+                            std::mem::take(&mut hook.panic_after_native_query_defect)
+                        }) {
+                            panic!("injected probe panic after native query defect");
+                        }
+                    }
+                }
+                if attempt.expired() {
+                    record_probe_attempt_expiry(defects, "process-group accounting proof");
+                    // SAFETY: this remains the retained positive process group.
+                    unsafe {
+                        libc::kill(-self.pgid, libc::SIGKILL);
+                    }
+                    attempt.restart();
+                }
+                tokio::time::sleep(ACTIVE_SETTLEMENT_POLL.min(attempt.remaining())).await;
+            }
+        }
+
+        #[cfg(windows)]
+        drop(self.job.take());
+        ProbeSettlement {
+            stdout,
+            stderr,
+            defects: defects.clone(),
+        }
+    }
+
+    async fn settle_observing_cancellation<F>(
+        &mut self,
+        wait: &ProbeWait,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+        observed: F,
+    ) -> (ProbeSettlement, bool)
+    where
+        F: FnOnce(),
+    {
+        if matches!(wait, ProbeWait::Cancelled) {
+            observed();
+            return (self.settle(wait).await, true);
+        }
+        let settlement = self.settle(wait);
+        tokio::pin!(settlement);
+        tokio::select! {
+            biased;
+            _ = wait_for_probe_cancellation(cancel) => {
+                observed();
+                (settlement.await, true)
+            }
+            settled = &mut settlement => (settled, false),
+        }
+    }
+}
+
+/// The startup-update target keeps this slot outside its caught future. The
+/// private process owner therefore survives a panic while wait/settlement is
+/// being polled and can resume cleanup before any terminal publication.
+#[derive(Default)]
+pub(crate) struct RetainedProbeOwner {
+    owner: Option<ProbeProcessOwner>,
+}
+
+impl RetainedProbeOwner {
+    pub(crate) fn is_some(&self) -> bool {
+        self.owner.is_some()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        drop(self.owner.take());
+    }
+
+    pub(crate) async fn settle_after_panic<F>(
+        &mut self,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+        observed: F,
+    ) -> Option<String>
+    where
+        F: FnOnce(),
+    {
+        let owner = self.owner.as_mut()?;
+        let (settlement, _) = owner
+            .settle_observing_cancellation(&ProbeWait::Cancelled, cancel, observed)
+            .await;
+        (!settlement.defects.is_empty()).then(|| settlement.defects.join("; "))
+    }
+}
+
+async fn wait_for_probe_cancellation(cancel: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *cancel.borrow() {
+            return;
+        }
+        if cancel.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+fn parse_probe_completion(
+    program: &Path,
+    status: std::process::ExitStatus,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> ProbeOutcome {
+    if status.success() {
+        match parse_version_token(&String::from_utf8_lossy(stdout))
+            .or_else(|| parse_version_token(&String::from_utf8_lossy(stderr)))
+        {
+            Some(version) => {
+                log::info!(
+                    "[agent-version] {} -> installed version {}",
+                    program.display(),
+                    version
+                );
+                ProbeOutcome::Version(version)
+            }
+            None => {
+                let mut detail = sanitize_detail(stdout);
+                if detail.is_empty() {
+                    detail = "<empty>".to_string();
+                }
+                let detail = format!("no version in output: {detail}");
+                log::warn!(
+                    "[agent-version] probe failed for {}: {detail}",
+                    program.display()
+                );
+                ProbeOutcome::Failed(detail)
+            }
+        }
+    } else {
+        let mut tail = sanitize_detail(stderr);
+        if tail.is_empty() {
+            tail = sanitize_detail(stdout);
+        }
+        if tail.is_empty() {
+            tail = "<no output>".to_string();
+        }
+        let detail = format!("exit code {}: {}", status.code().unwrap_or(-1), tail);
+        log::warn!(
+            "[agent-version] probe failed for {}: {detail}",
+            program.display()
+        );
+        ProbeOutcome::Failed(detail)
+    }
 }
 
 /// #1551 - run `<program> <args>` with a bound and read its version.
@@ -264,6 +955,54 @@ async fn collect_probe_output(
 /// runner is NOT reused: it executes shell strings, is pinned by six tests, and
 /// has a different failure contract.
 pub async fn probe_version(program: &Path, args: &[&str], timeout: Duration) -> ProbeOutcome {
+    let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    match probe_version_cancellable(program, args, timeout, cancel_rx).await {
+        CancellableProbeOutcome::Completed(outcome) => outcome,
+        CancellableProbeOutcome::Cancelled => {
+            ProbeOutcome::Failed("probe cancelled unexpectedly".to_string())
+        }
+        CancellableProbeOutcome::CleanupFailed(detail) => ProbeOutcome::Failed(detail),
+    }
+}
+
+pub async fn probe_version_cancellable(
+    program: &Path,
+    args: &[&str],
+    timeout: Duration,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> CancellableProbeOutcome {
+    let mut owner = RetainedProbeOwner::default();
+    let outcome = probe_version_cancellable_retained(
+        program,
+        args,
+        timeout,
+        &mut cancel,
+        &mut owner,
+        || {},
+        || {},
+    )
+    .await;
+    owner.clear();
+    outcome
+}
+
+/// Startup-update adapter with externally retained ownership. `owner_installed`
+/// runs synchronously only after the real process owner is stored in `owner_slot`;
+/// `cancellation_observed` runs while that owner is still retained and before
+/// settlement is awaited to completion.
+pub(crate) async fn probe_version_cancellable_retained<I, O>(
+    program: &Path,
+    args: &[&str],
+    timeout: Duration,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    owner_slot: &mut RetainedProbeOwner,
+    owner_installed: I,
+    cancellation_observed: O,
+) -> CancellableProbeOutcome
+where
+    I: FnOnce(),
+    O: FnOnce(),
+{
     let mut command = {
         let mut c = tokio::process::Command::new(program);
         c.args(args);
@@ -273,145 +1012,50 @@ pub async fn probe_version(program: &Path, args: &[&str], timeout: Duration) -> 
         c.kill_on_drop(true);
         c
     };
-    // The GUI binary owns no console: without CREATE_NO_WINDOW every refresh
-    // pops one console window per probe.
-    #[cfg(windows)]
-    {
-        command.creation_flags(0x0800_0000);
-    }
     #[cfg(unix)]
     {
         command.process_group(0);
     }
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(e) => return ProbeOutcome::Failed(format!("spawn failed: {e}")),
+    let owner = match ProbeProcessOwner::spawn(&mut command).await {
+        Ok(owner) => owner,
+        Err(outcome) => return outcome,
     };
-
-    let mut job: Option<crate::pty::job::JobObject> = {
-        #[cfg(windows)]
-        {
-            child.id().and_then(crate::pty::job::JobObject::for_child)
-        }
-        #[cfg(not(windows))]
-        {
-            None
-        }
-    };
-
-    let mut stdout_rx = child.stdout.take().map(spawn_capped_reader);
-    let mut stderr_rx = child.stderr.take().map(spawn_capped_reader);
-
-    #[cfg(unix)]
-    let pid = child.id().unwrap_or(0);
-
-    let waited = tokio::time::timeout(timeout, child.wait()).await;
-    match waited {
-        Ok(Ok(status)) => {
-            let joined = tokio::time::timeout(
-                READER_JOIN_TIMEOUT,
-                collect_probe_output(&mut stdout_rx, &mut stderr_rx),
-            )
-            .await;
-            let (stdout, stderr) = match joined {
-                Ok(pair) => pair,
-                Err(_) => {
-                    // A descendant holds the pipe open: kill the tree so the
-                    // readers EOF, then join once more.
-                    if let Some(job) = job.take() {
-                        #[cfg(windows)]
-                        drop(job);
-                        #[cfg(not(windows))]
-                        let _ = job;
-                    }
-                    #[cfg(unix)]
-                    // SAFETY: `-pid` is the process group created by
-                    // `process_group(0)` at spawn; it contains only this probe.
-                    unsafe {
-                        libc::kill(-(pid as i32), libc::SIGKILL);
-                    }
-                    tokio::time::timeout(
-                        READER_JOIN_TIMEOUT,
-                        collect_probe_output(&mut stdout_rx, &mut stderr_rx),
-                    )
-                    .await
-                    .unwrap_or_default()
-                }
-            };
-            if status.success() {
-                match parse_version_token(&String::from_utf8_lossy(&stdout))
-                    .or_else(|| parse_version_token(&String::from_utf8_lossy(&stderr)))
-                {
-                    Some(version) => {
-                        log::info!(
-                            "[agent-version] {} -> installed version {}",
-                            program.display(),
-                            version
-                        );
-                        ProbeOutcome::Version(version)
-                    }
-                    None => {
-                        let mut detail = sanitize_detail(&stdout);
-                        if detail.is_empty() {
-                            detail = "<empty>".to_string();
-                        }
-                        let detail = format!("no version in output: {detail}");
-                        log::warn!(
-                            "[agent-version] probe failed for {}: {detail}",
-                            program.display()
-                        );
-                        ProbeOutcome::Failed(detail)
-                    }
-                }
-            } else {
-                let mut tail = sanitize_detail(&stderr);
-                if tail.is_empty() {
-                    tail = sanitize_detail(&stdout);
-                }
-                if tail.is_empty() {
-                    tail = "<no output>".to_string();
-                }
-                let detail = format!("exit code {}: {}", status.code().unwrap_or(-1), tail);
-                log::warn!(
-                    "[agent-version] probe failed for {}: {detail}",
-                    program.display()
-                );
-                ProbeOutcome::Failed(detail)
-            }
-        }
-        Ok(Err(e)) => {
-            let detail = format!("spawn failed: {e}");
-            log::warn!(
-                "[agent-version] probe failed for {}: {detail}",
-                program.display()
-            );
-            ProbeOutcome::Failed(detail)
-        }
-        Err(_) => {
-            if let Some(job) = &job {
-                job.terminate();
-            }
-            let _ = child.kill().await;
-            #[cfg(unix)]
-            // SAFETY: `-pid` is the process group created by `process_group(0)`
-            // at spawn; it contains only this probe's own tree.
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-            let _ = tokio::time::timeout(READER_JOIN_TIMEOUT, child.wait()).await;
-            let _ = tokio::time::timeout(
-                READER_JOIN_TIMEOUT,
-                collect_probe_output(&mut stdout_rx, &mut stderr_rx),
-            )
-            .await;
+    debug_assert!(!owner_slot.is_some());
+    owner_slot.owner = Some(owner);
+    owner_installed();
+    let owner = owner_slot.owner.as_mut().expect("retained probe owner");
+    let waited = owner.wait(timeout, cancel).await;
+    let (settlement, cancellation_was_observed) = owner
+        .settle_observing_cancellation(&waited, cancel, cancellation_observed)
+        .await;
+    if !settlement.defects.is_empty() {
+        return CancellableProbeOutcome::CleanupFailed(settlement.defects.join("; "));
+    }
+    if cancellation_was_observed {
+        return CancellableProbeOutcome::Cancelled;
+    }
+    match &waited {
+        ProbeWait::Cancelled => CancellableProbeOutcome::Cancelled,
+        ProbeWait::TimedOut => {
             let detail = format!("timed out after {}s (killed)", timeout.as_secs());
             log::warn!(
                 "[agent-version] probe failed for {}: {detail}",
                 program.display()
             );
-            ProbeOutcome::Failed(detail)
+            CancellableProbeOutcome::Completed(ProbeOutcome::Failed(detail))
         }
+        ProbeWait::Exited(Err(error)) => {
+            let detail = format!("spawn failed: {error}");
+            log::warn!(
+                "[agent-version] probe failed for {}: {detail}",
+                program.display()
+            );
+            CancellableProbeOutcome::Completed(ProbeOutcome::Failed(detail))
+        }
+        ProbeWait::Exited(Ok(status)) => CancellableProbeOutcome::Completed(
+            parse_probe_completion(program, *status, &settlement.stdout, &settlement.stderr),
+        ),
     }
 }
 
@@ -629,6 +1273,7 @@ impl Drop for ProbeTicket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn shell_program() -> &'static str {
         if cfg!(windows) {
@@ -824,6 +1469,131 @@ mod tests {
             started.elapsed() < Duration::from_secs(10),
             "probe timeout must kill the tree promptly"
         );
+    }
+
+    async fn cancel_blocked_probe(program: &str, args: Vec<&str>) {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let probe = tokio::spawn({
+            let program = PathBuf::from(program);
+            let args: Vec<String> = args.into_iter().map(str::to_string).collect();
+            async move {
+                let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+                probe_version_cancellable(&program, &borrowed, Duration::from_secs(30), cancel_rx)
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cancel_tx.send(true).expect("request cancellation");
+        let outcome = tokio::time::timeout(Duration::from_secs(15), probe)
+            .await
+            .expect("probe cancellation settled")
+            .expect("probe task");
+        assert_eq!(outcome, CancellableProbeOutcome::Cancelled);
+    }
+
+    #[cfg(any(windows, unix))]
+    async fn cancel_during_probe_settlement(
+        program: &str,
+        args: Vec<&str>,
+        native_observations: std::collections::VecDeque<ProbeNativeObservation>,
+    ) -> CancellableProbeOutcome {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
+        let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
+        let probe = tokio::spawn({
+            let program = PathBuf::from(program);
+            let args: Vec<String> = args.into_iter().map(str::to_string).collect();
+            async move {
+                with_probe_settlement_hook(
+                    ProbeSettlementHook {
+                        before_native_proof: Some(proof_ready_tx),
+                        release_native_proof: Some(release_proof_rx),
+                        settlement_window: Some(Duration::from_millis(60)),
+                        native_observations,
+                        panic_after_native_proof_release: false,
+                        panic_after_native_query_defect: false,
+                        stdout_reader: None,
+                    },
+                    async move {
+                        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+                        probe_version_cancellable(
+                            &program,
+                            &borrowed,
+                            Duration::from_secs(10),
+                            cancel_rx,
+                        )
+                        .await
+                    },
+                )
+                .await
+            }
+        });
+        proof_ready_rx
+            .await
+            .expect("probe direct handle dropped before native proof");
+        cancel_tx
+            .send(true)
+            .expect("request cancellation during settlement");
+        tokio::task::yield_now().await;
+        assert!(
+            !probe.is_finished(),
+            "probe terminal outcome must remain behind native proof"
+        );
+        release_proof_tx
+            .send(())
+            .expect("release probe native proof");
+        tokio::time::timeout(Duration::from_secs(15), probe)
+            .await
+            .expect("probe settlement completed")
+            .expect("probe task")
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn cancelled_contained_probe() {
+        cancel_blocked_probe("cmd.exe", vec!["/C", "cmd /C ping -n 30 127.0.0.1 >NUL"]).await;
+        let outcome = cancel_during_probe_settlement(
+            "cmd.exe",
+            vec!["/D", "/C", "exit 0"],
+            std::collections::VecDeque::from([
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Error("injected query error"),
+                ProbeNativeObservation::Empty,
+            ]),
+        )
+        .await;
+        let CancellableProbeOutcome::CleanupFailed(detail) = outcome else {
+            panic!("expected later-settled cleanup failure, got {outcome:?}");
+        };
+        assert!(detail.contains("settlement attempt deadline exceeded during job accounting proof"));
+        assert!(detail.contains("job accounting failed: injected query error"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_probe_kills_unix_process_group_and_drains_readers() {
+        cancel_blocked_probe("sh", vec!["-c", "sh -c 'sleep 30' & wait"]).await;
+        let outcome = cancel_during_probe_settlement(
+            "sh",
+            vec!["-c", "exit 0"],
+            std::collections::VecDeque::from([
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Error("EPERM"),
+                ProbeNativeObservation::Empty,
+            ]),
+        )
+        .await;
+        let CancellableProbeOutcome::CleanupFailed(detail) = outcome else {
+            panic!("expected later-settled cleanup failure, got {outcome:?}");
+        };
+        assert!(detail.contains(
+            "settlement attempt deadline exceeded during process-group accounting proof"
+        ));
+        assert!(detail.contains("process-group accounting failed: EPERM"));
     }
 
     #[test]

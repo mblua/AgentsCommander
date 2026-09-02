@@ -16,6 +16,7 @@ agentscommander_lib -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib -> agentscommander_lib::config::settings
 agentscommander_lib -> agentscommander_lib::config::teams
 agentscommander_lib -> agentscommander_lib::logging
+agentscommander_lib -> agentscommander_lib::loops::ipc_observer
 agentscommander_lib -> agentscommander_lib::loops::non_stop_watchdog
 agentscommander_lib -> agentscommander_lib::pty::backend
 agentscommander_lib -> agentscommander_lib::pty::container_backend
@@ -420,6 +421,7 @@ agentscommander_lib::commands::entity_creation -> agentscommander_lib::pty::cred
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::session::manager
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::session::session
+agentscommander_lib::commands::ipc_blackbox -> agentscommander_lib::loops::ipc_observer
 agentscommander_lib::commands::loops -> agentscommander_lib::commands::ac_discovery
 agentscommander_lib::commands::loops -> agentscommander_lib::config::ac_root
 agentscommander_lib::commands::loops -> agentscommander_lib::config::loops
@@ -506,6 +508,7 @@ agentscommander_lib::commands::session -> agentscommander_lib::session::selectio
 agentscommander_lib::commands::session -> agentscommander_lib::session::session
 agentscommander_lib::commands::session -> agentscommander_lib::session::warnings
 agentscommander_lib::commands::session -> agentscommander_lib::telegram::manager
+agentscommander_lib::commands::session -> agentscommander_lib::web::commands
 agentscommander_lib::commands::spec_board -> agentscommander_lib
 agentscommander_lib::commands::spec_board -> agentscommander_lib::config::settings
 agentscommander_lib::commands::task -> agentscommander_lib::cli::task_ops
@@ -701,6 +704,8 @@ agentscommander_lib::loops::delivery -> agentscommander_lib::session::manager
 agentscommander_lib::loops::delivery -> agentscommander_lib::session::purge_guard
 agentscommander_lib::loops::delivery -> agentscommander_lib::session::session
 agentscommander_lib::loops::events -> agentscommander_lib::config::loops
+agentscommander_lib::loops::ipc_observer -> agentscommander_lib::config
+agentscommander_lib::loops::ipc_observer -> agentscommander_lib::shutdown
 agentscommander_lib::loops::non_stop_watchdog -> agentscommander_lib::config::settings
 agentscommander_lib::loops::non_stop_watchdog -> agentscommander_lib::network
 agentscommander_lib::loops::non_stop_watchdog -> agentscommander_lib::shutdown

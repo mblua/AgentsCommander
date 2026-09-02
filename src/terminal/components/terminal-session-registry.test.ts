@@ -160,11 +160,14 @@ function createFactory(h: Harness) {
     h.terminals.set(sessionId, terminal);
     h.webgls.set(sessionId, webgl);
     const replayStatus = document.createElement("div");
+    const agentMessageStatus = document.createElement("div");
     return {
       terminal: terminal as unknown as SessionTerminalEntry["terminal"],
       fitAddon: new FakeFitAddon() as unknown as SessionTerminalEntry["fitAddon"],
       webglAddon: webgl as unknown as SessionTerminalEntry["webglAddon"],
       replayStatus,
+      agentMessageStatus,
+      agentMessageAtMs: null,
       hasRenderedOutput: false,
       snapshotResizeSuppressed: false,
       inputBuffer: "",

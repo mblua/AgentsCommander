@@ -8,7 +8,7 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import type { UnlistenFn } from "../../shared/transport";
-import type { AgentUpdateOverviewRow, InstallState } from "../../shared/types";
+import type { AgentUpdateOverviewRow, AgentUpdateResult, InstallState } from "../../shared/types";
 import { agentUpdateStore, resetAgentUpdateForTests } from "../agent-update";
 import { agentUpdateOverviewStore } from "../stores/agent-update-overview";
 import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
@@ -17,6 +17,26 @@ const CMD = "get_agent_update_overview";
 const [, setAgentUpdateStore] = agentUpdateStore;
 
 const checking: InstallState = { status: "checking", seq: 0 };
+
+/**
+ * #1691 - the canonical result shape. This table's live column reads the agent-update store,
+ * so its fixtures must carry the required `outcome`/probe/`change` keys like any other result.
+ */
+function okResult(command: string, label: string): AgentUpdateResult {
+  return {
+    command,
+    label,
+    ok: true,
+    outcome: "succeeded",
+    installBefore: null,
+    installAfter: null,
+    change: "unknown",
+  };
+}
+
+function failedResult(command: string, label: string, error: string): AgentUpdateResult {
+  return { ...okResult(command, label), ok: false, outcome: "failed", error };
+}
 
 function installed(version: string, seq = 1): InstallState {
   return { status: "installed", version, path: `C:\\bin\\${version}.cmd`, seq };
@@ -271,8 +291,8 @@ describe("AgentAutoUpdateStatusList (#1551)", () => {
     setAgentUpdateStore({
       running: [{ command: "hermes", label: "Hermes" }],
       results: [
-        { command: "claude", label: "Claude", ok: true },
-        { command: "pi", label: "Pi", ok: false, error: "exit code 1" },
+        okResult("claude", "Claude"),
+        failedResult("pi", "Pi", "exit code 1"),
       ],
     });
     const fake = new FakeTransport();
@@ -334,9 +354,9 @@ describe("AgentAutoUpdateStatusList (#1551)", () => {
       setAgentUpdateStore({
         running: [],
         results: [
-          { command: "claude", label: "Claude", ok: true },
-          { command: "pi", label: "Pi", ok: false, error: "exit code 1" },
-          { command: "hermes", label: "Hermes", ok: true },
+          okResult("claude", "Claude"),
+          failedResult("pi", "Pi", "exit code 1"),
+          okResult("hermes", "Hermes"),
         ],
       });
       expect(state("hermes", "live")).toBe("ok");

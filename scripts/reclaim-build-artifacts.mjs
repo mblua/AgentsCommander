@@ -78,7 +78,7 @@ function parseArgs(argv) {
 
 function printHelp() {
   const lines = [
-    'Reclaim Rust/Tauri build artifacts (target, src-tauri/target) from workgroup clones.',
+    'Reclaim Rust/Tauri build artifacts (target, src-tauri/target) from room/workgroup clones.',
     '',
     'Usage:',
     '  node scripts/reclaim-build-artifacts.mjs [options] [root ...]',
@@ -126,7 +126,9 @@ function childDirs(dir) {
 }
 
 // Discover repo roots reachable from a scan root, bounded to two levels:
-//   root itself, `repo-*` children, and `repo-*` grandchildren under `wg-*` dirs.
+//   root itself, `repo-*` children, and `repo-*` grandchildren under a replica dir.
+// Replica dirs are `room-*` today and `wg-*` in the legacy layout; both are accepted,
+// otherwise a scan of `.ac` silently skips every current room clone (#1702).
 function discoverRepoRoots(scanRoot) {
   const found = new Set();
   if (isRepoRoot(scanRoot)) found.add(scanRoot);
@@ -134,7 +136,7 @@ function discoverRepoRoots(scanRoot) {
     const child = join(scanRoot, name);
     if (/^repo-/.test(name) && isRepoRoot(child)) {
       found.add(child);
-    } else if (/^wg-/.test(name)) {
+    } else if (/^(?:room|wg)-/.test(name)) {
       for (const gname of childDirs(child)) {
         const g = join(child, gname);
         if (/^repo-/.test(gname) && isRepoRoot(g)) found.add(g);
