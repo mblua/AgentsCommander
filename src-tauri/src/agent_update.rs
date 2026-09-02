@@ -1834,6 +1834,12 @@ enum UpdaterStepOutcome {
     Failed(String),
     Cancelled,
     CleanupFailed(String),
+    /// Windows only: pre-execution containment is a Win32 Job Object primitive, so
+    /// `spawn_suspended_contained` is exported only there and this is constructed only on
+    /// the `ContainedSpawnError::Containment` arm. On Unix `TargetProcessOwner::spawn` uses
+    /// a plain spawn, which can fail but has no containment step to fail, so the variant is
+    /// never produced and `dead_code` is correct to say so.
+    #[cfg_attr(not(windows), allow(dead_code))]
     ContainmentFailed,
 }
 
