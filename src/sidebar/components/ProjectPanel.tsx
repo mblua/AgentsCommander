@@ -3657,7 +3657,7 @@ const ProjectPanel: Component = () => {
                               handleReplicaContextClose(event, menu().sessionId)
                             }
                           >
-                            <span class="session-context-option-icon" aria-hidden="true">&#x2715;</span> Close Session
+                            <span class="session-context-option-icon" aria-hidden="true">&#x2715;</span> Close Session (Ctrl+Shift+W)
                           </button>
                         </Show>
                         <div class="context-separator" />

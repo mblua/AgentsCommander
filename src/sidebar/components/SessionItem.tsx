@@ -490,7 +490,7 @@ const SessionItem: Component<{
         <button
           class="session-item-close"
           onClick={handleClose}
-          title="Close session"
+          title="Close session (Ctrl+Shift+W)"
           data-ac-testid={`session.${props.session.id}.destroy`}
           data-ac-role="button"
         >

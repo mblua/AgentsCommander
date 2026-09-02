@@ -550,7 +550,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       "docs",
       "cli",
       "Open Matrix folder",
-      "Close Session",
+      "Close Session (Ctrl+Shift+W)",
       "Detach session",
       "Attach Telegram",
       "Add to Group",
@@ -1438,7 +1438,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       const coordinatorRow = findRow(rendered!.root, coordQuickRowTestId);
       let menu = await openMenu(coordinatorRow);
       const matrix = findExactMenuButton(menu, "Open Matrix folder")!;
-      const close = findExactMenuButton(menu, "Close Session")!;
+      const close = findExactMenuButton(menu, "Close Session (Ctrl+Shift+W)")!;
       const open = findExactMenuButton(menu, "Detach session")!;
       const attach = findExactMenuButton(menu, "Attach Telegram")!;
       const add = findExactMenuButton(menu, "Add to Group")!;
@@ -2045,7 +2045,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       const menu = await openMenu();
       expect(findExactMenuButton(menu, "Attach Telegram")).toBeNull();
       expect(findExactMenuButton(menu, "Detach Telegram")).toBeNull();
-      const close = findExactMenuButton(menu, "Close Session");
+      const close = findExactMenuButton(menu, "Close Session (Ctrl+Shift+W)");
       expect(close).not.toBeNull();
       click(close!);
       await waitFor(() => expect(replicaMenu()).toBeNull());
@@ -2066,7 +2066,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
         return { closed: true, workingCount: 0 };
       });
 
-      click(findExactMenuButton(await openMenu(), "Close Session")!);
+      click(findExactMenuButton(await openMenu(), "Close Session (Ctrl+Shift+W)")!);
       await waitFor(() => expect(fake.callsFor("close_coordinator")).toHaveLength(1));
       expect(fake.callsFor("close_coordinator")[0].args).toEqual({
         id: "member-session",
