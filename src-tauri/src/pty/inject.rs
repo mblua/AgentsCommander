@@ -406,6 +406,20 @@ where
         }
     }
 
+    // #1682 - an injected text block is a message to the agent, submitted on
+    // every branch but R8, so it arms this session and the busy->idle edges
+    // that follow stamp `tooling.lastAgentMessageAt`. Single funnel for every
+    // injection path (inter-agent wake, Loop delivery, the self-clear, self-switch
+    // and self-restart resume prompts, internal system notices, Telegram inject),
+    // so no caller needs its own site. Placed here rather than beside the
+    // `mark_successful_pty_write_busy` call above so an early `Err` return
+    // leaves the session unarmed. NOT "an undelivered message never arms": R8.
+    {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let manager = session_mgr.read().await.clone();
+        manager.arm_agent_turn(session_id).await;
+    }
+
     Ok(())
 }
 
@@ -710,6 +724,7 @@ mod tests {
             is_coordinator: true,
             is_root_agent: false,
             git_repos_gen: 0,
+            agent_turn_armed: false,
             token: Uuid::new_v4(),
             agent_kind: None,
             requested_profile: None,

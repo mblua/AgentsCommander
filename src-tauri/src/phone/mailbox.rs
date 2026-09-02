@@ -14487,6 +14487,164 @@ mod tests {
         );
     }
 
+    /// #1682 - the privileged exact-agent-input plane bypasses `mark_busy`, so
+    /// the boundary transaction itself is the arming site for it.
+    #[tokio::test]
+    async fn the_pty_input_boundary_arms_the_session() {
+        use crate::pty::backend::SessionBackendKind;
+        use crate::session::profile::IdleTuning;
+
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle().clone();
+        let sender_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "coordinator",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let target_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "member",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+        let paths = vec![fixture._temp.path().to_string_lossy().to_string()];
+        let route = crate::config::teams::verify_pty_input_route(
+            &fixture.sender_cwd,
+            false,
+            CANONICAL_WAKE_TO,
+            &paths,
+        )
+        .expect("verified route");
+        let target_cwd_identity =
+            crate::path_identity::verify_directory(&fixture.target_cwd).expect("target identity");
+        let sender_cwd_identity =
+            crate::path_identity::verify_directory(&fixture.sender_cwd).expect("sender identity");
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        pty.lock()
+            .unwrap()
+            .record_route_with_identities(
+                target_id,
+                SessionBackendKind::LocalProcess,
+                Some(target_cwd_identity),
+                Some(route.target.replica_identity.clone()),
+            )
+            .expect("record target route");
+        pty.lock()
+            .unwrap()
+            .record_route_with_identities(
+                sender_id,
+                SessionBackendKind::LocalProcess,
+                Some(sender_cwd_identity),
+                Some(route.sender.replica_identity.clone()),
+            )
+            .expect("record sender route");
+        let authority_route =
+            PtyManager::authority_route_proof(&pty, sender_id).expect("sender authority proof");
+        let permit = PtyManager::acquire_input_writer(&pty, target_id)
+            .await
+            .expect("target permit");
+        let idle = app
+            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .inner()
+            .clone();
+        idle.register_session(target_id, IdleTuning::DEFAULT);
+        idle.set_pty_input_ready_for_test(target_id);
+        let sessions = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let settings = app.state::<SettingsState>().inner().clone();
+        fn current_recipe(
+            session: &crate::session::session::Session,
+            settings: &AppSettings,
+        ) -> bool {
+            session_has_current_pty_submission_provenance(&SessionInfo::from(session), settings)
+        }
+
+        assert!(
+            !sessions
+                .get_session(target_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+
+        let boundary_guard = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                &settings,
+                current_recipe,
+                || true,
+            )
+            .await
+            .expect("the boundary must succeed");
+        drop(boundary_guard);
+
+        assert!(
+            sessions
+                .get_session(target_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+    }
+
+    /// #1682 - the single injection funnel behind the inter-agent wake, so one
+    /// arming site there covers every injection caller (round-1 blocker B1).
+    #[tokio::test]
+    async fn an_injected_text_block_arms_the_session() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let session_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-live",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, session_id);
+        let sessions = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+
+        assert!(
+            !sessions
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+
+        crate::pty::inject::inject_text_into_session(&app, session_id, "arbitrary payload")
+            .await
+            .unwrap();
+
+        assert!(
+            sessions
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+    }
+
     #[tokio::test]
     async fn final_pty_boundary_linearizes_wrapper_trust_against_concurrent_settings_mutation() {
         use crate::pty::backend::SessionBackendKind;

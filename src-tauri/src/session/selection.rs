@@ -2434,6 +2434,7 @@ async fn execute_restore_dormant<R: Runtime>(
         is_coordinator: request.is_coordinator,
         is_root_agent: request.is_root_agent,
         git_repos_gen: 0,
+        agent_turn_armed: false,
         token: Uuid::new_v4(),
         agent_kind: None,
         requested_profile: persisted.requested_profile,

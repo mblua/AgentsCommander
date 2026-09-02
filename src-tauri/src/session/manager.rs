@@ -345,6 +345,7 @@ impl SessionManager {
             is_coordinator,
             is_root_agent: false,
             git_repos_gen: 0,
+            agent_turn_armed: false,
             token: Uuid::new_v4(),
             agent_kind: None,
             requested_profile: None,
@@ -664,6 +665,37 @@ impl SessionManager {
         }
     }
 
+    /// #1682 - record that a message write reached an arming site for `id`, NOT that a message was delivered
+    /// and submitted: R7 and R8 both arm with nothing submitted. Idempotent, and never undone: see this phase's
+    /// D2. Deliberately NOT called from `mark_busy`, whose output-driven caller would arm a startup repaint.
+    pub async fn arm_agent_turn(&self, id: Uuid) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        let Some(s) = state.sessions.get_mut(&id) else {
+            return;
+        };
+        s.agent_turn_armed = true;
+    }
+
+    /// #1682 - where to persist the stamp for `id` on a busy->idle edge, or
+    /// `None` when no message ever armed this session or it has no coding
+    /// agent. Read-only: the latch is not consumed, so it never blocks a later
+    /// edge; the value converges on the last edge the stamp gates let through.
+    pub async fn agent_stamp_target(&self, id: Uuid) -> Option<(String, String)> {
+        let state = self.state.read().await;
+        if state.pending_create.contains_key(&id) {
+            return None;
+        }
+        let s = state.sessions.get(&id)?;
+        if !s.agent_turn_armed {
+            return None;
+        }
+        let agent_id = s.agent_id.clone()?;
+        Some((s.working_directory.clone(), agent_id))
+    }
+
     /// #1149 - the working-session set, sampled without an await.
     ///
     /// `RunEvent::Exit` runs on the main thread and needs this set while the
@@ -846,6 +878,13 @@ impl SessionManager {
             if matches!(session.status, SessionStatus::Idle) {
                 session.status = SessionStatus::Running;
             }
+            // #1682 - the boundary transaction arms this session, so its busy->idle
+            // edges stamp `tooling.lastAgentMessageAt`. It keys on that arming, not on
+            // proven delivery: R7 is the branch that arms without delivering. This site
+            // is required because the plane bypasses `mark_busy` (see the #1149 note
+            // below). It arms BEFORE the caller's write at `phone/mailbox.rs:6029`,
+            // because this block, not that write, is this function's point of no return.
+            session.agent_turn_armed = true;
             // #1149 - the third working-state mutation site, and the one that
             // bypasses `mark_busy`: `waiting_for_input` is already false by the
             // time `notify_pty_input_busy` reaches it, so hooking only
@@ -2249,6 +2288,7 @@ impl SessionManager {
             is_coordinator,
             is_root_agent: false,
             git_repos_gen: 0,
+            agent_turn_armed: false,
             token: Uuid::new_v4(),
             agent_kind: None,
             requested_profile: None,
@@ -4844,5 +4884,76 @@ mod tests {
         // Pending rows are hidden from the public read path (by design), so assert
         // the pending create is still present rather than via get_session.
         assert!(mgr.contains_public_or_pending(c_pending).await);
+    }
+
+    #[tokio::test]
+    async fn an_armed_session_yields_the_same_target_on_every_edge() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "codex".into(),
+                vec![],
+                "C:/x/armed".into(),
+                Some("codex".to_string()),
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create the armed session");
+
+        // Control, and the whole assertion for the unarmed gate.
+        assert_eq!(mgr.agent_stamp_target(session.id).await, None);
+
+        mgr.arm_agent_turn(session.id).await;
+        let expected = Some((session.working_directory.clone(), "codex".to_string()));
+        // The latch is never consumed, so every later busy->idle edge sees the
+        // same target rather than only the first.
+        assert_eq!(mgr.agent_stamp_target(session.id).await, expected);
+        assert_eq!(mgr.agent_stamp_target(session.id).await, expected);
+        assert_eq!(mgr.agent_stamp_target(session.id).await, expected);
+    }
+
+    #[tokio::test]
+    async fn a_session_without_an_agent_id_never_yields_a_target() {
+        let mgr = SessionManager::new();
+        let plain = mgr
+            .create_session(
+                "pwsh".into(),
+                vec![],
+                "C:/x/plain".into(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create the agentless session");
+        mgr.arm_agent_turn(plain.id).await;
+        assert_eq!(mgr.agent_stamp_target(plain.id).await, None);
+        assert_eq!(mgr.agent_stamp_target(plain.id).await, None);
+
+        // In-test control: without it this passes against an
+        // `agent_stamp_target` that always returns `None`.
+        let agent = mgr
+            .create_session(
+                "codex".into(),
+                vec![],
+                "C:/x/agent".into(),
+                Some("codex".to_string()),
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create the agent session");
+        mgr.arm_agent_turn(agent.id).await;
+        assert_eq!(
+            mgr.agent_stamp_target(agent.id).await,
+            Some((agent.working_directory.clone(), "codex".to_string()))
+        );
     }
 }
