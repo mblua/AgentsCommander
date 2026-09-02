@@ -55,7 +55,7 @@ A replica row shows the replica's path as its tooltip and carries the indicators
 
 Right-clicking a row opens a context menu, and AC builds a different one depending on whether the row has an active session or is an inactive replica.
 
-**With an active session**, the menu offers `Restart Session`, `Coding Agent`, `Open Replica's Folder` (tooltipped with the path it will open), one entry per repository AC discovered in the replica, `Open Matrix folder` when the replica has an Agent Matrix behind it, then `Open in new window`, which reads `Re-attach to main` when the session is already detached, an entry to add the replica to a group, and `Clear task title`.
+**With an active session**, the menu offers `Restart Session`, `Coding Agent`, `Open Replica's Folder` (tooltipped with the path it will open), one entry per repository AC discovered in the replica, `Open Matrix folder` when the replica has an Agent Matrix behind it, then `Detach session`, which reads `Re-attach session` when the session is already detached, an entry to add the replica to a group, and `Clear task title`.
 
 **On an inactive replica** the same menu appears without the two entries that need a running session: no `Restart Session` and no detach toggle.
 

@@ -64,6 +64,8 @@ import AgentPickerModal, { type AgentPickerScopeContext } from "./AgentPickerMod
 import RestartPromptModal from "./RestartPromptModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
+import DetachIcon from "./DetachIcon";
+import ReattachIcon from "./ReattachIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
 import {
   automationIdPart,
@@ -1705,7 +1707,7 @@ const ProjectPanel: Component = () => {
               }}
               data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.trigger`}
             >
-              <span class="session-context-option-icon" aria-hidden="true" />
+              <span class="session-context-option-icon" aria-hidden="true">&#x1F465;</span>
               <span>Add to Group</span>
               <span class="session-context-submenu-arrow">&rsaquo;</span>
             </button>
@@ -3663,11 +3665,15 @@ const ProjectPanel: Component = () => {
                           class="session-context-option"
                           onClick={() => toggleReplicaDetach(menu().sessionId)}
                         >
-                          {/* #987 - the two glyphs the session row's detach button uses. */}
+                          {/* #987, #1708 - the same icon pair the session row's detach button uses. */}
                           <span class="session-context-option-icon" aria-hidden="true">
-                            {sessionsStore.isDetached(menu().sessionId) ? "\u2934" : "\u29C9"}
+                            {sessionsStore.isDetached(menu().sessionId) ? (
+                              <ReattachIcon class="session-context-detach-icon" />
+                            ) : (
+                              <DetachIcon class="session-context-detach-icon" />
+                            )}
                           </span>{" "}
-                          {sessionsStore.isDetached(menu().sessionId) ? "Re-attach to main" : "Open in new window"}
+                          {sessionsStore.isDetached(menu().sessionId) ? "Re-attach session" : "Detach session"}
                         </button>
                         <Show when={liveTelegramSession()}>
                           <button
@@ -3679,7 +3685,7 @@ const ProjectPanel: Component = () => {
                             <span
                               class="session-context-option-icon"
                               aria-hidden="true"
-                              style={telegramBridge() ? { color: telegramBridge()!.color } : {}}
+                              style={telegramBridge() ? { color: telegramBridge()!.color } : { color: "#0088cc" }}
                             >
                               <TelegramIcon />
                             </span>{" "}
@@ -3723,7 +3729,7 @@ const ProjectPanel: Component = () => {
                             void startReplicaTitleEdit(menu().wg);
                           }}
                         >
-                          <span class="session-context-option-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
+                          <span class="session-context-option-icon session-context-task-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
                         </button>
                         <Show when={titleEdit() && titleEdit()!.wgPath === menu().wg.path}>
                           <div
@@ -3838,7 +3844,7 @@ const ProjectPanel: Component = () => {
                               void startReplicaTitleEdit(menu().wg);
                             }}
                           >
-                            <span class="session-context-option-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
+                            <span class="session-context-option-icon session-context-task-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
                           </button>
                           <Show when={titleEdit() && titleEdit()!.wgPath === menu().wg.path}>
                             <div
