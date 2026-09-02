@@ -91,7 +91,7 @@ const Titlebar: Component<TitlebarProps> = (props) => {
             <button
               class="titlebar-btn titlebar-btn-attach"
               onClick={handleReattach}
-              title="Re-attach to main window"
+              title="Re-attach session"
               data-ac-testid="terminal.titlebar.reattach"
               data-ac-role="button"
             >

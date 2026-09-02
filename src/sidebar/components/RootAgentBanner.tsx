@@ -21,6 +21,8 @@ import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal"
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
 import { rootAgentCodingAgentAction } from "./root-agent-action";
 import { TelegramIcon } from "./TelegramIcon";
+import DetachIcon from "./DetachIcon";
+import ReattachIcon from "./ReattachIcon";
 import { sessionDotClass } from "./session-status";
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
@@ -513,12 +515,13 @@ const RootAgentBanner: Component = () => {
               class="session-item-detach"
               classList={{ attached: isDetached() }}
               onClick={handleDetachToggle}
-              title={isDetached() ? "Re-attach to main window" : "Open in new window"}
-              innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
+              title={isDetached() ? "Re-attach session" : "Detach session"}
               data-ac-testid="rootAgent.detachToggle"
               data-ac-role="button"
               data-ac-state={isDetached() ? "detached" : "attached"}
-            />
+            >
+              {isDetached() ? <ReattachIcon /> : <DetachIcon />}
+            </button>
 
             <Show when={bridge()}>
               <div
@@ -607,7 +610,7 @@ const RootAgentBanner: Component = () => {
                   data-ac-role="menuitem"
                   data-ac-state={isDetached() ? "detached" : "attached"}
                 >
-                  {isDetached() ? "Re-attach to main" : "Open in new window"}
+                  {isDetached() ? "Re-attach session" : "Detach session"}
                 </button>
               </Show>
             </Show>
