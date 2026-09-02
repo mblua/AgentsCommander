@@ -418,6 +418,11 @@ where
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let manager = session_mgr.read().await.clone();
         manager.arm_agent_turn(session_id).await;
+        // #1682 - the text write above marked this session through
+        // `mark_successful_pty_write_busy` (`:388`); this clear cancels that mark.
+        // It keys on ARMING, not on proven delivery: R8 arms and clears with
+        // nothing submitted. Self-cancelling here, so no caller needs its own site.
+        crate::commands::pty::clear_control_write_mark(app, session_id);
     }
 
     Ok(())

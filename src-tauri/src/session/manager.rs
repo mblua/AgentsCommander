@@ -911,6 +911,12 @@ impl SessionManager {
         // The `mark_busy` this reaches through the idle callback then sees no
         // edge and emits nothing, so there is exactly one record per injection.
         idle_detector.notify_pty_input_busy(id, was_idle);
+        // #1682 - the privileged exact-agent-input plane ARMS the turn here, and the
+        // clear keys on that arming, not on proven delivery: R7 is the branch that
+        // arms without delivering. It never reaches `mark_successful_pty_write_busy`,
+        // so it sets no mark of its own; this cancels one a preceding control write
+        // left, so a focus report before a `send --pty-input` cannot suppress its edge.
+        idle_detector.clear_control_write(id);
         Ok(route_guard)
     }
 
