@@ -143,6 +143,29 @@ function setupTerminalTransport(fake: FakeTransport): void {
   fake.resolve("detach_terminal_output", undefined);
 }
 
+/** `FakeTransport` resolves every `listen` immediately, which cannot express the
+ *  one state the mount guard exists for: a registration still in flight when the
+ *  component is disposed. This subclass gates ONE event so a test can park the
+ *  mount chain there. It adds nothing to `fake-transport.ts`, which this phase
+ *  leaves untouched; `listenAttempts` records the calls that never reach
+ *  `super.listen`, which `listens` by construction cannot show. */
+class GatedFakeTransport extends FakeTransport {
+  readonly listenAttempts: string[] = [];
+  agentMessageGate: Promise<void> | null = null;
+
+  override async listen<T>(
+    event: string,
+    callback: (payload: T) => void,
+    options?: Parameters<FakeTransport["listen"]>[2]
+  ) {
+    this.listenAttempts.push(event);
+    if (event === "session_agent_message" && this.agentMessageGate) {
+      await this.agentMessageGate;
+    }
+    return super.listen<T>(event, callback, options);
+  }
+}
+
 /** Shaped like `emitPtyOutput` in `TerminalView.saturation.test.tsx:185` — a
  *  module-local `function` closing over a module-local `currentFake`, for the
  *  same reason. */
@@ -442,6 +465,58 @@ describe("TerminalView last coding-agent message stamp (#1682)", () => {
       expect(xterm.instances[0].writes.length).toBeGreaterThan(writesBefore);
       expect(stampFor(ON_SCREEN).textContent).toBe(before);
       expect(stampFor(ON_SCREEN).textContent).toBe("08-31 21:29");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // The mount guard, pinned directly rather than through the cross-file symptom.
+  // `onMount`'s chain can outlive the component — unmount needs no window close,
+  // `shouldMountTerminal` drops this view whenever the selection leaves live
+  // mode — and everything it registers after that point attaches to a dead view
+  // that `onCleanup` has already run past. Parking the chain at the
+  // `session_agent_message` registration and disposing the view underneath it is
+  // the only way to observe the abort locally.
+  it("aborts the rest of the mount when the view is disposed mid-registration", async () => {
+    const fake = new GatedFakeTransport();
+    setupTerminalTransport(fake);
+    fake.resolve("get_last_agent_message", null);
+    let releaseGate: () => void = () => {};
+    fake.agentMessageGate = new Promise<void>((resolve) => {
+      releaseGate = () => resolve();
+    });
+    currentFake = fake;
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+
+    try {
+      // Park the chain: the registration has been ATTEMPTED and is now waiting.
+      await waitFor(() =>
+        expect(fake.listenAttempts).toContain("session_agent_message")
+      );
+      expect(fake.listenAttempts).not.toContain("terminal_detached");
+
+      // Dispose the view the way production does it, NOT via `rendered.cleanup()`:
+      // the selection leaves live mode, `shouldMountTerminal` (`terminal/App.tsx:61`)
+      // goes false, and `<Show>` disposes `TerminalView` while its mount chain is
+      // still parked. This matters for more than realism - `cleanup()` also runs
+      // `restoreTransport()`, after which the resumed chain talks to the real
+      // transport and this fake goes blind to exactly the registration under test.
+      terminalStore.setActiveSessionForTests(null);
+      await waitFor(() =>
+        expect(
+          document.querySelector(`[data-testid="terminal-grid-size-${ON_SCREEN}"]`)
+        ).toBeNull()
+      );
+
+      // The chain resumes with the component already disposed.
+      releaseGate();
+      await settle();
+
+      // The load-bearing assertion: the mount returned instead of carrying on, so
+      // the registration that follows it was never even attempted. Drop the early
+      // `return` and this records "terminal_detached" and goes red.
+      expect(fake.listenAttempts).not.toContain("terminal_detached");
+      expect(fake.listens.some((l) => l.event === "terminal_detached")).toBe(false);
     } finally {
       rendered.cleanup();
     }

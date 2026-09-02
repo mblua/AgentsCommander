@@ -117,6 +117,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   let unlistenAgentMessage: UnlistenFn | null = null;
   let unlistenTerminalDetached: UnlistenFn | null = null;
   let unlistenCloseRequested: UnlistenFn | null = null;
+  // #1682 - set in `onCleanup`, read by `onMount`. The same fact
+  // `failListenerReady(new Error("TerminalView unmounted"))` records for the
+  // attach gate, in the form the mount chain can test synchronously.
+  let unmounted = false;
 
   // #1363 - this window's single output attachment, and the serialization that
   // keeps it honest. `attachedSessionId` is what the BACKEND holds for this
@@ -1767,6 +1771,24 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       applyAgentMessage(entry, at);
     });
 
+    // #1682 - this chain can outlive the component. Unmount is frequent and
+    // needs no window close: `shouldMountTerminal` drops this component whenever
+    // the selection leaves live mode. When that happens while the chain is
+    // suspended, `onCleanup` has already run past every holder below, so a
+    // registration that resolves afterwards attaches to a dead view and is never
+    // released. Release what the await just produced, and ABORT the rest of the
+    // mount: continuing to initialize a disposed component is never right, and
+    // the early return is what keeps the registrations below from leaking too.
+    //
+    // Deliberately partial. The registrations ABOVE this point carry the same
+    // race, it predates #1682, and closing it for them is tracked separately
+    // rather than widened into the last phase of this delivery.
+    if (unmounted) {
+      unlistenAgentMessage?.();
+      unlistenAgentMessage = null;
+      return;
+    }
+
     if (!props.lockedSessionId) {
       unlistenTerminalDetached = await onTerminalDetached(({ sessionId }) => {
         // The session moved to its own window: release it here rather than
@@ -1816,6 +1838,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   });
 
   onCleanup(() => {
+    unmounted = true;
     // Settle the gate so an attach still queued behind it cannot hang the
     // chain, and settle it as a FAILURE so it can never authorize an attach
     // for a view that is going away (settling twice is a no-op).
