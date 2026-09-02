@@ -1164,10 +1164,8 @@ describe("SettingsModal automation hooks", () => {
     byTestId<HTMLButtonElement>("settings.profileRail.1.clear").click();
     await settle();
     expect(document.querySelector('[data-ac-testid="settings.profileRail.1"]')).toBeNull();
-    // #895: Claude is available again, and the row head itself re-adds it. Neither
-    // a "Use" nor a "Remove" button survives on any agent row — that per-row
-    // button was what made one row taller than the rest.
-    expect(document.querySelector('[data-ac-testid="settings.agentRow.1.use"]')).toBeNull();
+    // #895: clearing lives on the rail, not on an agent row; Use remains per-row, but no per-row Remove survives.
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.1.use"]')).not.toBeNull();
     expect(document.querySelector('[data-ac-testid="settings.agentRow.1.unuse"]')).toBeNull();
     expect(byTestId("settings.agentRow.1").getAttribute("data-ac-rail")).toBe("available");
     // The emptied rail has no header, so no Clear button either.
