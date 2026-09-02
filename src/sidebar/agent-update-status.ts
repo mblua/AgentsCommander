@@ -28,17 +28,35 @@ export interface AutoUpdateRowView {
   live: { state: LiveState; label: string; title?: string };
 }
 
-/** round 5 (Option 2 timeline) */
-export type NodeState = "pending" | "updating" | "ok" | "failed";
+/** round 5 (Option 2 timeline); #1691 adds the two nonterminal states and the cancelled terminal state. */
+export type NodeState =
+  | "pending"
+  | "updating"
+  | "verifying"
+  | "cancelling"
+  | "ok"
+  | "failed"
+  | "cancelled";
 
+/**
+ * #1691 - one timeline row. A row shows EXACTLY ONE line of text: a nonterminal row
+ * shows `stateText` (one of the four fixed words), a terminal row shows `detail` (the
+ * whole outcome as a single string). Never both, so no middle-dot split can reappear.
+ */
 export interface TimelineNodeView {
   command: string;
   label: string;
   updateCommands: string[];
   state: NodeState;
-  stateText: string;
+  /** the nonterminal word; `null` on a terminal row. */
+  stateText: string | null;
+  /** the terminal outcome string; `null` on a nonterminal row. */
   detail: string | null;
   detailTitle: string | null;
+  /** #1691 - a terminal result was observed for this command (first winner). */
+  terminal: boolean;
+  /** #1691 - nonterminal and no cancellation requested yet: the row action is actionable. */
+  cancellable: boolean;
 }
 
 export interface TimelineHeaderView {
@@ -51,16 +69,20 @@ export interface TimelineHeaderView {
 
 export const CONFIGURED_LABELS = { yes: "Yes", no: "No", ask: "Will ask at startup" } as const;
 export const LIVE_LABELS = { idle: "-", updating: "Updating...", ok: "Updated", failed: "Update failed" } as const;
+/** #1691 - the only four nonterminal words. Terminal rows carry no state word at all. */
 export const NODE_STATE_LABELS = {
-  pending: "Pendiente",
-  updating: "Actualizando...",
-  ok: "Listo",
-  failed: "Falló",
+  pending: "Pending",
+  updating: "Updating...",
+  verifying: "Verifying...",
+  cancelling: "Cancelling...",
 } as const;
-export const VERSION_MISSING_LABEL = "no instalada";
-export const VERSION_UNDETECTED_LABEL = "versión no detectada";
 export const UNKNOWN_ERROR_LABEL = "unknown error";
 export const NOT_INSTALLED_LABEL = "Not installed";
+/** #1691 - the exact terminal copy. ASCII `-` and `->` only: no Unicode arrow, no middle dot. */
+export const NOTHING_TO_UPDATE_SUFFIX = "(Nothing to update)";
+export const UPDATE_UNVERIFIED_LABEL = "Update completed - Version could not be verified";
+export const CANCELLED_LABEL = "Cancelled";
+export const FAILED_LABEL = "Failed";
 
 /** `true` -> yes, `false` -> no, absent -> ask (the stored policy, registration aside). */
 export function configuredState(map: Record<string, boolean>, command: string): ConfiguredState {
@@ -128,125 +150,141 @@ export function deriveAutoUpdateRows(
 }
 
 /**
- * round 5 - what a probe result says about the installed version: the version string,
- * `no instalada`, `versión no detectada`, or `null` when there is no claim to make
- * (`unprobed`, `checking`, a version-less `installed`, no state at all).
+ * #1691 - the only version value a row may display: the version string of a nonempty
+ * `installed` probe. Every other state (`missing`, `probeFailed`, `unprobed`, `checking`,
+ * a version-less `installed`, no state at all) is not comparable and yields `null`, so a
+ * row never prints an invented or non-comparable value.
  */
 export function describeInstall(install: InstallState | null | undefined): string | null {
   if (!install) return null;
-  switch (install.status) {
-    case "installed":
-      return install.version ? install.version : null;
-    case "missing":
-      return VERSION_MISSING_LABEL;
-    case "probeFailed":
-      return VERSION_UNDETECTED_LABEL;
-    default:
-      return null;
-  }
+  if (install.status !== "installed") return null;
+  return install.version ? install.version : null;
 }
 
 /**
- * round 5 - `<before> → <after>` when both were read, the honest partial form when only
- * one was, `null` when neither. Never an invented value.
+ * #1691 - the exact single string of a terminal row, from that result's own fields only
+ * (never from the one-shot install-cache events):
+ *
+ * - cancelled -> `Cancelled`;
+ * - failed    -> `Failed - <reason>`, or `Failed` when a legacy result carries no reason;
+ * - unchanged -> `<version> (Nothing to update)`;
+ * - changed   -> `Ready - <old> -> <new>`;
+ * - anything else succeeded (including a `changed`/`unchanged` claim whose versions are
+ *   not both comparable) -> `Update completed - Version could not be verified`.
  */
-export function versionTransitionText(
-  before: InstallState | null | undefined,
-  after: InstallState | null | undefined
-): string | null {
-  const b = describeInstall(before);
-  const a = describeInstall(after);
-  if (b !== null && a !== null) return `${b} → ${a}`;
-  if (b !== null) return b;
-  if (a !== null) return a;
-  return null;
+export function outcomeText(result: AgentUpdateResult): string {
+  if (result.outcome === "cancelled") return CANCELLED_LABEL;
+  if (result.outcome === "failed") {
+    const reason = result.error ?? "";
+    return reason ? `${FAILED_LABEL} - ${reason}` : FAILED_LABEL;
+  }
+  const before = describeInstall(result.installBefore);
+  const after = describeInstall(result.installAfter);
+  if (result.change === "unchanged") {
+    const version = after ?? before;
+    return version ? `${version} ${NOTHING_TO_UPDATE_SUFFIX}` : UPDATE_UNVERIFIED_LABEL;
+  }
+  if (result.change === "changed" && before !== null && after !== null) {
+    return `Ready - ${before} -> ${after}`;
+  }
+  return UPDATE_UNVERIFIED_LABEL;
 }
 
+/** #1691 - the terminal state of a result; `ok` keeps the pre-#1691 attribute value for `succeeded`. */
+export function outcomeState(result: AgentUpdateResult): NodeState {
+  if (result.outcome === "cancelled") return "cancelled";
+  if (result.outcome === "failed") return "failed";
+  return "ok";
+}
+
+/**
+ * #1691 - first winner, then cancellation, then verification, then running. Cancellation
+ * outranks verification so a verifying row that was already requested keeps saying
+ * `Cancelling...`; both outrank `running` so a stale start never pulls a row backwards.
+ */
 function timelineNodeView(
   command: string,
   label: string,
   updateCommands: string[],
-  installBefore: InstallState | null | undefined,
   running: AgentUpdateCommandRef[],
+  verifying: AgentUpdateCommandRef[],
   results: AgentUpdateResult[],
-  installAfter: Record<string, InstallState>
+  cancelling: ReadonlySet<string>
 ): TimelineNodeView {
   const result = results.find((entry) => entry.command === command);
-  const state: NodeState = result
-    ? result.ok
-      ? "ok"
-      : "failed"
-    : running.some((ref) => ref.command === command)
-      ? "updating"
-      : "pending";
-  const transition = versionTransitionText(installBefore, installAfter[command]);
-  let detail: string | null = null;
-  if (state === "ok") {
-    detail = transition;
-  } else if (state === "failed") {
-    detail = [result?.error ?? UNKNOWN_ERROR_LABEL, transition].filter(Boolean).join(" · ");
+  if (result) {
+    const detail = outcomeText(result);
+    return {
+      command,
+      label,
+      updateCommands,
+      state: outcomeState(result),
+      stateText: null,
+      detail,
+      detailTitle: detail,
+      terminal: true,
+      cancellable: false,
+    };
   }
+  const state: NodeState = cancelling.has(command)
+    ? "cancelling"
+    : verifying.some((ref) => ref.command === command)
+      ? "verifying"
+      : running.some((ref) => ref.command === command)
+        ? "updating"
+        : "pending";
   return {
     command,
     label,
     updateCommands,
     state,
     stateText: NODE_STATE_LABELS[state],
-    detail,
-    detailTitle: detail,
+    detail: null,
+    detailTitle: null,
+    terminal: false,
+    cancellable: state !== "cancelling",
   };
 }
 
 /**
  * round 5 - one view per pass node, in node (pass) order; then, defensively (older
- * backend, lost `started` payload), every command present in `running` or `results`
- * but absent from `nodes`, in `running` order then `results` order, with no update
- * sequence. No command yields two views.
+ * backend, lost `started` payload), every command present in `running`, `verifying` or
+ * `results` but absent from `nodes`, in that order, with no update sequence. No command
+ * yields two views.
  */
 export function deriveTimelineNodes(
   nodes: AgentUpdateNode[],
   running: AgentUpdateCommandRef[],
+  verifying: AgentUpdateCommandRef[],
   results: AgentUpdateResult[],
-  installAfter: Record<string, InstallState>
+  cancelling: ReadonlySet<string> = new Set<string>()
 ): TimelineNodeView[] {
   const views: TimelineNodeView[] = [];
   const seen = new Set<string>();
-  for (const node of nodes) {
-    if (seen.has(node.command)) continue;
-    seen.add(node.command);
+  const push = (command: string, label: string, updateCommands: string[]) => {
+    if (seen.has(command)) return;
+    seen.add(command);
     views.push(
-      timelineNodeView(
-        node.command,
-        node.label,
-        node.updateCommands,
-        node.installBefore,
-        running,
-        results,
-        installAfter
-      )
+      timelineNodeView(command, label, updateCommands, running, verifying, results, cancelling)
     );
-  }
-  for (const ref of running) {
-    if (seen.has(ref.command)) continue;
-    seen.add(ref.command);
-    views.push(timelineNodeView(ref.command, ref.label, [], null, running, results, installAfter));
-  }
-  for (const result of results) {
-    if (seen.has(result.command)) continue;
-    seen.add(result.command);
-    views.push(timelineNodeView(result.command, result.label, [], null, running, results, installAfter));
-  }
+  };
+  for (const node of nodes) push(node.command, node.label, node.updateCommands);
+  for (const ref of running) push(ref.command, ref.label, []);
+  for (const ref of verifying) push(ref.command, ref.label, []);
+  for (const result of results) push(result.command, result.label, []);
   return views;
 }
 
-/** round 5 - `n de N completados` plus ` · k falló` / ` · k fallaron`, and the bar's percent. */
+/**
+ * #1691 - `<done> of <total> completed`, plus `, <n> failed` only when failures exist.
+ * Every terminal row (cancelled included) counts as done; only `failed` counts as failed.
+ */
 export function deriveTimelineHeader(views: TimelineNodeView[]): TimelineHeaderView {
   const total = views.length;
-  const done = views.filter((view) => view.state === "ok" || view.state === "failed").length;
+  const done = views.filter((view) => view.terminal).length;
   const failed = views.filter((view) => view.state === "failed").length;
   const percent = total ? Math.round((done / total) * 100) : 0;
-  let text = `${done} de ${total} completados`;
-  if (failed === 1) text += ` · ${failed} falló`;
-  else if (failed > 1) text += ` · ${failed} fallaron`;
+  let text = `${done} of ${total} completed`;
+  if (failed > 0) text += `, ${failed} failed`;
   return { total, done, failed, percent, text };
 }

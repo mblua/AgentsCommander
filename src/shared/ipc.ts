@@ -33,6 +33,9 @@ import type {
   AgentUpdateCommandRef,
   AgentUpdateNode,
   AgentUpdateOverviewRow,
+  AgentUpdateCancelResponse,
+  AgentUpdateCancelAllResponse,
+  AgentUpdateCancellationChanged,
   AgentInstallStateChanged,
   CodingAgentEnv,
   CodingAgentDefinition,
@@ -423,6 +426,12 @@ export const AgentUpdateAPI = {
   /** #1551 - instant: the backend schedules the install probes in the background, only once the startup pass is finished. */
   getOverview: () =>
     transport.invoke<AgentUpdateOverviewRow[]>("get_agent_update_overview"),
+  /** #1691 - ask the backend to cancel one command's update sequence; the disposition says what it did. */
+  cancel: (command: string) =>
+    transport.invoke<AgentUpdateCancelResponse>("agent_update_cancel", { command }),
+  /** #1691 - ask the backend to cancel the whole pass; the response partitions the pass. */
+  cancelAll: () =>
+    transport.invoke<AgentUpdateCancelAllResponse>("agent_updates_cancel_all"),
 };
 
 export const ReposAPI = {
@@ -1296,6 +1305,26 @@ export function onAgentUpdateCommandFinished(
 ): Promise<UnlistenFn> {
   return transport.listen<AgentUpdateResult>("agent_update_command_finished", (result) =>
     callback(result)
+  );
+}
+
+/** #1691 - a command's update sequence ended and its post-update probe is running; the payload is
+ *  that one command's ref. The row is no longer running, is not yet terminal, and stays cancellable. */
+export function onAgentUpdateCommandVerifying(
+  callback: (ref: AgentUpdateCommandRef) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentUpdateCommandRef>("agent_update_command_verifying", (ref) =>
+    callback(ref)
+  );
+}
+
+/** #1691 - the pass's cancellation state changed; the payload is the FULL snapshot, not a delta. */
+export function onAgentUpdateCancellationChanged(
+  callback: (payload: AgentUpdateCancellationChanged) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentUpdateCancellationChanged>(
+    "agent_update_cancellation_changed",
+    (payload) => callback(payload)
   );
 }
 
