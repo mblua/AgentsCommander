@@ -5,6 +5,7 @@ import type {
   UnlistenFn,
 } from "./transport";
 import type { PtyOutputEvent } from "./types";
+import { noteInvokeSettle, noteInvokeStart } from "./ipc-blackbox";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -249,6 +250,11 @@ export class WsTransport implements Transport {
   }
 
   async invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    const id = noteInvokeStart(cmd);
+    try { return await this.invokeInner<T>(cmd, args); } finally { noteInvokeSettle(id); }
+  }
+
+  private async invokeInner<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     await this.waitForConnection();
 
     const id = this.nextId++;
