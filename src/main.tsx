@@ -11,6 +11,8 @@ import ScreenshotOverlayApp from "./screenshot-overlay/App";
 import MainApp from "./main/App";
 import { initAutomationBridge } from "./shared/automation-bridge";
 import { initLogLevelForWindow } from "./shared/log-level";
+import { harvestIpcBlackBox, installIpcBlackBox } from "./shared/ipc-blackbox";
+import { BlackBoxAPI } from "./shared/ipc";
 
 const params = new URLSearchParams(window.location.search);
 const windowType = params.get("window");
@@ -28,6 +30,11 @@ if (isTauri) {
 }
 
 void initLogLevelForWindow();
+
+// #1652 - installed for EVERY window: which windows kept ticking and which
+// stopped is itself evidence, and all windows share one origin's localStorage,
+// so each keys its record by its own webview label.
+void installIpcBlackBox();
 
 const isLegacyDetached =
   windowType === "terminal" && params.get("detached") === "true";
@@ -55,5 +62,10 @@ if (!isTauri) {
 } else if (windowType === "spec-board") {
   render(() => <SpecBoardApp />, root);
 } else {
+  // #1652 - one harvester per app start. The main window always exists, and
+  // scanning from exactly one window is what keeps a single previous-run record
+  // from being reported by several windows at once. `harvestIpcBlackBox` awaits
+  // the install above internally, so this line does not need to.
+  void harvestIpcBlackBox(BlackBoxAPI.report);
   render(() => <MainApp />, root);
 }
