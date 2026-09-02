@@ -2473,11 +2473,29 @@ pub fn run(
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
                 let app_for_idle = app.clone();
+                // #1682 - read the control-write mark on the watcher thread, at
+                // the edge instant. `Option<Duration>` is `Copy`, so it moves
+                // into the spawned task with no clone and no guard held.
+                let control_write_age = app
+                    .try_state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+                    .and_then(|detector| detector.control_write_age(id));
                 tauri::async_runtime::spawn(async move {
                     let mgr = mgr_clone.read().await;
                     mgr.mark_idle(id).await;
                     crate::config::sessions_persistence::persist_current_state_prune_dormant(&mgr)
                         .await;
+                    // #1682 - a busy->idle edge on an armed session stamps
+                    // `tooling.lastAgentMessageAt`. A no-op unless a message write reached
+                    // an arming site for this session in this process (R7 and R8 arm with
+                    // nothing submitted), the user has no recent unsubmitted input in it,
+                    // and no recent control write of ours is what re-opened the busy period.
+                    crate::commands::session::record_agent_turn_completed(
+                        &app_for_idle,
+                        &mgr,
+                        id,
+                        control_write_age,
+                    )
+                    .await;
                     if let Some(scheduler) =
                         app_for_idle.try_state::<Arc<loops::scheduler::LoopScheduler>>()
                     {
@@ -3459,6 +3477,7 @@ pub fn run(
             commands::session::set_last_prompt,
             commands::session::list_sessions,
             commands::session::get_active_session,
+            commands::session::get_last_agent_message,
             session::warnings::drain_session_warnings,
             commands::session::create_root_agent_session,
             commands::task::task_get_title,

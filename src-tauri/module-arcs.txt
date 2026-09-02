@@ -506,6 +506,7 @@ agentscommander_lib::commands::session -> agentscommander_lib::session::selectio
 agentscommander_lib::commands::session -> agentscommander_lib::session::session
 agentscommander_lib::commands::session -> agentscommander_lib::session::warnings
 agentscommander_lib::commands::session -> agentscommander_lib::telegram::manager
+agentscommander_lib::commands::session -> agentscommander_lib::web::commands
 agentscommander_lib::commands::spec_board -> agentscommander_lib
 agentscommander_lib::commands::spec_board -> agentscommander_lib::config::settings
 agentscommander_lib::commands::task -> agentscommander_lib::cli::task_ops
