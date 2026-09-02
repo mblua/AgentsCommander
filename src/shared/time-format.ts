@@ -16,3 +16,23 @@ export function formatClockTime(value: string | null | undefined): string {
   const seconds = String(parsed.getSeconds()).padStart(2, "0");
   return `${hours}:${minutes}:${seconds}`;
 }
+
+/**
+ * #1682 - the terminal status strip's stamp: local `MM-DD HH:MM`, zero padded,
+ * no seconds and no year. `new Date(value)` fixes the instant from the offset the
+ * backend wrote; `getMonth`/`getDate`/`getHours`/`getMinutes` are the local-time
+ * getters, so the host's zone and DST are applied by the platform.
+ *
+ * Returns "" for a missing or unparseable value: the strip renders nothing at
+ * all rather than a placeholder.
+ */
+export function formatAgentMessageStamp(value: string | null | undefined): string {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+  return `${month}-${day} ${hours}:${minutes}`;
+}

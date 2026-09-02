@@ -18,6 +18,7 @@ import type {
   Session,
   SessionCommunication,
   SessionRepo,
+  SessionAgentMessagePayload,
   SessionContextPayload,
   SessionEnvWarningPayload,
   SessionWarning,
@@ -33,6 +34,9 @@ import type {
   AgentUpdateCommandRef,
   AgentUpdateNode,
   AgentUpdateOverviewRow,
+  AgentUpdateCancelResponse,
+  AgentUpdateCancelAllResponse,
+  AgentUpdateCancellationChanged,
   AgentInstallStateChanged,
   CodingAgentEnv,
   CodingAgentDefinition,
@@ -185,6 +189,13 @@ export interface CodingAgentProfileSelectionUpdatedPayload {
 }
 
 export const SessionAPI = {
+  /** #1682 - the stored last-agent-message instant for a session, for a terminal
+   *  that just mounted and missed the `session_agent_message` event. `null`
+   *  covers every unavailable case and never means "now". Rejects in browser
+   *  mode, where the command has no dispatcher entry; callers must catch. */
+  getLastAgentMessage: (sessionId: string) =>
+    transport.invoke<string | null>("get_last_agent_message", { sessionId }),
+
   create: async (opts?: CreateSessionOptions): Promise<Session> => {
     const viewport = isBrowser ? null : measurePtyViewport();
 
@@ -423,6 +434,12 @@ export const AgentUpdateAPI = {
   /** #1551 - instant: the backend schedules the install probes in the background, only once the startup pass is finished. */
   getOverview: () =>
     transport.invoke<AgentUpdateOverviewRow[]>("get_agent_update_overview"),
+  /** #1691 - ask the backend to cancel one command's update sequence; the disposition says what it did. */
+  cancel: (command: string) =>
+    transport.invoke<AgentUpdateCancelResponse>("agent_update_cancel", { command }),
+  /** #1691 - ask the backend to cancel the whole pass; the response partitions the pass. */
+  cancelAll: () =>
+    transport.invoke<AgentUpdateCancelAllResponse>("agent_updates_cancel_all"),
 };
 
 export const ReposAPI = {
@@ -847,6 +864,18 @@ export function onSessionContext(
   callback: (data: SessionContextPayload) => void
 ): Promise<UnlistenFn> {
   return transport.listen<SessionContextPayload>("session_context", callback);
+}
+
+/**
+ * #1682 - the busy->idle edge the backend judged an agent turn, after the write
+ * to disk landed. Registered UNSCOPED, exactly like `onSessionContext` and
+ * `onSessionIdle`: the backend emits it to every window and a detached terminal
+ * window must receive it too.
+ */
+export function onSessionAgentMessage(
+  callback: (data: SessionAgentMessagePayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<SessionAgentMessagePayload>("session_agent_message", callback);
 }
 
 /**
@@ -1296,6 +1325,26 @@ export function onAgentUpdateCommandFinished(
 ): Promise<UnlistenFn> {
   return transport.listen<AgentUpdateResult>("agent_update_command_finished", (result) =>
     callback(result)
+  );
+}
+
+/** #1691 - a command's update sequence ended and its post-update probe is running; the payload is
+ *  that one command's ref. The row is no longer running, is not yet terminal, and stays cancellable. */
+export function onAgentUpdateCommandVerifying(
+  callback: (ref: AgentUpdateCommandRef) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentUpdateCommandRef>("agent_update_command_verifying", (ref) =>
+    callback(ref)
+  );
+}
+
+/** #1691 - the pass's cancellation state changed; the payload is the FULL snapshot, not a delta. */
+export function onAgentUpdateCancellationChanged(
+  callback: (payload: AgentUpdateCancellationChanged) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentUpdateCancellationChanged>(
+    "agent_update_cancellation_changed",
+    (payload) => callback(payload)
   );
 }
 
