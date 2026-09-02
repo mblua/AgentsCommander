@@ -3559,6 +3559,8 @@ pub fn run(
                 commands::config::get_update_status,
                 commands::config::get_agent_update_status,
                 commands::config::agent_update_answer,
+                commands::config::agent_update_cancel,
+                commands::config::agent_updates_cancel_all,
                 commands::config::get_agent_update_overview,
                 commands::repos::search_repos,
                 commands::repos::git_remote_url,
