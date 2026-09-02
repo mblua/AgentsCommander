@@ -132,6 +132,16 @@ pub struct Session {
     /// never persisted and never exposed via SessionInfo.
     #[serde(skip)]
     pub git_repos_gen: u64,
+    /// #1682 - a message write reached one of this session's arming sites in this process, so its busy->idle edges
+    /// are agent responses worth stamping. It keys on that write, NOT on a delivered, submitted message: R7 (an
+    /// exact-agent write that fails after `prepare_pty_input_boundary` armed) and R8 (an injection whose stem
+    /// leaves `send_enter` false, so the text is written and never submitted) both arm with nothing submitted, and
+    /// both ship disclosed. Set by `SessionManager::arm_agent_turn`, by `prepare_pty_input_boundary` and by
+    /// `pty::inject::inject_text_into_session_impl`. DELIBERATELY never cleared: an edge is 2500ms of silence, not
+    /// the end of a response, so the latch never blocks a later edge and the value converges on the last edge the
+    /// stamp gates pass. Runtime-only: a restored session starts unarmed, which stops a restore repaint rewriting it.
+    #[serde(skip)]
+    pub agent_turn_armed: bool,
     /// Unique token for CLI authentication. Agent PTY children receive it via per-child `AGENTSCOMMANDER_TOKEN` env at spawn.
     pub token: Uuid,
     /// Resolved coding-agent identity, or `None` for a plain shell. Set once
@@ -443,6 +453,7 @@ mod tests {
             is_coordinator: false,
             is_root_agent: false,
             git_repos_gen: 0,
+            agent_turn_armed: false,
             token: Uuid::nil(),
             agent_kind: None,
             requested_profile: None,

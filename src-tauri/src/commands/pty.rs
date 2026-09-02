@@ -83,7 +83,14 @@ pub(crate) async fn mark_successful_pty_write_busy<R: tauri::Runtime>(
     byte_count: usize,
 ) {
     if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
-        idle.record_activity_with_bytes(session_id, byte_count);
+        // #1682 - every caller of this helper is a PTY write that is not, by
+        // itself, a delivered message: xterm and web keystrokes, the injection
+        // text write (whose own arming block clears the mark a few lines later)
+        // and the graceful-close `exit`. Marking here rather than in
+        // `note_user_message_to_session` is what lets the detector test
+        // `idle_set` BEFORE the write is recorded; by the time this helper
+        // returns, the session is busy and that question can no longer be asked.
+        idle.record_control_write_activity(session_id, byte_count);
     }
     if let Some(sessions) =
         app.try_state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>()
@@ -93,6 +100,19 @@ pub(crate) async fn mark_successful_pty_write_busy<R: tauri::Runtime>(
             guard.clone()
         };
         manager.mark_busy(session_id).await;
+    }
+}
+
+/// #1682 - arming an agent turn cancels any standing control-write mark for this
+/// session. Called from TWO of the three arming sites: `note_user_message_to_session`
+/// here, and `pty::inject::inject_text_into_session_impl`. The third,
+/// `SessionManager::prepare_pty_input_boundary`, clears through
+/// `IdleDetector::clear_control_write` directly, because `session::manager` holds the
+/// detector as a parameter and takes no `AppHandle`. A no-op when the detector is not
+/// managed, which is the same `try_state` fail-open the neighbouring helper uses.
+pub(crate) fn clear_control_write_mark<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid) {
+    if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
+        idle.clear_control_write(session_id);
     }
 }
 
@@ -142,6 +162,13 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         let guard = mgr.read().await;
         guard.clone()
     };
+    // #1682 - a substantive message arms this session; the busy->idle edges that
+    // follow stamp `tooling.lastAgentMessageAt`. Non-substantive writes (arrow
+    // keys, focus reports, a bare Enter, a cancelled line) never arm.
+    if substantive {
+        manager.arm_agent_turn(session_id).await;
+        clear_control_write_mark(app, session_id);
+    }
     let cleared =
         match crate::config::sessions_persistence::clear_user_input_transitions_and_persist_result(
             &manager,
@@ -1745,6 +1772,23 @@ mod tests {
             .expect("build user input test app")
     }
 
+    /// #1682 - `user_input_test_app`'s builder plus a managed `IdleDetector`, so
+    /// test 7's control-write mark has somewhere to live. A separate fixture
+    /// deliberately: `user_input_test_app` is shared by more than one existing
+    /// test and must stay byte-unchanged.
+    fn user_input_test_app_with_idle_detector(
+        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        clocks: CoordinatorClocksState,
+    ) -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(session_mgr)
+            .manage(clocks)
+            .manage(crate::pty::input_activity::new_state())
+            .manage(crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {}))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build user input + idle detector test app")
+    }
+
     async fn fresh_intent_fixture() -> FreshIntentFixture {
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
@@ -1840,6 +1884,172 @@ mod tests {
         assert!(!record_fresh(&f).await);
         assert!(!mirror_fresh(&f));
         assert!(inject_continue_after_restore(record_fresh(&f).await));
+    }
+
+    #[tokio::test]
+    async fn a_non_substantive_terminal_write_does_not_arm() {
+        let f = fresh_intent_fixture().await;
+        assert!(
+            !f.session_mgr
+                .read()
+                .await
+                .get_session(f.session_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+        for chunk in [
+            b"\x1b[I".as_slice(),
+            b"\x1b[A".as_slice(),
+            b"\x1b]11;rgb:1234/5678/9abc\x07".as_slice(),
+            b"\r".as_slice(),
+            b"\x03".as_slice(),
+        ] {
+            note_user_message_to_session(
+                f.app.handle(),
+                f.session_id,
+                UserInputSource::Terminal(chunk),
+            )
+            .await;
+            assert!(
+                !f.session_mgr
+                    .read()
+                    .await
+                    .get_session(f.session_id)
+                    .await
+                    .unwrap()
+                    .agent_turn_armed
+            );
+        }
+
+        // The control: without it this test stays green even if the
+        // `if substantive` guard is deleted.
+        note_user_message_to_session(
+            f.app.handle(),
+            f.session_id,
+            UserInputSource::Terminal(b"do the thing\r"),
+        )
+        .await;
+        assert!(
+            f.session_mgr
+                .read()
+                .await
+                .get_session(f.session_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+    }
+
+    #[tokio::test]
+    async fn a_substantive_terminal_prompt_arms() {
+        let f = fresh_intent_fixture().await;
+        assert!(
+            !f.session_mgr
+                .read()
+                .await
+                .get_session(f.session_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+        note_user_message_to_session(
+            f.app.handle(),
+            f.session_id,
+            UserInputSource::Terminal(b"do the thing\r"),
+        )
+        .await;
+        assert!(
+            f.session_mgr
+                .read()
+                .await
+                .get_session(f.session_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+
+        // The latch is never cleared, so a later non-substantive write leaves it set.
+        note_user_message_to_session(
+            f.app.handle(),
+            f.session_id,
+            UserInputSource::Terminal(b"\x1b[I"),
+        )
+        .await;
+        assert!(
+            f.session_mgr
+                .read()
+                .await
+                .get_session(f.session_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+    }
+
+    /// #1682 - the terminal plane: a PTY write marks the session, and the
+    /// substantive submission that follows clears the mark. The \x1b[I step is the
+    /// control, and the last step is the assertion that goes red if the clear is
+    /// omitted from the `if substantive` block.
+    #[tokio::test]
+    async fn a_terminal_write_marks_and_a_substantive_one_clears() {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+        let app = user_input_test_app_with_idle_detector(session_mgr.clone(), clocks.clone());
+        let cwd = "C:/ac-test/project/.ac/wg-871-dev-team/__agent_tech-lead".to_string();
+        let session = {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "codex".to_string(),
+                Vec::new(),
+                cwd,
+                None,
+                None,
+                Vec::<SessionRepo>::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create coordinator session")
+        };
+        let handle = app.handle().clone();
+        let idle = handle
+            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .inner()
+            .clone();
+        idle.register_session(session.id, crate::session::profile::IdleTuning::DEFAULT);
+        idle.set_pty_input_ready_for_test(session.id);
+        assert!(
+            idle.control_write_age(session.id).is_none(),
+            "no mark before any write"
+        );
+
+        // The control: this path never writes to the PTY, so it never reaches
+        // `mark_successful_pty_write_busy` and must leave the mark unset.
+        note_user_message_to_session(&handle, session.id, UserInputSource::Terminal(b"\x1b[I"))
+            .await;
+        assert!(
+            idle.control_write_age(session.id).is_none(),
+            "note_user_message_to_session does not write to the PTY and must not mark"
+        );
+
+        // The write itself, as `pty_write` performs it.
+        mark_successful_pty_write_busy(&handle, session.id, 3).await;
+        assert!(
+            idle.control_write_age(session.id).is_some(),
+            "a PTY write into an idle session must mark"
+        );
+
+        note_user_message_to_session(
+            &handle,
+            session.id,
+            UserInputSource::Terminal(b"do the thing\r"),
+        )
+        .await;
+        assert!(
+            idle.control_write_age(session.id).is_none(),
+            "a substantive submission must clear the mark"
+        );
     }
 
     #[test]

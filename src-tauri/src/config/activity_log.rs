@@ -973,6 +973,7 @@ mod tests {
             is_coordinator: false,
             is_root_agent: false,
             git_repos_gen: 0,
+            agent_turn_armed: false,
             token: Uuid::new_v4(),
             agent_kind,
             requested_profile: None,

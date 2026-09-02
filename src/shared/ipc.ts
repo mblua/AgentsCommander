@@ -18,6 +18,7 @@ import type {
   Session,
   SessionCommunication,
   SessionRepo,
+  SessionAgentMessagePayload,
   SessionContextPayload,
   SessionEnvWarningPayload,
   SessionWarning,
@@ -188,6 +189,13 @@ export interface CodingAgentProfileSelectionUpdatedPayload {
 }
 
 export const SessionAPI = {
+  /** #1682 - the stored last-agent-message instant for a session, for a terminal
+   *  that just mounted and missed the `session_agent_message` event. `null`
+   *  covers every unavailable case and never means "now". Rejects in browser
+   *  mode, where the command has no dispatcher entry; callers must catch. */
+  getLastAgentMessage: (sessionId: string) =>
+    transport.invoke<string | null>("get_last_agent_message", { sessionId }),
+
   create: async (opts?: CreateSessionOptions): Promise<Session> => {
     const viewport = isBrowser ? null : measurePtyViewport();
 
@@ -856,6 +864,18 @@ export function onSessionContext(
   callback: (data: SessionContextPayload) => void
 ): Promise<UnlistenFn> {
   return transport.listen<SessionContextPayload>("session_context", callback);
+}
+
+/**
+ * #1682 - the busy->idle edge the backend judged an agent turn, after the write
+ * to disk landed. Registered UNSCOPED, exactly like `onSessionContext` and
+ * `onSessionIdle`: the backend emits it to every window and a detached terminal
+ * window must receive it too.
+ */
+export function onSessionAgentMessage(
+  callback: (data: SessionAgentMessagePayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<SessionAgentMessagePayload>("session_agent_message", callback);
 }
 
 /**

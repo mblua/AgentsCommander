@@ -31,6 +31,16 @@ pub struct IdleDetector {
     registered_at: Arc<Mutex<HashMap<Uuid, Instant>>>,
     idle_set: Arc<Mutex<HashSet<Uuid>>>,
     resize_grace: Arc<Mutex<HashMap<Uuid, Instant>>>,
+    /// #1682 - per-session instant of the last PTY write that was NOT a delivered message and
+    /// that either FOUND this session idle, which is "re-opened its busy period" everywhere
+    /// except inside an active `resize_grace`, or arrived while a mark already stood. It is
+    /// NOT an exact "the current busy period is attributable to this write": R4 and R6 in
+    /// phase 03's D1 are the two ways it is not. Set and refreshed by
+    /// `record_control_write_activity`, cleared by `clear_control_write` at every ARMING site
+    /// and by `remove_session` on teardown, read by `control_write_age`. NEVER read by the
+    /// watcher, by `record_activity_with_bytes`, by `purge_readiness` or by auto-close, so it
+    /// cannot affect the #260 idle dot, the #552 silence clock or #885 readiness.
+    control_write: Arc<Mutex<HashMap<Uuid, Instant>>>,
     /// Per-session idle tuning, populated by `register_session` at PTY spawn.
     /// A session missing here falls back to `IdleTuning::DEFAULT`.
     tuning: Arc<Mutex<HashMap<Uuid, IdleTuning>>>,
@@ -114,6 +124,7 @@ impl IdleDetector {
             registered_at: Arc::new(Mutex::new(HashMap::new())),
             idle_set: Arc::new(Mutex::new(HashSet::new())),
             resize_grace: Arc::new(Mutex::new(HashMap::new())),
+            control_write: Arc::new(Mutex::new(HashMap::new())),
             tuning: Arc::new(Mutex::new(HashMap::new())),
             on_idle: Arc::new(on_idle),
             on_busy: Arc::new(on_busy),
@@ -220,6 +231,47 @@ impl IdleDetector {
         self.record_activity_with_bytes(session_id, 0);
     }
 
+    /// #1682 - record PTY activity for a write that is NOT a delivered message.
+    /// Marks the session when this write FOUND it idle, and refreshes a mark that
+    /// already stands; both halves are load-bearing and phase 03's D1 says why.
+    /// "Found it idle" is "re-opened the busy period" everywhere except inside an
+    /// active `resize_grace`, where nothing is re-opened and the mark still stands.
+    /// Everything after the mark is `record_activity_with_bytes` unchanged, so
+    /// the #260 idle dot, the #552 clock and the resize grace are unaffected.
+    pub fn record_control_write_activity(&self, session_id: Uuid, byte_count: usize) {
+        let reopened = self
+            .idle_set
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&session_id);
+        {
+            let mut marks = self.control_write.lock().unwrap_or_else(|e| e.into_inner());
+            if reopened || marks.contains_key(&session_id) {
+                marks.insert(session_id, Instant::now());
+            }
+        }
+        self.record_activity_with_bytes(session_id, byte_count);
+    }
+
+    /// #1682 - arming an agent turn cancels the standing mark. Idempotent, and a
+    /// no-op for a session that carries none.
+    pub fn clear_control_write(&self, session_id: Uuid) {
+        self.control_write
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
+    }
+
+    /// #1682 - age of the standing control-write mark, or `None` when none
+    /// stands. Read once per busy->idle edge by the idle callback.
+    pub fn control_write_age(&self, session_id: Uuid) -> Option<Duration> {
+        self.control_write
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session_id)
+            .map(|since| since.elapsed())
+    }
+
     /// #552 Reset the auto-close silence clock for a session. Does NOT touch
     /// `activity`/`idle_set`/`on_busy`, so it never affects the #260 idle dot.
     /// Called for ANY PTY output, user input, and inter-agent delivery.
@@ -246,6 +298,15 @@ impl IdleDetector {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .insert(session_id, now.checked_sub(alive_age).unwrap_or(now));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_control_write_age_for_test(&self, session_id: Uuid, age: Duration) {
+        let now = Instant::now();
+        let mut marks = self.control_write.lock().unwrap_or_else(|e| e.into_inner());
+        if marks.contains_key(&session_id) {
+            marks.insert(session_id, now.checked_sub(age).unwrap_or(now));
+        }
     }
 
     #[cfg(test)]
@@ -464,6 +525,10 @@ impl IdleDetector {
             .remove(&session_id);
         self.idle_set.lock().unwrap().remove(&session_id);
         self.resize_grace.lock().unwrap().remove(&session_id);
+        self.control_write
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
         self.tuning.lock().unwrap().remove(&session_id);
     }
 
@@ -1013,6 +1078,145 @@ mod tests {
              If this fails, record_activity_with_bytes is no longer \
              early-returning during grace, and the F-1 fourth gate leg \
              may be unnecessary."
+        );
+    }
+
+    /// #1682 - the executable form of the `idle_set` half of D1. Its exact
+    /// property is "this write found the session idle"; the first half is the
+    /// child-solicited device-status reply arriving mid-render, which must not
+    /// mark and so must not cancel the genuine turn that is under way.
+    #[test]
+    fn a_control_write_marks_only_when_it_finds_the_session_idle() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+        assert!(
+            detector.control_write_age(id).is_none(),
+            "a freshly registered session carries no mark"
+        );
+
+        detector.record_control_write_activity(id, 3);
+        assert!(
+            detector.control_write_age(id).is_none(),
+            "a control write into a BUSY session must not mark: this is the \
+             assertion that goes red if the idle_set half is dropped"
+        );
+
+        // The in-test control: the same call on an idle session does mark.
+        detector.set_pty_input_ready_for_test(id);
+        detector.record_control_write_activity(id, 3);
+        assert!(
+            detector.control_write_age(id).is_some(),
+            "a control write that FOUND the session idle must mark"
+        );
+    }
+
+    /// #1682 - the refresh half of D1: a ten-second burst of arrow keys must not
+    /// age out mid-burst, even though only its first write finds the session idle.
+    #[test]
+    fn a_standing_control_write_mark_refreshes_while_the_session_is_busy() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+        detector.set_pty_input_ready_for_test(id);
+        detector.record_control_write_activity(id, 1);
+        assert!(detector.control_write_age(id).is_some());
+
+        detector.set_control_write_age_for_test(id, Duration::from_secs(30));
+        assert!(
+            detector.control_write_age(id).expect("the mark stands") >= Duration::from_secs(30),
+            "the backdating helper must age the standing mark"
+        );
+        assert!(
+            !detector.idle_set.lock().unwrap().contains(&id),
+            "the first write made the session busy"
+        );
+
+        detector.record_control_write_activity(id, 1);
+        assert!(
+            detector
+                .control_write_age(id)
+                .expect("the mark still stands")
+                < Duration::from_secs(1),
+            "a later write must REFRESH the standing mark: this is the assertion \
+             that goes red if the refresh half is dropped"
+        );
+    }
+
+    /// #1682 - arming clears the mark, and the tail is the control: without it the
+    /// test passes on a `control_write_age` that always returns `None`.
+    #[test]
+    fn clear_control_write_cancels_the_mark_and_a_later_write_sets_it_again() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+        detector.set_pty_input_ready_for_test(id);
+        detector.record_control_write_activity(id, 1);
+        assert!(detector.control_write_age(id).is_some());
+
+        detector.clear_control_write(id);
+        assert!(
+            detector.control_write_age(id).is_none(),
+            "clear_control_write must cancel the standing mark"
+        );
+
+        detector.set_pty_input_ready_for_test(id);
+        detector.record_control_write_activity(id, 1);
+        assert!(
+            detector.control_write_age(id).is_some(),
+            "a later control write must be able to set the mark again"
+        );
+    }
+
+    /// #1682 - the regression guard for the #260 idle dot: apart from the mark,
+    /// `record_control_write_activity` must behave exactly as
+    /// `record_activity_with_bytes` does.
+    #[test]
+    fn record_control_write_activity_still_produces_the_busy_edge() {
+        let busy: Arc<Mutex<Vec<Uuid>>> = Arc::new(Mutex::new(Vec::new()));
+        let busy_cb = Arc::clone(&busy);
+        let detector = IdleDetector::new(
+            |_| {},
+            move |id| {
+                busy_cb.lock().unwrap().push(id);
+            },
+        );
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+        detector.set_pty_input_ready_for_test(id);
+        assert!(
+            busy.lock().unwrap().is_empty(),
+            "no busy edge before the write"
+        );
+
+        detector.record_control_write_activity(id, 7);
+
+        assert_eq!(
+            *busy.lock().unwrap(),
+            vec![id],
+            "the new method must still fire on_busy exactly once"
+        );
+        assert!(
+            !detector.idle_set.lock().unwrap().contains(&id),
+            "the session must have left idle_set"
+        );
+    }
+
+    /// #1682 - teardown drops the mark, so a destroyed and recreated session id
+    /// cannot inherit one. Mirrors `remove_session_clears_tuning`.
+    #[test]
+    fn remove_session_clears_the_control_write_mark() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+        detector.set_pty_input_ready_for_test(id);
+        detector.record_control_write_activity(id, 1);
+        assert!(detector.control_write_age(id).is_some());
+
+        detector.remove_session(id);
+        assert!(
+            detector.control_write_age(id).is_none(),
+            "remove_session must drop the control-write mark"
         );
     }
 }
