@@ -7,10 +7,12 @@ import {
   SessionAPI,
   TerminalOutputAPI,
   onPtyOutput,
+  onSessionAgentMessage,
   onSessionDestroyed,
   onTerminalDetached,
 } from "../../shared/ipc";
 import { isBrowser, isTauri } from "../../shared/platform";
+import { formatAgentMessageStamp } from "../../shared/time-format";
 import {
   registerPtyViewportProbe,
   registerUiTerminalController,
@@ -112,6 +114,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   let resizeObserver: ResizeObserver | null = null;
   let unlistenPtyOutput: UnlistenFn | null = null;
   let unlistenSessionDestroyed: UnlistenFn | null = null;
+  let unlistenAgentMessage: UnlistenFn | null = null;
   let unlistenTerminalDetached: UnlistenFn | null = null;
   let unlistenCloseRequested: UnlistenFn | null = null;
 
@@ -240,18 +243,44 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     replayStatus.setAttribute("data-ac-testid", `terminal.replay-status.${sessionId}`);
     container.appendChild(replayStatus);
 
+    // #1682 - the bottom status strip. The stamp sits immediately LEFT of the
+    // COLS/ROWS chip, and the chip's width varies with its digit count, so a
+    // second independently right-anchored sibling would drift: one flex row
+    // right-anchored as a whole is what keeps the gap exact. The positioning,
+    // masking and padding therefore belong to the strip, and the chip keeps
+    // only its own identity and typography.
+    const statusStrip = document.createElement("div");
+    statusStrip.className = "terminal-status-strip";
+    statusStrip.style.position = "absolute";
+    statusStrip.style.right = "8px";
+    statusStrip.style.bottom = "4px";
+    statusStrip.style.zIndex = "2";
+    statusStrip.style.pointerEvents = "none";
+    statusStrip.style.display = "flex";
+    statusStrip.style.alignItems = "center";
+    statusStrip.style.gap = "10px";
+    statusStrip.style.padding = "1px 3px";
+    statusStrip.style.background = "var(--terminal-bg)";
+
+    // `hidden` and NOT an inline `display`: an inline display would beat the
+    // user-agent `[hidden] { display: none }` rule. While hidden it is not a
+    // flex item, so the strip's `gap` does not show either.
+    const agentMessageStatus = document.createElement("div");
+    agentMessageStatus.className = "terminal-agent-message-status";
+    agentMessageStatus.setAttribute("data-testid", `terminal-agent-message-${sessionId}`);
+    agentMessageStatus.setAttribute("aria-label", "Last coding agent message time");
+    agentMessageStatus.style.color = "var(--statusbar-fg)";
+    agentMessageStatus.style.fontFamily = "var(--font-mono)";
+    agentMessageStatus.style.fontSize = "10px";
+    agentMessageStatus.style.opacity = "0.75";
+    agentMessageStatus.textContent = "";
+    agentMessageStatus.hidden = true;
+
     const gridStatus = document.createElement("div");
     gridStatus.className = "terminal-grid-status";
     gridStatus.setAttribute("data-testid", `terminal-grid-size-${sessionId}`);
     gridStatus.setAttribute("aria-label", "Terminal grid size");
-    gridStatus.style.position = "absolute";
-    gridStatus.style.right = "8px";
-    gridStatus.style.bottom = "4px";
-    gridStatus.style.zIndex = "2";
-    gridStatus.style.pointerEvents = "none";
-    gridStatus.style.padding = "1px 3px";
     gridStatus.style.color = "var(--statusbar-fg)";
-    gridStatus.style.background = "var(--terminal-bg)";
     gridStatus.style.fontFamily = "var(--font-mono)";
     gridStatus.style.fontSize = "10px";
     gridStatus.style.opacity = "0.75";
@@ -259,7 +288,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       gridStatus.textContent = `COLS: ${cols} ROWS: ${rows}`;
     };
     updateGridStatus(terminal.cols, terminal.rows);
-    container.appendChild(gridStatus);
+
+    statusStrip.appendChild(agentMessageStatus);
+    statusStrip.appendChild(gridStatus);
+    container.appendChild(statusStrip);
 
     let webglAddon: WebglAddon | null = null;
     try {
@@ -375,6 +407,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       fitAddon,
       webglAddon,
       replayStatus,
+      agentMessageStatus,
+      agentMessageAtMs: null,
       hasRenderedOutput: false,
       snapshotResizeSuppressed: false,
       inputBuffer: "",
@@ -1617,6 +1651,38 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       });
   };
 
+  // #1682 - the only writer of the stamp element. Monotonic: a value applies
+  // only when it parses AND is strictly newer than what is rendered, so a late
+  // hydration can never overwrite a newer event that already landed on this
+  // entry, and a null or unparseable value can never blank a good rendering.
+  const applyAgentMessage = (
+    entry: SessionTerminalEntry,
+    at: string | null | undefined
+  ): void => {
+    const ms = at ? Date.parse(at) : Number.NaN;
+    if (Number.isNaN(ms)) return;
+    if (entry.agentMessageAtMs !== null && ms <= entry.agentMessageAtMs) return;
+    entry.agentMessageAtMs = ms;
+    entry.agentMessageStatus.textContent = formatAgentMessageStamp(at);
+    entry.agentMessageStatus.hidden = false;
+  };
+
+  // #1682 - reconcile a newly visible session against disk, so a terminal that
+  // missed the event still shows the persisted value. Rejection is expected in
+  // browser mode (no dispatcher entry): a blank chip is the correct degradation.
+  // Both guards answer different questions: the identity guard drops a result
+  // belonging to an entry that was evicted and recreated (a NEW entry's
+  // watermark is `null`, so it would otherwise accept anything), and the
+  // watermark drops a result merely older than what this same entry shows.
+  const hydrateAgentMessage = (sessionId: string, entry: SessionTerminalEntry): void => {
+    void SessionAPI.getLastAgentMessage(sessionId)
+      .then((at) => {
+        if (registry.get(sessionId) !== entry || entry.destroyed) return;
+        applyAgentMessage(entry, at);
+      })
+      .catch(() => {});
+  };
+
   const selectSession = (sessionId: string): void => {
     if (visibleSessionId !== null && visibleSessionId !== sessionId) {
       const oldEntry = registry.get(visibleSessionId);
@@ -1627,6 +1693,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     visibleSessionId = sessionId;
     const entry = registry.activate(sessionId, createSessionTerminal);
+    hydrateAgentMessage(sessionId, entry);
     entry.container.hidden = false;
     registry.setVisible(sessionId);
     entry.terminal.focus();
@@ -1691,6 +1758,15 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       registry.remove(id);
     });
 
+    // #1682 - the lookup is by the payload's `sessionId`, not by
+    // `visibleSessionId`: a retained but hidden terminal stays correct and shows
+    // the right value the moment it is shown again.
+    unlistenAgentMessage = await onSessionAgentMessage(({ sessionId, at }) => {
+      const entry = registry.get(sessionId);
+      if (!entry || entry.destroyed) return;
+      applyAgentMessage(entry, at);
+    });
+
     if (!props.lockedSessionId) {
       unlistenTerminalDetached = await onTerminalDetached(({ sessionId }) => {
         // The session moved to its own window: release it here rather than
@@ -1746,6 +1822,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     failListenerReady(new Error("TerminalView unmounted"));
     unlistenPtyOutput?.();
     unlistenSessionDestroyed?.();
+    unlistenAgentMessage?.();
     unlistenTerminalDetached?.();
     unlistenCloseRequested?.();
     resizeObserver?.disconnect();
