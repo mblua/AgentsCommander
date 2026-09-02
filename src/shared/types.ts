@@ -808,11 +808,61 @@ export interface UpdateInfo {
   upgradeCommand: string;
 }
 
+/** #1691 - why a command's update sequence ended. `ok` stays for the legacy predicate;
+ *  `outcome` is the only truthful classification (a cancelled command has `ok=false`). */
+export type AgentUpdateOutcome = "succeeded" | "failed" | "cancelled";
+
+/** #1691 - what the post-update probe proved about the installed version. */
+export type AgentUpdateChange = "changed" | "unchanged" | "unknown";
+
+/** #1691 - what `agent_update_cancel` did with the request. */
+export type AgentUpdateCancelDisposition =
+  | "requested"
+  | "already_requested"
+  | "already_terminal"
+  | "not_in_pass";
+
 export interface AgentUpdateResult {
   command: string;
   label: string;
   ok: boolean;
+  outcome: AgentUpdateOutcome;
   error?: string | null;
+  /** #1691 - the pre-update probe, `null` when it never ran; the key is always present. */
+  installBefore: InstallState | null;
+  /** #1691 - the post-update probe, `null` when it never ran; the key is always present. */
+  installAfter: InstallState | null;
+  change: AgentUpdateChange;
+  /** #1691 - the post-update probe's own diagnostic; omitted when the probe succeeded. */
+  verificationError?: string;
+}
+
+/** #1691 - a result as it may arrive from an older backend: the four #1691 keys may be absent.
+ *  `normalizeAgentUpdateResult` (sidebar/agent-update.ts) turns one of these into the canonical
+ *  shape before any store fold or notification classification. */
+export type AgentUpdateResultWire = Omit<
+  AgentUpdateResult,
+  "outcome" | "installBefore" | "installAfter" | "change"
+> &
+  Partial<Pick<AgentUpdateResult, "outcome" | "installBefore" | "installAfter" | "change">>;
+
+/** #1691 - the response of `agent_update_cancel` for one command. */
+export interface AgentUpdateCancelResponse {
+  command: string;
+  disposition: AgentUpdateCancelDisposition;
+}
+
+/** #1691 - the response of `agent_updates_cancel_all`, partitioned over the pass. */
+export interface AgentUpdateCancelAllResponse {
+  requested: AgentUpdateCommandRef[];
+  alreadyRequested: AgentUpdateCommandRef[];
+  alreadyTerminal: AgentUpdateCommandRef[];
+}
+
+/** #1691 - the full cancellation snapshot carried by `agent_update_cancellation_changed`. */
+export interface AgentUpdateCancellationChanged {
+  cancelRequested: AgentUpdateCommandRef[];
+  cancelAllRequested: boolean;
 }
 
 export interface AgentUpdatePrompt {
@@ -874,6 +924,12 @@ export interface AgentUpdateStatus {
   answered?: Record<string, boolean>;
   /** #1551 - the pass nodes in pass order; absent on an older backend. */
   nodes?: AgentUpdateNode[];
+  /** #1691 - commands whose update sequence finished and whose post-update probe is running, in pass order. */
+  verifying: AgentUpdateCommandRef[];
+  /** #1691 - commands whose cancellation the backend has accepted, in pass order. */
+  cancelRequested: AgentUpdateCommandRef[];
+  /** #1691 - a batch cancellation was accepted for this pass. */
+  cancelAllRequested: boolean;
 }
 
 export type ResourceWatchdogAction = "warn" | "killGroup";
