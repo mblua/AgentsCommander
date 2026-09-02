@@ -4,18 +4,25 @@ import { FakeTransport } from "../shared/testing/fake-transport";
 import { __setTransportForTests } from "../shared/ipc";
 import { toastStore } from "../shared/stores/toasts";
 import type {
+  AgentUpdateCommandRef,
   AgentUpdateNode,
   AgentUpdatePrompt,
   AgentUpdateResult,
+  AgentUpdateResultWire,
   AgentUpdateStatus,
   InstallState,
 } from "../shared/types";
 import {
+  BATCH_CANCEL_FAILED_TOAST,
+  ROW_CANCEL_FAILED_TOAST,
   agentUpdateInitialState,
   agentUpdateStore,
+  cancelAgentUpdateRow,
+  cancelAllAgentUpdates,
   dismissAgentUpdateSummary,
   markPromptClosed,
   mergeSnapshot,
+  normalizeAgentUpdateResult,
   resetAgentUpdateForTests,
   wireAgentUpdateListeners,
 } from "./agent-update";
@@ -27,7 +34,11 @@ const FAILING: AgentUpdateResult = {
   command: "claude",
   label: "Claude",
   ok: false,
+  outcome: "failed",
   error: "exit code 1",
+  installBefore: null,
+  installAfter: null,
+  change: "unknown",
 };
 
 // Frozen: a Solid path write (`set("prompt", next)`) merges `next` INTO the object the store
@@ -42,17 +53,43 @@ function node(command: string, installBefore?: InstallState): AgentUpdateNode {
     : { command, label, updateCommands: [`${command} update`] };
 }
 
+function label(command: string): string {
+  return command.charAt(0).toUpperCase() + command.slice(1);
+}
+
+function ref(command: string): AgentUpdateCommandRef {
+  return { command, label: label(command) };
+}
+
+/** #1691 - the canonical succeeded result of a #1691 backend. */
 function ok(command: string): AgentUpdateResult {
-  return { command, label: command.charAt(0).toUpperCase() + command.slice(1), ok: true };
+  return {
+    command,
+    label: label(command),
+    ok: true,
+    outcome: "succeeded",
+    installBefore: null,
+    installAfter: null,
+    change: "unknown",
+  };
 }
 
 function failed(command: string, error = "exit code 1"): AgentUpdateResult {
-  return {
-    command,
-    label: command.charAt(0).toUpperCase() + command.slice(1),
-    ok: false,
-    error,
-  };
+  return { ...ok(command), ok: false, outcome: "failed", error };
+}
+
+/** #1691 - `ok=false` and NEVER a failure: this result must emit no `Auto-update failed` toast. */
+function cancelled(command: string): AgentUpdateResult {
+  return { ...ok(command), ok: false, outcome: "cancelled" };
+}
+
+/** #1691 - the pre-#1691 wire shape: no `outcome`, no probes, no `change`. */
+function legacyOk(command: string): AgentUpdateResultWire {
+  return { command, label: label(command), ok: true };
+}
+
+function legacyFailed(command: string, error = "exit code 1"): AgentUpdateResultWire {
+  return { command, label: label(command), ok: false, error };
 }
 
 function installed(version: string, seq: number): InstallState {
@@ -60,7 +97,16 @@ function installed(version: string, seq: number): InstallState {
 }
 
 function status(overrides: Partial<AgentUpdateStatus> = {}): AgentUpdateStatus {
-  return { inProgress: false, prompt: null, results: [], running: [], ...overrides };
+  return {
+    inProgress: false,
+    prompt: null,
+    results: [],
+    running: [],
+    verifying: [],
+    cancelRequested: [],
+    cancelAllRequested: false,
+    ...overrides,
+  };
 }
 
 /** Apply a snapshot through the pure merge exactly as the wiring does. */
@@ -142,7 +188,7 @@ describe("wireAgentUpdateListeners (#1327)", () => {
   it("getStatus failure never breaks the live listeners (F8)", async () => {
     fake.reject("get_agent_update_status", "boom");
     const unlisteners = await wireAgentUpdateListeners();
-    expect(unlisteners).toHaveLength(8);
+    expect(unlisteners).toHaveLength(10);
 
     fake.emitFromBackend("agent_updates_finished", { results: [FAILING] });
     expect(toastStore.items).toHaveLength(1);
@@ -429,15 +475,23 @@ describe("agent-update store: per-command events and the monotonic snapshot merg
     fake.emitFromBackend("agent_install_state_changed", { command: "codex", install: installed("2.1", 1) });
     expect(store.installAfter.codex).toEqual(installed("2.1", 1));
     const codexView = () =>
-      deriveTimelineNodes(store.nodes, store.running, store.results, store.installAfter).find(
+      deriveTimelineNodes(store.nodes, store.running, store.verifying, store.results).find(
         (view) => view.command === "codex"
       );
-    // ...the running node shows no transition yet...
+    // ...the running node shows no outcome yet...
     expect(codexView()).toMatchObject({ state: "updating", detail: null });
-    fake.emitFromBackend("agent_update_command_finished", ok("codex"));
+    fake.emitFromBackend("agent_update_command_finished", {
+      ...ok("codex"),
+      change: "changed",
+      installBefore: installed("2.0", 0),
+      installAfter: installed("2.1", 1),
+    });
     expect(store.installAfter.codex).toEqual(installed("2.1", 1));
-    // ...and deriveTimelineNodes shows it once the result arrives
-    expect(codexView()).toMatchObject({ state: "ok", detail: "2.0 → 2.1" });
+    // #1691 - the row's text comes from the RESULT's own probes, never from this cache
+    expect(codexView()).toMatchObject({ state: "ok", detail: "Ready - 2.0 -> 2.1" });
+    fake.emitFromBackend("agent_install_state_changed", { command: "codex", install: installed("9.9", 8) });
+    expect(store.installAfter.codex).toEqual(installed("9.9", 8));
+    expect(codexView()).toMatchObject({ state: "ok", detail: "Ready - 2.0 -> 2.1" });
 
     // after the result: seq 3 is kept, a later seq 2 is ignored
     fake.emitFromBackend("agent_update_command_finished", ok("claude"));
@@ -448,7 +502,7 @@ describe("agent-update store: per-command events and the monotonic snapshot merg
 
     // a command outside the pass never enters installAfter
     fake.emitFromBackend("agent_install_state_changed", { command: "pi", install: installed("5.0", 9) });
-    expect(store.installAfter).toEqual({ codex: installed("2.1", 1), claude: installed("1.1", 3) });
+    expect(store.installAfter).toEqual({ codex: installed("9.9", 8), claude: installed("1.1", 3) });
 
     // a newer state REPLACES the entry: keys the new state omits (version, path) do not survive
     const gone: InstallState = { status: "missing", detail: "'claude' was not found on PATH", seq: 4 };
@@ -596,4 +650,619 @@ describe("agent-update store: per-command events and the monotonic snapshot merg
     expect(toastStore.items).toHaveLength(1);
     expect(store.summary).toBe("none");
   });
+});
+
+describe("#1691 - verification, cancellation folds and terminal first-winner", () => {
+  let fake: FakeTransport;
+  let restore: () => void;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  /** The row cancel/batch/status triple a happy-path test needs. */
+  function resolveCancel(disposition: string): void {
+    fake.resolve("agent_update_cancel", { command: "claude", disposition });
+  }
+
+  beforeEach(() => {
+    fake = new FakeTransport();
+    restore = __setTransportForTests(fake);
+    toastStore.clear();
+    resetAgentUpdateForTests();
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    toastStore.clear();
+    resetAgentUpdateForTests();
+    restore();
+    vi.restoreAllMocks();
+  });
+
+  // -------------------------------------------------------------------------
+  // normalization
+  // -------------------------------------------------------------------------
+
+  it("normalizeAgentUpdateResult applies exactly the four documented inferences", () => {
+    expect(normalizeAgentUpdateResult(legacyOk("a"))).toEqual({
+      command: "a",
+      label: "A",
+      ok: true,
+      outcome: "succeeded",
+      installBefore: null,
+      installAfter: null,
+      change: "unknown",
+    });
+    expect(normalizeAgentUpdateResult(legacyFailed("b", "boom"))).toEqual({
+      command: "b",
+      label: "B",
+      ok: false,
+      error: "boom",
+      outcome: "failed",
+      installBefore: null,
+      installAfter: null,
+      change: "unknown",
+    });
+    // a canonical result is returned unchanged, cancelled included
+    expect(normalizeAgentUpdateResult(cancelled("c"))).toEqual(cancelled("c"));
+    // a present outcome always wins over the `ok` inference
+    expect(normalizeAgentUpdateResult({ ...legacyOk("d"), ok: false, outcome: "cancelled" })).toMatchObject({
+      outcome: "cancelled",
+    });
+    // an absent verification diagnostic stays absent, never null
+    expect(normalizeAgentUpdateResult(legacyOk("e"))).not.toHaveProperty("verificationError");
+  });
+
+  // -------------------------------------------------------------------------
+  // cancelled results never toast the legacy failure copy
+  // -------------------------------------------------------------------------
+
+  it("a cancelled result emits no failure toast on a dismissed summary, and a genuine failure still does", async () => {
+    await wireAgentUpdateListeners();
+    fake.emitFromBackend("agent_updates_started", { nodes: [node("claude"), node("codex")] });
+    fake.emitFromBackend("agent_updates_finished", { results: [cancelled("claude"), failed("codex")] });
+    expect(store.summary).toBe("shown");
+    expect(toastStore.items).toHaveLength(0);
+
+    dismissAgentUpdateSummary();
+    expect(toastStore.items.map((item) => item.message)).toEqual([
+      "Auto-update failed for Codex (codex): exit code 1",
+    ]);
+  });
+
+  it("a cancelled result emits no failure toast on a late/no-summary finished surface", async () => {
+    await wireAgentUpdateListeners();
+    // no `agent_updates_started` on this surface: the immediate-toast path
+    fake.emitFromBackend("agent_updates_finished", { results: [cancelled("claude"), failed("codex")] });
+    expect(store.summary).toBe("none");
+    expect(toastStore.items.map((item) => item.message)).toEqual([
+      "Auto-update failed for Codex (codex): exit code 1",
+    ]);
+  });
+
+  it("listener-first getStatus() on an already-finished pass toasts the failure only, never the cancellation", async () => {
+    fake.resolve(
+      "get_agent_update_status",
+      status({ inProgress: false, results: [cancelled("claude"), failed("codex")] })
+    );
+    await wireAgentUpdateListeners();
+    await settle();
+    expect(toastStore.items.map((item) => item.message)).toEqual([
+      "Auto-update failed for Codex (codex): exit code 1",
+    ]);
+  });
+
+  it("a LEGACY cancelled result normalizes to `failed` and does toast: only a truthful outcome suppresses it", async () => {
+    // The guarantee is about the canonical contract: an older backend that cannot say
+    // `cancelled` is indistinguishable from a failure, and the normalization is exact.
+    await wireAgentUpdateListeners();
+    fake.emitFromBackend("agent_updates_finished", { results: [legacyFailed("claude")] });
+    expect(store.results[0].outcome).toBe("failed");
+    expect(toastStore.items).toHaveLength(1);
+
+    // a legacy SUCCESS never toasts
+    resetAgentUpdateForTests();
+    toastStore.clear();
+    fake.emitFromBackend("agent_updates_finished", { results: [legacyOk("claude")] });
+    expect(store.results[0]).toEqual(ok("claude"));
+    expect(toastStore.items).toHaveLength(0);
+  });
+
+  it("an absent probe and a false `ok` are never failure predicates on their own", async () => {
+    await wireAgentUpdateListeners();
+    fake.emitFromBackend("agent_updates_finished", {
+      results: [{ ...ok("claude"), installAfter: null, change: "unknown" }, cancelled("codex")],
+    });
+    expect(store.results.map((result) => result.ok)).toEqual([true, false]);
+    expect(toastStore.items).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // verifying
+  // -------------------------------------------------------------------------
+
+  it("agent_update_command_verifying moves a row out of running and keeps it unfinished and cancellable", async () => {
+    await wireAgentUpdateListeners();
+    fake.emitFromBackend("agent_updates_started", { nodes: [node("claude"), node("codex")] });
+    fake.emitFromBackend("agent_update_command_started", node("claude"));
+    expect(store.running).toEqual([ref("claude")]);
+
+    fake.emitFromBackend("agent_update_command_verifying", ref("claude"));
+    expect(store.running).toEqual([]);
+    expect(store.verifying).toEqual([ref("claude")]);
+
+    const view = () =>
+      deriveTimelineNodes(store.nodes, store.running, store.verifying, store.results).find(
+        (entry) => entry.command === "claude"
+      );
+    // unfinished, not done, not failed, and it still offers the row action
+    expect(view()).toMatchObject({ state: "verifying", stateText: "Verifying...", terminal: false, cancellable: true });
+
+    // a stale `started` never pulls a verifying row backwards
+    fake.emitFromBackend("agent_update_command_started", node("claude"));
+    expect(store.running).toEqual([]);
+    expect(store.verifying).toEqual([ref("claude")]);
+
+    // only the terminal result ends it
+    fake.emitFromBackend("agent_update_command_finished", ok("claude"));
+    expect(store.verifying).toEqual([]);
+    expect(view()).toMatchObject({ terminal: true, cancellable: false });
+  });
+
+  it("a verifying row that was requested renders Cancelling... and stays uncancellable until terminal", async () => {
+    fake.resolve("get_agent_update_status", status());
+    resolveCancel("requested");
+    await wireAgentUpdateListeners();
+    await settle();
+    fake.emitFromBackend("agent_updates_started", { nodes: [node("claude")] });
+    fake.emitFromBackend("agent_update_command_verifying", ref("claude"));
+
+    await cancelAgentUpdateRow("claude");
+    expect(store.cancelRequested).toEqual([ref("claude")]);
+    expect(store.verifying).toEqual([ref("claude")]);
+
+    const cancelling = new Set(store.cancelRequested.map((entry) => entry.command));
+    const view = deriveTimelineNodes(store.nodes, store.running, store.verifying, store.results, cancelling)[0];
+    expect(view).toMatchObject({ state: "cancelling", stateText: "Cancelling...", cancellable: false, terminal: false });
+
+    // the terminal cancellation is the first winner and clears every collection
+    fake.emitFromBackend("agent_update_command_finished", cancelled("claude"));
+    expect(store.verifying).toEqual([]);
+    expect(store.cancelRequested).toEqual([]);
+    expect(store.cancelResponses).toEqual([]);
+    expect(store.results).toEqual([cancelled("claude")]);
+  });
+
+  // -------------------------------------------------------------------------
+  // terminal first winner
+  // -------------------------------------------------------------------------
+
+  it("start, verifying, cancellation, final and stale snapshots never overwrite the first terminal result", async () => {
+    await wireAgentUpdateListeners();
+    fake.emitFromBackend("agent_updates_started", { nodes: [node("claude"), node("codex")] });
+    fake.emitFromBackend("agent_update_command_finished", ok("claude"));
+    expect(store.results).toEqual([ok("claude")]);
+
+    // a second result for the same command is dropped
+    fake.emitFromBackend("agent_update_command_finished", failed("claude", "late"));
+    expect(store.results).toEqual([ok("claude")]);
+
+    // start / verifying / cancellation cannot resurrect it
+    fake.emitFromBackend("agent_update_command_started", node("claude"));
+    fake.emitFromBackend("agent_update_command_verifying", ref("claude"));
+    fake.emitFromBackend("agent_update_cancellation_changed", {
+      cancelRequested: [ref("claude")],
+      cancelAllRequested: false,
+    });
+    expect(store.running).toEqual([]);
+    expect(store.verifying).toEqual([]);
+    expect(store.cancelRequested).toEqual([]);
+
+    // a stale snapshot filters the terminal row out of every in-progress array
+    applySnapshot(
+      status({
+        inProgress: true,
+        running: [ref("claude")],
+        verifying: [ref("claude")],
+        cancelRequested: [ref("claude")],
+        results: [failed("claude", "stale")],
+      })
+    );
+    expect(store.results).toEqual([ok("claude")]);
+    expect(store.running).toEqual([]);
+    expect(store.verifying).toEqual([]);
+    expect(store.cancelRequested).toEqual([]);
+
+    // the FINAL payload merges missing commands only
+    fake.emitFromBackend("agent_updates_finished", {
+      results: [failed("claude", "final"), ok("codex")],
+    });
+    expect(store.results).toEqual([ok("claude"), ok("codex")]);
+  });
+
+  it("a verifying event or snapshot never clears an already-observed cancellation request", async () => {
+    await wireAgentUpdateListeners();
+    fake.emitFromBackend("agent_updates_started", { nodes: [node("claude")] });
+    fake.emitFromBackend("agent_update_cancellation_changed", {
+      cancelRequested: [ref("claude")],
+      cancelAllRequested: false,
+    });
+    fake.emitFromBackend("agent_update_command_verifying", ref("claude"));
+    expect(store.cancelRequested).toEqual([ref("claude")]);
+
+    applySnapshot(status({ inProgress: true, verifying: [ref("claude")], cancelRequested: [] }));
+    expect(store.cancelRequested).toEqual([ref("claude")]);
+    expect(store.verifying).toEqual([ref("claude")]);
+  });
+
+  it("cancelAllRequested only ever ORs upward within a pass, and only a new pass resets it", async () => {
+    await wireAgentUpdateListeners();
+    fake.emitFromBackend("agent_updates_started", { nodes: [node("claude")] });
+    fake.emitFromBackend("agent_update_cancellation_changed", {
+      cancelRequested: [],
+      cancelAllRequested: true,
+    });
+    expect(store.cancelAllRequested).toBe(true);
+
+    // a delayed false event, and a delayed false snapshot, are both inert
+    fake.emitFromBackend("agent_update_cancellation_changed", {
+      cancelRequested: [],
+      cancelAllRequested: false,
+    });
+    expect(store.cancelAllRequested).toBe(true);
+    applySnapshot(status({ inProgress: true, cancelAllRequested: false }));
+    expect(store.cancelAllRequested).toBe(true);
+
+    // it survives the finished boundary...
+    fake.emitFromBackend("agent_updates_finished", { results: [ok("claude")] });
+    expect(store.cancelAllRequested).toBe(true);
+    applySnapshot(status({ cancelAllRequested: false }));
+    expect(store.cancelAllRequested).toBe(true);
+
+    // ...and only the next pass clears it
+    fake.emitFromBackend("agent_updates_started", { nodes: [node("claude")] });
+    expect(store.cancelAllRequested).toBe(false);
+  });
+
+  it("agent_updates_started resets verifying, cancelRequested, cancelAllRequested and both latches", async () => {
+    await wireAgentUpdateListeners();
+    setAgentUpdateStore({
+      verifying: [ref("codex")],
+      cancelRequested: [ref("codex")],
+      cancelAllRequested: true,
+      cancelResponses: ["codex"],
+    });
+
+    fake.emitFromBackend("agent_updates_started", { nodes: [node("claude")] });
+    expect(store.verifying).toEqual([]);
+    expect(store.cancelRequested).toEqual([]);
+    expect(store.cancelAllRequested).toBe(false);
+    expect(store.cancelResponses).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // row response folding
+  // -------------------------------------------------------------------------
+
+  it("`requested` and `already_requested` latch the row AND fold it into cancelRequested, then hydrate once", async () => {
+    for (const disposition of ["requested", "already_requested"]) {
+      resetAgentUpdateForTests();
+      fake.clearCalls();
+      fake.resolve("get_agent_update_status", status({ inProgress: true, nodes: [node("claude")] }));
+      resolveCancel(disposition);
+      setAgentUpdateStore({ inProgress: true, nodes: [node("claude")], running: [ref("claude")] });
+
+      const accepted = await cancelAgentUpdateRow("claude");
+      expect(accepted).toBe(true);
+      expect(fake.lastCall("agent_update_cancel")?.args).toEqual({ command: "claude" });
+      expect(store.cancelResponses).toEqual(["claude"]);
+      expect(store.cancelRequested).toEqual([ref("claude")]);
+      expect(fake.callsFor("get_agent_update_status")).toHaveLength(1);
+      expect(toastStore.items).toHaveLength(0);
+    }
+  });
+
+  it("`already_terminal` and `not_in_pass` latch the row, fabricate no result and request nothing", async () => {
+    for (const disposition of ["already_terminal", "not_in_pass"]) {
+      resetAgentUpdateForTests();
+      fake.clearCalls();
+      fake.resolve("get_agent_update_status", status({ inProgress: true, nodes: [node("claude")] }));
+      resolveCancel(disposition);
+      setAgentUpdateStore({ inProgress: true, nodes: [node("claude")], running: [ref("claude")] });
+
+      const accepted = await cancelAgentUpdateRow("claude");
+      expect(accepted).toBe(true);
+      expect(store.cancelResponses).toEqual(["claude"]);
+      expect(store.cancelRequested).toEqual([]);
+      expect(store.results).toEqual([]);
+      expect(toastStore.items).toHaveLength(0);
+    }
+  });
+
+  it("the row latch survives a missing event, a delayed false snapshot and a later hydration, and only the terminal result clears it", async () => {
+    fake.resolve("get_agent_update_status", status({ inProgress: true }));
+    resolveCancel("requested");
+    setAgentUpdateStore({ inProgress: true, nodes: [node("claude")], running: [ref("claude")] });
+
+    await cancelAgentUpdateRow("claude");
+    expect(store.cancelResponses).toEqual(["claude"]);
+
+    // no cancellation event ever arrives, and a snapshot reports no request at all
+    applySnapshot(status({ inProgress: true, running: [ref("claude")], cancelRequested: [] }));
+    expect(store.cancelResponses).toEqual(["claude"]);
+    expect(store.cancelRequested).toEqual([ref("claude")]);
+
+    // the terminal result is the only thing that clears both
+    await wireAgentUpdateListeners();
+    fake.emitFromBackend("agent_update_command_finished", cancelled("claude"));
+    expect(store.cancelResponses).toEqual([]);
+    expect(store.cancelRequested).toEqual([]);
+  });
+
+  it("hydration rejection after ANY accepted row response keeps the latch, logs only, and toasts nothing", async () => {
+    for (const disposition of ["requested", "already_requested", "already_terminal", "not_in_pass"]) {
+      resetAgentUpdateForTests();
+      toastStore.clear();
+      errorSpy.mockClear();
+      fake.clearCalls();
+      fake.reject("get_agent_update_status", "boom");
+      resolveCancel(disposition);
+      setAgentUpdateStore({ inProgress: true, nodes: [node("claude")], running: [ref("claude")] });
+
+      const accepted = await cancelAgentUpdateRow("claude");
+      expect(accepted).toBe(true);
+      // latched despite the failed refresh
+      expect(store.cancelResponses).toEqual(["claude"]);
+      // neither cancellation-failure string, and no raw backend text anywhere
+      expect(toastStore.items).toHaveLength(0);
+      // diagnostic to console.error only, and exactly one cancel invoke
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(String(errorSpy.mock.calls[0][0])).toContain("[agent-update] getStatus after cancel failed:");
+      expect(fake.callsFor("agent_update_cancel")).toHaveLength(1);
+    }
+  });
+
+  it("only an invoke/backend rejection BEFORE a response toasts the exact row string and permits one retry", async () => {
+    fake.reject("agent_update_cancel", "transport closed");
+    setAgentUpdateStore({ inProgress: true, nodes: [node("claude")], running: [ref("claude")] });
+
+    const accepted = await cancelAgentUpdateRow("claude");
+    expect(accepted).toBe(false);
+    expect(store.cancelResponses).toEqual([]);
+    expect(store.cancelRequested).toEqual([]);
+    expect(toastStore.items).toHaveLength(1);
+    expect(toastStore.items[0].kind).toBe("error");
+    expect(toastStore.items[0].message).toBe("Could not cancel the coding agent update.");
+    expect(ROW_CANCEL_FAILED_TOAST).toBe("Could not cancel the coding agent update.");
+    // no raw backend text is appended to the fixed copy
+    expect(toastStore.items[0].message).not.toContain("transport closed");
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    // no hydration was attempted, and the row may be retried
+    expect(fake.callsFor("get_agent_update_status")).toHaveLength(0);
+
+    fake.resolve("get_agent_update_status", status({ inProgress: true }));
+    resolveCancel("requested");
+    expect(await cancelAgentUpdateRow("claude")).toBe(true);
+    expect(fake.callsFor("agent_update_cancel")).toHaveLength(2);
+    expect(store.cancelResponses).toEqual(["claude"]);
+  });
+
+  it("row cancellation preserves completed peers and never resurrects their terminal state", async () => {
+    fake.resolve("get_agent_update_status", status({ inProgress: true, running: [ref("codex")] }));
+    resolveCancel("requested");
+    setAgentUpdateStore({
+      inProgress: true,
+      nodes: [node("claude"), node("codex")],
+      running: [ref("claude"), ref("codex")],
+      results: [ok("codex")],
+    });
+
+    await cancelAgentUpdateRow("claude");
+    expect(store.results).toEqual([ok("codex")]);
+    expect(store.cancelRequested).toEqual([ref("claude")]);
+    expect(store.cancelResponses).toEqual(["claude"]);
+    // the completed peer stays out of every in-progress collection
+    expect(store.running.map((entry) => entry.command)).not.toContain("codex");
+  });
+
+  // -------------------------------------------------------------------------
+  // batch response folding
+  // -------------------------------------------------------------------------
+
+  it("a batch response latches cancelAllRequested and folds requested + alreadyRequested only", async () => {
+    fake.resolve("get_agent_update_status", status({ inProgress: true }));
+    fake.resolve("agent_updates_cancel_all", {
+      requested: [ref("claude")],
+      alreadyRequested: [ref("codex")],
+      alreadyTerminal: [ref("pi")],
+    });
+    setAgentUpdateStore({ inProgress: true, nodes: [node("claude"), node("codex"), node("pi")] });
+
+    expect(await cancelAllAgentUpdates()).toBe(true);
+    expect(fake.lastCall("agent_updates_cancel_all")?.args).toEqual({});
+    expect(store.cancelAllRequested).toBe(true);
+    expect(store.cancelRequested).toEqual([ref("claude"), ref("codex")]);
+    expect(store.cancelResponses).toEqual(["claude", "codex"]);
+    // alreadyTerminal fabricates no result and no request
+    expect(store.results).toEqual([]);
+    expect(fake.callsFor("get_agent_update_status")).toHaveLength(1);
+  });
+
+  it("an all-alreadyTerminal batch response still latches the batch", async () => {
+    fake.resolve("get_agent_update_status", status({ inProgress: true }));
+    fake.resolve("agent_updates_cancel_all", {
+      requested: [],
+      alreadyRequested: [],
+      alreadyTerminal: [ref("claude"), ref("codex")],
+    });
+    setAgentUpdateStore({ inProgress: true, nodes: [node("claude"), node("codex")] });
+
+    expect(await cancelAllAgentUpdates()).toBe(true);
+    expect(store.cancelAllRequested).toBe(true);
+    expect(store.cancelRequested).toEqual([]);
+    expect(store.results).toEqual([]);
+    expect(toastStore.items).toHaveLength(0);
+  });
+
+  it("an only-alreadyRequested batch response latches the batch too", async () => {
+    fake.resolve("get_agent_update_status", status({ inProgress: true }));
+    fake.resolve("agent_updates_cancel_all", {
+      requested: [],
+      alreadyRequested: [ref("claude")],
+      alreadyTerminal: [],
+    });
+    setAgentUpdateStore({ inProgress: true, nodes: [node("claude")] });
+
+    expect(await cancelAllAgentUpdates()).toBe(true);
+    expect(store.cancelAllRequested).toBe(true);
+    expect(store.cancelRequested).toEqual([ref("claude")]);
+  });
+
+  it("hydration rejection after ANY accepted batch response keeps the latch, logs only, and toasts nothing", async () => {
+    const responses = [
+      { requested: [ref("claude")], alreadyRequested: [], alreadyTerminal: [] },
+      { requested: [], alreadyRequested: [ref("claude")], alreadyTerminal: [] },
+      { requested: [], alreadyRequested: [], alreadyTerminal: [ref("claude")] },
+    ];
+    for (const response of responses) {
+      resetAgentUpdateForTests();
+      toastStore.clear();
+      errorSpy.mockClear();
+      fake.clearCalls();
+      fake.reject("get_agent_update_status", "boom");
+      fake.resolve("agent_updates_cancel_all", response);
+      setAgentUpdateStore({ inProgress: true, nodes: [node("claude")] });
+
+      expect(await cancelAllAgentUpdates()).toBe(true);
+      expect(store.cancelAllRequested).toBe(true);
+      expect(toastStore.items).toHaveLength(0);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(String(errorSpy.mock.calls[0][0])).toContain("[agent-update] getStatus after cancel failed:");
+      expect(fake.callsFor("agent_updates_cancel_all")).toHaveLength(1);
+    }
+  });
+
+  it("only an invoke/backend rejection BEFORE a batch response toasts the exact batch string and permits one retry", async () => {
+    fake.reject("agent_updates_cancel_all", "transport closed");
+    setAgentUpdateStore({ inProgress: true, nodes: [node("claude")] });
+
+    expect(await cancelAllAgentUpdates()).toBe(false);
+    expect(store.cancelAllRequested).toBe(false);
+    expect(toastStore.items).toHaveLength(1);
+    expect(toastStore.items[0].message).toBe("Could not cancel coding agent updates.");
+    expect(BATCH_CANCEL_FAILED_TOAST).toBe("Could not cancel coding agent updates.");
+    expect(toastStore.items[0].message).not.toContain("transport closed");
+    expect(fake.callsFor("get_agent_update_status")).toHaveLength(0);
+
+    fake.resolve("get_agent_update_status", status({ inProgress: true }));
+    fake.resolve("agent_updates_cancel_all", { requested: [ref("claude")], alreadyRequested: [], alreadyTerminal: [] });
+    expect(await cancelAllAgentUpdates()).toBe(true);
+    expect(fake.callsFor("agent_updates_cancel_all")).toHaveLength(2);
+    expect(store.cancelAllRequested).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // response/event/snapshot permutations
+  // -------------------------------------------------------------------------
+
+  it("event-before-response and response-before-event both end latched, and neither double-cancels", async () => {
+    // (i) event first
+    fake.resolve("get_agent_update_status", status({ inProgress: true }));
+    resolveCancel("already_requested");
+    await wireAgentUpdateListeners();
+    await settle();
+    fake.emitFromBackend("agent_updates_started", { nodes: [node("claude")] });
+    fake.emitFromBackend("agent_update_cancellation_changed", {
+      cancelRequested: [ref("claude")],
+      cancelAllRequested: false,
+    });
+    await cancelAgentUpdateRow("claude");
+    expect(store.cancelRequested).toEqual([ref("claude")]);
+    expect(store.cancelResponses).toEqual(["claude"]);
+
+    // (ii) response first, event later
+    resetAgentUpdateForTests();
+    fake.clearCalls();
+    resolveCancel("requested");
+    fake.emitFromBackend("agent_updates_started", { nodes: [node("claude")] });
+    await cancelAgentUpdateRow("claude");
+    expect(store.cancelResponses).toEqual(["claude"]);
+    fake.emitFromBackend("agent_update_cancellation_changed", {
+      cancelRequested: [ref("claude")],
+      cancelAllRequested: true,
+    });
+    expect(store.cancelRequested).toEqual([ref("claude")]);
+    expect(store.cancelAllRequested).toBe(true);
+    expect(fake.callsFor("agent_update_cancel")).toHaveLength(1);
+  });
+
+  it("a full listener-first hydration restores cancellation, verifying, both probes, change and a terminal cancellation", async () => {
+    const restored: AgentUpdateResult = {
+      ...ok("pi"),
+      change: "changed",
+      installBefore: installed("1.0", 0),
+      installAfter: installed("1.1", 1),
+    };
+    fake.resolve(
+      "get_agent_update_status",
+      status({
+        inProgress: true,
+        nodes: [node("claude"), node("codex"), node("pi"), node("hermes")],
+        running: [ref("claude")],
+        verifying: [ref("codex")],
+        cancelRequested: [ref("claude"), ref("codex")],
+        cancelAllRequested: true,
+        results: [restored, cancelled("hermes")],
+      })
+    );
+    await wireAgentUpdateListeners();
+    await settle();
+
+    expect(store.running).toEqual([ref("claude")]);
+    expect(store.verifying).toEqual([ref("codex")]);
+    expect(store.cancelRequested).toEqual([ref("claude"), ref("codex")]);
+    expect(store.cancelAllRequested).toBe(true);
+    expect(store.results).toEqual([restored, cancelled("hermes")]);
+
+    const cancelling = new Set(store.cancelRequested.map((entry) => entry.command));
+    const views = deriveTimelineNodes(store.nodes, store.running, store.verifying, store.results, cancelling);
+    expect(views.map((view) => view.state)).toEqual(["cancelling", "cancelling", "ok", "cancelled"]);
+    expect(views.map((view) => view.detail)).toEqual([
+      null,
+      null,
+      "Ready - 1.0 -> 1.1",
+      "Cancelled",
+    ]);
+    // a mid-pass hydration toasts nothing
+    expect(toastStore.items).toHaveLength(0);
+  });
+
+  it("a remount (fresh listeners over the surviving store) keeps both latches and issues no cancellation", async () => {
+    fake.resolve("get_agent_update_status", status({ inProgress: true, nodes: [node("claude")] }));
+    resolveCancel("requested");
+    setAgentUpdateStore({ inProgress: true, nodes: [node("claude")], running: [ref("claude")] });
+    await cancelAgentUpdateRow("claude");
+    await cancelAllAgentUpdatesWith(fake);
+    expect(store.cancelResponses).toEqual(["claude"]);
+    expect(store.cancelAllRequested).toBe(true);
+
+    // the surface remounts: the store is shared, so the latches survive
+    const unlisteners = await wireAgentUpdateListeners();
+    await settle();
+    expect(store.cancelResponses).toEqual(["claude"]);
+    expect(store.cancelAllRequested).toBe(true);
+
+    // teardown unlistens ONLY: no cancel command is ever invoked by cleanup
+    const before = fake.callsFor("agent_update_cancel").length + fake.callsFor("agent_updates_cancel_all").length;
+    for (const unlisten of unlisteners) unlisten();
+    expect(fake.callsFor("agent_update_cancel").length + fake.callsFor("agent_updates_cancel_all").length).toBe(before);
+  });
+
+  /** Batch-cancel with a response the caller does not care about; keeps the remount test short. */
+  async function cancelAllAgentUpdatesWith(transport: FakeTransport): Promise<void> {
+    transport.resolve("agent_updates_cancel_all", {
+      requested: [ref("claude")],
+      alreadyRequested: [],
+      alreadyTerminal: [],
+    });
+    await cancelAllAgentUpdates();
+  }
 });

@@ -157,6 +157,22 @@ export function hasResult(list: AgentUpdateResult[], command: string): boolean {
   return list.some((entry) => entry.command === command);
 }
 
+/**
+ * #1691 - MERGE MISSING COMMANDS ONLY. The terminal result is the first winner, so no later
+ * payload of any kind (a final `agent_updates_finished`, a stale snapshot, a duplicate
+ * command result) may replace one this surface already observed. `incoming` order is kept
+ * for the commands that are genuinely new.
+ */
+export function mergeMissingResults(
+  current: AgentUpdateResult[],
+  incoming: AgentUpdateResult[]
+): AgentUpdateResult[] {
+  return incoming.reduce(
+    (list, result) => (hasResult(list, result.command) ? list : [...list, result]),
+    current
+  );
+}
+
 export function withoutRunning(
   list: AgentUpdateCommandRef[],
   command: string
@@ -250,7 +266,7 @@ export function labelFor(state: AgentUpdateState, command: string): string {
  *  #1691 - results are normalized first, so every fold below classifies on the canonical shape;
  *  running/verifying/cancel arrays drop terminal rows; `cancelAllRequested` only ever ORs upward. */
 export function mergeSnapshot(current: AgentUpdateState, status: AgentUpdateStatus): AgentUpdateState {
-  const results = normalizeAgentUpdateResults(status.results).reduce(upsertResult, current.results);
+  const results = mergeMissingResults(current.results, normalizeAgentUpdateResults(status.results));
   const cancelResponses = current.cancelResponses.filter((command) => !hasResult(results, command));
   // #1691 - the batch latch is monotonic even across the finished boundary: a delayed `false`
   // must never re-enable a control the response already latched.
@@ -553,10 +569,7 @@ export async function wireAgentUpdateListeners(): Promise<UnlistenFn[]> {
       // the close; every other surface keeps the immediate toasts.
       // #1691 - the final payload MERGES MISSING COMMANDS ONLY: a result this surface
       // already observed stays the first winner.
-      const merged = normalizeAgentUpdateResults(results).reduce(
-        (list, result) => (hasResult(list, result.command) ? list : [...list, result]),
-        state.results
-      );
+      const merged = mergeMissingResults(state.results, normalizeAgentUpdateResults(results));
       const showSummary = state.inProgress && merged.length > 0;
       setAgentUpdateState({
         inProgress: false,

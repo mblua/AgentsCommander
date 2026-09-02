@@ -7,21 +7,25 @@ import type {
   InstallState,
 } from "../shared/types";
 import {
+  CANCELLED_LABEL,
   CONFIGURED_LABELS,
+  FAILED_LABEL,
   LIVE_LABELS,
   NODE_STATE_LABELS,
+  NOTHING_TO_UPDATE_SUFFIX,
   NOT_INSTALLED_LABEL,
   UNKNOWN_ERROR_LABEL,
-  VERSION_MISSING_LABEL,
-  VERSION_UNDETECTED_LABEL,
+  UPDATE_UNVERIFIED_LABEL,
   configuredState,
   deriveAutoUpdateRows,
   deriveTimelineHeader,
   deriveTimelineNodes,
   describeInstall,
   installedView,
+  isTerminalState,
   liveView,
-  versionTransitionText,
+  outcomeState,
+  outcomeText,
 } from "./agent-update-status";
 
 const checking: InstallState = { status: "checking", seq: 0 };
@@ -78,14 +82,45 @@ function ref(command: string): AgentUpdateCommandRef {
   return { command, label: command.toUpperCase() };
 }
 
+/** #1691 - the canonical succeeded result: both probe keys present, no version claim. */
 function ok(command: string): AgentUpdateResult {
-  return { command, label: command.toUpperCase(), ok: true };
+  return {
+    command,
+    label: command.toUpperCase(),
+    ok: true,
+    outcome: "succeeded",
+    installBefore: null,
+    installAfter: null,
+    change: "unknown",
+  };
 }
 
 function failed(command: string, error?: string): AgentUpdateResult {
-  return error === undefined
-    ? { command, label: command.toUpperCase(), ok: false }
-    : { command, label: command.toUpperCase(), ok: false, error };
+  const base: AgentUpdateResult = { ...ok(command), ok: false, outcome: "failed" };
+  return error === undefined ? base : { ...base, error };
+}
+
+/** #1691 - a cancelled result: `ok=false`, but never a failure. */
+function cancelled(command: string): AgentUpdateResult {
+  return { ...ok(command), ok: false, outcome: "cancelled" };
+}
+
+function changed(command: string, before: string, after: string): AgentUpdateResult {
+  return {
+    ...ok(command),
+    change: "changed",
+    installBefore: installed(before, 0),
+    installAfter: installed(after, 1),
+  };
+}
+
+function unchanged(command: string, version: string): AgentUpdateResult {
+  return {
+    ...ok(command),
+    change: "unchanged",
+    installBefore: installed(version, 0),
+    installAfter: installed(version, 1),
+  };
 }
 
 function node(command: string, installBefore?: InstallState): AgentUpdateNode {
@@ -202,145 +237,280 @@ describe("deriveAutoUpdateRows and its cell derivations (#1551)", () => {
   });
 });
 
-describe("timeline derivations (#1551 round 5)", () => {
-  it("describeInstall claims a version only when one was read", () => {
+describe("timeline derivations (#1551 round 5, #1691)", () => {
+  it("describeInstall claims a version only for a nonempty installed probe", () => {
     expect(describeInstall(installed("1.0"))).toBe("1.0");
-    expect(describeInstall(missing())).toBe(VERSION_MISSING_LABEL);
-    expect(describeInstall(probeFailed())).toBe(VERSION_UNDETECTED_LABEL);
+    // #1691 - `missing` and `probeFailed` are no longer comparable display values
+    expect(describeInstall(missing())).toBeNull();
+    expect(describeInstall(probeFailed())).toBeNull();
     expect(describeInstall(unprobed())).toBeNull();
     expect(describeInstall(checking)).toBeNull();
     expect(describeInstall({ status: "installed", seq: 1 })).toBeNull();
     expect(describeInstall(null)).toBeNull();
     expect(describeInstall(undefined)).toBeNull();
-    expect(VERSION_MISSING_LABEL).toBe("no instalada");
-    expect(VERSION_UNDETECTED_LABEL).toBe("versión no detectada");
   });
 
-  it("versionTransitionText prints both, one, or nothing, never an invented value", () => {
-    expect(versionTransitionText(installed("1.0"), installed("1.1"))).toBe("1.0 → 1.1");
-    expect(versionTransitionText(installed("1.1"), installed("1.1"))).toBe("1.1 → 1.1");
-    expect(versionTransitionText(installed("1.0"), missing())).toBe("1.0 → no instalada");
-    expect(versionTransitionText(missing(), installed("1.1"))).toBe("no instalada → 1.1");
-    expect(versionTransitionText(installed("1.0"), undefined)).toBe("1.0");
-    expect(versionTransitionText(probeFailed(), installed("1.1"))).toBe("versión no detectada → 1.1");
-    expect(versionTransitionText(unprobed(), unprobed())).toBeNull();
-    expect(versionTransitionText(undefined, undefined)).toBeNull();
-    expect(versionTransitionText(undefined, installed("1.1"))).toBe("1.1");
+  it("outcomeText prints the exact terminal string of every outcome, from the result's own fields", () => {
+    // unchanged: the version plus the fixed suffix, from either probe
+    expect(outcomeText(unchanged("a", "1.2.3"))).toBe("1.2.3 (Nothing to update)");
+    expect(outcomeText({ ...unchanged("a", "1.2.3"), installAfter: null })).toBe("1.2.3 (Nothing to update)");
+    // unchanged without any comparable version falls back to the unverified string
+    expect(outcomeText({ ...ok("a"), change: "unchanged" })).toBe(UPDATE_UNVERIFIED_LABEL);
+
+    // changed: ASCII arrow, both versions
+    expect(outcomeText(changed("a", "1.2.3", "1.2.4"))).toBe("Ready - 1.2.3 -> 1.2.4");
+    // a `changed` claim with only one comparable version never invents the other
+    expect(outcomeText({ ...changed("a", "1.2.3", "1.2.4"), installBefore: missing() })).toBe(
+      UPDATE_UNVERIFIED_LABEL
+    );
+
+    // unknown
+    expect(outcomeText(ok("a"))).toBe("Update completed - Version could not be verified");
+
+    // cancelled and failed
+    expect(outcomeText(cancelled("a"))).toBe("Cancelled");
+    expect(outcomeText(failed("a", "exit code 1"))).toBe("Failed - exit code 1");
+    expect(outcomeText(failed("a"))).toBe("Failed");
+    expect(outcomeText({ ...failed("a"), error: null })).toBe("Failed");
+    // a cancelled result never prints a version, whatever its probes say
+    expect(outcomeText({ ...cancelled("a"), change: "changed", installBefore: installed("1.0", 0), installAfter: installed("1.1", 1) })).toBe(
+      "Cancelled"
+    );
+
+    expect(CANCELLED_LABEL).toBe("Cancelled");
+    expect(FAILED_LABEL).toBe("Failed");
+    expect(NOTHING_TO_UPDATE_SUFFIX).toBe("(Nothing to update)");
+    expect(UPDATE_UNVERIFIED_LABEL).toBe("Update completed - Version could not be verified");
   });
 
-  it("deriveTimelineNodes derives the state of every node in node order with the state texts", () => {
+  it("every visible string is ASCII: no Unicode arrow, no middle dot, no Spanish literal", () => {
+    const strings = [
+      ...Object.values(NODE_STATE_LABELS),
+      ...Object.values(LIVE_LABELS),
+      ...Object.values(CONFIGURED_LABELS),
+      NOT_INSTALLED_LABEL,
+      UNKNOWN_ERROR_LABEL,
+      NOTHING_TO_UPDATE_SUFFIX,
+      UPDATE_UNVERIFIED_LABEL,
+      CANCELLED_LABEL,
+      FAILED_LABEL,
+      outcomeText(changed("a", "1.2.3", "1.2.4")),
+      outcomeText(unchanged("a", "1.2.3")),
+      outcomeText(failed("a", "exit code 1")),
+      outcomeText(cancelled("a")),
+      deriveTimelineHeader(deriveTimelineNodes([node("a"), node("b")], [], [], [failed("a", "x")])).text,
+    ];
+    for (const value of strings) {
+      expect(value).toMatch(/^[\x20-\x7E]*$/);
+      expect(value).not.toContain("→");
+      expect(value).not.toContain("·");
+    }
+  });
+
+  it("outcomeState and isTerminalState map the three terminal outcomes", () => {
+    expect(outcomeState(ok("a"))).toBe("ok");
+    expect(outcomeState(failed("a", "boom"))).toBe("failed");
+    expect(outcomeState(cancelled("a"))).toBe("cancelled");
+    expect(["ok", "failed", "cancelled"].map((state) => isTerminalState(state as never))).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect(["pending", "updating", "verifying", "cancelling"].map((state) => isTerminalState(state as never))).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it("deriveTimelineNodes derives every node state in node order with the four nonterminal words", () => {
     const views = deriveTimelineNodes(
-      [node("a"), node("b"), node("c"), node("d")],
-      [ref("b")],
+      [node("a"), node("b"), node("c"), node("d"), node("e"), node("f")],
+      [ref("b"), ref("e")],
+      [ref("c")],
       [ok("a"), failed("d", "exit code 1")],
-      {}
+      new Set(["e"])
     );
-    expect(views.map((view) => view.command)).toEqual(["a", "b", "c", "d"]);
-    expect(views.map((view) => view.state)).toEqual(["ok", "updating", "pending", "failed"]);
-    expect(views.map((view) => view.stateText)).toEqual(["Listo", "Actualizando...", "Pendiente", "Falló"]);
-    expect(NODE_STATE_LABELS).toEqual({
-      pending: "Pendiente",
-      updating: "Actualizando...",
-      ok: "Listo",
-      failed: "Falló",
-    });
-    expect(views[1]).toMatchObject({ label: "B", updateCommands: ["b update"], detail: null, detailTitle: null });
-    expect(views[2]).toMatchObject({ detail: null, detailTitle: null });
-  });
-
-  it("detail: the version transition for ok, the reason plus the transition for failed, title equal to detail", () => {
-    const views = deriveTimelineNodes(
-      [
-        node("a", installed("1.0", 0)),
-        node("b"),
-        node("c", installed("1.0", 0)),
-        node("d"),
-        node("e"),
-      ],
-      [],
-      [ok("a"), ok("b"), failed("c", "exit code 1"), failed("d", "exit code 1"), failed("e")],
-      { a: installed("1.1", 3), c: missing("'c' was not found on PATH", 4) }
-    );
-    const byCommand = Object.fromEntries(views.map((view) => [view.command, view]));
-    // ok with a version text
-    expect(byCommand.a.detail).toBe("1.0 → 1.1");
-    // ok without any version source: no detail (the T4 stubs)
-    expect(byCommand.b.detail).toBeNull();
-    // failed with a version text: the 2026-08-25 incident line
-    expect(byCommand.c.detail).toBe("exit code 1 · 1.0 → no instalada");
-    // failed without a version text
-    expect(byCommand.d.detail).toBe("exit code 1");
-    // failed without a reason (practically unreachable)
-    expect(byCommand.e.detail).toBe(UNKNOWN_ERROR_LABEL);
+    expect(views.map((view) => view.command)).toEqual(["a", "b", "c", "d", "e", "f"]);
+    expect(views.map((view) => view.state)).toEqual([
+      "ok",
+      "updating",
+      "verifying",
+      "failed",
+      "cancelling",
+      "pending",
+    ]);
+    // a nonterminal row shows the state word and no detail; a terminal row the reverse
+    expect(views.map((view) => view.stateText)).toEqual([
+      null,
+      "Updating...",
+      "Verifying...",
+      null,
+      "Cancelling...",
+      "Pending",
+    ]);
+    expect(views.map((view) => view.detail)).toEqual([
+      "Update completed - Version could not be verified",
+      null,
+      null,
+      "Failed - exit code 1",
+      null,
+      null,
+    ]);
+    expect(views.map((view) => view.terminal)).toEqual([true, false, false, true, false, false]);
+    // cancellable: every nonterminal row EXCEPT one already cancelling
+    expect(views.map((view) => view.cancellable)).toEqual([false, true, true, false, false, true]);
     for (const view of views) expect(view.detailTitle).toBe(view.detail);
+
+    expect(NODE_STATE_LABELS).toEqual({
+      pending: "Pending",
+      updating: "Updating...",
+      verifying: "Verifying...",
+      cancelling: "Cancelling...",
+    });
+    expect(views[1]).toMatchObject({ label: "B", updateCommands: ["b update"] });
   });
 
-  it("appends running and finished commands absent from nodes, in that order, never twice", () => {
+  it("cancellation outranks verification, and a terminal result outranks both", () => {
+    // a verifying row whose cancellation was requested says Cancelling..., not Verifying...
+    const requested = deriveTimelineNodes([node("a")], [], [ref("a")], [], new Set(["a"]));
+    expect(requested[0]).toMatchObject({ state: "cancelling", stateText: "Cancelling...", cancellable: false });
+
+    // the terminal result wins over every in-progress collection, cancelling included
+    const terminal = deriveTimelineNodes(
+      [node("a")],
+      [ref("a")],
+      [ref("a")],
+      [cancelled("a")],
+      new Set(["a"])
+    );
+    expect(terminal[0]).toMatchObject({
+      state: "cancelled",
+      stateText: null,
+      detail: "Cancelled",
+      terminal: true,
+      cancellable: false,
+    });
+  });
+
+  it("the terminal text comes from the result's own probes, never from a running row's node", () => {
+    const views = deriveTimelineNodes(
+      [node("a", installed("9.9", 0)), node("b")],
+      [],
+      [],
+      [unchanged("a", "1.2.3"), changed("b", "1.2.3", "1.2.4")]
+    );
+    // the node's `installBefore` (9.9) is NOT the source: the result's own probe is
+    expect(views[0].detail).toBe("1.2.3 (Nothing to update)");
+    expect(views[1].detail).toBe("Ready - 1.2.3 -> 1.2.4");
+  });
+
+  it("appends running, verifying and finished commands absent from nodes, in that order, never twice", () => {
     const views = deriveTimelineNodes(
       [node("a")],
       [ref("b"), ref("a")],
-      [ok("c"), ok("a"), failed("b", "exit code 2")],
-      {}
+      [ref("v"), ref("b")],
+      [ok("c"), ok("a"), failed("b", "exit code 2")]
     );
-    expect(views.map((view) => view.command)).toEqual(["a", "b", "c"]);
+    expect(views.map((view) => view.command)).toEqual(["a", "b", "v", "c"]);
     expect(views[0]).toMatchObject({ state: "ok", updateCommands: ["a update"] });
-    // a finished command wins over its running entry, exactly as for a pass node
-    expect(views[1]).toMatchObject({ label: "B", state: "failed", updateCommands: [], detail: "exit code 2" });
-    expect(views[2]).toMatchObject({ label: "C", state: "ok", updateCommands: [], detail: null });
+    // a finished command wins over its running AND verifying entry, exactly as for a pass node
+    expect(views[1]).toMatchObject({
+      label: "B",
+      state: "failed",
+      updateCommands: [],
+      detail: "Failed - exit code 2",
+    });
+    expect(views[2]).toMatchObject({ label: "V", state: "verifying", stateText: "Verifying...", detail: null });
+    expect(views[3]).toMatchObject({ label: "C", state: "ok", updateCommands: [] });
 
-    const running = deriveTimelineNodes([], [ref("x")], [], {});
+    const running = deriveTimelineNodes([], [ref("x")], [], []);
     expect(running).toEqual([
       {
         command: "x",
         label: "X",
         updateCommands: [],
         state: "updating",
-        stateText: "Actualizando...",
+        stateText: "Updating...",
         detail: null,
         detailTitle: null,
+        terminal: false,
+        cancellable: true,
       },
     ]);
   });
 
-  it("deriveTimelineHeader counts done and failed, rounds the percent and pluralizes the failures", () => {
-    const pending = deriveTimelineNodes([node("a"), node("b"), node("c")], [], [], {});
+  it("deriveTimelineHeader counts every terminal row as done and only `failed` as failed", () => {
+    const pending = deriveTimelineNodes([node("a"), node("b"), node("c")], [], [], []);
     expect(deriveTimelineHeader(pending)).toEqual({
       total: 3,
       done: 0,
       failed: 0,
       percent: 0,
-      text: "0 de 3 completados",
+      text: "0 of 3 completed",
     });
 
     const oneFailed = deriveTimelineNodes(
       [node("a"), node("b"), node("c")],
       [ref("c")],
-      [ok("a"), failed("b", "exit code 1")],
-      {}
+      [],
+      [ok("a"), failed("b", "exit code 1")]
     );
     expect(deriveTimelineHeader(oneFailed)).toEqual({
       total: 3,
       done: 2,
       failed: 1,
       percent: 67,
-      text: "2 de 3 completados · 1 falló",
+      text: "2 of 3 completed, 1 failed",
     });
 
     const twoFailed = deriveTimelineNodes(
       [node("a"), node("b"), node("c")],
       [],
-      [ok("a"), failed("b", "exit code 1"), failed("c", "exit code 1")],
-      {}
+      [],
+      [ok("a"), failed("b", "exit code 1"), failed("c", "exit code 1")]
     );
     expect(deriveTimelineHeader(twoFailed)).toEqual({
       total: 3,
       done: 3,
       failed: 2,
       percent: 100,
-      text: "3 de 3 completados · 2 fallaron",
+      text: "3 of 3 completed, 2 failed",
     });
 
-    const oneOfThree = deriveTimelineNodes([node("a"), node("b"), node("c")], [], [ok("a")], {});
+    // #1691 - a cancelled row is done and never failed; a verifying row is neither
+    const cancelledAndVerifying = deriveTimelineNodes(
+      [node("a"), node("b"), node("c"), node("d")],
+      [],
+      [ref("c")],
+      [cancelled("a"), failed("b", "exit code 1")],
+      new Set(["c"])
+    );
+    expect(deriveTimelineHeader(cancelledAndVerifying)).toEqual({
+      total: 4,
+      done: 2,
+      failed: 1,
+      percent: 50,
+      text: "2 of 4 completed, 1 failed",
+    });
+
+    // only cancellations: done, and no failure clause at all
+    const allCancelled = deriveTimelineNodes(
+      [node("a"), node("b")],
+      [],
+      [],
+      [cancelled("a"), cancelled("b")]
+    );
+    expect(deriveTimelineHeader(allCancelled)).toEqual({
+      total: 2,
+      done: 2,
+      failed: 0,
+      percent: 100,
+      text: "2 of 2 completed",
+    });
+
+    const oneOfThree = deriveTimelineNodes([node("a"), node("b"), node("c")], [], [], [ok("a")]);
     expect(deriveTimelineHeader(oneOfThree).percent).toBe(33);
 
     expect(deriveTimelineHeader([])).toEqual({
@@ -348,7 +518,7 @@ describe("timeline derivations (#1551 round 5)", () => {
       done: 0,
       failed: 0,
       percent: 0,
-      text: "0 de 0 completados",
+      text: "0 of 0 completed",
     });
   });
 });
