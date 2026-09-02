@@ -8,6 +8,13 @@ pub fn ui_automation_enabled(
 }
 
 #[tauri::command]
+pub fn ui_automation_layout_pulse_suppressed(
+    state: State<'_, crate::testability::ui_automation::UiAutomationState>,
+) -> bool {
+    state.layout_pulse_suppressed()
+}
+
+#[tauri::command]
 pub fn ui_automation_frontend_ready(
     webview: WebviewWindow,
     window: Option<String>,

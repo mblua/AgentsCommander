@@ -19,6 +19,7 @@ pub const SESSION_FILE: &str = "session.json";
 pub const REQUESTS_DIR: &str = "requests";
 pub const RESPONSES_DIR: &str = "responses";
 pub const ENV_ENABLE: &str = "AC_UI_AUTOMATION";
+pub const ENV_SUPPRESS_LAYOUT_PULSE: &str = "AC_UI_AUTOMATION_SUPPRESS_LAYOUT_PULSE";
 pub const BACKEND_AUTOMATION_WINDOW: &str = "__backend";
 pub const RESOURCE_WATCHDOG_BACKEND_SELECTOR: &str = "resourceMonitor.watchdog";
 
@@ -248,6 +249,7 @@ pub struct UiAutomationState {
 
 struct UiAutomationInner {
     enabled: bool,
+    layout_pulse_suppressed: bool,
     token: String,
     config_dir: PathBuf,
     automation_dir: PathBuf,
@@ -261,7 +263,7 @@ struct UiAutomationInner {
 }
 
 impl UiAutomationState {
-    pub fn new(enabled: bool, config_dir: PathBuf) -> Self {
+    pub fn new(enabled: bool, layout_pulse_suppressed: bool, config_dir: PathBuf) -> Self {
         let automation_dir = config_dir.join(UI_AUTOMATION_DIR);
         let session_path = automation_dir.join(SESSION_FILE);
         let exe_path = current_exe_path_string();
@@ -271,6 +273,7 @@ impl UiAutomationState {
         Self {
             inner: Arc::new(UiAutomationInner {
                 enabled,
+                layout_pulse_suppressed,
                 token: if enabled {
                     Uuid::new_v4().to_string()
                 } else {
@@ -291,6 +294,12 @@ impl UiAutomationState {
 
     pub fn enabled(&self) -> bool {
         self.inner.enabled && self.inner.available.load(Ordering::SeqCst)
+    }
+
+    /// ANDs `enabled()` so suppression without an enabled automation session is not
+    /// merely unreached but structurally unrepresentable, whatever the stored field says.
+    pub fn layout_pulse_suppressed(&self) -> bool {
+        self.enabled() && self.inner.layout_pulse_suppressed
     }
 
     pub fn start(&self, app: AppHandle, shutdown: ShutdownSignal) {
@@ -1483,6 +1492,30 @@ pub fn resolve_enabled_from_cli_or_env(ui_automation: bool) -> Result<bool, Stri
     Ok(true)
 }
 
+/// Pure core of the layout-pulse suppression gate, mirroring
+/// `window_placement::resolve_from_cli_or_env_for_exe`: every input is a parameter so
+/// the gate can be proven in a unit test without touching process state. All three
+/// conditions are required, and the environment value must be exactly "1".
+fn resolve_layout_pulse_suppression_for_exe(
+    automation_enabled: bool,
+    exe_name: &str,
+    env_value: Option<&str>,
+) -> bool {
+    automation_enabled && exe_name == TESTABLE_EXE_NAME && env_value == Some("1")
+}
+
+/// Resolved once at startup and then immutable for the process, so no in-flight
+/// sidebar pulse can ever observe the value changing. Refusal is silent by design: a
+/// stray variable on a release binary must not prevent the app from starting.
+pub fn resolve_layout_pulse_suppression(automation_enabled: bool) -> bool {
+    let env_value = std::env::var(ENV_SUPPRESS_LAYOUT_PULSE).ok();
+    resolve_layout_pulse_suppression_for_exe(
+        automation_enabled,
+        &current_exe_name(),
+        env_value.as_deref(),
+    )
+}
+
 pub fn existing_enabled_session_for_current_config() -> bool {
     let Some(config_dir) = crate::config::config_dir() else {
         return false;
@@ -1621,14 +1654,18 @@ fn ensure_current_exe_is_testable() -> Result<(), Value> {
     }
 }
 
-fn current_exe_is_testable() -> bool {
+fn current_exe_name() -> String {
     std::env::current_exe()
         .ok()
         .and_then(|path| {
             path.file_name()
                 .map(|name| name.to_string_lossy().into_owned())
         })
-        .is_some_and(|name| name == TESTABLE_EXE_NAME)
+        .unwrap_or_default()
+}
+
+fn current_exe_is_testable() -> bool {
+    current_exe_name() == TESTABLE_EXE_NAME
 }
 
 fn config_dir_or_error() -> Result<PathBuf, Value> {
@@ -2916,7 +2953,7 @@ mod tests {
     #[test]
     fn complete_rejects_unknown_request_id() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = UiAutomationState::new(true, false, tmp.path().to_path_buf());
         let response = UiAutomationResponse::minimal_error(
             &Uuid::new_v4().to_string(),
             "main",
@@ -2935,7 +2972,7 @@ mod tests {
     #[test]
     fn frontend_ready_registers_dynamic_caller_label() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = UiAutomationState::new(true, false, tmp.path().to_path_buf());
         state.initialize_files().unwrap();
 
         state
@@ -2957,7 +2994,7 @@ mod tests {
     #[test]
     fn live_window_sync_prunes_closed_dynamic_windows() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = UiAutomationState::new(true, false, tmp.path().to_path_buf());
         state.initialize_files().unwrap();
         state
             .mark_frontend_ready("resource-monitor", Some("resource-monitor"))
@@ -2976,7 +3013,7 @@ mod tests {
     #[test]
     fn complete_writes_completion_mismatch_response() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = UiAutomationState::new(true, false, tmp.path().to_path_buf());
         fs::create_dir_all(state.requests_dir()).unwrap();
         fs::create_dir_all(state.responses_dir()).unwrap();
 
@@ -3022,7 +3059,7 @@ mod tests {
     #[test]
     fn expire_pending_requests_writes_timeout_response() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = UiAutomationState::new(true, false, tmp.path().to_path_buf());
         fs::create_dir_all(state.requests_dir()).unwrap();
         fs::create_dir_all(state.responses_dir()).unwrap();
 
@@ -3069,7 +3106,7 @@ mod tests {
     #[test]
     fn initialization_failure_can_disable_state() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = UiAutomationState::new(true, false, tmp.path().to_path_buf());
         fs::create_dir_all(&state.inner.automation_dir).unwrap();
         fs::write(state.requests_dir(), "not a directory").unwrap();
 
@@ -3146,5 +3183,63 @@ mod tests {
             timeout_phase(&request_path, &inflight_path, &session_path, "main"),
             "awaiting_frontend_response"
         );
+    }
+
+    #[test]
+    fn layout_pulse_suppression_enabled_when_gate_and_env_hold() {
+        assert!(resolve_layout_pulse_suppression_for_exe(
+            true,
+            TESTABLE_EXE_NAME,
+            Some("1")
+        ));
+    }
+
+    #[test]
+    fn layout_pulse_suppression_refuses_non_testeable_exe() {
+        for exe in [
+            "agentscommander.exe",
+            "agentscommander_stage.exe",
+            "AGENTSCOMMANDER_TESTEABLE.EXE",
+            "",
+        ] {
+            assert!(
+                !resolve_layout_pulse_suppression_for_exe(true, exe, Some("1")),
+                "exe {exe} must not be able to enable layout-pulse suppression"
+            );
+        }
+    }
+
+    #[test]
+    fn layout_pulse_suppression_refuses_without_automation() {
+        assert!(!resolve_layout_pulse_suppression_for_exe(
+            false,
+            TESTABLE_EXE_NAME,
+            Some("1")
+        ));
+    }
+
+    #[test]
+    fn layout_pulse_suppression_defaults_off() {
+        for env_value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("11"),
+            Some(" 1"),
+        ] {
+            assert!(
+                !resolve_layout_pulse_suppression_for_exe(true, TESTABLE_EXE_NAME, env_value),
+                "env value {env_value:?} must not enable layout-pulse suppression"
+            );
+        }
+    }
+
+    #[test]
+    fn layout_pulse_suppressed_accessor_requires_enabled_state() {
+        let dir = std::path::PathBuf::from(r"C:\tmp\ac-1724-accessor");
+        assert!(!UiAutomationState::new(false, true, dir.clone()).layout_pulse_suppressed());
+        assert!(UiAutomationState::new(true, true, dir.clone()).layout_pulse_suppressed());
+        assert!(!UiAutomationState::new(true, false, dir).layout_pulse_suppressed());
     }
 }

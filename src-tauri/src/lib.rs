@@ -2426,6 +2426,7 @@ pub fn run(
     let (_app_outbox_path, app_outbox) = prepare_app_outbox(&config_dir, &instance_id)?;
     let ui_automation_state = crate::testability::ui_automation::UiAutomationState::new(
         ui_automation_enabled,
+        crate::testability::ui_automation::resolve_layout_pulse_suppression(ui_automation_enabled),
         config_dir.clone(),
     );
 
@@ -3590,6 +3591,7 @@ pub fn run(
                 commands::telegram::telegram_send_test,
                 commands::telegram::telegram_send_image,
                 commands::testability::ui_automation_enabled,
+                commands::testability::ui_automation_layout_pulse_suppressed,
                 commands::testability::ui_automation_frontend_ready,
                 commands::testability::ui_automation_complete,
                 commands::window::detach_terminal,
