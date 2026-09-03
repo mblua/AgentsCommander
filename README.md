@@ -5,11 +5,7 @@
 <h1 align="center">Agents Commander</h1>
 
 <p align="center">
-  <b>Compound your coding agents.</b> Bring any CLI coding agent at full power, put your Fusion team on a <b>Loop</b>, and let scheduled, recurring runs compound toward the best answer, while you sleep. <b>AgentsCommander only adds, never subtracts.</b> <i>Road to the Dark Factory.</i>
-</p>
-
-<p align="center">
-  <sub><i>A Fusion team combines multiple models in one team: point OpenCode at any provider and any model can join, even OpenRouter Fusion.</i></sub>
+  <b>Compound your coding agents.</b> Bring any CLI coding agent at full power and activate Teams as parallel Rooms. Each Room is a separate filesystem workspace with replicas of its Team's agents and clones of its assigned repositories. <b>Parallelize the work. Keep the thread. Share the setup.</b>
 </p>
 
 <p align="center">
@@ -42,75 +38,31 @@
 Paste this prompt into a Coding Agent you already trust. It inspects first, shows you an exact plan, and waits before changing your machine.
 
 ```text
-Install AgentsCommander safely on this machine.
+Install AgentsCommander safely using only the official `mblua/AgentsCommander` repository, its latest stable GitHub Release, and the canonical guide: https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md
 
-Use only the official mblua/AgentsCommander repository, its latest stable
-GitHub Release, and the canonical guide at:
-https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md
+First resolve/report the current `main` snapshot's full commit SHA, then read the guide at that pinned commit. Treat the entire pinned guide, especially `Support gates`, `Use only pinned official evidence`, `Resolve versions before configuration`, and `Coding Agent contract`, as binding. Fail closed on every stop condition and on missing, ambiguous, or conflicting required evidence.
 
-First resolve and report the full Git commit SHA for the current main snapshot,
-then read the guide at that pinned commit. Stop if the guide, commit, stable
-release, asset list, or SHASUMS256.txt is missing, ambiguous, or conflicting.
+Before any download or mutation, perform/report every required read-only preflight and the complete plan: OS/version/architectures/support tier; existing install/version/provenance; independently resolved target stable tag; each exact release tag's resolver (`main` is not published-binary evidence); existing/replacement configuration selections; mapped release/asset URLs and exact checksum record; destination, commands, created/overwritten files, privilege, PATH/system-wide effects, preservation, validation, and rollback. Apply the guide's gates exactly: Windows 10 1809+/11 x86_64/AMD64 is full; Linux x86_64/AMD64 is partial/in progress and requires explained limitations plus explicit confirmation; macOS is unsupported and only the explicit tester/contributor path may be offered; all other platforms stop. Prefer least privilege. Await plan approval plus separate consent for elevation, system-wide/PATH changes, overwrites, and unsigned execution.
 
-Before changing anything, detect and report the OS name and version, native CPU
-architecture, process architecture if different, any existing AgentsCommander
-installation, its exact binary version, and the support tier from the pinned
-guide. Independently resolve and report the exact selected stable release tag.
-Do not resolve or preserve configuration until both versions are known and you
-have inspected each exact release tag's resolver; main is not evidence for a
-published binary. Report both the existing selection and the replacement's
-expected selection. Stop if a version is unknown, state cannot be attributed,
-multiple plausible directories exist, a candidate is mounted/read-only and
-ephemeral, or any evidence is ambiguous.
-Windows 10 1809+ or Windows 11 on x86_64/AMD64 is fully supported. Linux
-x86_64/AMD64 is partial/in progress: explain the limitations and wait for my
-explicit confirmation before continuing. macOS is not supported yet: stop the
-normal install and offer only the explicit tester/contributor path. Stop on any
-other OS or architecture without emulation, substitution, or fallback.
-
-Select only an asset explicitly mapped by the pinned guide. Report the stable
-release tag and URL, exact asset name and URL, exact checksum record,
-destination, every command, files created or overwritten, privilege level,
-PATH or system-wide effects, configuration-preservation plan, validation, and
-rollback. Prefer least privilege. Wait for my approval of that complete plan.
-
-Treat elevation, system-wide or PATH changes, overwrites, and running unsigned
-software as separate consent decisions. Current Windows artifacts may be
-unsigned. Explain that a matching release checksum detects corruption or an
-asset mismatch but does not protect against compromise of the publisher or
-repository account.
-
-After approval, download the exact asset and SHASUMS256.txt from the same stable
-release, require one exact filename record, verify the complete SHA-256 digest,
-back up the persistent configuration selected by the verified existing version,
-run only the approved commands,
-validate from the exact installed path, and report the result. Stop safely on
-any mismatch. For a v0.30.3 AppImage update or uninstall, stop before mutation
-when its selected candidate is in the temporary read-only mount, any existing
-state is present, or selection is ambiguous; do not invent an external or home
-configuration path.
-
-Never bypass a security control silently, elevate automatically, use
-`curl | shell`, use a mirror, build from source as a fallback, use an emulated or
-substitute asset, fall back to npm, or install or authenticate a Coding Agent
-CLI for me.
+Only afterward follow the guide's exact same-release download, one-record full-SHA-256 verification, backup of persistent configuration selected by the verified existing version, approved execution, exact-path validation/reporting, and rollback rules. Enforce its v0.30.3 AppImage stops and no-invented-config rule. Warn that Windows artifacts may be unsigned and that a matching release checksum detects corruption/asset mismatch, not publisher/repository-account compromise. Enforce all prohibitions: silent security bypass, automatic elevation, `curl | shell`, mirrors, source fallback, emulation/substitute assets, npm fallback, and installing/authenticating a Coding Agent CLI for me.
 ```
 
 Read the complete [installation contract, platform matrix, trust boundaries, and rollback rules](docs/install-with-agent.md). Prefer a manual release download or npm? Those remain [secondary routes](docs/install-with-agent.md#manual-alternatives), with the same platform policy.
 
 ## The 30-second pitch
 
-> **A Dark Factory runs with the lights off, no humans on the floor.** AgentsCommander is how you get there: bring any coding agent at full power, put a Fusion team of cheaper models on a **Loop**, and let scheduled runs compound toward the best answer. We only add, never subtract.
+> **See which Team is working on each task, even while several Teams work in parallel.** Define agents and Teams in source-controlled files, then activate a Team as one or more Rooms. Each Room is a separate filesystem workspace with its own agent replicas, repository clones, messaging area, and build or test state. The UI keeps every Room's task, sessions, branches, and repository state visible.
 
 - **Pick the coding agent per role (Claude Code, Codex, Antigravity, Pi, or OpenCode) at full power.** Each runs in its own real terminal with a full PTY, not a command runner. AgentsCommander only adds capability; it never sandboxes or nerfs your agent.
-- **Direct multiple rooms from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across teams. Ask it to talk to room orchestrators, send work to different teams, and keep initiatives aligned across parallel rooms.
-- **Multi-agent Teams that coordinate through files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole org fits in `ls`.
+- **Direct multiple Rooms from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across Teams. Ask it to talk to Room orchestrators, send work to different Teams, and keep initiatives aligned across parallel Rooms.
+- **Give each Room its own working copies.** AC creates a separate workspace with repository clones, agent replicas, a messaging area, and build or test state. Each agent's context carries write-restriction instructions that ask it to stay inside its Room; that is documented policy the agents follow, not a sandbox the product enforces. Each session invokes the installed AgentsCommander executable with credentials whose token and root values are scoped to that Room. Run multiple Teams, or multiple Rooms for the same Team, without mixing one task's source changes or build and test state into another's.
+- **Return without rebuilding the map.** A Room keeps its task, agent replicas, repository clones, and messages on disk. Come back later, reopen a Room's closed session, and AC asks Claude Code, Codex, Antigravity, or Pi to continue the prior conversation in that same workspace.
+- **Share configuration as source code.** A Project's `.ac/` tree holds canonical agent roles, skills, and plans; Team rosters and repo access; and Loop prompts and schedules in reviewable Markdown, JSON, and TOML. Commit the shared files so teammates can pull the same reviewed setup instead of recreating it.
+- **Coordinate Teams through auditable files.** Agents exchange Markdown messages in a `messaging/` folder you can read with `cat`, inspect in an editor, search, and audit directly on disk. The whole organization fits in `ls`.
 - **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
 - **Local state, no telemetry.** Machine-local state stays in the configuration directory selected by the exact binary version; shared team state stays in each project's `.ac/` tree. The published `v0.30.3` resolver and the newer, unpublished `main` resolver differ, so use the [versioned configuration rule](docs/features/portable-instances.md#config-directory-rule) before moving or deleting state.
 
 You bring the coding agents. AgentsCommander coordinates them.
-
-> **OpenRouter Fusion compounds models on a single request. AgentsCommander compounds agents, models, and Fusion itself: on a Loop, across a team.** Point OpenCode at any provider and bring any model (including OpenRouter Fusion) into the team.
 
 ## See it work
 
@@ -131,15 +83,15 @@ Full walkthrough: [`docs/quickstart.md`](docs/quickstart.md).
 
 ## Why this exists
 
-Most agent tools focus on in-process orchestration or one interactive session. AgentsCommander starts with the **coding agents you already use** (Claude Code, Codex, Antigravity, Pi, and OpenCode), runs them as real OS processes, and lets them coordinate through plain markdown files that any human, any tool, and any `git diff` can inspect. You see every step in a real terminal, and the coordination state stays visible on disk.
+Most agent tools focus on in-process orchestration or one interactive session. AgentsCommander starts with the **coding agents you already use** (Claude Code, Codex, Antigravity, Pi, and OpenCode), runs them as real OS processes, and lets them coordinate through plain Markdown files that humans and file tools can read, search, and audit directly on disk. You see every step in a real terminal, and the coordination state stays visible on disk.
 
 ## What you can build
 
 | Use case | Setup |
 |---|---|
-| **Parallel feature development** | Two coding agents on the same repo, each owning a different module. Orchestrator routes work and merges results. |
+| **Parallel feature development** | Activate one Room per parallel task, even when reusing the same Team. Every Room gets its own repository clones and build or test state; direct the Room orchestrators from the Root Agent. |
 | **Code-review swarm** | One agent ships a PR; two others review independently. You read both reviews in their own terminals before merging. |
-| **Autonomous refactor crew** | A long-running orchestrator splits a multi-file refactor across worker agents and rebases their branches as they finish. |
+| **Autonomous refactor Team** | A long-running orchestrator splits a multi-file refactor across worker agents and rebases their branches as they finish. |
 | **Long-running agent with phone alerts** | Pair a session with a [Telegram bot](docs/features/telegram-bridge.md), kick off a build from your phone, and receive text updates plus screenshots or image artifacts. |
 
 Full recipes: [`docs/use-cases.md`](docs/use-cases.md).
@@ -162,7 +114,8 @@ Full comparison with trade-offs and honest losses: [`docs/comparison.md`](docs/c
 These are not accidents.
 
 - **Start with files and CLIs.** AgentsCommander keeps the core workflow in plain files and real terminal sessions. External protocols, including MCP, belong where they improve a concrete integration without hiding the workflow.
-- **Files before databases.** All state and communication is persisted to plain files (JSON, TOML, markdown). Every change is visible via `git diff`, trivial to inspect, easy to debug. Databases can be introduced later for performance-critical paths once the data model is mature.
+- **Configuration is source code.** Canonical agent, Team, and Loop configuration lives in plain Markdown, JSON, and TOML under each Project's `.ac/` tree. Commit those shared files and review them like code. Gitignored runtime and machine-local state (Rooms, Loop state, and project-local settings) can also live under `.ac/`; keep it distinct from the versioned configuration.
+- **Files before databases.** Shared configuration and inter-agent messages use plain files that are easy to inspect and debug. Databases can be introduced for performance-critical runtime paths without hiding how a Team is defined or how its agents coordinate.
 - **One agent = one directory.** An agent is defined by a `CLAUDE.md` file (or equivalent role-prompt file) inside its own directory. Multiple role prompts within the same directory or its subdirectories are forbidden. Coding agents assume the entire contents of their working directory are relevant context; if two role prompts coexisted, an agent could read another agent's role and leak context.
 
 ## Documentation
