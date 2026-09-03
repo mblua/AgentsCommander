@@ -66,6 +66,7 @@ import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
 import DetachIcon from "./DetachIcon";
 import ReattachIcon from "./ReattachIcon";
+import UserPlusIcon from "./UserPlusIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
 import {
   automationIdPart,
@@ -1649,7 +1650,12 @@ const ProjectPanel: Component = () => {
                       }}
                       data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.create`}
                     >
-                      Create new group
+                      {/* #1731 - 👥 reads as "a group", which is what this row
+                          PRODUCES; it moved here from Add to Group. No colour
+                          class: an emoji is painted by the system emoji font and
+                          ignores `color`, so one would be dead CSS. */}
+                      <span class="session-context-option-icon" aria-hidden="true">&#x1F465;</span>
+                      <span>Create new group</span>
                     </button>
                   }
                 >
@@ -1707,7 +1713,11 @@ const ProjectPanel: Component = () => {
               }}
               data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.trigger`}
             >
-              <span class="session-context-option-icon" aria-hidden="true">&#x1F465;</span>
+              {/* #1731 - user-plus, not 👥: this row ADDS a room to a group, it
+                  does not produce one. Tinted through the class, never a hex. */}
+              <span class="session-context-option-icon" aria-hidden="true">
+                <UserPlusIcon class="session-context-group-add-icon" />
+              </span>
               <span>Add to Group</span>
               <span class="session-context-submenu-arrow">&rsaquo;</span>
             </button>
