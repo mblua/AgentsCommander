@@ -1011,13 +1011,18 @@ const ProjectPanel: Component = () => {
           const session = sessionsStore.findSessionByName(agent.name);
           const repoText = sessionRepoSearchText(session);
           const codingAgentLabel = liveAgentLabel(session);
-          const metaVisible = !!codingAgentLabel || repoText !== "";
+          // #1730 - the profile badge is passed unconditionally. This call used to
+          // gate it on `!!codingAgentLabel || repoText !== ""`, a second copy of the
+          // meta-strip gate SessionItem.tsx carried before #1730. That gate is gone,
+          // so every session row now carries this badge's data, and the filter has
+          // to find it. Do not re-add a gate here: replicaSearchText above never had
+          // one, and a voice transient hiding the strip is not a rule about the data.
           return matchesFilterText(
             agentDisplayName(agent.name),
             sessionSearchText(session),
             codingAgentLabel,
             repoText,
-            metaVisible && session ? sessionProfileBadge(session) : null
+            session ? sessionProfileBadge(session) : null
           );
         };
         const teamMemberMatches = (team: AcTeam, agentName: string) =>
