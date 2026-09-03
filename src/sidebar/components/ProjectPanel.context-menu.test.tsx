@@ -1496,9 +1496,11 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       const row = findRow(rendered!.root, memberRowTestId);
       expect(row.querySelector(".session-item-telegram")).toBeNull();
       expect(row.querySelector(".session-item-close")).toBeNull();
-      expect(row.querySelector<HTMLElement>(".session-item-bridge-dot")?.style.background).toBe(
-        "red",
-      );
+      const icon = row.querySelector<HTMLElement>(".session-item-bridge-icon");
+      expect(icon?.style.color).toBe("red");
+      expect(icon?.getAttribute("title")).toBe(`Telegram: ${botOne.label}`);
+      expect(icon?.querySelector("svg")).not.toBeNull();
+      expect(row.querySelector(".session-item-bridge-dot")).toBeNull();
 
       const menu = await openMenu(row);
       const detach = findExactMenuButton(menu, "Detach Telegram")!;
