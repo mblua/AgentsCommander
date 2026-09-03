@@ -9,9 +9,9 @@ For developers who want the complete list of key combinations AgentsCommander bi
 | `Ctrl+Shift+W` | Closes the currently selected session. | Any AC window with focus. |
 | `Ctrl+Shift+R` | Toggles voice capture on the selected session. Live sessions only. | Any AC window with focus. |
 
-The Close Session menu item and both close-session tooltips display `Ctrl+Shift+W`.
+The Close Session menu item and both close-session tooltips display `Ctrl+Shift+W`. Each of those controls closes the session it belongs to, which is not always the selected one.
 
-Both act on **the current selection**, not on the window you are looking at. `Ctrl+Shift+R` does nothing when the selection is not a live session.
+Both shortcuts act on **the current selection**, not on the window you are looking at. `Ctrl+Shift+R` does nothing when the selection is not a live session.
 
 ## The global screenshot hotkey
 
