@@ -13,6 +13,7 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { settingsStore } from "../../shared/stores/settings";
+import { sessionsStore } from "../stores/sessions";
 import type { AgentConfig, AppSettings, CodingAgentProfilesConfig, Session } from "../../shared/types";
 
 function agentConfig(id: string, label: string, command: string): AgentConfig {
@@ -44,11 +45,21 @@ function profiles(
   };
 }
 
-async function renderRow(sessionProps: Partial<Session>, settings: AppSettings) {
+async function renderRow(
+  sessionProps: Partial<Session>,
+  settings: AppSettings,
+  originProject?: string,
+) {
   const fake = new FakeTransport();
   fake.resolve("get_settings", settings);
   const rendered = renderWithFakeTransport(
-    () => <SessionItem session={session(sessionProps)} isActive={false} />,
+    () => (
+      <SessionItem
+        session={session(sessionProps)}
+        isActive={false}
+        originProject={originProject}
+      />
+    ),
     fake,
   );
   await settingsStore.load();
@@ -563,4 +574,238 @@ describe("SessionItem coding-agent badge is style-invariant (#1167)", () => {
       }
     });
   }
+});
+
+// #1730 - the agent name is now a chip inside the row's badge strip, and the
+// strip itself renders unconditionally. jsdom applies no stylesheet, so every
+// pin here is on the emitted DOM: the chip's text and title, its position in
+// the strip, its double-click, and the voice states that suppress its
+// neighbours but never the chip.
+describe("SessionItem identity chip (#1730)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+    vi.restoreAllMocks();
+  });
+
+  const CTX_PATTERN = "Context left until auto-compact: (\\d+)%";
+  const MAXIMAL_ID = "chip-1";
+
+  function chipSettings(): AppSettings {
+    return baseSettings({
+      agents: [
+        { ...agentConfig("codex", "Codex", "codex"), contextRegex: CTX_PATTERN },
+        agentConfig("claude", "Claude Code", "claude"),
+      ],
+      codingAgentProfiles: profiles({}),
+    });
+  }
+
+  // Every gate of the strip lit at once: without this the suppression
+  // assertions below are vacuously true on a fixture that renders no chips.
+  const MAXIMAL_ROW: Partial<Session> = {
+    id: MAXIMAL_ID,
+    agentId: "codex",
+    agentLabel: "Codex",
+    effectiveProfile: "B",
+    profileOutdated: true,
+    isCoordinator: true,
+    status: "running",
+    gitRepos: [
+      { label: "repo-a", sourcePath: "C:\\repo-a", branch: "main", dirty: false },
+      { label: "repo-b", sourcePath: "C:\\repo-b", branch: "dev", dirty: false },
+    ],
+  };
+
+  it("renders the strip in the #1730 order with the chip after the drift badge", async () => {
+    sessionsStore.setSessionContext(MAXIMAL_ID, 42);
+    const rendered = await renderRow(MAXIMAL_ROW, chipSettings());
+    try {
+      await waitFor(() =>
+        expect(rendered.root.querySelector(".ctx-badge")).not.toBeNull(),
+      );
+      const strip = rendered.root.querySelector(".session-item-meta")!;
+      const classNames = Array.from(strip.children).map((el) => el.className);
+      expect(classNames).toEqual([
+        "profile-outdated-badge",
+        "agent-name-chip",
+        "ac-discovery-badge agent",
+        "profile-badge",
+        "ctx-badge",
+        "session-item-branches",
+      ]);
+      // Nothing added and nothing removed: today's five plus the chip.
+      expect(new Set(classNames.filter((c) => c !== "agent-name-chip"))).toEqual(
+        new Set([
+          "profile-outdated-badge",
+          "ac-discovery-badge agent",
+          "profile-badge",
+          "ctx-badge",
+          "session-item-branches",
+        ]),
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // D12. Branch A is the extractProjectName branch, which strips the appended
+  // "@project" suffix BY LENGTH; branch B is the lastIndexOf("/") fallback.
+  const CHIP_CASES: {
+    name: string;
+    workingDirectory: string;
+    originProject?: string;
+    text: string;
+    displayed: string;
+  }[] = [
+    {
+      name: "branch A, clean",
+      workingDirectory: "D:\\proj\\.ac\\__agent_dev-rust",
+      text: "dev-rust",
+      displayed: "dev-rust@proj",
+    },
+    {
+      name: "branch B, @ in a discarded parent",
+      workingDirectory: "D:\\work\\foo@bar\\baz",
+      text: "baz",
+      displayed: "foo@bar/baz",
+    },
+    {
+      name: "branch B, @ inside the kept segment",
+      workingDirectory: "D:\\work\\bar\\foo@baz",
+      text: "foo@baz",
+      displayed: "bar/foo@baz",
+    },
+    {
+      name: "branch A, @ in both halves",
+      workingDirectory: "D:\\p@q\\.ac\\__agent_a@b",
+      text: "a@b",
+      displayed: "a@b@p@q",
+    },
+    {
+      name: "branch A, originProject overrides the path project",
+      workingDirectory: "D:\\proj\\.ac\\__agent_dev@x",
+      originProject: "p@q",
+      text: "dev@x",
+      displayed: "dev@x@p@q",
+    },
+  ];
+
+  for (const chipCase of CHIP_CASES) {
+    it(`carries the bare identity and the full tooltip: ${chipCase.name}`, async () => {
+      const rendered = await renderRow(
+        { id: "chip-name", workingDirectory: chipCase.workingDirectory },
+        chipSettings(),
+        chipCase.originProject,
+      );
+      try {
+        const chip = rendered.root.querySelector<HTMLElement>(".agent-name-chip")!;
+        expect(chip).not.toBeNull();
+        expect(chip.textContent).toBe(chipCase.text);
+        expect(chip.getAttribute("title")).toBe(
+          `${chipCase.displayed}\n${chipCase.workingDirectory}`,
+        );
+        expect(rendered.root.querySelector(".session-item-name")).toBeNull();
+        expect(rendered.root.querySelector(".name-prefix")).toBeNull();
+      } finally {
+        rendered.cleanup();
+      }
+    });
+  }
+
+  it("opens the agent modal on a chip double click and leaves the selection alone", async () => {
+    const rendered = await renderRow(
+      { id: "chip-dbl", workingDirectory: "C:\\repos\\demo" },
+      chipSettings(),
+    );
+    // OpenAgentModal's debounced search effect is created above its early
+    // return, so it invokes search_repos even though the repo list never
+    // renders; FakeTransport throws on an unregistered command.
+    rendered.fake.resolve("search_repos", []);
+    try {
+      const activeBefore = sessionsStore.activeId;
+      expect(document.querySelector(".modal-overlay")).toBeNull();
+      const chip = rendered.root.querySelector(".agent-name-chip")!;
+      chip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+      await waitFor(() =>
+        expect(document.querySelector(".modal-overlay")).not.toBeNull(),
+      );
+      expect(sessionsStore.activeId).toBe(activeBefore);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // D8: every term of voiceQuiet(), including the non-session-scoped micError().
+  type VoiceRecorder = typeof import("../../shared/voice-recorder")["voiceRecorder"];
+  const VOICE_CASES: { name: string; install: (vr: VoiceRecorder) => void }[] = [
+    {
+      name: "recording",
+      install: (vr) => { vi.spyOn(vr, "recordingSessionId").mockReturnValue(MAXIMAL_ID); },
+    },
+    {
+      name: "transcribing",
+      install: (vr) => { vi.spyOn(vr, "processingSessionId").mockReturnValue(MAXIMAL_ID); },
+    },
+    {
+      name: "auto-executing",
+      install: (vr) => { vi.spyOn(vr, "autoExecuteSessionId").mockReturnValue(MAXIMAL_ID); },
+    },
+    {
+      name: "typing warning",
+      install: (vr) => { vi.spyOn(vr, "typingWarnSessionId").mockReturnValue(MAXIMAL_ID); },
+    },
+    {
+      name: "mic error",
+      install: (vr) => { vi.spyOn(vr, "micError").mockReturnValue("Microphone unavailable"); },
+    },
+  ];
+
+  for (const voiceCase of VOICE_CASES) {
+    it(`keeps the chip and suppresses every status chip while ${voiceCase.name}`, async () => {
+      const { voiceRecorder } = await vi.importActual<
+        typeof import("../../shared/voice-recorder")
+      >("../../shared/voice-recorder");
+      voiceCase.install(voiceRecorder);
+      sessionsStore.setSessionContext(MAXIMAL_ID, 42);
+
+      const rendered = await renderRow(MAXIMAL_ROW, chipSettings());
+      try {
+        const strip = rendered.root.querySelector(".session-item-meta");
+        expect(strip).not.toBeNull();
+        expect(strip!.querySelectorAll(".agent-name-chip")).toHaveLength(1);
+        expect(strip!.querySelector(".ac-discovery-badge.agent")).toBeNull();
+        expect(strip!.querySelector(".profile-badge")).toBeNull();
+        expect(strip!.querySelector(".ctx-badge")).toBeNull();
+        expect(strip!.querySelector(".profile-outdated-badge")).toBeNull();
+        expect(strip!.querySelector(".session-item-branches")).toBeNull();
+      } finally {
+        rendered.cleanup();
+      }
+    });
+  }
+
+  it("renders the strip and the chip on an inactive row with no agent label", async () => {
+    const rendered = await renderRow(
+      { id: "inactive-1", status: { exited: 0 } },
+      chipSettings(),
+    );
+    try {
+      const strip = rendered.root.querySelector(".session-item-meta");
+      expect(strip).not.toBeNull();
+      expect(strip!.querySelectorAll(".agent-name-chip")).toHaveLength(1);
+      expect(strip!.querySelector(".ac-discovery-badge.agent")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });

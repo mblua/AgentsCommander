@@ -66,7 +66,7 @@ Accepting restarts that session. Declining leaves it running with the previous c
 
 The banner sits at the top of the sidebar and belongs to the **Root Agent** session: the single host-level agent described in the [glossary](../glossary.md#root-agent).
 
-With no Root Agent session running, the banner's action creates one. With one running, the banner is that session's compact control strip: its status dot, its context badge when the agent has a context pattern configured, and controls to open its folder in the file explorer (`Open folder in explorer`), close it (`Close session`), restart it (`Restart Session`), pick its coding agent (`Coding Agent`), and cancel a voice recording in progress (`Cancel recording`).
+With no Root Agent session running, the banner's action creates one. With one running, the banner is that session's compact control strip: its status dot, its context badge when the agent has a context pattern configured, and controls to open its folder in the file explorer (`Open folder in explorer`), close it (`Close session (Ctrl+Shift+W)`), restart it (`Restart Session`), pick its coding agent (`Coding Agent`), and cancel a voice recording in progress (`Cancel recording`).
 
 ## Context-template updates
 

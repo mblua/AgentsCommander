@@ -8,7 +8,7 @@ This file is a snapshot. The authoritative status for tracked work lives in its 
 
 - Multi-agent rooms with file-based inter-agent messaging
 - Cross-coding-agent profiles: Claude Code · Codex · Pi · Antigravity
-- OpenCode usable today via the custom coding-agent path (provider-agnostic: point it at any provider or model, including OpenRouter Fusion)
+- OpenCode usable today via the custom coding-agent path; configure it with any provider or model OpenCode supports
 - Agents Agency role-template picker (explicit downloaded cache from [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents))
 - Telegram bridge (PTY mode for every session, provider-specific JSONL readers where available, plus photo/image sends for screenshots and artifacts)
 - Voice-to-text via Gemini API with auto-execute
