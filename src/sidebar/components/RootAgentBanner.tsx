@@ -555,7 +555,7 @@ const RootAgentBanner: Component = () => {
           <button
             class="session-item-close"
             onClick={(event) => void handleClose(event)}
-            title="Close session"
+            title="Close session (Ctrl+Shift+W)"
             data-ac-testid="rootAgent.destroy"
             data-ac-role="button"
           >
