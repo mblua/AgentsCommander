@@ -64,8 +64,9 @@ function chipSettings(): AppSettings {
 
 // The maximal row: one workgroup with a task title, a coordinator that lights
 // every gate of the strip, and one working peer so the running-peer chip
-// renders. Only ProjectPanel.tsx:2762 passes extraBadge, runningPeers and
-// taskTitle, so the quick-access site is the only row that can light them all.
+// renders. Of renderReplicaItem's two call sites only the .coord-quick-access
+// one, the call that passes "quick" as its row context, passes extraBadge,
+// runningPeers and taskTitle, so it is the only row that can light them all.
 function maximalWorkgroup(): AcWorkgroup {
   return {
     name: wgName,
