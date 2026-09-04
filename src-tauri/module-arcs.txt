@@ -881,6 +881,7 @@ agentscommander_lib::pty::manager -> agentscommander_lib::session::selection
 agentscommander_lib::pty::manager -> agentscommander_lib::shutdown
 agentscommander_lib::pty::manager -> agentscommander_lib::telegram::manager
 agentscommander_lib::pty::manager -> agentscommander_lib::web::broadcast
+agentscommander_lib::pty::menu_guard -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::pty::menu_guard -> agentscommander_lib::config::settings
 agentscommander_lib::pty::menu_guard -> agentscommander_lib::pty::manager
 agentscommander_lib::pty::menu_guard -> agentscommander_lib::pty::watchers

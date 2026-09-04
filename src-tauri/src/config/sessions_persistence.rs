@@ -2200,6 +2200,153 @@ async fn raise_hand_and_persist_to_dir_result(
     Ok(RaiseHandPersistOutcome::Raised(communication))
 }
 
+/// #1669 - outcome of a set-blocked-menu-and-persist attempt. There is
+/// deliberately no failure variant: a save failure cannot change the outcome,
+/// because the in-memory transition stands and the caller must still publish it.
+#[derive(Debug)]
+pub enum BlockedMenuPersistOutcome {
+    /// A real transition applied. The caller MUST emit
+    /// `session_communication_changed` with this communication, whether or not
+    /// the snapshot reached disk.
+    Changed(SessionCommunication),
+    /// The identical blocked-menu message was already visible. Nothing mutated,
+    /// nothing written. This is the 250 ms scan-loop steady state and is why a
+    /// blocked session does not write once per tick.
+    Unchanged,
+    /// The session is missing, pending-create, or exited. Nothing mutated,
+    /// nothing written.
+    NotApplicable,
+}
+
+/// #1669 - apply the blocked-menu set transition and persist the resulting
+/// snapshot atomically with respect to ALL session persistence: take
+/// `sessions_save_lock()` FIRST, then mutate, snapshot and save under that single
+/// acquisition. Do NOT call `persist_current_state_result` here; it re-acquires
+/// the same non-reentrant tokio mutex and would deadlock.
+///
+/// FAILURE POLICY DIFFERS FROM RAISE-HAND, deliberately: NO rollback, matching the
+/// #756 contract in `write_start_fresh_and_persist_to_dir_result`; but the transition
+/// is reported even when the save fails, which DIVERGES from #756 (it returns `Err`
+/// and reports nothing). Raise-hand can roll back because a user can raise a hand
+/// again; this cannot be retried. `MenuGuard::scan_tick`
+/// evaluates only on a CHANGED screen (`ScreenRowsSince::Unchanged` is an empty
+/// arm) and a menu-parked terminal emits no further frames, and
+/// `evaluate_logical_rows` has already set `MenuGuardSessionState.is_blocked`,
+/// which this function cannot reach. A rollback would therefore freeze PTY
+/// injection permanently with no toast, no Sidebar indicator and no disk row.
+///
+/// `settings` is the caller's already-resolved `AppSettings`, not a
+/// `load_settings_for_cli()` call: this runs on the 250 ms scan loop, that loader
+/// is uncached, and `scan_tick` already holds a fresh clone.
+pub async fn set_blocked_menu_and_persist(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    message: String,
+    now: chrono::DateTime<chrono::Utc>,
+    settings: &crate::config::settings::AppSettings,
+) -> BlockedMenuPersistOutcome {
+    let dir = super::config_dir();
+    let project_paths = session_retention_project_paths(settings);
+    let (outcome, error) = set_blocked_menu_and_persist_to_dir(
+        mgr,
+        session_id,
+        message,
+        now,
+        dir.as_deref(),
+        Some(&project_paths),
+    )
+    .await;
+    if let Some(e) = error {
+        log::error!("Failed to persist blocked-menu set: {}", e);
+    }
+    outcome
+}
+
+/// Returns `(outcome, save_error)`. `outcome` is the caller's publish gate;
+/// `save_error` is reported separately because it must not suppress the publish.
+async fn set_blocked_menu_and_persist_to_dir(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    message: String,
+    now: chrono::DateTime<chrono::Utc>,
+    dir: Option<&Path>,
+    project_paths: Option<&[String]>,
+) -> (BlockedMenuPersistOutcome, Option<String>) {
+    let _guard = sessions_save_lock().lock().await;
+
+    let communication = match mgr.set_blocked_menu(session_id, message, now).await {
+        Some((true, communication)) => communication,
+        Some((false, _)) => return (BlockedMenuPersistOutcome::Unchanged, None),
+        None => return (BlockedMenuPersistOutcome::NotApplicable, None),
+    };
+
+    let Some(dir) = dir else {
+        return (
+            BlockedMenuPersistOutcome::Changed(communication),
+            Some("Could not determine home directory".to_string()),
+        );
+    };
+    let error = snapshot_and_save_locked(mgr, dir, project_paths)
+        .await
+        .err();
+    (BlockedMenuPersistOutcome::Changed(communication), error)
+}
+
+/// #1669 - clear a visible blocked-menu communication and persist the result
+/// atomically. Returns `true` when a visible blocked-menu was actually cleared,
+/// which is exactly when the caller must publish `communication: null`. When
+/// nothing was visible to clear it returns BEFORE any save, so a scan tick over
+/// an unblocked session writes nothing.
+///
+/// Same failure policy as the set path: no rollback, and the clear is reported
+/// even when the save fails. This DIVERGES from
+/// `clear_user_input_transitions_and_persist_result`, which suppresses its clear
+/// event on save failure so `list-sessions` and the UI agree. That trade is right
+/// for a raise-hand lower, whose absence is invisible; it is wrong here, because
+/// this event dismisses a STICKY toast for a menu already gone from the screen and
+/// the clear has no retry path. Do not "fix" it back. Failures are logged.
+///
+/// Unlike the set path this resolves its own settings: it is not on the scan loop
+/// (at most one clear per episode, per guard-disable, and per user click).
+pub async fn clear_blocked_menu_and_persist(mgr: &SessionManager, session_id: Uuid) -> bool {
+    let dir = super::config_dir();
+    let settings = crate::config::settings::load_settings_for_cli();
+    let project_paths = session_retention_project_paths(&settings);
+    let (cleared, error) = clear_blocked_menu_and_persist_to_dir(
+        mgr,
+        session_id,
+        dir.as_deref(),
+        Some(&project_paths),
+    )
+    .await;
+    if let Some(e) = error {
+        log::error!("Failed to persist blocked-menu clear: {}", e);
+    }
+    cleared
+}
+
+/// Returns `(cleared, save_error)`. `cleared` is the caller's publish gate;
+/// `save_error` is reported separately because it must not suppress the clear.
+async fn clear_blocked_menu_and_persist_to_dir(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    dir: Option<&Path>,
+    project_paths: Option<&[String]>,
+) -> (bool, Option<String>) {
+    let _guard = sessions_save_lock().lock().await;
+
+    if !mgr.clear_blocked_menu(session_id).await {
+        return (false, None);
+    }
+    let Some(dir) = dir else {
+        return (true, Some("Could not determine home directory".to_string()));
+    };
+    match snapshot_and_save_locked(mgr, dir, project_paths).await {
+        Ok(()) => (true, None),
+        Err(e) => (true, Some(e)),
+    }
+}
+
 /// #698: the user-input session-state transitions cleared by
 /// `clear_user_input_transitions_and_persist_result`, reported so the caller can
 /// decide whether to emit the raise-hand clear event.
@@ -2347,7 +2494,8 @@ async fn write_start_fresh_and_persist_to_dir_result(
 #[cfg(test)]
 mod tests {
     use super::{
-        append_orphan_archive_record, clear_user_input_transitions_and_persist_to_dir_result,
+        append_orphan_archive_record, clear_blocked_menu_and_persist_to_dir,
+        clear_user_input_transitions_and_persist_to_dir_result,
         filter_sessions_for_normalized_roots, filter_sessions_for_project_paths,
         filter_sessions_for_project_paths_blocking, is_under_normalized_archived_roots,
         load_sessions_purging_outside_project_paths_in_dir, load_sessions_raw_from_dir_for_test,
@@ -2356,11 +2504,11 @@ mod tests {
         purge_sessions_outside_project_paths_in_dir, raise_hand_and_persist_to_dir_result,
         rename_with_retry, reset_orphan_archived, reset_orphan_counters, reset_orphan_warned,
         sanitize_failed_recoverable, save_sessions_to_dir, session_retention_project_paths,
-        sessions_save_lock, set_test_orphan_archive_cap, snapshot_sessions,
-        strip_auto_injected_args, validate_session_creation_cwd,
+        sessions_save_lock, set_blocked_menu_and_persist_to_dir, set_test_orphan_archive_cap,
+        snapshot_sessions, strip_auto_injected_args, validate_session_creation_cwd,
         working_directory_under_any_project_path, write_start_fresh_and_persist_to_dir_result,
-        PersistMode, PersistedSession, RaiseHandPersistOutcome, FILTER_PROJECT_PATHS_THREAD_IDS,
-        NORMALIZE_CALLS, ORPHAN_ARCHIVE_FILENAME, RENAME_ATTEMPTS,
+        BlockedMenuPersistOutcome, PersistMode, PersistedSession, RaiseHandPersistOutcome,
+        FILTER_PROJECT_PATHS_THREAD_IDS, NORMALIZE_CALLS, ORPHAN_ARCHIVE_FILENAME, RENAME_ATTEMPTS,
     };
     #[cfg(windows)]
     use super::{deduplicate, load_sessions_from_path};
@@ -3135,6 +3283,295 @@ mod tests {
         assert_eq!(
             hand_b.updated_at, persisted_hand.updated_at,
             "the original raise time must survive the round trip"
+        );
+    }
+
+    // ---- #1669: atomic blocked-menu set/clear + persist, no rollback ----
+
+    /// Happy path: a real blocked-menu transition reaches `sessions.json` through
+    /// the single save-lock acquisition.
+    #[tokio::test]
+    async fn set_blocked_menu_and_persist_writes_blocked_state_to_disk() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-30T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let message =
+            "codex is waiting for you to answer the folder-trust menu in this terminal".to_string();
+
+        let (outcome, error) = set_blocked_menu_and_persist_to_dir(
+            &mgr,
+            session.id,
+            message.clone(),
+            now,
+            Some(temp.path()),
+            None,
+        )
+        .await;
+        assert!(matches!(outcome, BlockedMenuPersistOutcome::Changed(_)));
+        assert!(error.is_none(), "the save must succeed: {error:?}");
+
+        // Live state carries the blocked menu...
+        let live = mgr.list_sessions().await;
+        let live_comm = live[0].communication.as_ref().expect("live communication");
+        assert_eq!(live_comm.kind, SessionCommunicationKind::BlockedMenu);
+        assert!(live_comm.visible);
+        assert_eq!(live_comm.message.as_deref(), Some(message.as_str()));
+
+        // ...and so does the durable snapshot.
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
+        assert_eq!(rows.len(), 1);
+        let comm = rows[0]
+            .communication
+            .as_ref()
+            .expect("communication persisted");
+        assert_eq!(comm.kind, SessionCommunicationKind::BlockedMenu);
+        assert!(comm.visible);
+        assert_eq!(comm.message.as_deref(), Some(message.as_str()));
+    }
+
+    /// The 250 ms scan-loop steady state: re-setting the IDENTICAL message
+    /// mutates nothing and saves nothing. The second call is pointed at a
+    /// file-as-dir that would fail deterministically, so the `None` error proves
+    /// the save was never attempted.
+    #[tokio::test]
+    async fn set_blocked_menu_and_persist_second_identical_call_writes_nothing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-30T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let message =
+            "codex is waiting for you to answer the folder-trust menu in this terminal".to_string();
+
+        let (outcome, error) = set_blocked_menu_and_persist_to_dir(
+            &mgr,
+            session.id,
+            message.clone(),
+            now,
+            Some(temp.path()),
+            None,
+        )
+        .await;
+        assert!(matches!(outcome, BlockedMenuPersistOutcome::Changed(_)));
+        assert!(error.is_none(), "the first save must succeed: {error:?}");
+
+        // A second temp dir whose "dir" is an existing FILE, so any attempted
+        // save would fail deterministically in `create_dir_all`.
+        let temp2 = tempfile::tempdir().expect("tempdir");
+        let file_as_dir = temp2.path().join("sessions-dir-is-a-file");
+        std::fs::write(&file_as_dir, "not a directory").expect("write file target");
+
+        let (outcome2, error2) = set_blocked_menu_and_persist_to_dir(
+            &mgr,
+            session.id,
+            message.clone(),
+            now,
+            Some(&file_as_dir),
+            None,
+        )
+        .await;
+        assert!(
+            matches!(outcome2, BlockedMenuPersistOutcome::Unchanged),
+            "an identical message must not be a transition"
+        );
+        assert!(
+            error2.is_none(),
+            "a None error can only mean the save was never attempted: {error2:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file_as_dir).expect("read file target"),
+            "not a directory",
+            "the file-as-dir must still hold its original bytes"
+        );
+        assert!(
+            !temp2.path().join("sessions.json").exists(),
+            "no sessions.json may be written beside the file-as-dir"
+        );
+    }
+
+    /// D3 regression net: a failed save must NOT roll the live transition back.
+    /// `evaluate_logical_rows` has already frozen PTY injection and there is no
+    /// retry path, so a rollback would leave a frozen peer with no toast, no
+    /// Sidebar indicator and no disk row. This test fails if anyone adds one.
+    #[tokio::test]
+    async fn set_blocked_menu_and_persist_keeps_live_state_when_the_save_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_as_dir = temp.path().join("sessions-dir-is-a-file");
+        std::fs::write(&file_as_dir, "not a directory").expect("write file target");
+
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+        assert!(
+            mgr.list_sessions().await[0].communication.is_none(),
+            "precondition: no communication before the set"
+        );
+
+        let (outcome, error) = set_blocked_menu_and_persist_to_dir(
+            &mgr,
+            session.id,
+            "codex is waiting for you to answer the folder-trust menu in this terminal".to_string(),
+            chrono::Utc::now(),
+            Some(&file_as_dir),
+            None,
+        )
+        .await;
+        assert!(
+            matches!(outcome, BlockedMenuPersistOutcome::Changed(_)),
+            "the transition must still be reported to the caller"
+        );
+        assert!(error.is_some(), "save into a file path must fail");
+
+        let live = mgr.list_sessions().await;
+        let live_comm = live[0]
+            .communication
+            .as_ref()
+            .expect("the blocked menu must survive a failed persist");
+        assert_eq!(live_comm.kind, SessionCommunicationKind::BlockedMenu);
+        assert!(live_comm.visible);
+    }
+
+    /// The degraded-config-dir limb: with no resolvable config dir the transition
+    /// is still applied and still reported, so the blocked-menu toast appears.
+    #[tokio::test]
+    async fn set_blocked_menu_and_persist_without_a_config_dir_still_reports_the_transition() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let (outcome, error) = set_blocked_menu_and_persist_to_dir(
+            &mgr,
+            session.id,
+            "codex is waiting for you to answer the folder-trust menu in this terminal".to_string(),
+            chrono::Utc::now(),
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(outcome, BlockedMenuPersistOutcome::Changed(_)),
+            "the transition must be reported without a config dir"
+        );
+        assert_eq!(error.as_deref(), Some("Could not determine home directory"));
+
+        let live = mgr.list_sessions().await;
+        let live_comm = live[0].communication.as_ref().expect("live communication");
+        assert_eq!(live_comm.kind, SessionCommunicationKind::BlockedMenu);
+        assert!(live_comm.visible);
+    }
+
+    /// The clear path writes `communication: null` to disk when something was
+    /// visible, and returns before any save when nothing was.
+    #[tokio::test]
+    async fn clear_blocked_menu_and_persist_to_dir_clears_disk_and_skips_the_save_when_nothing_is_set(
+    ) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let (outcome, error) = set_blocked_menu_and_persist_to_dir(
+            &mgr,
+            session.id,
+            "codex is waiting for you to answer the folder-trust menu in this terminal".to_string(),
+            chrono::Utc::now(),
+            Some(temp.path()),
+            None,
+        )
+        .await;
+        assert!(matches!(outcome, BlockedMenuPersistOutcome::Changed(_)));
+        assert!(error.is_none(), "the set must persist: {error:?}");
+
+        let (cleared, clear_error) =
+            clear_blocked_menu_and_persist_to_dir(&mgr, session.id, Some(temp.path()), None).await;
+        assert!(cleared, "a visible blocked menu must be cleared");
+        assert!(clear_error.is_none(), "the clear must persist");
+        assert!(
+            mgr.list_sessions().await[0].communication.is_none(),
+            "live communication must be cleared"
+        );
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].communication.is_none(),
+            "the cleared state must reach disk"
+        );
+
+        // Nothing left to clear: the helper returns BEFORE any save, proven by the
+        // file-as-dir target reporting no error.
+        let file_as_dir = temp.path().join("sessions-dir-is-a-file");
+        std::fs::write(&file_as_dir, "not a directory").expect("write file target");
+        let (cleared_again, clear_error_again) =
+            clear_blocked_menu_and_persist_to_dir(&mgr, session.id, Some(&file_as_dir), None).await;
+        assert!(!cleared_again, "a second clear is not a transition");
+        assert!(
+            clear_error_again.is_none(),
+            "a None error can only mean the save was never attempted: {clear_error_again:?}"
         );
     }
 
