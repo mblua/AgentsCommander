@@ -95,10 +95,22 @@ Out of scope, and the implementer must not touch any of these:
   by test id and asserts its `className` at `:134` and `:175`; `offline-badges` builds
   class-filtered lists such as `root.querySelectorAll(".ac-discovery-badge.agent")` at `:88` and
   indexes only `[0]`, and every class it filters on sits at strip indices 0 to 8, before the edited
-  region. Together with `chip-order`, `menu-guard` and `regex-filter`, plus
-  `RootAgentBanner.agent-badge.test.tsx` and `SessionItem.test.tsx` (neither of which renders this
-  strip), that is every test file under `src/` mentioning `ac-discovery-badge`
-  (`grep -rln "ac-discovery-badge" src/ --include=*.test.tsx` returns exactly those six).
+  region. Together with `chip-order` and `menu-guard`, plus `RootAgentBanner.agent-badge.test.tsx`
+  and `SessionItem.test.tsx` (neither of which renders this strip), that is six files, and
+  `grep -rln "ac-discovery-badge" src/ --include=*.test.tsx` returns exactly those six. Widening the
+  grep to the whole live suite, `--include=*.test.ts --include=*.test.tsx`, adds one seventh file,
+  `src/sidebar/styles/agent-badge-css.test.ts`, which has its own bullet below.
+  `ProjectPanel.regex-filter.test.tsx` is in neither list: it does not mention the class at all
+  (`grep -c "ac-discovery-badge" src/sidebar/components/ProjectPanel.regex-filter.test.tsx` returns
+  `0`). It is out of scope on its own merits, by its bullet above and section 6.4, not because it
+  reads this strip.
+- `src/sidebar/styles/agent-badge-css.test.ts`. It is a live test: `vitest.config.ts:13` includes
+  `src/**/*.test.ts` as well as `src/**/*.test.tsx`. It renders no DOM at all. It takes its file set
+  from `import.meta.glob("../../**/*.css")` at `:20`, reads the bytes off disk with `readFileSync`
+  (imported at `:1`, called at `:23` inside the `CSS_SOURCES` map at `:22-24`), and asserts the
+  declarations of `.ac-discovery-badge.agent` in `sidebar.css` at `:236`.
+  A JSX sibling reorder cannot reach a test that never mounts a component, and AC 4 keeps
+  `sidebar.css` byte-identical, so this file neither changes nor breaks.
 - `src-tauri/`. No Rust file, no `module-arcs.txt` entry: the change adds no import, so it adds no
   module arc.
 - Historical documents that show the old order: `plans/1730-sidebar-row-chips.md` and the
@@ -161,7 +173,15 @@ the working tree and the blob differ in line terminator: `file src/sidebar/compo
 reports "with CRLF line terminators" and the working-tree copy has CR 4461 / LF 4461, while
 `git show 302e6c12:src/sidebar/components/ProjectPanel.tsx | file -` reports no CRLF. The same split
 applies to `src/sidebar/components/ProjectPanel.chip-order.test.tsx` (working tree CRLF, CR 293 /
-LF 293; blob LF) and therefore to both fences in section 4.2. This plan file itself is 100% LF.
+LF 293; blob LF) and therefore to both fences in section 4.2.
+
+This plan file is subject to the same split, and nothing here may be built on the assumption that it
+is LF. Its *blob* is LF (CR 0, measured), but `.gitattributes` has no `*.md` row either, so a fresh
+checkout smudges it to CRLF exactly as it does the two source files. That does not touch AC 1 or
+AC 2, for two reasons: the `git show` side of each comparison is LF whatever the working tree holds,
+and extracting a fence with Git-for-Windows `sed` or `awk` strips the CR anyway (measured on this
+host, GNU sed 4.9 and GNU awk 5.3.2: `sed -n` and an `NR>=n && NR<=m` range over a CRLF file both
+emit CR 0).
 
 Consequence for the implementer: write the region with the file's existing CRLF terminators, exactly
 as any editor will do when it saves a CRLF file, and let `core.autocrlf` normalise on commit. The
@@ -315,6 +335,12 @@ that asserts the strip's child order by index. It has three tests:
 Objective and checkable. All commands run from the repository root on
 `fix/1745-running-chips-after-repos`.
 
+**Base dependency.** AC 1, AC 2 and AC 10 pin absolute line numbers and diff-hunk headers derived at
+base `302e6c12`. `main` is at `302e6c12` at the time of writing, so nothing here is stale. If `main`
+advances with any change to `ProjectPanel.tsx` or `ProjectPanel.chip-order.test.tsx` and this branch
+merges it, all three must be re-derived against the new base before they are evaluated; a failure
+after such a merge is evidence about the plan's line numbers, not about the implementation.
+
 1. `git show HEAD:src/sidebar/components/ProjectPanel.tsx | sed -n '2529,2553p'` is byte-identical to
    the fence in section 4.1. Both sides are LF. This is pinned against the committed blob and not
    against the working tree because the working tree is CRLF under `core.autocrlf=true` while the
@@ -324,7 +350,10 @@ Objective and checkable. All commands run from the repository root on
 2. `git show HEAD:src/sidebar/components/ProjectPanel.chip-order.test.tsx | sed -n '200,203p'` is
    byte-identical to the second fence in section 4.2. Both sides are LF, for the same reason as
    AC 1. Additionally, `wc -l src/sidebar/components/ProjectPanel.chip-order.test.tsx` reports `293`.
-3. `git show --numstat` on the implementation commit lists exactly two paths:
+3. `git status --porcelain` is empty when these criteria are evaluated. AC 1, AC 2, AC 3, AC 4 and
+   AC 10 read committed state while AC 5, AC 6, AC 7 and AC 8 read the working tree, so without this
+   clause a dirty tree lets the byte gates and the behavioural gates look at different bytes.
+   `git show --numstat` on the implementation commit(s), taken together, lists exactly two paths:
    `src/sidebar/components/ProjectPanel.tsx` and
    `src/sidebar/components/ProjectPanel.chip-order.test.tsx`. For both, insertions equal deletions.
    No `.css` path, no `src-tauri/` path, no `AcDiscoveryPanel.tsx`, no `regex-filter` or
