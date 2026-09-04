@@ -3328,7 +3328,7 @@ const ROOT_AUTHORITY_SECTION: &str = "\n\n## Root Agent Authority and Chain of C
 /// Single source for coordinator, root, and specialists (the per-template
 /// copies were removed in #640). Self-contained: no SKILL.md ships.
 /// Threshold 3 is hardcoded (plan C). Prohibition-first (grinch H1/H2).
-const SELF_MAINTENANCE_AUTO_SECTION: &str = "\n\n## Self-Maintenance (auto self-handoff-and-clear)\n\nTreat this as a background hygiene habit, never an interrupt. Hard rule first: do NOT clear your own context while anything is in flight. You are NOT at a safe point if ANY of these is true:\n- you dispatched work to a peer and have not received their reply;\n- a build, deploy, test, or other long-running command you started is still running;\n- you are mid-review, mid-edit, or in the middle of any task.\nIf any apply, keep working and do not self-clear, even if you appear idle.\n\nMaintain a running `SELF-FORGET.md` in your own root: each time you GENUINELY finish a topic and move on to something unrelated, append ONE line naming what you closed. One line per genuinely-closed topic only; do not pre-log, batch-log, or count headers or blank lines.\n\nWhen `SELF-FORGET.md` reaches 3 such lines, treat that as a CANDIDATE to refresh your context, acted on ONLY at a safe resting point (none of the in-flight cases above). At that point:\n1. Write `SELF-HANDOFF.md` in your own root: standalone, action-first resume notes (who you are, your open and in-progress work, how to resume, and the FIRST thing to do on return), EXCLUDING everything already in `SELF-FORGET.md`. After the clear you have ZERO memory, so make it self-sufficient. This file is REQUIRED; the command refuses to clear without it.\n2. Run: `\"<AGENTSCOMMANDER_BINARY_PATH>\" self-handoff-and-clear --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"`\n3. Go idle. The clear fires only after 30s of continuous idle; any new turn resets that window. At invocation the daemon captures a sanitized max 240 char forgotten summary from `SELF-FORGET.md` and archives that file to `self-clear/<timestamp>_SELF-FORGET.md`, so your count resets on INVOCATION, not on a successful clear. After the clear, a fresh 30s of idle archives `SELF-HANDOFF.md` to `self-clear/<timestamp>_SELF-HANDOFF.md` and injects a prompt naming that exact archived path (or `SELF-HANDOFF.md` still in your root if the rename failed); the prompt may mention the forgotten summary only as closed background. The handoff file is the only active work source: read the file the prompt names and resume from there.\n\nIf the clear never fires (you became active again, or the daemon restarted), re-issue at your next safe point. Best-effort and self-only. If you find yourself freshly cleared with no resume prompt, read `SELF-HANDOFF.md` from your root if present, otherwise the newest `*_SELF-HANDOFF.md` under `self-clear/`, and resume; if that newest archive clearly describes already-finished work, wait for new instructions instead.";
+const SELF_MAINTENANCE_AUTO_SECTION: &str = "\n\n## Self-Maintenance (auto self-handoff-and-clear)\n\nTreat this as a background hygiene habit, never an interrupt. Hard rule first: do NOT clear your own context while anything is in flight. You are NOT at a safe point if ANY of these is true:\n- you dispatched work to a peer and have not received their reply;\n- a build, deploy, test, or other long-running command you started is still running;\n- you are mid-review, mid-edit, or in the middle of any task.\nIf any apply, keep working and do not self-clear, even if you appear idle.\n\nMaintain a running `SELF-FORGET.md` in your own root: each time you GENUINELY finish a topic and move on to something unrelated, append ONE line naming what you closed. One line per genuinely-closed topic only; do not pre-log, batch-log, or count headers or blank lines.\n\nWhen `SELF-FORGET.md` reaches 3 such lines, treat that as a CANDIDATE to refresh your context, acted on ONLY at a safe resting point (none of the in-flight cases above). At that point:\n1. Write a brief, resume-only `SELF-HANDOFF.md` in your own root. Include only the FIRST action; open or in-progress work; blockers and pending decisions; live state; and exact pointers needed to resume (file, symbol, command, message, or artifact). The restarted session automatically receives your identity, basic AgentsCommander operation, instructions from `AGENTS.md` or `CLAUDE.md`, `Role.md` content, and procedures available in skills; do NOT repeat any of them. Also omit closed work and every topic already included in `SELF-FORGET.md`. This file is REQUIRED; the command refuses to clear without it.\n2. Run: `\"<AGENTSCOMMANDER_BINARY_PATH>\" self-handoff-and-clear --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"`\n3. Go idle. The clear fires only after 30s of continuous idle; any new turn resets that window. At invocation the daemon captures a sanitized max 240 char forgotten summary from `SELF-FORGET.md` and archives that file to `self-clear/<timestamp>_SELF-FORGET.md`, so your count resets on INVOCATION, not on a successful clear. After the clear, a fresh 30s of idle archives `SELF-HANDOFF.md` to `self-clear/<timestamp>_SELF-HANDOFF.md` and injects a prompt naming that exact archived path (or `SELF-HANDOFF.md` still in your root if the rename failed); the prompt may mention the forgotten summary only as closed background. The handoff file is the only active work source: read the file the prompt names and resume from there.\n\nIf the clear never fires (you became active again, or the daemon restarted), re-issue at your next safe point. Best-effort and self-only. If you find yourself freshly cleared with no resume prompt, read `SELF-HANDOFF.md` from your root if present, otherwise the newest `*_SELF-HANDOFF.md` under `self-clear/`, and resume; if that newest archive clearly describes already-finished work, wait for new instructions instead.";
 
 /// #640 Remove any legacy `## Self-Maintenance...` section so the gated
 /// directive is the SINGLE source, even when a persisted coordinator template
@@ -4307,6 +4307,33 @@ mod tests {
             count_context_occurrences(out, "## Inter-Agent Messaging"),
             1
         );
+    }
+
+    fn assert_minimal_self_handoff_contract(section: &str) {
+        for required in [
+            "brief, resume-only",
+            "Include only the FIRST action",
+            "open or in-progress work",
+            "blockers and pending decisions",
+            "live state",
+            "exact pointers needed to resume",
+            "restarted session automatically receives",
+            "your identity",
+            "basic AgentsCommander operation",
+            "instructions from `AGENTS.md` or `CLAUDE.md`",
+            "`Role.md` content",
+            "procedures available in skills",
+            "do NOT repeat any of them",
+            "omit closed work",
+            "every topic already included in `SELF-FORGET.md`",
+        ] {
+            assert!(
+                section.contains(required),
+                "self-handoff policy missing required contract anchor: {required}"
+            );
+        }
+        assert!(!section.contains("who you are"));
+        assert!(!section.contains("ZERO memory"));
     }
 
     // ---- #658 presence-aware append-fallback tests ----------------------------
@@ -7729,6 +7756,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
+    fn self_maintenance_handoff_policy_is_minimal_and_resume_only() {
+        assert_minimal_self_handoff_contract(SELF_MAINTENANCE_AUTO_SECTION);
+    }
+
+    #[test]
     fn materialized_context_gates_self_maintenance_directive_by_flag() {
         // #640: the gated SELF_MAINTENANCE_AUTO_SECTION is appended to a coding
         // agent's materialized context only when auto_self_clear is true. Driven
@@ -7748,6 +7780,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(on_content.contains("reaches 3 such lines"));
         assert!(on_content.contains("max 240 char forgotten summary"));
         assert!(on_content.contains("closed background"));
+        let section_start = on_content
+            .rfind("## Self-Maintenance (auto self-handoff-and-clear)")
+            .expect("self-maintenance section");
+        assert_minimal_self_handoff_contract(&on_content[section_start..]);
 
         let off = materialize_agent_context_file_with_filename(
             &cwd,
@@ -7762,6 +7798,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let off_content = std::fs::read_to_string(&off).expect("read OFF context");
         assert!(!off_content.contains("## Self-Maintenance"));
         assert!(!off_content.contains("max 240 char forgotten summary"));
+        assert!(!off_content.contains("brief, resume-only"));
     }
 
     #[test]
