@@ -1,15 +1,19 @@
 name: Release
 
+# This workflow is woken by ".github/workflows/release-tag-wake.yml", but it
+# takes nothing from that run: no artifact, no cache, no job output, no
+# workspace, and not its conclusion. The "guard" job below re-derives every
+# release fact from the protected remote. GitHub loads a workflow_run workflow
+# from the default branch, so protected main is the trust root for these bytes.
 on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_run:
+    workflows: [Release tag wake]
+    types: [completed]
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-wake-${{ github.event.workflow_run.id }}
   cancel-in-progress: false
 
 jobs:
@@ -19,108 +23,134 @@ jobs:
     permissions:
       contents: read
     outputs:
-      version: ${{ steps.tag.outputs.version }}
-      tag_object: ${{ steps.tag.outputs.tag_object }}
-      peeled_commit: ${{ steps.tag.outputs.peeled_commit }}
-      release_dir: ${{ steps.tag.outputs.release_dir }}
-      authority_sha256: ${{ steps.tag.outputs.authority_sha256 }}
+      tag: ${{ steps.event.outputs.tag }}
+      version: ${{ steps.event.outputs.version }}
+      tag_object: ${{ steps.event.outputs.tag_object }}
+      peeled_commit: ${{ steps.event.outputs.peeled_commit }}
+      release_dir: ${{ steps.event.outputs.release_dir }}
+      default_branch: ${{ steps.event.outputs.default_branch }}
+      default_branch_commit: ${{ steps.event.outputs.default_branch_commit }}
+      evidence_sha256: ${{ steps.evidence.outputs.evidence_sha256 }}
       release_controls_b64: ${{ steps.controls.outputs.release_controls_b64 }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          ref: ${{ github.ref }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Bind the event to one annotated remote tag
-        id: tag
+      - name: Resolve the release tag from the protected remote without trusting the wake run
+        id: event
         shell: bash
         env:
-          EVENT_SHA: ${{ github.sha }}
+          WAKE_REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
+          WAKE_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          WAKE_EVENT: ${{ github.event.workflow_run.event }}
+          WAKE_NAME: ${{ github.event.workflow_run.name }}
+          WAKE_PATH: ${{ github.event.workflow_run.path }}
+          WAKE_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WAKE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WAKE_ACTOR: ${{ github.event.workflow_run.actor.login }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG_ACTOR: ${{ vars.RELEASE_TAG_ACTOR }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
-          TAG="$GITHUB_REF_NAME"
-          RELEASE_DIR="docs/releases/$TAG"
-          test -f "$RELEASE_DIR/release-authority-v1.txt"
-          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
-          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
-          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
-          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
-          test "$GITHUB_SHA" = "$EVENT_SHA"
-          test "$GITHUB_SHA" = "$HEAD_COMMIT"
-          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
-          test "$TAG_OBJECT" != "$PEELED_COMMIT"
-          tag_bytes="$(mktemp)"
-          tag_payload="$(mktemp)"
-          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            my $separator = index($bytes, "\n\n");
-            die "annotated tag header/message separator missing\n" if $separator < 0;
-            print substr($bytes, $separator + 2);
-          ' < "$tag_bytes" > "$tag_payload"
-          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
-          authority_sha256="$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$authority_sha256"
-          changed_payload="$(mktemp)"
-          truncated_payload="$(mktemp)"
-          extra_payload="$(mktemp)"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            die "authority payload is empty\n" unless length $bytes;
-            substr($bytes, 0, 1) = chr((ord(substr($bytes, 0, 1)) + 1) % 256);
-            print $bytes;
-          ' < "$RELEASE_DIR/release-authority-v1.txt" > "$changed_payload"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            die "authority payload is too short\n" unless length($bytes) > 1;
-            print substr($bytes, 0, -1);
-          ' < "$RELEASE_DIR/release-authority-v1.txt" > "$truncated_payload"
-          cat "$RELEASE_DIR/release-authority-v1.txt" > "$extra_payload"
-          printf '\001' >> "$extra_payload"
-          for fixture in "$changed_payload" "$truncated_payload" "$extra_payload"; do
-            if cmp -s -- "$fixture" "$RELEASE_DIR/release-authority-v1.txt"; then
-              echo "::error::authority payload negative fixture unexpectedly matched its target"
-              exit 1
-            fi
-          done
-          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          # Every WAKE_* value above is an untrusted event string until it
+          # passes the exact checks below. The wake run's conclusion,
+          # artifacts, caches, outputs and workspace are never read, here or in
+          # any downstream job.
+          test "$WAKE_REPOSITORY" = "$GITHUB_REPOSITORY"
+          test "$WAKE_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          test "$WAKE_EVENT" = push
+          test "$WAKE_NAME" = 'Release tag wake'
+          test "$WAKE_PATH" = '.github/workflows/release-tag-wake.yml'
+          printf '%s' "$WAKE_HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$WAKE_HEAD_BRANCH" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          TAG="$WAKE_HEAD_BRANCH"
+          # The release principal is an administrator-configured non-secret
+          # Actions variable. Missing, empty or mismatched values fail closed.
+          test -n "$RELEASE_TAG_ACTOR"
+          printf '%s' "$RELEASE_TAG_ACTOR" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?$'
+          test "$WAKE_ACTOR" = "$RELEASE_TAG_ACTOR"
+          printf '%s' "$DEFAULT_BRANCH" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$'
+          # A fresh bare Git directory, so nothing from a tag checkout is read
+          # or executed before the tag itself is validated.
+          bare="$(mktemp -d "$RUNNER_TEMP/release-remote.XXXXXX")"
+          git init --quiet --bare "$bare"
+          git -C "$bare" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          mapfile -t REMOTE_TAG < <(git -C "$bare" ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
           test "${#REMOTE_TAG[@]}" -eq 2
-          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
-          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
+          TAG_OBJECT="$(printf '%s\n' "${REMOTE_TAG[@]}" | awk -F'\t' -v ref="refs/tags/$TAG" '$2 == ref { print $1 }')"
+          PEELED_COMMIT="$(printf '%s\n' "${REMOTE_TAG[@]}" | awk -F'\t' -v ref="refs/tags/$TAG^{}" '$2 == ref { print $1 }')"
+          printf '%s' "$TAG_OBJECT" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$PEELED_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+          test "$TAG_OBJECT" != "$PEELED_COMMIT"
+          test "$PEELED_COMMIT" = "$WAKE_HEAD_SHA"
+          git -C "$bare" fetch --quiet origin "+refs/tags/$TAG:refs/tags/$TAG" "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          test "$(git -C "$bare" rev-parse "refs/tags/$TAG^{tag}")" = "$TAG_OBJECT"
+          test "$(git -C "$bare" rev-parse "refs/tags/$TAG^{}")" = "$PEELED_COMMIT"
+          DEFAULT_BRANCH_COMMIT="$(git -C "$bare" rev-parse "refs/remotes/origin/$DEFAULT_BRANCH^{commit}")"
+          # The release source must be reachable from the protected default
+          # branch. GITHUB_SHA, GITHUB_REF and GITHUB_REF_NAME describe this
+          # default-branch workflow run, never the release source, so they are
+          # not used as release inputs anywhere in this workflow.
+          git -C "$bare" merge-base --is-ancestor "$PEELED_COMMIT" "$DEFAULT_BRANCH_COMMIT"
           mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
           test "${#immutable_fields[@]}" = 2
           test "${immutable_fields[0]}" = true
           case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
           {
+            echo "tag=$TAG"
             echo "version=${TAG#v}"
             echo "tag_object=$TAG_OBJECT"
             echo "peeled_commit=$PEELED_COMMIT"
-            echo "release_dir=$RELEASE_DIR"
-            echo "authority_sha256=$authority_sha256"
+            echo "release_dir=docs/releases/$TAG"
+            echo "default_branch=$DEFAULT_BRANCH"
+            echo "default_branch_commit=$DEFAULT_BRANCH_COMMIT"
           } >> "$GITHUB_OUTPUT"
 
+      # v5.1.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ steps.event.outputs.peeled_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind the validated checkout to the guarded tag and preparation evidence
+        id: evidence
+        shell: bash
+        env:
+          TAG: ${{ steps.event.outputs.tag }}
+          RELEASE_DIR: ${{ steps.event.outputs.release_dir }}
+          EXPECTED_TAG_OBJECT: ${{ steps.event.outputs.tag_object }}
+          EXPECTED_PEELED_COMMIT: ${{ steps.event.outputs.peeled_commit }}
+          EXPECTED_DEFAULT_BRANCH: ${{ steps.event.outputs.default_branch }}
+          EXPECTED_DEFAULT_BRANCH_COMMIT: ${{ steps.event.outputs.default_branch_commit }}
+        run: |
+          set -euo pipefail
+          test "$RELEASE_DIR" = "docs/releases/$TAG"
+          test -f "$RELEASE_DIR/release-authority-v1.txt"
+          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
+          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
+          test "$HEAD_COMMIT" = "$EXPECTED_PEELED_COMMIT"
+          test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
+          test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
+          test "$TAG_OBJECT" != "$PEELED_COMMIT"
+          test "$(git rev-parse "refs/remotes/origin/$EXPECTED_DEFAULT_BRANCH^{commit}")" = "$EXPECTED_DEFAULT_BRANCH_COMMIT"
+          git merge-base --is-ancestor "$EXPECTED_PEELED_COMMIT" "$EXPECTED_DEFAULT_BRANCH_COMMIT"
+          # docs/releases/<tag>/release-authority-v1.txt is release preparation
+          # evidence only. The annotated tag message text authorizes nothing in
+          # this workflow: platform tag restrictions, the release principal,
+          # and default-branch reachability are the authorization.
+          evidence_sha256="$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')"
+          printf 'evidence_sha256=%s\n' "$evidence_sha256" >> "$GITHUB_OUTPUT"
+
+      # v5.0.0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
 
-      - name: Verify strict authority and exact evidence bytes
-        id: authority
+      - name: Verify exact release preparation evidence bytes
+        id: preparation_evidence
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ steps.event.outputs.tag }}
         run: |
           set -euo pipefail
           node - "$TAG" <<'NODE'
@@ -283,7 +313,7 @@ jobs:
       - name: Verify synchronized version surfaces
         shell: bash
         env:
-          VERSION: ${{ steps.tag.outputs.version }}
+          VERSION: ${{ steps.event.outputs.version }}
         run: |
           set -euo pipefail
           npm run version:check
@@ -662,8 +692,8 @@ jobs:
       - name: Verify draft and release identity negative fixtures
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
-          RELEASE_DIR: ${{ steps.tag.outputs.release_dir }}
+          TAG: ${{ steps.event.outputs.tag }}
+          RELEASE_DIR: ${{ steps.event.outputs.release_dir }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/release-controls.sh"
@@ -726,7 +756,7 @@ jobs:
       - name: Reject an existing npm version
         shell: bash
         env:
-          VERSION: ${{ steps.tag.outputs.version }}
+          VERSION: ${{ steps.event.outputs.version }}
           REGISTRY_URL: https://registry.npmjs.org/
         run: |
           set -euo pipefail
@@ -783,53 +813,37 @@ jobs:
     outputs:
       release_id: ${{ steps.release.outputs.release_id }}
     steps:
+      # v5.1.0
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.guard.outputs.peeled_commit }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Rebind the guarded annotated tag
         shell: bash
         env:
-          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ needs.guard.outputs.tag }}
           EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
           EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
-          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          EXPECTED_EVIDENCE_SHA256: ${{ needs.guard.outputs.evidence_sha256 }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
-          TAG="$GITHUB_REF_NAME"
+          TAG="$EXPECTED_TAG"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           test "$RELEASE_DIR" = "docs/releases/$TAG"
           test -f "$RELEASE_DIR/release-authority-v1.txt"
-          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
           PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
           TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
-          test "$GITHUB_SHA" = "$EVENT_SHA"
-          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$EXPECTED_PEELED_COMMIT"
           test "$HEAD_COMMIT" = "$PEELED_COMMIT"
           test "$TAG_OBJECT" != "$PEELED_COMMIT"
           test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
           test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
-          tag_bytes="$(mktemp)"
-          tag_payload="$(mktemp)"
-          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            my $separator = index($bytes, "\n\n");
-            die "annotated tag header/message separator missing\n" if $separator < 0;
-            print substr($bytes, $separator + 2);
-          ' < "$tag_bytes" > "$tag_payload"
-          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_EVIDENCE_SHA256"
           mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
@@ -839,6 +853,7 @@ jobs:
           test "${immutable_fields[0]}" = true
           case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
+      # v5.0.0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
@@ -864,7 +879,7 @@ jobs:
         id: release
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -910,53 +925,37 @@ jobs:
             raw_source: target/x86_64-apple-darwin/release/agentscommander
             target_dir: target/x86_64-apple-darwin/release
     steps:
+      # v5.1.0
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.guard.outputs.peeled_commit }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Rebind the guarded annotated tag
         shell: bash
         env:
-          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ needs.guard.outputs.tag }}
           EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
           EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
-          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          EXPECTED_EVIDENCE_SHA256: ${{ needs.guard.outputs.evidence_sha256 }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
-          TAG="$GITHUB_REF_NAME"
+          TAG="$EXPECTED_TAG"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           test "$RELEASE_DIR" = "docs/releases/$TAG"
           test -f "$RELEASE_DIR/release-authority-v1.txt"
-          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
           PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
           TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
-          test "$GITHUB_SHA" = "$EVENT_SHA"
-          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$EXPECTED_PEELED_COMMIT"
           test "$HEAD_COMMIT" = "$PEELED_COMMIT"
           test "$TAG_OBJECT" != "$PEELED_COMMIT"
           test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
           test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
-          tag_bytes="$(mktemp)"
-          tag_payload="$(mktemp)"
-          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            my $separator = index($bytes, "\n\n");
-            die "annotated tag header/message separator missing\n" if $separator < 0;
-            print substr($bytes, $separator + 2);
-          ' < "$tag_bytes" > "$tag_payload"
-          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_EVIDENCE_SHA256"
           mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
@@ -966,6 +965,7 @@ jobs:
           test "${immutable_fields[0]}" = true
           case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
+      # v5.0.0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
@@ -991,7 +991,7 @@ jobs:
         id: release
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
@@ -1011,11 +1011,13 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Install Rust stable
+        # stable channel snapshot; upstream does not publish a semver action tag
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           targets: ${{ startsWith(matrix.name, 'macos-') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Restore Rust cache
+        # v2.9.2
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: src-tauri -> target
@@ -1038,6 +1040,7 @@ jobs:
         run: npm ci --ignore-scripts --registry "$REGISTRY_URL"
 
       - name: Build package artifacts without release-side effects
+        # v0.6.2
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         with:
           args: ${{ matrix.args }}
@@ -1064,7 +1067,7 @@ jobs:
       - name: Prepare closed producer assets and manifest
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           PRODUCER: ${{ matrix.producer }}
           RAW_SOURCE: ${{ matrix.raw_source }}
@@ -1188,7 +1191,7 @@ jobs:
       - name: Upload exact platform artifacts by the coordinator numeric release ID
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           PRODUCER: ${{ matrix.producer }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
@@ -1215,6 +1218,7 @@ jobs:
           done
 
       - name: Upload the closed successful producer manifest for internal verification
+        # v4.6.2
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: producer-manifest-${{ matrix.producer }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
@@ -1231,62 +1235,47 @@ jobs:
       contents: write
       actions: read
     steps:
+      # v5.1.0
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.guard.outputs.peeled_commit }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Rebind the guarded annotated tag
         shell: bash
         env:
-          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ needs.guard.outputs.tag }}
           EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
           EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
-          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          EXPECTED_EVIDENCE_SHA256: ${{ needs.guard.outputs.evidence_sha256 }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
-          TAG="$GITHUB_REF_NAME"
+          TAG="$EXPECTED_TAG"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           test "$RELEASE_DIR" = "docs/releases/$TAG"
           test -f "$RELEASE_DIR/release-authority-v1.txt"
-          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
           PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
           TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
-          test "$GITHUB_SHA" = "$EVENT_SHA"
-          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$EXPECTED_PEELED_COMMIT"
           test "$HEAD_COMMIT" = "$PEELED_COMMIT"
           test "$TAG_OBJECT" != "$PEELED_COMMIT"
           test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
           test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
-          tag_bytes="$(mktemp)"
-          tag_payload="$(mktemp)"
-          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            my $separator = index($bytes, "\n\n");
-            die "annotated tag header/message separator missing\n" if $separator < 0;
-            print substr($bytes, $separator + 2);
-          ' < "$tag_bytes" > "$tag_payload"
-          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_EVIDENCE_SHA256"
           mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
           test "${#immutable_fields[@]}" = 2
           test "${immutable_fields[0]}" = true
           case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
+      # v5.0.0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
@@ -1311,7 +1300,7 @@ jobs:
       - name: Resolve exact-run producer manifests across workflow attempts
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           PRODUCER_MANIFEST_DIR: ${{ runner.temp }}/producer-manifests
@@ -1501,7 +1490,7 @@ jobs:
       - name: Verify closed producer manifests against the guarded draft assets
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           PRODUCER_MANIFEST_DIR: ${{ runner.temp }}/producer-manifests
@@ -1601,7 +1590,7 @@ jobs:
       - name: Build and upload the runtime checksum ledger without replacement
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           PRODUCER_MANIFEST_DIR: ${{ runner.temp }}/producer-manifests
@@ -1722,7 +1711,7 @@ jobs:
       - name: Verify the exact draft asset set and runtime checksum ledger
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
@@ -1785,62 +1774,47 @@ jobs:
     permissions:
       contents: write
     steps:
+      # v5.1.0
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.guard.outputs.peeled_commit }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Rebind the guarded annotated tag
         shell: bash
         env:
-          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ needs.guard.outputs.tag }}
           EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
           EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
-          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          EXPECTED_EVIDENCE_SHA256: ${{ needs.guard.outputs.evidence_sha256 }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
-          TAG="$GITHUB_REF_NAME"
+          TAG="$EXPECTED_TAG"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           test "$RELEASE_DIR" = "docs/releases/$TAG"
           test -f "$RELEASE_DIR/release-authority-v1.txt"
-          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
           PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
           TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
-          test "$GITHUB_SHA" = "$EVENT_SHA"
-          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$EXPECTED_PEELED_COMMIT"
           test "$HEAD_COMMIT" = "$PEELED_COMMIT"
           test "$TAG_OBJECT" != "$PEELED_COMMIT"
           test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
           test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
-          tag_bytes="$(mktemp)"
-          tag_payload="$(mktemp)"
-          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            my $separator = index($bytes, "\n\n");
-            die "annotated tag header/message separator missing\n" if $separator < 0;
-            print substr($bytes, $separator + 2);
-          ' < "$tag_bytes" > "$tag_payload"
-          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_EVIDENCE_SHA256"
           mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
           test "${#immutable_fields[@]}" = 2
           test "${immutable_fields[0]}" = true
           case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
+      # v5.0.0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
@@ -1865,7 +1839,7 @@ jobs:
       - name: Verify the dynamic immediate immutable predecessor
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
@@ -1995,7 +1969,7 @@ jobs:
       - name: Verify the guarded draft and all candidate assets before publication
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
@@ -2052,50 +2026,34 @@ jobs:
           assert.equal(fs.readFileSync(path.join(downloads, sumName), 'utf8'), records.join('\n') + '\n');
           NODE
 
-      - name: Revalidate tag, authority, and release policy immediately before publication
+      - name: Revalidate tag, preparation evidence, and release policy immediately before publication
         shell: bash
         env:
-          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ needs.guard.outputs.tag }}
           EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
           EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
-          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          EXPECTED_EVIDENCE_SHA256: ${{ needs.guard.outputs.evidence_sha256 }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
-          TAG="$GITHUB_REF_NAME"
+          TAG="$EXPECTED_TAG"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           test "$RELEASE_DIR" = "docs/releases/$TAG"
           test -f "$RELEASE_DIR/release-authority-v1.txt"
           HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
           PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
           TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
-          test "$GITHUB_SHA" = "$EVENT_SHA"
-          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$EXPECTED_PEELED_COMMIT"
           test "$HEAD_COMMIT" = "$PEELED_COMMIT"
           test "$TAG_OBJECT" != "$PEELED_COMMIT"
           test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
           test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
-          tag_bytes="$(mktemp)"
-          tag_payload="$(mktemp)"
-          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            my $separator = index($bytes, "\n\n");
-            die "annotated tag header/message separator missing\n" if $separator < 0;
-            print substr($bytes, $separator + 2);
-          ' < "$tag_bytes" > "$tag_payload"
-          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_EVIDENCE_SHA256"
           mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
           test "${#immutable_fields[@]}" = 2
           test "${immutable_fields[0]}" = true
@@ -2104,7 +2062,7 @@ jobs:
       - name: Publish only the verified guarded draft
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
@@ -2129,62 +2087,47 @@ jobs:
       contents: read
       attestations: read
     steps:
+      # v5.1.0
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.guard.outputs.peeled_commit }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Rebind the guarded annotated tag
         shell: bash
         env:
-          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ needs.guard.outputs.tag }}
           EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
           EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
-          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          EXPECTED_EVIDENCE_SHA256: ${{ needs.guard.outputs.evidence_sha256 }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
-          TAG="$GITHUB_REF_NAME"
+          TAG="$EXPECTED_TAG"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           test "$RELEASE_DIR" = "docs/releases/$TAG"
           test -f "$RELEASE_DIR/release-authority-v1.txt"
-          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
           PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
           TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
-          test "$GITHUB_SHA" = "$EVENT_SHA"
-          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$EXPECTED_PEELED_COMMIT"
           test "$HEAD_COMMIT" = "$PEELED_COMMIT"
           test "$TAG_OBJECT" != "$PEELED_COMMIT"
           test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
           test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
-          tag_bytes="$(mktemp)"
-          tag_payload="$(mktemp)"
-          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            my $separator = index($bytes, "\n\n");
-            die "annotated tag header/message separator missing\n" if $separator < 0;
-            print substr($bytes, $separator + 2);
-          ' < "$tag_bytes" > "$tag_payload"
-          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_EVIDENCE_SHA256"
           mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
           test "${#immutable_fields[@]}" = 2
           test "${immutable_fields[0]}" = true
           case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
+      # v5.0.0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
@@ -2247,11 +2190,11 @@ jobs:
       - name: Verify the public immutable release and every release attestation
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
           EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
-          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          EXPECTED_EVIDENCE_SHA256: ${{ needs.guard.outputs.evidence_sha256 }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2276,21 +2219,8 @@ jobs:
             test "$peeled_commit" = "$EXPECTED_PEELED_COMMIT"
             printf '%s\n' "${remote_tag[@]}" | grep -Fx "$tag_object"$'\t'"refs/tags/$TAG"
             printf '%s\n' "${remote_tag[@]}" | grep -Fx "$peeled_commit"$'\t'"refs/tags/$TAG^{}"
-            tag_bytes="$(mktemp)"
-            tag_payload="$(mktemp)"
-            git cat-file tag "$tag_object" > "$tag_bytes"
-            perl -0777 -e '
-              binmode STDIN;
-              binmode STDOUT;
-              local $/;
-              my $bytes = <STDIN>;
-              my $separator = index($bytes, "\n\n");
-              die "annotated tag header/message separator missing\n" if $separator < 0;
-              print substr($bytes, $separator + 2);
-            ' < "$tag_bytes" > "$tag_payload"
-            cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
-            test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-            test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+            test "$head_commit" = "$EXPECTED_PEELED_COMMIT"
+            test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_EVIDENCE_SHA256"
           }
           assert_tag_pair
           export RELEASE_GH_BIN="$VERIFIED_GH_BIN"
@@ -2367,57 +2297,42 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # v5.1.0
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.guard.outputs.peeled_commit }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Rebind the verified annotated tag
         shell: bash
         env:
-          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ needs.guard.outputs.tag }}
           EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
           EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
-          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          EXPECTED_EVIDENCE_SHA256: ${{ needs.guard.outputs.evidence_sha256 }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
+          TAG="$EXPECTED_TAG"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           test "$RELEASE_DIR" = "docs/releases/$TAG"
           test -f "$RELEASE_DIR/release-authority-v1.txt"
-          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
           PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
           TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
-          test "$GITHUB_SHA" = "$EVENT_SHA"
-          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$EXPECTED_PEELED_COMMIT"
           test "$HEAD_COMMIT" = "$PEELED_COMMIT"
           test "$TAG_OBJECT" != "$PEELED_COMMIT"
           test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
           test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
-          tag_bytes="$(mktemp)"
-          tag_payload="$(mktemp)"
-          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            my $separator = index($bytes, "\n\n");
-            die "annotated tag header/message separator missing\n" if $separator < 0;
-            print substr($bytes, $separator + 2);
-          ' < "$tag_bytes" > "$tag_payload"
-          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_EVIDENCE_SHA256"
           mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
           test "${#immutable_fields[@]}" = 2
           test "${immutable_fields[0]}" = true
@@ -2448,6 +2363,7 @@ jobs:
           npm_reject_tokenless_auth_environment
           test ! -e "$RUNNER_TEMP/.npmrc"
 
+      # v5.0.0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
@@ -2561,7 +2477,7 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.guard.outputs.version }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}

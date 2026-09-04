@@ -1,0 +1,43 @@
+name: Release tag wake
+
+# This workflow exists only to wake the protected default-branch release
+# workflow when a release tag is pushed. It is evaluated from the pushed tag,
+# so a tag author controls these bytes. That is why it holds no credential and
+# produces nothing a privileged job could consume:
+#
+#   - top-level and job-level "permissions: {}", so GITHUB_TOKEN has no scope;
+#   - no checkout, no action, no secret, no environment;
+#   - no artifact, no cache, no job output, no GitHub API call, no npm command
+#     and no Release mutation.
+#
+# Its entire interface to ".github/workflows/release.yml" is the existence of a
+# completed workflow run. release.yml re-derives every release fact from the
+# protected remote and never reads this run's conclusion, artifacts, caches,
+# outputs or workspace.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+# Concurrency here only reduces duplicate wake runs for one tag. It is neither
+# an authorization nor an idempotency mechanism; release.yml owns both.
+concurrency:
+  group: release-tag-wake-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  wake:
+    name: wake
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Wake the protected release workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'Wake only: this job has no permissions and emits nothing.'
+          echo 'The protected default-branch workflow validates the release tag itself.'
