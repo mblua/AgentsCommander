@@ -197,10 +197,10 @@ describe("ProjectPanel replica chip strip order (#1730)", () => {
     // "ctx-badge unavailable" shape.
     expect(classNames[7]).toBe("ctx-badge");
     expect(classNames[8]).toBe("ac-discovery-badge team");
-    expect(classNames[9]).toBe("ac-discovery-badge running-peer");
     // Neither fixture repo is dirty, so both are the bare branch class.
+    expect(classNames[9]).toBe("ac-discovery-badge branch");
     expect(classNames[10]).toBe("ac-discovery-badge branch");
-    expect(classNames[11]).toBe("ac-discovery-badge branch");
+    expect(classNames[11]).toBe("ac-discovery-badge running-peer");
 
     // Nothing added and nothing removed: the eleven chips of today plus the
     // moved slot and the new chip. Enumerated, NOT compared against a second

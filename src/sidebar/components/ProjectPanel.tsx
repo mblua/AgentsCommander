@@ -2526,18 +2526,6 @@ const ProjectPanel: Component = () => {
                   <Show when={extraBadge}>
                     <span class="ac-discovery-badge team">{extraBadge}</span>
                   </Show>
-                  <Show when={runningPeers && runningPeers()!.length > 0}>
-                    <For each={runningPeers!()}>
-                      {(peer) => (
-                        <span
-                          class="ac-discovery-badge running-peer"
-                          title={`${wg.name}/${peer.name}`}
-                        >
-                          {peer.name} RUNNING
-                        </span>
-                      )}
-                    </For>
-                  </Show>
                   <Show when={isCoord() && repoBadges().length > 0}>
                     <For each={repoBadges()}>
                       {(repo, index) => (
@@ -2547,6 +2535,18 @@ const ProjectPanel: Component = () => {
                           data-ac-testid={repoBadgeTestId(repo.label, index())}
                         >
                           {formatReplicaRepoBadgeLabel(repo)}
+                        </span>
+                      )}
+                    </For>
+                  </Show>
+                  <Show when={runningPeers && runningPeers()!.length > 0}>
+                    <For each={runningPeers!()}>
+                      {(peer) => (
+                        <span
+                          class="ac-discovery-badge running-peer"
+                          title={`${wg.name}/${peer.name}`}
+                        >
+                          {peer.name} RUNNING
                         </span>
                       )}
                     </For>
