@@ -229,9 +229,14 @@ impl MenuGuard {
                 ids
             };
             if !blocked_sessions.is_empty() {
-                let session_mgr = session_mgr_state.read().await;
+                let session_mgr = { session_mgr_state.read().await.clone() };
                 for id in blocked_sessions {
-                    if session_mgr.clear_blocked_menu(id).await {
+                    if crate::config::sessions_persistence::clear_blocked_menu_and_persist(
+                        &session_mgr,
+                        id,
+                    )
+                    .await
+                    {
                         crate::session::selection::publish_session_communication(app, id, None);
                     }
                 }
@@ -243,7 +248,7 @@ impl MenuGuard {
             return;
         };
 
-        let session_mgr = session_mgr_state.read().await;
+        let session_mgr = { session_mgr_state.read().await.clone() };
         let sessions = session_mgr.list_sessions().await;
 
         for session in sessions {
@@ -307,8 +312,20 @@ impl MenuGuard {
                     let eval = self.evaluate_logical_rows(session_uuid, &rows, &entries);
                     if eval.should_notify {
                         if let Some(msg) = eval.matched_notification {
-                            if let Some((true, comm)) = session_mgr
-                                .set_blocked_menu(session_uuid, msg, chrono::Utc::now())
+                            // #1669: the transition must reach sessions.json so a disk-reading CLI
+                            // (`list-peers`) can see the blocked terminal. Only a REAL transition
+                            // writes: `Unchanged` is the steady state on this 250 ms loop and does
+                            // no save and no settings read. A failed save is logged inside the
+                            // helper and does NOT suppress this publish; see its doc comment for
+                            // why there is no rollback.
+                            if let crate::config::sessions_persistence::BlockedMenuPersistOutcome::Changed(comm) =
+                                crate::config::sessions_persistence::set_blocked_menu_and_persist(
+                                    &session_mgr,
+                                    session_uuid,
+                                    msg,
+                                    chrono::Utc::now(),
+                                    &settings,
+                                )
                                 .await
                             {
                                 crate::session::selection::publish_session_communication(
@@ -319,7 +336,11 @@ impl MenuGuard {
                             }
                         }
                     } else if eval.should_clear_notification
-                        && session_mgr.clear_blocked_menu(session_uuid).await
+                        && crate::config::sessions_persistence::clear_blocked_menu_and_persist(
+                            &session_mgr,
+                            session_uuid,
+                        )
+                        .await
                     {
                         crate::session::selection::publish_session_communication(
                             app,
