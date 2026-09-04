@@ -11791,9 +11791,15 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // `.local.md` name satisfies.
         #[test]
         fn tripwire_a_full_resolve_never_touches_or_records_a_local_md() {
+            // The base global template is deliberately ABSENT and the resolve is
+            // driven through the ACTIVATED path, so the sync creates it, records a
+            // publication, and marks the loaded state dirty. That is what makes
+            // `persist_state_best_effort` (`seeded_context_templates.rs:1048-1050`)
+            // actually write the state file, so C7's assertion below is never
+            // vacuous. The test asserts the file's existence before reading it.
             let fixture = new_fixture();
             let base_path = fixture.ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-            std::fs::write(&base_path, "BASE GLOBAL TEMPLATE\n").expect("base");
+            assert!(!base_path.exists());
             let overrides = [
                 ("Context.AgentsCommander.local.md", "GLOBAL OVERRIDE\n"),
                 ("Context.coordinator.local.md", "COORDINATOR OVERRIDE\n"),
@@ -11807,7 +11813,12 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 .map(|(name, _)| std::fs::read(fixture.ac_root.join(name)).expect("bytes"))
                 .collect();
 
-            let _ = resolve_global(&fixture);
+            let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
+            let _ = resolve_global_activated(&fixture, Some(&token));
+            assert!(
+                base_path.exists(),
+                "the activated resolve must create the base template"
+            );
 
             // C6: every override is byte-identical and none was retired.
             for (index, (name, _)) in overrides.iter().enumerate() {
@@ -11835,16 +11846,22 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 "no .local.md may be retired: {entries:?}"
             );
 
-            // C7: the seed manifest records no `.local.md` entry.
+            // C7: the seed manifest records no `.local.md` entry. Its existence is
+            // asserted first, so this half cannot silently become a no-op if the
+            // activated path ever stops persisting state.
             let manifest_path = fixture
                 .ac_root
                 .join(crate::config::instance_artifacts::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
-            if let Ok(manifest) = std::fs::read_to_string(&manifest_path) {
-                assert!(
-                    !manifest.contains(".local.md"),
-                    "the seed manifest recorded a .local.md: {manifest}"
-                );
-            }
+            let manifest = std::fs::read_to_string(&manifest_path).unwrap_or_else(|e| {
+                panic!(
+                    "the seed manifest state file must exist for C7 to assert anything ({}): {e}",
+                    manifest_path.display()
+                )
+            });
+            assert!(
+                !manifest.contains(".local.md"),
+                "the seed manifest recorded a .local.md: {manifest}"
+            );
         }
 
         /// The gate-state variants (C8b to C8d) run through the ACTIVATED path,
