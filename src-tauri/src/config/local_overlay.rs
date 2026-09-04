@@ -1261,4 +1261,38 @@ mod tests {
         assert_eq!(records[0].level(), OverlayDiagnosticLevel::Error);
         assert!(records[0].render().contains("bad type"));
     }
+
+    /// `into_undecodable` PRESERVES the ineligible-key drops, which is correct on
+    /// `parse_settings_json`'s path (it renders once, at the end) and is exactly
+    /// why `default_settings_with_overlay`'s decode-error arm must not render this
+    /// value: it already rendered those drops before its early return, so
+    /// re-rendering the whole list would emit each drop twice. A default overlay
+    /// carries the new record alone, which is what that arm uses.
+    #[test]
+    fn into_undecodable_preserves_drops_and_a_default_overlay_carries_one_record() {
+        let mut base = json!({"rootToken": "base", "mainZoom": 1.5});
+        let Value::Object(overlay) = json!({"rootToken": "x", "mainZoom": 1.0}) else {
+            unreachable!()
+        };
+        let state =
+            LocalSettingsOverlay::from_overlay_object(&mut base, overlay, &["rootToken"], &[], &[]);
+        assert_eq!(state.dropped_keys(), &["rootToken".to_string()]);
+        let carried = state.into_undecodable("bad type".to_string());
+        assert_eq!(
+            carried.diagnostics("settings.local.json").len(),
+            2,
+            "the drop survives alongside the new rejection"
+        );
+
+        let fresh = LocalSettingsOverlay::default().into_undecodable("bad type".to_string());
+        let records = fresh.diagnostics("settings.local.json");
+        assert_eq!(records.len(), 1);
+        assert!(matches!(
+            records[0],
+            OverlayDiagnostic::Rejected {
+                rejection: OverlayRejection::MergedValueUndecodable(_),
+                ..
+            }
+        ));
+    }
 }

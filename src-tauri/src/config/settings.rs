@@ -1185,9 +1185,16 @@ fn default_settings_with_overlay(settings_path: &Path, source: &str) -> AppSetti
             settings
         }
         Err(e) => {
-            // D21 with `AppSettings::default()` as the fallback.
-            let overlay = overlay.into_undecodable(e.to_string());
-            report_overlay_diagnostics(source, &overlay);
+            // D21 with `AppSettings::default()` as the fallback. 4.2e step 5 says
+            // "record `MergedValueUndecodable`, render THAT record", singular: the
+            // ineligible-key drops were already rendered above and
+            // `into_undecodable` preserves them, so rendering this overlay's whole
+            // record list would emit every drop a second time. A default overlay
+            // carries the new record alone, and the value returned is
+            // `AppSettings::default()` either way, so the state the caller adopts
+            // is unchanged.
+            let undecodable = LocalSettingsOverlay::default().into_undecodable(e.to_string());
+            report_overlay_diagnostics(source, &undecodable);
             AppSettings::default()
         }
     }
