@@ -5,6 +5,9 @@ export type ToastKind = "error" | "success" | "info";
 export interface ToastAction {
   label: string;
   onClick: () => void;
+  /** #1669: when false, clicking the action runs `onClick` and LEAVES the
+   *  toast up. Omitted or true keeps the original behavior (dismiss on click). */
+  dismissOnClick?: boolean;
 }
 
 export interface PushToastOptions {
@@ -14,6 +17,8 @@ export interface PushToastOptions {
    *  the per-kind default below. */
   durationMs?: number | null;
   action?: ToastAction;
+  /** #1669: optional second action rendered BEFORE `action`. */
+  secondaryAction?: ToastAction;
   tag?: string;
 }
 
@@ -23,6 +28,7 @@ export interface Toast {
   message: string;
   exiting: boolean;
   action?: ToastAction;
+  secondaryAction?: ToastAction;
   tag?: string;
 }
 
@@ -99,6 +105,7 @@ export const toastStore = {
       if (existingIndex !== -1) {
         setToasts(existingIndex, "message", opts.message);
         setToasts(existingIndex, "action", opts.action);
+        setToasts(existingIndex, "secondaryAction", opts.secondaryAction);
         return toasts[existingIndex].id;
       }
     }
@@ -111,6 +118,7 @@ export const toastStore = {
       message: opts.message,
       exiting: false,
       action: opts.action,
+      secondaryAction: opts.secondaryAction,
       tag: opts.tag,
     };
 

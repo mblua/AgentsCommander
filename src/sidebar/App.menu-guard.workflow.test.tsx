@@ -78,6 +78,7 @@ function setupMenuGuardTransport(fake: FakeTransport, sessions: Session[]): void
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
   fake.resolve("resolve_blocking_menu", undefined);
+  fake.resolve("switch_session", undefined);
 }
 
 function blockedMenu(message = menuMessage): SessionCommunication {
@@ -171,5 +172,50 @@ describe("SidebarApp menu-guard workflow (#1649)", () => {
     await waitFor(() =>
       expect(document.body.querySelector("[data-ac-testid='toast.item']")).toBeNull()
     );
+  });
+
+  it("shows See terminal and Resolved by user on the blocked-menu toast", async () => {
+    const { fake } = await mountSidebar();
+
+    fake.emitFromBackend("session_communication_changed", {
+      sessionId,
+      communication: blockedMenu(),
+    });
+
+    await waitFor(() => {
+      expect(
+        document.body.querySelector("[data-ac-testid='toast.item.action.secondary']")?.textContent
+      ).toBe("See terminal");
+      expect(document.body.querySelector("[data-ac-testid='toast.item.action']")?.textContent)
+        .toBe("Resolved by user");
+    });
+  });
+
+  it("See terminal invokes switch_session with the blocked session id and keeps the toast", async () => {
+    const { fake } = await mountSidebar();
+    fake.emitFromBackend("session_communication_changed", {
+      sessionId,
+      communication: blockedMenu(),
+    });
+    await waitFor(() =>
+      expect(
+        document.body.querySelector("[data-ac-testid='toast.item.action.secondary']")
+      ).not.toBeNull()
+    );
+
+    document.body
+      .querySelector<HTMLButtonElement>("[data-ac-testid='toast.item.action.secondary']")!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    await waitFor(() =>
+      expect(fake.callsFor("switch_session")).toEqual([
+        { cmd: "switch_session", args: { id: sessionId } },
+      ])
+    );
+
+    expect(fake.callsFor("resolve_blocking_menu")).toEqual([]);
+    const item = document.body.querySelector("[data-ac-testid='toast.item']");
+    expect(item).not.toBeNull();
+    expect(item?.classList.contains("toast-item--exiting")).toBe(false);
   });
 });
