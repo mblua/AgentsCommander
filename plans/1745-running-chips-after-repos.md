@@ -75,8 +75,9 @@ Supporting evidence, all verified at `302e6c12`:
 In scope, exactly two files:
 
 1. `src/sidebar/components/ProjectPanel.tsx`: swap the two sibling blocks at `:2529-2553`.
-2. `src/sidebar/components/ProjectPanel.chip-order.test.tsx`: update the three index assertions at
-   `:200-203` to the new order.
+2. `src/sidebar/components/ProjectPanel.chip-order.test.tsx`: rewrite the four lines at `:200-203` to
+   the new order. Of those four, two assertion lines change value and one comment line moves; see
+   section 4.2 for the exact post-state.
 
 Out of scope, and the implementer must not touch any of these:
 
@@ -89,6 +90,15 @@ Out of scope, and the implementer must not touch any of these:
 - `ProjectPanel.menu-guard.test.tsx`. Its only strip reads are
   `expect(strip?.classList.contains("ac-discovery-badges")).toBe(true)` at `:127` and `:146`,
   which assert the identity of the strip element, not its children.
+- `ProjectPanel.dirty-repo-badge.test.tsx` and `ProjectPanel.offline-badges.test.tsx`. Both read
+  `.ac-discovery-badge`, and neither is order-sensitive. `dirty-repo-badge` resolves a single badge
+  by test id and asserts its `className` at `:134` and `:175`; `offline-badges` builds
+  class-filtered lists such as `root.querySelectorAll(".ac-discovery-badge.agent")` at `:88` and
+  indexes only `[0]`, and every class it filters on sits at strip indices 0 to 8, before the edited
+  region. Together with `chip-order`, `menu-guard` and `regex-filter`, plus
+  `RootAgentBanner.agent-badge.test.tsx` and `SessionItem.test.tsx` (neither of which renders this
+  strip), that is every test file under `src/` mentioning `ac-discovery-badge`
+  (`grep -rln "ac-discovery-badge" src/ --include=*.test.tsx` returns exactly those six).
 - `src-tauri/`. No Rust file, no `module-arcs.txt` entry: the change adds no import, so it adds no
   module arc.
 - Historical documents that show the old order: `plans/1730-sidebar-row-chips.md` and the
@@ -109,8 +119,8 @@ last puts them at the end of the block, after the repos, which is what the issue
 ### 4.1 Exact post-state of `ProjectPanel.tsx:2529-2553`
 
 After the change, lines 2529 to 2553 must read exactly as follows (18 spaces of indentation on each
-`<Show>` line, LF endings, no other whitespace change). This region is byte-identical to the two
-blocks at `302e6c12`, in swapped order:
+`<Show>` line, no other whitespace change). This region is byte-identical to the two blocks at
+`302e6c12`, in swapped order:
 
 ~~~tsx
                   <Show when={isCoord() && repoBadges().length > 0}>
@@ -142,6 +152,24 @@ blocks at `302e6c12`, in swapped order:
 
 Line 2528 (`</Show>` closing the `extraBadge` block) and line 2554 (`</div>` closing the strip) are
 unchanged. `ProjectPanel.tsx` stays at 4461 lines.
+
+**Line terminators.** The fence above is LF because it reproduces the *tracked blob*, and the tracked
+blob is LF. `git config --get core.autocrlf` is `true` and `.gitattributes` has no `*.tsx` entry
+(its `text eol=lf` rows cover `.husky/**`, `*.sh`, `*.toml`, `*.json`, `*.rs`,
+`src-tauri/module-arcs.txt` and `docs/integrations/rtk_claude/hooks/*.js`, none of which match), so
+the working tree and the blob differ in line terminator: `file src/sidebar/components/ProjectPanel.tsx`
+reports "with CRLF line terminators" and the working-tree copy has CR 4461 / LF 4461, while
+`git show 302e6c12:src/sidebar/components/ProjectPanel.tsx | file -` reports no CRLF. The same split
+applies to `src/sidebar/components/ProjectPanel.chip-order.test.tsx` (working tree CRLF, CR 293 /
+LF 293; blob LF) and therefore to both fences in section 4.2. This plan file itself is 100% LF.
+
+Consequence for the implementer: write the region with the file's existing CRLF terminators, exactly
+as any editor will do when it saves a CRLF file, and let `core.autocrlf` normalise on commit. The
+fences reproduce the committed blob, so a working-tree comparison against them differs in 25 line
+terminators (4 for section 4.2) on a *correct* implementation. Every fence comparison in the
+acceptance criteria is therefore made against `git show HEAD:<path>` and never against the working
+tree. No fence in this plan asks for a line-terminator change; the only whitespace claim that applies
+to the working tree is the 18-space indentation.
 
 The repository has no Prettier, no ESLint and no formatter step (there is no formatter dependency in
 `package.json` and no lint job in `.github/workflows/pr-regression-gates.yml`), so no tool will
@@ -177,16 +205,38 @@ comment, not the fixtures, not the `describe` title, not the enumerated token se
 | File | Symbol | Change |
 |---|---|---|
 | `src/sidebar/components/ProjectPanel.tsx` | `renderReplicaItem`, JSX inside `<div class="ac-discovery-badges">`, lines 2529-2553 | swap two sibling `<Show>` blocks |
-| `src/sidebar/components/ProjectPanel.chip-order.test.tsx` | `it("orders every chip of a maximal quick-access coordinator row")`, lines 200-203 | three index assertions and one comment reposition |
+| `src/sidebar/components/ProjectPanel.chip-order.test.tsx` | `it("orders every chip of a maximal quick-access coordinator row")`, lines 200-203 | two index assertions re-valued, one comment repositioned |
 
 No symbol is added, renamed, removed or re-signed. `renderReplicaItem`'s parameter list at `:2317-2324`
 is unchanged, including `runningPeers?: () => AcAgentReplica[]` at `:2321`. The `repoBadges` memo at
 `:2338` and `runningCoordinatorPeers` at `:358-362` are unchanged.
 
-No shipped comment citation is invalidated. The three in-code citations of `ProjectPanel.tsx` line
-numbers are `SessionItem.tsx:391` (cites `ProjectPanel.tsx:2271`), `src-tauri/src/cli/list_peers.rs:297`
-(cites `ProjectPanel.tsx:780-786`) and `list_peers.rs:305` (cites `ProjectPanel.tsx:60`). All three
-targets are above line 2529 and the edit changes no line count, so no cited line moves.
+No shipped citation of a `ProjectPanel.tsx` line number is invalidated. There are exactly **four**
+tracked citations outside `plans/`; `git grep -n "ProjectPanel\.tsx:" -- . | grep -v "^plans/"`
+returns these four lines and nothing else:
+
+| Citing site | Cited target | Position relative to the edited region |
+|---|---|---|
+| `src/sidebar/components/SessionItem.tsx:391` | `ProjectPanel.tsx:2271` | above 2529 |
+| `src-tauri/src/cli/list_peers.rs:297` | `ProjectPanel.tsx:780-786` | above 2529 |
+| `src-tauri/src/cli/list_peers.rs:305` | `ProjectPanel.tsx:60` | above 2529 |
+| `scripts/room-rename-allowlist.tsv:23` | `ProjectPanel.tsx:2749` | **below** 2553 |
+
+The fourth is a live, tracked script input, not a plan document, and its target is below the edited
+region, so an "all targets are above the edit" argument does not cover it and is not used here. The
+argument that does cover all four is the line-count one: the change is a pure reorder of two adjacent
+sibling blocks wholly inside 2529-2553, it adds and removes no line, and `ProjectPanel.tsx` stays at
+4461 lines. Therefore no line outside 2529-2553 moves, and all four cited targets (`60`, `780-786`,
+`2271`, `2749`) still resolve to the same lines they resolve to today. Lines *inside* 2529-2553 do
+move, and nothing cites them.
+
+`scripts/room-rename-allowlist.tsv` needs no edit for a second, independent reason. Its allowlist key
+is `(path, trimmed line content)`, not a line number: `scripts/room-rename-allowlist.mjs:16-18` says
+"The allowlist key is (path, trimmed line content). Content, not line number, so the file survives
+line drift. Trimming also absorbs the line-ending split". A reorder changes no line's content and no
+line's leading whitespace, so every allowlist row for `ProjectPanel.tsx` still matches. The `:2749`
+mention is inside a `#` comment describing a regeneration recipe, not a data row: `grep -n 2749
+scripts/room-rename-allowlist.tsv` returns only line 23.
 
 ## 6. Required behavior, edge cases and failure behavior
 
@@ -211,7 +261,7 @@ iterates `runningPeers!()`, whose order comes from `runningCoordinatorPeers` fil
 | Zero running peers, N repos (N >= 1) | The running gate `runningPeers && runningPeers()!.length > 0` is false, the block emits nothing, and the N repo chips are the strip's last children. Identical rendering to today. |
 | N running peers (N >= 1), zero repos | The repo gate `isCoord() && repoBadges().length > 0` is false, the block emits nothing, and the N running-peer chips are the strip's last children. Identical rendering to today. Reached when a coordinator's session reports no `gitRepos` and `configuredReplicaRepoBadgesLive` yields none. |
 | Both empty | The strip ends at whichever earlier chip last rendered. Identical rendering to today. |
-| A dirty repo | The chip's class is `ac-discovery-badge branch dirty` (`:2545`, the `repo.dirty === true` ternary is carried across verbatim). It is still a repo chip, so it still precedes every running-peer chip. No dirty-specific handling is added. |
+| A dirty repo | The chip's class is `ac-discovery-badge branch dirty` (`:2545` before the change, `:2533` after it, per this plan's "read at `302e6c12`" convention; the `repo.dirty === true` ternary is carried across verbatim and is byte-identical on both lines). It is still a repo chip, so it still precedes every running-peer chip. No dirty-specific handling is added. |
 | Non-quick row contexts (`:2601`, `rowContext` defaults to `"workgroups"`) | `runningPeers` is `undefined`, so the gate is false by its first conjunct and the block contributes zero children. The reorder is invisible on these rows: their strips render exactly the children they render today, in the same order. This is asserted by the third test of `chip-order.test.tsx`, which expects the worker strip's children to equal `["agent-name-chip"]`. |
 | Non-coordinator row that somehow receives `runningPeers` | Not reachable today: the only call site that passes `runningPeers` iterates `filteredCoordinatorItems()`, whose replicas are coordinators. If it ever became reachable, the running block would render (its gate does not test `isCoord()`) while the repo block would not, and the running-peer chips would be last. That is the intended order and needs no extra gate. |
 | Multiple running peers and multiple repos | All repo chips first in `repoBadges()` order, then all running-peer chips in `runningCoordinatorPeers` order. No interleaving is possible: they are two separate `<For>` blocks. |
@@ -265,20 +315,24 @@ that asserts the strip's child order by index. It has three tests:
 Objective and checkable. All commands run from the repository root on
 `fix/1745-running-chips-after-repos`.
 
-1. `src/sidebar/components/ProjectPanel.tsx` lines 2529-2553 are byte-identical to the fence in
-   section 4.1, and `wc -l src/sidebar/components/ProjectPanel.tsx` reports `4461`.
-2. `src/sidebar/components/ProjectPanel.chip-order.test.tsx` lines 200-203 are byte-identical to the
-   second fence in section 4.2, and `wc -l` reports `293`.
+1. `git show HEAD:src/sidebar/components/ProjectPanel.tsx | sed -n '2529,2553p'` is byte-identical to
+   the fence in section 4.1. Both sides are LF. This is pinned against the committed blob and not
+   against the working tree because the working tree is CRLF under `core.autocrlf=true` while the
+   blob is LF; see the line-terminator note in section 4.1. Additionally,
+   `wc -l src/sidebar/components/ProjectPanel.tsx` reports `4461` (the count is the same either way,
+   because a CRLF file still has one LF per line).
+2. `git show HEAD:src/sidebar/components/ProjectPanel.chip-order.test.tsx | sed -n '200,203p'` is
+   byte-identical to the second fence in section 4.2. Both sides are LF, for the same reason as
+   AC 1. Additionally, `wc -l src/sidebar/components/ProjectPanel.chip-order.test.tsx` reports `293`.
 3. `git show --numstat` on the implementation commit lists exactly two paths:
    `src/sidebar/components/ProjectPanel.tsx` and
    `src/sidebar/components/ProjectPanel.chip-order.test.tsx`. For both, insertions equal deletions.
    No `.css` path, no `src-tauri/` path, no `AcDiscoveryPanel.tsx`, no `regex-filter` or
    `menu-guard` test path appears. The plan file is committed in its own earlier commit, so
    `git diff --name-only main...HEAD` over the whole branch lists those two paths plus
-   `plans/1745-running-chips-after-repos.md` and nothing else. Do not pin an exact insertion count
-   for the test file: git picks the minimal edit script, and because the moved comment and one
-   `branch` assertion are unchanged lines it will report fewer than four of each. AC 2 is what pins
-   the result there.
+   `plans/1745-running-chips-after-repos.md` and nothing else. The exact per-file insertion and
+   deletion counts are pinned by AC 10; note that they are *not* the region sizes 25 and 4, because
+   git reports the minimal edit script and several lines of each region are unchanged.
 4. `git diff main...HEAD -- src/sidebar/styles/sidebar.css` is empty.
 5. `npx vitest run src/sidebar/components/ProjectPanel.chip-order.test.tsx` exits 0 and reports
    3 passed, 0 failed.
@@ -286,9 +340,36 @@ Objective and checkable. All commands run from the repository root on
    unmodified.
 7. `npm run typecheck` exits 0.
 8. `npm test` exits 0. If it does not, the failing test must be reproduced on `302e6c12` before it
-   can be attributed to anything other than this change. These two commands are exactly what the
-   `frontend-regression` job runs (`.github/workflows/pr-regression-gates.yml:365` and `:381`).
+   can be attributed to anything other than this change. These are the two gating commands of the
+   `frontend-regression` job (`.github/workflows/pr-regression-gates.yml:365` is
+   `run: npm run typecheck`, `:381` is the `npm test` line). The job is not identical to running them
+   locally: it also runs `npm ci` at `:362`, and it invokes `npm test` inside the #480 known-debt
+   classifier guard with reporter flags,
+   `npm test -- --reporter=default --reporter=json --outputFile.json=npm-test-results.json 2>&1 | tee npm-test.log`,
+   so a local `npm test` exercises the same suite but not the guard's tolerate/fail classification.
 9. Semantic restatement of AC 1, checkable by reading the maximal-row test's assertions: in the
    quick-access coordinator row's `.ac-discovery-badges`, every `.ac-discovery-badge.running-peer`
    chip has a higher child index than every `.ac-discovery-badge.branch` chip, the strip still has
    exactly 12 children, and the enumerated class-token set at `:208-228` is unchanged.
+10. Nothing outside the two edited regions is touched. AC 1 and AC 2 pin bytes only inside
+    2529-2553 and 200-203, and AC 3 pins only the file set, so without this criterion a stray
+    one-line-for-one-line edit elsewhere in either file would satisfy AC 1, AC 2, AC 3 and AC 4.
+    With default git settings (`diff.algorithm` is unset in this repository, so Myers; default three
+    lines of context):
+
+    - `git diff main...HEAD --numstat -- src/sidebar/components/ProjectPanel.tsx` reports exactly
+      `12` insertions and `12` deletions, and
+      `git diff main...HEAD -- src/sidebar/components/ProjectPanel.tsx | grep -c '^@@'` reports `2`,
+      with the two hunk headers beginning `@@ -2526,18 +2526,6 @@` and `@@ -2551,6 +2539,18 @@`.
+    - `git diff main...HEAD --numstat -- src/sidebar/components/ProjectPanel.chip-order.test.tsx`
+      reports exactly `2` insertions and `2` deletions, in exactly `1` hunk, whose header begins
+      `@@ -197,10 +197,10 @@`.
+
+    These figures are measured, not estimated: the post-state of both files was constructed from the
+    `302e6c12` blobs and diffed. They are stable under `--diff-algorithm=myers`, `histogram`,
+    `patience` and `minimal`, all four of which give 12/12 in 2 hunks and 2/2 in 1 hunk. Two points
+    the implementer and the reviewer must not "correct": the `ProjectPanel.tsx` diff is **two** hunks,
+    not one, because the 13-line repo block sits between the two halves of the move and is longer
+    than twice the three lines of context, so the hunks cannot merge; and the hunk headers start at
+    2526 and 2551, not at 2529, because a header begins three context lines before the first changed
+    line.
