@@ -3517,6 +3517,22 @@ html.light-theme .session-context-title-btn:hover:not(:disabled) {
   color: var(--sidebar-accent);
 }
 
+/* #1731 - the Add to Group user-plus SVG. Geometry mirrors
+   .session-context-detach-icon above: 14px inside the 16px
+   .session-context-option-icon box, which has no spare room. The colour is the
+   TOKEN, not the raw #22c55e: that literal is only the dark value
+   (variables.css:17) and renders at contrast 1.92 on the light --sidebar-surface
+   (#ebebf0), short of the 3:1 non-text minimum, and worse there than the light
+   value #16a34a, which reaches 2.77 and is still short. That is the
+   shortfall disclosed and accepted in #1731; the fix is to retune the light
+   --status-waiting, never to hard-code a darker green here. */
+.session-context-group-add-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: var(--status-waiting);
+}
+
 /* #1708 - the Edit TASK title pencil, pairing it with the Clear task title broom
    below it. Token, not the raw #eab308: that literal is only the dark value
    (variables.css:18) and renders at contrast 1.61 on #ebebf0. */
