@@ -16,6 +16,7 @@ pub mod injected_messages;
 pub(crate) mod instance_artifacts;
 pub(crate) mod instance_gitignore;
 pub mod local_config_io;
+pub(crate) mod local_overlay;
 pub mod loops;
 pub mod placeholders;
 pub mod profile;
