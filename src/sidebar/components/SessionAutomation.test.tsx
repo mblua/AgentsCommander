@@ -6,6 +6,7 @@ import RootAgentBanner from "./RootAgentBanner";
 import iconUrl from "../../../src-tauri/icons/64x64.png";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
+  bridge,
   click,
   contextMenu,
   installBrowserDomStubs,
@@ -15,6 +16,7 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { sessionsStore } from "../stores/sessions";
+import { bridgesStore } from "../stores/bridges";
 import { voiceRecorder } from "../../shared/voice-recorder";
 
 describe("session workflow automation hooks", () => {
@@ -313,6 +315,76 @@ describe("session workflow automation hooks", () => {
     try {
       expect(rendered.root.querySelector('[data-ac-testid="rootAgent.banner"]')).not.toBeNull();
       expect(rendered.root.querySelector(".profile-outdated-badge")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});
+
+describe("Telegram indicator after #1730", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    vi.restoreAllMocks();
+  });
+
+  it("carries the bot label on the root banner button while a bridge is attached", async () => {
+    sessionsStore.setSessions([session({ id: "root-1", isRootAgent: true, status: "running" })]);
+    bridgesStore.setBridges([bridge({ sessionId: "root-1" })]);
+
+    const fake = new FakeTransport();
+    const rendered = renderWithFakeTransport(() => <RootAgentBanner />, fake);
+    try {
+      const button = rendered.root.querySelector(".session-item-telegram.active");
+      expect(button).not.toBeNull();
+      expect(button?.getAttribute("title")).toBe("Detach Telegram: Ops Bot");
+      expect(rendered.root.querySelector(".session-item-bridge-dot")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("leaves the root banner button unattached and untitled by a bot with no bridge", async () => {
+    sessionsStore.setSessions([session({ id: "root-1", isRootAgent: true, status: "running" })]);
+    bridgesStore.setBridges([]);
+
+    const fake = new FakeTransport();
+    const rendered = renderWithFakeTransport(() => <RootAgentBanner />, fake);
+    try {
+      const button = rendered.root.querySelector(".session-item-telegram");
+      expect(button).not.toBeNull();
+      expect(rendered.root.querySelector(".session-item-telegram.active")).toBeNull();
+      expect(button?.getAttribute("title")).toBe("Attach Telegram");
+      expect(rendered.root.querySelector(".session-item-bridge-dot")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("leaves a session row button titled Attach Telegram with no bridge", async () => {
+    const fake = new FakeTransport();
+    const rendered = renderWithFakeTransport(
+      () => (
+        <SessionItem
+          session={session({ id: "session-1", status: "running" })}
+          isActive={false}
+        />
+      ),
+      fake,
+    );
+    try {
+      const button = rendered.root.querySelector(".session-item-telegram");
+      expect(button).not.toBeNull();
+      expect(button?.getAttribute("title")).toBe("Attach Telegram");
+      expect(rendered.root.querySelector(".session-item-bridge-dot")).toBeNull();
     } finally {
       rendered.cleanup();
     }

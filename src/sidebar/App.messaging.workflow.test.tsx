@@ -116,9 +116,8 @@ describe("SidebarApp Telegram messaging workflow", () => {
 
       await waitFor(() => {
         const activeButton = rendered.root.querySelector(".session-item-telegram.active");
-        const dot = rendered.root.querySelector(".session-item-bridge-dot");
         expect(activeButton).not.toBeNull();
-        expect(dot?.getAttribute("title")).toBe("Telegram: Ops Bot");
+        expect(activeButton?.getAttribute("title")).toBe("Detach Telegram: Ops Bot");
       });
     } finally {
       rendered.cleanup();

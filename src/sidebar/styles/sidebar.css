@@ -830,10 +830,6 @@ html, body, #root {
   padding-left: calc(var(--spacing-md) + 16px);
 }
 
-.team-group-coordinator .session-item .session-item-name {
-  font-weight: 600;
-}
-
 .team-group-ungrouped {
   margin-top: 4px;
   border-top: 1px solid var(--sidebar-border);
@@ -865,19 +861,6 @@ html, body, #root {
 .session-item-info {
   flex: 1;
   min-width: 0;
-}
-
-.session-item-name {
-  font-size: var(--font-size-md);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--sidebar-fg);
-}
-
-.session-item.active .session-item-name {
-  color: var(--sidebar-fg);
 }
 
 /* Extended name: dim the parent/prefix, highlight the repo name */
@@ -3189,13 +3172,25 @@ html.light-theme .settings-api-client-warning {
   color: var(--sidebar-accent);
 }
 
-/* Bridge indicator dot on session item */
-.session-item-bridge-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+/* #1730 - the bridge indicator on the replica row, which has no attach/detach
+   button of its own. TelegramIcon takes no props, so the wrapper carries the class
+   and the bot colour; the svg is fill: currentColor. 14px matches
+   .session-item-telegram svg below. It replaces a 6px dot, so the row does not
+   shrink there, but it cannot make the row taller either: .replica-item is
+   align-items: center with no height, its .replica-item-info column is at least
+   the badge strip's 16px whenever any badge renders, and the row also loses the
+   whole name line in this change. */
+.session-item-bridge-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  box-shadow: 0 0 4px currentColor;
+}
+
+.session-item-bridge-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
 }
 
 /* Telegram attach/detach button on session item */
@@ -3520,6 +3515,22 @@ html.light-theme .session-context-title-btn:hover:not(:disabled) {
   height: 14px;
   flex: 0 0 14px;
   color: var(--sidebar-accent);
+}
+
+/* #1731 - the Add to Group user-plus SVG. Geometry mirrors
+   .session-context-detach-icon above: 14px inside the 16px
+   .session-context-option-icon box, which has no spare room. The colour is the
+   TOKEN, not the raw #22c55e: that literal is only the dark value
+   (variables.css:17) and renders at contrast 1.92 on the light --sidebar-surface
+   (#ebebf0), short of the 3:1 non-text minimum, and worse there than the light
+   value #16a34a, which reaches 2.77 and is still short. That is the
+   shortfall disclosed and accepted in #1731; the fix is to retune the light
+   --status-waiting, never to hard-code a darker green here. */
+.session-context-group-add-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: var(--status-waiting);
 }
 
 /* #1708 - the Edit TASK title pencil, pairing it with the Clear task title broom
@@ -5965,7 +5976,6 @@ html.light-theme .settings-hint-error {
 .replica-item:hover .session-item-mic { display: flex; }
 .replica-item:hover .session-item-explorer { display: flex; }
 .replica-item:hover .session-item-detach { display: flex; }
-.replica-item:hover .session-item-telegram { display: flex; }
 .replica-item:hover .session-item-close { display: flex; }
 
 .replica-item > .session-item-status {
@@ -6033,14 +6043,6 @@ html.light-theme .settings-hint-error {
   opacity: 1;
 }
 
-.coord-quick-access .replica-item:has(.ac-discovery-badge.coord) .replica-item-info:has(.coord-task-title) .replica-item-name {
-  /* When a title is shown, demote the replica name to the secondary line. */
-  font-weight: 400;
-  font-size: var(--font-size-xs, 10px);
-  color: var(--sidebar-fg-dim);
-  opacity: 0.85;
-}
-
 .replica-item-name {
   font-size: var(--font-size-sm);
   color: var(--sidebar-fg);
@@ -6066,6 +6068,31 @@ html.light-theme .settings-hint-error {
   padding: 1px 4px;
   border-radius: 3px;
   text-transform: uppercase;
+}
+
+/* #1730 - the row's identity chip. Deliberately NOT an .ac-discovery-badge: those
+   are uppercase, letter-spaced status pills, and deep-space dims every one of them
+   to 0.95 opacity (sidebar.css:6883). This chip must read identically in all seven
+   sidebar styles and both themes, so it carries its own geometry and takes no
+   per-skin override. text-transform is pinned because agent names are lowercase
+   and case-carrying. align-self is load-bearing, not cosmetic: .ac-discovery-badges
+   has no align-items (so it stretches its children) while .session-item-meta is
+   align-items: flex-start, and without it the same chip would be a 16px block on
+   the replica row and a 14px one on the session row. */
+.agent-name-chip {
+  align-self: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: #fff;
+  color: #111;
+  text-transform: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .ac-discovery-badge.team {
@@ -6876,10 +6903,6 @@ html.light-theme[data-sidebar-style="deep-space"] .ac-wg-group:last-child {
   color: rgba(200, 220, 255, 0.92);
 }
 
-[data-sidebar-style="deep-space"] .session-item-name {
-  color: rgba(200, 220, 255, 0.92);
-}
-
 [data-sidebar-style="deep-space"] .ac-discovery-badge {
   opacity: 0.95;
 }
@@ -6979,12 +7002,6 @@ html.light-theme[data-sidebar-style="deep-space"] .replica-item.active:has(.ac-d
   box-shadow: 0 0 16px rgba(255, 180, 40, 0.06);
 }
 
-[data-sidebar-style="deep-space"] .replica-item:has(.ac-discovery-badge.coord) .replica-item-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: rgba(255, 210, 130, 0.95);
-}
-
 html.light-theme[data-sidebar-style="deep-space"] .replica-item:has(.ac-discovery-badge.coord) {
   background: linear-gradient(
     135deg,
@@ -6992,10 +7009,6 @@ html.light-theme[data-sidebar-style="deep-space"] .replica-item:has(.ac-discover
     rgba(255, 160, 30, 0.04) 100%
   );
   border-color: rgba(200, 140, 20, 0.2);
-}
-
-html.light-theme[data-sidebar-style="deep-space"] .replica-item:has(.ac-discovery-badge.coord) .replica-item-name {
-  color: rgba(140, 80, 0, 0.9);
 }
 
 /* Non-coordinator agents in Deep Space — recede slightly but remain legible */
@@ -7343,10 +7356,6 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-wg-group {
   color: rgba(230, 210, 170, 0.92);
 }
 
-[data-sidebar-style="obsidian-mesh"] .session-item-name {
-  color: rgba(230, 210, 170, 0.92);
-}
-
 [data-sidebar-style="obsidian-mesh"] .ac-discovery-badge.coord {
   background: rgba(255, 80, 40, 0.15);
   color: #ff6830;
@@ -7419,19 +7428,9 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item.active:has(.a
   border-left-color: rgba(255, 100, 40, 0.6);
 }
 
-[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-discovery-badge.coord) .replica-item-name {
-  font-size: 12px;
-  font-weight: 700;
-  color: rgba(255, 180, 100, 0.95);
-}
-
 html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-discovery-badge.coord) {
   background: rgba(200, 100, 20, 0.06);
   border-left-color: rgba(200, 100, 20, 0.35);
-}
-
-html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-discovery-badge.coord) .replica-item-name {
-  color: rgba(160, 70, 0, 0.9);
 }
 
 /* Worker agents — minimized, receded */
@@ -7449,13 +7448,16 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-disco
   font-size: 10px;
 }
 
-[data-sidebar-style="obsidian-mesh"] .replica-item:not(:has(.ac-discovery-badge.coord)) .ac-discovery-badges {
+/* #1730 - the identity chip and the blocked-menu alert now live in this strip, so
+   the strip itself can no longer be hidden: an unhovered worker row would lose its
+   name and its alert. Hide only the status chips, and only while the row is not
+   hovered, so every child returns to its own display value on hover with no
+   restore value to keep in sync. Replaces the former container-level hide and its
+   hover reveal. */
+[data-sidebar-style="obsidian-mesh"]
+  .replica-item:not(:has(.ac-discovery-badge.coord)):not(:hover)
+  .ac-discovery-badges > *:not(.agent-name-chip):not(.coord-communication-slot) {
   display: none;
-}
-
-/* Reveal worker badges on hover */
-[data-sidebar-style="obsidian-mesh"] .replica-item:not(:has(.ac-discovery-badge.coord)):hover .ac-discovery-badges {
-  display: flex;
 }
 
 /* Worker status dots — smaller */

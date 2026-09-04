@@ -550,7 +550,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       "docs",
       "cli",
       "Open Matrix folder",
-      "Close Session",
+      "Close Session (Ctrl+Shift+W)",
       "Detach session",
       "Attach Telegram",
       "Add to Group",
@@ -1438,7 +1438,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       const coordinatorRow = findRow(rendered!.root, coordQuickRowTestId);
       let menu = await openMenu(coordinatorRow);
       const matrix = findExactMenuButton(menu, "Open Matrix folder")!;
-      const close = findExactMenuButton(menu, "Close Session")!;
+      const close = findExactMenuButton(menu, "Close Session (Ctrl+Shift+W)")!;
       const open = findExactMenuButton(menu, "Detach session")!;
       const attach = findExactMenuButton(menu, "Attach Telegram")!;
       const add = findExactMenuButton(menu, "Add to Group")!;
@@ -1451,8 +1451,12 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       expect(open).not.toBeNull();
       expect(add).not.toBeNull();
       expect(attach.querySelector("svg")).not.toBeNull();
-      // #1708 - Add to Group fills its icon gutter like every other entry.
-      expect(add.querySelector(".session-context-option-icon")?.textContent).toBe("\u{1F465}");
+      // #1731 - Add to Group's gutter now holds the tinted user-plus SVG. The
+      // emoji it used to hold moved to Create new group; the gutter must be left
+      // with NO text glyph at all, which is what the empty textContent pins.
+      const addIcon = add.querySelector<HTMLElement>(".session-context-option-icon");
+      expect(addIcon?.querySelector(".session-context-group-add-icon")).not.toBeNull();
+      expect(addIcon?.textContent).toBe("");
       // #1708 - the detach entry carries the sized, tinted SVG, not a text glyph.
       expect(open.querySelector(".session-context-detach-icon")).not.toBeNull();
       // #1708 - with no bridge the Telegram icon falls back to the Telegram blue.
@@ -1486,6 +1490,23 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
     }
   });
 
+  it("moves the group emoji into the Create new group gutter (#1731)", async () => {
+    await setupPanel();
+    const menu = await openMenu(findRow(rendered!.root, coordQuickRowTestId));
+    // The flyout renders through a Portal, so it is reached from the document,
+    // not from the menu element.
+    click(findExactMenuButton(menu, "Add to Group")!);
+    const createTestId = `replica.${automationIdPart("wg-2-dev-team")}.groups.create`;
+    await waitFor(() =>
+      expect(document.querySelector(`[data-ac-testid="${createTestId}"]`)).not.toBeNull(),
+    );
+    const create = document.querySelector<HTMLElement>(`[data-ac-testid="${createTestId}"]`)!;
+    expect(create.querySelector(".session-context-option-icon")?.textContent).toBe("\u{1F465}");
+    // #1731 constraint 3 - an emoji ignores `color`, so this row carries no
+    // colour class; one here would be dead CSS.
+    expect(create.querySelector(".session-context-group-add-icon")).toBeNull();
+  });
+
   it("removes row buttons while preserving the bridge indicator and colored Detach action", async () => {
     const bridges = await testBridgesStore();
     bridges.setBridges([
@@ -1496,9 +1517,11 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       const row = findRow(rendered!.root, memberRowTestId);
       expect(row.querySelector(".session-item-telegram")).toBeNull();
       expect(row.querySelector(".session-item-close")).toBeNull();
-      expect(row.querySelector<HTMLElement>(".session-item-bridge-dot")?.style.background).toBe(
-        "red",
-      );
+      const icon = row.querySelector<HTMLElement>(".session-item-bridge-icon");
+      expect(icon?.style.color).toBe("red");
+      expect(icon?.getAttribute("title")).toBe(`Telegram: ${botOne.label}`);
+      expect(icon?.querySelector("svg")).not.toBeNull();
+      expect(row.querySelector(".session-item-bridge-dot")).toBeNull();
 
       const menu = await openMenu(row);
       const detach = findExactMenuButton(menu, "Detach Telegram")!;
@@ -2045,7 +2068,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       const menu = await openMenu();
       expect(findExactMenuButton(menu, "Attach Telegram")).toBeNull();
       expect(findExactMenuButton(menu, "Detach Telegram")).toBeNull();
-      const close = findExactMenuButton(menu, "Close Session");
+      const close = findExactMenuButton(menu, "Close Session (Ctrl+Shift+W)");
       expect(close).not.toBeNull();
       click(close!);
       await waitFor(() => expect(replicaMenu()).toBeNull());
@@ -2066,7 +2089,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
         return { closed: true, workingCount: 0 };
       });
 
-      click(findExactMenuButton(await openMenu(), "Close Session")!);
+      click(findExactMenuButton(await openMenu(), "Close Session (Ctrl+Shift+W)")!);
       await waitFor(() => expect(fake.callsFor("close_coordinator")).toHaveLength(1));
       expect(fake.callsFor("close_coordinator")[0].args).toEqual({
         id: "member-session",

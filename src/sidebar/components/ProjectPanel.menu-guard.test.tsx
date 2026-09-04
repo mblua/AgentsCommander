@@ -123,6 +123,11 @@ describe("ProjectPanel blocked-menu communication slot (#1649)", () => {
       `[data-ac-testid="${rowSlotTestId(wgName, replicaName)}"]`
     );
     expect(slot?.getAttribute("data-kind")).toBe("blockedMenu");
+    const strip = slot?.parentElement;
+    expect(strip?.classList.contains("ac-discovery-badges")).toBe(true);
+    expect(strip?.firstElementChild).toBe(slot);
+    expect(rendered.root.querySelector(".replica-item-name-row")).toBeNull();
+    expect(rendered.root.querySelector(".coord-task-line")).not.toBeNull();
   });
 
   it("renders the blocked-menu slot for a worker without a task title", async () => {
@@ -137,12 +142,13 @@ describe("ProjectPanel blocked-menu communication slot (#1649)", () => {
       `[data-ac-testid="${rowSlotTestId(wgName, replicaName, "workgroups")}"]`
     );
     expect(slot?.getAttribute("data-kind")).toBe("blockedMenu");
-    const nameRow = slot?.parentElement;
-    const name = nameRow?.querySelector<HTMLElement>(".replica-item-name");
-    expect(nameRow?.classList.contains("replica-item-name-row")).toBe(true);
-    expect(nameRow?.classList.contains("coord-task-line")).toBe(true);
-    expect(name?.style.minWidth).toBe("0px");
-    expect(name?.style.flex).toBe("1 1 auto");
+    const strip = slot?.parentElement;
+    expect(strip?.classList.contains("ac-discovery-badges")).toBe(true);
+    expect(strip?.firstElementChild).toBe(slot);
+    const chip = strip?.querySelector<HTMLElement>(".agent-name-chip");
+    expect(chip?.textContent).toBe(replicaName);
+    expect(chip?.getAttribute("title")).toBe(replicaName);
+    expect(rendered.root.querySelector(".replica-item-name-row")).toBeNull();
   });
 
   it("uses the backend message for the tooltip and exposes an accessible label", async () => {
