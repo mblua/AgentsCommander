@@ -1401,15 +1401,7 @@ mod tests {
     #[tokio::test]
     async fn probe_version_skips_an_ansi_only_first_line() {
         let (program, args): (&str, Vec<&str>) = if cfg!(windows) {
-            (
-                "powershell.exe",
-                vec![
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "[char]27 + '[?25l'; '2.0.1'",
-                ],
-            )
+            ("cmd.exe", vec!["/C", "echo \x1b[?25l& echo 2.0.1"])
         } else {
             ("sh", vec!["-c", "printf '\\033[?25l\\n2.0.1\\n'"])
         };
