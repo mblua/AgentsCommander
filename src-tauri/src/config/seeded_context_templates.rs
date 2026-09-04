@@ -27,6 +27,9 @@ pub(crate) enum ContextTemplateSkipReason {
     IgnoredByUser,
     AcRootUnavailable,
     TargetMissing,
+    /// #1748: a distribution-owned template differs from the current default on a
+    /// path that cannot report the replacement; the repair is left to the scan.
+    DistributionRepairDeferred,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +77,7 @@ impl<T> ContextTemplateExecution<T> {
 #[derive(Debug, Clone)]
 pub(crate) struct TemplateSyncOutcome {
     pub(crate) pending_update: Option<ContextTemplateUpdate>,
+    pub(crate) replacement: Option<ContextTemplateReplacement>,
     pub(crate) target_outcome: TemplatePublication,
 }
 
@@ -459,6 +463,20 @@ pub struct ContextTemplateOverwriteResult {
     pub current_default_sha256: String,
 }
 
+/// #1748: everything a caller needs to tell the user that AgentsCommander replaced
+/// the bytes they had on disk. Produced ONLY when the replaced bytes were not ours.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextTemplateReplacement {
+    pub project_path: String,
+    pub workspace_path: String,
+    pub file_path: String,
+    pub filename: String,
+    pub label: String,
+    pub backup_path: String,
+    pub local_override_path: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SeededContextTemplateState {
@@ -493,9 +511,13 @@ struct SeededContextTemplateSpec {
     label: &'static str,
     current_version: u32,
     current_content: fn() -> &'static str,
-    is_known_generated: fn(&str) -> bool,
+    /// #1748: `None` for a distribution-owned spec, which consults no recognizer.
+    is_known_generated: Option<fn(&str) -> bool>,
     project_actionable: bool,
     suppress_unknown_without_state: bool,
+    /// #1748: the file is owned by the distribution. It is repaired on the
+    /// reporting sync path instead of being offered as a pending update.
+    distribution_owned: bool,
 }
 
 #[derive(Clone)]
@@ -591,9 +613,10 @@ fn project_specs() -> [SeededContextTemplateSpec; 5] {
             label: "AgentsCommander shared context",
             current_version: 6,
             current_content: crate::config::session_context::get_default_agent_template,
-            is_known_generated: is_known_generated_global_template,
+            is_known_generated: None,
             project_actionable: true,
             suppress_unknown_without_state: true,
+            distribution_owned: true,
         },
         SeededContextTemplateSpec {
             id: "coordinator",
@@ -601,9 +624,10 @@ fn project_specs() -> [SeededContextTemplateSpec; 5] {
             label: "Orchestrator context",
             current_version: 6,
             current_content: crate::config::session_context::get_default_coordinator_template,
-            is_known_generated: is_known_generated_coordinator_template,
+            is_known_generated: Some(is_known_generated_coordinator_template),
             project_actionable: true,
             suppress_unknown_without_state: false,
+            distribution_owned: false,
         },
         windows,
         linux,
@@ -625,9 +649,10 @@ fn platform_specs() -> [SeededContextTemplateSpec; 3] {
             label: "Windows host platform rules",
             current_version: 1,
             current_content: || crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
-            is_known_generated: is_known_generated_platform_windows,
+            is_known_generated: Some(is_known_generated_platform_windows),
             project_actionable: true,
             suppress_unknown_without_state: true,
+            distribution_owned: false,
         },
         SeededContextTemplateSpec {
             id: "platform.linux",
@@ -635,9 +660,10 @@ fn platform_specs() -> [SeededContextTemplateSpec; 3] {
             label: "Linux host platform rules",
             current_version: 1,
             current_content: || crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
-            is_known_generated: is_known_generated_platform_linux,
+            is_known_generated: Some(is_known_generated_platform_linux),
             project_actionable: true,
             suppress_unknown_without_state: true,
+            distribution_owned: false,
         },
         SeededContextTemplateSpec {
             id: "platform.macos",
@@ -645,9 +671,10 @@ fn platform_specs() -> [SeededContextTemplateSpec; 3] {
             label: "macOS host platform rules",
             current_version: 1,
             current_content: || crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
-            is_known_generated: is_known_generated_platform_macos,
+            is_known_generated: Some(is_known_generated_platform_macos),
             project_actionable: true,
             suppress_unknown_without_state: true,
+            distribution_owned: false,
         },
     ]
 }
@@ -659,9 +686,12 @@ fn root_spec() -> SeededContextTemplateSpec {
         label: "Root agent context",
         current_version: 8,
         current_content: crate::config::root_agent::default_root_context_template,
-        is_known_generated: crate::config::root_agent::is_known_generated_root_context_template,
+        is_known_generated: Some(
+            crate::config::root_agent::is_known_generated_root_context_template,
+        ),
         project_actionable: false,
         suppress_unknown_without_state: false,
+        distribution_owned: false,
     }
 }
 
@@ -679,19 +709,16 @@ fn actionable_project_spec_by_filename(
     }
     let spec = project_spec_by_filename(filename)
         .ok_or_else(|| "Context template filename is not managed by AgentsCommander".to_string())?;
+    if spec.distribution_owned {
+        return Err(
+            "Context template filename is managed by the distribution and cannot be overwritten by hand"
+                .to_string(),
+        );
+    }
     if !spec.project_actionable {
         return Err("Context template filename is not actionable for this project".to_string());
     }
     Ok(spec)
-}
-
-fn is_known_generated_global_template(content: &str) -> bool {
-    content == crate::config::session_context::get_default_agent_template()
-        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
-        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
-        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
-        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
-        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
 }
 
 /// #979: exact recognition of a STANDALONE (app-config) generated global context.
@@ -702,9 +729,10 @@ fn is_known_generated_global_template(content: &str) -> bool {
 /// a CRLF copy, an invalid-UTF-8 file, a one-byte edit, or a state entry claiming
 /// ownership is UNKNOWN, and unknown content is backed up, never deleted.
 ///
-/// Deliberately separate from `is_known_generated_global_template`, which drives
-/// PROJECT auto-update behavior through `project_specs()`. Root retirement must not
-/// widen that.
+/// #1748: the PROJECT `global` spec is distribution-owned and names no recognizer,
+/// so this is the only recognizer for these bytes. It must never be pointed at
+/// `project_specs()`: a second consumer would make a future edit to it silently
+/// change project behavior.
 fn is_known_generated_standalone_global_template(content: &str) -> bool {
     content == crate::config::session_context::get_default_agent_template()
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
@@ -744,6 +772,16 @@ fn is_known_generated_coordinator_template(content: &str) -> bool {
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("{:x}", digest)
+}
+
+/// #1748: the operator-owned override that replaces this template at render time.
+/// Kept in lockstep with `config::local_overlay`, whose PRIVATE `MARKDOWN_LOCAL_SUFFIX`
+/// (`local_overlay.rs:28`) is the other half of the contract.
+fn local_override_filename(filename: &str) -> String {
+    format!(
+        "{}.local.md",
+        filename.strip_suffix(".md").unwrap_or(filename)
+    )
 }
 
 fn display_path(path: &Path) -> String {
@@ -1154,7 +1192,10 @@ where
         );
         return ContextTemplateExecution::completed(TemplatePublication::ChangedUnderUs);
     }
-    if !(spec.is_known_generated)(&snapshot.content) {
+    if !spec
+        .is_known_generated
+        .is_some_and(|matches| matches(&snapshot.content))
+    {
         log::warn!(
             "[context-templates] {} no longer matches a known generated default; preserving current content",
             path.display()
@@ -1172,6 +1213,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_one_template(
     project_dir: Option<&Path>,
     ac_root: &Path,
@@ -1179,6 +1221,7 @@ fn sync_one_template(
     loaded: &mut LoadedState,
     allow_create_missing: bool,
     return_pending: bool,
+    repair: bool,
     clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
 ) -> ContextTemplateExecution<TemplateSyncOutcome> {
     let path = ac_root.join(spec.filename);
@@ -1194,6 +1237,7 @@ fn sync_one_template(
         if !allow_create_missing {
             return ContextTemplateExecution::completed(TemplateSyncOutcome {
                 pending_update: None,
+                replacement: None,
                 target_outcome: TemplatePublication::Skipped(
                     ContextTemplateSkipReason::CreationDisabled,
                 ),
@@ -1219,6 +1263,7 @@ fn sync_one_template(
                 return ContextTemplateExecution::from_parts(
                     Ok(TemplateSyncOutcome {
                         pending_update: None,
+                        replacement: None,
                         target_outcome,
                     }),
                     carried_publication,
@@ -1236,6 +1281,7 @@ fn sync_one_template(
         return ContextTemplateExecution::from_parts(
             Ok(TemplateSyncOutcome {
                 pending_update: None,
+                replacement: None,
                 target_outcome,
             }),
             carried_publication,
@@ -1250,9 +1296,120 @@ fn sync_one_template(
         return ContextTemplateExecution::from_parts(
             Ok(TemplateSyncOutcome {
                 pending_update: None,
+                replacement: None,
                 target_outcome,
             }),
             carried_publication,
+        );
+    }
+
+    if spec.distribution_owned {
+        if !repair {
+            // D2: no reporting channel on this path, so the repair is deferred to
+            // the scan rather than replacing operator bytes with no notification.
+            let target_outcome = carried_publication
+                .map(TemplatePublication::Published)
+                .unwrap_or(TemplatePublication::Skipped(
+                    ContextTemplateSkipReason::DistributionRepairDeferred,
+                ));
+            return ContextTemplateExecution::from_parts(
+                Ok(TemplateSyncOutcome {
+                    pending_update: None,
+                    replacement: None,
+                    target_outcome,
+                }),
+                carried_publication,
+            );
+        }
+
+        // Unreachable today: `repair` is true only on the scan, which always has a
+        // project path. It must stay an error rather than a silent `None`.
+        let project_dir = match project_dir {
+            Some(project_dir) => project_dir,
+            None => {
+                return ContextTemplateExecution::from_parts(
+                    Err(format!(
+                        "Cannot create context template update for {} without a project path",
+                        path.display()
+                    )),
+                    carried_publication,
+                )
+            }
+        };
+
+        // D6: silent only when the bytes about to be replaced are exactly the ones
+        // we last wrote. Computed before any write.
+        let notify = loaded
+            .trusted_entry(spec)
+            .and_then(|entry| entry.last_seeded_sha256.as_deref())
+            != Some(snapshot.sha256.as_str());
+
+        let backup_path = match create_backup(&path, &snapshot.bytes) {
+            Ok(backup_path) => backup_path,
+            Err(error) => {
+                return ContextTemplateExecution::from_parts(Err(error), carried_publication)
+            }
+        };
+        let after_backup = match read_validated_snapshot(&path, "Context template") {
+            Ok(after_backup) => after_backup,
+            Err(error) => {
+                return ContextTemplateExecution::from_parts(Err(error), carried_publication)
+            }
+        };
+        if !after_backup
+            .as_ref()
+            .is_some_and(|after_backup| after_backup.sha256 == snapshot.sha256)
+        {
+            log::warn!(
+                "[context-templates] {} changed before the distribution repair; the bytes read first are kept in {}",
+                path.display(),
+                backup_path.display()
+            );
+            return ContextTemplateExecution::from_parts(
+                Ok(TemplateSyncOutcome {
+                    pending_update: None,
+                    replacement: None,
+                    target_outcome: TemplatePublication::ChangedUnderUs,
+                }),
+                carried_publication,
+            );
+        }
+
+        let published_at = match crate::config::session_context::atomically_replace_context_template(
+            &path,
+            current_default,
+            clock,
+        ) {
+            Ok(published_at) => published_at,
+            Err(error) => {
+                log::warn!(
+                    "[context-templates] replacement failed after backup {} was created: {}",
+                    backup_path.display(),
+                    error
+                );
+                return ContextTemplateExecution::from_parts(Err(error), carried_publication);
+            }
+        };
+        loaded.mark_seeded(spec, &current_default_sha256);
+        let replacement = notify.then(|| ContextTemplateReplacement {
+            project_path: display_path(project_dir),
+            workspace_path: display_path(ac_root),
+            file_path: display_path(&path),
+            filename: spec.filename.to_string(),
+            label: spec.label.to_string(),
+            backup_path: display_path(&backup_path),
+            local_override_path: display_path(
+                &ac_root.join(local_override_filename(spec.filename)),
+            ),
+        });
+        let publication = ContextPublication { published_at };
+        return ContextTemplateExecution::with_publication(
+            Ok(TemplateSyncOutcome {
+                pending_update: None,
+                replacement,
+                target_outcome: TemplatePublication::Published(publication),
+            }),
+            publication,
         );
     }
 
@@ -1260,7 +1417,9 @@ fn sync_one_template(
     if let Some(entry) = trusted_entry.as_ref() {
         if entry.last_seeded_sha256.as_deref() == Some(snapshot.sha256.as_str())
             && entry.last_seeded_sha256.as_deref() != Some(current_default_sha256.as_str())
-            && (spec.is_known_generated)(&snapshot.content)
+            && spec
+                .is_known_generated
+                .is_some_and(|matches| matches(&snapshot.content))
         {
             let execution = auto_update_generated_template(&path, spec, &snapshot.sha256, clock);
             let published = execution.published;
@@ -1272,6 +1431,7 @@ fn sync_one_template(
                     ContextTemplateExecution::from_parts(
                         Ok(TemplateSyncOutcome {
                             pending_update: None,
+                            replacement: None,
                             target_outcome,
                         }),
                         published,
@@ -1283,7 +1443,11 @@ fn sync_one_template(
     }
 
     let has_valid_entry = trusted_entry.is_some();
-    if !has_valid_entry && (spec.is_known_generated)(&snapshot.content) {
+    if !has_valid_entry
+        && spec
+            .is_known_generated
+            .is_some_and(|matches| matches(&snapshot.content))
+    {
         let execution = auto_update_generated_template(&path, spec, &snapshot.sha256, clock);
         let published = execution.published;
         return match execution.completion {
@@ -1294,6 +1458,7 @@ fn sync_one_template(
                 ContextTemplateExecution::from_parts(
                     Ok(TemplateSyncOutcome {
                         pending_update: None,
+                        replacement: None,
                         target_outcome,
                     }),
                     published,
@@ -1316,6 +1481,7 @@ fn sync_one_template(
         return ContextTemplateExecution::from_parts(
             Ok(TemplateSyncOutcome {
                 pending_update: None,
+                replacement: None,
                 target_outcome,
             }),
             carried_publication,
@@ -1334,6 +1500,7 @@ fn sync_one_template(
             return ContextTemplateExecution::from_parts(
                 Ok(TemplateSyncOutcome {
                     pending_update: None,
+                    replacement: None,
                     target_outcome,
                 }),
                 carried_publication,
@@ -1376,6 +1543,7 @@ fn sync_one_template(
     ContextTemplateExecution::from_parts(
         Ok(TemplateSyncOutcome {
             pending_update,
+            replacement: None,
             target_outcome,
         }),
         carried_publication,
@@ -1388,6 +1556,10 @@ fn compute_pending_update(
     spec: SeededContextTemplateSpec,
     loaded: &LoadedState,
 ) -> Result<Option<ContextTemplateUpdate>, String> {
+    // D4: a distribution-owned template is never offered as a pending update.
+    if spec.distribution_owned {
+        return Ok(None);
+    }
     let path = ac_root.join(spec.filename);
     let current_default = (spec.current_content)();
     let current_default_sha256 = sha256_hex(current_default.as_bytes());
@@ -1400,7 +1572,11 @@ fn compute_pending_update(
 
     let trusted_entry = loaded.trusted_entry(spec);
     let has_valid_entry = trusted_entry.is_some();
-    if !has_valid_entry && (spec.is_known_generated)(&snapshot.content) {
+    if !has_valid_entry
+        && spec
+            .is_known_generated
+            .is_some_and(|matches| matches(&snapshot.content))
+    {
         return Ok(None);
     }
     if spec.suppress_unknown_without_state && !has_valid_entry {
@@ -1498,7 +1674,8 @@ fn ensure_project_context_templates_with_clock(
     validate_existing_dir(ac_root, "Context template directory")?;
     let mut loaded = load_state(ac_root, false)?;
     for spec in project_specs() {
-        let execution = sync_one_template(None, ac_root, spec, &mut loaded, true, false, clock);
+        let execution =
+            sync_one_template(None, ac_root, spec, &mut loaded, true, false, false, clock);
         let _ = consume_template_execution(spec, execution, on_publication)?;
     }
     persist_state_best_effort(ac_root, &loaded);
@@ -1531,7 +1708,16 @@ fn ensure_platform_context_templates_with_clock(
     validate_existing_dir(context_dir, "Context template directory")?;
     let mut loaded = load_state(context_dir, false)?;
     for spec in platform_specs() {
-        let execution = sync_one_template(None, context_dir, spec, &mut loaded, true, false, clock);
+        let execution = sync_one_template(
+            None,
+            context_dir,
+            spec,
+            &mut loaded,
+            true,
+            false,
+            false,
+            clock,
+        );
         let _ = consume_template_execution(spec, execution, on_publication)?;
     }
     persist_state_best_effort(context_dir, &loaded);
@@ -1570,9 +1756,23 @@ fn scan_project_context_template_updates_with_clock(
     clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
     on_publication: &mut dyn FnMut(&'static str, ContextPublication),
 ) -> Result<Vec<ContextTemplateUpdate>, String> {
+    scan_project_context_templates_with_clock(project_dir, ac_root, clock, on_publication)
+        .map(|(updates, _replacements)| updates)
+}
+
+/// #1748: the scan is the only sync path whose return value reaches the UI, so it
+/// is the only one that repairs a distribution-owned template (D2). Phase 02 turns
+/// the returned replacements into a surfaced value; here they are logged.
+fn scan_project_context_templates_with_clock(
+    project_dir: &Path,
+    ac_root: &Path,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+) -> Result<(Vec<ContextTemplateUpdate>, Vec<ContextTemplateReplacement>), String> {
     validate_project_ac_root_for_scan(project_dir, ac_root)?;
     let mut loaded = load_state(ac_root, false)?;
     let mut updates = Vec::new();
+    let mut replacements = Vec::new();
     for spec in project_specs() {
         let execution = sync_one_template(
             Some(project_dir),
@@ -1581,17 +1781,25 @@ fn scan_project_context_template_updates_with_clock(
             &mut loaded,
             false,
             true,
+            true,
             clock,
         );
-        if let Some(update) =
-            consume_template_execution(spec, execution, on_publication)?.pending_update
-        {
+        let outcome = consume_template_execution(spec, execution, on_publication)?;
+        if let Some(replacement) = outcome.replacement {
+            log::info!(
+                "[context-templates] {} was replaced with the current default; the previous bytes are in {}",
+                replacement.file_path,
+                replacement.backup_path
+            );
+            replacements.push(replacement);
+        }
+        if let Some(update) = outcome.pending_update {
             updates.push(update);
         }
     }
     persist_state_best_effort(ac_root, &loaded);
     dedupe_context_template_updates(&mut updates);
-    Ok(updates)
+    Ok((updates, replacements))
 }
 
 pub fn sync_project_context_template_for_read(
@@ -1631,7 +1839,16 @@ fn sync_project_context_template_for_read_with_clock(
     };
     validate_existing_dir(context_dir, "Context template directory")?;
     let mut loaded = load_state(context_dir, false)?;
-    let execution = sync_one_template(None, context_dir, spec, &mut loaded, true, false, clock);
+    let execution = sync_one_template(
+        None,
+        context_dir,
+        spec,
+        &mut loaded,
+        true,
+        false,
+        false,
+        clock,
+    );
     let result = consume_template_execution(spec, execution, on_publication).map(|_| ());
     persist_state_best_effort(context_dir, &loaded);
     result
@@ -1654,6 +1871,7 @@ pub fn ensure_root_context_template(config_dir: &Path) -> Result<(), String> {
         root_spec(),
         &mut loaded,
         true,
+        false,
         false,
         &mut clock,
     );
@@ -2209,15 +2427,13 @@ mod tests {
         GLOBAL_CONTEXT_TEMPLATE_FILENAME,
     };
 
-    /// #1614 AC7.9 and AC7.11 for the two project specs. Each new snapshot is
-    /// accepted by EVERY recognizer it is wired into, and is != the current
-    /// default -- the assert_ne is what proves the rename actually moved the
-    /// default rather than freezing a copy of something unchanged.
+    /// #1614 AC7.9 and AC7.11. #1748 retired the PROJECT global recognizer, so
+    /// this constant's only recognizer is now the #979 standalone classifier; the
+    /// snapshot must still be accepted by it and be != the current default -- the
+    /// assert_ne is what proves the rename actually moved the default rather than
+    /// freezing a copy of something unchanged.
     #[test]
     fn frozen_pre_room_rename_global_template_is_recognized() {
-        assert!(is_known_generated_global_template(
-            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
-        ));
         assert!(is_known_generated_standalone_global_template(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
         ));
@@ -2250,17 +2466,11 @@ mod tests {
     /// criterion in this plan surfaces that; before plan section 15.3's
     /// re-base both constants really were 539 bytes and F4406596...316A.
     #[test]
-    fn both_frozen_global_generations_are_recognized_and_distinct() {
-        // The ||-chain limb: neither generation may be dropped from either
-        // recognizer.
-        assert!(is_known_generated_global_template(
-            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
-        ));
+    fn both_frozen_global_generations_are_standalone_recognized_and_distinct() {
+        // The ||-chain limb: #1748 left one recognizer for these bytes, and neither
+        // generation may be dropped from it.
         assert!(is_known_generated_standalone_global_template(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
-        ));
-        assert!(is_known_generated_global_template(
-            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
         ));
         assert!(is_known_generated_standalone_global_template(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
@@ -2360,8 +2570,9 @@ mod tests {
     // section 10.2 item 17, 10.6, acceptance item 31): the coordinator recognizer
     // must accept the current default AND every frozen generated predecessor
     // (pre-cross-workgroup v3, pre-token-minimization v2, pre-raise-hand), but not
-    // custom content; the global recognizer stays narrower (never a coordinator
-    // snapshot). A mutation that recognizes only one generation fails here.
+    // custom content. A mutation that recognizes only one generation fails here.
+    // #1748 retired the PROJECT global recognizer, so the arms that asserted its
+    // narrowness are gone; the standalone arms below are what remains.
     #[test]
     fn stage_e_all_recognized_coordinator_predecessors_are_generated_and_custom_is_not() {
         assert!(is_known_generated_coordinator_template(
@@ -2380,42 +2591,15 @@ mod tests {
             "custom operator-authored coordinator content"
         ));
 
-        assert!(is_known_generated_global_template(
-            crate::config::session_context::get_default_agent_template()
-        ));
-        assert!(is_known_generated_global_template(
-            GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
-        ));
-        assert!(is_known_generated_global_template(
-            GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
-        ));
-        assert!(is_known_generated_global_template(
-            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
-        ));
         assert!(is_known_generated_standalone_global_template(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
         ));
         assert!(is_known_generated_standalone_global_template(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
         ));
-        assert!(is_known_generated_global_template(
-            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
-        ));
         assert!(is_known_generated_standalone_global_template(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
         ));
-        assert!(
-            !is_known_generated_global_template(
-                COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
-            ),
-            "the global recognizer must not widen to a coordinator snapshot"
-        );
-        assert!(
-            !is_known_generated_global_template(
-                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS
-            ),
-            "the global recognizer must not widen to a platform default"
-        );
     }
 
     #[test]
@@ -2427,12 +2611,10 @@ mod tests {
             (global.current_content)(),
             crate::config::session_context::get_default_agent_template()
         );
-        assert!((global.is_known_generated)(
-            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
-        ));
-        assert!((global.is_known_generated)(
-            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
-        ));
+        assert!(
+            global.is_known_generated.is_none(),
+            "#1748: the global spec is distribution-owned and names no recognizer"
+        );
 
         assert_eq!(coordinator.id, "coordinator");
         assert_eq!(coordinator.current_version, 6);
@@ -2440,12 +2622,14 @@ mod tests {
             (coordinator.current_content)(),
             get_default_coordinator_template()
         );
-        assert!((coordinator.is_known_generated)(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
-        ));
-        assert!(!(coordinator.is_known_generated)(
-            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
-        ));
+        assert!(coordinator
+            .is_known_generated
+            .is_some_and(|matches| matches(
+                COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+            )));
+        assert!(!coordinator
+            .is_known_generated
+            .is_some_and(|matches| matches(GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION)));
 
         for (spec, id, filename, default) in [
             (
@@ -2471,20 +2655,69 @@ mod tests {
             assert_eq!(spec.filename, filename);
             assert_eq!(spec.current_version, 1);
             assert_eq!((spec.current_content)(), default);
-            assert!((spec.is_known_generated)(default));
+            assert!(spec
+                .is_known_generated
+                .is_some_and(|matches| matches(default)));
             assert!(spec.project_actionable);
             assert!(spec.suppress_unknown_without_state);
         }
-        assert!(!(windows.is_known_generated)(
+        assert!(!windows.is_known_generated.is_some_and(|matches| matches(
             crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX
-        ));
-        assert!(!(global.is_known_generated)(
-            crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS
-        ));
+        )));
     }
 
     fn hash_text(content: &str) -> String {
         sha256_hex(content.as_bytes())
+    }
+
+    /// #1748: until phase 02 returns the replacements from the public scan, the
+    /// tests read them through the internal collector the scan already builds.
+    fn scan_project_context_template_replacements_for_test(
+        project_dir: &Path,
+        ac_root: &Path,
+    ) -> Result<Vec<ContextTemplateReplacement>, String> {
+        let mut clock = fixed_publication_time;
+        let mut on_publication = |_: &'static str, _: ContextPublication| {};
+        scan_project_context_templates_with_clock(
+            project_dir,
+            ac_root,
+            &mut clock,
+            &mut on_publication,
+        )
+        .map(|(_updates, replacements)| replacements)
+    }
+
+    /// Every `*.bak` in the workspace, sorted. The backup COUNT is what detects a
+    /// spurious rewrite; mtime cannot (see the new-test-3 comment).
+    fn backup_files(ac_root: &Path) -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(ac_root)
+            .expect("read workspace")
+            .map(|entry| entry.expect("workspace entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".bak"))
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// A trusted `global` state entry written as raw JSON, so the fixture pins the
+    /// wire keys rather than the struct shape phase 01b retypes.
+    fn write_trusted_global_state(ac_root: &Path, last_seeded_sha256: &str) {
+        std::fs::write(
+            ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME),
+            format!(
+                concat!(
+                    "{{\"schemaVersion\":1,\"templates\":{{\"global\":{{",
+                    "\"templateId\":\"global\",\"currentVersion\":3,",
+                    "\"lastSeededSha256\":\"{}\"}}}}}}"
+                ),
+                last_seeded_sha256
+            ),
+        )
+        .expect("write trusted global state");
     }
 
     fn fixed_publication_time() -> chrono::DateTime<chrono::Utc> {
@@ -2815,21 +3048,16 @@ mod tests {
         );
     }
 
-    /// #1005 S6 failing-first proof for ALL of: the v2 rewrite (assert_ne), BOTH
-    /// recognizers (project auto-update :308 and standalone root retirement
-    /// :323 - missing either strands installs silently, :260 suppresses
-    /// stateless unknowns), the version bump, and the old-v1-on-disk
-    /// auto-upgrade through the seeded-state SHA flow.
+    /// #1005 S6 failing-first proof for the v2 rewrite (assert_ne), the #979
+    /// standalone recognizer and the version bump, retargeted by #1748 at the scan:
+    /// the distribution repair, not the read path, is what lands the current
+    /// default on an old pristine file.
     #[test]
-    fn read_sync_updates_pre_token_minimization_global_template() {
+    fn scan_replaces_pre_token_minimization_global_template() {
         assert_ne!(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
             crate::config::session_context::get_default_agent_template(),
             "v2 rewrite must actually change the template or the freeze is pointless"
-        );
-        assert!(
-            is_known_generated_global_template(GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION),
-            "project recognizer must accept the frozen v1 bytes"
         );
         assert!(
             is_known_generated_standalone_global_template(
@@ -2847,13 +3075,11 @@ mod tests {
         )
         .expect("write pristine v1 global");
 
-        let published_at = fixed_publication_time();
-        let publications =
-            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
-        assert_one_publication(
-            &publications,
-            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
-            published_at,
+        assert!(
+            scan_project_context_template_updates(temp.path(), &ac_root)
+                .expect("scan updates")
+                .is_empty(),
+            "a distribution-owned template never yields a pending update"
         );
 
         let content = std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
@@ -2861,14 +3087,21 @@ mod tests {
         assert_eq!(
             content,
             crate::config::session_context::get_default_agent_template(),
-            "pristine v1 Context.AgentsCommander.md must auto-upgrade"
+            "pristine v1 Context.AgentsCommander.md must be repaired to the default"
+        );
+        let backups = backup_files(&ac_root);
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(
+            std::fs::read_to_string(&backups[0]).expect("read backup"),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+            "the backup must hold the pre-run bytes"
         );
         let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
             parsed["templates"]["global"]["currentVersion"], 6,
-            "recognized v1 global content must land on the current v6 default"
+            "the repaired global must land on the current v6 default"
         );
     }
 
@@ -2927,20 +3160,10 @@ mod tests {
             "frozen v4 global snapshot changed; it must stay byte-identical to what shipped"
         );
         assert!(
-            is_known_generated_global_template(GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES),
-            "the project recognizer must accept the frozen v4 bytes"
-        );
-        assert!(
             is_known_generated_standalone_global_template(
                 GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
             ),
             "the standalone (retirement) recognizer must accept the frozen v4 bytes"
-        );
-        assert!(
-            !is_known_generated_global_template(
-                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS
-            ),
-            "the project recognizer must not widen to a platform default"
         );
         assert_ne!(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
@@ -2953,16 +3176,10 @@ mod tests {
     fn global_before_summarization_is_an_exact_generated_operand() {
         let one_byte = format!("{GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION}X");
         let crlf = GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION.replace('\n', "\r\n");
-        let recognizers = [
-            (
-                "project",
-                is_known_generated_global_template as fn(&str) -> bool,
-            ),
-            (
-                "standalone",
-                is_known_generated_standalone_global_template as fn(&str) -> bool,
-            ),
-        ];
+        let recognizers = [(
+            "standalone",
+            is_known_generated_standalone_global_template as fn(&str) -> bool,
+        )];
 
         for (label, recognizes) in recognizers {
             assert!(
@@ -2975,7 +3192,7 @@ mod tests {
     }
 
     #[test]
-    fn read_sync_updates_pristine_v3_global_template_without_state() {
+    fn scan_replaces_pristine_v3_global_template_without_state() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
@@ -2985,21 +3202,22 @@ mod tests {
         )
         .expect("write pristine v3 global");
 
-        let published_at = fixed_publication_time();
-        let publications =
-            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
-        assert_one_publication(
-            &publications,
-            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
-            published_at,
+        let replacements =
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("scan pristine v3 global");
+        assert_eq!(
+            replacements.len(),
+            1,
+            "with no state entry the replacement is notified"
         );
         let current = crate::config::session_context::get_default_agent_template();
         let current_hash = hash_text(current);
         assert_eq!(
             std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
-                .expect("read migrated global"),
+                .expect("read repaired global"),
             current
         );
+        assert_eq!(backup_files(&ac_root).len(), 1);
         let state: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
                 .expect("read seeded state"),
@@ -3012,16 +3230,19 @@ mod tests {
         );
 
         assert!(
-            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at).is_empty(),
-            "a second sync must be already-current"
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("second scan")
+                .is_empty(),
+            "a second scan must produce no replacement"
         );
+        assert_eq!(backup_files(&ac_root).len(), 1, "and no new backup");
         assert!(scan_project_context_template_updates(temp.path(), &ac_root)
             .expect("scan updates")
             .is_empty());
     }
 
     #[test]
-    fn read_sync_updates_pristine_v3_global_template_with_trusted_state() {
+    fn scan_replaces_pristine_v3_global_template_with_trusted_state() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
@@ -3044,20 +3265,24 @@ mod tests {
         );
         persist_state(&ac_root, &state).expect("persist trusted v3 state");
 
-        let published_at = fixed_publication_time();
-        let publications =
-            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
-        assert_one_publication(
-            &publications,
-            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
-            published_at,
+        let replacements =
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("scan pristine v3 global");
+        assert!(
+            replacements.is_empty(),
+            "a trusted entry naming these exact bytes makes the repair silent"
         );
         let current = crate::config::session_context::get_default_agent_template();
         let current_hash = hash_text(current);
         assert_eq!(
             std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
-                .expect("read migrated global"),
+                .expect("read repaired global"),
             current
+        );
+        assert_eq!(
+            backup_files(&ac_root).len(),
+            1,
+            "silent does not mean unbacked-up"
         );
         let state: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
@@ -3071,16 +3296,22 @@ mod tests {
         );
 
         assert!(
-            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at).is_empty(),
-            "a second sync must be already-current"
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("second scan")
+                .is_empty(),
+            "a second scan must produce no replacement"
         );
+        assert_eq!(backup_files(&ac_root).len(), 1, "and no new backup");
         assert!(scan_project_context_template_updates(temp.path(), &ac_root)
             .expect("scan updates")
             .is_empty());
     }
 
+    /// #1748 inverted this: a near match is no longer a preserved category. It is
+    /// drift like any other and the scan replaces it, in both state shapes. The
+    /// read path still leaves it alone, which is D2.
     #[test]
-    fn v3_global_near_matches_remain_custom_in_both_project_state_shapes() {
+    fn scan_replaces_v3_global_near_matches_in_both_project_state_shapes() {
         let variants = [
             (
                 "one-byte",
@@ -3123,58 +3354,60 @@ mod tests {
                 assert!(
                     sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at)
                         .is_empty(),
-                    "{label}/{trusted_state}: a near match must not publish"
+                    "{label}/{trusted_state}: the read path must not publish a repair"
                 );
                 assert_eq!(
                     std::fs::read(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                         .expect("read preserved near match"),
                     bytes,
-                    "{label}/{trusted_state}: sync changed bytes"
+                    "{label}/{trusted_state}: the read path changed bytes"
                 );
 
-                let mut clock = || published_at;
-                let mut scan_publications = Vec::new();
-                let updates = scan_project_context_template_updates_with_clock(
-                    temp.path(),
-                    &ac_root,
-                    &mut clock,
-                    &mut |filename, publication| scan_publications.push((filename, publication)),
-                )
-                .expect("scan v3 near match");
-                assert!(scan_publications.is_empty(), "{label}/{trusted_state}");
-                if trusted_state {
-                    assert_eq!(updates.len(), 1, "{label}: trusted state must be pending");
-                    assert_eq!(updates[0].current_default_version, 6);
-                    assert_eq!(
-                        updates[0].current_default_sha256,
-                        hash_text(crate::config::session_context::get_default_agent_template())
-                    );
-                } else {
-                    assert!(updates.is_empty(), "{label}: stateless global is ambiguous");
-                }
+                let replacements =
+                    scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                        .expect("scan v3 near match");
+                assert_eq!(
+                    replacements.len(),
+                    1,
+                    "{label}/{trusted_state}: a near match is drift and is notified"
+                );
+                let current = crate::config::session_context::get_default_agent_template();
+                assert_eq!(
+                    std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                        .expect("read repaired near match"),
+                    current,
+                    "{label}/{trusted_state}: the scan must repair a near match"
+                );
+                let backups = backup_files(&ac_root);
+                assert_eq!(backups.len(), 1, "{label}/{trusted_state}: {backups:?}");
+                assert_eq!(
+                    std::fs::read(&backups[0]).expect("read backup"),
+                    bytes,
+                    "{label}/{trusted_state}: the backup must hold the near-match bytes"
+                );
 
                 assert!(
-                    sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at)
+                    scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                        .expect("second scan v3 near match")
                         .is_empty(),
-                    "{label}/{trusted_state}: second read must not publish"
+                    "{label}/{trusted_state}: the second scan is idempotent"
                 );
-                assert_eq!(
-                    std::fs::read(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
-                        .expect("re-read preserved near match"),
-                    bytes,
-                    "{label}/{trusted_state}: second read changed bytes"
+                assert_eq!(backup_files(&ac_root).len(), 1, "{label}/{trusted_state}");
+                assert!(
+                    scan_project_context_template_updates(temp.path(), &ac_root)
+                        .expect("second scan v3 near match")
+                        .is_empty(),
+                    "{label}/{trusted_state}: never a pending update"
                 );
-                let second = scan_project_context_template_updates(temp.path(), &ac_root)
-                    .expect("second scan v3 near match");
-                assert_eq!(second.len(), usize::from(trusted_state));
             }
         }
     }
 
+    /// #1748 inverted this the same way as the near-match test: a fine custom
+    /// global is replaced by the scan, in both state shapes.
     #[test]
-    fn compact_fine_token_global_template_remains_custom_in_both_state_shapes() {
+    fn scan_replaces_the_compact_fine_token_global_in_both_state_shapes() {
         const FINE_TEMPLATE: &str = "# Fine custom context\n{{AGENT_ROOT}}{{MATRIX_SECTION}}{{MESSAGING_EXCEPTION}}{{MATRIX_ALLOWED}}{{MESSAGING_ALLOWED}}{{FORBIDDEN_SCOPE}}{{GIT_SCOPE}}{{SKILLS_SECTION}}{{PEER_NAME_FORMAT}}{{SEND_MESSAGE_INSTRUCTIONS}}\n";
-        assert!(!is_known_generated_global_template(FINE_TEMPLATE));
         assert!(!is_known_generated_standalone_global_template(
             FINE_TEMPLATE
         ));
@@ -3213,41 +3446,51 @@ mod tests {
                     fixed_publication_time(),
                 )
                 .is_empty(),
-                "fine custom content must never publish"
+                "the read path must not publish a repair"
             );
             assert_eq!(
                 std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                     .expect("read fine custom global"),
                 FINE_TEMPLATE
             );
-            let updates = scan_project_context_template_updates(temp.path(), &ac_root)
-                .expect("scan fine custom global");
-            assert_eq!(updates.len(), usize::from(trusted_state));
-            if trusted_state {
-                assert_eq!(updates[0].current_default_version, 6);
-            }
+
+            let replacements =
+                scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                    .expect("scan fine custom global");
+            assert_eq!(
+                replacements.len(),
+                1,
+                "{trusted_state}: fine custom content is drift and is notified"
+            );
+            assert!(
+                scan_project_context_template_updates(temp.path(), &ac_root)
+                    .expect("scan fine custom global")
+                    .is_empty(),
+                "{trusted_state}: never a pending update"
+            );
             assert_eq!(
                 std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
-                    .expect("re-read fine custom global"),
+                    .expect("re-read repaired global"),
+                crate::config::session_context::get_default_agent_template()
+            );
+            let backups = backup_files(&ac_root);
+            assert_eq!(backups.len(), 1, "{trusted_state}: {backups:?}");
+            assert_eq!(
+                std::fs::read_to_string(&backups[0]).expect("read backup"),
                 FINE_TEMPLATE
             );
         }
     }
 
-    /// #1605 failing-first proof for ALL of: the v5 placeholder insertion
-    /// (assert_ne), BOTH recognizers (project auto-update and standalone root
-    /// retirement), the version bump, and the pristine-v4-on-disk auto-upgrade
-    /// through the seeded-state SHA flow.
+    /// #1605 failing-first proof for the v5 placeholder insertion (assert_ne), the
+    /// #979 standalone recognizer and the version bump, retargeted by #1748 at the
+    /// scan.
     #[test]
-    fn read_sync_updates_pre_host_platform_rules_global_template() {
+    fn scan_replaces_pre_host_platform_rules_global_template() {
         assert_ne!(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
             crate::config::session_context::get_default_agent_template(),
             "the v5 rewrite must actually change the template or the freeze is pointless"
-        );
-        assert!(
-            is_known_generated_global_template(GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES),
-            "project recognizer must accept the frozen v4 bytes"
         );
         assert!(
             is_known_generated_standalone_global_template(
@@ -3265,13 +3508,11 @@ mod tests {
         )
         .expect("write pristine v4 global");
 
-        let published_at = fixed_publication_time();
-        let publications =
-            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
-        assert_one_publication(
-            &publications,
-            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
-            published_at,
+        assert_eq!(
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("scan pristine v4 global")
+                .len(),
+            1
         );
 
         let content = std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
@@ -3279,14 +3520,20 @@ mod tests {
         assert_eq!(
             content,
             crate::config::session_context::get_default_agent_template(),
-            "pristine v4 Context.AgentsCommander.md must auto-upgrade to v6"
+            "pristine v4 Context.AgentsCommander.md must be repaired to v6"
+        );
+        let backups = backup_files(&ac_root);
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(
+            std::fs::read_to_string(&backups[0]).expect("read backup"),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
         );
         let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
             parsed["templates"]["global"]["currentVersion"], 6,
-            "recognized v4 global content must land on the current v6 default"
+            "the repaired global must land on the current v6 default"
         );
     }
 
@@ -3294,15 +3541,11 @@ mod tests {
     /// with NO `global` state entry. Failing-first proof for the v3 rename
     /// (assert_ne), BOTH recognizers, the version bump, and the auto-upgrade.
     #[test]
-    fn read_sync_updates_pre_agent_repos_global_template() {
+    fn scan_replaces_pre_agent_repos_global_template() {
         assert_ne!(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS,
             crate::config::session_context::get_default_agent_template(),
             "the v3 rename must actually change the template or the freeze is pointless"
-        );
-        assert!(
-            is_known_generated_global_template(GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS),
-            "project recognizer must accept the frozen v2 bytes"
         );
         assert!(
             is_known_generated_standalone_global_template(
@@ -3320,13 +3563,12 @@ mod tests {
         )
         .expect("write pristine v2 global");
 
-        let published_at = fixed_publication_time();
-        let publications =
-            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
-        assert_one_publication(
-            &publications,
-            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
-            published_at,
+        assert_eq!(
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("scan pristine v2 global")
+                .len(),
+            1,
+            "population C has no state entry, so the replacement is notified"
         );
 
         let content = std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
@@ -3334,8 +3576,9 @@ mod tests {
         assert_eq!(
             content,
             crate::config::session_context::get_default_agent_template(),
-            "pristine v2 Context.AgentsCommander.md must auto-upgrade"
+            "pristine v2 Context.AgentsCommander.md must be repaired"
         );
+        assert_eq!(backup_files(&ac_root).len(), 1);
         let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
@@ -3344,7 +3587,7 @@ mod tests {
             scan_project_context_template_updates(temp.path(), &ac_root)
                 .expect("scan updates")
                 .is_empty(),
-            "an auto-upgraded pristine template must not leave a pending update"
+            "a repaired template must not leave a pending update"
         );
     }
 
@@ -3354,7 +3597,7 @@ mod tests {
     /// freeze this yields 1 pending update, i.e. the modal telling the user that
     /// a file they never touched "appears customized".
     #[test]
-    fn read_sync_updates_pre_agent_repos_global_template_with_state_entry() {
+    fn scan_replaces_pre_agent_repos_global_template_with_state_entry() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
@@ -3377,21 +3620,20 @@ mod tests {
         );
         persist_state(&ac_root, &state).expect("persist v2 state entry");
 
-        let published_at = fixed_publication_time();
-        let publications =
-            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
-        assert_one_publication(
-            &publications,
-            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
-            published_at,
+        assert!(
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("scan the dominant population")
+                .is_empty(),
+            "the state names these exact bytes, so the repair is silent"
         );
 
         assert_eq!(
             std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read global"),
             crate::config::session_context::get_default_agent_template(),
-            "a pristine v2 with a trusted state entry must auto-upgrade silently"
+            "a pristine v2 with a trusted state entry must be repaired silently"
         );
+        assert_eq!(backup_files(&ac_root).len(), 1);
         let parsed: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
                 .expect("read seeded state"),
@@ -3404,68 +3646,6 @@ mod tests {
                 .is_empty(),
             "the dominant population must never be accused of having customized the file"
         );
-    }
-
-    /// #1369 (C4) AC-4.8a: the whole flow the update modal drives, minus the
-    /// pixels. A v2 template with a trusted state entry and ONE user edit is a
-    /// genuine customization, so it must surface as a pending update carrying the
-    /// v4 digest and version, and overwriting must land the v4 bytes on disk and
-    /// in the state.
-    #[test]
-    fn customized_pre_agent_repos_global_template_scans_and_overwrites_to_current() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let ac_root = temp.path().join(".ac");
-        std::fs::create_dir(&ac_root).expect("create workspace");
-        let customized = format!("{GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS}\n\nMY OWN NOTE\n");
-        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), &customized)
-            .expect("write customized v2 global");
-        let mut state = SeededContextTemplateState::default();
-        state.templates.insert(
-            "global".to_string(),
-            SeededContextTemplateEntry {
-                template_id: "global".to_string(),
-                current_version: 2,
-                last_seeded_sha256: Some(hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS)),
-                last_observed_sha256: None,
-                ignored_default_sha256: None,
-                ignored_observed_sha256: None,
-            },
-        );
-        persist_state(&ac_root, &state).expect("persist v2 state entry");
-
-        let update = scan_project_context_template_updates(temp.path(), &ac_root)
-            .expect("scan updates")
-            .pop()
-            .expect("pending update");
-        let v4_sha = hash_text(crate::config::session_context::get_default_agent_template());
-        assert_eq!(update.filename, GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-        assert_eq!(update.current_default_sha256, v4_sha);
-        assert_eq!(update.current_default_version, 6);
-
-        let result = overwrite_context_template_with_default(
-            &ac_root,
-            &update.filename,
-            &update.current_file_sha256,
-            &update.current_default_sha256,
-        )
-        .expect("overwrite");
-
-        assert_eq!(
-            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
-                .expect("read global"),
-            crate::config::session_context::get_default_agent_template()
-        );
-        assert_eq!(
-            std::fs::read_to_string(result.backup_path).expect("read backup"),
-            customized
-        );
-        let parsed: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
-                .expect("read seeded state"),
-        )
-        .expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["lastSeededSha256"], v4_sha);
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 6);
     }
 
     #[test]
@@ -4256,22 +4436,25 @@ mod tests {
         );
     }
 
+    /// #1748 retargeted this pair at the coordinator: `global` is distribution-owned
+    /// and has no ignore, dismiss or pending-update lifecycle any more (new test 5
+    /// pins the rejection). The coordinator still has one, so the property survives.
     #[test]
     fn ignored_v3_pair_becomes_pending_against_v4() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
-        let custom = "# Custom global\n\nKEEP THIS CONTENT\n";
+        let custom = "# Custom coordinator\n\nKEEP THIS CONTENT\n";
         let custom_hash = hash_text(custom);
-        let v3_hash = hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION);
-        let v4_hash = hash_text(crate::config::session_context::get_default_agent_template());
-        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), custom)
-            .expect("write custom global");
+        let v3_hash = hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE);
+        let v4_hash = hash_text(get_default_coordinator_template());
+        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+            .expect("write custom coordinator");
         let mut state = SeededContextTemplateState::default();
         state.templates.insert(
-            "global".to_string(),
+            "coordinator".to_string(),
             SeededContextTemplateEntry {
-                template_id: "global".to_string(),
+                template_id: "coordinator".to_string(),
                 current_version: 3,
                 last_seeded_sha256: Some(v3_hash.clone()),
                 last_observed_sha256: Some(custom_hash.clone()),
@@ -4296,13 +4479,13 @@ mod tests {
         assert_eq!(updates[0].current_default_sha256, v4_hash);
         assert_eq!(updates[0].current_default_version, 6);
         assert_eq!(
-            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
-                .expect("read preserved custom global"),
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read preserved custom coordinator"),
             custom
         );
         let after_observation = load_state(&ac_root, true).expect("load observed state");
         let entry = after_observation
-            .trusted_entry(project_spec_by_filename(GLOBAL_CONTEXT_TEMPLATE_FILENAME).unwrap())
+            .trusted_entry(project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME).unwrap())
             .expect("trusted global entry");
         assert_eq!(
             entry.ignored_observed_sha256.as_deref(),
@@ -4315,7 +4498,7 @@ mod tests {
 
         dismiss_context_template_update(
             &ac_root,
-            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             &updates[0].current_file_sha256,
             &updates[0].current_default_sha256,
         )
@@ -4324,12 +4507,12 @@ mod tests {
             .expect("scan re-dismissed v4 pair");
         assert!(second.is_empty());
         assert_eq!(
-            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
-                .expect("re-read preserved custom global"),
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("re-read preserved custom coordinator"),
             custom
         );
 
-        let spec = project_spec_by_filename(GLOBAL_CONTEXT_TEMPLATE_FILENAME).unwrap();
+        let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME).unwrap();
         let mut loaded = load_state(&ac_root, true).expect("load re-dismissed state");
         let mut clock = || fixed_publication_time();
         let outcome = sync_one_template(
@@ -4338,6 +4521,7 @@ mod tests {
             spec,
             &mut loaded,
             false,
+            true,
             true,
             &mut clock,
         )
@@ -4354,16 +4538,16 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
-        let custom = "# Current ignored custom global\n";
+        let custom = "# Current ignored custom coordinator\n";
         let custom_hash = hash_text(custom);
-        let v4_hash = hash_text(crate::config::session_context::get_default_agent_template());
-        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), custom)
-            .expect("write custom global");
+        let v4_hash = hash_text(get_default_coordinator_template());
+        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+            .expect("write custom coordinator");
         let mut state = SeededContextTemplateState::default();
         state.templates.insert(
-            "global".to_string(),
+            "coordinator".to_string(),
             SeededContextTemplateEntry {
-                template_id: "global".to_string(),
+                template_id: "coordinator".to_string(),
                 current_version: 6,
                 last_seeded_sha256: Some(v4_hash.clone()),
                 last_observed_sha256: Some(custom_hash.clone()),
@@ -4385,12 +4569,12 @@ mod tests {
         assert!(updates.is_empty());
         assert!(publications.is_empty());
         assert_eq!(
-            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
-                .expect("read ignored custom global"),
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read ignored custom coordinator"),
             custom
         );
 
-        let spec = project_spec_by_filename(GLOBAL_CONTEXT_TEMPLATE_FILENAME).unwrap();
+        let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME).unwrap();
         let mut loaded = load_state(&ac_root, true).expect("load ignored v4 state");
         let outcome = sync_one_template(
             Some(temp.path()),
@@ -4398,6 +4582,7 @@ mod tests {
             spec,
             &mut loaded,
             false,
+            true,
             true,
             &mut clock,
         )
@@ -5094,5 +5279,376 @@ mod tests {
     #[cfg(windows)]
     fn try_symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
         std::os::windows::fs::symlink_file(target, link)
+    }
+
+    /// #1748 new test 1 and its control in one harness: the SAME pristine fixture
+    /// is silent when the state says we wrote those bytes and notifies when it does
+    /// not. The flipped input is `lastSeededSha256` and nothing else; the file is
+    /// replaced and backed up identically in both arms.
+    #[test]
+    fn pristine_older_generation_is_replaced_silently_when_the_state_says_we_wrote_it() {
+        let current = crate::config::session_context::get_default_agent_template();
+        for (arm, seeded, expected_replacements) in [
+            (
+                "silent",
+                hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS),
+                0usize,
+            ),
+            (
+                "the_same_pristine_file_notifies_when_the_state_does_not_match",
+                hash_text("something else"),
+                1usize,
+            ),
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let ac_root = temp.path().join(".ac");
+            std::fs::create_dir(&ac_root).expect("create workspace");
+            std::fs::write(
+                ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+                GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS,
+            )
+            .expect("write pristine v2 global");
+            write_trusted_global_state(&ac_root, &seeded);
+
+            let replacements =
+                scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                    .expect("scan");
+            assert_eq!(replacements.len(), expected_replacements, "{arm}");
+
+            assert_eq!(
+                std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                    .expect("read repaired global"),
+                current,
+                "{arm}: the file must become the current default"
+            );
+            let backups = backup_files(&ac_root);
+            assert_eq!(backups.len(), 1, "{arm}: {backups:?}");
+            assert_eq!(
+                std::fs::read_to_string(&backups[0]).expect("read backup"),
+                GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS,
+                "{arm}: the backup must hold the pre-run bytes"
+            );
+            let parsed: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+                    .expect("read seeded state"),
+            )
+            .expect("parse seeded state");
+            assert_eq!(
+                parsed["templates"]["global"]["lastSeededSha256"],
+                hash_text(current),
+                "{arm}"
+            );
+            assert_eq!(parsed["templates"]["global"]["currentVersion"], 6, "{arm}");
+            assert!(
+                scan_project_context_template_updates(temp.path(), &ac_root)
+                    .expect("scan updates")
+                    .is_empty(),
+                "{arm}: a distribution-owned template never yields a pending update"
+            );
+        }
+    }
+
+    /// #1748 new test 2: no state file at all is the population that must be told.
+    #[test]
+    fn an_installation_with_no_state_entry_is_notified() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        let path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&path, GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS)
+            .expect("write pristine v2 global");
+        assert!(!ac_root
+            .join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME)
+            .exists());
+
+        let replacements =
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("scan");
+        assert_eq!(replacements.len(), 1);
+        let replacement = &replacements[0];
+        assert_eq!(replacement.file_path, display_path(&path));
+        assert_eq!(replacement.filename, GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        assert_eq!(replacement.label, "AgentsCommander shared context");
+        assert_eq!(replacement.project_path, display_path(temp.path()));
+        assert_eq!(replacement.workspace_path, display_path(&ac_root));
+        assert!(
+            replacement
+                .local_override_path
+                .ends_with("Context.AgentsCommander.local.md"),
+            "{}",
+            replacement.local_override_path
+        );
+        assert_eq!(
+            std::fs::read_to_string(&replacement.backup_path).expect("read backup"),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
+        );
+
+        // Control: a second run over the repaired tree. This proves IDEMPOTENCE and
+        // NOT the notify rule, because a repaired file returns at the equal-default
+        // early return and never reaches D6.
+        let repaired = std::fs::read_to_string(&path).expect("read repaired global");
+        assert!(
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("second scan")
+                .is_empty()
+        );
+        assert_eq!(backup_files(&ac_root).len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("re-read repaired global"),
+            repaired
+        );
+    }
+
+    /// #1748 new test 3: the repair never touches a file that already holds the
+    /// current default.
+    #[test]
+    fn a_file_already_equal_to_the_current_default_is_never_rewritten() {
+        let current = crate::config::session_context::get_default_agent_template();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        let path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&path, current).expect("write the current default");
+        assert!(backup_files(&ac_root).is_empty());
+
+        assert!(
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("scan an already-current global")
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read global"),
+            current
+        );
+        // NOT `modified()`: the Windows clock tick is about 15.6 ms and
+        // `atomically_replace_context_template` is a same-directory replace, so mtime
+        // cannot detect a spurious rewrite. The backup count can, and does.
+        assert!(
+            backup_files(&ac_root).is_empty(),
+            "an already-current file must produce no backup"
+        );
+
+        // Control (the input flipped): append one byte and re-run.
+        std::fs::write(&path, format!("{current}X")).expect("append one byte");
+        assert_eq!(
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("scan a one-byte drift")
+                .len(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read repaired global"),
+            current
+        );
+        assert_eq!(backup_files(&ac_root).len(), 1);
+    }
+
+    /// #1748 new test 4: `create_backup` never opens, truncates or replaces an
+    /// existing backup, so every earlier one survives every later replacement.
+    #[test]
+    fn every_replacement_keeps_every_earlier_backup() {
+        const SENTINEL: &str = "an earlier backup that must survive untouched\n";
+        for pre_existing_backup in [true, false] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let ac_root = temp.path().join(".ac");
+            std::fs::create_dir(&ac_root).expect("create workspace");
+            let path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+            let customized =
+                format!("{GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS}\n\nMY OWN NOTE\n");
+            std::fs::write(&path, &customized).expect("write customized global");
+            // Do not pre-create the `{f}.{ts}.bak` name: per D7 the timestamp comes
+            // from the wall clock, not the injected one, so it cannot be predicted.
+            let first_backup = ac_root.join(format!("{GLOBAL_CONTEXT_TEMPLATE_FILENAME}.bak"));
+            if pre_existing_backup {
+                std::fs::write(&first_backup, SENTINEL).expect("write the sentinel backup");
+            }
+
+            assert_eq!(
+                scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                    .expect("scan")
+                    .len(),
+                1,
+                "{pre_existing_backup}"
+            );
+
+            let backups = backup_files(&ac_root);
+            assert_eq!(
+                backups.len(),
+                usize::from(pre_existing_backup) + 1,
+                "{pre_existing_backup}: {backups:?}"
+            );
+            if pre_existing_backup {
+                assert_eq!(
+                    std::fs::read_to_string(&first_backup).expect("read the sentinel backup"),
+                    SENTINEL,
+                    "the pre-existing backup must be byte-identical afterwards"
+                );
+                let others: Vec<&PathBuf> = backups
+                    .iter()
+                    .filter(|entry| **entry != first_backup)
+                    .collect();
+                assert_eq!(others.len(), 1, "{backups:?}");
+                assert_eq!(
+                    std::fs::read_to_string(others[0]).expect("read the new backup"),
+                    customized
+                );
+            } else {
+                assert_eq!(
+                    backups[0], first_backup,
+                    "the first backup takes the plain .bak name"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&backups[0]).expect("read the new backup"),
+                    customized
+                );
+            }
+        }
+    }
+
+    /// #1748 new test 5: `global` has left the actionable surface entirely.
+    #[test]
+    fn the_global_template_can_no_longer_be_dismissed_or_overwritten_by_hand() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            format!("{GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS}\n\nMY OWN NOTE\n"),
+        )
+        .expect("write customized global");
+        std::fs::write(
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            format!("{}\n\nMY OWN NOTE\n", get_default_coordinator_template()),
+        )
+        .expect("write customized coordinator");
+        let coordinator_default = hash_text(get_default_coordinator_template());
+        let managed = "Context template filename is managed by the distribution and cannot be overwritten by hand";
+
+        // The global arm never inspects the hashes: it is rejected on the filename.
+        assert_eq!(
+            dismiss_context_template_update(
+                &ac_root,
+                GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+                "not the file sha",
+                &coordinator_default,
+            )
+            .expect_err("dismiss must be rejected for a distribution-owned template"),
+            managed
+        );
+        assert_eq!(
+            overwrite_context_template_with_default(
+                &ac_root,
+                GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+                "not the file sha",
+                &coordinator_default,
+            )
+            .expect_err("overwrite must be rejected for a distribution-owned template"),
+            managed
+        );
+
+        // Control (the input flipped): the coordinator is not distribution-owned, so
+        // the identical calls reach the existing expected-hash guard instead.
+        assert_eq!(
+            dismiss_context_template_update(
+                &ac_root,
+                COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+                "not the file sha",
+                &coordinator_default,
+            )
+            .expect_err("a stale coordinator hash must be rejected"),
+            CONTEXT_TEMPLATE_CHANGED
+        );
+        assert_eq!(
+            overwrite_context_template_with_default(
+                &ac_root,
+                COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+                "not the file sha",
+                &coordinator_default,
+            )
+            .expect_err("a stale coordinator hash must be rejected"),
+            CONTEXT_TEMPLATE_CHANGED
+        );
+    }
+
+    /// #1748 new test 6. The other half of this contract lives in
+    /// `config::local_overlay`, whose PRIVATE markdown local suffix must stay
+    /// `.local.md`. This pins the VALUE only; it cannot detect the forbidden
+    /// module arc, because it never calls into the overlay. AC-01-8 detects that.
+    #[test]
+    fn local_override_filename_is_the_overlay_sibling() {
+        assert_eq!(
+            local_override_filename(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            "Context.AgentsCommander.local.md"
+        );
+        // `strip_suffix`, not `trim_end_matches`: the latter strips a REPEATED
+        // suffix and would turn `a.md.md` into `a`.
+        assert_eq!(local_override_filename("a.md.md"), "a.md.local.md");
+        assert_eq!(
+            local_override_filename("noextension"),
+            "noextension.local.md"
+        );
+    }
+
+    /// #1748 new test 7: the whole content of D2, and the replacement carrier for
+    /// the read-path tests that would otherwise have survived vacuously. One
+    /// fixture, driven twice; the flipped input is the entry point.
+    #[test]
+    fn the_read_path_no_longer_repairs_the_global_but_the_scan_does() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        let path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&path, GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES)
+            .expect("write pristine v4 global");
+
+        assert!(
+            sync_for_read_at(
+                &ac_root,
+                GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+                fixed_publication_time(),
+            )
+            .is_empty(),
+            "the read path cannot report a replacement, so it must not make one"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read global"),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+            "the read path must leave the bytes exactly as they were"
+        );
+        assert!(backup_files(&ac_root).is_empty());
+
+        let replacements =
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("scan the same tree");
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read repaired global"),
+            crate::config::session_context::get_default_agent_template()
+        );
+        let backups = backup_files(&ac_root);
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(
+            std::fs::read_to_string(&backups[0]).expect("read backup"),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+        );
+    }
+
+    /// #1748 new test 8: distribution ownership and the recognizer slot are one
+    /// decision, across every spec. Written as ONE loop with a single assertion so
+    /// the field-access census stays derivable.
+    #[test]
+    fn distribution_ownership_and_the_recognizer_slot_never_drift() {
+        let [global, coordinator, windows, linux, macos] = project_specs();
+        let mut owned = 0usize;
+        for spec in [global, coordinator, windows, linux, macos, root_spec()] {
+            assert_eq!(
+                spec.distribution_owned,
+                spec.is_known_generated.is_none(),
+                "#1748: {} is distribution-owned exactly when it names no recognizer",
+                spec.id
+            );
+            owned += usize::from(spec.distribution_owned);
+        }
+        assert_eq!(owned, 1, "exactly one spec is distribution-owned");
     }
 }
