@@ -487,6 +487,7 @@ jobs:
           if (matches.length === 1) {
             assert.ok(Number.isSafeInteger(matches[0].id) && matches[0].id > 0, 'release asset id');
             assert.ok(matches[0].size > 0, 'release asset size');
+            assert.equal(matches[0].state, 'uploaded', 'release asset upload state');
             process.stdout.write(String(matches[0].id));
           }
           NODE
@@ -507,6 +508,7 @@ jobs:
             names.add(asset.name);
             assert.ok(Number.isSafeInteger(asset.id) && asset.id > 0, 'release asset id');
             assert.ok(Number.isSafeInteger(asset.size) && asset.size > 0, 'release asset size');
+            assert.equal(asset.state, 'uploaded', 'release asset upload state');
             process.stdout.write(String(asset.id) + '\t' + asset.name + '\n');
           }
           NODE
@@ -548,6 +550,7 @@ jobs:
               verify_dir="$(mktemp -d "$RUNNER_TEMP/release-asset.XXXXXX")"
               release_cli api --method GET -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$existing_id" > "$verify_dir/$asset_name"
               cmp -- "$file" "$verify_dir/$asset_name"
+              release_assert_existing_asset "$snapshot" "$asset_name" "$file" "$verify_dir/$asset_name"
             fi
             after_id="$(release_resolve_id draft "$release_id")"
             test "$after_id" = "$release_id"
@@ -685,6 +688,71 @@ jobs:
           assert.throws(() => assert.deepEqual(authKeys({ '//registry.npmjs.org/:_auth': 'legacy' }), []), 'legacy auth fixture');
           NODE
           }
+          npm_classify_version_status() {
+            local curl_exit="$1"
+            local status="$2"
+            local subject="$3"
+            if [ "$curl_exit" -ne 0 ]; then
+              echo "::error::registry transport failure while checking $subject (curl exit $curl_exit)" >&2
+              return 1
+            fi
+            case "$status" in
+              200) printf '%s' present ;;
+              404) printf '%s' absent ;;
+              *)
+                echo "::error::registry returned HTTP $status while checking $subject" >&2
+                return 1
+                ;;
+            esac
+          }
+
+          npm_verify_version_classifier() {
+            local fixture
+            local fixture_exit
+            local fixture_status
+            test "$(npm_classify_version_status 0 200 fixture)" = present
+            test "$(npm_classify_version_status 0 404 fixture)" = absent
+            for fixture in '6 000' '35 000' '0 401' '0 403' '0 429' '0 500' '0 502' '0 418' '0 301'; do
+              read -r fixture_exit fixture_status <<< "$fixture"
+              if npm_classify_version_status "$fixture_exit" "$fixture_status" fixture >/dev/null 2>&1; then
+                echo "::error::npm version classifier negative fixture unexpectedly passed: $fixture"
+                return 1
+              fi
+            done
+          }
+
+          npm_version_state() {
+            local metadata_url="$1"
+            local output="$2"
+            local subject="$3"
+            local curl_exit=0
+            local status
+            status="$(curl --silent --show-error --output "$output" --write-out '%{http_code}' --proto '=https' --tlsv1.2 "$metadata_url")" || curl_exit=$?
+            npm_classify_version_status "$curl_exit" "$status" "$subject"
+          }
+
+          release_assert_existing_asset() {
+            local release_path="$1"
+            local asset_name="$2"
+            local local_file="$3"
+            local downloaded="$4"
+            node - "$release_path" "$asset_name" "$local_file" "$downloaded" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const [releasePath, assetName, localFile, downloaded] = process.argv.slice(2);
+          const release = JSON.parse(fs.readFileSync(releasePath, 'utf8'));
+          const matches = release.assets.filter((asset) => asset.name === assetName);
+          assert.equal(matches.length, 1, 'exactly one existing draft asset may carry this name');
+          const asset = matches[0];
+          assert.equal(asset.state, 'uploaded', 'existing draft asset upload state');
+          const local = fs.readFileSync(localFile);
+          assert.equal(asset.size, local.length, 'existing draft asset byte length');
+          const digest = (bytes) => 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
+          assert.equal(digest(fs.readFileSync(downloaded)), digest(local), 'existing draft asset sha256 digest');
+          NODE
+          }
+
           BASH
           chmod 700 "$controls"
           printf 'release_controls_b64=%s\n' "$(base64 < "$controls" | tr -d '\n')" >> "$GITHUB_OUTPUT"
@@ -768,36 +836,9 @@ jobs:
           package_name="$(node -p "require('./npm/package.json').name")"
           encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$package_name")"
           metadata_url="$REGISTRY_URL$encoded_name/$VERSION"
-          classify_npm_collision() {
-            local curl_exit="$1"
-            local status="$2"
-            if [ "$curl_exit" -ne 0 ]; then
-              echo "::error::registry transport failure while checking $package_name@$VERSION (curl exit $curl_exit)" >&2
-              return 1
-            fi
-            case "$status" in
-              200) printf '%s' present ;;
-              404) printf '%s' absent ;;
-              *)
-                echo "::error::registry returned HTTP $status while checking $package_name@$VERSION" >&2
-                return 1
-                ;;
-            esac
-          }
-          test "$(classify_npm_collision 0 404)" = absent
-          for fixture in '6 000 dns' '35 000 tls' '0 401 unauthorized' '0 403 forbidden' '0 500 server-error' '0 418 generic-error'; do
-            read -r fixture_exit fixture_status fixture_name <<< "$fixture"
-            if classify_npm_collision "$fixture_exit" "$fixture_status" >/dev/null 2>&1; then
-              echo "::error::npm collision negative fixture unexpectedly passed: $fixture_name"
-              exit 1
-            fi
-          done
+          npm_verify_version_classifier
           metadata_file="$(mktemp)"
-          curl_exit=0
-          status="$(curl --silent --show-error --output "$metadata_file" --write-out '%{http_code}' --proto '=https' --tlsv1.2 "$metadata_url")" || curl_exit=$?
-          if ! registry_state="$(classify_npm_collision "$curl_exit" "$status")"; then
-            exit 1
-          fi
+          registry_state="$(npm_version_state "$metadata_url" "$metadata_file" "$package_name@$VERSION")"
           if [ "$registry_state" = present ]; then
             echo "::error::$package_name@$VERSION is already present in the registry."
             exit 1
@@ -2293,9 +2334,11 @@ jobs:
     name: publish-npm
     needs: [guard, release-coordinator, verify-release]
     runs-on: ubuntu-22.04
+    environment: release-production
     permissions:
       contents: read
       id-token: write
+      attestations: write
     steps:
       # v5.1.0
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -2473,7 +2516,7 @@ jobs:
           npm_assert_tokenless_npmrc "$tokenless_npmrc" "$REGISTRY_URL"
           printf 'TOKENLESS_NPMRC=%s\n' "$tokenless_npmrc" >> "$GITHUB_ENV"
 
-      - name: Publish or verify the provenance package
+      - name: Assemble and bind the exact npm package tarball
         shell: bash
         env:
           VERSION: ${{ needs.guard.outputs.version }}
@@ -2540,41 +2583,136 @@ jobs:
           process.stdout.write(output);
           NODE
           )"
+          # Bind the one tarball that will be attested and published. Never a
+          # glob, never a workspace directory.
+          tarball_name="$(basename "$local_tarball")"
+          expected_tarball_name="$(node -e 'const [name, version] = process.argv.slice(1); process.stdout.write(name.replace(/^@/, "").replace(/\//g, "-") + "-" + version + ".tgz")' "$package_name" "$VERSION")"
+          test "$tarball_name" = "$expected_tarball_name"
+          tarball_bytes="$(stat -c %s "$local_tarball")"
+          test "$tarball_bytes" -gt 0
+          tarball_sha256="$(sha256sum "$local_tarball" | awk '{print $1}')"
+          printf '%s' "$tarball_sha256" | grep -Eq '^[0-9a-f]{64}$'
+          packed_manifest="$work_dir/packed-package.json"
+          tar --extract --gzip --to-stdout --file "$local_tarball" package/package.json > "$packed_manifest"
+          node - "$packed_manifest" "$package_name" "$VERSION" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const [manifestPath, packageName, version] = process.argv.slice(2);
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+          assert.equal(manifest.name, packageName, 'packed package name');
+          assert.equal(manifest.version, version, 'packed package version');
+          NODE
+          {
+            printf 'NPM_PACKAGE_NAME=%s\n' "$package_name"
+            printf 'NPM_PACKAGE_VERSION=%s\n' "$package_version"
+            printf 'NPM_BINARY_NAME=%s\n' "$binary_name"
+            printf 'NPM_TARBALL=%s\n' "$local_tarball"
+            printf 'NPM_TARBALL_NAME=%s\n' "$tarball_name"
+            printf 'NPM_TARBALL_BYTES=%s\n' "$tarball_bytes"
+            printf 'NPM_TARBALL_SHA256=%s\n' "$tarball_sha256"
+            printf 'NPM_WORK_DIR=%s\n' "$work_dir"
+          } >> "$GITHUB_ENV"
+
+      - name: Attest the exact npm package tarball
+        # Build provenance for the exact tarball, created here rather than in
+        # "build" so that the attested bytes are the bytes this job publishes
+        # and so that no earlier job needs id-token or attestation write.
+        # v4.1.0
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
+        with:
+          subject-path: ${{ env.NPM_TARBALL }}
+
+      - name: Verify the GitHub attestation of that exact tarball before publication
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "${NPM_TARBALL:-}"
+          test -f "$NPM_TARBALL"
+          test "$(stat -c %s "$NPM_TARBALL")" = "$NPM_TARBALL_BYTES"
+          test "$(sha256sum "$NPM_TARBALL" | awk '{print $1}')" = "$NPM_TARBALL_SHA256"
+          test -n "${GITHUB_WORKFLOW_SHA:-}"
+          printf '%s' "$GITHUB_WORKFLOW_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          gh --version
+          verification="$NPM_WORK_DIR/attestation-verification.json"
+          # GITHUB_WORKFLOW_SHA is the commit of this workflow file, which for a
+          # workflow_run workflow is a protected default-branch commit.
+          gh attestation verify "$NPM_TARBALL" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --signer-digest "$GITHUB_WORKFLOW_SHA" \
+            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --predicate-type 'https://slsa.dev/provenance/v1' \
+            --format json > "$verification"
+          node - "$verification" "$NPM_TARBALL_SHA256" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const [verificationPath, expectedDigest] = process.argv.slice(2);
+          const results = JSON.parse(fs.readFileSync(verificationPath, 'utf8'));
+          assert.ok(Array.isArray(results) && results.length > 0, 'attestation verification result list');
+          for (const result of results) {
+            const statement = result.verificationResult?.statement ?? result.statement;
+            assert.ok(statement && typeof statement === 'object', 'verified in-toto statement');
+            assert.equal(statement.predicateType, 'https://slsa.dev/provenance/v1', 'verified predicate type');
+            assert.ok(Array.isArray(statement.subject) && statement.subject.length > 0, 'verified subject list');
+            assert.ok(
+              statement.subject.some((subject) => subject.digest && subject.digest.sha256 === expectedDigest),
+              'verified subject must be the exact tarball',
+            );
+          }
+          NODE
+
+      - name: Publish and verify the provenance package
+        shell: bash
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+          TAG: ${{ needs.guard.outputs.tag }}
+          DEFAULT_BRANCH: ${{ needs.guard.outputs.default_branch }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY_URL: https://registry.npmjs.org/
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/release-controls.sh"
+          unset NODE_AUTH_TOKEN
+          unset NPM_CONFIG_USERCONFIG
+          npm_reject_tokenless_auth_environment
+          test -n "${TOKENLESS_NPMRC:-}"
+          test -f "$TOKENLESS_NPMRC"
+          test ! -e npm/.npmrc
+          npm_require_official_registry "$REGISTRY_URL"
+          npm_require_official_registry "$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" config get registry)"
+          npm_assert_tokenless_npmrc "$TOKENLESS_NPMRC" "$REGISTRY_URL"
+          npm_verify_version_classifier
+          package_name="$NPM_PACKAGE_NAME"
+          package_version="$NPM_PACKAGE_VERSION"
+          binary_name="$NPM_BINARY_NAME"
+          local_tarball="$NPM_TARBALL"
+          work_dir="$NPM_WORK_DIR"
+          test "$package_version" = "$VERSION"
+          test -f "$local_tarball"
+          test "$(stat -c %s "$local_tarball")" = "$NPM_TARBALL_BYTES"
+          test "$(sha256sum "$local_tarball" | awk '{print $1}')" = "$NPM_TARBALL_SHA256"
+          release_id="$(release_resolve_id public "$EXPECTED_RELEASE_ID")"
+          test "$release_id" = "$EXPECTED_RELEASE_ID"
           encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$package_name")"
           metadata_url="$REGISTRY_URL$encoded_name/$VERSION"
-          status="$(curl --silent --show-error --output "$work_dir/version-metadata.json" --write-out '%{http_code}' "$metadata_url")"
-          case "$status" in
-            200)
-              registry_state=present
-              ;;
-            404)
-              registry_state=absent
-              ;;
-            *)
-              cat "$work_dir/version-metadata.json"
-              echo "::error::registry returned HTTP $status while checking $package_name@$VERSION"
-              exit 1
-              ;;
-          esac
+          registry_state="$(npm_version_state "$metadata_url" "$work_dir/version-metadata.json" "$package_name@$VERSION")"
           if [ "$registry_state" = absent ]; then
-            (
-              cd npm
-              env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG -u NPM_TOKEN -u NPM_AGENTSCOMMANDER -u NPM_ID_TOKEN -u SIGSTORE_ID_TOKEN npm --userconfig "$TOKENLESS_NPMRC" publish --access public --provenance --registry "$REGISTRY_URL"
-            )
+            # Publish the exact attested tarball, never a second pack of the
+            # working tree.
+            env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG -u NPM_TOKEN -u NPM_AGENTSCOMMANDER -u NPM_ID_TOKEN -u SIGSTORE_ID_TOKEN npm --userconfig "$TOKENLESS_NPMRC" publish "$local_tarball" --access public --provenance --registry "$REGISTRY_URL"
           fi
           for attempt in $(seq 1 30); do
-            status="$(curl --silent --show-error --output "$work_dir/version-metadata.json" --write-out '%{http_code}' "$metadata_url")"
-            if [ "$status" = 200 ]; then
+            registry_state="$(npm_version_state "$metadata_url" "$work_dir/version-metadata.json" "$package_name@$VERSION")"
+            if [ "$registry_state" = present ]; then
               break
-            fi
-            if [ "$status" != 404 ]; then
-              cat "$work_dir/version-metadata.json"
-              echo "::error::registry returned HTTP $status while waiting for $package_name@$VERSION"
-              exit 1
             fi
             sleep 2
           done
-          test "$status" = 200
+          test "$registry_state" = present
           latest="$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" view "$package_name" dist-tags.latest --registry "$REGISTRY_URL")"
           test "$latest" = "$VERSION"
           registry_tarball_url="$(node - "$work_dir/version-metadata.json" "$local_tarball" "$package_name" "$VERSION" <<'NODE'
@@ -2623,12 +2761,12 @@ jobs:
           )"
           attestation_file="$work_dir/attestations.json"
           curl --fail --location --proto '=https' --tlsv1.2 "$attestation_url" --output "$attestation_file"
-          node - "$attestation_file" "$package_name" "$VERSION" "$GITHUB_REPOSITORY" "$TAG" "$local_tarball" "$REGISTRY_URL" <<'NODE'
+          node - "$attestation_file" "$package_name" "$VERSION" "$GITHUB_REPOSITORY" "$DEFAULT_BRANCH" "$local_tarball" "$REGISTRY_URL" <<'NODE'
           const assert = require('node:assert/strict');
           const crypto = require('node:crypto');
           const fs = require('node:fs');
 
-          const [attestationPath, packageName, version, repository, tag, localTarball, registryUrl] = process.argv.slice(2);
+          const [attestationPath, packageName, version, repository, defaultBranch, localTarball, registryUrl] = process.argv.slice(2);
           const attestations = JSON.parse(fs.readFileSync(attestationPath, 'utf8')).attestations;
           assert.ok(Array.isArray(attestations) && attestations.length > 0, 'registry attestation list');
           const payloads = attestations.map((record) => {
@@ -2649,11 +2787,11 @@ jobs:
           assert.ok(provenance && matchesSubject(provenance), 'SLSA provenance subject');
           const workflow = provenance.predicate.buildDefinition.externalParameters.workflow;
           assert.equal(workflow.repository, 'https://github.com/' + repository);
-          assert.equal(workflow.ref, 'refs/tags/' + tag);
+          assert.equal(workflow.ref, 'refs/heads/' + defaultBranch);
           assert.equal(workflow.path, '.github/workflows/release.yml');
           assert.ok(
             provenance.predicate.buildDefinition.resolvedDependencies.some(
-              (dependency) => dependency.uri === 'git+https://github.com/' + repository + '@refs/tags/' + tag,
+              (dependency) => dependency.uri === 'git+https://github.com/' + repository + '@refs/heads/' + defaultBranch,
             ),
             'SLSA provenance repository and tag dependency',
           );
