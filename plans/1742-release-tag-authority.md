@@ -2,11 +2,40 @@
 
 Author: `__agent_architect`, wg-23-community, 2026-09-04 UTC.
 
-Status: READY_FOR_IMPLEMENTATION
+Status: READY_FOR_IMPLEMENTATION (recertified 2026-09-04 UTC)
 
 Issue: [mblua/AgentsCommander#1742](https://github.com/mblua/AgentsCommander/issues/1742)
 
 Delivery path: Full.
+
+### 0.1 Recertification after implementation evidence
+
+This recertification resolves the implementation-visible contradiction in the
+prior certification. It selects option 1: retain the existing job-local draft
+Release asset uploads in `build` and `checksums`, and correct the permission
+table and every contrary statement below. This is the smallest safe result:
+the existing 17 assets already flow through those two jobs, their guarded
+`release_upload_exact_asset` calls are already part of the reviewed workflow,
+and the frozen input manifest requires
+`contracts.permissions.assetUpload === 'job-local-contents-write'`.
+
+Moving the uploads to `publish-github` would require a separate Actions
+artifact-transport redesign and a coordinated preparation-contract change.
+Splitting the jobs would likewise require a new job boundary and contract
+update. Neither is within this issue's approved change surface. The cost of
+option 1 is explicit residual authority: GitHub's `contents: write` token is
+broader than a draft-asset-upload-only API, so a compromise of `build` or
+`checksums` could use the GitHub Contents/Release write surface rather than
+only its intended exact-asset operation. Those jobs receive no npm OIDC,
+attestation write, environment, or npm token capability.
+
+Where an earlier sentence says that `build` or `checksums` is credentialless
+with respect to GitHub Releases, forbids its Release asset upload API, or says
+that the job cannot upload a Release asset, this section and the corrected
+Sections 2.3, 3.2, 3.4, 5, 6, 7, 9, and 10 control. The retained permission is
+only an implementation capability for the exact guarded draft-asset calls; it
+does not authorize creation, publication, deletion, replacement, tag
+mutation, repository-content mutation, or any npm publication operation.
 
 This document supersedes, in place, the prior Ed25519 release-tag-authority
 plan at this path. That certification is void. The custom authority, local
@@ -17,10 +46,11 @@ implemented by this issue.
 
 Harden the existing tag-to-release pipeline with GitHub and npm controls that
 are native or already audited. A release must be initiated by a protected tag,
-run its privileged workflow from protected default-branch bytes, keep build
-work separate from GitHub Release and npm credentials, publish through npm
-Trusted Publishing, and make the exact package tarball attestable and verified
-before npm publication.
+run its privileged workflow from protected default-branch bytes, keep npm OIDC,
+attestation, environment, and publication credentials isolated in
+`publish-npm`, retain only the existing guarded job-local draft-asset uploads
+in `build` and `checksums`, publish through npm Trusted Publishing, and make
+the exact package tarball attestable and verified before npm publication.
 
 This plan is based on `main` and `origin/main` at
 `302e6c12cad6f1701bbd937c38475ad376fe2afb`, on branch
@@ -166,8 +196,8 @@ default:
 |---|---|---|
 | `guard` | `contents: read` | all write permissions, environment, OIDC, attestation, cache/artifact intake from wake |
 | `release-coordinator` | current minimum `contents: write` only if it creates the draft | npm OIDC, environment, attestation write |
-| `build` | `contents: read`, existing artifact-service upload only | `contents: write`, Release asset/upload API, npm OIDC, npm token, environment, attestation write |
-| `checksums` | `contents: read`, existing artifact-service upload only | Release write, npm OIDC, npm token, environment, attestation write |
+| `build` | `contents: write` for its existing guarded `release_upload_exact_asset` calls for producer assets, plus existing artifact-service upload | npm OIDC, npm token, environment, attestation write, and any Release/tag/repository mutation other than exact verified draft-asset upload |
+| `checksums` | `contents: write` for its existing guarded `release_upload_exact_asset` call for `SHASUMS256.txt`, `actions: read`, and existing artifact-service read/upload | npm OIDC, npm token, environment, attestation write, and any Release/tag/repository mutation other than exact verified draft-asset upload |
 | `publish-github` | `contents: write` only after guard/checksum success | npm OIDC, npm token, environment, attestation write |
 | `verify-release` | `contents: read` | Release write, npm OIDC, npm token, environment, attestation write |
 | `publish-npm` | `contents: read`, `id-token: write`, `attestations: write`, protected environment | `contents: write`, `NODE_AUTH_TOKEN`, `NPM_TOKEN`, any npm token secret |
@@ -183,6 +213,48 @@ Do not restore a cache, download an artifact, or consume an output created by
 `release-tag-wake.yml`. Keep `swatinem/rust-cache` only in `build`, after the
 guard's protected-main/tag validation and target-SHA checkout. This prevents
 the standard `workflow_run` cache/artifact privilege-escalation hazard.
+
+### 2.4 Ratified implementation interpretations
+
+The following observations were made against the implemented workflow tip
+`ba94526a4ed6e0777eb0396b37f56fe660aa0def`. They are ratified and are
+requirements of this plan rather than implementer discretion.
+
+1. **Release-authority text comparison: ratified removal.** Remove every
+   `cmp` between annotated-tag payload text and
+   `docs/releases/<tag>/release-authority-v1.txt`. Retain that file's
+   SHA-256 as `evidence_sha256` and retain all preparation-evidence integrity
+   checks. The file is not a second authorizer under this native trust model;
+   platform tag restrictions, the release principal, remote tag rebinding,
+   protected-main reachability, and protected default-branch workflow bytes
+   are the authorization chain.
+2. **npm tarball binding: ratified replacement.** The npm pack tarball is not
+   one of the 17 GitHub Release assets and must not be claimed to be in
+   `SHASUMS256.txt`. Require exactly one `npm pack` output, the filename
+   derived from the guarded package name and version, nonzero length, a
+   recorded SHA-256, and a `package/package.json` inside the tarball with the
+   guarded name and version. The exact resulting file is then the one
+   attested, verified, and passed to `npm publish`.
+3. **npm provenance ref: ratified default-branch expectation.** For this
+   `workflow_run` job, post-publish provenance must expect
+   `workflow.ref === 'refs/heads/<guard default_branch>'` and the matching
+   default-branch dependency, not `refs/tags/<tag>`. The tag is bound by the
+   guard and downstream remote rebinding; the provenance ref describes the
+   workflow-run source context.
+4. **Wake tag filter: ratified `v*`.** Malformed `v`-prefixed tags may create
+   an extra zero-credential wake run. The guard must reject them before any
+   checkout, cache, environment, writer operation, or artifact intake. This
+   operational noise is accepted to retain a deliberately minimal wake seam.
+5. **`Swatinem` action-owner casing: ratified as-is.** Retain the established
+   `Swatinem/rust-cache` spelling and its new version comment. Casing cleanup
+   is unrelated to this security change and is not an authorization control.
+6. **Evidence hardening allowlist: deferred to Phase 3 handover.** Do not add
+   `release-tag-wake.yml` to the frozen `hardeningAllowlist` in this issue.
+   Its omission fails closed for a future change that needs to alter the wake
+   workflow. Any such future change must update the manifest assertion and
+   the preparation skill that emits the manifest atomically, under separate
+   review. The zero-credential wake file remains protected by code-owner
+   review under Section 4 meanwhile.
 
 ## 3. Required workflow edits
 
@@ -238,12 +310,18 @@ At the existing downstream jobs near lines 777, 878, 1226, 1781, 2124, and
 2. Feed tag, version, and target SHA solely from `guard` outputs.
 3. Reuse and tighten the existing downstream tag-rebinding blocks so each
    writer verifies the live tag object and target against guard outputs before
-   receiving a write credential or sending a writer command.
+   sending any writer command. GitHub grants job-level tokens at job start, so
+   this is a command-ordering control, not a claim that the retained local
+   asset-upload jobs obtain their token after rebinding.
 4. Fetch/check out the validated peeled target by SHA for source-dependent
    work. Never check out the wake event ref or use the wake workspace.
-5. Keep `build` and `checksums` credentialless with respect to GitHub Releases
-   and npm. Artifact upload to the GitHub Actions artifact service remains
-   allowed because it is neither a Release mutation nor an npm credential.
+5. Keep `build` and `checksums` free of npm, OIDC, attestation, and protected
+   environment credentials. Retain their existing job-local GitHub Release
+   asset uploads: `build` calls `release_upload_exact_asset` for producer
+   assets and `checksums` calls it for `SHASUMS256.txt`. Each call must rebind
+   the guarded tag and use the exact draft/name/size/SHA-256 query-first
+   contract in Section 3.4. Existing Actions artifact-service transport remains
+   allowed, but no new artifact transport or uploader job is introduced.
 
 ### 3.3 Pin every action with a reviewable version comment
 
@@ -280,8 +358,11 @@ reason in the pull request.
 
 ### 3.4 Preserve immutable Release behavior and make absence checks fail closed
 
-At `release-coordinator`, `publish-github`, and `verify-release`, retain the
-existing draft and asset flow. Tighten it to this closed state machine:
+At `release-coordinator`, `build`, `checksums`, `publish-github`, and
+`verify-release`, retain the existing draft and asset flow. The producer-asset
+uploads stay in `build`; the `SHASUMS256.txt` upload stays in `checksums`;
+`publish-github` retains its existing release-publication work. Tighten this
+combined flow to the following closed state machine:
 
 ```text
 exactly absent Release -> create one draft -> attach only verified missing assets
@@ -317,12 +398,16 @@ establish presence or absence.
 
 At existing `publish-npm` lines 2464 through 2646, preserve the current
 tokenless configuration checks and `npm pack` step. Insert these steps after
-the final package tarball is assembled and SHA-256-checked against the
-checksums artifact, immediately before the existing `npm publish` command:
+the final package tarball is assembled. The tarball is not a GitHub Release
+asset and is not listed in `SHASUMS256.txt`; bind it by the exact pack-output
+contract in Section 2.4.2 immediately before the existing `npm publish`
+command:
 
-1. Require the tarball's name, byte length, SHA-256, package name, and version
-   to match the guarded release/checksum facts. Do not attest a glob or a
-   workspace directory.
+1. Require exactly one pack output with its derived filename, nonzero byte
+   length, recorded SHA-256, and packed `package/package.json` name/version
+   matching the guarded package name and version. Do not attest a glob, an
+   arbitrary workspace directory, or a tarball claimed to be in the release
+   checksum artifact.
 2. Run the SHA-pinned `actions/attest` action with `subject-path` set to that
    one tarball. The job-level `id-token: write` and `attestations: write`
    permissions are the only capabilities it needs to create GitHub build
@@ -394,7 +479,7 @@ is unavailable, incorrectly scoped, or only in evaluate mode, do not release.
 |---|---|---|
 | npm Trusted Publishing via OIDC | leaked, rotated, over-broad, or mistakenly injected npm token can publish a package | keep current tokenless npm checks; configure npm OIDC and grant `id-token: write` only to `publish-npm` |
 | Full-SHA action pins plus comments | a moving tag or compromised action release silently changes CI code | retain existing pins, add version/channel comments, and pin `actions/attest` to v4.1.0 SHA |
-| Build/publish separation | build or checksum code can use a Release or npm credential | explicit job permissions, no OIDC/Release write in build/checksum jobs |
+| Build/npm credential separation with retained local asset upload | build or checksum code can acquire npm/OIDC/attestation/environment publication capability, or upload an unverified draft asset | explicit job permissions, no npm/OIDC capability in build/checksum, and their existing `contents: write` asset calls remain bounded by exact guarded draft/name/size/digest checks |
 | GitHub provenance plus pre-publish verification | an un-attested, substituted, or differently signed tarball reaches npm | attest one checksum-validated tarball in `publish-npm`, then verify its subject, repo, workflow, and workflow digest before `npm publish` |
 | Immutable Releases and query-first asset upload | a public Release asset or tag is replaced, deleted, or silently clobbered | administrator enables immutable Releases; preserve draft -> asset -> publish and require exact name/size/digest checks |
 | Exact absence checks | outage, auth denial, rate limit, proxy response, or parser failure is mistaken for an absent tag/Release/asset/npm version | explicit result classification; only exact successful not-found responses permit creation |
@@ -417,6 +502,8 @@ format, database, CLI, or package dependency.
 | `publish.mjs` inspect/execute graph | duplicates a guarded workflow with a custom publisher | existing workflow remains the one release implementation |
 | default-branch `create` trigger | `create` does not turn tag workflow bytes into default-branch bytes | use `workflow_run`, which is documented to load the downstream workflow from default branch |
 | Node ownership of Release/assets/checksum/npm | rewriting a large existing, guarded shell workflow would enlarge the risk and scope | retain and tighten the current workflow jobs instead |
+| Relocating the existing Release asset uploads to `publish-github` | requires a separate Actions artifact-transport design and an atomic preparation-manifest permission-contract change | retain the existing job-local uploads and explicitly accept their broad `contents: write` token surface in this issue |
+| Splitting build into credentialless build plus a new asset-upload job | adds a new job boundary and still requires the preparation-manifest permission contract to change | defer as a separately reviewed change rather than silently changing the release contract |
 | Phase-A installed-version proof | it needs a separately versioned producer and claims beyond a release mechanism | current checksum, post-publish provenance, and install smoke checks remain the evidence |
 
 ### 6.2 Residual risks accepted by deferring signing authority
@@ -438,6 +525,11 @@ format, database, CLI, or package dependency.
 5. GitHub provenance proves what the GitHub workflow attested to. It cannot
    protect against a compromised GitHub-hosted runner, a malicious reviewed
    main commit, or an approver who deliberately approves the wrong deployment.
+6. `build` and `checksums` keep `contents: write` because GitHub cannot scope
+   that token to only the existing Release asset-upload endpoint. A compromise
+   of either job could attempt broader Contents/Release API mutations. The
+   workflow constrains its intended calls to a revalidated, uniquely identified
+   draft asset, but the token's platform capability remains broader.
 
 These risks are explicit user acceptance for this issue, not gaps to be filled
 implicitly by an implementer.
@@ -452,9 +544,12 @@ a workflow-only change:
 2. Inspect every `uses:` in the two changed workflow files. Assert the exact
    full-SHA/comment rule in Section 3.3, with no floating ref.
 3. Review job permissions from rendered YAML. Assert `id-token: write` occurs
-   once, in `publish-npm`; `attestations: write` occurs only there; `build` and
-   `checksums` have no GitHub Release writer or npm publish capability; and
-   the wake workflow is `permissions: {}` with no checkout/action/cache/output.
+   once, in `publish-npm`; `attestations: write` occurs only there; `build`
+   retains only `contents: write` for its existing exact producer-asset upload;
+   `checksums` retains only `contents: write` plus `actions: read` for its
+   existing exact checksum-asset upload and artifact read; neither job has npm,
+   OIDC, attestation, or environment capability; and the wake workflow is
+   `permissions: {}` with no checkout/action/cache/output.
 4. In a non-production sandbox repository with no npm trusted publisher,
    simulate a tag pointing at a non-main commit that changes the wake workflow.
    The default-branch release workflow must fail its guard before source
@@ -475,6 +570,14 @@ a workflow-only change:
 8. Before the first real release, have the administrator record the evidence
    for every prerequisite in Section 4. An absent evidence item is a release
    blocker, not a warning.
+9. The implementation PR must complete checks 1 through 3 before landing.
+   The `gh attestation verify` signer-option enforcement, `npm publish
+   <tarball> --provenance`, and annotated-tag `workflow_run.head_sha` behavior
+   cannot be proven by the local sandbox alone. They may carry past code
+   landing only if no production tag is created; checks 4 through 7 in a
+   disposable sandbox must complete before the first production release. A
+   failed or unavailable sandbox result is a production-release blocker, not a
+   reason to weaken the guard or omit the command options.
 
 ## 8. Dependency-cycle and layering gate
 
@@ -491,6 +594,16 @@ It is not an ESM, Rust, TypeScript, Tauri, `AppHandle`, or UI transport arc.
 No lower layer gains a UI transport dependency. The manual per-arc SCC result
 is therefore zero new source-module arcs, zero reverse paths, and no role
 inversion.
+
+Recertification evidence: the base
+`302e6c12cad6f1701bbd937c38475ad376fe2afb` and implemented tip
+`ba94526a4ed6e0777eb0396b37f56fe660aa0def` differ only in the two workflow
+files and this plan. `src-tauri/module-arcs.txt` is the identical Git blob
+`b8c6488ff986992d9cb8c88684f39f994dbcd689` at both revisions. Therefore the
+manual zero-arc SCC analysis is sufficient for this workflow-only scope: no
+new arc can cross a previously clean source-module SCC boundary, no cyclic SCC
+membership changes, and no lower layer gains `AppHandle`, Tauri, or UI
+transport dependency.
 
 Implementation acceptance: keep `src-tauri/module-arcs.txt` byte-identical.
 If implementation expands scope to add, remove, or move any Rust/TypeScript/
@@ -509,8 +622,10 @@ activation phase:
 
 1. **Privilege split and permissions.** Add `release-tag-wake.yml`, make
    `release.yml` a default-branch `workflow_run` workflow, implement the
-   independent guard/rebinding checks, set explicit permissions, and annotate
-   all existing action pins. Land only after PR and sandbox no-writer tests.
+   independent guard/rebinding checks, set explicit permissions, retain the
+   existing job-local exact draft-asset uploads in `build` and `checksums`, and
+   annotate all existing action pins. Land only after PR checks 1 through 3;
+   complete the no-writer sandbox checks before the first production tag.
 2. **Provenance and immutable-release behavior.** Add the pinned native
    attestation/verification steps in `publish-npm`, tighten query-first asset
    and exact-absence behavior while preserving existing guards, and prove the
@@ -520,6 +635,10 @@ activation phase:
    immutable Releases, release actor variable, npm trusted publisher, and
    `release-production` reviewer gate. This is not code implementation and
    must occur before any production tag.
+4. **Phase 3 handover.** If a later change needs to alter
+   `release-tag-wake.yml`, update the frozen evidence hardening allowlist and
+   its preparation-skill producer atomically under a separate review. Do not
+   change that contract opportunistically in this issue.
 
 The old custom-authority plan required distinct crypto, Windows local-state,
 GitHub, and npm expertise. This native-controls plan is realistic for one
@@ -536,7 +655,9 @@ administrator proof before production use.
   trusted, so `create` is not used as a false solution.
 - Credentials: only `publish-npm` receives OIDC, attestation write, and the
   protected environment; no npm token is introduced. Build and checksum jobs
-  cannot create/update/upload Releases or publish npm.
+  retain `contents: write` solely for their existing guarded exact draft-asset
+  uploads, which is an explicitly accepted broad-token residual risk; they
+  cannot publish npm and must not perform any other Contents/Release mutation.
 - Release integrity: enable immutable Releases, retain draft -> assets ->
   public behavior, enforce query-first exact asset identity, and fail closed on
   every ambiguous absence decision.
@@ -544,8 +665,18 @@ administrator proof before production use.
   existing tokenless npm publication command.
 - Module-cycle gate: zero planned source-module arcs, manual zero-arc SCC
   analysis passed, and no layer or UI transport inversion is introduced.
+- Recertification: option 1 is selected. All six implementation
+  interpretations in Section 2.4 are ratified, including Phase 3 deferral of
+  the evidence hardening allowlist update. No further workflow code edit is
+  required by this recertification because the implemented permissions and
+  behavior already match these corrected requirements.
+- Verification disposition: PR checks 1 through 3 are landing gates; sandbox
+  checks 4 through 7 and administrator prerequisites are production-release
+  gates. The known external-tool semantic gaps are therefore carried only to
+  the controlled sandbox and never to an untested production tag.
 - Verdict: READY_FOR_IMPLEMENTATION, conditional on the fail-closed
-  administrator prerequisites in Section 4 before a production release.
+  administrator prerequisites and production-release evidence in Sections 4
+  and 7.
 
 Authoritative references for implementation:
 
