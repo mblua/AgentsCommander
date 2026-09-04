@@ -1025,6 +1025,12 @@ mod tests {
             "sessions.json",
             "settings.json",
             "settings.json.lock",
+            // #1737: the operator-owned overlay and the two managed context
+            // template overrides. The `settings.json` row is an exact-name rule and
+            // does not reach `settings.local.json`, which is why the row exists.
+            "settings.local.json",
+            "Context.AgentsCommander.local.md",
+            "Context.root-agent.local.md",
             "settings.pre-384-v1.json",
             "settings.pre-999-v9.json",
             "telegram-bridge.log",
@@ -1089,6 +1095,8 @@ mod tests {
             // Load-bearing: this is what proves the `coding-agent-requests/` row
             // does not reach its byte-order neighbour.
             "coding-agents/agents.json",
+            // #1737: these two also prove the `*.local.md` glob does not reach the
+            // tracked base templates whose overrides it covers.
             "Context.root-agent.md",
             // The standalone global context and both retirement-backup shapes:
             // all three hold the user's own bytes.

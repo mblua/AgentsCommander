@@ -648,6 +648,7 @@ agentscommander_lib::config::session_context -> agentscommander_lib::commands::r
 agentscommander_lib::config::session_context -> agentscommander_lib::config
 agentscommander_lib::config::session_context -> agentscommander_lib::config::ac_root
 agentscommander_lib::config::session_context -> agentscommander_lib::config::instance_artifacts
+agentscommander_lib::config::session_context -> agentscommander_lib::config::local_overlay
 agentscommander_lib::config::session_context -> agentscommander_lib::config::replica_identity
 agentscommander_lib::config::session_context -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::session_context -> agentscommander_lib::config::seed_manifest
@@ -670,6 +671,7 @@ agentscommander_lib::config::settings -> agentscommander_lib::config
 agentscommander_lib::config::settings -> agentscommander_lib::config::agent_command
 agentscommander_lib::config::settings -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::config::settings -> agentscommander_lib::config::instance_artifacts
+agentscommander_lib::config::settings -> agentscommander_lib::config::local_overlay
 agentscommander_lib::config::settings -> agentscommander_lib::config::placeholders
 agentscommander_lib::config::settings -> agentscommander_lib::config::profile
 agentscommander_lib::config::settings -> agentscommander_lib::config::projects

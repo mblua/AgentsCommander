@@ -684,6 +684,15 @@ fn build_protected_settings_candidate(
     // companion metadata. The disk serializer builds project fields only from
     // this protected state (or disk truth), never from the incoming payload.
     candidate.project_path_state = current.project_path_state.clone();
+    // #1737: `local_overlay_state` is `#[serde(skip)]`, so a payload that arrived from
+    // the webview or the WebSocket transport decodes it as an empty overlay. Restore
+    // it from live memory, exactly like `project_path_state` above: without this the
+    // save that follows would find nothing to restore, would write the overlay value
+    // into settings.json, and `*s = written.clone()` would install the empty overlay
+    // so every later save is unprotected too. General rule (plan D14): any AppSettings
+    // that did not come out of `parse_settings_json` and is later saved must inherit
+    // the live overlay state first.
+    candidate.local_overlay_state = current.local_overlay_state.clone();
     // #965: rail collapse is mutated only by `set_rail_collapse`. A settings payload
     // from the GUI, CLI, or API must never carry authority for it, so restore both
     // fields from live memory. Same rule and same mechanism as the project lists
@@ -720,6 +729,9 @@ async fn persist_settings_draft_update_with_saver(
     // #1077: restore the hidden project-path pair state (see the protected
     // candidate builder above).
     draft.project_path_state = current.project_path_state.clone();
+    // #1737: the same overlay-state carry-over as in
+    // `build_protected_settings_candidate` above, and for the same reason (plan D14).
+    draft.local_overlay_state = current.local_overlay_state.clone();
     // #965: same protect as `build_protected_settings_candidate`. The SettingsModal
     // Save path lands here, and so does every whole-object writer that reads
     // `settingsStore.current` first (window geometry, zoom, titlebar...). Rail
@@ -5340,5 +5352,316 @@ mod tests {
             .profiles_by_agent
             .get("agent-0")
             .is_some_and(|cells| cells.contains_key("B")));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // #1737 D14 - the two payload-constructed `AppSettings` carry-overs, and D13's
+    // narrowing on the three other production writers of `codingAgentProfiles`.
+    // Plan section 11, P1 to P7.
+    // ─────────────────────────────────────────────────────────────────────────
+    mod local_overlay_1737 {
+        use super::{
+            persist_protected_settings_update_with_saver, persist_settings_draft_update_with_saver,
+            state_for,
+        };
+        use crate::config::settings::{
+            load_settings_from_path, save_settings_to_path_preserving_project_paths,
+            validate_and_repair_settings, AppSettings,
+        };
+        use serde_json::{json, Value};
+        use std::path::{Path, PathBuf};
+
+        fn agent_json(id: &str) -> Value {
+            json!({
+                "id": id,
+                "label": id,
+                "command": id,
+                "color": "#000000",
+                "blockingMenus": [],
+            })
+        }
+
+        /// A base `settings.json` with two agents and a watcher whose
+        /// `dedupeWindowMs` the overlay overrides, plus the local file. Returns the
+        /// settings path.
+        fn seed(dir: &Path, local: &Value) -> PathBuf {
+            let base = json!({
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "rootToken": "base-token",
+                "agents": [agent_json("codex"), agent_json("claude")],
+                "watchers": {
+                    "a": { "mode": "state", "pattern": "^ready", "dedupeWindowMs": 500 }
+                },
+                "codingAgentProfiles": {
+                    "schemaVersion": 2,
+                    "profileSlots": { "A": { "label": "" } },
+                    "profilesByAgent": {
+                        "codex": { "A": { "enabled": true, "command": "codex", "env": {}, "notes": "" } },
+                        "claude": { "A": { "enabled": true, "command": "claude", "env": {}, "notes": "" } }
+                    },
+                    "defaultProfileByAgent": {},
+                    "profileLabelsByAgent": {}
+                }
+            });
+            let path = dir.join("settings.json");
+            std::fs::write(&path, serde_json::to_string_pretty(&base).unwrap()).unwrap();
+            std::fs::write(
+                dir.join("settings.local.json"),
+                serde_json::to_string_pretty(local).unwrap(),
+            )
+            .unwrap();
+            path
+        }
+
+        fn disk(path: &Path) -> Value {
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        }
+
+        fn dedupe_window_on_disk(path: &Path) -> Value {
+            disk(path)["watchers"]["a"]["dedupeWindowMs"].clone()
+        }
+
+        /// The exact renderer round trip: serialize and deserialize, which is what
+        /// drops every `#[serde(skip)]` field.
+        fn renderer_round_trip(settings: &AppSettings) -> AppSettings {
+            serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap()
+        }
+
+        // P4, asserted first because P1 to P3 depend on the behaviour it pins.
+        #[test]
+        fn the_renderer_round_trip_drops_the_overlay_state() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(
+                temp.path(),
+                &json!({"watchers": {"a": {"dedupeWindowMs": 50}}}),
+            );
+            let loaded = load_settings_from_path(&path);
+            assert!(
+                !loaded.local_overlay_state.is_empty(),
+                "the fixture must carry an overlay"
+            );
+            let payload = renderer_round_trip(&loaded);
+            assert!(
+                payload.local_overlay_state.is_empty(),
+                "this is the serde behaviour the D14 carry-overs compensate for"
+            );
+        }
+
+        // P1 and P3
+        #[tokio::test]
+        async fn the_protected_writer_inherits_the_live_overlay_state() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(
+                temp.path(),
+                &json!({"watchers": {"a": {"dedupeWindowMs": 50}}}),
+            );
+            let loaded = load_settings_from_path(&path);
+            let state = state_for(loaded.clone());
+            let payload = renderer_round_trip(&loaded);
+
+            let saved = {
+                let path = path.clone();
+                persist_protected_settings_update_with_saver(&state, payload, move |candidate| {
+                    save_settings_to_path_preserving_project_paths(candidate, &path)
+                })
+                .await
+                .unwrap()
+            };
+
+            // P1: the overlay-owned leaf on disk still holds the base value.
+            assert_eq!(dedupe_window_on_disk(&path), json!(500));
+            assert!(!saved.local_overlay_state.is_empty());
+
+            // P3: the value the state now holds is still protected, so a second
+            // round trip through the same path is protected too.
+            {
+                let live = state.read().await;
+                assert!(!live.local_overlay_state.is_empty());
+            }
+            let second_payload = {
+                let live = state.read().await;
+                renderer_round_trip(&live)
+            };
+            let path2 = path.clone();
+            persist_protected_settings_update_with_saver(
+                &state,
+                second_payload,
+                move |candidate| save_settings_to_path_preserving_project_paths(candidate, &path2),
+            )
+            .await
+            .unwrap();
+            assert_eq!(dedupe_window_on_disk(&path), json!(500));
+        }
+
+        // P2
+        #[tokio::test]
+        async fn the_draft_writer_inherits_the_live_overlay_state() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(
+                temp.path(),
+                &json!({"watchers": {"a": {"dedupeWindowMs": 50}}}),
+            );
+            let loaded = load_settings_from_path(&path);
+            let state = state_for(loaded.clone());
+            let payload = renderer_round_trip(&loaded);
+
+            let (saved, _events) = {
+                let path = path.clone();
+                persist_settings_draft_update_with_saver(&state, payload, move |candidate| {
+                    save_settings_to_path_preserving_project_paths(candidate, &path)
+                })
+                .await
+                .unwrap()
+            };
+
+            assert_eq!(dedupe_window_on_disk(&path), json!(500));
+            assert!(!saved.local_overlay_state.is_empty());
+        }
+
+        /// The `agents` overlay that introduces one scratch agent, which is what
+        /// makes D13's closure own `codingAgentProfiles.profilesByAgent.scratch-agent`.
+        fn scratch_agent_overlay() -> Value {
+            json!({
+                "agents": [
+                    agent_json("codex"),
+                    agent_json("claude"),
+                    agent_json("scratch-agent"),
+                ]
+            })
+        }
+
+        // P5
+        #[tokio::test]
+        async fn a_profile_edit_persists_except_for_the_overlay_introduced_agent() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(temp.path(), &scratch_agent_overlay());
+            let loaded = load_settings_from_path(&path);
+            assert!(loaded
+                .coding_agent_profiles
+                .profiles_by_agent
+                .contains_key("scratch-agent"));
+            let state = state_for(loaded.clone());
+
+            let mut draft = renderer_round_trip(&loaded);
+            draft
+                .coding_agent_profiles
+                .profiles_by_agent
+                .get_mut("codex")
+                .unwrap()
+                .get_mut("A")
+                .unwrap()
+                .command = "codex --edited".to_string();
+            draft.coding_agent_profiles.profile_slots.insert(
+                "B".to_string(),
+                crate::config::settings::ProfileSlotConfig {
+                    label: "Second".to_string(),
+                },
+            );
+            draft
+                .coding_agent_profiles
+                .default_profile_by_agent
+                .insert("codex".to_string(), "A".to_string());
+
+            let path2 = path.clone();
+            persist_settings_draft_update_with_saver(&state, draft, move |candidate| {
+                save_settings_to_path_preserving_project_paths(candidate, &path2)
+            })
+            .await
+            .unwrap();
+
+            let profiles = disk(&path)["codingAgentProfiles"].clone();
+            assert_eq!(
+                profiles["profilesByAgent"]["codex"]["A"]["command"],
+                json!("codex --edited")
+            );
+            assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
+            assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
+            assert!(
+                profiles["profilesByAgent"].get("scratch-agent").is_none(),
+                "only the overlay-introduced agent's cells are frozen: {profiles}"
+            );
+        }
+
+        // P6
+        #[test]
+        fn the_dedicated_profiles_command_shape_has_the_same_outcome() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(temp.path(), &scratch_agent_overlay());
+            let loaded = load_settings_from_path(&path);
+
+            // `persist_coding_agent_profiles_update` clones the live guard, assigns
+            // the payload and saves; `save_settings` delegates to the path-taking
+            // preserving writer for a resolved path. Reproduced here because that
+            // helper takes no injectable saver and redirecting `save_settings`
+            // would need a process-global env mutation.
+            let mut candidate = loaded.clone();
+            candidate
+                .coding_agent_profiles
+                .profiles_by_agent
+                .get_mut("codex")
+                .unwrap()
+                .get_mut("A")
+                .unwrap()
+                .command = "codex --edited".to_string();
+            candidate.coding_agent_profiles.profile_slots.insert(
+                "B".to_string(),
+                crate::config::settings::ProfileSlotConfig {
+                    label: "Second".to_string(),
+                },
+            );
+            candidate
+                .coding_agent_profiles
+                .default_profile_by_agent
+                .insert("codex".to_string(), "A".to_string());
+            validate_and_repair_settings(&mut candidate).unwrap();
+            save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+
+            let profiles = disk(&path)["codingAgentProfiles"].clone();
+            assert_eq!(
+                profiles["profilesByAgent"]["codex"]["A"]["command"],
+                json!("codex --edited")
+            );
+            assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
+            assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
+            assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+        }
+
+        // P7
+        #[test]
+        fn an_agent_delete_removes_its_default_profile_entry_from_the_base_file() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(temp.path(), &scratch_agent_overlay());
+            let mut seeded = load_settings_from_path(&path);
+            seeded
+                .coding_agent_profiles
+                .default_profile_by_agent
+                .insert("claude".to_string(), "A".to_string());
+            save_settings_to_path_preserving_project_paths(&seeded, &path).unwrap();
+            assert_eq!(
+                disk(&path)["codingAgentProfiles"]["defaultProfileByAgent"]["claude"],
+                json!("A")
+            );
+
+            // The agent-delete shape: remove the entry from a clone of the live
+            // guard and save.
+            let loaded = load_settings_from_path(&path);
+            let mut candidate = loaded.clone();
+            candidate
+                .coding_agent_profiles
+                .default_profile_by_agent
+                .remove("claude");
+            save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+
+            assert!(
+                disk(&path)["codingAgentProfiles"]["defaultProfileByAgent"]
+                    .get("claude")
+                    .is_none(),
+                "the removal must persist"
+            );
+            assert!(disk(&path)["codingAgentProfiles"]["profilesByAgent"]
+                .get("scratch-agent")
+                .is_none());
+        }
     }
 }
