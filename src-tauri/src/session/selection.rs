@@ -736,10 +736,19 @@ enum CoordinatorJob {
 }
 
 struct CoordinatorEnvelope {
+    /// #1580. Released before the completion the caller observes, by
+    /// `respond_after_release` at every completion-bearing send in
+    /// `execute_envelope` and `drain_after_shutdown`, and by an explicit
+    /// `drop(critical.take())` in the two arms whose send is not a completion.
+    /// Declared FIRST on purpose: fields drop in declaration order, so on the
+    /// path where an envelope is destroyed without being executed this key is
+    /// freed before `job` drops the caller's `oneshot::Sender` and wakes the
+    /// caller with `RecvError`. `CriticalAdmissionGuard::drop` remains the
+    /// backstop for every path that never reaches a send.
+    _critical_admission: Option<CriticalAdmissionGuard>,
     job: CoordinatorJob,
     _admission: OwnedSemaphorePermit,
     _create_ticket: Option<OwnedSemaphorePermit>,
-    _critical_admission: Option<CriticalAdmissionGuard>,
 }
 
 struct CoordinatorInner {
@@ -1991,12 +2000,21 @@ async fn drain_after_shutdown<R: Runtime>(
     receiver: &mut mpsc::Receiver<CoordinatorEnvelope>,
 ) {
     while let Some(envelope) = receiver.recv().await {
-        match envelope.job {
+        let CoordinatorEnvelope {
+            _critical_admission: mut critical,
+            job,
+            _admission,
+            _create_ticket,
+        } = envelope;
+        match job {
             CoordinatorJob::FinalizeCreate { request, response } => {
                 execute_rollback_create(transaction, request.binding).await;
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
-                    .is_err()
+                if respond_after_release(
+                    &mut critical,
+                    response,
+                    Err(SelectionCoordinatorError::Unavailable.to_string()),
+                )
+                .is_err()
                 {
                     log::debug!(
                         "[selection] shutdown finalizer caller dropped session={}",
@@ -2006,75 +2024,103 @@ async fn drain_after_shutdown<R: Runtime>(
             }
             CoordinatorJob::RollbackCreate { binding } => {
                 execute_rollback_create(transaction, binding).await;
+                drop(critical.take());
             }
             CoordinatorJob::Transition { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
-                    .is_err()
+                if respond_after_release(
+                    &mut critical,
+                    response,
+                    Err(SelectionCoordinatorError::Unavailable.to_string()),
+                )
+                .is_err()
                 {
                     log::debug!("[selection] queued transition caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Snapshot { response } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
-                    .is_err()
+                if respond_after_release(
+                    &mut critical,
+                    response,
+                    Err(SelectionCoordinatorError::Unavailable.to_string()),
+                )
+                .is_err()
                 {
                     log::debug!("[selection] queued snapshot caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RouteLoss { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
-                    .is_err()
+                if respond_after_release(
+                    &mut critical,
+                    response,
+                    Err(SelectionCoordinatorError::Unavailable.to_string()),
+                )
+                .is_err()
                 {
                     log::debug!("[selection] queued route-loss caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Destroy { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
-                    .is_err()
+                if respond_after_release(
+                    &mut critical,
+                    response,
+                    Err(SelectionCoordinatorError::Unavailable.to_string()),
+                )
+                .is_err()
                 {
                     log::debug!("[selection] queued destroy caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RestartLifecycle { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
-                    .is_err()
+                if respond_after_release(
+                    &mut critical,
+                    response,
+                    Err(SelectionCoordinatorError::Unavailable.to_string()),
+                )
+                .is_err()
                 {
                     log::debug!("[selection] queued restart caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RootLifecycle { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
-                    .is_err()
+                if respond_after_release(
+                    &mut critical,
+                    response,
+                    Err(SelectionCoordinatorError::Unavailable.to_string()),
+                )
+                .is_err()
                 {
                     log::debug!("[selection] queued Root caller dropped during shutdown");
                 }
             }
             CoordinatorJob::ResourceKill { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
-                    .is_err()
+                if respond_after_release(
+                    &mut critical,
+                    response,
+                    Err(SelectionCoordinatorError::Unavailable.to_string()),
+                )
+                .is_err()
                 {
                     log::debug!("[selection] queued resource-kill caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Detach { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
-                    .is_err()
+                if respond_after_release(
+                    &mut critical,
+                    response,
+                    Err(SelectionCoordinatorError::Unavailable.to_string()),
+                )
+                .is_err()
                 {
                     log::debug!("[selection] queued detach caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Attach { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
-                    .is_err()
+                if respond_after_release(
+                    &mut critical,
+                    response,
+                    Err(SelectionCoordinatorError::Unavailable.to_string()),
+                )
+                .is_err()
                 {
                     log::debug!("[selection] queued attach caller dropped during shutdown");
                 }
@@ -2083,32 +2129,68 @@ async fn drain_after_shutdown<R: Runtime>(
                 if started.send(()).is_err() {
                     log::debug!("[selection] restore submitter dropped during shutdown");
                 }
+                drop(critical.take());
             }
         }
+        debug_assert!(
+            critical.is_none(),
+            "#1580: a CoordinatorJob arm delivered a response without releasing the critical-admission key"
+        );
     }
+}
+
+/// Releases the critical-admission dedup key, then delivers `value` to the
+/// caller.
+///
+/// The release is sequenced before the send, which is what makes an observed
+/// completion imply the dedup key is already free. `remove_critical_key` takes
+/// and releases the `critical_keys` mutex before `send` publishes the value, so
+/// any thread that observes the response and then locks `critical_keys` sees the
+/// removal. Reversing these two statements reintroduces #1580.
+///
+/// This belongs at a **completion-bearing** send only: the send that tells the
+/// caller the job is finished. `CoordinatorJob::RestoreBarrier`'s `started`
+/// sender is NOT one. It fires before `release.await` (`:2206-2213`), so calling
+/// this helper there would free the key before the barrier work runs. An arm
+/// whose send is not a completion must instead call `drop(critical.take())` at
+/// the point its work actually ends, which is what `RollbackCreate` and
+/// `RestoreBarrier` do.
+fn respond_after_release<T>(
+    critical: &mut Option<CriticalAdmissionGuard>,
+    response: oneshot::Sender<T>,
+    value: T,
+) -> Result<(), T> {
+    drop(critical.take());
+    response.send(value)
 }
 
 async fn execute_envelope<R: Runtime>(
     transaction: &SelectionTransaction<R>,
     envelope: CoordinatorEnvelope,
 ) {
-    match envelope.job {
+    let CoordinatorEnvelope {
+        _critical_admission: mut critical,
+        job,
+        _admission,
+        _create_ticket,
+    } = envelope;
+    match job {
         CoordinatorJob::Transition { request, response } => {
             let result = execute_transition(transaction, request).await;
-            if response.send(result).is_err() {
+            if respond_after_release(&mut critical, response, result).is_err() {
                 log::debug!("[selection] transition caller dropped before result delivery");
             }
         }
         CoordinatorJob::Snapshot { response } => {
             let snapshot = transaction.manager().await.selection_payload().await;
-            if response.send(Ok(snapshot)).is_err() {
+            if respond_after_release(&mut critical, response, Ok(snapshot)).is_err() {
                 log::debug!("[selection] snapshot caller dropped before result delivery");
             }
         }
         CoordinatorJob::FinalizeCreate { request, response } => {
             let session_id = request.binding.session_id();
             let result = execute_finalize_create(transaction, request).await;
-            if response.send(result).is_err() {
+            if respond_after_release(&mut critical, response, result).is_err() {
                 log::debug!(
                     "[selection] create finalizer caller dropped before result delivery session={}",
                     session_id
@@ -2117,6 +2199,7 @@ async fn execute_envelope<R: Runtime>(
         }
         CoordinatorJob::RollbackCreate { binding } => {
             execute_rollback_create(transaction, binding).await;
+            drop(critical.take());
         }
         CoordinatorJob::RouteLoss {
             session_id,
@@ -2124,7 +2207,7 @@ async fn execute_envelope<R: Runtime>(
             response,
         } => {
             let result = execute_route_loss(transaction, session_id, exit_code).await;
-            if response.send(result).is_err() {
+            if respond_after_release(&mut critical, response, result).is_err() {
                 log::debug!(
                     "[selection] route-loss caller dropped before result delivery session={}",
                     session_id
@@ -2134,21 +2217,21 @@ async fn execute_envelope<R: Runtime>(
         CoordinatorJob::Destroy { request, response } => {
             let result =
                 crate::commands::session::execute_destroy_transaction(transaction, request).await;
-            if response.send(result).is_err() {
+            if respond_after_release(&mut critical, response, result).is_err() {
                 log::debug!("[selection] destroy caller dropped before result delivery");
             }
         }
         CoordinatorJob::RestartLifecycle { request, response } => {
             let result =
                 crate::commands::session::execute_restart_transaction(transaction, request).await;
-            if response.send(result).is_err() {
+            if respond_after_release(&mut critical, response, result).is_err() {
                 log::debug!("[selection] restart caller dropped before result delivery");
             }
         }
         CoordinatorJob::RootLifecycle { request, response } => {
             let result =
                 crate::commands::session::execute_root_transaction(transaction, request).await;
-            if response.send(result).is_err() {
+            if respond_after_release(&mut critical, response, result).is_err() {
                 log::debug!("[selection] Root caller dropped before result delivery");
             }
         }
@@ -2163,7 +2246,7 @@ async fn execute_envelope<R: Runtime>(
                 intent,
             )
             .await;
-            if response.send(result).is_err() {
+            if respond_after_release(&mut critical, response, result).is_err() {
                 log::debug!(
                     "[selection] resource-kill caller dropped before result delivery session={}",
                     session_id
@@ -2183,7 +2266,7 @@ async fn execute_envelope<R: Runtime>(
                 suppress_selection,
             )
             .await;
-            if response.send(result).is_err() {
+            if respond_after_release(&mut critical, response, result).is_err() {
                 log::debug!(
                     "[selection] detach caller dropped before result delivery session={}",
                     session_id
@@ -2196,7 +2279,7 @@ async fn execute_envelope<R: Runtime>(
         } => {
             let result =
                 crate::commands::window::execute_attach_transaction(transaction, session_id).await;
-            if response.send(result).is_err() {
+            if respond_after_release(&mut critical, response, result).is_err() {
                 log::debug!(
                     "[selection] attach caller dropped before result delivery session={}",
                     session_id
@@ -2210,8 +2293,13 @@ async fn execute_envelope<R: Runtime>(
             if release.await.is_err() {
                 log::warn!("[selection] restore barrier released by dropped owner");
             }
+            drop(critical.take());
         }
     }
+    debug_assert!(
+        critical.is_none(),
+        "#1580: a CoordinatorJob arm delivered a response without releasing the critical-admission key"
+    );
 }
 
 async fn execute_transition<R: Runtime>(
@@ -4781,6 +4869,172 @@ fn commit_selection_transition() {
             CriticalAdmissionOutcome::Completed(())
         );
         assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+        coordinator.close_and_join().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn critical_admission_key_is_released_before_the_caller_can_observe_completion() {
+        use crate::pty::backend::SessionBackendKind;
+        use tauri::Listener;
+
+        // Fixture: full_queue_critical_route_waiter_... (:4680-4718).
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/critical-release-order".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create critical-release-order fixture");
+        let backend = Arc::new(LifecycleTestBackend::default());
+        backend.set_live(session.id, true);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build critical-release-order app");
+        coordinator.start(app.handle().clone()).unwrap();
+        let barrier = coordinator.submit_restore_first().await.unwrap();
+
+        // Happens-before anchor, registered before any job body can run. Same
+        // mechanism as route_loss_publishes_... (:4531-4537).
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        for event_name in ["session_destroyed", "session_created", "session_switched"] {
+            let events_tx = events_tx.clone();
+            app.listen_any(event_name, move |_| {
+                let _ = events_tx.send(event_name);
+            });
+        }
+
+        let reservations = (0..COORDINATOR_QUEUE_CAPACITY)
+            .map(|_| coordinator.reserve_auto_close().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(coordinator.inner.admission.available_permits(), 0);
+
+        backend.set_live(session.id, false);
+        pty.lock()
+            .unwrap()
+            .remove_route_if_kind(session.id, SessionBackendKind::LocalProcess);
+
+        // 1. Park a critical route-loss waiter with its dedup key registered and its
+        //    envelope not yet queued.
+        let mut waiter = {
+            let sender = coordinator.container_lifecycle_sender();
+            tokio::spawn(async move { sender.route_lost(session.id, 82).await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if coordinator.inner.critical_keys.lock().unwrap().len() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("critical waiter registers its dedup key");
+
+        // 2. Hold the dedup-key lock. The worker must take it to release the key, so
+        //    from here the release cannot complete until this test allows it.
+        //    Steps 2 through 5 are wrapped in a BLOCK and that bracing is
+        //    load-bearing. The release must come from the end of this scope, never
+        //    from a `drop(keys);` statement: on rustc/clippy 1.97
+        //    `clippy::await_holding_lock` does not honour an explicit `drop()`, so
+        //    the `drop(keys);` form reported this guard as held across the `.await`s
+        //    in steps 6 and 7 and failed AC5's `-D warnings` (#1580 round 4). Only a
+        //    lexical scope clears it. Do not "simplify" this back to a `drop`.
+        //    NO `.await` anywhere inside this block. Two reasons, and "the future
+        //    stops being Send" is NOT one of them: #[tokio::test] lowers to
+        //    Runtime::block_on, which puts no Send bound on the future, so holding a
+        //    std MutexGuard across an .await here would compile. The real reasons are
+        //    (a) clippy::await_holding_lock, denied by AC5's -D warnings and still
+        //    armed inside this block, and (b) an await here parks the test task while
+        //    it holds the very lock the worker needs, which is a self-inflicted
+        //    stall, not a proof.
+        {
+            let keys = coordinator.inner.critical_keys.lock().unwrap();
+            assert!(keys.contains(&CriticalAdmissionKey {
+                session_id: session.id,
+                kind: CriticalAdmissionKind::RouteLoss,
+            }));
+
+            // 3. Give the job everything it needs to run to completion.
+            drop(reservations);
+            barrier.finish();
+
+            // 4. Anchor. execute_route_loss publishes at :2760-2769, strictly before it
+            //    returns and therefore strictly before the send in BOTH orderings. This
+            //    is a happens-before edge, not a duration: it proves the job body
+            //    finished. Blocking recv, no yield point, guard still held.
+            let observed = (0..3)
+                .map(|_| {
+                    events_rx
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("route-loss publications reach the test before the response")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                observed,
+                vec!["session_destroyed", "session_created", "session_switched"]
+            );
+
+            // 5. #1580. From the anchor the only work left before `response.send` is the
+            //    return from execute_route_loss. Post-fix the release must happen first
+            //    and cannot, because this test holds the lock, so the waiter can never
+            //    finish. Pre-fix it finishes within microseconds of the anchor; the
+            //    window only has to cover the oneshot wake and the task completing.
+            let started = Instant::now();
+            let mut finished_after = None;
+            while started.elapsed() < Duration::from_millis(200) {
+                if waiter.is_finished() {
+                    finished_after = Some(started.elapsed());
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(
+                finished_after.is_none(),
+                "#1580: route-loss completion became observable {:?} after the job's last publication, while its critical-admission key was still registered",
+                finished_after.unwrap_or_default()
+            );
+        }
+
+        // 6. Once the release can complete, so can the job, and the key is gone.
+        let outcome = tokio::time::timeout(Duration::from_secs(5), &mut waiter)
+            .await
+            .expect("critical route-loss completes once the dedup key is released")
+            .expect("join critical route-loss waiter")
+            .expect("critical route-loss result");
+        assert_eq!(outcome, CriticalAdmissionOutcome::Completed(()));
+        assert!(!coordinator.critical_key_registered_for_test(
+            session.id,
+            CriticalAdmissionKind::RouteLoss
+        ));
+
+        // 7. The production consequence: a distinct submission issued straight after
+        //    the observed completion is accepted, not deduplicated.
+        assert_eq!(
+            coordinator
+                .container_lifecycle_sender()
+                .route_lost(session.id, 99)
+                .await
+                .unwrap(),
+            CriticalAdmissionOutcome::Completed(())
+        );
         coordinator.close_and_join().await;
     }
 
