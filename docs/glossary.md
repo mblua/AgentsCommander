@@ -46,7 +46,7 @@ Windows' native PTY API. AC uses ConPTY via [portable-pty](https://github.com/we
 
 ## Container coding agent
 
-A coding agent AC launches under its **Container** runtime instead of as a local host process. Host login reuse is on by default, so a container Claude Code session starts signed in with no interaction. Known limitation: the bind mount exposes only the agent's replica root, and the `repo-*` work-repo clones are siblings of that replica inside the room directory, so they fall outside the mount and a container agent cannot do repo work today ([#935](https://github.com/mblua/AgentsCommander/issues/935)). See [Container coding agents](features/container-coding-agents.md).
+A coding agent AC launches under its **Container** runtime instead of as a local host process. Host login reuse is on by default, so a container Claude Code session starts signed in with no interaction. Repos are mounted inside the container at `/repos/...`; if a repo is not listed as admissible for the room, it will not be mounted. See [Container coding agents](features/container-coding-agents.md).
 
 ## Context alert
 

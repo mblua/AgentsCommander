@@ -2,7 +2,7 @@
 
 For developers running a coding agent under AC's **Container** runtime: what AC does with your host credentials at launch, what works today, and what does not.
 
-> **Status: in progress.** Host login reuse works and is on by default: a container Claude Code session starts signed in with zero interaction. But **a container coding agent cannot reach its repos yet** ([#935](https://github.com/mblua/AgentsCommander/issues/935)). Read [Known limitations](#known-limitations) before you move an agent to the Container runtime.
+> **Status: in progress.** Host login reuse works and is on by default: a container Claude Code session starts signed in with zero interaction. Container agents now run with mounted work repos, and the injected repo context targets container paths (`/repos/...`), but not every project is mounted by default. Read [Known limitations](#known-limitations) before you move an agent to the Container runtime.
 
 ## Why this exists
 
@@ -58,19 +58,19 @@ A successful JSON read writes one compact ASCII-only document plus LF. PNG write
 
 Root snapshot authority is deliberately host-only. Root must use `agentscommander terminal-snapshot` with a live Root session token and never receives an API identity.
 
-This read does not depend on frontend visibility or access to the target's repository. The separate [repo mount limitation](#1-container-agents-cannot-reach-their-repos-935) still prevents normal container repo work. See [Terminal snapshots](terminal-snapshots.md) for authorization, schema, fidelity, renderer, privacy, errors, and cleanup.
+This read does not depend on frontend visibility or access to the target's repository. For repo access, see [Known limitations #1](#1-repos-mounted-in-container) below. See [Terminal snapshots](terminal-snapshots.md) for authorization, schema, fidelity, renderer, privacy, errors, and cleanup.
 
 ## Known limitations
 
 All of the following are current. Host login reuse does not fix any of them.
 
-### 1. Container agents cannot reach their repos ([#935](https://github.com/mblua/AgentsCommander/issues/935))
+### 1. Repos mounted in container agents
 
-**This is the blocker.** The container bind mount exposes **only the agent's replica root**. Your [work repos](../glossary.md#work-repo) (`repo-*`) are siblings of the replica inside the room directory, so they fall **outside the mount**. From inside the container the agent sees its own replica root and `.agentscommander_ac`, and nothing else.
+Container agents now mount admissible [work repos](../glossary.md#work-repo) (`repo-*`) into `/repos/<name>` inside the container.
 
-The injected `# Agent Repos` context makes it worse: it hands the agent Windows host paths (`C:\Users\...`) that do not exist inside the container, and promises read/write access the agent does not have.
+The injected `# Agent Repos` context renders container paths (for example `/repos/repo-<name>`), not host paths.
 
-**A container coding agent cannot do repo work today.** It runs, it authenticates, it reads its own replica, it messages peers. It cannot check out, edit, build, or commit your repos. Use the local-process runtime for repo work until #935 lands.
+If a work repo is not admissible, it is not mounted and is therefore unavailable in-container. In that case the repo will not appear in the container repo list.
 
 ### 2. One-time "Bypass Permissions mode" consent
 
@@ -121,7 +121,7 @@ Every step logs under the `[container-cred]` prefix. Set `logLevel` to `info` (t
 | `[container-cred] copied host credential into <path>` | The copy succeeded. |
 | `[container-cred] dest dir <path> is a symlink/reparse point; skipping copy-in` | AC refuses to write a token through a symlink or junction it did not create. Nothing was copied and nothing was stamped; the agent shows its login wizard. Remove the link. |
 | `[container-cred] <path> is not valid JSON (...); skipping first-run state` | The container's `.claude.json` is unparseable, so AC left it byte for byte rather than clobber it. The token is in place, but you get the onboarding wizard. |
-| The agent is signed in but sees no `repo-*` directory | Expected. This is [#935](https://github.com/mblua/AgentsCommander/issues/935), see [limitation 1](#1-container-agents-cannot-reach-their-repos-935). |
+| The agent is signed in but does not see a repo under `/repos` | Expected for non-admissible repos. See [limitation 1](#1-repos-mounted-in-container). |
 
 ## See also
 

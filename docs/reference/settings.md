@@ -155,7 +155,7 @@ The per-agent and per-replica assignments do **not** live here. They are stored 
 
 ### Container coding agents
 
-Host login reuse for coding agents running under the Container runtime. **This feature is in progress**: container agents cannot reach their `repo-*` directories yet. See [Container coding agents](../features/container-coding-agents.md).
+Host login reuse for coding agents running under the Container runtime. The container receives the room's admissible repo mounts (for example under `/repos`), and sees host credentials when enabled. See [Container coding agents](../features/container-coding-agents.md).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
