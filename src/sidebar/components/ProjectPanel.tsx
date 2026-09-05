@@ -81,6 +81,7 @@ import {
   findReplicaSession as replicaSession,
   isReplicaWorking,
   replicaSessionName,
+  workgroupIsWorking,
 } from "./workgroup-session";
 import {
   MAX_GROUP_MATCH_ID_LENGTH,
@@ -2408,7 +2409,10 @@ const ProjectPanel: Component = () => {
           return (
             <div
               class="replica-item"
-              classList={{ active: session()?.id === sessionsStore.activeId }}
+              classList={{
+                active: session()?.id === sessionsStore.activeId,
+                working: isReplicaWorking(wg, replica),
+              }}
               data-ac-testid={rowTestId()}
               onClick={() => handleReplicaClick(replica, wg)}
               onContextMenu={(e) => {
@@ -2579,7 +2583,7 @@ const ProjectPanel: Component = () => {
           );
           const wgCollapsed = () => isPanelCollapsed(wgCollapsedKey);
           return (
-            <div class="ac-wg-subgroup">
+            <div class="ac-wg-subgroup" classList={{ working: workgroupIsWorking(wg) }}>
               <div
                 class="ac-wg-header ac-wg-header--collapsible"
                 title={wg.path}
