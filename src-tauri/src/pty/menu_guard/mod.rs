@@ -366,6 +366,9 @@ impl MenuGuard {
 mod tests {
     use super::*;
     use crate::config::settings::default_blocking_menus_for_command;
+    // #1757 - T11 builds a real ScreenFrame. Test-module only: widening the
+    // production use statement at the top of this file would remove a production line.
+    use crate::pty::watchers::ScreenFrame;
 
     #[test]
     fn test_menu_guard_pattern_matching() {
@@ -485,5 +488,93 @@ mod tests {
         let eval = guard.evaluate_logical_rows(session_id, &rows, &entries);
         assert!(eval.is_blocked);
         assert_eq!(eval.matched_notification.as_deref(), Some("good regex"));
+    }
+
+    /// #1757 G2 - the Codex "Hooks need review" dialog as a REPLAYED terminal
+    /// mirror, not as hand-typed row text. Every content row is inset by two
+    /// columns, carries SGR attributes, and ends CRLF; U+203A is the selection
+    /// marker Codex actually renders.
+    const CODEX_HOOKS_REVIEW_FRAME: &str = concat!(
+        "  \x1b[1mHooks need review\x1b[0m\r\n",
+        "  \x1b[33m1 hook is new or changed.\x1b[0m\r\n",
+        "  \x1b[2mHooks can run outside the sandbox after you trust them.\x1b[0m\r\n",
+        "\r\n",
+        "  \u{203a} 1. Review hooks\r\n",
+        "    2. Trust all and continue\r\n",
+        "    3. Continue without trusting (hooks won't run)\r\n",
+        "\r\n",
+        "  \x1b[2mPress enter to confirm or esc to go back\x1b[0m\r\n",
+    );
+
+    /// #1757 T11. Drives the product's own frame-building and row-joining code
+    /// over a replayed vt100 mirror, so the two-column inset, the trailing-blank
+    /// trim and the wrap join are what the shipped pattern is measured against.
+    #[test]
+    fn codex_hooks_review_matches_the_mirror_of_a_styled_inset_dialog() {
+        let guard = MenuGuard::new();
+        let entries = default_blocking_menus_for_command("codex");
+
+        let mut parser = vt100::Parser::new(30, 120, 0);
+        parser.process(CODEX_HOOKS_REVIEW_FRAME.as_bytes());
+
+        // Built exactly as PtyManager::get_screen_rows_since builds it.
+        let screen = parser.screen();
+        let rows: Vec<String> = screen.rows(0, 120).collect();
+        let wrapped: Vec<bool> = (0..rows.len() as u16)
+            .map(|row| screen.row_wrapped(row))
+            .collect();
+        let frame = ScreenFrame {
+            rows,
+            wrapped,
+            cursor_row: screen.cursor_position().0,
+            stamp: None,
+        };
+        let rows = logical_rows(&frame);
+
+        let eval = guard.evaluate_logical_rows(Uuid::new_v4(), &rows, &entries);
+        assert!(
+            eval.is_blocked,
+            "the shipped codex entries did not mark the replayed hooks-review dialog blocked"
+        );
+        assert_eq!(
+            eval.matched_notification.as_deref(),
+            Some("codex is waiting for you to answer the hooks-review menu in this terminal")
+        );
+
+        // 7.3 - the deliberately-broken control, executed and not merely described.
+        let broken = vec![BlockingMenuEntry::Valid(BlockingMenuConfig {
+            pattern: r"^Hooks need review$".to_string(),
+            notification: "control".to_string(),
+            enabled: true,
+            captured_against: None,
+        })];
+        let control = guard.evaluate_logical_rows(Uuid::new_v4(), &rows, &broken);
+        assert!(
+            !control.is_blocked,
+            "control pattern matched: the replayed rows are neither inset nor decorated, so the shipped \
+             pattern's tolerance for a gutter is untested and the main assertion proves nothing"
+        );
+
+        // 7.4 - negative corpus, on a fresh session id per row so no earlier
+        // episode masks the result.
+        for text in [
+            "1 hook is new or changed.",
+            "Hooks can run outside the sandbox after you trust them.",
+            "Press enter to confirm or esc to go back",
+            "The docs explain why Hooks need review is shown.",
+            "Hooks need reviewers",
+            "hooks need review",
+        ] {
+            let row = vec![LogicalRow {
+                start: 0,
+                end: 0,
+                text: text.to_string(),
+            }];
+            let negative = guard.evaluate_logical_rows(Uuid::new_v4(), &row, &entries);
+            assert!(
+                !negative.is_blocked,
+                "negative corpus row must not match: {text:?}"
+            );
+        }
     }
 }
