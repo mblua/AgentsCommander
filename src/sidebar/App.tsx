@@ -713,6 +713,16 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
             kind: "info",
             durationMs: null,
             tag: `blockedMenu:${sessionId}`,
+            // #1669: leading action. Raises the blocked terminal (switch_session also
+            // focuses the terminal-<id> window when the session is detached) and does
+            // NOT dismiss: the menu is still unanswered, so the notice must survive.
+            secondaryAction: {
+              label: "See terminal",
+              dismissOnClick: false,
+              onClick: () => {
+                void SessionAPI.switch(sessionId).catch(() => {});
+              },
+            },
             action: {
               label: "Resolved by user",
               onClick: () => {
