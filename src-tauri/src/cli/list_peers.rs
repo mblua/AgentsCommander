@@ -2437,6 +2437,11 @@ mod tests {
     const BLOCKED_MENU_MESSAGE: &str =
         "codex is waiting for you to answer the folder-trust menu in this terminal";
 
+    /// #1774 - `ps_row` hardcodes one UUID for every row it builds, so a
+    /// multi-row fixture assigns its own ids to keep the two rows distinct.
+    const CHOSEN_SESSION_ID: &str = "22222222-2222-2222-2222-222222222222";
+    const OTHER_SESSION_ID: &str = "33333333-3333-3333-3333-333333333333";
+
     #[test]
     fn build_session_index_from_copies_blocked_menu_from_persisted() {
         let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
@@ -2558,6 +2563,55 @@ mod tests {
         let status = compute_peer_status(r"C:\work", None, &index);
         assert!(status.blocked_menu);
         assert_eq!(status.blocked_menu_message, None);
+    }
+
+    #[test]
+    fn compute_peer_status_ignores_blocked_menu_of_an_unchosen_lower_priority_session() {
+        // #1774 / D3: the pair must describe the session `max_by_key(priority)`
+        // chose, not `filtered[0]`. The blocked row is first in the slice and has
+        // the LOWER priority, so reading `filtered[0]` reports the wrong terminal.
+        let mut blocked_idle = ps_row("Session 1", r"C:\work", Some(SessionStatus::Idle), true);
+        blocked_idle.id = Some(OTHER_SESSION_ID.to_string());
+        blocked_idle.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some(BLOCKED_MENU_MESSAGE.into()),
+        });
+        let mut chosen_active = ps_row("Session 2", r"C:\work", Some(SessionStatus::Active), true);
+        chosen_active.id = Some(CHOSEN_SESSION_ID.to_string());
+        let index = build_session_index_from(&[blocked_idle, chosen_active]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        assert!(!status.blocked_menu);
+        assert_eq!(status.blocked_menu_message, None);
+        assert_eq!(status.session_status, "active");
+        assert_eq!(status.session_id.as_deref(), Some(CHOSEN_SESSION_ID));
+    }
+
+    #[test]
+    fn compute_peer_status_reports_blocked_menu_of_the_chosen_higher_priority_session() {
+        // #1774 / D3, the inverse fixture: the unblocked row is first in the
+        // slice and the blocked row is the one priority chooses, so reading
+        // `filtered[0]` drops a real block and its message.
+        let mut idle = ps_row("Session 1", r"C:\work", Some(SessionStatus::Idle), true);
+        idle.id = Some(OTHER_SESSION_ID.to_string());
+        let mut blocked_active = ps_row("Session 2", r"C:\work", Some(SessionStatus::Active), true);
+        blocked_active.id = Some(CHOSEN_SESSION_ID.to_string());
+        blocked_active.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some(BLOCKED_MENU_MESSAGE.into()),
+        });
+        let index = build_session_index_from(&[idle, blocked_active]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        assert!(status.blocked_menu);
+        assert_eq!(
+            status.blocked_menu_message.as_deref(),
+            Some(BLOCKED_MENU_MESSAGE)
+        );
+        assert_eq!(status.session_status, "active");
+        assert_eq!(status.session_id.as_deref(), Some(CHOSEN_SESSION_ID));
     }
 
     #[test]
