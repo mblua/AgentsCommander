@@ -636,11 +636,11 @@ fn project_specs() -> [SeededContextTemplateSpec; 5] {
 }
 
 /// #1605: the three per-EXECUTION-platform `{{HOST_PLATFORM_RULES}}` files
-/// (`Context.platform.<os>.md`), seeded absent-only in project `.ac` roots by
-/// the same `sync_one_template` lifecycle as the global/coordinator templates
-/// (seeded/observed state, edit preservation, pending-update offer).
+/// (`Context.platform.<os>.md`), seeded absent-only in project `.ac` roots and
+/// carried through `sync_one_template` with seeded/observed state, edit
+/// preservation and a pending-update offer.
 /// `suppress_unknown_without_state: true` keeps a pre-existing unowned file
-/// preserved silently, never prompted — same posture as the global template.
+/// preserved silently and never prompted.
 fn platform_specs() -> [SeededContextTemplateSpec; 3] {
     [
         SeededContextTemplateSpec {
@@ -745,9 +745,9 @@ fn is_known_generated_standalone_global_template(content: &str) -> bool {
 
 /// #1605: per-platform generated recognizers — equality with the current
 /// platform default const only. A future default change MUST first freeze the
-/// previous default as a snapshot const and extend the recognizer (same pattern
-/// as the global template generations), so seeded files auto-update and edited
-/// files are preserved with the pending-update offer.
+/// previous default as a snapshot const and extend the recognizer, so seeded
+/// files auto-update and edited files are preserved with the pending-update
+/// offer.
 fn is_known_generated_platform_windows(content: &str) -> bool {
     content == crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS
 }
@@ -776,7 +776,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// #1748: the operator-owned override that replaces this template at render time.
 /// Kept in lockstep with `config::local_overlay`, whose PRIVATE `MARKDOWN_LOCAL_SUFFIX`
-/// (`local_overlay.rs:28`) is the other half of the contract.
+/// (`local_overlay.rs:28`) is the other half of the contract. The lockstep holds for a
+/// `.md` filename, which is the only kind any spec carries; for any other extension
+/// `markdown_override_path` returns `None` and this helper has no counterpart.
 fn local_override_filename(filename: &str) -> String {
     format!(
         "{}.local.md",
@@ -3539,7 +3541,8 @@ mod tests {
 
     /// #1369 (C4) AC-4.5-C: population C, the edge case - a pristine v2 on disk
     /// with NO `global` state entry. Failing-first proof for the v3 rename
-    /// (assert_ne), BOTH recognizers, the version bump, and the auto-upgrade.
+    /// (assert_ne), the #979 standalone recognizer and the version bump,
+    /// retargeted by #1748 at the scan.
     #[test]
     fn scan_replaces_pre_agent_repos_global_template() {
         assert_ne!(
@@ -3933,7 +3936,7 @@ mod tests {
         assert_eq!(
             parsed["templates"]["platform.windows"],
             serde_json::Value::Null,
-            "a stateless pre-existing custom platform file must stay unowned (same posture as the global template)"
+            "a stateless pre-existing custom platform file must stay unowned (same posture as the coordinator template)"
         );
     }
 
@@ -4522,7 +4525,7 @@ mod tests {
             &mut loaded,
             false,
             true,
-            true,
+            false,
             &mut clock,
         )
         .completion
@@ -4583,7 +4586,7 @@ mod tests {
             &mut loaded,
             false,
             true,
-            true,
+            false,
             &mut clock,
         )
         .completion
@@ -5583,15 +5586,15 @@ mod tests {
         // `strip_suffix`, not `trim_end_matches`: the latter strips a REPEATED
         // suffix and would turn `a.md.md` into `a`.
         assert_eq!(local_override_filename("a.md.md"), "a.md.local.md");
-        assert_eq!(
-            local_override_filename("noextension"),
-            "noextension.local.md"
-        );
     }
 
     /// #1748 new test 7: the whole content of D2, and the replacement carrier for
     /// the read-path tests that would otherwise have survived vacuously. One
-    /// fixture, driven twice; the flipped input is the entry point.
+    /// fixture, driven through FOUR entry points; the flipped input is the entry
+    /// point throughout. Arms (a), (b) and (c) share one tree, and (c)'s
+    /// `repair: true` call is the LAST call on it because that call replaces the
+    /// bytes and writes a backup; arm (d) runs on a second tree built from the
+    /// same fixture, so "one `*.bak` appears" is a statement about the scan alone.
     #[test]
     fn the_read_path_no_longer_repairs_the_global_but_the_scan_does() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -5601,6 +5604,7 @@ mod tests {
         std::fs::write(&path, GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES)
             .expect("write pristine v4 global");
 
+        // (a) the render-time read path.
         assert!(
             sync_for_read_at(
                 &ac_root,
@@ -5617,15 +5621,99 @@ mod tests {
         );
         assert!(backup_files(&ac_root).is_empty());
 
+        // (b) project registration, the OTHER `repair: false` caller that iterates
+        // `project_specs()`. The `Ok(())` is what makes this arm gradeable: with
+        // this caller's `repair` flipped to `true`, `project_dir` is `None`, so
+        // control reaches the project-dir guard, which sits BEFORE `create_backup`
+        // and returns `Err` having written nothing. Both filesystem assertions
+        // below hold in either state. This arm therefore proves "this call site
+        // does not pass `repair: true`", NOT "a repair on this path would leave
+        // the bytes alone" -- the latter is unreachable here.
+        assert_eq!(
+            ensure_project_context_templates(&ac_root),
+            Ok(()),
+            "project registration must not attempt a repair it cannot report"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read global after registration"),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+            "project registration must leave the bytes exactly as they were"
+        );
+        assert!(backup_files(&ac_root).is_empty());
+
+        // (c) `sync_one_template` directly, the only pair in this phase that can
+        // distinguish the new skip reason from a silent fall-through: unchanged
+        // bytes and no publication hold equally for `AmbiguousWithoutState`,
+        // `CreationDisabled` or any other quiet return.
+        let spec = project_spec_by_filename(GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .expect("the global project spec");
+        let mut clock = || fixed_publication_time();
+        let mut loaded = load_state(&ac_root, true).expect("load state for the deferred call");
+        let deferred = sync_one_template(
+            Some(temp.path()),
+            &ac_root,
+            spec,
+            &mut loaded,
+            false,
+            true,
+            false,
+            &mut clock,
+        )
+        .completion
+        .expect("classify the deferred repair");
+        assert!(
+            matches!(
+                deferred.target_outcome,
+                TemplatePublication::Skipped(ContextTemplateSkipReason::DistributionRepairDeferred)
+            ),
+            "expected Skipped(DistributionRepairDeferred), got {:?}",
+            deferred.target_outcome
+        );
+        assert!(deferred.replacement.is_none());
+        assert!(backup_files(&ac_root).is_empty());
+
+        let mut loaded = load_state(&ac_root, true).expect("load state for the repairing call");
+        let repaired = sync_one_template(
+            Some(temp.path()),
+            &ac_root,
+            spec,
+            &mut loaded,
+            false,
+            true,
+            true,
+            &mut clock,
+        )
+        .completion
+        .expect("run the distribution repair");
+        assert!(
+            matches!(repaired.target_outcome, TemplatePublication::Published(..)),
+            "expected Published(..), got {:?}",
+            repaired.target_outcome
+        );
+        assert!(
+            repaired.replacement.is_some(),
+            "an installation with no state entry must be notified"
+        );
+
+        // (d) the scan, on a second tree built from the same fixture.
+        let scan_temp = tempfile::tempdir().expect("tempdir");
+        let scan_ac_root = scan_temp.path().join(".ac");
+        std::fs::create_dir(&scan_ac_root).expect("create scan workspace");
+        let scan_path = scan_ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(
+            &scan_path,
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+        )
+        .expect("write pristine v4 global");
         let replacements =
-            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
-                .expect("scan the same tree");
+            scan_project_context_template_replacements_for_test(scan_temp.path(), &scan_ac_root)
+                .expect("scan the second tree");
         assert_eq!(replacements.len(), 1);
         assert_eq!(
-            std::fs::read_to_string(&path).expect("read repaired global"),
+            std::fs::read_to_string(&scan_path).expect("read repaired global"),
             crate::config::session_context::get_default_agent_template()
         );
-        let backups = backup_files(&ac_root);
+        let backups = backup_files(&scan_ac_root);
         assert_eq!(backups.len(), 1, "{backups:?}");
         assert_eq!(
             std::fs::read_to_string(&backups[0]).expect("read backup"),
