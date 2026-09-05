@@ -196,7 +196,7 @@ Under the **Container** runtime there is one deliberate exception, on by default
 ## See also
 
 - [Coding Agent Profiles](../features/coding-agent-profiles.md): lettered launch variants (A/B/C) per coding agent
-- [Container coding agents](../features/container-coding-agents.md): host login reuse, and why container agents cannot reach repos yet
+- [Container coding agents](../features/container-coding-agents.md): host login reuse, and how a container mounts that agent's work repos
 - [Creating agents](../agents/creating-agents.md) — make a new agent dir
 - [Settings reference](../reference/settings.md) — full schema for `agents[]`
 - [Roadmap: coding agents](../../ROADMAP.md): OpenCode first-class integration, Nvidia agent, more
