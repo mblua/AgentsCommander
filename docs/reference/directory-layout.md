@@ -8,7 +8,7 @@ AgentsCommander keeps its on-disk data in two distinct trees:
 
 | Tree | Location | Scope |
 |---|---|---|
-| Project `.ac/` | `<project>/.ac/` | Shared team and tool configuration, tracked in the project's git |
+| Project `.ac/` | `<project>/.ac/` | Shared team and tool configuration. Version it in its own [Agents config repo](../glossary.md#agents-config-repo) (recommended), track it inside a work repo, or leave it untracked |
 | Application config dir | Selected by the exact binary version; see below | Machine-local application state, never shared |
 
 In the deployment documented below, the adjacent candidate is selected: the binary is `agentscommander_ac2.exe` beside the project root, so the two trees are `D:\0_repos\AgentsCommander_iac\.ac\` and `D:\0_repos\AgentsCommander_iac\.agentscommander_ac2\`. This example describes that deployment, not every package layout.
