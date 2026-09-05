@@ -64,7 +64,7 @@ The project-scoped tree. AC creates and maintains it, and the recommended layout
 |---|---|
 | `_agent_<name>/` | Agent matrix: one directory per agent, holding `Role.md`, `config.json`, `memory/`, `memory_YYYYMMDD_hhmmss/` (rotated memory archives), `plans/`, and `skills/`. See [Agent Matrix conventions](../agent-matrix-conventions.md), and see [Agent Matrix conventions §11](../agent-matrix-conventions.md#11-agent-memory-rotation-at-spawn) for how the archives are made |
 | `_team_<name>/` | Team definitions: `config.json` (members, orchestrator, repos) and `conventions.md` |
-| `room-<N>-<name>/` | Rooms: `__agent_<name>/` replica directories, `messaging/` (inter-agent message files), `repo-*/` room clones, `TASK*.md` briefs. Project-scoped and shared, but gitignored (`room-*/`) because the `repo-*` folders are their own git repositories |
+| `room-<N>-<name>/` | Rooms: `__agent_<name>/` replica directories, `messaging/` (inter-agent message files), `repo-*/` [work repo](../glossary.md#work-repo) clones, `TASK*.md` briefs. Project-scoped and shared, but gitignored (`room-*/`) because the `repo-*` folders are their own git repositories |
 | `coding-agents/` | Coding-agent catalog: `agents.json` (manifest) and `_seed/` (per-tool default config-folder masters). Seeded per registered project; this is the copy AC reads and writes |
 | `competitions/` | Competition packages, one folder per competition with a `MANIFEST.md`. No writer in the current source; treat as hand-managed |
 
