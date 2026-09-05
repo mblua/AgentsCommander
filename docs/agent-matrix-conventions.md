@@ -10,14 +10,14 @@ This document is the definitive guide for any AI agent tasked with creating or m
 |---|---|---|---|
 | **Agent** | `_agent_` | `.ac/_agent_NAME/` | A role definition: who this agent is, what it does, what it must never do |
 | **Team** | `_team_` | `.ac/_team_NAME/` | A grouping of agents that can message each other via `list-peers` / `send` |
-| **Room** | `room-` (legacy: `wg-`) | `.ac/room-N-TEAMNAME/` | An isolated working environment with cloned agents + cloned repo for parallel work |
+| **Room** | `room-` (legacy: `wg-`) | `.ac/room-N-TEAMNAME/` | An isolated working environment with agent replicas + work repo clones for parallel work |
 | **Room Agent** | `__agent_` | `.ac/room-N-TEAMNAME/__agent_NAME/` | A replica of a project-level agent inside a room (double underscore) |
 
-`.ac/` is the only supported Project AC Root directory.
+`.ac/` is the only supported Project AC Root directory. The repository that versions it is the [Agents config repo](glossary.md#agents-config-repo): giving `.ac/` a repository of its own is the recommended layout, and tracking it inside a [work repo](glossary.md#work-repo) also works.
 
-The team is the logical capability and organization: it defines who can work together, who coordinates, and which repos are available. The room is an operational runtime replica instance of a team for a specific task: it contains replica agents and `repo-*` working repositories.
+The team is the logical capability and organization: it defines who can work together, who coordinates, and which repos are available. The room is an operational runtime replica instance of a team for a specific task: it contains replica agents and the room's [work repo](glossary.md#work-repo) clones (`repo-*`).
 
-**Hierarchy:** Project → Agents + Teams → Rooms (with replicated agents + repo clones)
+**Hierarchy:** Project → Agents + Teams → Rooms (with replicated agents + work repo clones)
 
 ---
 
@@ -41,7 +41,7 @@ The canonical Root Agent (`ac-root-agent`) never reads `.ac/Context.AgentsComman
 Root Agent context
 ├── code-owned runtime prologue   (heading, Core Concepts, write scope and Root
 │                                  authority, delegated-task reporting, skills,
-│                                  workspace repos, CLI rules, credentials,
+│                                  work repos, CLI rules, credentials,
 │                                  Root messaging)
 ├── ../Context.root-agent.md      (raw supplemental Root prose)
 └── Role.md                       (raw)
@@ -49,7 +49,7 @@ Root Agent context
 
 Because the prologue is assembled from code rather than rendered from a template, **emptying, editing, or deleting any Root file cannot suppress mandatory Root governance**. There is no editable Root runtime template and no placeholder whose removal can erase a block.
 
-`.ac/Context.root-agent.md` is appended only for the canonical `ac-root-agent` session. It is static supplemental root prose for identity, durable root state, and high-level coordination scope. It does not receive placeholder rendering: operational write restrictions, credentials, CLI usage, inter-agent messaging, workspace repo context, and skills all come from the code-owned prologue above.
+`.ac/Context.root-agent.md` is appended only for the canonical `ac-root-agent` session. It is static supplemental root prose for identity, durable root state, and high-level coordination scope. It does not receive placeholder rendering: operational write restrictions, credentials, CLI usage, inter-agent messaging, work repo context, and skills all come from the code-owned prologue above.
 
 Root provisioning seeds **only** Root-specific material (`Context.root-agent.md`, `Role.md`, Root skills, the Root messaging directory, and `config.json`). It never creates `Context.AgentsCommander.md` or `Context.coordinator.md`.
 
@@ -248,7 +248,7 @@ Teams define which agents can communicate with each other via `list-peers` and `
 
 ## 3. Room Structure (`room-*`)
 
-Rooms are isolated working environments created when a team needs to work on a task in parallel. They contain **replicas** of agents (double underscore `__agent_*`) and **clones** of repositories (`repo-*`).
+Rooms are isolated working environments created when a team needs to work on a task in parallel. They contain **replicas** of agents (double underscore `__agent_*`) and **clones** of the team's work repos (`repo-*`).
 
 ### Folder Structure
 
@@ -264,7 +264,7 @@ Rooms are isolated working environments created when a team needs to work on a t
 │       └── config.json
 ├── __agent_OTHER/
 │   └── ...
-└── repo-REPONAME/              # Shallow clone of the team's repo
+└── repo-REPONAME/              # Shallow clone of the team's work repo
     ├── .git/
     ├── _plans/                 # Plans created during this room's work
     └── (repository contents)
@@ -289,16 +289,16 @@ Rooms are isolated working environments created when a team needs to work on a t
 |---|---|
 | `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` is the AC-injected global template, and it is valid **only for Agent Matrix and room context**; the Root Agent ignores it (see #979 above) and any occurrence is stripped from the Root `config.json` during provisioning. The Role.md entry defines this agent's personality. `$REPOS_WORKSPACE_INFO` is deprecated; repo context is rendered through `{{AGENT_REPOS}}` inside `$AGENTSCOMMANDER_CONTEXT`. |
 | `identity` | Path to the parent agent folder. This is the canonical identity — the room agent is a replica of this. |
-| `repos` | Relative paths to the repo clones inside this room. |
+| `repos` | Relative paths to the work repo clones inside this room. |
 
 ### Key Conventions
 
 1. **Naming:** `room-N-TEAMNAME` where N is sequential (1, 2, 3...) and TEAMNAME matches the team.
 2. **Double underscore:** Room agents use `__agent_` (two underscores) to distinguish from project-level `_agent_` (one underscore).
-3. **Repo prefix:** Cloned repos inside rooms use `repo-` prefix (e.g., `repo-AgentsCommander`). This is critical — the golden rule allows write access only to `repo-*` folders.
+3. **Repo prefix:** Work repo clones inside rooms use the `repo-` prefix (e.g., `repo-AgentsCommander`). This is critical — the golden rule allows write access only to `repo-*` folders.
 4. **Context paths:** Use relative paths (`../../_agent_NAME/Role.md`) so the room is portable.
 5. **Role.md override:** If you place a Role.md inside the `__agent_*` folder, it overrides the parent's role. To use the parent's role, reference it in `context` instead.
-6. **.gitignore:** The `.ac/.gitignore` MUST exclude `room-*/` to prevent the parent repo's git operations from corrupting room clones.
+6. **.gitignore:** The `.ac/.gitignore` MUST exclude `room-*/` to prevent the tracking repository's git operations from corrupting the room's work repo clones.
 
 ---
 
@@ -339,7 +339,7 @@ The tokens map onto the matrix layout from the sections above: a replica is a `_
 | Token | Resolves to | Valid when |
 |---|---|---|
 | `%AC_REPLICA_ROOT%` | The **replica** dir — the launch working directory, canonicalized | A Room replica (`__agent_*` under `room-*`) **or** the `ac-root-agent` launch root |
-| `%AC_WORKSPACE_ROOT%` | The **`.ac` workspace** root (the nearest `.ac` ancestor of the launch root) | Any launch root **inside** a `.ac` workspace — including non-replica roots (a `repo-*` checkout, a bare `room-*` dir, an `_agent_*` matrix dir) |
+| `%AC_WORKSPACE_ROOT%` | The **`.ac` workspace** root (the nearest `.ac` ancestor of the launch root) | Any launch root **inside** a `.ac` workspace — including non-replica roots (a `repo-*` work repo, a bare `room-*` dir, an `_agent_*` matrix dir) |
 | `%AC_MATRIX_ROOT%` | The **matrix** dir `<workspace>\_agent_<name>` (the agent's canonical Agent Matrix) | **Only** a Room replica launch |
 
 ### Example resolutions
@@ -358,7 +358,7 @@ The three tokens have **different** validity gates. A value is rejected only whe
 
 - **Room replica** (`__agent_*` under `room-*`): all three tokens resolve.
 - **Root agent** (`ac-root-agent`): only `%AC_REPLICA_ROOT%` resolves (to the root-agent dir). `%AC_WORKSPACE_ROOT%` and `%AC_MATRIX_ROOT%` are unavailable — the root agent has no `.ac` workspace and no Agent Matrix — and error if used.
-- **Non-replica launch root inside a `.ac` workspace** (a `repo-*` checkout at `…\.ac\room-6\repo-X`, a bare `room-*` dir, or an `_agent_*` matrix dir): **only** `%AC_WORKSPACE_ROOT%` resolves (its `.ac` ancestor exists); `%AC_REPLICA_ROOT%` and `%AC_MATRIX_ROOT%` still error there. This "workspace resolves but replica/matrix error" asymmetry is intentional.
+- **Non-replica launch root inside a `.ac` workspace** (a `repo-*` work repo at `…\.ac\room-6\repo-X`, a bare `room-*` dir, or an `_agent_*` matrix dir): **only** `%AC_WORKSPACE_ROOT%` resolves (its `.ac` ancestor exists); `%AC_REPLICA_ROOT%` and `%AC_MATRIX_ROOT%` still error there. This "workspace resolves but replica/matrix error" asymmetry is intentional.
 - **Launch root outside any `.ac`** (a normal repo): none of the tokens resolve.
 
 When a token is used where it does not apply, the launch fails with a specific error:
@@ -404,7 +404,7 @@ For a worked end-to-end example that puts `%AC_MATRIX_ROOT%` in a coding agent's
 room-*/
 ```
 
-This is non-negotiable. Without it, `git checkout` or `git reset` on the parent repo will corrupt the room repo clones (which are independent git repositories nested inside the parent).
+This is non-negotiable. Without it, `git checkout` or `git reset` on the repository that tracks `.ac/` will corrupt the room's work repo clones (which are independent git repositories nested inside it).
 
 ---
 

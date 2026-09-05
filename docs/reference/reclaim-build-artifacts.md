@@ -1,8 +1,8 @@
 # Reclaiming build artifacts
 
-For operators and agents who maintain room repo clones. How to recover disk space taken by regenerable Rust/Tauri build output, safely and repeatably.
+For operators and agents who maintain the [work repo](../glossary.md#work-repo) clones inside rooms. How to recover disk space taken by regenerable Rust/Tauri build output, safely and repeatably.
 
-Room clones accumulate large Cargo/Tauri build artifacts whenever an agent or operator runs a build inside a clone. The bytes are fully regenerable, so they are safe to delete, but they recur and can consume many gigabytes across a set of clones. `scripts/reclaim-build-artifacts.mjs` is a maintenance/process script (not an app feature, UI action, or app command) that reclaims them.
+Work repo clones accumulate large Cargo/Tauri build artifacts whenever an agent or operator runs a build inside one. The bytes are fully regenerable, so they are safe to delete, but they recur and can consume many gigabytes across a set of them. `scripts/reclaim-build-artifacts.mjs` is a maintenance/process script (not an app feature, UI action, or app command) that reclaims them.
 
 ## What it removes
 
@@ -11,9 +11,9 @@ Only these two directories, and only when they are real directories named `targe
 | Path (relative to a repo root) | Why it exists |
 |---|---|
 | `target` | Current Cargo workspace output location. |
-| `src-tauri/target` | Historical pre-workspace output location, left behind by older clones. |
+| `src-tauri/target` | Historical pre-workspace output location, left behind by older work repo clones. |
 
-Both are covered on purpose. `cargo clean` alone is insufficient: it only knows the active workspace target, so a stale historical `src-tauri/target` from an older clone survives a clean. This script targets both locations by explicit path.
+Both are covered on purpose. `cargo clean` alone is insufficient: it only knows the active workspace target, so a stale historical `src-tauri/target` from an older work repo clone survives a clean. This script targets both locations by explicit path.
 
 It never deletes source, `.git`, config, or any other untracked user work. See [Safety guardrails](#safety-guardrails).
 
@@ -34,7 +34,7 @@ npm run reclaim:artifacts:apply
 Scan somewhere other than this repo, for example a whole room or a parent holding several rooms. Pass roots positionally or with `--root` (repeatable). Combine with `--apply` to delete:
 
 ```
-# dry run across a room dir's repo-* clones
+# dry run across a room dir's repo-* work repos
 node scripts/reclaim-build-artifacts.mjs "C:\path\to\.ac\room-13-dev-v4-team"
 
 # apply across several roots
@@ -57,9 +57,9 @@ node scripts/reclaim-build-artifacts.mjs --json
 
 A scan root may be any of:
 
-- a single repo clone (has `Cargo.toml`, `package.json`, or `src-tauri`),
-- a room dir (`room-*`) that holds `repo-*` clones, or
-- a parent dir that holds several `repo-*` clones and/or `room-*` room dirs.
+- a single work repo clone (has `Cargo.toml`, `package.json`, or `src-tauri`),
+- a room dir (`room-*`) that holds `repo-*` work repos, or
+- a parent dir that holds several `repo-*` work repos and/or `room-*` room dirs.
 
 Discovery is bounded to two levels: the root itself, its `repo-*` children, and `repo-*` grandchildren under `room-*` dirs. It does not walk arbitrarily deep.
 
@@ -82,8 +82,8 @@ Discovery is bounded to two levels: the root itself, its `repo-*` children, and 
 
 ## When to run it
 
-- Periodically on machines that host room clones, after heavy build activity.
-- Before archiving or duplicating a clone set, to avoid copying regenerable bytes.
-- Any time disk pressure traces back to `target` / `src-tauri/target` under clones.
+- Periodically on machines that host work repo clones, after heavy build activity.
+- Before archiving or duplicating a set of work repo clones, to avoid copying regenerable bytes.
+- Any time disk pressure traces back to `target` / `src-tauri/target` under work repo clones.
 
 Rebuilds regenerate the artifacts on the next `cargo`/`tauri` build, so reclaiming is non-destructive to work in progress.

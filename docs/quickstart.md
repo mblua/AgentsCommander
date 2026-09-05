@@ -22,7 +22,7 @@ After it verifies the exact asset against `SHASUMS256.txt` and validates the exe
 
 ## 2. Open or create an AC project
 
-An **AC project** is a folder with a Project AC Root (`.ac/`) inside. AC stores agents, teams, and messaging here so the whole project is portable and version-controllable.
+An **AC project** is a folder with a Project AC Root (`.ac/`) inside. AC stores agents, teams, and messaging here so the whole project is portable and version-controllable. The repository that versions `.ac/` is the [Agents config repo](glossary.md#agents-config-repo): giving `.ac/` a repository of its own is the recommended layout, and tracking it inside a [work repo](glossary.md#work-repo) also works.
 
 In the sidebar, click **New Project** and point at any folder, empty or an existing repo. AC creates `.ac/` with a sensible `.gitignore` and registers the project in your sidebar.
 
