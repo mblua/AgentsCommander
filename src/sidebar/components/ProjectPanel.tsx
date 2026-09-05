@@ -81,6 +81,7 @@ import {
   findReplicaSession as replicaSession,
   isReplicaWorking,
   replicaSessionName,
+  workgroupIsWorking,
 } from "./workgroup-session";
 import {
   MAX_GROUP_MATCH_ID_LENGTH,
@@ -2325,6 +2326,13 @@ const ProjectPanel: Component = () => {
           const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => replica.isCoordinator;
           const session = () => replicaSession(wg, replica);
+          // #1783 - the quick-access panel answers "is this team busy", so an
+          // orchestrator row there tints when ANY agent in its room is working,
+          // the orchestrator included. Every other render site (rowContext
+          // "workgroups" and "selected", both inside .ac-wg-subgroup) keeps the
+          // per-row meaning: own session only. Do not collapse this branch.
+          const rowIsWorking = () =>
+            rowContext === "quick" ? workgroupIsWorking(wg) : isReplicaWorking(wg, replica);
           const communication = createMemo(() => session()?.communication ?? null);
           const showRaiseHand = createMemo(() =>
             isCoord() &&
@@ -2408,7 +2416,10 @@ const ProjectPanel: Component = () => {
           return (
             <div
               class="replica-item"
-              classList={{ active: session()?.id === sessionsStore.activeId }}
+              classList={{
+                active: session()?.id === sessionsStore.activeId,
+                working: rowIsWorking(),
+              }}
               data-ac-testid={rowTestId()}
               onClick={() => handleReplicaClick(replica, wg)}
               onContextMenu={(e) => {
@@ -2579,7 +2590,7 @@ const ProjectPanel: Component = () => {
           );
           const wgCollapsed = () => isPanelCollapsed(wgCollapsedKey);
           return (
-            <div class="ac-wg-subgroup">
+            <div class="ac-wg-subgroup" classList={{ working: workgroupIsWorking(wg) }}>
               <div
                 class="ac-wg-header ac-wg-header--collapsible"
                 title={wg.path}

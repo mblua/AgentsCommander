@@ -3575,6 +3575,110 @@ mod tests {
         );
     }
 
+    /// D3 regression net for the CLEAR path: a failed save must NOT roll the
+    /// clear back. `cleared` is the caller's publish gate for `communication:
+    /// null`, so a rollback here would leave the Sidebar blocked-menu indicator
+    /// and the sticky toast up for a session that is no longer blocked. This
+    /// test fails if anyone adds one.
+    #[tokio::test]
+    async fn clear_blocked_menu_and_persist_keeps_the_clear_when_the_save_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let (outcome, error) = set_blocked_menu_and_persist_to_dir(
+            &mgr,
+            session.id,
+            "codex is waiting for you to answer the folder-trust menu in this terminal".to_string(),
+            chrono::Utc::now(),
+            Some(temp.path()),
+            None,
+        )
+        .await;
+        assert!(matches!(outcome, BlockedMenuPersistOutcome::Changed(_)));
+        assert!(
+            error.is_none(),
+            "precondition: the set must persist: {error:?}"
+        );
+
+        let file_as_dir = temp.path().join("sessions-dir-is-a-file");
+        std::fs::write(&file_as_dir, "not a directory").expect("write file target");
+
+        let (cleared, clear_error) =
+            clear_blocked_menu_and_persist_to_dir(&mgr, session.id, Some(&file_as_dir), None).await;
+        assert!(
+            cleared,
+            "the clear must still be reported to the caller when the save fails"
+        );
+        assert!(
+            clear_error.is_some(),
+            "save into a file path must fail: {clear_error:?}"
+        );
+        assert!(
+            mgr.list_sessions().await[0].communication.is_none(),
+            "the clear must survive a failed persist"
+        );
+    }
+
+    /// The degraded-config-dir limb of the clear path: with no resolvable config
+    /// dir the clear is still applied and still reported, and the unavailable
+    /// directory is surfaced as the save error rather than suppressing the clear.
+    #[tokio::test]
+    async fn clear_blocked_menu_and_persist_without_a_config_dir_still_reports_the_clear() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let (outcome, _set_error) = set_blocked_menu_and_persist_to_dir(
+            &mgr,
+            session.id,
+            "codex is waiting for you to answer the folder-trust menu in this terminal".to_string(),
+            chrono::Utc::now(),
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(outcome, BlockedMenuPersistOutcome::Changed(_)),
+            "precondition: the blocked menu must be live before the clear"
+        );
+
+        let (cleared, clear_error) =
+            clear_blocked_menu_and_persist_to_dir(&mgr, session.id, None, None).await;
+        assert!(cleared, "the clear must be reported without a config dir");
+        assert_eq!(
+            clear_error.as_deref(),
+            Some("Could not determine home directory")
+        );
+        assert!(
+            mgr.list_sessions().await[0].communication.is_none(),
+            "live communication must be cleared without a config dir"
+        );
+    }
+
     // ---- #698 grinch MEDIUM: single-critical-section user-input clear ----
 
     /// MEDIUM grinch fix: both user-input transitions (re-arm `start_fresh_on_restore`

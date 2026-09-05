@@ -68,7 +68,7 @@ The integer `<N>` is the lowest free positive number across the project, not per
 
 ### Why replicas?
 
-Room replicas give each team a separate operating space instead of sharing a plain disposable git worktree. A replica includes its own repository copy, agent directories, messaging area, filesystem write boundaries, and room-specific executable. This costs more disk space and setup time than a basic worktree, but it gives AgentsCommander stronger isolation for parallel teams, safer delegation boundaries, and cleaner test or build state per room.
+Room replicas give each team a separate operating space instead of sharing a plain disposable git worktree. A room includes a clone of each assigned [work repo](../glossary.md#work-repo) beside its replicas, and each replica has its own agent directories, messaging area, filesystem write boundaries, and room-specific executable. This costs more disk space and setup time than a basic worktree, but it gives AgentsCommander stronger isolation for parallel teams, safer delegation boundaries, and cleaner test or build state per room.
 
 ### Replicas vs the matrix
 

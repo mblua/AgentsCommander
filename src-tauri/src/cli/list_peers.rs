@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::config::ac_root::existing_ac_root;
 use crate::config::agent_config::{AgentLocalConfig, CodingAgentEntry};
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
-use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
+use crate::session::session::{SessionCommunicationKind, SessionStatus, TEMP_SESSION_PREFIX};
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -21,6 +21,14 @@ OUTPUT: JSON array of team peers. Each entry contains:\n  \
                   \"exited\", \"none\"\n  \
   sessionId         UUID of the matched session (omitted if no match)\n  \
   waitingForInput   true if the matching session is waiting for user input\n  \
+  blockedMenu       true when the matched session is parked on a blocking\n                    \
+                  terminal menu (a folder-trust prompt). OMITTED entirely\n                    \
+                  when it is not blocked. working, sessionStatus and\n                    \
+                  waitingForInput keep their normal values in this state.\n  \
+  blockedMenuMessage\n                    \
+                  The agent-specific notice for that menu, e.g. \"codex is\n                    \
+                  waiting for you to answer the folder-trust menu in this\n                    \
+                  terminal\". Omitted when not blocked or absent.\n  \
   exitCode          Exit code (only present when sessionStatus == \"exited\")\n  \
   role              Summary extracted from the agent's CLAUDE.md\n  \
   teams             List of shared team names\n  \
@@ -87,6 +95,15 @@ Each entry contains:\n  \
                   \"exited\", \"none\". Same domain as `list-peers`.\n  \
   waitingForInput   true if the matched session is waiting for user input;\n                    \
                   false when there is no matching session.\n  \
+  blockedMenu       true when the matched session is parked on a blocking\n                    \
+                  terminal menu (a folder-trust prompt). OMITTED entirely\n                    \
+                  when it is not blocked. working, sessionStatus and\n                    \
+                  waitingForInput keep their normal values in this state.\n  \
+  blockedMenuMessage\n                    \
+                  The agent-specific notice for that menu, e.g. \"codex is\n                    \
+                  waiting for you to answer the folder-trust menu in this\n                    \
+                  terminal\". Omitted when not blocked or absent.\n                    \
+                  Same semantics as `list-peers`.\n  \
   reachable         true if you can directly message this agent.\n  \
   teams             List of shared team names.\n  \
   roleSummary       Single-line role hint, ≤80 chars total (including any\n                    \
@@ -109,7 +126,8 @@ verified Room Orchestrator and member in registered projectPaths. A verified Roo
 Orchestrator lists non-Orchestrator members of its own room. Workers and\n\
 origin agents receive `[]`. This view reads no sessions.json, creates no peer\n\
 directories, and grants no authority. Use the returned exact name with\n\
-`terminal-snapshot --to`.\n\n\
+`terminal-snapshot --to`. This view never emits `blockedMenu` or\n\
+`blockedMenuMessage`, because it reads no session index.\n\n\
 PEER FILTER (--peer):\n  \
   Repeat `--peer <FQN>` to return only the named peers. Matching is by\n  \
   exact canonical FQN (no substring, no case-folding). Duplicate values\n  \
@@ -161,6 +179,11 @@ pub struct ListPeersLeanArgs {
     pub snapshot_targets: bool,
 }
 
+/// serde predicate: omit a `false` flag from the JSON entirely (#1669).
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 /// Lean peer projection emitted by `list-peers-lean`. Made `pub` (#791 §8.2)
@@ -175,6 +198,14 @@ pub struct LeanPeerInfo {
     pub session_status: String,
     /// Same value as `PeerInfo.waiting_for_input`.
     pub waiting_for_input: bool,
+    /// #1669 - same value as `PeerInfo.blocked_menu`. Omitted entirely when
+    /// the matched session is not parked on a blocking terminal menu.
+    #[serde(skip_serializing_if = "is_false")]
+    pub blocked_menu: bool,
+    /// #1669 - same value as `PeerInfo.blocked_menu_message`. Omitted when the
+    /// session is not blocked or the row carries no message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_menu_message: Option<String>,
     /// Same value as `PeerInfo.reachable`.
     pub reachable: bool,
     /// Same value as `PeerInfo.teams`.
@@ -267,6 +298,8 @@ impl From<&PeerInfo> for LeanPeerInfo {
             working: p.working,
             session_status: p.session_status.clone(),
             waiting_for_input: p.waiting_for_input,
+            blocked_menu: p.blocked_menu,
+            blocked_menu_message: p.blocked_menu_message.clone(),
             reachable: p.reachable,
             teams: p.teams.clone(),
             role_summary: lean_role_summary(&p.role),
@@ -312,6 +345,19 @@ struct PeerInfo {
     session_id: Option<String>,
     /// True if the matched session has waiting_for_input.
     waiting_for_input: bool,
+    /// #1669 - true when the matched session is parked on a blocking terminal
+    /// menu (a folder-trust prompt detected by the #1646/#1647 menu guard).
+    /// OMITTED entirely when the session is not blocked, so existing consumers
+    /// are unaffected. `working`, `sessionStatus` and `waitingForInput` keep
+    /// their normal values in this state: the blocked condition is communicated
+    /// ONLY through this field and `blockedMenuMessage`.
+    #[serde(skip_serializing_if = "is_false")]
+    blocked_menu: bool,
+    /// #1669 - the agent-specific notice for that menu, e.g. "codex is waiting
+    /// for you to answer the folder-trust menu in this terminal". Omitted when
+    /// the session is not blocked or the row carries no message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocked_menu_message: Option<String>,
     /// Exit code, present iff session_status == "exited".
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<i32>,
@@ -399,6 +445,11 @@ struct CandidateSession {
     context_percent: Option<u8>,
     agent_id: Option<String>,
     effective_profile: Option<String>,
+    /// #1669 - the row is parked on a blocking terminal menu
+    /// (`communication.kind == BlockedMenu && visible`).
+    blocked_menu: bool,
+    /// #1669 - the agent-specific notice for that menu, when the row carries one.
+    blocked_menu_message: Option<String>,
 }
 
 struct PeerStatus {
@@ -411,6 +462,10 @@ struct PeerStatus {
     context_percent: Option<u8>,
     agent_id: Option<String>,
     effective_profile: Option<String>,
+    /// #1669 - the chosen session is parked on a blocking terminal menu.
+    blocked_menu: bool,
+    /// #1669 - the agent-specific notice for that menu, when there is one.
+    blocked_menu_message: Option<String>,
 }
 
 impl PeerStatus {
@@ -425,6 +480,8 @@ impl PeerStatus {
             context_percent: None,
             agent_id: None,
             effective_profile: None,
+            blocked_menu: false,
+            blocked_menu_message: None,
         }
     }
 }
@@ -457,6 +514,17 @@ fn build_session_index_from(rows: &[PersistedSession]) -> HashMap<String, Vec<Ca
             continue;
         };
         let key = canon_or_norm(&ps.working_directory);
+        // #1669: a blocked terminal is a visible BlockedMenu communication. RaiseHand
+        // and cleared/invisible communications are not blocked terminals.
+        let blocked_menu = ps
+            .communication
+            .as_ref()
+            .is_some_and(|c| c.kind == SessionCommunicationKind::BlockedMenu && c.visible);
+        let blocked_menu_message = if blocked_menu {
+            ps.communication.as_ref().and_then(|c| c.message.clone())
+        } else {
+            None
+        };
         index.entry(key).or_default().push(CandidateSession {
             id,
             name: ps.name.clone(),
@@ -465,6 +533,8 @@ fn build_session_index_from(rows: &[PersistedSession]) -> HashMap<String, Vec<Ca
             context_percent: ps.context_percent,
             agent_id: ps.agent_id.clone(),
             effective_profile: ps.effective_profile.clone(),
+            blocked_menu,
+            blocked_menu_message,
         });
     }
     index
@@ -528,6 +598,18 @@ fn compute_peer_status(
             }
         };
 
+    // #1669: `snapshot_sessions` deliberately preserves `communication` for exited
+    // rows (#747), so a crash between the block and the exit can leave a stale
+    // BlockedMenu on a session whose terminal is gone. A terminal that exited is
+    // not waiting on a menu, so suppress the pair rather than report a false
+    // positive alongside sessionStatus == "exited".
+    let blocked_menu = chosen.blocked_menu && !matches!(chosen.status, SessionStatus::Exited(_));
+    let blocked_menu_message = if blocked_menu {
+        chosen.blocked_menu_message.clone()
+    } else {
+        None
+    };
+
     PeerStatus {
         working,
         session_status,
@@ -538,6 +620,8 @@ fn compute_peer_status(
         context_percent: chosen.context_percent,
         agent_id: chosen.agent_id.clone(),
         effective_profile: chosen.effective_profile.clone(),
+        blocked_menu,
+        blocked_menu_message,
     }
 }
 
@@ -655,6 +739,8 @@ fn build_wg_peer(
         session_status: ps.session_status.to_string(),
         session_id: ps.session_id,
         waiting_for_input: ps.waiting_for_input,
+        blocked_menu: ps.blocked_menu,
+        blocked_menu_message: ps.blocked_menu_message,
         exit_code: ps.exit_code,
         context_percent: ps.context_percent,
         agent: ps.agent_id,
@@ -892,6 +978,8 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
                 session_status: ps.session_status.to_string(),
                 session_id: ps.session_id,
                 waiting_for_input: ps.waiting_for_input,
+                blocked_menu: ps.blocked_menu,
+                blocked_menu_message: ps.blocked_menu_message,
                 exit_code: ps.exit_code,
                 context_percent: ps.context_percent,
                 agent: ps.agent_id,
@@ -1107,6 +1195,10 @@ fn build_root_agent_synthetic_peer(
         session_status: "none".to_string(),
         session_id: None,
         waiting_for_input: false,
+        // Synthetic root-agent peer: no session in this verb's cwd namespace,
+        // so it can never be parked on a blocking terminal menu.
+        blocked_menu: false,
+        blocked_menu_message: None,
         exit_code: None,
         // Synthetic root-agent peer: no session in this verb's cwd namespace.
         context_percent: None,
@@ -1271,6 +1363,8 @@ fn snapshot_target_projection(
         working: false,
         session_status: "unknown".to_string(),
         waiting_for_input: false,
+        blocked_menu: false,
+        blocked_menu_message: None,
         reachable,
         teams: vec![target.team],
         role_summary: String::new(),
@@ -1439,6 +1533,7 @@ pub fn execute_lean(args: ListPeersLeanArgs) -> i32 {
 mod tests {
     use super::*;
     use crate::config::sessions_persistence::PersistedSession;
+    use crate::session::session::SessionCommunication;
     use crate::session::session::SessionStatus;
 
     fn cand(name: &str, status: SessionStatus, waiting: bool) -> CandidateSession {
@@ -1450,6 +1545,8 @@ mod tests {
             context_percent: None,
             agent_id: None,
             effective_profile: None,
+            blocked_menu: false,
+            blocked_menu_message: None,
         }
     }
 
@@ -2023,6 +2120,8 @@ mod tests {
             session_status: "running".to_string(),
             session_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
             waiting_for_input: false,
+            blocked_menu: false,
+            blocked_menu_message: None,
             exit_code: None,
             context_percent: None,
             agent: None,
@@ -2219,6 +2318,8 @@ mod tests {
         peer.waiting_for_input = status.waiting_for_input;
         peer.agent = status.agent_id.clone();
         peer.profile = status.effective_profile.clone();
+        peer.blocked_menu = status.blocked_menu;
+        peer.blocked_menu_message = status.blocked_menu_message.clone();
         peer
     }
 
@@ -2328,6 +2429,216 @@ mod tests {
         let lean = LeanPeerInfo::from(&peer);
         assert_eq!(lean.agent.as_deref(), Some("codex"));
         assert_eq!(lean.profile.as_deref(), Some("B"));
+    }
+
+    // ── #1669: blockedMenu projection through the peer→session join ──
+
+    /// The agent-specific notice a #1646/#1647 menu-guard row carries.
+    const BLOCKED_MENU_MESSAGE: &str =
+        "codex is waiting for you to answer the folder-trust menu in this terminal";
+
+    #[test]
+    fn build_session_index_from_copies_blocked_menu_from_persisted() {
+        let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        row.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some(BLOCKED_MENU_MESSAGE.into()),
+        });
+        let index = build_session_index_from(&[row]);
+        let candidates = index
+            .get(&canon_or_norm(r"C:\work"))
+            .expect("row indexed by its cwd");
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].blocked_menu);
+        assert_eq!(
+            candidates[0].blocked_menu_message.as_deref(),
+            Some(BLOCKED_MENU_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn build_session_index_from_ignores_raise_hand_and_invisible_communication() {
+        // Control 1: a VISIBLE raise-hand is a communication, but not a blocked
+        // terminal.
+        let mut raise_hand = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        raise_hand.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::RaiseHand,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some("the agent raised a hand".into()),
+        });
+        let index = build_session_index_from(&[raise_hand]);
+        let candidates = index.get(&canon_or_norm(r"C:\work")).unwrap();
+        assert!(!candidates[0].blocked_menu);
+        assert_eq!(candidates[0].blocked_menu_message, None);
+
+        // Control 2: a CLEARED (invisible) blocked-menu row is not blocked either.
+        let mut invisible = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        invisible.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: false,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some(BLOCKED_MENU_MESSAGE.into()),
+        });
+        let index = build_session_index_from(&[invisible]);
+        let candidates = index.get(&canon_or_norm(r"C:\work")).unwrap();
+        assert!(!candidates[0].blocked_menu);
+        assert_eq!(candidates[0].blocked_menu_message, None);
+    }
+
+    #[test]
+    fn build_session_index_from_absent_communication_is_not_blocked() {
+        let row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        let index = build_session_index_from(&[row]);
+        let candidates = index.get(&canon_or_norm(r"C:\work")).unwrap();
+        assert!(!candidates[0].blocked_menu);
+        assert_eq!(candidates[0].blocked_menu_message, None);
+    }
+
+    #[test]
+    fn compute_peer_status_returns_blocked_menu_of_the_chosen_session() {
+        let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        row.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some(BLOCKED_MENU_MESSAGE.into()),
+        });
+        let index = build_session_index_from(&[row]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        assert!(status.blocked_menu);
+        assert_eq!(
+            status.blocked_menu_message.as_deref(),
+            Some(BLOCKED_MENU_MESSAGE)
+        );
+        // D5 regression net: the blocked condition is communicated ONLY through
+        // the two new keys. Every pre-existing field keeps its current value.
+        assert!(status.working);
+        assert_eq!(status.session_status, "running");
+        assert!(!status.waiting_for_input);
+    }
+
+    #[test]
+    fn compute_peer_status_suppresses_blocked_menu_for_an_exited_session() {
+        // D4: `snapshot_sessions` preserves `communication` for exited rows
+        // (#747), so a crash between the block and the exit leaves a stale
+        // BlockedMenu whose terminal is gone. Suppress the pair.
+        let mut row = ps_row(
+            "Session 1",
+            r"C:\work",
+            Some(SessionStatus::Exited(0)),
+            true,
+        );
+        row.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some(BLOCKED_MENU_MESSAGE.into()),
+        });
+        let index = build_session_index_from(&[row]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        assert!(!status.blocked_menu);
+        assert_eq!(status.blocked_menu_message, None);
+        assert_eq!(status.session_status, "exited");
+        assert_eq!(status.exit_code, Some(0));
+    }
+
+    #[test]
+    fn compute_peer_status_blocked_without_message_keeps_the_flag() {
+        let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        row.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: None,
+        });
+        let index = build_session_index_from(&[row]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        assert!(status.blocked_menu);
+        assert_eq!(status.blocked_menu_message, None);
+    }
+
+    #[test]
+    fn full_peer_json_carries_blocked_menu_and_omits_when_unblocked() {
+        let mut peer = sample_peer_info("p");
+        peer.blocked_menu = true;
+        peer.blocked_menu_message = Some(BLOCKED_MENU_MESSAGE.into());
+        let json = serde_json::to_string(&peer).unwrap();
+        assert!(json.contains("\"blockedMenu\":true"), "got {json}");
+        let message_key = format!("\"blockedMenuMessage\":\"{BLOCKED_MENU_MESSAGE}\"");
+        assert!(json.contains(&message_key), "got {json}");
+
+        peer.blocked_menu = false;
+        peer.blocked_menu_message = None;
+        let json = serde_json::to_string(&peer).unwrap();
+        assert!(
+            !json.contains("blockedMenu"),
+            "false must omit the key: {json}"
+        );
+        assert!(
+            !json.contains("blockedMenuMessage"),
+            "None must omit the key: {json}"
+        );
+    }
+
+    #[test]
+    fn lean_peer_json_carries_blocked_menu_and_omits_when_unblocked() {
+        let mut peer = sample_peer_info("p");
+        peer.blocked_menu = true;
+        peer.blocked_menu_message = Some(BLOCKED_MENU_MESSAGE.into());
+        let lean = LeanPeerInfo::from(&peer);
+        assert!(lean.blocked_menu);
+        assert_eq!(
+            lean.blocked_menu_message.as_deref(),
+            Some(BLOCKED_MENU_MESSAGE)
+        );
+        let json = serde_json::to_string(&lean).unwrap();
+        assert!(json.contains("\"blockedMenu\":true"), "got {json}");
+        let message_key = format!("\"blockedMenuMessage\":\"{BLOCKED_MENU_MESSAGE}\"");
+        assert!(json.contains(&message_key), "got {json}");
+
+        peer.blocked_menu = false;
+        peer.blocked_menu_message = None;
+        let lean = LeanPeerInfo::from(&peer);
+        let json = serde_json::to_string(&lean).unwrap();
+        assert!(
+            !json.contains("blockedMenu"),
+            "false must omit the key: {json}"
+        );
+        assert!(
+            !json.contains("blockedMenuMessage"),
+            "None must omit the key: {json}"
+        );
+    }
+
+    #[test]
+    fn list_peers_help_documents_blocked_menu() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let lp = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "list-peers")
+            .expect("list-peers subcommand");
+        let after = lp.get_after_help().expect("after_help present").to_string();
+        assert!(after.contains("blockedMenu"));
+        assert!(after.contains("blockedMenuMessage"));
+        assert!(after.contains("OMITTED"));
+    }
+
+    #[test]
+    fn list_peers_lean_help_documents_blocked_menu() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let lp = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "list-peers-lean")
+            .expect("list-peers-lean subcommand");
+        let after = lp.get_after_help().expect("after_help present").to_string();
+        assert!(after.contains("blockedMenu"));
+        assert!(after.contains("blockedMenuMessage"));
+        assert!(after.contains("OMITTED"));
     }
 
     // §6.3 — field preservation parity
