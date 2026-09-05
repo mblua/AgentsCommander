@@ -8771,3 +8771,69 @@ html.light-theme .onboarding-card.selected {
   font-size: var(--font-size-xs, 11px);
   color: var(--sidebar-fg-dim);
 }
+
+/* #1755 - passive "someone is working here" wash. `working` is set by
+   ProjectPanel from isReplicaWorking / workgroupIsWorking; both predicates
+   predate this issue.
+
+   The colour is --status-running #3a7bff spelled as a literal rgba, because
+   rgba() cannot take a hex custom property as its colour argument and this
+   file does not otherwise use color-mix. It is blue and not green on purpose:
+   --status-waiting #22c55e is the green `waiting` dot on the same row and
+   means the agent is blocked on the user, that is, NOT working, while the
+   group-rail working dot (:4000) already reuses the blue .running circle.
+
+   The row wash is an ::after overlay, never a `background` on the row itself.
+   `.replica-item` already owns two opaque background states that must keep
+   working: `:hover` -> --sidebar-hover and `.active` -> --sidebar-active plus
+   the cyan left border. A `background` for the working state would have to
+   outrank both, and outranking them would destroy them: a selected working row
+   would stop looking selected. The overlay composes with them instead. It
+   carries no z-index on purpose - pushed behind the content it would sit under
+   those opaque backgrounds and disappear in exactly the selected and hovered
+   cases. `inset: 0` is the padding box, so the 3px active border stays clean.
+
+   The alphas encode an ordering, not a strength: room wash < hover < working
+   row < selection, measured as luminance distance from --sidebar-bg. See the
+   "signal ladder" in plans/1755-sidebar-working-tint.md; working-tint-css.test.ts
+   asserts it from these bytes and from variables.css. That ladder is measured
+   over --sidebar-bg. In the four styles whose .ac-wg-group wrapper paints a
+   background of its own, the room wash sits on that instead and rises above
+   hover; the inversion is measured, accepted by the user, and recorded in the
+   plan. Do not "fix" it here with a per-style room-wash value.
+
+   This block must stay at the end of the file: .ac-wg-subgroup.working has the
+   same specificity as [data-sidebar-style="X"] .ac-wg-subgroup, and five styles
+   set border-left there while card-sections sets background, so equal
+   specificity plus a later position is what wins those ten rules.
+
+   The group rule carries a SECOND selector because one competitor is not a tie:
+   :6686 html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup is
+   (0,3,1) against (0,2,0), and cascade order never breaks a specificity
+   difference. Without that selector, light theme + card-sections keeps its own
+   rgba(0, 0, 0, 0.015) ground and the working room renders the 3px blue border
+   with no wash. Do not "simplify" it away; working-tint-css.test.ts assertion 7
+   fails if it goes. */
+.replica-item::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+
+.replica-item.working::after {
+  background: rgba(58, 123, 255, 0.15);
+}
+
+.ac-wg-subgroup {
+  transition: background var(--transition-fast), border-left-color var(--transition-fast);
+}
+
+.ac-wg-subgroup.working,
+html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
+  background: rgba(58, 123, 255, 0.066);
+  border-left: 3px solid rgba(58, 123, 255, 0.28);
+}

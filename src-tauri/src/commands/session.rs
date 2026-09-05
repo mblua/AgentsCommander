@@ -4862,6 +4862,11 @@ pub async fn create_root_agent_session(
 
 /// #1646 / #1647 - Resolves a blocking menu episode for a session.
 /// Clears the blocked menu in SessionManager and publishes the updated communication state.
+/// #1669 - the clear is persisted through the same atomic helper `scan_tick` uses,
+/// so a disk-reading CLI stops reporting `blockedMenu` as soon as the user
+/// resolves the menu. The scan loop cannot do this: `resolve_current_episode`
+/// suppresses the episode, and the suppressed arm of `evaluate_logical_rows`
+/// returns BOTH `should_notify: false` and `should_clear_notification: false`.
 #[tauri::command]
 pub async fn resolve_blocking_menu<R: Runtime>(
     app: AppHandle<R>,
@@ -4871,8 +4876,8 @@ pub async fn resolve_blocking_menu<R: Runtime>(
 ) -> Result<(), String> {
     let session_id = Uuid::parse_str(&id).map_err(|e| format!("Invalid session ID: {e}"))?;
     menu_guard.resolve_current_episode(session_id);
-    let session_mgr = session_mgr.read().await;
-    session_mgr.clear_blocked_menu(session_id).await;
+    let mgr = { session_mgr.read().await.clone() };
+    crate::config::sessions_persistence::clear_blocked_menu_and_persist(&mgr, session_id).await;
     crate::session::selection::publish_session_communication(&app, session_id, None);
     Ok(())
 }

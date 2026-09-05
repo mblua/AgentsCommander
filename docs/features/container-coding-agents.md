@@ -66,9 +66,9 @@ All of the following are current. Host login reuse does not fix any of them.
 
 ### 1. Container agents cannot reach their repos ([#935](https://github.com/mblua/AgentsCommander/issues/935))
 
-**This is the blocker.** The container bind mount exposes **only the agent's replica root**. Your workspace repos (`repo-*`) are siblings of the replica inside the room directory, so they fall **outside the mount**. From inside the container the agent sees its own replica root and `.agentscommander_ac`, and nothing else.
+**This is the blocker.** The container bind mount exposes **only the agent's replica root**. Your [work repos](../glossary.md#work-repo) (`repo-*`) are siblings of the replica inside the room directory, so they fall **outside the mount**. From inside the container the agent sees its own replica root and `.agentscommander_ac`, and nothing else.
 
-The injected "Workspace Repos" context makes it worse: it hands the agent Windows host paths (`C:\Users\...`) that do not exist inside the container, and promises read/write access the agent does not have.
+The injected `# Agent Repos` context makes it worse: it hands the agent Windows host paths (`C:\Users\...`) that do not exist inside the container, and promises read/write access the agent does not have.
 
 **A container coding agent cannot do repo work today.** It runs, it authenticates, it reads its own replica, it messages peers. It cannot check out, edit, build, or commit your repos. Use the local-process runtime for repo work until #935 lands.
 
