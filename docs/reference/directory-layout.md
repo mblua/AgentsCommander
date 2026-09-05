@@ -35,10 +35,10 @@ C:\tools\agentscommander_ac2.exe    ->  C:\tools\.agentscommander_ac2\
 
 The rule has two consequences:
 
-- `.ac/` is shared: commit it to the project's git so the team gets the same agents, teams, rooms, and tool configuration.
+- `.ac/` is shared: version it so the team gets the same agents, teams, rooms, and tool configuration; see the layouts in the table above.
 - The selected application config dir is machine-local: never commit or share it. It holds tokens, sessions, logs, and other local state. AC writes a `.gitignore` inside it so those files stay out of git when the selected path is inside a repository.
 
-## `.ac/` (shared, tracked in the project git)
+## `.ac/` (shared across the team)
 
 The project-scoped tree. AC creates and maintains it, and the project commits it. In this deployment the project git tracks 692 files under `.ac/` and none inside the instance dir. Unless a row says otherwise, everything here is shared and tracked.
 
