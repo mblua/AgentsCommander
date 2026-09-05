@@ -86,6 +86,9 @@ pub struct AgentConfig {
     pub context_regex: Option<String>,
     /// #1646 / #1647 - proactive detection patterns for terminal blocking menus (e.g. folder trust).
     /// None = unmaterialized defaults (materialized at load time). Some(vec![]) = explicitly disabled.
+    /// `Some(vec![])` is also what stops a future default from being back-filled by a
+    /// one-shot migration; per-entry `enabled: false` is the way to disable one pattern
+    /// while keeping the array active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocking_menus: Option<Vec<BlockingMenuEntry>>,
     /// Backend used for future non-local session transports. Omitted/default
@@ -974,6 +977,22 @@ impl Default for AppSettings {
     }
 }
 
+/// #1757 - the Codex "Hooks need review" startup dialog. One literal, two consumers:
+/// `default_blocking_menus_for_command` (new installs) and `apply_issue_1757_migration`
+/// (installs whose `blockingMenus` array was already materialized against the older default).
+/// Neither writes the pattern inline, so the two paths cannot drift.
+pub(crate) const CODEX_HOOKS_REVIEW_PATTERN: &str = r"^[^A-Za-z0-9]*Hooks need review\b";
+
+fn codex_hooks_review_menu() -> BlockingMenuConfig {
+    BlockingMenuConfig {
+        pattern: CODEX_HOOKS_REVIEW_PATTERN.to_string(),
+        notification: "codex is waiting for you to answer the hooks-review menu in this terminal"
+            .to_string(),
+        enabled: true,
+        captured_against: Some("codex 0.153.2 / Windows".to_string()),
+    }
+}
+
 /// #1646 / #1647 - default blocking menu patterns for known commands.
 pub fn default_blocking_menus_for_command(command: &str) -> Vec<BlockingMenuEntry> {
     let stem = crate::config::coding_agents_catalog::command_executable_basename(command);
@@ -985,14 +1004,17 @@ pub fn default_blocking_menus_for_command(command: &str) -> Vec<BlockingMenuEntr
             enabled: true,
             captured_against: Some("pi 0.52 / Windows".to_string()),
         })],
-        Some("codex") => vec![BlockingMenuEntry::Valid(BlockingMenuConfig {
-            pattern: r"^\s*Do you trust the contents of this directory\?".to_string(),
-            notification:
-                "codex is waiting for you to answer the folder-trust menu in this terminal"
-                    .to_string(),
-            enabled: true,
-            captured_against: Some("codex 0.x / Linux".to_string()),
-        })],
+        Some("codex") => vec![
+            BlockingMenuEntry::Valid(BlockingMenuConfig {
+                pattern: r"^\s*Do you trust the contents of this directory\?".to_string(),
+                notification:
+                    "codex is waiting for you to answer the folder-trust menu in this terminal"
+                        .to_string(),
+                enabled: true,
+                captured_against: Some("codex 0.x / Linux".to_string()),
+            }),
+            BlockingMenuEntry::Valid(codex_hooks_review_menu()),
+        ],
         _ => vec![],
     }
 }
@@ -1006,6 +1028,60 @@ pub fn materialize_blocking_menus(agents: &mut [AgentConfig]) -> bool {
             agent.blocking_menus = Some(default_blocking_menus_for_command(&agent.command));
             changed = true;
         }
+    }
+    changed
+}
+
+/// #1757 - one-shot migration for installs whose Codex `blockingMenus` array was already
+/// materialized against the pre-#1757 default, which is every install created before this
+/// change. `materialize_blocking_menus` only fills `None`, so those users would otherwise
+/// never receive the hooks-review pattern.
+///
+/// Keyed by content, not by a marker field: the entry is appended only when no valid entry
+/// already carries `CODEX_HOOKS_REVIEW_PATTERN`, so the function is idempotent across
+/// restarts and adds no key to the settings schema. The check ignores `enabled`, so setting
+/// `enabled: false` on the entry is a durable off switch; deleting it is not (#1757 D2).
+///
+/// Extends an ACTIVE set, never activates an inactive one: `None` belongs to
+/// `materialize_blocking_menus`, and `Some(vec![])` is the field's documented
+/// "explicitly disabled" state.
+///
+/// #1737 (D7c): an overlay that owns `agents` supplies the whole array and `restore_base`
+/// writes the base array back on save, so appending here would be discarded on write and
+/// would overwrite the operator's in-memory array meanwhile. Owning `agents` therefore
+/// suppresses the migration, which then runs correctly the first time the overlay is removed.
+///
+/// Returns true when any agent's array changed.
+pub fn apply_issue_1757_migration(settings: &mut AppSettings) -> bool {
+    if settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_AGENTS)
+    {
+        return false;
+    }
+    let mut changed = false;
+    for agent in &mut settings.agents {
+        if crate::config::coding_agents_catalog::command_executable_basename(&agent.command)
+            .as_deref()
+            != Some("codex")
+        {
+            continue;
+        }
+        let Some(entries) = agent.blocking_menus.as_mut() else {
+            continue;
+        };
+        if entries.is_empty() {
+            continue;
+        }
+        if entries.iter().any(|entry| {
+            entry
+                .valid()
+                .is_some_and(|c| c.pattern == CODEX_HOOKS_REVIEW_PATTERN)
+        }) {
+            continue;
+        }
+        entries.push(BlockingMenuEntry::Valid(codex_hooks_review_menu()));
+        changed = true;
     }
     changed
 }
@@ -2060,6 +2136,10 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
         log::info!("[settings-migration] materialized default blocking menus");
         needs_save = true;
     }
+    if apply_issue_1757_migration(&mut settings) {
+        log::info!("[settings-migration] #1757 - added the Codex hooks-review blocking menu");
+        needs_save = true;
+    }
     if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
         log::info!("[settings-migration] repaired codingAgentProfiles invariants");
         needs_save = true;
@@ -2209,6 +2289,7 @@ pub fn load_settings_for_cli() -> AppSettings {
     apply_issue_248_migration(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     materialize_blocking_menus(&mut settings.agents);
+    apply_issue_1757_migration(&mut settings);
 
     // NO root_token auto-gen, NO save_settings call.
     settings
@@ -2280,6 +2361,7 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
     apply_issue_248_migration(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     materialize_blocking_menus(&mut settings.agents);
+    apply_issue_1757_migration(&mut settings);
 
     Ok(settings)
 }
@@ -2441,18 +2523,22 @@ pub(crate) const OVERLAY_DERIVED_ID_CLOSURES: &[DerivedIdClosure] = &[DerivedIdC
     derived_prefix: &["codingAgentProfiles", "profilesByAgent"],
 }];
 
-/// #1737 (D7c) - migration destination keys. Each is written from a legacy
-/// source key on the typed struct AFTER the merge, so a migration whose
-/// destination the overlay owns would silently overwrite the override in memory.
-/// Owning the destination suppresses the migration (plan D7c, evidence 2.11b).
-/// The four suppression sites name these constants; the array is what S29 pins
+/// #1737 (D7c) - migration destination keys. Each names a top-level key that a
+/// migration WRITES after the merge, so a migration whose destination the overlay
+/// owns would silently overwrite the override in memory. Owning the destination
+/// suppresses the migration (plan D7c, evidence 2.11b). Four of the five are
+/// written from a legacy source key on the typed struct; `agents` is the
+/// exception, rewritten in place by `apply_issue_1757_migration` (#1757 D12).
+/// Every suppression names one of these constants; the array is what S29 pins
 /// and what a future author greps.
+pub(crate) const OVERLAY_KEY_AGENTS: &str = "agents";
 pub(crate) const OVERLAY_KEY_MAIN_ALWAYS_ON_TOP: &str = "mainAlwaysOnTop";
 pub(crate) const OVERLAY_KEY_MAIN_GEOMETRY: &str = "mainGeometry";
 pub(crate) const OVERLAY_KEY_MAIN_ZOOM: &str = "mainZoom";
 pub(crate) const OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE: &str = "restoreCoordinatorWakeState";
-#[allow(dead_code)] // read only from test code: the suppression sites name the four constants individually
+#[allow(dead_code)] // read only from test code: the suppressions name the five constants individually
 pub(crate) const OVERLAY_MIGRATION_DESTINATION_KEYS: &[&str] = &[
+    OVERLAY_KEY_AGENTS,
     OVERLAY_KEY_MAIN_ALWAYS_ON_TOP,
     OVERLAY_KEY_MAIN_GEOMETRY,
     OVERLAY_KEY_MAIN_ZOOM,
@@ -9071,7 +9157,7 @@ mod tests {
 
         // Codex
         let codex_menus = agents[1].blocking_menus.as_ref().unwrap();
-        assert_eq!(codex_menus.len(), 1);
+        assert_eq!(codex_menus.len(), 2);
         let codex_cfg = codex_menus[0].valid().unwrap();
         assert_eq!(
             codex_cfg.pattern,
@@ -9085,6 +9171,19 @@ mod tests {
         assert_eq!(
             codex_cfg.captured_against.as_deref(),
             Some("codex 0.x / Linux")
+        );
+
+        // #1757 - the hooks-review entry, appended AFTER folder-trust (D13).
+        let codex_hooks_cfg = codex_menus[1].valid().unwrap();
+        assert_eq!(codex_hooks_cfg.pattern, super::CODEX_HOOKS_REVIEW_PATTERN);
+        assert_eq!(
+            codex_hooks_cfg.notification,
+            "codex is waiting for you to answer the hooks-review menu in this terminal"
+        );
+        assert!(codex_hooks_cfg.enabled);
+        assert_eq!(
+            codex_hooks_cfg.captured_against.as_deref(),
+            Some("codex 0.153.2 / Windows")
         );
 
         // Claude -> empty array
@@ -9187,6 +9286,275 @@ mod tests {
         assert!(serialized.contains("\"menuGuardEnabled\":false"));
     }
 
+    // ---- #1757: the Codex hooks-review blocking menu -----------------------
+
+    /// One agent carrying exactly the `blocking_menus` state under test.
+    fn agent_1757(
+        id: &str,
+        command: &str,
+        blocking_menus: Option<Vec<super::BlockingMenuEntry>>,
+    ) -> AgentConfig {
+        AgentConfig {
+            id: id.to_string(),
+            label: id.to_string(),
+            command: command.to_string(),
+            color: "#000000".to_string(),
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+            context_regex: None,
+            blocking_menus,
+            backend: Default::default(),
+        }
+    }
+
+    fn settings_1757(agents: Vec<AgentConfig>) -> AppSettings {
+        AppSettings {
+            agents,
+            ..AppSettings::default()
+        }
+    }
+
+    /// The pre-#1757 materialized Codex array's only entry.
+    fn folder_trust_entry_1757() -> super::BlockingMenuEntry {
+        super::BlockingMenuEntry::Valid(super::BlockingMenuConfig {
+            pattern: r"^\s*Do you trust the contents of this directory\?".to_string(),
+            notification:
+                "codex is waiting for you to answer the folder-trust menu in this terminal"
+                    .to_string(),
+            enabled: true,
+            captured_against: Some("codex 0.x / Linux".to_string()),
+        })
+    }
+
+    fn hooks_review_entry_1757(enabled: bool) -> super::BlockingMenuEntry {
+        super::BlockingMenuEntry::Valid(super::BlockingMenuConfig {
+            pattern: super::CODEX_HOOKS_REVIEW_PATTERN.to_string(),
+            notification:
+                "codex is waiting for you to answer the hooks-review menu in this terminal"
+                    .to_string(),
+            enabled,
+            captured_against: Some("codex 0.153.2 / Windows".to_string()),
+        })
+    }
+
+    fn assert_folder_trust_entry_1757(entry: &super::BlockingMenuEntry) {
+        let cfg = entry.valid().expect("folder-trust entry is valid");
+        assert_eq!(
+            cfg.pattern,
+            r"^\s*Do you trust the contents of this directory\?"
+        );
+        assert_eq!(
+            cfg.notification,
+            "codex is waiting for you to answer the folder-trust menu in this terminal"
+        );
+        assert!(cfg.enabled);
+        assert_eq!(cfg.captured_against.as_deref(), Some("codex 0.x / Linux"));
+    }
+
+    fn assert_hooks_review_entry_1757(entry: &super::BlockingMenuEntry) {
+        let cfg = entry.valid().expect("hooks-review entry is valid");
+        assert_eq!(cfg.pattern, super::CODEX_HOOKS_REVIEW_PATTERN);
+        assert_eq!(
+            cfg.notification,
+            "codex is waiting for you to answer the hooks-review menu in this terminal"
+        );
+        assert!(cfg.enabled);
+        assert_eq!(
+            cfg.captured_against.as_deref(),
+            Some("codex 0.153.2 / Windows")
+        );
+    }
+
+    // T4
+    #[test]
+    fn issue_1757_appends_to_an_already_materialized_codex_array() {
+        let mut settings = settings_1757(vec![agent_1757(
+            "codex",
+            "codex",
+            Some(vec![folder_trust_entry_1757()]),
+        )]);
+
+        assert!(
+            super::apply_issue_1757_migration(&mut settings),
+            "an already-materialized codex array must be extended"
+        );
+
+        let menus = settings.agents[0]
+            .blocking_menus
+            .as_ref()
+            .expect("blocking_menus present");
+        assert_eq!(menus.len(), 2);
+        assert_folder_trust_entry_1757(&menus[0]);
+        assert_hooks_review_entry_1757(&menus[1]);
+    }
+
+    // T5
+    #[test]
+    fn issue_1757_is_idempotent() {
+        let mut settings = settings_1757(vec![agent_1757(
+            "codex",
+            "codex",
+            Some(vec![folder_trust_entry_1757()]),
+        )]);
+
+        assert!(super::apply_issue_1757_migration(&mut settings));
+        assert!(
+            !super::apply_issue_1757_migration(&mut settings),
+            "the second call must be a no-op: the pattern is already present"
+        );
+        assert_eq!(
+            settings.agents[0]
+                .blocking_menus
+                .as_ref()
+                .expect("blocking_menus present")
+                .len(),
+            2
+        );
+    }
+
+    // T6
+    #[test]
+    fn issue_1757_never_activates_an_explicitly_empty_array() {
+        let mut settings = settings_1757(vec![agent_1757("codex", "codex", Some(vec![]))]);
+
+        assert!(
+            !super::apply_issue_1757_migration(&mut settings),
+            "Some(vec![]) is the documented explicitly-disabled state (D8)"
+        );
+        assert_eq!(settings.agents[0].blocking_menus, Some(vec![]));
+    }
+
+    // T7
+    #[test]
+    fn issue_1757_respects_a_disabled_hooks_entry() {
+        let disabled = hooks_review_entry_1757(false);
+        let mut settings = settings_1757(vec![agent_1757(
+            "codex",
+            "codex",
+            Some(vec![disabled.clone()]),
+        )]);
+
+        assert!(
+            !super::apply_issue_1757_migration(&mut settings),
+            "the presence test ignores the enabled flag, so enabled: false is a durable off switch (D9)"
+        );
+        assert_eq!(settings.agents[0].blocking_menus, Some(vec![disabled]));
+    }
+
+    // T8
+    #[test]
+    fn issue_1757_ignores_non_codex_agents() {
+        let pi_menus = vec![super::BlockingMenuEntry::Valid(super::BlockingMenuConfig {
+            pattern: r"^\s*Trust project folder\?".to_string(),
+            notification: "pi is waiting for you to answer the folder-trust menu in this terminal"
+                .to_string(),
+            enabled: true,
+            captured_against: Some("pi 0.52 / Windows".to_string()),
+        })];
+        let claude_menus = vec![super::BlockingMenuEntry::Valid(super::BlockingMenuConfig {
+            pattern: "^Something else entirely".to_string(),
+            notification: "claude is waiting".to_string(),
+            enabled: true,
+            captured_against: None,
+        })];
+        let mut settings = settings_1757(vec![
+            agent_1757("pi", "pi", Some(pi_menus.clone())),
+            agent_1757("claude", "claude", Some(claude_menus.clone())),
+        ]);
+
+        assert!(
+            !super::apply_issue_1757_migration(&mut settings),
+            "the stem gate must never target an agent the default would not"
+        );
+        assert_eq!(settings.agents[0].blocking_menus, Some(pi_menus));
+        assert_eq!(settings.agents[1].blocking_menus, Some(claude_menus));
+    }
+
+    // T9 - the only new test that observes the real load chain. Every other
+    // needs_save source is deliberately inert on this fixture, so the migration's
+    // own flag is the only thing that can drive the write.
+    #[test]
+    fn issue_1757_reaches_settings_json_through_the_real_load_chain() {
+        const FIXTURE: &str = r##"{
+  "defaultShell": "test-shell",
+  "defaultShellArgs": [],
+  "rootToken": "issue-1757-fixture-token",
+  "agents": [
+    {
+      "id": "codex",
+      "label": "Codex",
+      "command": "codex",
+      "color": "#000000",
+      "blockingMenus": [
+        {
+          "pattern": "^\\s*Do you trust the contents of this directory\\?",
+          "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
+          "enabled": true,
+          "capturedAgainst": "codex 0.x / Linux"
+        }
+      ]
+    }
+  ],
+  "codingAgentProfiles": {
+    "schemaVersion": 2,
+    "profileSlots": { "A": { "label": "" } },
+    "defaultProfileByAgent": {},
+    "profilesByAgent": {
+      "codex": { "A": { "enabled": true, "command": "", "env": {}, "notes": "" } }
+    }
+  }
+}"##;
+
+        // Tripwire: a single-backslash escape here is not legal JSON, the load would
+        // fall back to default_settings_with_overlay with zero agents, and this test
+        // would silently stop testing anything.
+        serde_json::from_str::<serde_json::Value>(FIXTURE)
+            .expect("the T9 fixture must be valid JSON");
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, FIXTURE).unwrap();
+
+        let settings = super::load_settings_from_path(&path);
+        assert_eq!(
+            settings.agents.len(),
+            1,
+            "the fixture must parse; zero agents means the loader fell back to defaults"
+        );
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let menus = value["agents"][0]["blockingMenus"]
+            .as_array()
+            .expect("blockingMenus array on disk");
+        assert_eq!(
+            menus.len(),
+            2,
+            "the migration must have appended and the loader must have saved"
+        );
+
+        assert_eq!(
+            menus[0]["pattern"].as_str(),
+            Some(r"^\s*Do you trust the contents of this directory\?")
+        );
+        assert_eq!(
+            menus[0]["notification"].as_str(),
+            Some("codex is waiting for you to answer the folder-trust menu in this terminal")
+        );
+        assert_eq!(menus[0]["enabled"].as_bool(), Some(true));
+        assert_eq!(
+            menus[0]["capturedAgainst"].as_str(),
+            Some("codex 0.x / Linux")
+        );
+
+        assert_eq!(
+            menus[1]["pattern"].as_str(),
+            Some(super::CODEX_HOOKS_REVIEW_PATTERN)
+        );
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // #1737 - the `.local` alter-ego override layer. Plan section 11, S1 to S34.
     // ─────────────────────────────────────────────────────────────────────────
@@ -9229,6 +9597,28 @@ mod tests {
                 Value::Object(object) => object,
                 other => panic!("settings.json is not an object: {other}"),
             }
+        }
+
+        /// #1757 - the folder-trust entry exactly as a materialized codex
+        /// `blockingMenus` array carries it. NOT built from `agent_json`, whose
+        /// hardcoded empty array would make T10 pass with or without the guard.
+        fn folder_trust_entry() -> Value {
+            json!({
+                "pattern": r"^\s*Do you trust the contents of this directory\?",
+                "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
+                "enabled": true,
+                "capturedAgainst": "codex 0.x / Linux",
+            })
+        }
+
+        fn codex_agent_with(blocking_menus: Value) -> Value {
+            json!({
+                "id": "codex",
+                "label": "Codex",
+                "command": "codex",
+                "color": "#000000",
+                "blockingMenus": blocking_menus,
+            })
         }
 
         /// The watcher base used by most of the JSON tests: a nested object with a
@@ -9416,6 +9806,12 @@ mod tests {
           "enabled": true,
           "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
           "pattern": "^\\s*Do you trust the contents of this directory\\?"
+        },
+        {
+          "capturedAgainst": "codex 0.153.2 / Windows",
+          "enabled": true,
+          "notification": "codex is waiting for you to answer the hooks-review menu in this terminal",
+          "pattern": "^[^A-Za-z0-9]*Hooks need review\\b"
         }
       ],
       "color": "#112233",
@@ -10265,23 +10661,25 @@ mod tests {
             assert_eq!(
                 OVERLAY_MIGRATION_DESTINATION_KEYS,
                 &[
+                    "agents",
                     "mainAlwaysOnTop",
                     "mainGeometry",
                     "mainZoom",
                     "restoreCoordinatorWakeState",
                 ]
             );
+            assert_eq!(OVERLAY_MIGRATION_DESTINATION_KEYS[0], OVERLAY_KEY_AGENTS);
             assert_eq!(
-                OVERLAY_MIGRATION_DESTINATION_KEYS[0],
+                OVERLAY_MIGRATION_DESTINATION_KEYS[1],
                 OVERLAY_KEY_MAIN_ALWAYS_ON_TOP
             );
             assert_eq!(
-                OVERLAY_MIGRATION_DESTINATION_KEYS[1],
+                OVERLAY_MIGRATION_DESTINATION_KEYS[2],
                 OVERLAY_KEY_MAIN_GEOMETRY
             );
-            assert_eq!(OVERLAY_MIGRATION_DESTINATION_KEYS[2], OVERLAY_KEY_MAIN_ZOOM);
+            assert_eq!(OVERLAY_MIGRATION_DESTINATION_KEYS[3], OVERLAY_KEY_MAIN_ZOOM);
             assert_eq!(
-                OVERLAY_MIGRATION_DESTINATION_KEYS[3],
+                OVERLAY_MIGRATION_DESTINATION_KEYS[4],
                 OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE
             );
 
@@ -10302,6 +10700,63 @@ mod tests {
                     "{key} is not a serialized AppSettings field"
                 );
             }
+        }
+
+        // #1757 (D11/D12) - an overlay that owns `agents` suppresses the migration.
+        #[test]
+        fn an_overlay_owned_agents_array_suppresses_the_1757_migration() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["agents"] = json!([codex_agent_with(json!([folder_trust_entry()]))]);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                // The overlay's array MUST be the non-empty one-entry shape: that is
+                // precisely what the migration would act on if the guard were absent.
+                Some(&json!({"agents": [codex_agent_with(json!([folder_trust_entry()]))]})),
+            );
+
+            let settings = load_settings_from_path(&path);
+            assert!(
+                settings
+                    .local_overlay_state
+                    .owns_top_level(OVERLAY_KEY_AGENTS),
+                "the fixture stopped producing an overlay-owned agents array"
+            );
+
+            fn in_memory(settings: &AppSettings) -> usize {
+                settings
+                    .agents
+                    .iter()
+                    .find(|a| a.id == "codex")
+                    .expect("codex agent")
+                    .blocking_menus
+                    .as_ref()
+                    .expect("blocking_menus present")
+                    .len()
+            }
+            fn on_disk(path: &Path) -> usize {
+                let object = disk_object(path);
+                object["agents"][0]["blockingMenus"]
+                    .as_array()
+                    .expect("blockingMenus array")
+                    .len()
+            }
+
+            // Deleting the owns_top_level(OVERLAY_KEY_AGENTS) early return makes this
+            // in-memory number 2. The on-disk number is 1 either way, because
+            // restore_base writes the captured base array back on every save.
+            assert_eq!(
+                in_memory(&settings),
+                1,
+                "the migration must not touch an overlay-owned agents array in memory"
+            );
+            assert_eq!(on_disk(&path), 1, "the base file must stay clean");
+
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+            assert_eq!(in_memory(&settings), 1);
+            assert_eq!(on_disk(&path), 1, "restore_base must keep the base array");
         }
 
         // S30
