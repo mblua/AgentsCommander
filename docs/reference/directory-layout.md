@@ -35,12 +35,12 @@ C:\tools\agentscommander_ac2.exe    ->  C:\tools\.agentscommander_ac2\
 
 The rule has two consequences:
 
-- `.ac/` is shared: version it so the team gets the same agents, teams, rooms, and tool configuration; see the layouts in the table above.
+- `.ac/` is shared: version it so the team gets the same agents, teams, and tool configuration; see the layouts in the table above.
 - The selected application config dir is machine-local: never commit or share it. It holds tokens, sessions, logs, and other local state. AC writes a `.gitignore` inside it so those files stay out of git when the selected path is inside a repository.
 
 ## `.ac/` (shared across the team)
 
-The project-scoped tree. AC creates and maintains it, and the project commits it. In this deployment the project git tracks 692 files under `.ac/` and none inside the instance dir. Unless a row says otherwise, everything here is shared and tracked.
+The project-scoped tree. AC creates and maintains it, and the recommended layout versions it in git; see the layouts in the table above. In this deployment the project git tracks 692 files under `.ac/` and none inside the instance dir. Unless a row says otherwise, everything here is shared, and tracked wherever `.ac/` is tracked.
 
 ### Top-level files
 
@@ -120,7 +120,7 @@ The manifest never tracks the selected application config dir. Under the unpubli
 
 ## Shared vs per-instance in one rule
 
-- `<project>/.ac/`: shared, commit it.
+- `<project>/.ac/`: shared. Version it in its own repo (recommended), track it inside a work repo, or leave it untracked; see the layouts in the table at the top of this page.
 - The active selected application config directory: machine-local, never commit or share. Tokens, sessions, logs, and the coding-agent catalog live there; its path follows the selection rule above.
 
 ## Cross-references
