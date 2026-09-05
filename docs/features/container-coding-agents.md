@@ -98,7 +98,7 @@ For Pi, AC also does not copy or map host `~/.pi/agent/` state, translate `PI_CO
 
 ### 4. No shared team container ([#936](https://github.com/mblua/AgentsCommander/issues/936), paused)
 
-One container per session today, each mounting only its own agent's replica. One shared container for the whole room is a recorded requirement, not a shipped feature, and its feasibility analysis is paused.
+One container per session today, each mounting its own agent's replica plus that agent's enabled work repos. One shared container for the whole room is a recorded requirement, not a shipped feature, and its feasibility analysis is paused.
 
 ## What the copied file actually is
 
