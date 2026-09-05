@@ -46,7 +46,7 @@ Windows' native PTY API. AC uses ConPTY via [portable-pty](https://github.com/we
 
 ## Container coding agent
 
-A coding agent AC launches under its **Container** runtime instead of as a local host process. Host login reuse is on by default, so a container Claude Code session starts signed in with no interaction. Repos are mounted inside the container at `/repos/...`; if a repo is not listed as admissible for the room, it will not be mounted. See [Container coding agents](features/container-coding-agents.md).
+A coding agent AC launches under its **Container** runtime instead of as a local host process. Host login reuse is on by default, so a container Claude Code session starts signed in with no interaction. Each agent's enabled work repos are mounted inside the container at `/repos/<name>`. An entry whose directory is not there is still listed, marked `(NOT FOUND)`, and the session runs; an entry resolving to anything other than an admissible `repo-*` directory under the room root refuses the spawn. See [Container coding agents](features/container-coding-agents.md).
 
 ## Context alert
 
