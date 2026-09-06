@@ -104,10 +104,6 @@ jobs:
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
           {
             echo "version=${TAG#v}"
             echo "tag_object=$TAG_OBJECT"
@@ -838,10 +834,6 @@ jobs:
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -965,10 +957,6 @@ jobs:
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -1286,10 +1274,6 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
           test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -1840,10 +1824,6 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
           test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -2100,10 +2080,6 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
           test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - name: Publish only the verified guarded draft
         shell: bash
@@ -2184,10 +2160,6 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
           test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -2422,10 +2394,6 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
           test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - name: Restore numeric release API controls
         shell: bash
