@@ -161,6 +161,7 @@ fn ensure_session_context_with_config(
         super::root_agent::ensure_default_root_agent_skills_at(Path::new(agent_root))?;
     }
     let matrix_root = resolve_replica_matrix_root(agent_root)?;
+    ensure_replica_shared_locations(agent_root, &canonical_root);
     let skill_owner_root = resolve_skill_owner_root(agent_root, matrix_root.as_deref());
     let skill_index = discover_skill_index(skill_owner_root.as_deref());
     let skills_section = render_skills_section(&skill_index);
@@ -214,6 +215,50 @@ fn ensure_session_context_with_config(
     );
 
     Ok(file_path.to_string_lossy().to_string())
+}
+
+/// #1795 backstop for a project or a room that predates #1795. Bootstrap
+/// (`config::seeded_context_templates`) and room creation (`commands::entity_creation`)
+/// create these eagerly and hard-error on failure.
+///
+/// Takes BOTH the raw and the canonical agent root and applies the SAME two-name Root
+/// guard as the content selection at :187-188. A Root Agent directory that is a junction
+/// onto a replica path has a raw basename of `ac-root-agent` and a canonical basename of
+/// `__agent_<name>`; guarding on one name only would create directories on that Root
+/// Agent's behalf. `T10` pins this.
+///
+/// Resolves with the SAME `replica_shared_roots` the renderer uses, from the SAME
+/// canonical root, so creation and rendering can never disagree about which directories
+/// entry 5 and entry 6 name. `T13` pins that a session start creates them and `T6b` that
+/// the resolver gates the creation.
+///
+/// Best-effort on purpose: refusing to start a session because a shared directory could
+/// not be created would be a worse outcome than the grant it protects. A grant over a
+/// directory that is missing fails at use time with an ordinary filesystem error, and
+/// the warning below names the path. `T11` pins that a failure does not fail the session.
+fn ensure_replica_shared_locations(agent_root: &str, canonical_root: &str) {
+    if super::root_agent::is_root_agent_dir_name(agent_root)
+        || super::root_agent::is_root_agent_dir_name(canonical_root)
+    {
+        return;
+    }
+    let Some((ac_root, room_root)) = replica_shared_roots(canonical_root) else {
+        return;
+    };
+    if let Err(e) = super::shared_locations::create_project_shared_dirs(&ac_root) {
+        log::warn!(
+            "[session_context] #1795 could not create project shared dirs under {}: {}",
+            ac_root.display(),
+            e
+        );
+    }
+    if let Err(e) = super::shared_locations::create_room_shared_dir(&room_root) {
+        log::warn!(
+            "[session_context] #1795 could not create room shared dir under {}: {}",
+            room_root.display(),
+            e
+        );
+    }
 }
 
 const MANAGED_CONTEXT_FILENAMES: &[&str] = &["last_ac_context.md", "CLAUDE.md", "AGENTS.md"];
@@ -12248,6 +12293,90 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             ac_root.join("errors").is_dir(),
             "bootstrap must create `errors` under the project `.ac` root"
         );
+    }
+
+    /// #1795 `T6b`. The backstop creates for an authoritative replica and nothing
+    /// for a Root Agent or a direct-Matrix agent.
+    #[test]
+    fn ensure_replica_shared_locations_creates_for_replica_and_nothing_for_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ac_root, room_root, replica_root, _matrix_root) = make_valid_replica(temp.path());
+        let replica = display_path(&replica_root);
+
+        ensure_replica_shared_locations(&replica, &replica);
+
+        for name in ["plans", "tools", "errors", "project-shared"] {
+            assert!(
+                ac_root.join(name).is_dir(),
+                "the backstop must create `{name}` under the project `.ac` root"
+            );
+        }
+        assert!(
+            room_root.join("room-shared").is_dir(),
+            "the backstop must create `room-shared` under the room root"
+        );
+
+        let root_agent = temp.path().join("root-side").join("ac-root-agent");
+        std::fs::create_dir_all(&root_agent).expect("root agent dir");
+        let root_agent = display_path(&root_agent);
+        ensure_replica_shared_locations(&root_agent, &root_agent);
+
+        let direct_matrix = temp.path().join("matrix-side").join("_agent_dev-rust");
+        std::fs::create_dir_all(&direct_matrix).expect("direct matrix dir");
+        let direct_matrix = display_path(&direct_matrix);
+        ensure_replica_shared_locations(&direct_matrix, &direct_matrix);
+
+        for parent in ["root-side", "matrix-side"] {
+            let side = temp.path().join(parent);
+            assert!(
+                !side.join("room-shared").exists(),
+                "nothing may be created beside a {parent} agent"
+            );
+            for name in ["plans", "tools", "errors", "project-shared"] {
+                assert!(
+                    !side.join(name).exists(),
+                    "no `{name}` may be created beside a {parent} agent"
+                );
+            }
+        }
+    }
+
+    /// #1795 `T10`. Pins the two-name Root guard against a Root Agent whose
+    /// directory is an alias onto a replica path: the raw basename is
+    /// `ac-root-agent` and the canonical basename is `__agent_<name>`. Guarding on
+    /// one name only would create directories on that Root Agent's behalf. The
+    /// canonical argument is a layout the resolver ACCEPTS, which is what keeps
+    /// control `C8` alive: with a canonical root the resolver rejects anyway,
+    /// deleting the guard would change nothing. No junction and no privilege are
+    /// needed, because the guard is a pure function of the two strings.
+    ///
+    /// The `room-shared` absence is asserted FIRST: `C8` flips both creations at
+    /// once, so the panic lands on whichever absence is written first, and 8.3 names
+    /// `room-shared` as `C8`'s kill site.
+    #[test]
+    fn root_agent_alias_creates_no_shared_locations() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ac_root, room_root, replica_root, _matrix_root) = make_valid_replica(temp.path());
+        let replica = display_path(&replica_root);
+        let root_alias = display_path(&temp.path().join("alias").join("ac-root-agent"));
+
+        for (raw, canonical, order) in [
+            (root_alias.as_str(), replica.as_str(), "raw Root, canonical replica"),
+            (replica.as_str(), root_alias.as_str(), "raw replica, canonical Root"),
+        ] {
+            ensure_replica_shared_locations(raw, canonical);
+
+            assert!(
+                !room_root.join("room-shared").exists(),
+                "no `room-shared` may be created for a Root Agent alias ({order})"
+            );
+            for name in ["plans", "tools", "errors", "project-shared"] {
+                assert!(
+                    !ac_root.join(name).exists(),
+                    "no `{name}` may be created for a Root Agent alias ({order})"
+                );
+            }
+        }
     }
 }
 
