@@ -62,7 +62,10 @@ mod tests {
         for run in 1..=2 {
             create_room_shared_dir(&room_root).expect("create room shared dir");
             let path = room_root.join("room-shared");
-            assert!(path.is_dir(), "run {run}: `room-shared` must be a directory");
+            assert!(
+                path.is_dir(),
+                "run {run}: `room-shared` must be a directory"
+            );
         }
     }
 }
