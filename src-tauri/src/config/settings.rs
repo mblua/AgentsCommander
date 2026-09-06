@@ -480,6 +480,20 @@ pub struct AppSettings {
     /// Sidebar visual style: "noir-minimal", "card-sections", "command-center", "deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit"
     #[serde(default = "default_sidebar_style")]
     pub sidebar_style: String,
+    /// #1796 - selected-row rail width. A whole number from 1 to 14, optionally
+    /// suffixed `px`: `9px` and `12` are both accepted; `0`, `15`, `2em` and
+    /// `40px` are not. The bound is `RAIL_WIDTH_MAX` in
+    /// `src/sidebar/selected-row-rail.ts`. Rust does not validate this field. That
+    /// one predicate runs at startup and on every keystroke in the settings modal,
+    /// which is the only place it shows a warning; an unusable value is never
+    /// published to the DOM and the stylesheet falls back to its `:root` default.
+    #[serde(default = "default_selected_row_rail_width")]
+    pub selected_row_rail_width: String,
+    /// #1796 - selected-row rail colour, `#rrggbb` exactly; the 3- and 8-digit hex
+    /// forms are not accepted. Same soft-warning contract as
+    /// `selected_row_rail_width`.
+    #[serde(default = "default_selected_row_rail_color")]
+    pub selected_row_rail_color: String,
     /// Root token that bypasses all routing checks in the send command
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_token: Option<String>,
@@ -829,6 +843,14 @@ fn default_sidebar_style() -> String {
     "noir-minimal".to_string()
 }
 
+fn default_selected_row_rail_width() -> String {
+    "9px".to_string()
+}
+
+fn default_selected_row_rail_color() -> String {
+    "#00ff5f".to_string()
+}
+
 fn default_main_sidebar_width() -> f64 {
     240.0
 }
@@ -937,6 +959,8 @@ impl Default for AppSettings {
             project_path_state: Arc::default(),
             local_overlay_state: Arc::default(),
             sidebar_style: default_sidebar_style(),
+            selected_row_rail_width: default_selected_row_rail_width(),
+            selected_row_rail_color: default_selected_row_rail_color(),
             root_token: None,
             onboarding_dismissed: false,
             coord_sort_by_activity: false,
@@ -9910,6 +9934,8 @@ mod tests {
   "resourceWatchdogAction": "warn",
   "restoreCoordinatorWakeState": false,
   "screenshotCaptureHotkey": "Ctrl+Q",
+  "selectedRowRailColor": "#00ff5f",
+  "selectedRowRailWidth": "9px",
   "sidebarAlwaysOnTop": false,
   "sidebarStyle": "noir-minimal",
   "sidebarZoom": 1.0,

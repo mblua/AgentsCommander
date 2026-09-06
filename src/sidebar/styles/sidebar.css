@@ -827,7 +827,7 @@ html, body, #root {
 
 .team-group-members .session-item,
 .team-group-coordinator .session-item {
-  padding-left: calc(var(--spacing-md) + 16px);
+  padding-left: max(0px, calc(calc(var(--spacing-md) + 16px) - var(--ac-rail-delta)));
 }
 
 .team-group-ungrouped {
@@ -842,10 +842,11 @@ html, body, #root {
   align-items: center;
   gap: var(--spacing-sm);
   padding: var(--spacing-sm) var(--spacing-md);
+  padding-left: max(0px, calc(var(--spacing-md) - var(--ac-rail-delta)));
   cursor: pointer;
   transition: background var(--transition-fast), transform var(--transition-fast);
   position: relative;
-  border-left: 3px solid transparent;
+  border-left: var(--ac-selected-rail-width) solid transparent;
 }
 
 .session-item:hover {
@@ -855,7 +856,7 @@ html, body, #root {
 
 .session-item.active {
   background: var(--sidebar-active);
-  border-left-color: var(--sidebar-accent);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 .session-item-info {
@@ -5957,10 +5958,11 @@ html.light-theme .settings-hint-error {
   display: flex;
   align-items: center;
   padding: 4px var(--spacing-md) 4px calc(var(--spacing-md) + 6px);
+  padding-left: max(0px, calc(calc(var(--spacing-md) + 6px) - var(--ac-rail-delta)));
   cursor: pointer;
   position: relative;
   transition: background var(--transition-fast), border-left-color var(--transition-fast);
-  border-left: 3px solid transparent;
+  border-left: var(--ac-selected-rail-width) solid transparent;
 }
 
 .replica-item:hover {
@@ -5969,7 +5971,7 @@ html.light-theme .settings-hint-error {
 
 .replica-item.active {
   background: var(--sidebar-active);
-  border-left-color: var(--sidebar-accent);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 /* Show action buttons on replica-item hover (same as session-item) */
@@ -6591,8 +6593,9 @@ html.light-theme .ac-discovery-badge.running-peer {
 }
 
 [data-sidebar-style="noir-minimal"] .replica-item {
-  padding-left: calc(var(--spacing-md) + 16px);
-  border-left: 2px solid transparent;
+  padding-left: max(0px, calc(calc(var(--spacing-md) + 16px) - var(--ac-rail-delta)));
+  --ac-rail-delta: calc(var(--ac-selected-rail-width) - 2px);
+  border-left: var(--ac-selected-rail-width) solid transparent;
   transition: border-color 150ms, background 150ms;
 }
 
@@ -6602,11 +6605,11 @@ html.light-theme .ac-discovery-badge.running-peer {
 
 [data-sidebar-style="noir-minimal"] .replica-item.active {
   background: var(--sidebar-active);
-  border-left-color: var(--sidebar-accent);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 [data-sidebar-style="noir-minimal"] .project-content .session-item {
-  padding-left: calc(var(--spacing-md) + 20px);
+  padding-left: max(0px, calc(calc(var(--spacing-md) + 20px) - var(--ac-rail-delta)));
 }
 
 /* #1351 — box geometry mirrors [data-sidebar-style="noir-minimal"] .ac-wg-group:
@@ -6692,7 +6695,7 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup {
 }
 
 [data-sidebar-style="card-sections"] .replica-item {
-  padding-left: calc(var(--spacing-sm) + 8px);
+  padding-left: max(0px, calc(calc(var(--spacing-sm) + 8px) - var(--ac-rail-delta)));
   border-radius: 3px;
 }
 
@@ -6761,6 +6764,7 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup {
 
 [data-sidebar-style="command-center"] .replica-item {
   padding: 3px 8px 3px 12px;
+  padding-left: max(0px, calc(12px - var(--ac-rail-delta)));
   gap: 6px;
 }
 
@@ -6890,6 +6894,7 @@ html.light-theme[data-sidebar-style="deep-space"] .ac-wg-group:last-child {
 
 [data-sidebar-style="deep-space"] .replica-item {
   padding: 5px 12px 5px 18px;
+  padding-left: max(0px, calc(18px - var(--ac-rail-delta)));
   border-radius: 4px;
   margin: 1px 4px;
   transition: background 200ms, box-shadow 200ms, border-color 200ms;
@@ -6921,18 +6926,19 @@ html.light-theme[data-sidebar-style="deep-space"] .ac-wg-group:last-child {
 [data-sidebar-style="deep-space"] .project-content .session-item {
   margin: 1px 4px;
   border-radius: 4px;
-  border-left-width: 2px;
+  --ac-rail-delta: calc(var(--ac-selected-rail-width) - 2px);
+  border-left-width: var(--ac-selected-rail-width);
 }
 
 [data-sidebar-style="deep-space"] .session-item.active {
   background: rgba(30, 50, 110, 0.35);
-  border-left-color: rgba(80, 160, 255, 0.7);
+  border-left-color: var(--ac-selected-rail-color);
   box-shadow: inset 0 0 20px rgba(60, 130, 255, 0.08);
 }
 
 [data-sidebar-style="deep-space"] .replica-item.active {
   background: rgba(30, 50, 110, 0.35);
-  border-left-color: rgba(80, 160, 255, 0.7);
+  border-left-color: var(--ac-selected-rail-color);
   box-shadow: inset 0 0 20px rgba(60, 130, 255, 0.08);
 }
 
@@ -7134,10 +7140,12 @@ html.light-theme[data-sidebar-style="arctic-ops"] .ac-wg-name {
 
 [data-sidebar-style="arctic-ops"] .replica-item {
   padding: 5px 12px 5px 18px;
+  padding-left: max(0px, calc(18px - var(--ac-rail-delta)));
   margin: 1px 4px;
   border-radius: 2px;
   transition: background 150ms, border-color 150ms;
-  border-left: 2px solid transparent;
+  --ac-rail-delta: calc(var(--ac-selected-rail-width) - 2px);
+  border-left: var(--ac-selected-rail-width) solid transparent;
 }
 
 [data-sidebar-style="arctic-ops"] .replica-item:hover {
@@ -7173,27 +7181,28 @@ html.light-theme[data-sidebar-style="arctic-ops"] .ac-discovery-badge.coord {
 [data-sidebar-style="arctic-ops"] .project-content .session-item {
   margin: 1px 4px;
   border-radius: 2px;
-  border-left-width: 2px;
+  --ac-rail-delta: calc(var(--ac-selected-rail-width) - 2px);
+  border-left-width: var(--ac-selected-rail-width);
 }
 
 [data-sidebar-style="arctic-ops"] .session-item.active {
   background: rgba(160, 200, 255, 0.08);
-  border-left-color: rgba(100, 180, 255, 0.6);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 html.light-theme[data-sidebar-style="arctic-ops"] .session-item.active {
   background: rgba(80, 140, 220, 0.32);
-  border-left-color: rgba(20, 80, 180, 0.75);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 [data-sidebar-style="arctic-ops"] .replica-item.active {
   background: rgba(160, 200, 255, 0.08);
-  border-left-color: rgba(100, 180, 255, 0.6);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 html.light-theme[data-sidebar-style="arctic-ops"] .replica-item.active {
   background: rgba(80, 140, 220, 0.32);
-  border-left-color: rgba(20, 80, 180, 0.75);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 [data-sidebar-style="arctic-ops"] .session-item-status.active {
@@ -7341,8 +7350,10 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-wg-group {
 
 [data-sidebar-style="obsidian-mesh"] .replica-item {
   padding: 3px 10px 3px 14px;
+  padding-left: max(0px, calc(14px - var(--ac-rail-delta)));
   transition: background 150ms, border-left-color 150ms, opacity 150ms;
-  border-left: 2px solid transparent;
+  --ac-rail-delta: calc(var(--ac-selected-rail-width) - 2px);
+  border-left: var(--ac-selected-rail-width) solid transparent;
 }
 
 [data-sidebar-style="obsidian-mesh"] .replica-item:hover {
@@ -7369,7 +7380,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-wg-group {
 }
 
 [data-sidebar-style="obsidian-mesh"] .project-content .session-item {
-  border-left-width: 3px;
+  border-left-width: var(--ac-selected-rail-width);
   border-left-color: transparent;
   padding-top: 5px;
   padding-bottom: 5px;
@@ -7377,7 +7388,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-wg-group {
 
 [data-sidebar-style="obsidian-mesh"] .session-item.active {
   background: rgba(220, 160, 40, 0.06);
-  border-left-color: rgba(220, 160, 40, 0.6);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 /* Active coord rows — beats coord-beacon at (0,4,0). Specificity (0,5,0). */
@@ -7391,7 +7402,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-wg-group {
    worker is fully legible. */
 [data-sidebar-style="obsidian-mesh"] .replica-item.active:not(:has(.ac-discovery-badge.coord)) {
   background: rgba(220, 160, 40, 0.1);
-  border-left-color: rgba(220, 160, 40, 0.6);
+  border-left-color: var(--ac-selected-rail-color);
   opacity: 1;
 }
 
@@ -7418,6 +7429,8 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item.active:has(.a
 /* Coordinators — full prominence, expanded */
 [data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-discovery-badge.coord) {
   padding: 7px 10px 7px 12px;
+  --ac-rail-delta: 0px;
+  padding-left: max(0px, calc(12px - var(--ac-rail-delta)));
   background: rgba(255, 80, 40, 0.05);
   border-left: 3px solid rgba(255, 100, 40, 0.35);
   margin: 2px 0;
@@ -7436,6 +7449,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-disco
 /* Worker agents — minimized, receded */
 [data-sidebar-style="obsidian-mesh"] .replica-item:not(:has(.ac-discovery-badge.coord)) {
   padding: 2px 8px 2px 14px;
+  padding-left: max(0px, calc(14px - var(--ac-rail-delta)));
   opacity: 0.75;
   transition: opacity 150ms, background 150ms, border-left-color 150ms;
 }
@@ -7622,6 +7636,7 @@ html.light-theme[data-sidebar-style="neon-circuit"] .ac-wg-name {
 
 [data-sidebar-style="neon-circuit"] .replica-item {
   padding: 4px 12px 4px 16px;
+  padding-left: max(0px, calc(16px - var(--ac-rail-delta)));
   margin: 1px 2px;
   border-radius: 3px;
   transition: background 150ms, box-shadow 150ms, border-left-color 150ms;
@@ -7658,27 +7673,28 @@ html.light-theme[data-sidebar-style="neon-circuit"] .ac-discovery-badge.coord {
 [data-sidebar-style="neon-circuit"] .project-content .session-item {
   margin: 1px 2px;
   border-radius: 3px;
-  border-left-width: 2px;
+  --ac-rail-delta: calc(var(--ac-selected-rail-width) - 2px);
+  border-left-width: var(--ac-selected-rail-width);
 }
 
 [data-sidebar-style="neon-circuit"] .session-item.active {
   background: rgba(255, 0, 180, 0.05);
-  border-left-color: rgba(255, 0, 180, 0.5);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 html.light-theme[data-sidebar-style="neon-circuit"] .session-item.active {
   background: rgba(255, 0, 180, 0.06);
-  border-left-color: rgba(200, 0, 140, 0.45);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 [data-sidebar-style="neon-circuit"] .replica-item.active {
   background: rgba(255, 0, 180, 0.05);
-  border-left-color: rgba(255, 0, 180, 0.5);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 html.light-theme[data-sidebar-style="neon-circuit"] .replica-item.active {
   background: rgba(255, 0, 180, 0.06);
-  border-left-color: rgba(200, 0, 140, 0.45);
+  border-left-color: var(--ac-selected-rail-color);
 }
 
 [data-sidebar-style="neon-circuit"] .session-item-status.active {
@@ -7707,6 +7723,8 @@ html.light-theme[data-sidebar-style="neon-circuit"] .replica-item.active {
   border-radius: 0;
   margin: 0;
   padding: 4px var(--spacing-md) 4px calc(var(--spacing-md) + 6px);
+  --ac-rail-delta: 0px;
+  padding-left: max(0px, calc(calc(var(--spacing-md) + 6px) - var(--ac-rail-delta)));
   box-shadow: none;
 }
 
@@ -7723,7 +7741,8 @@ html.light-theme[data-sidebar-style="neon-circuit"] .replica-item.active {
    would otherwise leak through (see §4.5 round-2 G4). */
 .coord-quick-access .replica-item.active:has(.ac-discovery-badge.coord) {
   background: var(--sidebar-active);
-  border-left: 3px solid var(--sidebar-accent);
+  --ac-rail-delta: calc(var(--ac-selected-rail-width) - 3px);
+  border-left: var(--ac-selected-rail-width) solid var(--ac-selected-rail-color);
   box-shadow: none;
 }
 
@@ -7736,6 +7755,8 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access .replic
   border-radius: 0;
   margin: 0;
   padding: 4px var(--spacing-md) 4px calc(var(--spacing-md) + 6px);
+  --ac-rail-delta: 0px;
+  padding-left: max(0px, calc(calc(var(--spacing-md) + 6px) - var(--ac-rail-delta)));
   box-shadow: none;
 }
 
@@ -7753,7 +7774,8 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access .replic
 html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access .replica-item.active:has(.ac-discovery-badge.coord),
 html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access .replica-item.active:has(.ac-discovery-badge.coord) {
   background: var(--sidebar-active);
-  border-left: 3px solid var(--sidebar-accent);
+  --ac-rail-delta: calc(var(--ac-selected-rail-width) - 3px);
+  border-left: var(--ac-selected-rail-width) solid var(--ac-selected-rail-color);
   box-shadow: none;
 }
 
@@ -8791,7 +8813,8 @@ html.light-theme .onboarding-card.selected {
    would stop looking selected. The overlay composes with them instead. It
    carries no z-index on purpose - pushed behind the content it would sit under
    those opaque backgrounds and disappear in exactly the selected and hovered
-   cases. `inset: 0` is the padding box, so the 3px active border stays clean.
+   cases. `inset: 0` is the padding box, so the active rail stays clean at any
+   configured width (#1796).
 
    The alphas encode an ordering, not a strength: room wash < hover < working
    row < selection, measured as luminance distance from --sidebar-bg. See the
