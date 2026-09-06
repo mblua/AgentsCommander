@@ -2759,8 +2759,29 @@ jobs:
           process.stdout.write(tarball.toString());
           NODE
           )"
+          # The registry can lag right after a publish: the version metadata may be
+          # visible while its tarball and attestation documents still return 404,
+          # so both fetches get the same bounded propagation retry as the metadata.
+          fetch_with_propagation_retry() {
+            local url="$1"
+            local output="$2"
+            local status
+            local attempt
+            for attempt in $(seq 1 30); do
+              status="$(curl --silent --show-error --location --proto '=https' --tlsv1.2 --output "$output" --write-out '%{http_code}' "$url")"
+              if [ "$status" = 200 ]; then
+                return 0
+              fi
+              if [ "$status" != 404 ]; then
+                break
+              fi
+              sleep 2
+            done
+            echo "::error::registry returned HTTP $status fetching $url"
+            return 1
+          }
           registry_tarball="$work_dir/registry-package.tgz"
-          curl --fail --location --proto '=https' --tlsv1.2 "$registry_tarball_url" --output "$registry_tarball"
+          fetch_with_propagation_retry "$registry_tarball_url" "$registry_tarball"
           node - "$work_dir/version-metadata.json" "$registry_tarball" <<'NODE'
           const assert = require('node:assert/strict');
           const crypto = require('node:crypto');
@@ -2781,7 +2802,7 @@ jobs:
           NODE
           )"
           attestation_file="$work_dir/attestations.json"
-          curl --fail --location --proto '=https' --tlsv1.2 "$attestation_url" --output "$attestation_file"
+          fetch_with_propagation_retry "$attestation_url" "$attestation_file"
           node - "$attestation_file" "$package_name" "$VERSION" "$GITHUB_REPOSITORY" "$TAG" "$local_tarball" "$REGISTRY_URL" <<'NODE'
           const assert = require('node:assert/strict');
           const crypto = require('node:crypto');
@@ -2803,7 +2824,10 @@ jobs:
           assert.ok(publish && matchesSubject(publish), 'npm publish attestation subject');
           assert.equal(publish.predicate.name, packageName);
           assert.equal(publish.predicate.version, version);
-          assert.equal(publish.predicate.registry, registryUrl);
+          // npm writes the publish-attestation registry claim without a trailing
+          // slash while REGISTRY_URL carries one; compare the canonical forms.
+          const canonicalRegistry = (value) => value.replace(/\/+$/, '');
+          assert.equal(canonicalRegistry(publish.predicate.registry), canonicalRegistry(registryUrl));
           const provenance = payloads.find((payload) => payload.predicateType === 'https://slsa.dev/provenance/v1');
           assert.ok(provenance && matchesSubject(provenance), 'SLSA provenance subject');
           const workflow = provenance.predicate.buildDefinition.externalParameters.workflow;
