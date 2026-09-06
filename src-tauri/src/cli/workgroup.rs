@@ -704,4 +704,47 @@ mod tests {
             "the workgroup must be removed after the barrier releases"
         );
     }
+
+    /// #1795 `T12`. Drives the real production call site, `create_workgroup_on_disk`,
+    /// end to end. A test that called `create_room_shared_dir` directly would stay
+    /// green with the production call deleted, which is exactly the hole control `C6`
+    /// probes.
+    #[tokio::test]
+    async fn create_workgroup_on_disk_creates_the_room_shared_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("Project");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(ac_root.join("_agent_coordinator")).expect("coordinator matrix");
+
+        create_workgroup_on_disk(WorkgroupDiskCreateArgs {
+            project_path: project,
+            team_name: "dev-team".to_string(),
+            task_title: "Room shared directory".to_string(),
+            coordinator: Some("_agent_coordinator".to_string()),
+            agents: vec!["_agent_coordinator".to_string()],
+            repos: Vec::new(),
+        })
+        .await
+        .expect("create the room");
+
+        let rooms = list_workgroup_dirs(&ac_root);
+        assert_eq!(rooms.len(), 1, "exactly one room must have been created");
+        let wg_dir = &rooms[0];
+
+        assert!(
+            wg_dir.join("room-shared").is_dir(),
+            "`room-shared` must exist under {}",
+            wg_dir.display()
+        );
+        assert!(
+            wg_dir.join("messaging").is_dir(),
+            "`messaging` must exist under {}",
+            wg_dir.display()
+        );
+        assert!(
+            wg_dir.join("TASK.md").is_file(),
+            "`TASK.md` must exist under {}",
+            wg_dir.display()
+        );
+    }
 }

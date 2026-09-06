@@ -12214,6 +12214,41 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             );
         }
     }
+
+    /// #1795 `T8`. An integration test through the real bootstrap call chain
+    /// (`create_default_context_templates` ->
+    /// `ensure_project_context_templates_with_clock`), not a direct call to
+    /// `create_project_shared_dirs`: deleting the production call site must not
+    /// leave this green.
+    ///
+    /// The `project-shared` assertion is written FIRST on purpose. Control `C4`
+    /// deletes the whole creation call, so all four assertions would fail together
+    /// and the panic lands on whichever is written first; 8.3 names `project-shared`
+    /// as `C4`'s kill site.
+    #[test]
+    fn bootstrap_creates_project_shared_dirs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+
+        create_default_context_templates(&ac_root).expect("bootstrap the project `.ac` root");
+
+        assert!(
+            ac_root.join("project-shared").is_dir(),
+            "bootstrap must create `project-shared` under the project `.ac` root"
+        );
+        assert!(
+            ac_root.join("plans").is_dir(),
+            "bootstrap must create `plans` under the project `.ac` root"
+        );
+        assert!(
+            ac_root.join("tools").is_dir(),
+            "bootstrap must create `tools` under the project `.ac` root"
+        );
+        assert!(
+            ac_root.join("errors").is_dir(),
+            "bootstrap must create `errors` under the project `.ac` root"
+        );
+    }
 }
 
 /// #1005 token-accounting harness (plan section 7). Renders the three boot
