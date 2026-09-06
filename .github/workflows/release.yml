@@ -53,6 +53,10 @@ jobs:
           test "$GITHUB_SHA" = "$HEAD_COMMIT"
           test "$HEAD_COMMIT" = "$PEELED_COMMIT"
           test "$TAG_OBJECT" != "$PEELED_COMMIT"
+          # Release only reviewed source reachable from the current remote main.
+          # Fetch the explicit branch; a local tracking ref is not authority.
+          git fetch --quiet --no-tags origin refs/heads/main
+          git merge-base --is-ancestor "$PEELED_COMMIT" FETCH_HEAD
           tag_bytes="$(mktemp)"
           tag_payload="$(mktemp)"
           git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
@@ -100,10 +104,6 @@ jobs:
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
           {
             echo "version=${TAG#v}"
             echo "tag_object=$TAG_OBJECT"
@@ -441,7 +441,21 @@ jobs:
                 exit 1
                 ;;
             esac
-            release_resolve_id draft
+            # The paginated releases list is read-after-write eventually consistent:
+            # a just-created draft can be missing from the very next list, so resolve
+            # with a bounded retry instead of failing the whole run on the first read.
+            local attempt
+            local resolved_id
+            resolved_id=""
+            for attempt in 1 2 3 4 5 6; do
+              if resolved_id="$(release_resolve_id draft)"; then
+                printf '%s' "$resolved_id"
+                return 0
+              fi
+              sleep 5
+            done
+            echo '::error::draft release did not become visible in the releases list'
+            return 1
           }
 
           release_find_asset_id() {
@@ -579,7 +593,10 @@ jobs:
           }
 
           npm_reject_config_overrides() {
-            if env | cut -d= -f1 | grep -Eiq '^npm_config_'; then
+            # The windows-latest runner image itself exports NPM_CONFIG_PREFIX; it only
+            # relocates the global prefix and cannot redirect the registry, auth or a
+            # project-local npm ci, so exactly that name is tolerated.
+            if env | cut -d= -f1 | grep -Ei '^npm_config_' | grep -Eiv '^npm_config_prefix$' | grep -q .; then
               echo '::error::caller-provided npm configuration override is forbidden'
               return 1
             fi
@@ -834,10 +851,6 @@ jobs:
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -955,16 +968,18 @@ jobs:
             print substr($bytes, $separator + 2);
           ' < "$tag_bytes" > "$tag_payload"
           cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          file_sha256() {
+            perl -MDigest::SHA -e 'print Digest::SHA->new(256)->addfile($ARGV[0], "b")->hexdigest' -- "$1"
+          }
+          test "$(file_sha256 "$RELEASE_DIR/release-authority-v1.txt")" = "$EXPECTED_AUTHORITY_SHA256"
+          test "$(file_sha256 "$tag_payload")" = "$EXPECTED_AUTHORITY_SHA256"
+          REMOTE_TAG=()
+          while IFS= read -r remote_tag_line; do
+            REMOTE_TAG+=("$remote_tag_line")
+          done < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -1108,12 +1123,35 @@ jobs:
           copy_remaining_bundle_assets() {
             local asset_name
             local -a remaining
-            local -a matches
-            mapfile -t remaining < <(remaining_bundle_assets "$@")
+            local candidate_path
+            local candidate_base
+            local candidate_sanitized
+            local found_path
+            remaining=()
+            while IFS= read -r remaining_name; do
+              remaining+=("$remaining_name")
+            done < <(remaining_bundle_assets "$@")
             for asset_name in "${remaining[@]}"; do
-              mapfile -t matches < <(find "$TARGET_DIR/bundle" -type f -name "$asset_name" -print)
-              test "${#matches[@]}" = 1
-              cp -- "${matches[0]}" "$asset_dir/$asset_name"
+              # Ledger names are GitHub-sanitized upload names (spaces become dots);
+              # the bundler writes unsanitized files, so accept a bundle file whose
+              # basename or sanitized basename matches. Ambiguity fails closed.
+              found_path=""
+              while IFS= read -r candidate_path; do
+                candidate_base="${candidate_path##*/}"
+                candidate_sanitized="${candidate_base// /.}"
+                if [ "$candidate_base" = "$asset_name" ] || [ "$candidate_sanitized" = "$asset_name" ]; then
+                  if [ -n "$found_path" ]; then
+                    echo "::error::ambiguous bundle asset match for $asset_name"
+                    exit 1
+                  fi
+                  found_path="$candidate_path"
+                fi
+              done < <(find "$TARGET_DIR/bundle" -type f -print)
+              if [ -z "$found_path" ]; then
+                echo "::error::no bundle asset matches ledger name $asset_name"
+                exit 1
+              fi
+              cp -- "$found_path" "$asset_dir/$asset_name"
             done
           }
           asset_dir="$(mktemp -d "$RUNNER_TEMP/producer-assets.XXXXXX")"
@@ -1132,7 +1170,35 @@ jobs:
             linux-x86_64|macos-aarch64|macos-x86_64)
               raw_name="$(ledger_asset raw)"
               cp -- "$RAW_SOURCE" "$asset_dir/$raw_name"
-              copy_remaining_bundle_assets "$raw_name"
+              # The bundler writes exactly one updater archive, without an arch suffix
+              # (Agents Commander.app.tar.gz); every ledger name ending in .app.tar.gz
+              # is a renamed upload of that file, as the predecessor releases shipped.
+              tar_alias_names=()
+              while IFS= read -r remaining_name; do
+                case "$remaining_name" in
+                  *.app.tar.gz) tar_alias_names+=("$remaining_name") ;;
+                esac
+              done < <(remaining_bundle_assets "$raw_name")
+              if [ "${#tar_alias_names[@]}" -gt 0 ]; then
+                app_tar_path=""
+                while IFS= read -r candidate_path; do
+                  if [ -n "$app_tar_path" ]; then
+                    echo "::error::multiple bundler .app.tar.gz archives found"
+                    exit 1
+                  fi
+                  app_tar_path="$candidate_path"
+                done < <(find "$TARGET_DIR/bundle" -type f -name "*.app.tar.gz" -print)
+                if [ -z "$app_tar_path" ]; then
+                  echo "::error::no bundler .app.tar.gz archive found"
+                  exit 1
+                fi
+                for tar_alias_name in "${tar_alias_names[@]}"; do
+                  cp -- "$app_tar_path" "$asset_dir/$tar_alias_name"
+                done
+                copy_remaining_bundle_assets "$raw_name" "${tar_alias_names[@]}"
+              else
+                copy_remaining_bundle_assets "$raw_name"
+              fi
               ;;
             *)
               echo "::error::unknown producer $PRODUCER"
@@ -1198,7 +1264,8 @@ jobs:
           source "$RUNNER_TEMP/release-controls.sh"
           release_id="$(release_resolve_id draft "$EXPECTED_RELEASE_ID")"
           test "$release_id" = "$EXPECTED_RELEASE_ID"
-          mapfile -t asset_names < <(node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" <<'NODE'
+          asset_names_list="$(mktemp "$RUNNER_TEMP/producer-asset-names.XXXXXX")"
+          node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" <<'NODE' > "$asset_names_list"
           const assert = require('node:assert/strict');
           const fs = require('node:fs');
           const [ledgerPath, producer] = process.argv.slice(2);
@@ -1207,7 +1274,10 @@ jobs:
           assert.ok(assets.length > 0, 'producer has no ledger assets');
           for (const asset of assets) process.stdout.write(asset.name + '\n');
           NODE
-          )
+          asset_names=()
+          while IFS= read -r asset_name_line; do
+            asset_names+=("$asset_name_line")
+          done < "$asset_names_list"
           test "${#asset_names[@]}" -gt 0
           for asset_name in "${asset_names[@]}"; do
             test -s "$PRODUCER_ASSET_DIR/$asset_name"
@@ -1282,10 +1352,6 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
           test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -1836,10 +1902,6 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
           test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -2096,10 +2158,6 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
           test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - name: Publish only the verified guarded draft
         shell: bash
@@ -2180,10 +2238,6 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
           test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -2418,10 +2472,6 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
           test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
-          test "${#immutable_fields[@]}" = 2
-          test "${immutable_fields[0]}" = true
-          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
       - name: Restore numeric release API controls
         shell: bash

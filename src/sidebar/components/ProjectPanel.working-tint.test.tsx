@@ -30,18 +30,29 @@ import { automationIdPart } from "./replica-repo-badges";
 
 const projectPath = "C:\\Project";
 const wgName = "wg-9-tint-team";
-const workgroupPath = `${projectPath}\\.ac\\${wgName}`;
+const workgroupPathOf = (wg: string): string => `${projectPath}\\.ac\\${wg}`;
+const workgroupPath = workgroupPathOf(wgName);
 
 const ORCHESTRATOR = "orchestrator";
 const WORKER = "worker";
 const BYSTANDER = "bystander";
 
-const replicaPath = (name: string): string => `${workgroupPath}\\__agent_${name}`;
-const sessionName = (name: string): string => `${wgName}/${name}`;
+// #1783 - the second room. It exists to separate "this room is working" from
+// "something somewhere is working". With a single room those are the same
+// proposition in every frame, so no single-room test can tell them apart. It is
+// mutation M6 in the plan's section 8 that this room kills, and nothing else in
+// the suite sees M6 at all.
+const IDLE_ROOM = "wg-9-idle-team";
+const IDLE_ORCHESTRATOR = "idle-orchestrator";
+const IDLE_MEMBER = "idle-member";
+
+const replicaPath = (name: string, wg = wgName): string =>
+  `${workgroupPathOf(wg)}\\__agent_${name}`;
+const sessionName = (name: string, wg = wgName): string => `${wg}/${name}`;
 const sessionId = (name: string): string => `session-${name}`;
 
-const rowTestId = (context: string, replica: string): string =>
-  `replica.row.${automationIdPart(context)}.${automationIdPart(wgName)}.${automationIdPart(replica)}`;
+const rowTestId = (context: string, replica: string, wg = wgName): string =>
+  `replica.row.${automationIdPart(context)}.${automationIdPart(wg)}.${automationIdPart(replica)}`;
 
 function tintDiscovery() {
   return discovery({
@@ -69,13 +80,14 @@ function tintDiscovery() {
 function replicaSession(
   name: string,
   status: "running" | "idle",
-  waitingForInput = false
+  waitingForInput = false,
+  wg = wgName
 ) {
   return session({
     id: sessionId(name),
-    name: sessionName(name),
-    workingDirectory: replicaPath(name),
-    isCoordinator: name === ORCHESTRATOR,
+    name: sessionName(name, wg),
+    workingDirectory: replicaPath(name, wg),
+    isCoordinator: name === ORCHESTRATOR || name === IDLE_ORCHESTRATOR,
     status,
     waitingForInput,
   });
@@ -93,9 +105,59 @@ async function mount() {
   return rendered;
 }
 
-const row = (root: HTMLElement, context: string, replica: string): Element => {
-  const el = root.querySelector(`[data-ac-testid="${rowTestId(context, replica)}"]`);
-  if (!el) throw new Error(`missing row: ${rowTestId(context, replica)}`);
+function twoRoomDiscovery() {
+  return discovery({
+    workgroups: [
+      {
+        name: wgName,
+        path: workgroupPathOf(wgName),
+        task: null,
+        taskTitle: "Working tint",
+        agents: [
+          { name: ORCHESTRATOR, path: replicaPath(ORCHESTRATOR), repoPaths: [], isCoordinator: true },
+          { name: WORKER, path: replicaPath(WORKER), repoPaths: [], isCoordinator: false },
+          { name: BYSTANDER, path: replicaPath(BYSTANDER), repoPaths: [], isCoordinator: false },
+        ],
+      },
+      {
+        name: IDLE_ROOM,
+        path: workgroupPathOf(IDLE_ROOM),
+        task: null,
+        taskTitle: "Idle control room",
+        agents: [
+          {
+            name: IDLE_ORCHESTRATOR,
+            path: replicaPath(IDLE_ORCHESTRATOR, IDLE_ROOM),
+            repoPaths: [],
+            isCoordinator: true,
+          },
+          {
+            name: IDLE_MEMBER,
+            path: replicaPath(IDLE_MEMBER, IDLE_ROOM),
+            repoPaths: [],
+            isCoordinator: false,
+          },
+        ],
+      },
+    ],
+  });
+}
+
+async function mountTwoRooms() {
+  const fake = new FakeTransport();
+  fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+  fake.resolve("get_settings", baseSettings());
+  fake.resolve("discover_project", twoRoomDiscovery());
+  const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+  await settingsStore.load();
+  await projectStore.createAndLoad(projectPath);
+  await waitFor(() => expect(rendered.root.textContent).toContain(IDLE_MEMBER));
+  return rendered;
+}
+
+const row = (root: HTMLElement, context: string, replica: string, wg = wgName): Element => {
+  const el = root.querySelector(`[data-ac-testid="${rowTestId(context, replica, wg)}"]`);
+  if (!el) throw new Error(`missing row: ${rowTestId(context, replica, wg)}`);
   return el;
 };
 
@@ -260,29 +322,134 @@ describe("ProjectPanel working tint (#1755)", () => {
     }
   });
 
-  it("7. both render sites are covered: quick access and the room member list", async () => {
-    // One is inside .coord-quick-access and the other inside .ac-wg-subgroup, and
-    // one class toggle in renderReplicaItem has to cover both.
+  it("7. a quick-access row still tints when its own orchestrator session is the only one working", async () => {
+    // Acceptance criterion 3. Since #1783 the quick-access predicate is
+    // room-wide, so this test isolates the orchestrator: it is the ONLY working
+    // agent in the room, which is the one case a peers-only implementation
+    // (wiring the row to runningCoordinatorPeers) would get wrong. The two
+    // structural expectations below still pin that the quick row lives in
+    // .coord-quick-access and in no .ac-wg-subgroup.
     const rendered = await mount();
     try {
       sessionsStore.setSessions([
         replicaSession(ORCHESTRATOR, "running"),
-        replicaSession(WORKER, "running"),
+        replicaSession(WORKER, "idle"),
         replicaSession(BYSTANDER, "idle"),
       ]);
       await waitFor(() =>
-        expect(row(rendered.root, "quick", ORCHESTRATOR).classList.contains("working")).toBe(true)
+        expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(
+          true
+        )
       );
-      expect(row(rendered.root, "workgroups", WORKER).classList.contains("working")).toBe(true);
 
-      // Controls in the same run: the quick-access row is inside
-      // .coord-quick-access and NOT inside any .ac-wg-subgroup, which is the
-      // structural fact that makes ground 1 real; and the idle member stays
-      // untinted in both sections.
       const quick = row(rendered.root, "quick", ORCHESTRATOR);
+      expect(quick.classList.contains("working")).toBe(true);
       expect(quick.closest(".coord-quick-access")).not.toBeNull();
       expect(quick.closest(".ac-wg-subgroup")).toBeNull();
+
+      // Controls in the same render: the two idle members stay untinted in the
+      // member list, so this cannot pass by tinting every row.
+      expect(row(rendered.root, "workgroups", WORKER).classList.contains("working")).toBe(false);
       expect(row(rendered.root, "workgroups", BYSTANDER).classList.contains("working")).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("8. a quick-access row tints when a room member works and its own session is idle", async () => {
+    // #1783 acceptance criteria 1 and 2. Three controls live in this one render:
+    // the control room's quick row (kills a constant-true predicate, a
+    // project-wide "anything is working" predicate, and a room-wide check
+    // hand-rolled off raw session status), and the SAME orchestrator's
+    // member-list row, which must stay untinted while its quick row tints.
+    //
+    // IDLE_MEMBER is deliberately "running" WITH waitingForInput rather than
+    // idle. That makes the criterion-2 assertion carry two facts at once: the
+    // control room has no WORKING agent, and a waiting agent is not a working
+    // agent. Against a raw `status === "running"` check the room reads as busy,
+    // which is mutation M7 and required behaviour 5.8. Do not simplify this
+    // argument back to ("idle", false).
+    const rendered = await mountTwoRooms();
+    try {
+      sessionsStore.setSessions([
+        replicaSession(ORCHESTRATOR, "idle"),
+        replicaSession(WORKER, "running"),
+        replicaSession(BYSTANDER, "idle"),
+        replicaSession(IDLE_ORCHESTRATOR, "idle", false, IDLE_ROOM),
+        replicaSession(IDLE_MEMBER, "running", true, IDLE_ROOM),
+      ]);
+      // Gate only. True before and after #1783 and under every mutation probe,
+      // so it settles the store without ever masking one.
+      await waitFor(() =>
+        expect(row(rendered.root, "workgroups", WORKER).classList.contains("working")).toBe(true)
+      );
+
+      // Criterion 1.
+      expect(row(rendered.root, "quick", ORCHESTRATOR).classList.contains("working")).toBe(true);
+
+      // Criterion 2, same render: a room with nobody working carries no tint.
+      expect(
+        row(rendered.root, "quick", IDLE_ORCHESTRATOR, IDLE_ROOM).classList.contains("working")
+      ).toBe(false);
+
+      // Same replica, same room, member list: still own-session only.
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(
+        false
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("9. the room-wide rule does not leak into either .ac-wg-subgroup context", async () => {
+    // #1783 acceptance criteria 4 and 5. renderReplicaItem is a shared factory,
+    // so an edit that forgets to condition on rowContext tints every member row
+    // of a working room. TWO rowContext values render inside .ac-wg-subgroup,
+    // "workgroups" (ProjectPanel.tsx:2870) and "selected" (:2810), and this test
+    // asserts both: a predicate branching on the complement of "workgroups"
+    // passes the first half and fails the second. The positive control in each
+    // half is the working member itself, so neither half can pass by tinting
+    // nothing.
+    const rendered = await mountTwoRooms();
+    try {
+      sessionsStore.setSessions([
+        replicaSession(ORCHESTRATOR, "idle"),
+        replicaSession(WORKER, "running"),
+        replicaSession(BYSTANDER, "idle"),
+        replicaSession(IDLE_ORCHESTRATOR, "idle", false, IDLE_ROOM),
+        replicaSession(IDLE_MEMBER, "idle", false, IDLE_ROOM),
+      ]);
+      await waitFor(() =>
+        expect(row(rendered.root, "workgroups", WORKER).classList.contains("working")).toBe(true)
+      );
+
+      // Criterion 4, context "workgroups": the two idle members of a WORKING
+      // room stay untinted.
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(
+        false
+      );
+      expect(row(rendered.root, "workgroups", BYSTANDER).classList.contains("working")).toBe(false);
+      expect(
+        row(rendered.root, "workgroups", IDLE_MEMBER, IDLE_ROOM).classList.contains("working")
+      ).toBe(false);
+
+      // Criterion 5: the room block itself still tints on room-wide work.
+      expect(anySubgroupWorking(rendered.root)).toBe(true);
+
+      // Criterion 4, context "selected". Selecting WORKER's session makes
+      // selectedWorkgroup() resolve to the busy room, which renders a second
+      // .ac-wg-subgroup through renderWorkgroupSubgroup(wg, "selected"). The
+      // waitFor is a gate on the positive row only: it is true under the correct
+      // implementation and under every mutation in section 8, and it also proves
+      // the section actually rendered rather than the rows being absent.
+      sessionsStore.setVisibleActiveIdForTests(sessionId(WORKER));
+      await waitFor(() =>
+        expect(row(rendered.root, "selected", WORKER).classList.contains("working")).toBe(true)
+      );
+      expect(row(rendered.root, "selected", ORCHESTRATOR).classList.contains("working")).toBe(
+        false
+      );
+      expect(row(rendered.root, "selected", BYSTANDER).classList.contains("working")).toBe(false);
     } finally {
       rendered.cleanup();
     }

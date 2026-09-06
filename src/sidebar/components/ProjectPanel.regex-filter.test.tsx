@@ -296,7 +296,25 @@ describe("ProjectPanel regex filter", () => {
       input(filterInput, "RUNNING");
       await waitFor(() => {
         expect(rendered.root.textContent).toContain("dev-webpage-ui");
-        expect(rendered.root.textContent).toContain("dev-rust RUNNING");
+        const chip = rendered.root.querySelector(".ac-discovery-badge.running-peer");
+        expect(chip?.textContent).toBe("dev-rust");
+        expect(chip?.getAttribute("title")).toBe("wg-2-dev-team/dev-rust is running");
+        expect(rendered.root.textContent).not.toContain("RUNNING");
+      });
+
+      // #1790 option A: the word is no longer rendered but is still part of the
+      // running-peer match text. "dev-rust RUNNING" cannot be produced by any
+      // other haystack of this row, so the chip surviving this query proves the
+      // peer haystack is still live. The no-match query in between makes the
+      // transition observable instead of a stale pass.
+      input(filterInput, "zzz-no-such-row");
+      await waitFor(() => {
+        expect(rendered.root.querySelector(".ac-discovery-badge.running-peer")).toBeNull();
+      });
+
+      input(filterInput, "dev-rust RUNNING");
+      await waitFor(() => {
+        expect(rendered.root.querySelector(".ac-discovery-badge.running-peer")).not.toBeNull();
       });
     } finally {
       rendered.cleanup();
@@ -446,7 +464,7 @@ describe("ProjectPanel regex filter", () => {
         name: "wg-2-dev-team/dev-rust",
         workingDirectory: `${workgroupPath}\\__agent_dev-rust`,
         // Exited (not a running peer) so the matched coordinator does not render
-        // a legitimate "dev-rust RUNNING" peer badge — keeps the hide assertion
+        // a legitimate "dev-rust" peer badge — keeps the hide assertion
         // about the dev-rust *row*, not data integrity.
         status: { exited: 0 },
       }),
