@@ -497,7 +497,8 @@ impl Default for SeededContextTemplateState {
 #[serde(rename_all = "camelCase")]
 struct SeededContextTemplateEntry {
     template_id: String,
-    current_version: u32,
+    /// #1748: `None` means a distribution-owned template, which records no version.
+    current_version: Option<u32>,
     last_seeded_sha256: Option<String>,
     last_observed_sha256: Option<String>,
     ignored_default_sha256: Option<String>,
@@ -549,9 +550,23 @@ impl LoadedState {
     }
 
     fn entry_mut(&mut self, spec: SeededContextTemplateSpec) -> &mut SeededContextTemplateEntry {
+        let next_version = (!spec.distribution_owned).then_some(spec.current_version);
+        // #1748: for a distribution-owned spec this is the ONLY field this call can change,
+        // and every downstream guard compares hashes, so nothing else would ever mark the
+        // state dirty and an already-in-sync installation would keep its stale version on
+        // disk forever. Compare through a shared borrow first, so the flag is set on the
+        // real delta and the &mut below is taken only once.
+        if spec.distribution_owned {
+            let already_recorded = self.state.templates.get(spec.id).is_some_and(|entry| {
+                entry.template_id == spec.id && entry.current_version == next_version
+            });
+            if !already_recorded {
+                self.dirty = true;
+            }
+        }
         let entry = self.state.templates.entry(spec.id.to_string()).or_default();
         entry.template_id = spec.id.to_string();
-        entry.current_version = spec.current_version;
+        entry.current_version = next_version;
         entry
     }
 
@@ -3102,8 +3117,9 @@ mod tests {
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["global"]["currentVersion"], 6,
-            "the repaired global must land on the current v6 default"
+            parsed["templates"]["global"]["currentVersion"],
+            serde_json::Value::Null,
+            "#1748: the distribution-owned global entry records no version"
         );
     }
 
@@ -3225,7 +3241,10 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(state["templates"]["global"]["currentVersion"], 6);
+        assert_eq!(
+            state["templates"]["global"]["currentVersion"],
+            serde_json::Value::Null
+        );
         assert_eq!(
             state["templates"]["global"]["lastSeededSha256"],
             current_hash
@@ -3258,7 +3277,7 @@ mod tests {
             "global".to_string(),
             SeededContextTemplateEntry {
                 template_id: "global".to_string(),
-                current_version: 3,
+                current_version: Some(3),
                 last_seeded_sha256: Some(hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION)),
                 last_observed_sha256: None,
                 ignored_default_sha256: None,
@@ -3291,7 +3310,10 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(state["templates"]["global"]["currentVersion"], 6);
+        assert_eq!(
+            state["templates"]["global"]["currentVersion"],
+            serde_json::Value::Null
+        );
         assert_eq!(
             state["templates"]["global"]["lastSeededSha256"],
             current_hash
@@ -3340,7 +3362,7 @@ mod tests {
                         "global".to_string(),
                         SeededContextTemplateEntry {
                             template_id: "global".to_string(),
-                            current_version: 3,
+                            current_version: Some(3),
                             last_seeded_sha256: Some(hash_text(
                                 GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION,
                             )),
@@ -3429,7 +3451,7 @@ mod tests {
                     "global".to_string(),
                     SeededContextTemplateEntry {
                         template_id: "global".to_string(),
-                        current_version: 3,
+                        current_version: Some(3),
                         last_seeded_sha256: Some(hash_text(
                             GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION,
                         )),
@@ -3534,8 +3556,9 @@ mod tests {
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["global"]["currentVersion"], 6,
-            "the repaired global must land on the current v6 default"
+            parsed["templates"]["global"]["currentVersion"],
+            serde_json::Value::Null,
+            "#1748: the distribution-owned global entry records no version"
         );
     }
 
@@ -3585,7 +3608,10 @@ mod tests {
         let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 6);
+        assert_eq!(
+            parsed["templates"]["global"]["currentVersion"],
+            serde_json::Value::Null
+        );
         assert!(
             scan_project_context_template_updates(temp.path(), &ac_root)
                 .expect("scan updates")
@@ -3614,7 +3640,7 @@ mod tests {
             "global".to_string(),
             SeededContextTemplateEntry {
                 template_id: "global".to_string(),
-                current_version: 2,
+                current_version: Some(2),
                 last_seeded_sha256: Some(hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS)),
                 last_observed_sha256: None,
                 ignored_default_sha256: None,
@@ -3642,7 +3668,10 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 6);
+        assert_eq!(
+            parsed["templates"]["global"]["currentVersion"],
+            serde_json::Value::Null
+        );
         assert!(
             scan_project_context_template_updates(temp.path(), &ac_root)
                 .expect("scan updates")
@@ -4265,7 +4294,8 @@ mod tests {
         let v3_sha256 = hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE);
         let v4_sha256 = hash_text(get_default_coordinator_template());
         assert_eq!(
-            entry.current_version, 3,
+            entry.current_version,
+            Some(3),
             "row 3 requires the fixture to describe a seeded v3 coordinator"
         );
         assert_eq!(
@@ -4382,7 +4412,7 @@ mod tests {
             "coordinator".to_string(),
             SeededContextTemplateEntry {
                 template_id: "coordinator".to_string(),
-                current_version: 1,
+                current_version: Some(1),
                 last_seeded_sha256: Some(hash_text(custom)),
                 last_observed_sha256: None,
                 ignored_default_sha256: None,
@@ -4458,7 +4488,7 @@ mod tests {
             "coordinator".to_string(),
             SeededContextTemplateEntry {
                 template_id: "coordinator".to_string(),
-                current_version: 3,
+                current_version: Some(3),
                 last_seeded_sha256: Some(v3_hash.clone()),
                 last_observed_sha256: Some(custom_hash.clone()),
                 ignored_default_sha256: Some(v3_hash.clone()),
@@ -4551,7 +4581,7 @@ mod tests {
             "coordinator".to_string(),
             SeededContextTemplateEntry {
                 template_id: "coordinator".to_string(),
-                current_version: 6,
+                current_version: Some(6),
                 last_seeded_sha256: Some(v4_hash.clone()),
                 last_observed_sha256: Some(custom_hash.clone()),
                 ignored_default_sha256: Some(v4_hash),
@@ -5341,7 +5371,11 @@ mod tests {
                 hash_text(current),
                 "{arm}"
             );
-            assert_eq!(parsed["templates"]["global"]["currentVersion"], 6, "{arm}");
+            assert_eq!(
+                parsed["templates"]["global"]["currentVersion"],
+                serde_json::Value::Null,
+                "{arm}"
+            );
             assert!(
                 scan_project_context_template_updates(temp.path(), &ac_root)
                     .expect("scan updates")
@@ -5738,5 +5772,199 @@ mod tests {
             owned += usize::from(spec.distribution_owned);
         }
         assert_eq!(owned, 1, "exactly one spec is distribution-owned");
+    }
+
+    /// #1748 phase 01b: the raw slice of one template entry in the persisted state
+    /// file. The assertions below read the serialized BYTES rather than a parsed
+    /// round trip, because a round trip reads `Null` both when a key holds null and
+    /// when the field was dropped from every entry (D4). No entry field is itself an
+    /// object, so the first `}` closes the entry.
+    fn raw_entry_slice<'a>(raw: &'a str, id: &str) -> &'a str {
+        let key = format!("\"{id}\": {{");
+        let start = raw
+            .find(&key)
+            .unwrap_or_else(|| panic!("the state file must carry a `{id}` entry:\n{raw}"));
+        let rest = &raw[start + key.len()..];
+        let end = rest
+            .find('}')
+            .unwrap_or_else(|| panic!("the `{id}` entry must be closed:\n{raw}"));
+        &rest[..end]
+    }
+
+    /// #1748 phase 01b test 1: only the `global` entry loses its recorded version.
+    /// The `coordinator` and `unrelated` assertions ARE the control, and they are the
+    /// ones a DELETION of the field breaks: `SeededContextTemplateState.templates` is
+    /// a `BTreeMap` and `persist_state` re-serializes the whole map, so dropping the
+    /// field would drop the key from every entry, including five out-of-stage
+    /// templates and any unrecognized id.
+    #[test]
+    fn only_the_global_entry_loses_its_recorded_version() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        // A base file that DIFFERS from the current default, so the `global` entry
+        // takes the repair path and is rewritten.
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION,
+        )
+        .expect("write pristine v3 global");
+        let mut state = SeededContextTemplateState::default();
+        state.templates.insert(
+            "global".to_string(),
+            SeededContextTemplateEntry {
+                template_id: "global".to_string(),
+                current_version: Some(1),
+                last_seeded_sha256: Some(hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION)),
+                last_observed_sha256: None,
+                ignored_default_sha256: None,
+                ignored_observed_sha256: None,
+            },
+        );
+        state.templates.insert(
+            "coordinator".to_string(),
+            SeededContextTemplateEntry {
+                template_id: "coordinator".to_string(),
+                current_version: Some(6),
+                last_seeded_sha256: None,
+                last_observed_sha256: None,
+                ignored_default_sha256: None,
+                ignored_observed_sha256: None,
+            },
+        );
+        state.templates.insert(
+            "unrelated".to_string(),
+            SeededContextTemplateEntry {
+                template_id: "unrelated".to_string(),
+                current_version: Some(7),
+                last_seeded_sha256: None,
+                last_observed_sha256: None,
+                ignored_default_sha256: None,
+                ignored_observed_sha256: None,
+            },
+        );
+        persist_state(&ac_root, &state).expect("persist seeded state");
+
+        scan_project_context_template_updates(temp.path(), &ac_root).expect("scan project");
+
+        let raw = std::fs::read_to_string(state_path(&ac_root)).expect("read seeded state");
+        let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse seeded state");
+        assert_eq!(
+            parsed["templates"]["global"]["currentVersion"],
+            serde_json::Value::Null,
+            "#1748: the distribution-owned global entry records no version:\n{raw}"
+        );
+        assert!(
+            raw_entry_slice(&raw, "coordinator").contains(r#""currentVersion": 6"#),
+            "the out-of-stage coordinator entry keeps its recorded version:\n{raw}"
+        );
+        assert!(
+            raw_entry_slice(&raw, "unrelated").contains(r#""currentVersion": 7"#),
+            "an unrecognized id keeps its recorded version:\n{raw}"
+        );
+        assert!(
+            raw_entry_slice(&raw, "global").contains(r#""currentVersion": null"#),
+            "the key is still serialized on the global entry, as null:\n{raw}"
+        );
+    }
+
+    /// #1748 phase 01b test 2: the equal-default path, which D2 exists for. On an
+    /// installation whose base file already matches the shipped default the scan takes
+    /// the early return in `sync_one_template`, every downstream guard compares hashes
+    /// and finds them equal, and without D2 nothing would ever mark the state dirty,
+    /// so the stale `"currentVersion": 6` would stay on disk forever.
+    ///
+    /// `"probe": "sentinel"` is the two-sided detector for "was the state file
+    /// rewritten at all", which no byte comparison can give when a rewrite would
+    /// reproduce identical content: `SeededContextTemplateEntry` carries no
+    /// `deny_unknown_fields`, so the key parses in without costing the fixture its
+    /// trust and is DROPPED on the next serialize. The control arm flips the input,
+    /// not the expectation: with the recorded version already null, `already_recorded`
+    /// is true, nothing is persisted and the sentinel survives byte for byte. That arm
+    /// is also what forbids the lazy reading of D2, an unconditional
+    /// `self.dirty = true` in `entry_mut`.
+    #[test]
+    fn an_in_sync_installation_still_drops_its_recorded_global_version() {
+        for (arm, recorded_version, sentinel_survives) in
+            [("main", "6", false), ("control", "null", true)]
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let ac_root = temp.path().join(".ac");
+            std::fs::create_dir(&ac_root).expect("create workspace");
+            let current = crate::config::session_context::get_default_agent_template();
+            let current_hash = hash_text(current);
+            // ONLY `Context.AgentsCommander.md`. The scan passes
+            // `allow_create_missing = false`, so the four absent template files return
+            // before touching state; writing one of them would mark the state dirty in
+            // BOTH arms and the control would stop discriminating while still passing.
+            let global_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+            std::fs::write(&global_path, current).expect("write in-sync global");
+            // Hand-written in the PRETTY shape `to_vec_pretty` produces, WITH the space
+            // after each colon (D4a): the control arm asserts against these bytes
+            // verbatim while the main arm asserts against bytes the code wrote, and if
+            // the two shapes differed the control arm would silently stop testing the
+            // same thing. `lastSeededSha256` is the current default's hash, so
+            // `mark_seeded`'s own guard is FALSE, which is the whole point.
+            let fixture = format!(
+                r#"{{
+  "schemaVersion": 1,
+  "templates": {{
+    "coordinator": {{
+      "templateId": "coordinator",
+      "currentVersion": 6
+    }},
+    "global": {{
+      "templateId": "global",
+      "currentVersion": {recorded_version},
+      "lastSeededSha256": "{current_hash}",
+      "probe": "sentinel"
+    }}
+  }}
+}}"#
+            );
+            std::fs::write(state_path(&ac_root), &fixture).expect("write fixture state");
+
+            let replacements =
+                scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                    .expect("scan in-sync workspace");
+
+            assert!(
+                replacements.is_empty(),
+                "{arm}: an already-current file is never replaced: {replacements:?}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&global_path).expect("read global"),
+                current,
+                "{arm}: the template file the user sees is not touched"
+            );
+            let backups = backup_files(&ac_root);
+            assert!(
+                backups.is_empty(),
+                "{arm}: no backup is created: {backups:?}"
+            );
+
+            let raw = std::fs::read_to_string(state_path(&ac_root)).expect("read seeded state");
+            assert!(
+                raw_entry_slice(&raw, "global").contains(r#""currentVersion": null"#),
+                "{arm}: the global entry records no version:\n{raw}"
+            );
+            assert!(
+                raw_entry_slice(&raw, "global")
+                    .contains(&format!(r#""lastSeededSha256": "{current_hash}""#)),
+                "{arm}: the seeded hash is unchanged:\n{raw}"
+            );
+            assert!(
+                raw_entry_slice(&raw, "coordinator").contains(r#""currentVersion": 6"#),
+                "{arm}: the out-of-stage coordinator entry is untouched:\n{raw}"
+            );
+            assert_eq!(
+                raw.contains(r#""probe": "sentinel""#),
+                sentinel_survives,
+                "{arm}: the sentinel survives exactly when no persist ran:\n{raw}"
+            );
+            if sentinel_survives {
+                assert_eq!(raw, fixture, "{arm}: the state file is byte-identical");
+            }
+        }
     }
 }
