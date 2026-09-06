@@ -38,7 +38,7 @@ Three patterns ship, across exactly two stems:
 
 A stem with no defaults materializes to `"blockingMenus": []`, which is indistinguishable on disk from "I turned this off deliberately". That is intentional: see [Turning the guard off](#turning-the-guard-off).
 
-One default arrived after the feature shipped, so AC back-fills it. On every load, an agent whose stem is `codex` and whose array is non-empty gets the hooks-review entry appended if no entry already carries that exact pattern. It is the only back-fill in the code today, it never runs on an empty array, and it never runs on an agent whose `agents` array comes from a `.local` overlay.
+One default arrived after the feature shipped, so AC back-fills it. On every load, an agent whose stem is `codex` and whose array is non-empty gets the hooks-review entry appended if no entry already carries that exact pattern. It is the only back-fill that touches `blockingMenus` today, it never runs on an empty array, and it never runs on an agent whose `agents` array comes from a `.local` overlay.
 
 ## How a pattern is matched
 
@@ -77,7 +77,7 @@ Turning the guard off at the root also ends every episode it is currently holdin
 
 There is no Settings screen and no CLI verb for `blockingMenus`. You edit `settings.json`.
 
-**Close AgentsCommander first.** AC loads `settings.json` once at startup and never re-reads it, and any save from the running app writes its in-memory copy over the whole file. Edit while it is running and your pattern is gone at the next save.
+**Close AgentsCommander first.** AC loads `settings.json` into memory once at startup and never refreshes that copy from disk - there is no settings file watcher - and any save from the running app writes its in-memory copy over the whole file. Edit while it is running and your pattern is gone at the next save.
 
 ### 1. Capture the row
 
@@ -167,7 +167,7 @@ See [Settings reference](../reference/settings.md#menu-guard) for the full `Bloc
 2. The pattern does not compile. Look for `[menu_guard] Invalid regex pattern` in the log. Lookahead and backreferences are the common ones, and neither is supported.
 3. The pattern is anchored past the row's real start. The row keeps its leading spaces and any box-drawing prefix, so `^Do you trust` fails on `| Do you trust ...`. Drop the `^`, or use `^[^A-Za-z0-9]*`.
 
-**"My edit disappeared."** You edited while AC was running. AC reads the file once at startup and writes its in-memory copy back on save, so the running app is authoritative until you close it.
+**"My edit disappeared."** You edited while AC was running. AC loads the settings it runs on into memory at startup, never refreshes that copy from disk, and writes it back on save, so the running app is authoritative until you close it.
 
 **"The pattern matches text I can see on one line, but nothing fires."** The line is wrapping across the top edge of the screen. A wrapped logical row that starts at physical row 0 is skipped, because its beginning may have scrolled away. Make the terminal wider, or scroll, and it evaluates on the next tick.
 
