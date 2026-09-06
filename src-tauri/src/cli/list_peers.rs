@@ -2442,6 +2442,24 @@ mod tests {
     const CHOSEN_SESSION_ID: &str = "22222222-2222-2222-2222-222222222222";
     const OTHER_SESSION_ID: &str = "33333333-3333-3333-3333-333333333333";
 
+    /// #1774 - two more ids, so the three-row fixtures can bracket the chosen
+    /// row: `BELOW_CHOSEN_SESSION_ID` sorts under `CHOSEN_SESSION_ID` and
+    /// `TRAILING_SESSION_ID` over it, so a lexical minimum-by-id or
+    /// maximum-by-id read cannot coincide with `chosen`.
+    const BELOW_CHOSEN_SESSION_ID: &str = "00000000-0000-0000-0000-000000000000";
+    const TRAILING_SESSION_ID: &str = "44444444-4444-4444-4444-444444444444";
+
+    /// #1774 - two more notices, distinct from `BLOCKED_MENU_MESSAGE` and from
+    /// each other, so a fixture can give three blocked rows three different
+    /// messages and see which one is reported. They sort
+    /// `OTHER_BLOCKED_MENU_MESSAGE` < `BLOCKED_MENU_MESSAGE` <
+    /// `TRAILING_BLOCKED_MENU_MESSAGE`, so the chosen row's message is the
+    /// lexical middle one as well as the middle row.
+    const OTHER_BLOCKED_MENU_MESSAGE: &str =
+        "claude is waiting for you to answer the tool-permission menu in this terminal";
+    const TRAILING_BLOCKED_MENU_MESSAGE: &str =
+        "gemini is waiting for you to answer the model-selection menu in this terminal";
+
     #[test]
     fn build_session_index_from_copies_blocked_menu_from_persisted() {
         let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
@@ -2604,6 +2622,84 @@ mod tests {
             message: Some(BLOCKED_MENU_MESSAGE.into()),
         });
         let index = build_session_index_from(&[idle, blocked_active]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        assert!(status.blocked_menu);
+        assert_eq!(
+            status.blocked_menu_message.as_deref(),
+            Some(BLOCKED_MENU_MESSAGE)
+        );
+        assert_eq!(status.session_status, "active");
+        assert_eq!(status.session_id.as_deref(), Some(CHOSEN_SESSION_ID));
+    }
+
+    #[test]
+    fn compute_peer_status_reads_the_chosen_session_that_is_neither_first_nor_last() {
+        // #1774 / D3: `chosen` is the MIDDLE row, so it is neither `filtered[0]`
+        // nor `filtered.last()`. Both neighbours are unblocked and the chosen row
+        // is blocked, so a read of either end drops a real block, its message and
+        // its session id. The two neighbour ids bracket `CHOSEN_SESSION_ID`, so a
+        // smallest-id or largest-id read lands on an unblocked row too.
+        // Priorities are 1, 3, 2, so `max_by_key` has no tie.
+        let mut leading = ps_row("Session 1", r"C:\work", Some(SessionStatus::Idle), true);
+        leading.id = Some(BELOW_CHOSEN_SESSION_ID.to_string());
+        let mut blocked_active = ps_row("Session 2", r"C:\work", Some(SessionStatus::Active), true);
+        blocked_active.id = Some(CHOSEN_SESSION_ID.to_string());
+        blocked_active.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some(BLOCKED_MENU_MESSAGE.into()),
+        });
+        let mut trailing = ps_row("Session 3", r"C:\work", Some(SessionStatus::Running), true);
+        trailing.id = Some(TRAILING_SESSION_ID.to_string());
+        let index = build_session_index_from(&[leading, blocked_active, trailing]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        assert!(status.blocked_menu);
+        assert_eq!(
+            status.blocked_menu_message.as_deref(),
+            Some(BLOCKED_MENU_MESSAGE)
+        );
+        assert_eq!(status.session_status, "active");
+        assert_eq!(status.session_id.as_deref(), Some(CHOSEN_SESSION_ID));
+    }
+
+    #[test]
+    fn compute_peer_status_reports_the_message_of_the_chosen_blocked_session() {
+        // #1774 / D3, the message half: ALL THREE rows are blocked and each
+        // carries a different visible message, so the flag cannot tell them
+        // apart. The chosen row is the MIDDLE blocked row, so it is neither the
+        // first blocked row nor the last blocked one; its id is between the
+        // other two ids and its message is between the other two messages. A
+        // message read that takes the first blocked row, the last blocked row,
+        // the smallest id, the largest id, the smallest message or the largest
+        // message therefore reports a notice describing a different session
+        // than `session_id` and `session_status` do. Priorities are 1, 3, 2, so
+        // `max_by_key` has no tie.
+        let mut first_blocked = ps_row("Session 1", r"C:\work", Some(SessionStatus::Idle), true);
+        first_blocked.id = Some(BELOW_CHOSEN_SESSION_ID.to_string());
+        first_blocked.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some(OTHER_BLOCKED_MENU_MESSAGE.into()),
+        });
+        let mut chosen_blocked = ps_row("Session 2", r"C:\work", Some(SessionStatus::Active), true);
+        chosen_blocked.id = Some(CHOSEN_SESSION_ID.to_string());
+        chosen_blocked.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some(BLOCKED_MENU_MESSAGE.into()),
+        });
+        let mut last_blocked = ps_row("Session 3", r"C:\work", Some(SessionStatus::Running), true);
+        last_blocked.id = Some(TRAILING_SESSION_ID.to_string());
+        last_blocked.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some(TRAILING_BLOCKED_MENU_MESSAGE.into()),
+        });
+        let index = build_session_index_from(&[first_blocked, chosen_blocked, last_blocked]);
         let status = compute_peer_status(r"C:\work", None, &index);
         assert!(status.blocked_menu);
         assert_eq!(
