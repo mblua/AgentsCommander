@@ -79,6 +79,7 @@ import { loopToastFromEvent, type LoopToast } from "./loop-event-toast";
 import { createUpdateToaster } from "./update-toast";
 import { wireScreenshotListeners } from "./listeners-screenshot";
 import { wireAgentUpdateListeners } from "./agent-update";
+import { applySelectedRowRail } from "./selected-row-rail";
 import AgentUpdateOverlay from "./components/AgentUpdateOverlay";
 import "./styles/sidebar.css";
 import "../shared/styles/toast.css";
@@ -670,6 +671,11 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     const style = appSettings.sidebarStyle;
     const removedThemes = ["classic", "signal-grid"];
     document.documentElement.dataset.sidebarStyle = (!style || removedThemes.includes(style)) ? "noir-minimal" : style;
+    applySelectedRowRail(
+      document.documentElement,
+      appSettings.selectedRowRailWidth,
+      appSettings.selectedRowRailColor
+    );
     if (!props.embedded && appSettings.sidebarAlwaysOnTop && isTauri) {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       await getCurrentWindow().setAlwaysOnTop(true);

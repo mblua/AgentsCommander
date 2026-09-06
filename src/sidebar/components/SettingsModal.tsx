@@ -32,6 +32,7 @@ import TrashIcon from "./TrashIcon";
 import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
+import { applySelectedRowRail, isValidRailColor, isValidRailWidth } from "../selected-row-rail";
 import {
   canEnableWatcher,
   distinctCommandStems,
@@ -1849,6 +1850,58 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <option value="neon-circuit">Neon Circuit</option>
           </select>
         </label>
+        <label class="settings-field">
+          <span class="settings-label">Selected Row Bar Width</span>
+          <input
+            class="settings-input"
+            value={settings.data!.selectedRowRailWidth}
+            onInput={(e) => {
+              updateField("selectedRowRailWidth", e.currentTarget.value);
+              applySelectedRowRail(
+                document.documentElement,
+                e.currentTarget.value,
+                settings.data!.selectedRowRailColor
+              );
+            }}
+            data-ac-testid="settings.general.selectedRowRailWidth"
+          />
+        </label>
+        <Show when={!isValidRailWidth(settings.data?.selectedRowRailWidth ?? "")}>
+          <div
+            class="settings-hint settings-hint-error"
+            data-ac-testid="settings.general.selectedRowRailWidth.warning"
+          >
+            Not a valid width. Enter a whole number from 1 to 14, optionally
+            followed by px, for example 9px. While this is invalid the bar shows
+            the default 9px.
+          </div>
+        </Show>
+        <label class="settings-field">
+          <span class="settings-label">Selected Row Bar Color</span>
+          <input
+            class="settings-input"
+            value={settings.data!.selectedRowRailColor}
+            onInput={(e) => {
+              updateField("selectedRowRailColor", e.currentTarget.value);
+              applySelectedRowRail(
+                document.documentElement,
+                settings.data!.selectedRowRailWidth,
+                e.currentTarget.value
+              );
+            }}
+            data-ac-testid="settings.general.selectedRowRailColor"
+          />
+        </label>
+        <Show when={!isValidRailColor(settings.data?.selectedRowRailColor ?? "")}>
+          <div
+            class="settings-hint settings-hint-error"
+            data-ac-testid="settings.general.selectedRowRailColor.warning"
+          >
+            Not a valid colour. Enter a hash followed by six hex digits, for
+            example #00ff5f. While this is invalid the bar shows the default
+            #00ff5f.
+          </div>
+        </Show>
         <label class="settings-checkbox-field">
           <input
             type="checkbox"
