@@ -886,6 +886,31 @@ jobs:
           release_id="$(release_ensure_draft)"
           release_id="$(release_resolve_id draft "$release_id")"
           printf '%s' "$release_id" | grep -Eq '^[1-9][0-9]*$'
+          # Uploads are byte-exact against the draft, and rebuilds are never
+          # byte-identical (embedded timestamps), so assets left by an abandoned
+          # earlier run poison every later run. A fresh run (attempt 1) rebuilds
+          # everything and starts from an empty draft; rerun-failed-jobs keeps
+          # run_attempt > 1 and preserves the designed same-run resume reuse.
+          if [ "$GITHUB_RUN_ATTEMPT" = "1" ]; then
+            stale_release_path="$(mktemp "$RUNNER_TEMP/release-stale-reset.XXXXXX")"
+            stale_assets_list="$(mktemp "$RUNNER_TEMP/release-stale-assets.XXXXXX")"
+            release_cli api --method GET "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$stale_release_path"
+            node - "$stale_release_path" <<'NODE' > "$stale_assets_list"
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const release = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.equal(release.draft, true, 'stale-asset reset only applies to a draft');
+          for (const asset of release.assets) {
+            assert.ok(Number.isSafeInteger(asset.id) && asset.id > 0, 'stale asset id');
+            process.stdout.write(asset.id + '\t' + asset.name + '\n');
+          }
+          NODE
+            while IFS=$'\t' read -r stale_asset_id stale_asset_name; do
+              test -n "$stale_asset_id" || continue
+              echo "deleting stale draft asset $stale_asset_name ($stale_asset_id) left by an abandoned earlier run"
+              release_cli api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$stale_asset_id" > /dev/null
+            done < "$stale_assets_list"
+          fi
           printf 'release_id=%s\n' "$release_id" >> "$GITHUB_OUTPUT"
 
   build:
