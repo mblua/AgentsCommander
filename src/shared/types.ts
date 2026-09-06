@@ -652,6 +652,8 @@ export interface AppSettings {
   projectPaths: string[];
   archivedProjectPaths: string[];
   sidebarStyle: string;
+  selectedRowRailWidth: string;
+  selectedRowRailColor: string;
   onboardingDismissed: boolean;
   coordSortByActivity: boolean;
   alwaysShowSelectedWorkgroup?: boolean;
