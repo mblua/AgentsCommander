@@ -15,7 +15,6 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 ### Fixed
 
 - **A session no longer keeps the amber pending-review dot forever while the backend considers it active.** The sidebar's waiting mirror is reconciled from the backend session list on every poll, so a latched `pendingReview` state the backend no longer reports now clears instead of surviving polling and application restarts. ([#1779](https://github.com/mblua/AgentsCommander/issues/1779))
-
 ## 0.30.4
 
 ### Added
