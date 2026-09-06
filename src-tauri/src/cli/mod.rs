@@ -75,7 +75,10 @@ macro_rules! cli_println {
 }
 
 #[derive(Parser)]
-#[command(about = "Agent terminal session manager with inter-agent messaging")]
+#[command(
+    version,
+    about = "Agent terminal session manager with inter-agent messaging"
+)]
 #[command(after_help = "\
 TOKEN: In agent sessions, pass AGENTSCOMMANDER_TOKEN from the environment. \
 Credentials are not delivered through visible PTY text. \
