@@ -2106,6 +2106,9 @@ const ProjectPanel: Component = () => {
           return items.filter((item) =>
             workgroupOwnMatches(item.wg) ||
             replicaMatches(item.replica, item.wg, item.wg.name, item.wg.taskTitle) ||
+            // "RUNNING" is deliberately part of this match text even though the chip
+            // no longer renders the word (#1790), so the filter keeps answering
+            // "which teams have someone working right now".
             matchesFilterText(runningCoordinatorPeers(item.wg, item.replica).map((peer) => `${peer.name} RUNNING`).join(" "))
           );
         });
@@ -2555,9 +2558,9 @@ const ProjectPanel: Component = () => {
                       {(peer) => (
                         <span
                           class="ac-discovery-badge running-peer"
-                          title={`${wg.name}/${peer.name}`}
+                          title={`${wg.name}/${peer.name} is running`}
                         >
-                          {peer.name} RUNNING
+                          {peer.name}
                         </span>
                       )}
                     </For>

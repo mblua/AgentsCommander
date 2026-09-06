@@ -20,6 +20,18 @@ At most **four** toasts are visible at once. Past that, AC evicts the oldest one
 
 Clicking a toast's body does not raise or focus the terminal behind it, so dismissing one never steals your place.
 
+## The blocked-menu toast
+
+One toast is worth calling out separately, because it is the only one that means a session has stopped working and is waiting for you.
+
+When a coding agent parks on a dialog it will not move past, such as a folder-trust prompt, the menu guard raises a **sticky info toast** carrying that agent's own notice, for example:
+
+> codex is waiting for you to answer the folder-trust menu in this terminal
+
+It has two buttons. `See terminal` raises the blocked terminal and deliberately leaves the toast up, because the menu is still unanswered. `Resolved by user` clears the notice and lets AC write to the session again. The same block also shows as a chip on the replica row, labelled `Interactive menu requires user input` for assistive technology.
+
+The guard only knows the dialogs it has patterns for, and only the `pi` and `codex` commands ship any. See [Menu guard](menu-guard.md) for what it detects and how to add a pattern for your own agent.
+
 ## The error modal
 
 The error modal is titled `Application Error`. It appears when AC has an application-level failure to report that is too important for a toast.
@@ -114,3 +126,4 @@ See [Settings reference](../reference/settings.md#window--ui) for both keys in c
 - [App windows](app-windows.md) - the windows these dialogs appear in
 - [Settings reference](../reference/settings.md#window--ui) - `soundsEnabled` and `teamIdleBeepEnabled`
 - [Agent Matrix conventions](../agent-matrix-conventions.md) - the context templates the update modal offers to replace
+- [Menu guard](menu-guard.md) - what raises the blocked-menu toast, and how to add a pattern for your own agent

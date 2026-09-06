@@ -14,6 +14,8 @@
 // Files touched:
 //   - package.json                             "version"
 //   - package-lock.json                        root "version" + packages[""].version
+//   - npm/package.json                         "version"
+//   - npm/install.js                           VERSION constant
 //   - src-tauri/Cargo.toml                     [package] version
 //   - Cargo.lock                               internal Cargo crate entry version
 //   - src-tauri/tauri.conf.json                "version"
@@ -42,6 +44,8 @@ const HELP = `Usage:
 Updates every project version location:
   - package.json
   - package-lock.json (root + packages[""])
+  - npm/package.json
+  - npm/install.js
   - src-tauri/Cargo.toml
   - Cargo.lock (internal Cargo crate entry)
   - src-tauri/tauri.conf.json

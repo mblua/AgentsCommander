@@ -5,6 +5,8 @@ on:
     paths:
       - 'package.json'
       - 'package-lock.json'
+      - 'npm/package.json'
+      - 'npm/install.js'
       - 'src-tauri/Cargo.toml'
       - 'Cargo.lock'
       - 'src-tauri/tauri.conf.json'
@@ -22,6 +24,8 @@ on:
     paths:
       - 'package.json'
       - 'package-lock.json'
+      - 'npm/package.json'
+      - 'npm/install.js'
       - 'src-tauri/Cargo.toml'
       - 'Cargo.lock'
       - 'src-tauri/tauri.conf.json'

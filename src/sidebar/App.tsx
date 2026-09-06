@@ -48,6 +48,7 @@ import {
   onTransportConnectionState,
 } from "../shared/ipc";
 import { taskFirstLine } from "../shared/markdown";
+import { isSessionWorking } from "../shared/session-activity";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
 import { initZoom } from "../shared/zoom";
 import { initWindowGeometry } from "../shared/window-geometry";
@@ -199,6 +200,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   let sidebarScrollableEl: HTMLDivElement | undefined;
   createSidebarSelectionScrollReset(() => sidebarScrollableEl);
   let profileDriftRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let waitingReconcileTimer: ReturnType<typeof setInterval> | null = null;
   const handleMainSidebarSideChange = (event: Event) => {
     const side = (event as CustomEvent<{ side?: MainSidebarSide }>).detail?.side;
     setSettingsRailSide(side === "left" ? "left" : "right");
@@ -306,11 +308,28 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     setActiveContextTemplateUpdate(next);
   });
 
+  // #592 refreshes profileOutdated from the list. #1779 reconciles the waiting
+  // mirror from the SAME snapshot: the sidebar's pendingReview/waitingForInput are
+  // fed only by session_idle/session_busy, and a single missed busy edge latches
+  // forever because nothing else re-reads the backend's own view.
   const refreshProfileOutdated = async () => {
     try {
+      const generationAtRequest = sessionsStore.waitingEdgeGeneration;
       const list = await SessionAPI.list();
+      if (disposed) return;
+      // Evaluated ONCE, before the loop, because the clears below advance the
+      // generation themselves. Any real edge that landed while the list was in
+      // flight makes this snapshot stale and the whole batch is skipped; the next
+      // tick retries.
+      const snapshotIsCurrent =
+        sessionsStore.waitingEdgeGeneration === generationAtRequest;
       for (const s of list) {
         sessionsStore.setProfileOutdated(s.id, s.profileOutdated ?? false);
+        if (!snapshotIsCurrent || !isSessionWorking(s)) continue;
+        const row = sessionsStore.sessions.find((r) => r.id === s.id);
+        if (row && (row.waitingForInput || row.pendingReview)) {
+          sessionsStore.setSessionWaiting(s.id, false);
+        }
       }
     } catch (e) {
       console.error("Failed to refresh profile drift:", e);
@@ -750,6 +769,10 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // immediately; this is the robust catch-all for everything else.
     window.addEventListener("focus", handleWindowFocusDriftRefresh);
     document.addEventListener("visibilitychange", handleWindowFocusDriftRefresh);
+    // #1779 - focus alone does not heal a latch while the window STAYS focused,
+    // which is the reported field case. A low-frequency tick runs the same
+    // debounced refresh; handleWindowFocusDriftRefresh skips it while hidden.
+    waitingReconcileTimer = setInterval(handleWindowFocusDriftRefresh, 5000);
 
     // Listen for events
     await register(
@@ -871,6 +894,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (stopTeamIdleWatcher) stopTeamIdleWatcher();
     if (loopToastTimer) clearTimeout(loopToastTimer);
     if (profileDriftRefreshTimer) clearTimeout(profileDriftRefreshTimer);
+    if (waitingReconcileTimer) clearInterval(waitingReconcileTimer);
     sessionsStore.setSidebarPointerInside(false);
     sessionsStore.setSidebarMenuOpen(false);
     document.removeEventListener("mousedown", handleRaiseTerminal);
