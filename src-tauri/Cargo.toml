@@ -1,6 +1,6 @@
 [package]
 name = "agentscommander-new"
-version = "0.30.3"
+version = "0.30.4"
 edition = "2021"
 authors = ["AgentsCommander Contributors"]
 description = "AgentsCommander: Run multiple teams of AI coding agents"
