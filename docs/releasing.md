@@ -1,98 +1,129 @@
 # Releasing
 
-For maintainers cutting a new AgentsCommander release. Three phases: bump version → push tag → verify the draft release.
+Use the existing release workflow and npm Trusted Publishing. The sequence is:
+prepare evidence -> version PR and CI -> annotated tag -> GitHub and npm verification.
 
-This page is the canonical version-bumping procedure. Do not edit the version locations by hand — the script keeps the five files in sync.
+The `release-agentscommander-to-prod` agent skill performs this sequence. A normal
+request can be: "Release the next patch from main to GitHub and npm." The agent
+resolves current versions and scope, prepares the evidence and follows the checks
+below. The npm trust is an existing configuration, not a per-release setup step.
 
-## 1. Bump the version
+## 1. Prepare evidence before the version bump
 
-Every release starts with a version bump.
+Read current remote main, its complete `Unreleased` changelog and the previous
+public release. From the `prepare-agentscommander-release` skill, run:
 
-```bash
-npm run version:bump -- patch        # 0.8.x  ->  0.8.(x+1)
-npm run version:bump -- minor        # 0.x.y  ->  0.(x+1).0
-npm run version:bump -- major        # x.y.z  ->  (x+1).0.0
-npm run version:bump -- 0.9.0        # explicit X.Y.Z
+```text
+node scripts/release.mjs --candidate <config.version.v1.X.Y.Z.json>
 ```
 
-The script writes the same version to every checked location:
+The agent prepares the config and source files from live facts. This script lives
+in the skill, not this application repository. The explicit candidate mode
+produces the eight V1 files required by `.github/workflows/release.yml`:
+
+- `CHANGELOG.release.md`
+- `candidate-assets.v1.json`
+- `input-manifest.v1.json`
+- `predecessor-assets.v1.json`
+- `release-authority-v1.txt`
+- `release-body.md`
+- `release-plan.md`
+- `SHA256SUMS`
+
+The positional V2 preparation command produces a different four-file review
+handoff; it cannot supply the release workflow. Neither command publishes.
+
+Verify the generated checksums, scope and version. Add the exact V1 files under
+`docs/releases/vX.Y.Z/`, preserving LF bytes. Existing accepted bundles must not
+be overwritten or relabeled. The workflow also requires the manifest-derived
+`plans/<issue>-v<major><minor><patch>-release-hardening.md`; write a short release
+implementation record there, linked to the bundle and intended checks.
+
+## 2. Bump and verify all versions
+
+Use the script rather than editing version fields by hand:
+
+```bash
+npm run version:bump -- patch
+# Or: minor, major, or an explicit X.Y.Z
+npm run version:check
+```
+
+Use the same target version that was prepared. The bumper updates seven files
+containing eight values:
 
 | File | Field |
 |---|---|
 | `package.json` | `version` |
 | `package-lock.json` | root `version` and `packages[""].version` |
+| `npm/package.json` | npm wrapper `version` |
+| `npm/install.js` | `VERSION` constant |
 | `src-tauri/Cargo.toml` | `[package]` version |
-| `Cargo.lock` | internal Cargo crate entry (`agentscommander-new`) version |
+| `Cargo.lock` | internal `agentscommander-new` crate version |
 | `src-tauri/tauri.conf.json` | `version` |
 
-The frontend titlebar reads its version from `tauri.conf.json` at build time, so bumping that one file is enough to update what users see — no source files need manual edits.
+Move the prepared Unreleased body into the new root changelog section, leaving a
+fresh Unreleased section. Include the evidence, canonical plan, changelog and all
+seven version files in one release PR. Follow [CONTRIBUTING.md](../CONTRIBUTING.md)
+for branch naming and land through protected main after required CI passes.
 
-## 2. Verify the bump
+Mechanism-only changes do not bump the application version.
 
-Before committing, verify every location agrees:
+## 3. Push one annotated tag for the verified main commit
 
-```bash
-npm run version:check
-```
+After the PR lands, verify its exact main commit, version synchronization and
+evidence again. Query remote tags, GitHub Releases and npm for collisions; an
+authentication or network error never establishes absence.
 
-`version:check` is the same check CI runs on every PR / push that touches a version-relevant file. Running it locally catches a future regression in the bump script before CI does.
-
-## 3. Commit the version bump
-
-Stage every file the script touched and commit in one shot so CI sees them together:
-
-```bash
-git add package.json package-lock.json src-tauri/Cargo.toml Cargo.lock src-tauri/tauri.conf.json
-git commit -m "chore: bump version to X.Y.Z"
-```
-
-The branch-naming rule in [`CONTRIBUTING.md`](../CONTRIBUTING.md) applies. For a public release this commit lands on `main` through a PR (or directly if you have permissions) — never `--no-verify`.
-
-## 4. Push the tag
-
-Releases are automated via GitHub Actions. Push a tag to trigger a build:
+The deployed push workflow requires the annotation to equal the exact
+`release-authority-v1.txt` bytes. Read them from Git to avoid Windows line-ending
+conversion. Replace the placeholders with the verified commit and an authorized
+scratch path:
 
 ```bash
-git tag v0.8.43
-git push origin v0.8.43
+git show <verified-main-commit>:docs/releases/vX.Y.Z/release-authority-v1.txt > <authorized-scratch>/tag-message.txt
+git tag -a --cleanup=verbatim vX.Y.Z -F <authorized-scratch>/tag-message.txt <verified-main-commit>
+git push origin refs/tags/vX.Y.Z
 ```
 
-This creates a **draft release** with:
+A lightweight tag or a generic annotation fails this workflow. Do not force,
+move or delete a release tag. The guard checks that its peeled commit is reachable
+from current remote main. Pushing this tag starts publication; it is not a test.
 
-- Auto-generated changelog (from commits since the previous tag)
-- Windows installers (SignPath signing planned; artifacts may be unsigned until integration is complete)
-- Windows raw executables:
-  - `target/release/agentscommander.exe`
-  - `target/release/agentscommander_testeable.exe`
-- Linux `.AppImage`
-- macOS `.dmg` (Apple Silicon + Intel) — unsigned today
+## 4. Follow the automated publication
 
-The build matrix describes produced artifacts, not public support tiers. Release notes and install copy must use the [canonical platform contract](install-with-agent.md#support-gates): documented Windows x86_64 is fully supported, Linux x86_64 is partial/in progress, and macOS is not supported yet.
+The seven jobs run in order:
 
-The workflow file is `.github/workflows/release.yml`.
-Every release matrix row passes `--config src-tauri/tauri.prod.conf.json`;
-the macOS rows add their `--target` after the production config.
+`guard -> release-coordinator -> build -> checksums -> publish-github -> verify-release -> publish-npm`
 
-## 5. Verify and publish
+CI creates the draft, uploads and verifies the exact expected assets, publishes
+an immutable GitHub Release, verifies it, then publishes the npm wrapper using
+the existing trust. The wrapper needs the public GitHub binaries first.
 
-The release shows up under [Releases](https://github.com/mblua/AgentsCommander/releases) as a **draft**. Open it and verify:
+Wait for the workflow and inspect failures before deciding whether a job can
+resume. Never click Publish release or run npm publish manually to skip a failed
+step. Published versions, tags and assets are not replaceable.
 
-- **Asset count.** Every platform produced an installer. Re-run the failing job if one is missing.
-- **Windows signature status.** Until SignPath integration is active, the installer may be unsigned. Inspect the Authenticode status:
-  ```powershell
-  Import-Module (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1") -ErrorAction Stop
-  Get-AuthenticodeSignature -LiteralPath ".\Agents.Commander_<version>_x64-setup.exe"
-  ```
-- **Checksums.** Verify each exact downloaded filename against `SHASUMS256.txt`. A checksum match is not publisher-compromise protection. If a Windows artifact is unsigned, keep the release notes truthful about that separate status.
-- **Signed Windows artifacts.** Once SignPath signing is active, right-click the installer, choose Properties > Digital Signatures, and confirm SignPath Foundation. `Get-AuthenticodeSignature` should report `Valid`.
-- **Changelog.** Add curated highlights at the top (the auto-generated list goes underneath). Use the previous release as a tone reference.
-- **Tag matches the bump.** If you tagged `v0.8.42` but the binary reports `0.8.41`, abort and re-bump.
+The matrix produces Windows installers and raw executables, Linux artifacts and
+macOS artifacts for both architectures. Expected names and count come from the
+candidate manifest. Verify each downloaded asset against `SHASUMS256.txt`.
+Checksums and publisher signatures are separate facts; keep any unsigned status
+truthful in release notes.
 
-Click **Publish release** when verified.
+Build output does not define support tiers. Follow the
+[canonical platform contract](install-with-agent.md#support-gates):
+documented Windows x86_64 is fully supported, Linux x86_64 is partial/in progress,
+and macOS is not supported yet. Every matrix row uses
+`src-tauri/tauri.prod.conf.json`; macOS additionally selects its target.
 
-## 6. Update `CHANGELOG.md`
+## 5. Verify GitHub, npm and installation
 
-GitHub Releases is the source of truth for per-release detail, but `CHANGELOG.md` at the repo root carries the human-readable summary. Append a section under the new version with the highlights and a link to the release.
+Confirm the public immutable GitHub Release has exactly the expected assets.
+Query npm directly for the version and latest dist-tag, verify its tarball and
+provenance, and inspect the workflow's clean-install result. Complete the
+install/version smoke check on a supported platform before reporting success.
+
+A version visible on GitHub alone is not a completed release to npm.
 
 ## Room-specific builds
 
