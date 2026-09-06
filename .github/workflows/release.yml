@@ -53,6 +53,10 @@ jobs:
           test "$GITHUB_SHA" = "$HEAD_COMMIT"
           test "$HEAD_COMMIT" = "$PEELED_COMMIT"
           test "$TAG_OBJECT" != "$PEELED_COMMIT"
+          # Release only reviewed source reachable from the current remote main.
+          # Fetch the explicit branch; a local tracking ref is not authority.
+          git fetch --quiet --no-tags origin refs/heads/main
+          git merge-base --is-ancestor "$PEELED_COMMIT" FETCH_HEAD
           tag_bytes="$(mktemp)"
           tag_payload="$(mktemp)"
           git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
