@@ -18,6 +18,12 @@ const [frozenCoordinatorVisibleOrderByProject, setFrozenCoordinatorVisibleOrderB
 // an older wholesale list snapshot, even when the local membership is unchanged.
 let rowMembershipGeneration = 0;
 
+// #1779 - the counter advances on every setSessionWaiting call. A reconciliation
+// that read the backend session list BEFORE an edge landed must not apply its
+// stale snapshot on top of the fresher edge, so it captures this value before its
+// await and compares it exactly once after.
+let waitingEdgeGeneration = 0;
+
 // Combined sidebar interaction lock: the coordinator tile order stays frozen
 // while the pointer is inside the sidebar OR while any sidebar context menu
 // (or flyout) node is present in the DOM. Menus are rendered through Solid
@@ -383,6 +389,9 @@ export const sessionsStore = {
   get rowMembershipGeneration() {
     return rowMembershipGeneration;
   },
+  get waitingEdgeGeneration() {
+    return waitingEdgeGeneration;
+  },
 
   setSessions(sessions: Session[]) {
     advanceRowMembershipGeneration();
@@ -526,14 +535,21 @@ export const sessionsStore = {
   setSessionWaiting(id: string, waiting: boolean) {
     const session = state.sessions.find((s) => s.id === id);
     const wasAlreadyWaiting = session?.waitingForInput ?? false;
+    const wasPendingReview = session?.pendingReview ?? false;
     const isActive = id === state.activeId;
-    console.debug(`[idle-fe] setSessionWaiting: ${id.slice(0,8)} waiting=${waiting} wasAlreadyWaiting=${wasAlreadyWaiting} isActive=${isActive} pendingReview=${session?.pendingReview}`);
+    waitingEdgeGeneration += 1;
+    console.debug(
+      `[idle-fe] setSessionWaiting ${id.slice(0, 8)} waiting=${waiting} wasAlreadyWaiting=${wasAlreadyWaiting} wasPendingReview=${wasPendingReview} isActive=${isActive} gen=${waitingEdgeGeneration}`,
+    );
     setState("sessions", (s) => s.id === id, "waitingForInput", waiting);
     if (waiting && !wasAlreadyWaiting && !isActive) {
-      console.debug(`[idle-fe] >>> SETTING pendingReview=true for ${id.slice(0,8)}`);
+      console.debug(`[idle-fe] raise pendingReview ${id.slice(0, 8)}`);
       setState("sessions", (s) => s.id === id, "pendingReview", true);
     }
     if (!waiting) {
+      console.debug(
+        `[idle-fe] clear pendingReview ${id.slice(0, 8)} wasPendingReview=${wasPendingReview}`,
+      );
       setState("sessions", (s) => s.id === id, "pendingReview", false);
     }
   },
