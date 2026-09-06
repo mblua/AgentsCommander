@@ -1,0 +1,130 @@
+{
+  "assetCount": 17,
+  "assets": [
+    {
+      "name": "Agents.Commander-0.30.5-1.x86_64.rpm",
+      "producer": "linux-x86_64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "Agents.Commander_0.30.5_aarch64.dmg",
+      "producer": "macos-aarch64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "Agents.Commander_0.30.5_amd64.AppImage",
+      "producer": "linux-x86_64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "Agents.Commander_0.30.5_amd64.deb",
+      "producer": "linux-x86_64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "Agents.Commander_0.30.5_x64-setup.exe",
+      "producer": "windows",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "Agents.Commander_0.30.5_x64.dmg",
+      "producer": "macos-x86_64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "Agents.Commander_aarch64.app.tar.gz",
+      "producer": "macos-aarch64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "Agents.Commander_x64.app.tar.gz",
+      "producer": "macos-x86_64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "SHASUMS256.txt",
+      "producer": "checksums",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "agentscommander-0.30.5-windows-x86_64-portable.zip",
+      "producer": "windows",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "agentscommander-linux-x86_64",
+      "producer": "linux-x86_64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "agentscommander-mac-aarch64",
+      "producer": "macos-aarch64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "agentscommander-mac-aarch64.app.tar.gz",
+      "producer": "macos-aarch64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "agentscommander-mac-x86_64",
+      "producer": "macos-x86_64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "agentscommander-mac-x86_64.app.tar.gz",
+      "producer": "macos-x86_64",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "agentscommander-testeable-windows-x86_64.exe",
+      "producer": "windows",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    },
+    {
+      "name": "agentscommander-windows-x86_64.exe",
+      "producer": "windows",
+      "sha256": null,
+      "size": null,
+      "state": "required"
+    }
+  ],
+  "immutable": false,
+  "kind": "candidate",
+  "releaseId": null,
+  "repository": "mblua/AgentsCommander",
+  "schema": "prepare-agentscommander-release/asset-ledger/v1",
+  "tag": "v0.30.5"
+}
