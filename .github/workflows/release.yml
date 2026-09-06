@@ -441,7 +441,21 @@ jobs:
                 exit 1
                 ;;
             esac
-            release_resolve_id draft
+            # The paginated releases list is read-after-write eventually consistent:
+            # a just-created draft can be missing from the very next list, so resolve
+            # with a bounded retry instead of failing the whole run on the first read.
+            local attempt
+            local resolved_id
+            resolved_id=""
+            for attempt in 1 2 3 4 5 6; do
+              if resolved_id="$(release_resolve_id draft)"; then
+                printf '%s' "$resolved_id"
+                return 0
+              fi
+              sleep 5
+            done
+            echo '::error::draft release did not become visible in the releases list'
+            return 1
           }
 
           release_find_asset_id() {
@@ -1156,10 +1170,16 @@ jobs:
             linux-x86_64|macos-aarch64|macos-x86_64)
               raw_name="$(ledger_asset raw)"
               cp -- "$RAW_SOURCE" "$asset_dir/$raw_name"
-              alias_tar_name="$raw_name.app.tar.gz"
-              if remaining_bundle_assets "$raw_name" | grep -Fxq "$alias_tar_name"; then
-                # The ledger's stable-named updater archive is a renamed copy of the
-                # single bundler .app.tar.gz, as the predecessor releases shipped it.
+              # The bundler writes exactly one updater archive, without an arch suffix
+              # (Agents Commander.app.tar.gz); every ledger name ending in .app.tar.gz
+              # is a renamed upload of that file, as the predecessor releases shipped.
+              tar_alias_names=()
+              while IFS= read -r remaining_name; do
+                case "$remaining_name" in
+                  *.app.tar.gz) tar_alias_names+=("$remaining_name") ;;
+                esac
+              done < <(remaining_bundle_assets "$raw_name")
+              if [ "${#tar_alias_names[@]}" -gt 0 ]; then
                 app_tar_path=""
                 while IFS= read -r candidate_path; do
                   if [ -n "$app_tar_path" ]; then
@@ -1169,11 +1189,13 @@ jobs:
                   app_tar_path="$candidate_path"
                 done < <(find "$TARGET_DIR/bundle" -type f -name "*.app.tar.gz" -print)
                 if [ -z "$app_tar_path" ]; then
-                  echo "::error::no bundler .app.tar.gz archive found for $alias_tar_name"
+                  echo "::error::no bundler .app.tar.gz archive found"
                   exit 1
                 fi
-                cp -- "$app_tar_path" "$asset_dir/$alias_tar_name"
-                copy_remaining_bundle_assets "$raw_name" "$alias_tar_name"
+                for tar_alias_name in "${tar_alias_names[@]}"; do
+                  cp -- "$app_tar_path" "$asset_dir/$tar_alias_name"
+                done
+                copy_remaining_bundle_assets "$raw_name" "${tar_alias_names[@]}"
               else
                 copy_remaining_bundle_assets "$raw_name"
               fi
