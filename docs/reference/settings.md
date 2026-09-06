@@ -94,6 +94,7 @@ Besides the GUI Settings dialog and Onboarding, `agents[]` has a scriptable writ
 | `isolatedHome` | bool | `false` | Provide an isolated `CODEX_HOME` at spawn (Codex). |
 | `instructionsFilename` | string \| null | `null` | Bare `.md` filename AC writes into the agent root at launch. |
 | `contextRegex` | string \| null | `null` | Regex pattern for the per-agent context scraper reading. Absent or blank disables the reading; the value is used byte-for-byte (never trimmed). |
+| `blockingMenus` | `BlockingMenuEntry[]` \| absent | absent | Blocking-menu patterns for this agent. **Absent** means "materialize the defaults for my `command` stem at the next load", which AC then writes back to disk. `[]` means explicitly off, and is never repopulated. See [Menu guard](#menu-guard). |
 | `backend` | `AgentBackendConfig` | `{ "kind": "local" }` | Runtime backend. See below. |
 | `configSeed` | `ConfigSeedConfig` \| absent | absent | Optional config-folder seed copied into each replica at spawn. Absent (the default) means no seeding. See [Config seed](../features/config-seed.md). |
 
@@ -451,6 +452,29 @@ See [Watchers](../features/watchers.md).
 | `dedupeWindowMs` | u64 | `2000` | Dedupe window in milliseconds. |
 | `capturedAgainst` | string \| null | `null` | Free text (e.g. "claude 2.1.212"). Never validated, never parsed. |
 
+### Menu guard
+
+Proactive detection of terminal blocking menus, such as a folder-trust prompt an agent will not move past. One root switch, plus a per-agent array on each entry of `agents[]`. There is no Settings UI and no CLI verb for either: hand-edit `settings.json` with AC closed.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `menuGuardEnabled` | bool | `true` | Root switch for the whole feature. With `false`, each 250 ms tick clears any session the guard was holding and evaluates nothing. |
+
+`blockingMenus` is a field on `AgentConfig` (see [Coding agents](#coding-agents)). Absent means AC materializes the defaults for that agent's `command` executable stem at load and saves them; `[]` means off for that agent and is never refilled. Only the `pi` and `codex` stems ship defaults.
+
+`BlockingMenuConfig` (one valid entry):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `pattern` | string | — (required) | Rust `regex` expression, matched unanchored against one logical screen row at a time. Wrapped physical rows are joined first. An invalid pattern is logged once and skipped. |
+| `notification` | string | — (required) | The text shown on the toast and returned as `blockedMenuMessage` by `list-peers`. |
+| `enabled` | bool | `true` | Whether this entry is evaluated. `false` is the durable way to switch off a shipped default. |
+| `capturedAgainst` | string \| null | `null` | Free text (e.g. "codex 0.153.2 / Windows"). Never validated, never parsed. Omitted from the file when absent. |
+
+An entry AC cannot read as a `BlockingMenuConfig` is kept verbatim, skipped at evaluation, and written back untouched on the next save. It never invalidates the settings file.
+
+See [Menu guard](../features/menu-guard.md).
+
 ### Update notifications
 
 | Field | Type | Default | Description |
@@ -498,4 +522,5 @@ Use any JSON validator. AC will refuse to start if the file is not valid JSON an
 - [Portable instances](../features/portable-instances.md) — per-instance config rules
 - [CLI reference](cli.md) — verbs that read/write this file
 - [Terminal snapshots](../features/terminal-snapshots.md) - the default-off screen-content read capability
+- [Menu guard](../features/menu-guard.md) - `menuGuardEnabled` and `blockingMenus` in use
 - [`PRIVACY.md`](../../PRIVACY.md) — what credentials live here and how they are transmitted
