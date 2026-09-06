@@ -1007,6 +1007,62 @@ fn find_ac_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
     crate::config::ac_root::find_ac_root_ancestor(path).map(|p| canonical_or_original(&p))
 }
 
+/// The project `.ac` root and the room root for an authoritative room replica, or
+/// `None` for anything else.
+///
+/// #1795. This is deliberately STRICTER than `phone::messaging::workgroup_root`, which
+/// gates Golden Rule branch A. `workgroup_root` walks ancestors and accepts any
+/// descendant, at any depth, of any `room-<n>-`/`wg-<n>-` directory under any parent
+/// (`phone/messaging.rs:146-157`, `:372-383`). Entry 4 can afford that, because it
+/// renders a path INSIDE the room. Entry 5 renders paths in the room's PARENT, so the
+/// loose predicate would grant read and write over `<anything>/plans`, `<anything>/tools`,
+/// `<anything>/errors` and `<anything>/project-shared` for an input such as
+/// `C:/x/room-1-t/__agent_dev/sub/nested` or `C:/x/room-1-t/notanagent`. Those are not
+/// attacks; they are ordinary directories that exist and resolve, and round 1's resolver
+/// would have granted them. This one fails closed instead.
+///
+/// The three checks below are exactly the first three of
+/// `config::ac_root::wg_replica_layout_from_agent_dir` (`config/ac_root.rs:127-173`),
+/// and they are pure NAME checks, so this function touches no disk and section 6's
+/// deterministic byte budget is unaffected (3.2).
+///
+/// There is no Root Agent check here and none is needed: `ROOT_AGENT_DIR_NAME` is
+/// `"ac-root-agent"` (`config/mod.rs:49`), which never begins with `__agent_`, so check
+/// one already rejects every Root Agent directory. The Root Agent exclusion that IS
+/// load-bearing lives at the call sites: `session_context.rs:187-188` for rendering and
+/// `ensure_replica_shared_locations` for creation, both testing the raw AND the
+/// canonical basename.
+fn replica_shared_roots(agent_root: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let agent_path = Path::new(agent_root);
+
+    // 1. the agent directory itself must be an `__agent_` replica
+    if !agent_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.starts_with("__agent_"))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    // 2. its DIRECT parent must be the room root. Using the parent rather than
+    //    `workgroup_root`'s ancestor walk is what rejects a nested non-replica.
+    let room_root = agent_path.parent()?;
+    if !crate::config::entity_prefix::has_entity_prefix(
+        room_root.file_name().and_then(|name| name.to_str())?,
+    ) {
+        return None;
+    }
+
+    // 3. the room's parent must be a Project AC Root BY NAME (`.ac`).
+    let ac_root = room_root.parent()?;
+    if !super::ac_root::is_ac_root_name(ac_root.file_name().and_then(|name| name.to_str())?) {
+        return None;
+    }
+
+    Some((ac_root.to_path_buf(), room_root.to_path_buf()))
+}
+
 pub fn create_default_context_templates(ac_root: &Path) -> Result<(), String> {
     let mut on_publication =
         |_: &'static str, _: crate::config::seeded_context_templates::ContextPublication| {};
@@ -12064,6 +12120,97 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 std::fs::read_to_string(&base_path).expect("base after"),
                 base_body,
                 "the base file is untouched"
+            );
+        }
+    }
+
+    /// #1795 (plan 8.0). A replica that `resolve_replica_matrix_root` accepts.
+    /// Returns the tempdir-derived `.ac` root, the room root, the replica root and
+    /// the matrix root, each canonicalized and rendered with `display_path`, exactly
+    /// as production does at `:992`.
+    ///
+    /// A bare directory is not enough: `:163` runs `resolve_replica_matrix_root`,
+    /// which for any `__agent_*` basename reads `config.json` with
+    /// `allow_create = false` and returns `Err` when it is absent, and the `?` there
+    /// turns that into a failed session.
+    fn make_valid_replica(temp: &std::path::Path) -> (PathBuf, PathBuf, PathBuf, String) {
+        let ac_root = temp.join(".ac");
+        let room_root = ac_root.join("room-19-dev-team");
+        let replica_root = room_root.join("__agent_dev-rust");
+        let matrix_dir = ac_root.join("_agent_dev-rust");
+        std::fs::create_dir_all(&replica_root).expect("replica dir");
+        std::fs::create_dir_all(&matrix_dir).expect("matrix dir");
+        std::fs::write(
+            replica_root.join("config.json"),
+            "{\"identity\": \"../../_agent_dev-rust\"}",
+        )
+        .expect("replica config");
+        (
+            canonical_or_original(&ac_root),
+            canonical_or_original(&room_root),
+            canonical_or_original(&replica_root),
+            display_path(&canonical_or_original(&matrix_dir)),
+        )
+    }
+
+    /// #1795 `T4`. Pins the pure three-check resolver of plan 4.2 against the
+    /// authoritative four-check `wg_replica_layout_from_agent_dir` on a layout where
+    /// the authority check can succeed, so reusing only the three pure name checks
+    /// cannot drift into a different answer than the validator gives.
+    #[test]
+    fn replica_shared_roots_matches_wg_replica_layout_on_disk() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ac_root, room_root, replica_root, _matrix_root) = make_valid_replica(temp.path());
+        let agent_root = display_path(&replica_root);
+
+        let (resolved_ac_root, resolved_room_root) = replica_shared_roots(&agent_root)
+            .expect("an authoritative room replica must resolve its shared roots");
+        let layout = crate::config::ac_root::wg_replica_layout_from_agent_dir(&replica_root)
+            .expect("the authoritative validator must not error")
+            .expect("the authoritative validator must accept this layout");
+
+        assert_eq!(
+            canonical_or_original(&resolved_ac_root),
+            canonical_or_original(&layout.ac_root),
+            "the resolver's `.ac` root must equal the authoritative validator's"
+        );
+        assert_eq!(
+            canonical_or_original(&resolved_room_root),
+            canonical_or_original(&layout.wg_dir),
+            "the resolver's room root must equal the authoritative validator's"
+        );
+        assert_eq!(
+            canonical_or_original(&resolved_ac_root),
+            canonical_or_original(&ac_root),
+            "the resolver's `.ac` root must be the fixture's `.ac` root"
+        );
+        assert_eq!(
+            canonical_or_original(&resolved_room_root),
+            canonical_or_original(&room_root),
+            "the resolver's room root must be the fixture's room root"
+        );
+
+        for (agent_root, why) in [
+            (
+                "C:/fake/.ac/room-7-dev-team/notanagent",
+                "check 1: the leaf is not an `__agent_` replica",
+            ),
+            (
+                "C:/fake/.ac/room-7-dev-team/__agent_dev/sub/nested",
+                "check 1: the leaf is `nested`, not an `__agent_` replica",
+            ),
+            (
+                "C:/fake/.ac/room-7-dev-team/sub/__agent_x",
+                "check 2: the direct parent `sub` carries no room prefix",
+            ),
+            (
+                "C:/fake/room-7-dev-team/__agent_dev",
+                "check 3: the room's parent is not named `.ac`",
+            ),
+        ] {
+            assert!(
+                replica_shared_roots(agent_root).is_none(),
+                "{agent_root} must not resolve ({why})"
             );
         }
     }
