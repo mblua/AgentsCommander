@@ -579,7 +579,10 @@ jobs:
           }
 
           npm_reject_config_overrides() {
-            if env | cut -d= -f1 | grep -Eiq '^npm_config_'; then
+            # The windows-latest runner image itself exports NPM_CONFIG_PREFIX; it only
+            # relocates the global prefix and cannot redirect the registry, auth or a
+            # project-local npm ci, so exactly that name is tolerated.
+            if env | cut -d= -f1 | grep -Ei '^npm_config_' | grep -Eiv '^npm_config_prefix$' | grep -q .; then
               echo '::error::caller-provided npm configuration override is forbidden'
               return 1
             fi
@@ -1106,18 +1109,35 @@ jobs:
           copy_remaining_bundle_assets() {
             local asset_name
             local -a remaining
-            local -a matches
+            local candidate_path
+            local candidate_base
+            local candidate_sanitized
+            local found_path
             remaining=()
             while IFS= read -r remaining_name; do
               remaining+=("$remaining_name")
             done < <(remaining_bundle_assets "$@")
             for asset_name in "${remaining[@]}"; do
-              matches=()
-              while IFS= read -r match_path; do
-                matches+=("$match_path")
-              done < <(find "$TARGET_DIR/bundle" -type f -name "$asset_name" -print)
-              test "${#matches[@]}" = 1
-              cp -- "${matches[0]}" "$asset_dir/$asset_name"
+              # Ledger names are GitHub-sanitized upload names (spaces become dots);
+              # the bundler writes unsanitized files, so accept a bundle file whose
+              # basename or sanitized basename matches. Ambiguity fails closed.
+              found_path=""
+              while IFS= read -r candidate_path; do
+                candidate_base="${candidate_path##*/}"
+                candidate_sanitized="${candidate_base// /.}"
+                if [ "$candidate_base" = "$asset_name" ] || [ "$candidate_sanitized" = "$asset_name" ]; then
+                  if [ -n "$found_path" ]; then
+                    echo "::error::ambiguous bundle asset match for $asset_name"
+                    exit 1
+                  fi
+                  found_path="$candidate_path"
+                fi
+              done < <(find "$TARGET_DIR/bundle" -type f -print)
+              if [ -z "$found_path" ]; then
+                echo "::error::no bundle asset matches ledger name $asset_name"
+                exit 1
+              fi
+              cp -- "$found_path" "$asset_dir/$asset_name"
             done
           }
           asset_dir="$(mktemp -d "$RUNNER_TEMP/producer-assets.XXXXXX")"
@@ -1136,7 +1156,27 @@ jobs:
             linux-x86_64|macos-aarch64|macos-x86_64)
               raw_name="$(ledger_asset raw)"
               cp -- "$RAW_SOURCE" "$asset_dir/$raw_name"
-              copy_remaining_bundle_assets "$raw_name"
+              alias_tar_name="$raw_name.app.tar.gz"
+              if remaining_bundle_assets "$raw_name" | grep -Fxq "$alias_tar_name"; then
+                # The ledger's stable-named updater archive is a renamed copy of the
+                # single bundler .app.tar.gz, as the predecessor releases shipped it.
+                app_tar_path=""
+                while IFS= read -r candidate_path; do
+                  if [ -n "$app_tar_path" ]; then
+                    echo "::error::multiple bundler .app.tar.gz archives found"
+                    exit 1
+                  fi
+                  app_tar_path="$candidate_path"
+                done < <(find "$TARGET_DIR/bundle" -type f -name "*.app.tar.gz" -print)
+                if [ -z "$app_tar_path" ]; then
+                  echo "::error::no bundler .app.tar.gz archive found for $alias_tar_name"
+                  exit 1
+                fi
+                cp -- "$app_tar_path" "$asset_dir/$alias_tar_name"
+                copy_remaining_bundle_assets "$raw_name" "$alias_tar_name"
+              else
+                copy_remaining_bundle_assets "$raw_name"
+              fi
               ;;
             *)
               echo "::error::unknown producer $PRODUCER"
