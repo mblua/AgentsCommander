@@ -6,6 +6,14 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Changed
+
+- **Releases publish to npm again: the release pipeline was repaired and hardened end to end during its first full execution.** The guard no longer probes a repository setting its workflow token can never read ([#1811](https://github.com/mblua/AgentsCommander/issues/1811)), every build step now runs on the macOS runners' bash 3.2 ([#1813](https://github.com/mblua/AgentsCommander/issues/1813)), the windows runner's own `NPM_CONFIG_PREFIX` no longer aborts the npm-registry guard and bundle assets are matched by their GitHub-sanitized upload names with explicit fail-closed errors ([#1815](https://github.com/mblua/AgentsCommander/issues/1815)), the single bundler updater archive satisfies every ledger `.app.tar.gz` alias and the draft coordinator absorbs the releases-list read-after-write race ([#1817](https://github.com/mblua/AgentsCommander/issues/1817)), and a fresh run purges stale draft assets before its byte-exact uploads ([#1819](https://github.com/mblua/AgentsCommander/issues/1819)). Version 0.30.4 exists only as a GitHub Release: its npm publication was blocked by a toolchain-contract mismatch in release verification, so this version supersedes it on npm and the registry goes 0.30.3 → 0.30.5.
+
+### Fixed
+
+- **A session no longer keeps the amber pending-review dot forever while the backend considers it active.** The sidebar's waiting mirror is reconciled from the backend session list on every poll, so a latched `pendingReview` state the backend no longer reports now clears instead of surviving polling and application restarts. ([#1779](https://github.com/mblua/AgentsCommander/issues/1779))
+
 ## 0.30.4
 
 ### Added
