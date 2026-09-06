@@ -68,6 +68,10 @@ const SessionItem: Component<{
   const isProcessing = () => voiceRecorder.processingSessionId() === props.session.id;
   const isAutoExecuting = () => voiceRecorder.autoExecuteSessionId() === props.session.id;
   const isTypingWarning = () => voiceRecorder.typingWarnSessionId() === props.session.id;
+  // #1730 - the voice indicators replace the status chips, but never the identity.
+  const voiceQuiet = () =>
+    !isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() &&
+    !voiceRecorder.micError();
 
   const handleMicClick = (e: MouseEvent) => {
     e.stopPropagation();
@@ -297,6 +301,29 @@ const SessionItem: Component<{
     return props.session.name;
   };
 
+  // #1730 - the bare identity for agent-name-chip: exactly the non-dim text the
+  // deleted .session-item-name div rendered, minus the "@project" suffix that
+  // displayName() appends in its extractProjectName branch (the only branch that
+  // appends one). Split on "/" first: the fallback branch returns "parent/folder",
+  // whose last segment may itself contain "@". Strip the suffix by LENGTH, not by
+  // re-splitting on "@" and not by removing an unanchored "@project" substring, so
+  // an "@" inside either half cannot mis-split. This pair of expressions mirrors
+  // the pair inside displayName(), and must move with it.
+  const chipName = () => {
+    const full = displayName();
+    const wd = props.session.workingDirectory;
+    if (wd) {
+      const pathProject = extractProjectName(wd);
+      if (pathProject) {
+        const projectFolder = props.originProject || pathProject;
+        return full.slice(0, full.length - projectFolder.length - 1);
+      }
+    }
+    const slash = full.lastIndexOf("/");
+    return slash >= 0 ? full.slice(slash + 1) : full;
+  };
+  const chipTitle = () => `${displayName()}\n${props.session.workingDirectory}`;
+
   return (
     <div
       class={`session-item session-item-enter ${props.isActive ? "active" : ""} ${isInactive() ? "inactive-member" : ""}`}
@@ -310,14 +337,6 @@ const SessionItem: Component<{
         class={`session-item-status ${sessionDotClass(props.session, { inactive: isInactive() })}`}
       />
       <div class="session-item-info">
-        <div class="session-item-name" onDblClick={handleDoubleClick} title={props.session.workingDirectory}>
-          {displayName().includes("/") ? (
-            <>
-              <span class="name-prefix">{displayName().slice(0, displayName().lastIndexOf("/") + 1)}</span>
-              {displayName().slice(displayName().lastIndexOf("/") + 1)}
-            </>
-          ) : displayName()}
-        </div>
 
         <Show when={isRecording()}>
           <div class="session-item-voice-indicator recording">
@@ -359,56 +378,40 @@ const SessionItem: Component<{
           </div>
         </Show>
 
-        <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() && !voiceRecorder.micError()}>
-          <Show when={sessionAgentLabel() || (props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0)}>
-            <div class="session-item-meta">
-              {/* #1167 - one constant coding-agent style for every sidebar row.
-                  This emits the same class pair the workgroup/Coordinator rows
-                  emit (ProjectPanel.tsx:2271), so the two cannot drift apart
-                  again. No data-agent and no `running`: the badge must not vary
-                  by label or by PTY liveness. Liveness is still carried by the
-                  row status dot and .session-item.inactive-member. */}
-              <Show when={sessionAgentLabel()}>
-                {(agentLabel) => (
-                  <span class="ac-discovery-badge agent">{agentLabel()}</span>
-                )}
-              </Show>
-              <Show when={profileBadge()}>
-                {(badge) => (
-                  <span
-                    class="profile-badge"
-                    title={profileBadgeTitle()}
-                  >
-                    {badge()}
-                  </span>
-                )}
-              </Show>
-              <Show when={ctxVisible()}>
-                <ContextBadge
-                  percent={ctxPercent()}
-                  testId={`session.${props.session.id}.contextBadge`}
-                />
-              </Show>
-              <Show when={props.session.profileOutdated}>
-                <ProfileOutdatedBadge onReload={() => void restartSession()} />
-              </Show>
-              <Show when={props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0}>
-                <div class="session-item-branches">
-                  <For each={props.session.gitRepos}>
-                    {(repo) => (
-                      <div
-                        class="session-item-branch"
-                        title={`${repo.label}${repo.branch ? `/${repo.branch}` : ""}`}
-                      >
-                        {repo.label}{repo.branch ? `/${repo.branch}` : ""}
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </div>
+        <div class="session-item-meta">
+          <Show when={voiceQuiet() && props.session.profileOutdated}>
+            <ProfileOutdatedBadge onReload={() => void restartSession()} />
           </Show>
-        </Show>
+          <span class="agent-name-chip" onDblClick={handleDoubleClick} title={chipTitle()}>
+            {chipName()}
+          </span>
+          <Show when={voiceQuiet()}>
+            {/* #1167 - one constant coding-agent style for every sidebar row.
+                This emits the same class pair the workgroup/Coordinator rows
+                emit (ProjectPanel.tsx:2271), so the two cannot drift apart
+                again. No data-agent and no `running`: the badge must not vary
+                by label or by PTY liveness. Liveness is still carried by the
+                row status dot and .session-item.inactive-member. */}
+            <Show when={sessionAgentLabel()}>{(agentLabel) => (
+              <span class="ac-discovery-badge agent">{agentLabel()}</span>
+            )}</Show>
+            <Show when={profileBadge()}>{(badge) => (
+              <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>
+            )}</Show>
+            <Show when={ctxVisible()}>
+              <ContextBadge percent={ctxPercent()} testId={`session.${props.session.id}.contextBadge`} />
+            </Show>
+            <Show when={props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0}>
+              <div class="session-item-branches">
+                <For each={props.session.gitRepos}>{(repo) => (
+                  <div class="session-item-branch" title={`${repo.label}${repo.branch ? `/${repo.branch}` : ""}`}>
+                    {repo.label}{repo.branch ? `/${repo.branch}` : ""}
+                  </div>
+                )}</For>
+              </div>
+            </Show>
+          </Show>
+        </div>
       </div>
       <Show when={!isInactive()}>
         <Show when={sessionHasLivePty()}>
@@ -458,17 +461,10 @@ const SessionItem: Component<{
           >
             {isDetached() ? <ReattachIcon /> : <DetachIcon />}
           </button>
-          <Show when={bridge()}>
-            <div
-              class="session-item-bridge-dot"
-              style={{ background: bridge()!.color }}
-              title={`Telegram: ${bridge()!.botLabel}`}
-            />
-          </Show>
           <button
             class={`session-item-telegram ${bridge() ? "active" : ""}`}
             onClick={handleTelegramClick}
-            title={bridge() ? "Detach Telegram" : "Attach Telegram"}
+            title={bridge() ? `Detach Telegram: ${bridge()!.botLabel}` : "Attach Telegram"}
             style={bridge() ? { color: bridge()!.color } : {}}
           ><TelegramIcon /></button>
           <Show when={showBotMenu()}>
@@ -490,7 +486,7 @@ const SessionItem: Component<{
         <button
           class="session-item-close"
           onClick={handleClose}
-          title="Close session"
+          title="Close session (Ctrl+Shift+W)"
           data-ac-testid={`session.${props.session.id}.destroy`}
           data-ac-role="button"
         >

@@ -2,7 +2,7 @@
 
 For developers running a coding agent under AC's **Container** runtime: what AC does with your host credentials at launch, what works today, and what does not.
 
-> **Status: in progress.** Host login reuse works and is on by default: a container Claude Code session starts signed in with zero interaction. But **a container coding agent cannot reach its repos yet** ([#935](https://github.com/mblua/AgentsCommander/issues/935)). Read [Known limitations](#known-limitations) before you move an agent to the Container runtime.
+> **Status: in progress.** Host login reuse works and is on by default: a container Claude Code session starts signed in with zero interaction. Container agents run with their work repos mounted, and the injected repo context targets container paths (`/repos/...`). Read [Repos in the container](#repos-in-the-container) and [Known limitations](#known-limitations) before you move an agent to the Container runtime.
 
 ## Why this exists
 
@@ -58,40 +58,47 @@ A successful JSON read writes one compact ASCII-only document plus LF. PNG write
 
 Root snapshot authority is deliberately host-only. Root must use `agentscommander terminal-snapshot` with a live Root session token and never receives an API identity.
 
-This read does not depend on frontend visibility or access to the target's repository. The separate [repo mount limitation](#1-container-agents-cannot-reach-their-repos-935) still prevents normal container repo work. See [Terminal snapshots](terminal-snapshots.md) for authorization, schema, fidelity, renderer, privacy, errors, and cleanup.
+This read does not depend on frontend visibility or access to the target's repository. For repo access, see [Repos in the container](#repos-in-the-container) below. See [Terminal snapshots](terminal-snapshots.md) for authorization, schema, fidelity, renderer, privacy, errors, and cleanup.
+
+## Repos in the container
+
+Container agents mount their [work repos](../glossary.md#work-repo) read-write inside the container. The mount root is always `/repos`, and each repo lands at `/repos/<name>`, where `<name>` is the repo directory's own name, for example `/repos/repo-AgentsCommander`.
+
+Each agent mounts only the repos enabled for it, the `repos[]` entries in its own replica `config.json`. Two agents in the same room can see different repos.
+
+The injected `# Agent Repos` context shows the container path, not the host path. A local (non-container) session still shows host paths.
+
+An entry is mounted only if it resolves to a directory whose name starts with `repo-`, sitting directly under the room root, and not to a reserved location such as another agent's replica or `messaging/`. Two things can go wrong, and they behave differently:
+
+| The `repos[]` entry | What happens |
+|---|---|
+| Points at a directory that is not there | The session starts normally. The repo still appears in the injected `# Agent Repos` list with its `/repos/<name>` path, marked `(NOT FOUND)`. Nothing is mounted at that path, so any command against it fails inside the container. Restore or re-clone the directory on the host. |
+| Resolves to something that exists but is not an admissible `repo-*` directory | The session does not start at all. AC refuses the spawn with an error that begins `container repo mount refused:` and names the entry, the path it resolved to, and which check failed. No container is created. Correct `repos[]` in that agent's `config.json`, then start the session again. |
 
 ## Known limitations
 
 All of the following are current. Host login reuse does not fix any of them.
 
-### 1. Container agents cannot reach their repos ([#935](https://github.com/mblua/AgentsCommander/issues/935))
-
-**This is the blocker.** The container bind mount exposes **only the agent's replica root**. Your workspace repos (`repo-*`) are siblings of the replica inside the room directory, so they fall **outside the mount**. From inside the container the agent sees its own replica root and `.agentscommander_ac`, and nothing else.
-
-The injected "Workspace Repos" context makes it worse: it hands the agent Windows host paths (`C:\Users\...`) that do not exist inside the container, and promises read/write access the agent does not have.
-
-**A container coding agent cannot do repo work today.** It runs, it authenticates, it reads its own replica, it messages peers. It cannot check out, edit, build, or commit your repos. Use the local-process runtime for repo work until #935 lands.
-
-### 2. One-time "Bypass Permissions mode" consent
+### 1. One-time "Bypass Permissions mode" consent
 
 With `--dangerously-skip-permissions`, a brand-new replica still shows Claude Code's one-time bypass-mode acceptance screen. A human must accept it **once per replica, ever**. This is Anthropic's consent gate, not an AC bug, and AC deliberately does **not** auto-accept it. Host login reuse removes the login wizard, not this.
 
-### 3. Credential reuse is Claude Code only
+### 2. Credential reuse is Claude Code only
 
 Codex, Antigravity, and Pi have no credential descriptor. AC copies no credentials and stamps no provider-specific first-run state for them. Their container sessions authenticate with credentials you supply yourself.
 
 For Pi, AC also does not copy or map host `~/.pi/agent/` state, translate `PI_CODING_AGENT_SESSION_DIR`, or provision a `--session-dir` path. Pi 0.80.10 accepts only the separated spelling `--session-dir <dir>`; it rejects `--session-dir=<dir>`. AC preserves the user-authored spelling and path during any eligible `--continue` insertion but does not make the path container-aware. Any custom session directory and its durable state must already be meaningful inside the container.
 
-### 4. Deferred hardening ([#933](https://github.com/mblua/AgentsCommander/issues/933))
+### 3. Deferred hardening ([#933](https://github.com/mblua/AgentsCommander/issues/933))
 
 | Gap | Detail |
 |---|---|
 | **No owner-only ACL on Windows** | On Unix AC sets `0o600` on the copied credential. On Windows it sets no ACL, so the copy inherits the project tree's ACL, which for a user-chosen repo path can be broader than `~/.claude` (shared drives, `Everyone:R`). |
 | **Crash residue** | Teardown deletes the copy, and the next launch of the same agent overwrites it. There is no boot-time sweep. An unclean host crash (SIGKILL, power loss) leaves the copied credential on disk until that replica's next same-agent launch. A replica you never relaunch keeps a live refresh token on disk indefinitely. |
 
-### 5. No shared team container ([#936](https://github.com/mblua/AgentsCommander/issues/936), paused)
+### 4. No shared team container ([#936](https://github.com/mblua/AgentsCommander/issues/936), paused)
 
-One container per session today, each mounting only its own agent's replica. One shared container for the whole room is a recorded requirement, not a shipped feature, and its feasibility analysis is paused.
+One container per session today, each mounting its own agent's replica plus that agent's enabled work repos. One shared container for the whole room is a recorded requirement, not a shipped feature, and its feasibility analysis is paused.
 
 ## What the copied file actually is
 
@@ -121,7 +128,8 @@ Every step logs under the `[container-cred]` prefix. Set `logLevel` to `info` (t
 | `[container-cred] copied host credential into <path>` | The copy succeeded. |
 | `[container-cred] dest dir <path> is a symlink/reparse point; skipping copy-in` | AC refuses to write a token through a symlink or junction it did not create. Nothing was copied and nothing was stamped; the agent shows its login wizard. Remove the link. |
 | `[container-cred] <path> is not valid JSON (...); skipping first-run state` | The container's `.claude.json` is unparseable, so AC left it byte for byte rather than clobber it. The token is in place, but you get the onboarding wizard. |
-| The agent is signed in but sees no `repo-*` directory | Expected. This is [#935](https://github.com/mblua/AgentsCommander/issues/935), see [limitation 1](#1-container-agents-cannot-reach-their-repos-935). |
+| The agent is signed in, but a repo under `/repos` is listed as `(NOT FOUND)` | That `repos[]` entry has no directory on the host. The session runs and the repo is not mounted. See [Repos in the container](#repos-in-the-container). |
+| The session refuses to start with `container repo mount refused: ...` | A `repos[]` entry resolves to something that is not an admissible `repo-*` directory under the room root. The message names the entry, its resolved path, and the failed check. See [Repos in the container](#repos-in-the-container). |
 
 ## See also
 

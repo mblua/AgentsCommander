@@ -296,7 +296,25 @@ describe("ProjectPanel regex filter", () => {
       input(filterInput, "RUNNING");
       await waitFor(() => {
         expect(rendered.root.textContent).toContain("dev-webpage-ui");
-        expect(rendered.root.textContent).toContain("dev-rust RUNNING");
+        const chip = rendered.root.querySelector(".ac-discovery-badge.running-peer");
+        expect(chip?.textContent).toBe("dev-rust");
+        expect(chip?.getAttribute("title")).toBe("wg-2-dev-team/dev-rust is running");
+        expect(rendered.root.textContent).not.toContain("RUNNING");
+      });
+
+      // #1790 option A: the word is no longer rendered but is still part of the
+      // running-peer match text. "dev-rust RUNNING" cannot be produced by any
+      // other haystack of this row, so the chip surviving this query proves the
+      // peer haystack is still live. The no-match query in between makes the
+      // transition observable instead of a stale pass.
+      input(filterInput, "zzz-no-such-row");
+      await waitFor(() => {
+        expect(rendered.root.querySelector(".ac-discovery-badge.running-peer")).toBeNull();
+      });
+
+      input(filterInput, "dev-rust RUNNING");
+      await waitFor(() => {
+        expect(rendered.root.querySelector(".ac-discovery-badge.running-peer")).not.toBeNull();
       });
     } finally {
       rendered.cleanup();
@@ -446,7 +464,7 @@ describe("ProjectPanel regex filter", () => {
         name: "wg-2-dev-team/dev-rust",
         workingDirectory: `${workgroupPath}\\__agent_dev-rust`,
         // Exited (not a running peer) so the matched coordinator does not render
-        // a legitimate "dev-rust RUNNING" peer badge — keeps the hide assertion
+        // a legitimate "dev-rust" peer badge — keeps the hide assertion
         // about the dev-rust *row*, not data integrity.
         status: { exited: 0 },
       }),
@@ -707,26 +725,29 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
-  it("only matches an agent SessionItem's profile badge when that badge is actually shown (bug 1)", async () => {
+  it("matches an agent SessionItem by the profile badge every row now shows, and by nothing it does not show (bug 1)", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve(
       "discover_project",
       discovery({
         agents: [
-          { name: "AgentsCommander_ac/__agent_solohidden", path: `${projectPath}\\.ac\\_agent_solohidden`, roleExists: true },
-          { name: "AgentsCommander_ac/__agent_soloshown", path: `${projectPath}\\.ac\\_agent_soloshown`, roleExists: true },
+          { name: "AgentsCommander_ac/__agent_nolabel", path: `${projectPath}\\.ac\\_agent_nolabel`, roleExists: true },
+          { name: "AgentsCommander_ac/__agent_coordrepo", path: `${projectPath}\\.ac\\_agent_coordrepo`, roleExists: true },
         ],
       })
     );
 
     sessionsStore.setSessions([
-      // No agent label resolves and not a coordinator-with-repos → SessionItem's
-      // meta block (and thus its profile badge) is NOT rendered.
+      // No agent label resolves, not a coordinator and no repos. Before #1730
+      // SessionItem gated the whole meta block on
+      // `sessionAgentLabel() || (isCoordinator && ... && gitRepos.length > 0)`, so this
+      // row's profile badge was NOT rendered. #1730 deleted that gate: the badge is
+      // rendered on this row now, and the filter must therefore match it.
       session({
-        id: "solohidden-session",
-        name: "AgentsCommander_ac/__agent_solohidden",
-        workingDirectory: `${projectPath}\\.ac\\_agent_solohidden`,
+        id: "nolabel-session",
+        name: "AgentsCommander_ac/__agent_nolabel",
+        workingDirectory: `${projectPath}\\.ac\\_agent_nolabel`,
         status: "running",
         isCoordinator: false,
         agentId: null,
@@ -736,11 +757,11 @@ describe("ProjectPanel regex filter", () => {
         effectiveProfile: "B",
         profileFallbackApplied: true,
       }),
-      // Coordinator with repos → meta block renders, so its profile badge shows.
+      // Coordinator with repos: this row rendered its badge before #1730 as well.
       session({
-        id: "soloshown-session",
-        name: "AgentsCommander_ac/__agent_soloshown",
-        workingDirectory: `${projectPath}\\.ac\\_agent_soloshown`,
+        id: "coordrepo-session",
+        name: "AgentsCommander_ac/__agent_coordrepo",
+        workingDirectory: `${projectPath}\\.ac\\_agent_coordrepo`,
         status: "running",
         isCoordinator: true,
         agentId: null,
@@ -755,29 +776,42 @@ describe("ProjectPanel regex filter", () => {
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
-      await waitFor(() => expect(rendered.root.textContent).toContain("solohidden"));
-      // The hidden agent's badge is genuinely absent; the shown agent's is present.
-      expect(rendered.root.textContent).not.toContain("A->B");
+      await waitFor(() => expect(rendered.root.textContent).toContain("nolabel"));
+      // #1730 - the strip is unconditional, so both badges are on screen.
+      expect(rendered.root.textContent).toContain("A->B");
       expect(rendered.root.textContent).toContain("C->D");
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
       click(toggle);
       const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
 
-      // Hidden badge → not matchable (must not surface the row).
+      // The badge on the label-less, repo-less row is matchable, and surfaces only
+      // that row. This is the assertion ProjectPanel.tsx's deleted `metaVisible`
+      // gate failed: it refused a token the row visibly shows.
       input(filterInput, "A->B");
-      await waitFor(() => expect(rendered.root.textContent).not.toContain("solohidden"));
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("nolabel");
+        expect(rendered.root.textContent).not.toContain("coordrepo");
+      });
 
-      // Shown badge → matchable (surfaces only the row that displays it).
+      // The coordinator row's badge is matchable too, and surfaces only that row.
       input(filterInput, "C->D");
       await waitFor(() => {
-        expect(rendered.root.textContent).toContain("soloshown");
-        expect(rendered.root.textContent).not.toContain("solohidden");
+        expect(rendered.root.textContent).toContain("coordrepo");
+        expect(rendered.root.textContent).not.toContain("nolabel");
+      });
+
+      // A profile token neither row shows still matches neither row, so the filter
+      // is discriminating and does not surface every row on any input.
+      input(filterInput, "E->F");
+      await waitFor(() => {
+        expect(rendered.root.textContent).not.toContain("nolabel");
+        expect(rendered.root.textContent).not.toContain("coordrepo");
       });
 
       // Both still match by their visible names.
-      input(filterInput, "solohidden");
-      await waitFor(() => expect(rendered.root.textContent).toContain("solohidden"));
+      input(filterInput, "nolabel");
+      await waitFor(() => expect(rendered.root.textContent).toContain("nolabel"));
     } finally {
       rendered.cleanup();
     }

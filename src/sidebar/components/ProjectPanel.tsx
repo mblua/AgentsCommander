@@ -66,6 +66,7 @@ import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
 import DetachIcon from "./DetachIcon";
 import ReattachIcon from "./ReattachIcon";
+import UserPlusIcon from "./UserPlusIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
 import {
   automationIdPart,
@@ -80,6 +81,7 @@ import {
   findReplicaSession as replicaSession,
   isReplicaWorking,
   replicaSessionName,
+  workgroupIsWorking,
 } from "./workgroup-session";
 import {
   MAX_GROUP_MATCH_ID_LENGTH,
@@ -1011,13 +1013,18 @@ const ProjectPanel: Component = () => {
           const session = sessionsStore.findSessionByName(agent.name);
           const repoText = sessionRepoSearchText(session);
           const codingAgentLabel = liveAgentLabel(session);
-          const metaVisible = !!codingAgentLabel || repoText !== "";
+          // #1730 - the profile badge is passed unconditionally. This call used to
+          // gate it on `!!codingAgentLabel || repoText !== ""`, a second copy of the
+          // meta-strip gate SessionItem.tsx carried before #1730. That gate is gone,
+          // so every session row now carries this badge's data, and the filter has
+          // to find it. Do not re-add a gate here: replicaSearchText above never had
+          // one, and a voice transient hiding the strip is not a rule about the data.
           return matchesFilterText(
             agentDisplayName(agent.name),
             sessionSearchText(session),
             codingAgentLabel,
             repoText,
-            metaVisible && session ? sessionProfileBadge(session) : null
+            session ? sessionProfileBadge(session) : null
           );
         };
         const teamMemberMatches = (team: AcTeam, agentName: string) =>
@@ -1649,7 +1656,12 @@ const ProjectPanel: Component = () => {
                       }}
                       data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.create`}
                     >
-                      Create new group
+                      {/* #1731 - 👥 reads as "a group", which is what this row
+                          PRODUCES; it moved here from Add to Group. No colour
+                          class: an emoji is painted by the system emoji font and
+                          ignores `color`, so one would be dead CSS. */}
+                      <span class="session-context-option-icon" aria-hidden="true">&#x1F465;</span>
+                      <span>Create new group</span>
                     </button>
                   }
                 >
@@ -1707,7 +1719,11 @@ const ProjectPanel: Component = () => {
               }}
               data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.trigger`}
             >
-              <span class="session-context-option-icon" aria-hidden="true">&#x1F465;</span>
+              {/* #1731 - user-plus, not 👥: this row ADDS a room to a group, it
+                  does not produce one. Tinted through the class, never a hex. */}
+              <span class="session-context-option-icon" aria-hidden="true">
+                <UserPlusIcon class="session-context-group-add-icon" />
+              </span>
               <span>Add to Group</span>
               <span class="session-context-submenu-arrow">&rsaquo;</span>
             </button>
@@ -2090,6 +2106,9 @@ const ProjectPanel: Component = () => {
           return items.filter((item) =>
             workgroupOwnMatches(item.wg) ||
             replicaMatches(item.replica, item.wg, item.wg.name, item.wg.taskTitle) ||
+            // "RUNNING" is deliberately part of this match text even though the chip
+            // no longer renders the word (#1790), so the filter keeps answering
+            // "which teams have someone working right now".
             matchesFilterText(runningCoordinatorPeers(item.wg, item.replica).map((peer) => `${peer.name} RUNNING`).join(" "))
           );
         });
@@ -2310,6 +2329,13 @@ const ProjectPanel: Component = () => {
           const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => replica.isCoordinator;
           const session = () => replicaSession(wg, replica);
+          // #1783 - the quick-access panel answers "is this team busy", so an
+          // orchestrator row there tints when ANY agent in its room is working,
+          // the orchestrator included. Every other render site (rowContext
+          // "workgroups" and "selected", both inside .ac-wg-subgroup) keeps the
+          // per-row meaning: own session only. Do not collapse this branch.
+          const rowIsWorking = () =>
+            rowContext === "quick" ? workgroupIsWorking(wg) : isReplicaWorking(wg, replica);
           const communication = createMemo(() => session()?.communication ?? null);
           const showRaiseHand = createMemo(() =>
             isCoord() &&
@@ -2393,7 +2419,10 @@ const ProjectPanel: Component = () => {
           return (
             <div
               class="replica-item"
-              classList={{ active: session()?.id === sessionsStore.activeId }}
+              classList={{
+                active: session()?.id === sessionsStore.activeId,
+                working: rowIsWorking(),
+              }}
               data-ac-testid={rowTestId()}
               onClick={() => handleReplicaClick(replica, wg)}
               onContextMenu={(e) => {
@@ -2424,13 +2453,7 @@ const ProjectPanel: Component = () => {
                     </Show>
                   </div>
                 </Show>
-                <div class="replica-item-name-row coord-task-line">
-                  <span
-                    class="replica-item-name"
-                    style={{ "min-width": "0px", flex: "1 1 auto" }}
-                  >
-                    {replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}
-                  </span>
+                <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
                   <Show when={showBlockedMenu()}>
                     <span
                       class="coord-communication-slot coord-communication-slot--blocked-menu"
@@ -2442,22 +2465,28 @@ const ProjectPanel: Component = () => {
                       <RaiseHandIcon class="coord-communication-icon" />
                     </span>
                   </Show>
-                </div>
-                <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
-                  {/* #552/#580: the coordinator idle (minutes) badge leads the
-                      row; the neutral AUTO-CLOSED pill REPLACES it when the team
-                      is auto-closed (mutually exclusive — the #580 XOR gate), so
-                      exactly one of the two renders first, before all others. */}
-                  <Show when={!autoClosed() && !manuallyClosed() && idleBadge()}>
-                    {(b) => (
-                      <span
-                        class={`ac-discovery-badge coord-idle ${COORD_IDLE_CLASS[b().level]}`}
-                        title={idleBadgeTitle()}
-                      >
-                        {b().label}
-                      </span>
-                    )}
+                  {/* #592 - drift indicator for a WG replica session. Mirrors the
+                      SessionItem badge: the backend marks profileOutdated in
+                      list_sessions when the loaded cell != current config; clicking
+                      relaunches via the existing replica restart (re-stamps the hash
+                      and clears the flag). stopPropagation keeps the row from
+                      selecting the session under the click. */}
+                  <Show when={session()?.profileOutdated}>
+                    <ProfileOutdatedBadge
+                      testId={`replica.outdated.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                      onReload={() => {
+                        const s = session();
+                        if (s) void restartReplicaSession(s.id);
+                      }}
+                    />
                   </Show>
+                  {/* #552/#580/#1730: the mutually exclusive trio, positions 2, 3 and 4 of this
+                      strip. AUTO-CLOSED and MANUALLY-CLOSED lead it and the coordinator idle
+                      (minutes) badge now trails them; before #1730 the idle badge led the whole
+                      row. The #580 XOR gate is unchanged: at most one of the three ever renders,
+                      and the three stay contiguous, so a closed pill and the counter can never
+                      appear together. They no longer lead the strip: the blocked-menu alert slot
+                      and the drift badge come first. */}
                   <Show when={autoClosed() && !manuallyClosed()}>
                     <span
                       class="ac-discovery-badge coord-autoclosed"
@@ -2477,17 +2506,39 @@ const ProjectPanel: Component = () => {
                       MANUALLY-CLOSED
                     </span>
                   </Show>
-                  <Show when={runningPeers && runningPeers()!.length > 0}>
-                    <For each={runningPeers!()}>
-                      {(peer) => (
-                        <span
-                          class="ac-discovery-badge running-peer"
-                          title={`${wg.name}/${peer.name}`}
-                        >
-                          {peer.name} RUNNING
-                        </span>
-                      )}
-                    </For>
+                  <Show when={!autoClosed() && !manuallyClosed() && idleBadge()}>
+                    {(b) => (
+                      <span
+                        class={`ac-discovery-badge coord-idle ${COORD_IDLE_CLASS[b().level]}`}
+                        title={idleBadgeTitle()}
+                      >
+                        {b().label}
+                      </span>
+                    )}
+                  </Show>
+                  <span
+                    class="agent-name-chip"
+                    title={replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}
+                  >
+                    {replica.name}
+                  </span>
+                  <Show when={isCoord()}>
+                    <span class="ac-discovery-badge coord">orchestrator</span>
+                  </Show>
+                  <Show when={liveAgentLabel()}>
+                    <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
+                  </Show>
+                  <Show when={profileBadge()}>
+                    {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
+                  </Show>
+                  <Show when={ctxVisible()}>
+                    <ContextBadge
+                      percent={ctxPercent()}
+                      testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                    />
+                  </Show>
+                  <Show when={extraBadge}>
+                    <span class="ac-discovery-badge team">{extraBadge}</span>
                   </Show>
                   <Show when={isCoord() && repoBadges().length > 0}>
                     <For each={repoBadges()}>
@@ -2502,38 +2553,17 @@ const ProjectPanel: Component = () => {
                       )}
                     </For>
                   </Show>
-                  <Show when={liveAgentLabel()}>
-                    <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
-                  </Show>
-                  <Show when={profileBadge()}>
-                    {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
-                  </Show>
-                  <Show when={ctxVisible()}>
-                    <ContextBadge
-                      percent={ctxPercent()}
-                      testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
-                    />
-                  </Show>
-                  {/* #592 - drift indicator for a WG replica session. Mirrors the
-                      SessionItem badge: the backend marks profileOutdated in
-                      list_sessions when the loaded cell != current config; clicking
-                      relaunches via the existing replica restart (re-stamps the hash
-                      and clears the flag). stopPropagation keeps the row from
-                      selecting the session under the click. */}
-                  <Show when={session()?.profileOutdated}>
-                    <ProfileOutdatedBadge
-                      testId={`replica.outdated.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
-                      onReload={() => {
-                        const s = session();
-                        if (s) void restartReplicaSession(s.id);
-                      }}
-                    />
-                  </Show>
-                  <Show when={isCoord()}>
-                    <span class="ac-discovery-badge coord">orchestrator</span>
-                  </Show>
-                  <Show when={extraBadge}>
-                    <span class="ac-discovery-badge team">{extraBadge}</span>
+                  <Show when={runningPeers && runningPeers()!.length > 0}>
+                    <For each={runningPeers!()}>
+                      {(peer) => (
+                        <span
+                          class="ac-discovery-badge running-peer"
+                          title={`${wg.name}/${peer.name} is running`}
+                        >
+                          {peer.name}
+                        </span>
+                      )}
+                    </For>
                   </Show>
                 </div>
               </div>
@@ -2542,7 +2572,13 @@ const ProjectPanel: Component = () => {
                   <button class="session-item-mic-cancel" onClick={handleCancelRecording} title="Cancel recording">&#x2715;</button>
                 </Show>
                 <Show when={bridge()}>
-                  <div class="session-item-bridge-dot" style={{ background: bridge()!.color }} title={`Telegram: ${bridge()!.botLabel}`} />
+                  <span
+                    class="session-item-bridge-icon"
+                    style={{ color: bridge()!.color }}
+                    title={`Telegram: ${bridge()!.botLabel}`}
+                  >
+                    <TelegramIcon />
+                  </span>
                 </Show>
               </Show>
             </div>
@@ -2557,7 +2593,7 @@ const ProjectPanel: Component = () => {
           );
           const wgCollapsed = () => isPanelCollapsed(wgCollapsedKey);
           return (
-            <div class="ac-wg-subgroup">
+            <div class="ac-wg-subgroup" classList={{ working: workgroupIsWorking(wg) }}>
               <div
                 class="ac-wg-header ac-wg-header--collapsible"
                 title={wg.path}
@@ -3657,7 +3693,7 @@ const ProjectPanel: Component = () => {
                               handleReplicaContextClose(event, menu().sessionId)
                             }
                           >
-                            <span class="session-context-option-icon" aria-hidden="true">&#x2715;</span> Close Session
+                            <span class="session-context-option-icon" aria-hidden="true">&#x2715;</span> Close Session (Ctrl+Shift+W)
                           </button>
                         </Show>
                         <div class="context-separator" />

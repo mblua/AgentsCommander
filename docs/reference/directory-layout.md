@@ -8,7 +8,7 @@ AgentsCommander keeps its on-disk data in two distinct trees:
 
 | Tree | Location | Scope |
 |---|---|---|
-| Project `.ac/` | `<project>/.ac/` | Shared team and tool configuration, tracked in the project's git |
+| Project `.ac/` | `<project>/.ac/` | Shared team and tool configuration. Version it in its own [Agents config repo](../glossary.md#agents-config-repo) (recommended), track it inside a work repo, or leave it untracked |
 | Application config dir | Selected by the exact binary version; see below | Machine-local application state, never shared |
 
 In the deployment documented below, the adjacent candidate is selected: the binary is `agentscommander_ac2.exe` beside the project root, so the two trees are `D:\0_repos\AgentsCommander_iac\.ac\` and `D:\0_repos\AgentsCommander_iac\.agentscommander_ac2\`. This example describes that deployment, not every package layout.
@@ -35,12 +35,12 @@ C:\tools\agentscommander_ac2.exe    ->  C:\tools\.agentscommander_ac2\
 
 The rule has two consequences:
 
-- `.ac/` is shared: commit it to the project's git so the team gets the same agents, teams, rooms, and tool configuration.
+- `.ac/` is shared: version it so the team gets the same agents, teams, and tool configuration; see the layouts in the table above.
 - The selected application config dir is machine-local: never commit or share it. It holds tokens, sessions, logs, and other local state. AC writes a `.gitignore` inside it so those files stay out of git when the selected path is inside a repository.
 
-## `.ac/` (shared, tracked in the project git)
+## `.ac/` (shared across the team)
 
-The project-scoped tree. AC creates and maintains it, and the project commits it. In this deployment the project git tracks 692 files under `.ac/` and none inside the instance dir. Unless a row says otherwise, everything here is shared and tracked.
+The project-scoped tree. AC creates and maintains it, and the recommended layout versions it in git; see the layouts in the table above. In this deployment the project git tracks 692 files under `.ac/` and none inside the instance dir. Unless a row says otherwise, everything here is shared, and tracked wherever `.ac/` is tracked.
 
 ### Top-level files
 
@@ -64,7 +64,7 @@ The project-scoped tree. AC creates and maintains it, and the project commits it
 |---|---|
 | `_agent_<name>/` | Agent matrix: one directory per agent, holding `Role.md`, `config.json`, `memory/`, `memory_YYYYMMDD_hhmmss/` (rotated memory archives), `plans/`, and `skills/`. See [Agent Matrix conventions](../agent-matrix-conventions.md), and see [Agent Matrix conventions §11](../agent-matrix-conventions.md#11-agent-memory-rotation-at-spawn) for how the archives are made |
 | `_team_<name>/` | Team definitions: `config.json` (members, orchestrator, repos) and `conventions.md` |
-| `room-<N>-<name>/` | Rooms: `__agent_<name>/` replica directories, `messaging/` (inter-agent message files), `repo-*/` room clones, `TASK*.md` briefs. Project-scoped and shared, but gitignored (`room-*/`) because the `repo-*` folders are their own git repositories |
+| `room-<N>-<name>/` | Rooms: `__agent_<name>/` replica directories, `messaging/` (inter-agent message files), `repo-*/` [work repo](../glossary.md#work-repo) clones, `TASK*.md` briefs. Project-scoped and shared, but gitignored (`room-*/`) because the `repo-*` folders are their own git repositories |
 | `coding-agents/` | Coding-agent catalog: `agents.json` (manifest) and `_seed/` (per-tool default config-folder masters). Seeded per registered project; this is the copy AC reads and writes |
 | `competitions/` | Competition packages, one folder per competition with a `MANIFEST.md`. No writer in the current source; treat as hand-managed |
 
@@ -120,7 +120,7 @@ The manifest never tracks the selected application config dir. Under the unpubli
 
 ## Shared vs per-instance in one rule
 
-- `<project>/.ac/`: shared, commit it.
+- `<project>/.ac/`: shared. Version it in its own repo (recommended), track it inside a work repo, or leave it untracked; see the layouts in the table at the top of this page.
 - The active selected application config directory: machine-local, never commit or share. Tokens, sessions, logs, and the coding-agent catalog live there; its path follows the selection rule above.
 
 ## Cross-references

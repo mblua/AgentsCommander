@@ -14,7 +14,7 @@ AgentsCommander is **not** a coding agent. It spawns coding-agent processes and 
 | **Pi Coding Agent** | `pi`, `pi.exe`, or `pi.cmd` in a supported command position | `--continue` | Earendil Works' coding agent CLI. |
 | **Cursor** | `agent` (catalog entry) | — | Shipped in the default catalog (id `cursor`, instructions `AGENTS.md`). No tuned `CodingAgentKind`: it uses the generic path and the exact-stem logical-clear rule below. |
 
-> **OpenCode** runs today through the custom coding-agent path (see [Adding a custom coding agent](#adding-a-custom-coding-agent)). OpenCode is provider-agnostic, so you can point it at any provider or model, including OpenRouter Fusion. It does not yet have a first-class tuned integration (resume tokens, idle tuning); that work is tracked as [#315](https://github.com/mblua/AgentsCommander/issues/315).
+> **OpenCode** runs today through the custom coding-agent path (see [Adding a custom coding agent](#adding-a-custom-coding-agent)). Configure it with any provider or model OpenCode supports; AgentsCommander launches and coordinates the CLI without restricting that choice. OpenCode does not yet have a first-class tuned integration (resume tokens, idle tuning); that work is tracked as [#315](https://github.com/mblua/AgentsCommander/issues/315).
 
 ## How AC identifies a tuned integration
 
@@ -196,7 +196,7 @@ Under the **Container** runtime there is one deliberate exception, on by default
 ## See also
 
 - [Coding Agent Profiles](../features/coding-agent-profiles.md): lettered launch variants (A/B/C) per coding agent
-- [Container coding agents](../features/container-coding-agents.md): host login reuse, and why container agents cannot reach repos yet
+- [Container coding agents](../features/container-coding-agents.md): host login reuse, and how a container mounts that agent's work repos
 - [Creating agents](../agents/creating-agents.md) — make a new agent dir
 - [Settings reference](../reference/settings.md) — full schema for `agents[]`
 - [Roadmap: coding agents](../../ROADMAP.md): OpenCode first-class integration, Nvidia agent, more

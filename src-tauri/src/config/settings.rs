@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::config::instance_artifacts::SETTINGS_LOCK_FILE_NAME;
+use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
 use crate::pty::backend::SessionBackendKind;
 use crate::session::profile::CodingAgentKind;
@@ -85,6 +86,9 @@ pub struct AgentConfig {
     pub context_regex: Option<String>,
     /// #1646 / #1647 - proactive detection patterns for terminal blocking menus (e.g. folder trust).
     /// None = unmaterialized defaults (materialized at load time). Some(vec![]) = explicitly disabled.
+    /// `Some(vec![])` is also what stops a future default from being back-filled by a
+    /// one-shot migration; per-entry `enabled: false` is the way to disable one pattern
+    /// while keeping the array active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocking_menus: Option<Vec<BlockingMenuEntry>>,
     /// Backend used for future non-local session transports. Omitted/default
@@ -466,6 +470,13 @@ pub struct AppSettings {
     /// `AppSettings::clone()` stays cheap and copy-on-write mutation is explicit.
     #[serde(skip, default)]
     pub(crate) project_path_state: Arc<crate::config::projects::ProjectPathPersistenceState>,
+    /// #1737 - the `settings.local.json` overlay in force for this load, and the base
+    /// values it displaces. Never serialized; behind an `Arc` so `AppSettings::clone()`
+    /// stays cheap. Like `project_path_state`, a value that arrives from the renderer
+    /// or the WebSocket transport carries `Arc::default()` here, so every whole-object
+    /// writer must restore it from live memory first (plan D14).
+    #[serde(skip, default)]
+    pub(crate) local_overlay_state: Arc<LocalSettingsOverlay>,
     /// Sidebar visual style: "noir-minimal", "card-sections", "command-center", "deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit"
     #[serde(default = "default_sidebar_style")]
     pub sidebar_style: String,
@@ -924,6 +935,7 @@ impl Default for AppSettings {
             project_paths: vec![],
             archived_project_paths: vec![],
             project_path_state: Arc::default(),
+            local_overlay_state: Arc::default(),
             sidebar_style: default_sidebar_style(),
             root_token: None,
             onboarding_dismissed: false,
@@ -965,6 +977,22 @@ impl Default for AppSettings {
     }
 }
 
+/// #1757 - the Codex "Hooks need review" startup dialog. One literal, two consumers:
+/// `default_blocking_menus_for_command` (new installs) and `apply_issue_1757_migration`
+/// (installs whose `blockingMenus` array was already materialized against the older default).
+/// Neither writes the pattern inline, so the two paths cannot drift.
+pub(crate) const CODEX_HOOKS_REVIEW_PATTERN: &str = r"^[^A-Za-z0-9]*Hooks need review\b";
+
+fn codex_hooks_review_menu() -> BlockingMenuConfig {
+    BlockingMenuConfig {
+        pattern: CODEX_HOOKS_REVIEW_PATTERN.to_string(),
+        notification: "codex is waiting for you to answer the hooks-review menu in this terminal"
+            .to_string(),
+        enabled: true,
+        captured_against: Some("codex 0.153.2 / Windows".to_string()),
+    }
+}
+
 /// #1646 / #1647 - default blocking menu patterns for known commands.
 pub fn default_blocking_menus_for_command(command: &str) -> Vec<BlockingMenuEntry> {
     let stem = crate::config::coding_agents_catalog::command_executable_basename(command);
@@ -976,14 +1004,17 @@ pub fn default_blocking_menus_for_command(command: &str) -> Vec<BlockingMenuEntr
             enabled: true,
             captured_against: Some("pi 0.52 / Windows".to_string()),
         })],
-        Some("codex") => vec![BlockingMenuEntry::Valid(BlockingMenuConfig {
-            pattern: r"^\s*Do you trust the contents of this directory\?".to_string(),
-            notification:
-                "codex is waiting for you to answer the folder-trust menu in this terminal"
-                    .to_string(),
-            enabled: true,
-            captured_against: Some("codex 0.x / Linux".to_string()),
-        })],
+        Some("codex") => vec![
+            BlockingMenuEntry::Valid(BlockingMenuConfig {
+                pattern: r"^\s*Do you trust the contents of this directory\?".to_string(),
+                notification:
+                    "codex is waiting for you to answer the folder-trust menu in this terminal"
+                        .to_string(),
+                enabled: true,
+                captured_against: Some("codex 0.x / Linux".to_string()),
+            }),
+            BlockingMenuEntry::Valid(codex_hooks_review_menu()),
+        ],
         _ => vec![],
     }
 }
@@ -997,6 +1028,60 @@ pub fn materialize_blocking_menus(agents: &mut [AgentConfig]) -> bool {
             agent.blocking_menus = Some(default_blocking_menus_for_command(&agent.command));
             changed = true;
         }
+    }
+    changed
+}
+
+/// #1757 - one-shot migration for installs whose Codex `blockingMenus` array was already
+/// materialized against the pre-#1757 default, which is every install created before this
+/// change. `materialize_blocking_menus` only fills `None`, so those users would otherwise
+/// never receive the hooks-review pattern.
+///
+/// Keyed by content, not by a marker field: the entry is appended only when no valid entry
+/// already carries `CODEX_HOOKS_REVIEW_PATTERN`, so the function is idempotent across
+/// restarts and adds no key to the settings schema. The check ignores `enabled`, so setting
+/// `enabled: false` on the entry is a durable off switch; deleting it is not (#1757 D2).
+///
+/// Extends an ACTIVE set, never activates an inactive one: `None` belongs to
+/// `materialize_blocking_menus`, and `Some(vec![])` is the field's documented
+/// "explicitly disabled" state.
+///
+/// #1737 (D7c): an overlay that owns `agents` supplies the whole array and `restore_base`
+/// writes the base array back on save, so appending here would be discarded on write and
+/// would overwrite the operator's in-memory array meanwhile. Owning `agents` therefore
+/// suppresses the migration, which then runs correctly the first time the overlay is removed.
+///
+/// Returns true when any agent's array changed.
+pub fn apply_issue_1757_migration(settings: &mut AppSettings) -> bool {
+    if settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_AGENTS)
+    {
+        return false;
+    }
+    let mut changed = false;
+    for agent in &mut settings.agents {
+        if crate::config::coding_agents_catalog::command_executable_basename(&agent.command)
+            .as_deref()
+            != Some("codex")
+        {
+            continue;
+        }
+        let Some(entries) = agent.blocking_menus.as_mut() else {
+            continue;
+        };
+        if entries.is_empty() {
+            continue;
+        }
+        if entries.iter().any(|entry| {
+            entry
+                .valid()
+                .is_some_and(|c| c.pattern == CODEX_HOOKS_REVIEW_PATTERN)
+        }) {
+            continue;
+        }
+        entries.push(BlockingMenuEntry::Valid(codex_hooks_review_menu()));
+        changed = true;
     }
     changed
 }
@@ -1083,10 +1168,35 @@ pub fn normalize_profile_letter(raw: &str) -> Option<String> {
     None
 }
 
-fn parse_settings_json(contents: &str, source: &str) -> Result<(AppSettings, bool), String> {
+/// #1737 (D5): `settings_path` is `Some` on every production loader and `None` on
+/// the in-module test call sites. `None` means "no overlay lookup".
+fn parse_settings_json(
+    contents: &str,
+    source: &str,
+    settings_path: Option<&Path>,
+) -> Result<(AppSettings, bool), String> {
     let mut value: Value = serde_json::from_str(contents)
         .map_err(|e| format!("Failed to parse settings file: {}", e))?;
     let migrated = migrate_settings_value_to_v2(&mut value);
+    // #1737 (D21): the clone must be taken BEFORE the merge, because the merge is
+    // in place and the overlay's presence is not known until it returns. Gated on
+    // `settings_path.is_some()`, which is true on all three production loaders and
+    // false on the in-module test call sites. Cost: one Value clone per load.
+    let pre_merge = settings_path.map(|_| value.clone());
+    // #1737 (D5): the merge point, after the v2 migration and before the project
+    // decode. Merging after the migration keeps the `migrated` flag a property of
+    // the base file alone and makes the B7 cross-key edge impossible.
+    let mut overlay = match settings_path {
+        Some(p) => LocalSettingsOverlay::load_and_merge(
+            p,
+            &mut value,
+            OVERLAY_INELIGIBLE_DISK_KEYS,
+            OVERLAY_INELIGIBLE_LEGACY_KEYS,
+            OVERLAY_DERIVED_ID_CLOSURES,
+        ),
+        None => LocalSettingsOverlay::default(),
+    };
+    let unmerged = if overlay.is_empty() { None } else { pre_merge };
     // #1077: decode the six project fields and replace the three runtime fields
     // with the SELECTED canonical paths BEFORE deserializing the rest of
     // AppSettings, so a wrong-typed project field cannot fail unrelated settings
@@ -1094,10 +1204,76 @@ fn parse_settings_json(contents: &str, source: &str) -> Result<(AppSettings, boo
     let base = production_instance_base();
     let state =
         apply_project_decode_to_value(&mut value, base.as_deref(), &projects::FsCandidateResolver);
-    let mut settings: AppSettings = serde_json::from_value(value)
-        .map_err(|e| format!("Failed to deserialize settings from {source}: {e}"))?;
+    let decoded: Result<AppSettings, String> = serde_json::from_value(value)
+        .map_err(|e| format!("Failed to deserialize settings from {source}: {e}"));
+    // #1737 (D21): a merged value that fails to decode falls back to the BASE
+    // value, never to defaults. One wrong-typed leaf in settings.local.json must
+    // not replace a valid base configuration.
+    let (mut settings, state) = match (decoded, unmerged) {
+        (Ok(settings), _) => (settings, state),
+        (Err(reason), Some(mut unmerged)) => {
+            let base_state = apply_project_decode_to_value(
+                &mut unmerged,
+                base.as_deref(),
+                &projects::FsCandidateResolver,
+            );
+            let settings: AppSettings = serde_json::from_value(unmerged)
+                .map_err(|e| format!("Failed to deserialize settings from {source}: {e}"))?;
+            overlay = overlay.into_undecodable(reason);
+            (settings, base_state)
+        }
+        (Err(reason), None) => return Err(reason),
+    };
     settings.project_path_state = Arc::new(state);
+    report_overlay_diagnostics(source, &overlay);
+    settings.local_overlay_state = Arc::new(overlay);
     Ok((settings, migrated))
+}
+
+/// #1737 (D15) - the settings value when the base `settings.json` is absent,
+/// unreadable or unparseable. A valid `settings.local.json` still applies, over the
+/// serialized defaults, so the file the following `needs_save` write creates holds
+/// exactly what a no-overlay fresh instance would have written and deleting the
+/// local file restores it.
+fn default_settings_with_overlay(settings_path: &Path, source: &str) -> AppSettings {
+    // Total by construction: `AppSettings` is a struct with named fields, so serde
+    // always produces an object. The arm exists so the function has no panic.
+    let Ok(mut value @ Value::Object(_)) = serde_json::to_value(AppSettings::default()) else {
+        return AppSettings::default();
+    };
+    let overlay = LocalSettingsOverlay::load_and_merge(
+        settings_path,
+        &mut value,
+        OVERLAY_INELIGIBLE_DISK_KEYS,
+        OVERLAY_INELIGIBLE_LEGACY_KEYS,
+        OVERLAY_DERIVED_ID_CLOSURES,
+    );
+    // Unconditionally, and BEFORE the early return: `is_empty()` is also true for a
+    // REJECTED overlay, so returning first would swallow the very diagnostics D8
+    // mandates on a malformed local file.
+    report_overlay_diagnostics(source, &overlay);
+    if overlay.is_empty() {
+        return AppSettings::default();
+    }
+    match serde_json::from_value::<AppSettings>(value) {
+        Ok(mut settings) => {
+            settings.local_overlay_state = Arc::new(overlay);
+            settings
+        }
+        Err(e) => {
+            // D21 with `AppSettings::default()` as the fallback. 4.2e step 5 says
+            // "record `MergedValueUndecodable`, render THAT record", singular: the
+            // ineligible-key drops were already rendered above and
+            // `into_undecodable` preserves them, so rendering this overlay's whole
+            // record list would emit every drop a second time. A default overlay
+            // carries the new record alone, and the value returned is
+            // `AppSettings::default()` either way, so the state the caller adopts
+            // is unchanged.
+            let undecodable = LocalSettingsOverlay::default().into_undecodable(e.to_string());
+            report_overlay_diagnostics(source, &undecodable);
+            AppSettings::default()
+        }
+    }
 }
 
 fn migrate_settings_value_to_v2(value: &mut Value) -> bool {
@@ -1867,31 +2043,37 @@ pub fn load_settings() -> AppSettings {
     load_settings_from_path(&path)
 }
 
-fn load_settings_from_path(path: &Path) -> AppSettings {
+/// `pub(crate)` only so `commands::config`'s #1737 tests can seed a
+/// `settings.json` plus `settings.local.json` pair in a tempdir and load it
+/// through the real loader instead of reproducing the loader in a test. No
+/// production caller outside this module.
+pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
     let mut profile_migrated_to_v2 = false;
     let mut pre_migration_contents: Option<String> = None;
     let mut settings = if !path.exists() {
         log::info!("No settings file found at {:?}, using defaults", path);
-        AppSettings::default()
+        default_settings_with_overlay(path, &path.to_string_lossy())
     } else {
         match std::fs::read_to_string(path) {
-            Ok(contents) => match parse_settings_json(&contents, &path.to_string_lossy()) {
-                Ok((s, migrated)) => {
-                    log::debug!("Loaded settings from {:?}", path);
-                    if migrated {
-                        profile_migrated_to_v2 = true;
-                        pre_migration_contents = Some(contents);
+            Ok(contents) => {
+                match parse_settings_json(&contents, &path.to_string_lossy(), Some(path)) {
+                    Ok((s, migrated)) => {
+                        log::debug!("Loaded settings from {:?}", path);
+                        if migrated {
+                            profile_migrated_to_v2 = true;
+                            pre_migration_contents = Some(contents);
+                        }
+                        s
                     }
-                    s
+                    Err(e) => {
+                        log::error!("{}", e);
+                        default_settings_with_overlay(path, &path.to_string_lossy())
+                    }
                 }
-                Err(e) => {
-                    log::error!("{}", e);
-                    AppSettings::default()
-                }
-            },
+            }
             Err(e) => {
                 log::error!("Failed to read settings file: {}", e);
-                AppSettings::default()
+                default_settings_with_overlay(path, &path.to_string_lossy())
             }
         }
     };
@@ -1900,7 +2082,16 @@ fn load_settings_from_path(path: &Path) -> AppSettings {
     // after upgrade. Runs BEFORE root_token auto-gen so the migrated values persist
     // via the same save. The deprecated `sidebar_geometry`/`terminal_geometry` fields
     // are automatically dropped from disk by `skip_serializing_if` on the next save.
-    if settings.main_geometry.is_none() {
+    // #1737 (D7c): each of these three migrations writes its destination key from a
+    // legacy source on the typed struct AFTER the merge, so an overlay that owns the
+    // destination would have its override silently overwritten from the base file.
+    // Owning the destination suppresses the migration; with no overlay in force
+    // `owns_top_level` is false for every key and the behaviour is unchanged.
+    if !settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_MAIN_GEOMETRY)
+        && settings.main_geometry.is_none()
+    {
         if let Some(ref g) = settings.terminal_geometry {
             settings.main_geometry = Some(g.clone());
             log::info!("[settings-migration] seeded main_geometry from legacy terminal_geometry");
@@ -1909,14 +2100,22 @@ fn load_settings_from_path(path: &Path) -> AppSettings {
     // Seed main_zoom from sidebar_zoom on first boot. EPSILON guard: avoid clobbering
     // a user-set main_zoom=1.0 (which would equal default_zoom) with an effectively-unity
     // sidebar_zoom. See A3.10 / Arb-2.
-    if (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
+    if !settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_MAIN_ZOOM)
+        && (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
         && (settings.sidebar_zoom - default_zoom()).abs() > f64::EPSILON
     {
         settings.main_zoom = settings.sidebar_zoom;
         log::info!("[settings-migration] seeded main_zoom from legacy sidebar_zoom");
     }
     // Seed main_always_on_top from legacy sidebar_always_on_top.
-    if !settings.main_always_on_top && settings.sidebar_always_on_top {
+    if !settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_MAIN_ALWAYS_ON_TOP)
+        && !settings.main_always_on_top
+        && settings.sidebar_always_on_top
+    {
         settings.main_always_on_top = true;
         log::info!(
             "[settings-migration] seeded main_always_on_top from legacy sidebar_always_on_top"
@@ -1935,6 +2134,10 @@ fn load_settings_from_path(path: &Path) -> AppSettings {
     let mut needs_save = issue_248_migrated || profile_migrated_to_v2;
     if materialize_blocking_menus(&mut settings.agents) {
         log::info!("[settings-migration] materialized default blocking menus");
+        needs_save = true;
+    }
+    if apply_issue_1757_migration(&mut settings) {
+        log::info!("[settings-migration] #1757 - added the Codex hooks-review blocking menu");
         needs_save = true;
     }
     if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
@@ -2027,39 +2230,54 @@ pub fn load_settings_for_cli() -> AppSettings {
 
     let mut settings = if !path.exists() {
         log::info!("[cli] No settings file found at {:?}, using defaults", path);
-        AppSettings::default()
+        default_settings_with_overlay(&path, &path.to_string_lossy())
     } else {
         match std::fs::read_to_string(&path) {
-            Ok(contents) => match parse_settings_json(&contents, &path.to_string_lossy()) {
-                Ok((s, _migrated)) => {
-                    log::debug!("[cli] Loaded settings from {:?}", path);
-                    s
+            Ok(contents) => {
+                match parse_settings_json(&contents, &path.to_string_lossy(), Some(&path)) {
+                    Ok((s, _migrated)) => {
+                        log::debug!("[cli] Loaded settings from {:?}", path);
+                        s
+                    }
+                    Err(e) => {
+                        log::error!("[cli] {}", e);
+                        default_settings_with_overlay(&path, &path.to_string_lossy())
+                    }
                 }
-                Err(e) => {
-                    log::error!("[cli] {}", e);
-                    AppSettings::default()
-                }
-            },
+            }
             Err(e) => {
                 log::error!("[cli] Failed to read settings file: {}", e);
-                AppSettings::default()
+                default_settings_with_overlay(&path, &path.to_string_lossy())
             }
         }
     };
 
     // 0.8.0 unified-window migration — must mirror `load_settings` exactly,
     // EXCEPT for the root_token auto-gen + save_settings call.
-    if settings.main_geometry.is_none() {
+    // #1737 (D7c): the same three destination-ownership suppressions as the GUI loader.
+    if !settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_MAIN_GEOMETRY)
+        && settings.main_geometry.is_none()
+    {
         if let Some(ref g) = settings.terminal_geometry {
             settings.main_geometry = Some(g.clone());
         }
     }
-    if (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
+    if !settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_MAIN_ZOOM)
+        && (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
         && (settings.sidebar_zoom - default_zoom()).abs() > f64::EPSILON
     {
         settings.main_zoom = settings.sidebar_zoom;
     }
-    if !settings.main_always_on_top && settings.sidebar_always_on_top {
+    if !settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_MAIN_ALWAYS_ON_TOP)
+        && !settings.main_always_on_top
+        && settings.sidebar_always_on_top
+    {
         settings.main_always_on_top = true;
     }
 
@@ -2071,6 +2289,7 @@ pub fn load_settings_for_cli() -> AppSettings {
     apply_issue_248_migration(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     materialize_blocking_menus(&mut settings.agents);
+    apply_issue_1757_migration(&mut settings);
 
     // NO root_token auto-gen, NO save_settings call.
     settings
@@ -2092,7 +2311,9 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
         // No home dir to locate settings.json: nothing to protect, and a later
         // save would fail to resolve the dir anyway. Start from default.
         None => AppSettings::default(),
-        Some(path) if !path.exists() => AppSettings::default(),
+        Some(path) if !path.exists() => {
+            default_settings_with_overlay(&path, &path.to_string_lossy())
+        }
         Some(path) => {
             let contents = std::fs::read_to_string(&path).map_err(|e| {
                 format!(
@@ -2101,7 +2322,7 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
                 )
             })?;
             let (s, _migrated) =
-                parse_settings_json(&contents, &path.to_string_lossy()).map_err(|e| {
+                parse_settings_json(&contents, &path.to_string_lossy(), Some(&path)).map_err(|e| {
                     format!(
                         "settings.json exists but could not be parsed ({e}); refusing to modify it - fix or remove the file first"
                     )
@@ -2111,22 +2332,36 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
     };
 
     // Mirror `load_settings_for_cli`'s in-memory migrations (no disk write).
-    if settings.main_geometry.is_none() {
+    // #1737 (D7c): the same three destination-ownership suppressions.
+    if !settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_MAIN_GEOMETRY)
+        && settings.main_geometry.is_none()
+    {
         if let Some(ref g) = settings.terminal_geometry {
             settings.main_geometry = Some(g.clone());
         }
     }
-    if (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
+    if !settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_MAIN_ZOOM)
+        && (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
         && (settings.sidebar_zoom - default_zoom()).abs() > f64::EPSILON
     {
         settings.main_zoom = settings.sidebar_zoom;
     }
-    if !settings.main_always_on_top && settings.sidebar_always_on_top {
+    if !settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_MAIN_ALWAYS_ON_TOP)
+        && !settings.main_always_on_top
+        && settings.sidebar_always_on_top
+    {
         settings.main_always_on_top = true;
     }
     apply_issue_248_migration(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     materialize_blocking_menus(&mut settings.agents);
+    apply_issue_1757_migration(&mut settings);
 
     Ok(settings)
 }
@@ -2146,6 +2381,20 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
 /// `warn!` and keep the new field's existing value — never silently overwrite
 /// a deliberate `restoreCoordinatorWakeState` with a stale legacy value.
 fn apply_issue_248_migration(settings: &mut AppSettings) {
+    // #1737 (D7c): the overlay owns `restoreCoordinatorWakeState`, so this migration
+    // would overwrite the operator's value from the base file's legacy key. Return
+    // WITHOUT taking the legacy carrier: dropping it here would delete
+    // `startOnlyCoordinators` from the base file while `restore_base` simultaneously
+    // restored `restoreCoordinatorWakeState` to its (usually absent) base value, and
+    // the migration would be lost rather than deferred. Leaving the carrier in place
+    // costs one idempotent save per launch and makes the migration run correctly the
+    // first time the overlay is removed. See plan D7c and evidence 2.11b row R4.
+    if settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE)
+    {
+        return;
+    }
     if let Some(legacy) = settings.legacy_start_only_coordinators.take() {
         if !settings.restore_coordinator_wake_state {
             settings.restore_coordinator_wake_state = legacy;
@@ -2169,10 +2418,11 @@ fn apply_issue_248_migration(settings: &mut AppSettings) {
 ///
 /// Returns `None` on missing file, missing field, malformed JSON, unreadable filesystem,
 /// or any other read error — fully read-only and side-effect-free.
+/// #1737 (D16): routed through the merged (base plus `settings.local.json`) view.
 fn read_log_level_from_path(path: &std::path::Path) -> Option<String> {
-    let contents = std::fs::read_to_string(path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&contents).ok()?;
-    v.get("logLevel")?.as_str().map(String::from)
+    read_merged_top_level_key(path, "logLevel")?
+        .as_str()
+        .map(String::from)
 }
 
 /// See `read_log_level_from_path`. Resolves the canonical settings path and delegates.
@@ -2180,15 +2430,11 @@ pub fn read_log_level_only() -> Option<String> {
     read_log_level_from_path(&settings_path()?)
 }
 
+/// #1737 (D16): routed through the merged (base plus `settings.local.json`) view.
 fn read_activity_log_enabled_from_path(path: &std::path::Path) -> bool {
-    let Some(contents) = std::fs::read_to_string(path).ok() else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) else {
-        return false;
-    };
-    v.get("activityLogEnabled")
-        .and_then(serde_json::Value::as_bool)
+    read_merged_top_level_key(path, "activityLogEnabled")
+        .as_ref()
+        .and_then(Value::as_bool)
         .unwrap_or(false)
 }
 
@@ -2239,6 +2485,127 @@ const FIELD_PROJECT_PATHS_REL: &str = "projectPathsRelativeToInstance";
 const FIELD_ARCHIVED: &str = "archivedProjectPaths";
 const FIELD_ARCHIVED_REL: &str = "archivedProjectPathsRelativeToInstance";
 const FIELD_TERMINAL_SNAPSHOTS_ENABLED: &str = "terminalSnapshotsEnabled";
+
+/// #1737 (D7a) - top-level settings keys whose authority is the on-disk file, not
+/// the in-memory struct, and which `settings.local.json` therefore may not override.
+pub(crate) const OVERLAY_INELIGIBLE_DISK_KEYS: &[&str] = &[
+    FIELD_ARCHIVED,
+    FIELD_ARCHIVED_REL,
+    FIELD_PROJECT_PATH,
+    FIELD_PROJECT_PATH_REL,
+    FIELD_PROJECT_PATHS,
+    FIELD_PROJECT_PATHS_REL,
+    "rootToken",
+    FIELD_TERMINAL_SNAPSHOTS_ENABLED,
+];
+
+/// #1737 (D7b) - legacy keys that exist only as a one-time migration source. AC
+/// translates each into a different key, and one of them is removed from memory by
+/// the migration itself, so an override would write a key the restore plan does not
+/// own or would resurrect a key the #248 migration exists to delete.
+pub(crate) const OVERLAY_INELIGIBLE_LEGACY_KEYS: &[&str] = &[
+    "sidebarAlwaysOnTop",
+    "sidebarZoom",
+    "startOnlyCoordinators",
+    "terminalGeometry",
+];
+
+/// #1737 (D13) - a repair that creates one object per element id of a source
+/// array. When the overlay introduces an id into `source_key` that the base
+/// array did not carry, `<derived_prefix>/<id>` joins the restore plan with the
+/// base file's value at that path, so a repair driven by an overlay value can
+/// never be persisted into the base file. Deliberately narrower than the whole
+/// `codingAgentProfiles` key: that key has three other production writers whose
+/// payloads the operator did not override. See plan D13 and evidence 2.11.
+pub(crate) const OVERLAY_DERIVED_ID_CLOSURES: &[DerivedIdClosure] = &[DerivedIdClosure {
+    source_key: "agents",
+    id_field: "id",
+    derived_prefix: &["codingAgentProfiles", "profilesByAgent"],
+}];
+
+/// #1737 (D7c) - migration destination keys. Each names a top-level key that a
+/// migration WRITES after the merge, so a migration whose destination the overlay
+/// owns would silently overwrite the override in memory. Owning the destination
+/// suppresses the migration (plan D7c, evidence 2.11b). Four of the five are
+/// written from a legacy source key on the typed struct; `agents` is the
+/// exception, rewritten in place by `apply_issue_1757_migration` (#1757 D12).
+/// Every suppression names one of these constants; the array is what S29 pins
+/// and what a future author greps.
+pub(crate) const OVERLAY_KEY_AGENTS: &str = "agents";
+pub(crate) const OVERLAY_KEY_MAIN_ALWAYS_ON_TOP: &str = "mainAlwaysOnTop";
+pub(crate) const OVERLAY_KEY_MAIN_GEOMETRY: &str = "mainGeometry";
+pub(crate) const OVERLAY_KEY_MAIN_ZOOM: &str = "mainZoom";
+pub(crate) const OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE: &str = "restoreCoordinatorWakeState";
+#[allow(dead_code)] // read only from test code: the suppressions name the five constants individually
+pub(crate) const OVERLAY_MIGRATION_DESTINATION_KEYS: &[&str] = &[
+    OVERLAY_KEY_AGENTS,
+    OVERLAY_KEY_MAIN_ALWAYS_ON_TOP,
+    OVERLAY_KEY_MAIN_GEOMETRY,
+    OVERLAY_KEY_MAIN_ZOOM,
+    OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE,
+];
+
+/// #1737 (D16) - top-level keys whose value before the migrations differs from
+/// the value `parse_settings_json` produces, so `read_merged_top_level_key` may
+/// not serve them. `codingAgentProfiles` is rewritten by
+/// `migrate_settings_value_to_v2`; the six project keys are rewritten or removed
+/// by `apply_project_decode_to_value`. S26 derives this set from the two
+/// functions and fails if either starts writing a key that is not listed.
+const OVERLAY_PREMIGRATION_UNSAFE_KEYS: &[&str] = &[
+    FIELD_ARCHIVED,
+    FIELD_ARCHIVED_REL,
+    "codingAgentProfiles",
+    FIELD_PROJECT_PATH,
+    FIELD_PROJECT_PATH_REL,
+    FIELD_PROJECT_PATHS,
+    FIELD_PROJECT_PATHS_REL,
+];
+
+/// #1737 (D22) - the single site in this file that renders overlay diagnostics.
+/// `local_overlay` returns typed state and never logs, which is what lets the
+/// tests assert the level and the text of every record without installing a
+/// global logger. `session_context.rs` has the twin of this three-line match for
+/// the Markdown side; those two matches are the only deliberately unasserted
+/// code this design leaves.
+fn report_overlay_diagnostics(source: &str, overlay: &LocalSettingsOverlay) {
+    use crate::config::local_overlay::OverlayDiagnosticLevel;
+    for diagnostic in overlay.diagnostics(source) {
+        match diagnostic.level() {
+            OverlayDiagnosticLevel::Error => log::error!("{}", diagnostic.render()),
+            OverlayDiagnosticLevel::Info => log::info!("{}", diagnostic.render()),
+        }
+    }
+}
+
+/// #1737 (D16) - one top-level key of the effective (base plus overlay) settings
+/// object, read without migrations, without auto-token-gen and without any save.
+/// Deliberately pre-migration AND pre-project-decode, exactly as these readers
+/// were before #1737. Valid ONLY for keys outside
+/// `OVERLAY_PREMIGRATION_UNSAFE_KEYS`: `migrate_settings_value_to_v2` rewrites
+/// `codingAgentProfiles` and `apply_project_decode_to_value` rewrites or removes
+/// the six project keys, so for those seven the value here is not the value
+/// `parse_settings_json` produces. Renders no diagnostics: the load path already
+/// reports the same records and this runs twice per startup, and
+/// `read_log_level_only` additionally runs before the logger exists.
+fn read_merged_top_level_key(path: &Path, key: &str) -> Option<Value> {
+    debug_assert!(
+        !OVERLAY_PREMIGRATION_UNSAFE_KEYS.contains(&key),
+        "#1737 D16: {key} is rewritten after the merge; read it through parse_settings_json"
+    );
+    let mut value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let _ = LocalSettingsOverlay::load_and_merge(
+        path,
+        &mut value,
+        OVERLAY_INELIGIBLE_DISK_KEYS,
+        OVERLAY_INELIGIBLE_LEGACY_KEYS,
+        OVERLAY_DERIVED_ID_CLOSURES,
+    );
+    value.get(key).cloned()
+}
 
 /// The authoritative instance base for path pairing, canonicalized at the codec
 /// boundary. `None` in any degraded mode (no base, or a base that fails to
@@ -3780,6 +4147,21 @@ fn save_settings_value_locked(
         Value::Bool(terminal_snapshots_enabled),
     );
 
+    // #1737: the effective view the caller must adopt for overlay-owned paths. `out`
+    // is not a usable source: in Reconcile mode it was seeded from the disk object,
+    // which already holds base values. Skipped entirely when no overlay is in force,
+    // which is what keeps the no-overlay write path byte-identical.
+    let effective: Option<Map<String, Value>> = if settings.local_overlay_state.is_empty() {
+        None
+    } else {
+        Some(serialize_object()?)
+    };
+    // #1737: last writer over `out`, so no earlier stage can leak an overlay value
+    // into the base file. Runs in both project write modes: Reconcile seeds `out`
+    // from the live settings when the file is absent. The overlay-ineligible sets
+    // (D7a, D7b) already exclude every key the #1077 and #1173 stages touch.
+    settings.local_overlay_state.restore_base(&mut out);
+
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
     // repair, so the eligible branches above never fire for it; its groups are
     // written verbatim from the live settings/disk, matching pre-#1077 behavior.
@@ -3787,6 +4169,11 @@ fn save_settings_value_locked(
     write_value_atomic(&value, path)?;
 
     let mut written_value = value;
+    // #1737: disk holds the base, memory holds the effective value. Without this the
+    // caller would adopt base values for every overlay-owned key on the first save.
+    if let (Some(effective), Value::Object(object)) = (&effective, &mut written_value) {
+        settings.local_overlay_state.reapply_from(effective, object);
+    }
     let fresh_state = apply_project_decode_to_value(
         &mut written_value,
         base.as_deref(),
@@ -3803,6 +4190,7 @@ fn save_settings_value_locked(
         )
     })?;
     written.project_path_state = Arc::new(fresh_state);
+    written.local_overlay_state = settings.local_overlay_state.clone();
     Ok(written)
 }
 
@@ -4052,11 +4440,28 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
         return Err("terminal_snapshot_setting_conflict".to_string());
     }
 
+    // #1737 (D17): the disk-decoded candidate must carry the overlay VALUES, not just
+    // the overlay state, because the `disk_gate == enabled` early return below adopts
+    // it with no save and no re-decode. The `None` arm clones the live settings and
+    // already carries both.
+    let effective: Map<String, Value> = if current.local_overlay_state.is_empty() {
+        Map::new()
+    } else {
+        match serde_json::to_value(current) {
+            Ok(Value::Object(object)) => object,
+            _ => Map::new(),
+        }
+    };
     let mut candidate = match disk {
-        Some(object) => decode_disk_settings_for_terminal_snapshot_cas(object)
-            .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?,
+        Some(object) => decode_disk_settings_for_terminal_snapshot_cas(
+            object,
+            &current.local_overlay_state,
+            &effective,
+        )
+        .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?,
         None => current.clone(),
     };
+    candidate.local_overlay_state = current.local_overlay_state.clone();
     candidate.terminal_snapshots_enabled = enabled;
     if disk_gate == enabled {
         return Ok(candidate);
@@ -4091,10 +4496,20 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
 
 fn decode_disk_settings_for_terminal_snapshot_cas(
     object: Map<String, Value>,
+    overlay: &LocalSettingsOverlay,
+    effective: &Map<String, Value>,
 ) -> Result<AppSettings, String> {
     let base = production_instance_base();
     let mut value = Value::Object(object);
     migrate_settings_value_to_v2(&mut value);
+    // #1737 (D17): re-apply the overlay to the disk-decoded object, so the
+    // `disk_gate == enabled` early return does not hand the caller base values.
+    // Pinned between the v2 migration and the project decode, and therefore
+    // strictly before `candidate.terminal_snapshots_enabled = enabled` runs on
+    // the typed value.
+    if let Value::Object(map) = &mut value {
+        overlay.reapply_from(effective, map);
+    }
     let state =
         apply_project_decode_to_value(&mut value, base.as_deref(), &projects::FsCandidateResolver);
     let mut settings: AppSettings =
@@ -6306,7 +6721,7 @@ mod tests {
             }
         }"##;
 
-        let (settings, migrated) = super::parse_settings_json(json, "test").unwrap();
+        let (settings, migrated) = super::parse_settings_json(json, "test", None).unwrap();
 
         assert!(migrated);
         assert_eq!(settings.coding_agent_profiles.schema_version, 2);
@@ -6412,7 +6827,7 @@ mod tests {
             }
         }"##;
 
-        let (settings, migrated) = super::parse_settings_json(json, "test").unwrap();
+        let (settings, migrated) = super::parse_settings_json(json, "test", None).unwrap();
         let cell = &settings.coding_agent_profiles.profiles_by_agent["codex"]["A"];
 
         assert!(migrated);
@@ -6441,7 +6856,7 @@ mod tests {
             }]
         }"##;
 
-        let (settings, _migrated) = super::parse_settings_json(json, "test").unwrap();
+        let (settings, _migrated) = super::parse_settings_json(json, "test", None).unwrap();
         let out = serde_json::to_string(&settings).unwrap();
 
         assert!(settings.agents[0].isolated_home);
@@ -8037,7 +8452,7 @@ mod tests {
         })
         .to_string();
 
-        let (settings, _) = super::parse_settings_json(&contents, "test").expect(
+        let (settings, _) = super::parse_settings_json(&contents, "test", None).expect(
             "a malformed watcher must never fail the whole file: that is what the wrapper is for",
         );
 
@@ -8082,7 +8497,7 @@ mod tests {
         })
         .to_string();
 
-        let (settings, _) = super::parse_settings_json(&contents, "test").expect("parses");
+        let (settings, _) = super::parse_settings_json(&contents, "test", None).expect("parses");
         assert!(settings.watchers.is_empty());
         assert!(settings.watchers_geometry.is_none());
 
@@ -8123,7 +8538,7 @@ mod tests {
         })
         .to_string();
 
-        let (settings, _) = super::parse_settings_json(&contents, "test").expect("parses");
+        let (settings, _) = super::parse_settings_json(&contents, "test", None).expect("parses");
 
         let all = settings.watchers["all-agents"].valid().expect("valid");
         assert!(all.enabled, "enabled defaults to true");
@@ -8742,7 +9157,7 @@ mod tests {
 
         // Codex
         let codex_menus = agents[1].blocking_menus.as_ref().unwrap();
-        assert_eq!(codex_menus.len(), 1);
+        assert_eq!(codex_menus.len(), 2);
         let codex_cfg = codex_menus[0].valid().unwrap();
         assert_eq!(
             codex_cfg.pattern,
@@ -8756,6 +9171,19 @@ mod tests {
         assert_eq!(
             codex_cfg.captured_against.as_deref(),
             Some("codex 0.x / Linux")
+        );
+
+        // #1757 - the hooks-review entry, appended AFTER folder-trust (D13).
+        let codex_hooks_cfg = codex_menus[1].valid().unwrap();
+        assert_eq!(codex_hooks_cfg.pattern, super::CODEX_HOOKS_REVIEW_PATTERN);
+        assert_eq!(
+            codex_hooks_cfg.notification,
+            "codex is waiting for you to answer the hooks-review menu in this terminal"
+        );
+        assert!(codex_hooks_cfg.enabled);
+        assert_eq!(
+            codex_hooks_cfg.captured_against.as_deref(),
+            Some("codex 0.153.2 / Windows")
         );
 
         // Claude -> empty array
@@ -8856,5 +9284,1724 @@ mod tests {
 
         let serialized = serde_json::to_string(&s_disabled).expect("serializes");
         assert!(serialized.contains("\"menuGuardEnabled\":false"));
+    }
+
+    // ---- #1757: the Codex hooks-review blocking menu -----------------------
+
+    /// One agent carrying exactly the `blocking_menus` state under test.
+    fn agent_1757(
+        id: &str,
+        command: &str,
+        blocking_menus: Option<Vec<super::BlockingMenuEntry>>,
+    ) -> AgentConfig {
+        AgentConfig {
+            id: id.to_string(),
+            label: id.to_string(),
+            command: command.to_string(),
+            color: "#000000".to_string(),
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+            context_regex: None,
+            blocking_menus,
+            backend: Default::default(),
+        }
+    }
+
+    fn settings_1757(agents: Vec<AgentConfig>) -> AppSettings {
+        AppSettings {
+            agents,
+            ..AppSettings::default()
+        }
+    }
+
+    /// The pre-#1757 materialized Codex array's only entry.
+    fn folder_trust_entry_1757() -> super::BlockingMenuEntry {
+        super::BlockingMenuEntry::Valid(super::BlockingMenuConfig {
+            pattern: r"^\s*Do you trust the contents of this directory\?".to_string(),
+            notification:
+                "codex is waiting for you to answer the folder-trust menu in this terminal"
+                    .to_string(),
+            enabled: true,
+            captured_against: Some("codex 0.x / Linux".to_string()),
+        })
+    }
+
+    fn hooks_review_entry_1757(enabled: bool) -> super::BlockingMenuEntry {
+        super::BlockingMenuEntry::Valid(super::BlockingMenuConfig {
+            pattern: super::CODEX_HOOKS_REVIEW_PATTERN.to_string(),
+            notification:
+                "codex is waiting for you to answer the hooks-review menu in this terminal"
+                    .to_string(),
+            enabled,
+            captured_against: Some("codex 0.153.2 / Windows".to_string()),
+        })
+    }
+
+    fn assert_folder_trust_entry_1757(entry: &super::BlockingMenuEntry) {
+        let cfg = entry.valid().expect("folder-trust entry is valid");
+        assert_eq!(
+            cfg.pattern,
+            r"^\s*Do you trust the contents of this directory\?"
+        );
+        assert_eq!(
+            cfg.notification,
+            "codex is waiting for you to answer the folder-trust menu in this terminal"
+        );
+        assert!(cfg.enabled);
+        assert_eq!(cfg.captured_against.as_deref(), Some("codex 0.x / Linux"));
+    }
+
+    fn assert_hooks_review_entry_1757(entry: &super::BlockingMenuEntry) {
+        let cfg = entry.valid().expect("hooks-review entry is valid");
+        assert_eq!(cfg.pattern, super::CODEX_HOOKS_REVIEW_PATTERN);
+        assert_eq!(
+            cfg.notification,
+            "codex is waiting for you to answer the hooks-review menu in this terminal"
+        );
+        assert!(cfg.enabled);
+        assert_eq!(
+            cfg.captured_against.as_deref(),
+            Some("codex 0.153.2 / Windows")
+        );
+    }
+
+    // T4
+    #[test]
+    fn issue_1757_appends_to_an_already_materialized_codex_array() {
+        let mut settings = settings_1757(vec![agent_1757(
+            "codex",
+            "codex",
+            Some(vec![folder_trust_entry_1757()]),
+        )]);
+
+        assert!(
+            super::apply_issue_1757_migration(&mut settings),
+            "an already-materialized codex array must be extended"
+        );
+
+        let menus = settings.agents[0]
+            .blocking_menus
+            .as_ref()
+            .expect("blocking_menus present");
+        assert_eq!(menus.len(), 2);
+        assert_folder_trust_entry_1757(&menus[0]);
+        assert_hooks_review_entry_1757(&menus[1]);
+    }
+
+    // T5
+    #[test]
+    fn issue_1757_is_idempotent() {
+        let mut settings = settings_1757(vec![agent_1757(
+            "codex",
+            "codex",
+            Some(vec![folder_trust_entry_1757()]),
+        )]);
+
+        assert!(super::apply_issue_1757_migration(&mut settings));
+        assert!(
+            !super::apply_issue_1757_migration(&mut settings),
+            "the second call must be a no-op: the pattern is already present"
+        );
+        assert_eq!(
+            settings.agents[0]
+                .blocking_menus
+                .as_ref()
+                .expect("blocking_menus present")
+                .len(),
+            2
+        );
+    }
+
+    // T6
+    #[test]
+    fn issue_1757_never_activates_an_explicitly_empty_array() {
+        let mut settings = settings_1757(vec![agent_1757("codex", "codex", Some(vec![]))]);
+
+        assert!(
+            !super::apply_issue_1757_migration(&mut settings),
+            "Some(vec![]) is the documented explicitly-disabled state (D8)"
+        );
+        assert_eq!(settings.agents[0].blocking_menus, Some(vec![]));
+    }
+
+    // T7
+    #[test]
+    fn issue_1757_respects_a_disabled_hooks_entry() {
+        let disabled = hooks_review_entry_1757(false);
+        let mut settings = settings_1757(vec![agent_1757(
+            "codex",
+            "codex",
+            Some(vec![disabled.clone()]),
+        )]);
+
+        assert!(
+            !super::apply_issue_1757_migration(&mut settings),
+            "the presence test ignores the enabled flag, so enabled: false is a durable off switch (D9)"
+        );
+        assert_eq!(settings.agents[0].blocking_menus, Some(vec![disabled]));
+    }
+
+    // T8
+    #[test]
+    fn issue_1757_ignores_non_codex_agents() {
+        let pi_menus = vec![super::BlockingMenuEntry::Valid(super::BlockingMenuConfig {
+            pattern: r"^\s*Trust project folder\?".to_string(),
+            notification: "pi is waiting for you to answer the folder-trust menu in this terminal"
+                .to_string(),
+            enabled: true,
+            captured_against: Some("pi 0.52 / Windows".to_string()),
+        })];
+        let claude_menus = vec![super::BlockingMenuEntry::Valid(super::BlockingMenuConfig {
+            pattern: "^Something else entirely".to_string(),
+            notification: "claude is waiting".to_string(),
+            enabled: true,
+            captured_against: None,
+        })];
+        let mut settings = settings_1757(vec![
+            agent_1757("pi", "pi", Some(pi_menus.clone())),
+            agent_1757("claude", "claude", Some(claude_menus.clone())),
+        ]);
+
+        assert!(
+            !super::apply_issue_1757_migration(&mut settings),
+            "the stem gate must never target an agent the default would not"
+        );
+        assert_eq!(settings.agents[0].blocking_menus, Some(pi_menus));
+        assert_eq!(settings.agents[1].blocking_menus, Some(claude_menus));
+    }
+
+    // T9 - the only new test that observes the real load chain. Every other
+    // needs_save source is deliberately inert on this fixture, so the migration's
+    // own flag is the only thing that can drive the write.
+    #[test]
+    fn issue_1757_reaches_settings_json_through_the_real_load_chain() {
+        const FIXTURE: &str = r##"{
+  "defaultShell": "test-shell",
+  "defaultShellArgs": [],
+  "rootToken": "issue-1757-fixture-token",
+  "agents": [
+    {
+      "id": "codex",
+      "label": "Codex",
+      "command": "codex",
+      "color": "#000000",
+      "blockingMenus": [
+        {
+          "pattern": "^\\s*Do you trust the contents of this directory\\?",
+          "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
+          "enabled": true,
+          "capturedAgainst": "codex 0.x / Linux"
+        }
+      ]
+    }
+  ],
+  "codingAgentProfiles": {
+    "schemaVersion": 2,
+    "profileSlots": { "A": { "label": "" } },
+    "defaultProfileByAgent": {},
+    "profilesByAgent": {
+      "codex": { "A": { "enabled": true, "command": "", "env": {}, "notes": "" } }
+    }
+  }
+}"##;
+
+        // Tripwire: a single-backslash escape here is not legal JSON, the load would
+        // fall back to default_settings_with_overlay with zero agents, and this test
+        // would silently stop testing anything.
+        serde_json::from_str::<serde_json::Value>(FIXTURE)
+            .expect("the T9 fixture must be valid JSON");
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, FIXTURE).unwrap();
+
+        let settings = super::load_settings_from_path(&path);
+        assert_eq!(
+            settings.agents.len(),
+            1,
+            "the fixture must parse; zero agents means the loader fell back to defaults"
+        );
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let menus = value["agents"][0]["blockingMenus"]
+            .as_array()
+            .expect("blockingMenus array on disk");
+        assert_eq!(
+            menus.len(),
+            2,
+            "the migration must have appended and the loader must have saved"
+        );
+
+        assert_eq!(
+            menus[0]["pattern"].as_str(),
+            Some(r"^\s*Do you trust the contents of this directory\?")
+        );
+        assert_eq!(
+            menus[0]["notification"].as_str(),
+            Some("codex is waiting for you to answer the folder-trust menu in this terminal")
+        );
+        assert_eq!(menus[0]["enabled"].as_bool(), Some(true));
+        assert_eq!(
+            menus[0]["capturedAgainst"].as_str(),
+            Some("codex 0.x / Linux")
+        );
+
+        assert_eq!(
+            menus[1]["pattern"].as_str(),
+            Some(super::CODEX_HOOKS_REVIEW_PATTERN)
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // #1737 - the `.local` alter-ego override layer. Plan section 11, S1 to S34.
+    // ─────────────────────────────────────────────────────────────────────────
+    mod local_overlay_1737 {
+        use super::super::*;
+        use serde_json::json;
+        use std::collections::BTreeSet;
+        use std::path::{Path, PathBuf};
+
+        /// A base `settings.json` carrying the three fields that have no
+        /// `#[serde(default)]`, plus a root token so a load does not autogenerate
+        /// one unless the test wants it to.
+        fn base_fixture() -> Value {
+            json!({
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "agents": [],
+                "rootToken": "base-token",
+            })
+        }
+
+        fn seed(dir: &Path, base: Option<&Value>, local: Option<&Value>) -> PathBuf {
+            let path = dir.join("settings.json");
+            if let Some(base) = base {
+                std::fs::write(&path, serde_json::to_string_pretty(base).unwrap()).unwrap();
+            }
+            if let Some(local) = local {
+                std::fs::write(
+                    dir.join("settings.local.json"),
+                    serde_json::to_string_pretty(local).unwrap(),
+                )
+                .unwrap();
+            }
+            path
+        }
+
+        fn disk_object(path: &Path) -> Map<String, Value> {
+            let raw = std::fs::read_to_string(path).unwrap();
+            match serde_json::from_str::<Value>(&raw).unwrap() {
+                Value::Object(object) => object,
+                other => panic!("settings.json is not an object: {other}"),
+            }
+        }
+
+        /// #1757 - the folder-trust entry exactly as a materialized codex
+        /// `blockingMenus` array carries it. NOT built from `agent_json`, whose
+        /// hardcoded empty array would make T10 pass with or without the guard.
+        fn folder_trust_entry() -> Value {
+            json!({
+                "pattern": r"^\s*Do you trust the contents of this directory\?",
+                "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
+                "enabled": true,
+                "capturedAgainst": "codex 0.x / Linux",
+            })
+        }
+
+        fn codex_agent_with(blocking_menus: Value) -> Value {
+            json!({
+                "id": "codex",
+                "label": "Codex",
+                "command": "codex",
+                "color": "#000000",
+                "blockingMenus": blocking_menus,
+            })
+        }
+
+        /// The watcher base used by most of the JSON tests: a nested object with a
+        /// sibling the overlay must not touch.
+        fn watcher_base() -> Value {
+            let mut base = base_fixture();
+            base["watchers"] = json!({
+                "a": { "mode": "state", "pattern": "^ready", "enabled": true, "dedupeWindowMs": 500 }
+            });
+            base
+        }
+
+        fn dedupe_window(settings: &AppSettings) -> u64 {
+            settings.watchers["a"]
+                .valid()
+                .expect("valid watcher")
+                .dedupe_window_ms
+        }
+
+        // S1
+        #[test]
+        fn parse_settings_json_applies_the_overlay_and_records_the_base_values() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(
+                temp.path(),
+                Some(&watcher_base()),
+                Some(&json!({"watchers": {"a": {"dedupeWindowMs": 50}}})),
+            );
+            let contents = std::fs::read_to_string(&path).unwrap();
+            let (settings, _) = parse_settings_json(&contents, "test", Some(&path)).unwrap();
+
+            assert_eq!(dedupe_window(&settings), 50);
+            assert!(
+                settings.watchers["a"].valid().unwrap().enabled,
+                "sibling survives"
+            );
+            assert_eq!(
+                settings.local_overlay_state.owned_paths(),
+                &[vec![
+                    "watchers".to_string(),
+                    "a".to_string(),
+                    "dedupeWindowMs".to_string()
+                ]]
+            );
+        }
+
+        // S2 and S3
+        #[test]
+        fn a_preserve_save_restores_the_base_leaf_and_keeps_the_overlay_in_memory() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(
+                temp.path(),
+                Some(&watcher_base()),
+                Some(&json!({"watchers": {"a": {"dedupeWindowMs": 50}}})),
+            );
+            let mut settings = load_settings_from_path(&path);
+            assert_eq!(dedupe_window(&settings), 50);
+
+            settings.gemini_api_key = "unrelated-change".to_string();
+            let written = save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+            // S2: disk holds the BASE value, and the unrelated change is persisted.
+            let object = disk_object(&path);
+            assert_eq!(object["watchers"]["a"]["dedupeWindowMs"], json!(500));
+            assert_eq!(object["geminiApiKey"], json!("unrelated-change"));
+            // S3: memory still holds the OVERLAY value.
+            assert_eq!(dedupe_window(&written), 50);
+            assert!(!written.local_overlay_state.is_empty());
+        }
+
+        // S4
+        #[test]
+        fn deleting_the_local_file_restores_the_pre_override_configuration() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(
+                temp.path(),
+                Some(&watcher_base()),
+                Some(&json!({"watchers": {"a": {"dedupeWindowMs": 50}}})),
+            );
+            let mut settings = load_settings_from_path(&path);
+            settings.gemini_api_key = "unrelated-change".to_string();
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+            let reloaded = load_settings_from_path(&path);
+
+            let control_temp = tempfile::tempdir().unwrap();
+            let control_path = seed(control_temp.path(), Some(&watcher_base()), None);
+            let mut control = load_settings_from_path(&control_path);
+            control.gemini_api_key = "unrelated-change".to_string();
+            save_settings_to_path_preserving_project_paths(&control, &control_path).unwrap();
+            let control = load_settings_from_path(&control_path);
+
+            assert_eq!(dedupe_window(&reloaded), dedupe_window(&control));
+            assert_eq!(dedupe_window(&reloaded), 500);
+            assert_eq!(reloaded.gemini_api_key, control.gemini_api_key);
+            assert!(reloaded.local_overlay_state.is_empty());
+        }
+
+        // S5
+        #[test]
+        fn the_empty_overlay_is_a_typed_no_op_over_an_arbitrary_object() {
+            let object = json!({
+                "logLevel": "info",
+                "agents": [{"id": "a"}, {"id": "b"}],
+                "watchers": {"a": {"intervalMs": 500, "nested": {"deep": true}}},
+                "count": 3,
+                "flag": false,
+            });
+            let Value::Object(object) = object else {
+                unreachable!()
+            };
+
+            let overlay = LocalSettingsOverlay::default();
+            assert!(overlay.is_empty());
+            assert!(overlay.owned_paths().is_empty());
+            assert!(overlay.diagnostics("x").is_empty());
+
+            let mut restored = object.clone();
+            overlay.restore_base(&mut restored);
+            assert_eq!(restored, object);
+
+            let mut reapplied = object.clone();
+            overlay.reapply_from(&object, &mut reapplied);
+            assert_eq!(reapplied, object);
+        }
+
+        /// S6's fixture, captured on the pinned base `ac845616` through the
+        /// delivery-gate-8 materialise-and-revert procedure.
+        const S6_FIXTURE_JSON: &str = r##"{
+  "defaultShell": "gate8-shell",
+  "defaultShellArgs": ["-NoLogo", "-NoProfile"],
+  "agents": [
+    {
+      "id": "codex",
+      "label": "Codex",
+      "command": "codex",
+      "color": "#112233"
+    },
+    {
+      "id": "claude",
+      "label": "Claude",
+      "command": "claude",
+      "color": "#445566",
+      "blockingMenus": []
+    }
+  ],
+  "webServerPort": 8123,
+  "apiServerPort": 8124,
+  "rootToken": "gate8-fixed-token",
+  "logLevel": "info",
+  "activityLogEnabled": true,
+  "mainZoom": 1.25,
+  "mainGeometry": { "x": 1.0, "y": 2.0, "width": 300.0, "height": 400.0 },
+  "watchers": {
+    "w1": {
+      "mode": "state",
+      "pattern": "^ready",
+      "enabled": true
+    }
+  },
+  "watchersGeometry": { "x": 10.0, "y": 20.0, "width": 300.0, "height": 400.0 }
+}"##;
+
+        /// AC-7's control, captured by running `s6_normalized_non_project_settings`
+        /// on the pinned base `ac845616` BEFORE the first edit of this change
+        /// (delivery gate 8). Two capture runs produced byte-identical files.
+        /// The six `FIELD_*` project keys and `rootToken` are removed because their
+        /// values depend on `production_instance_base()` and the filesystem; every
+        /// remaining key is pinned. The fixture pins `defaultShell`,
+        /// `defaultShellArgs` and `agents` (no `#[serde(default)]`) and the two
+        /// profile-aware ports, so the platform this runs on is not load-bearing.
+        const EXPECTED_NON_PROJECT_SETTINGS_JSON: &str = r##"{
+  "activityLogEnabled": true,
+  "agentAutoUpdateByCommand": {},
+  "agentGroupKillPrivateBytes": 12884901888,
+  "agentGroupWarnPrivateBytes": 8589934592,
+  "agentProcessKillPrivateBytes": 12884901888,
+  "agentTemplatesPath": null,
+  "agents": [
+    {
+      "blockingMenus": [
+        {
+          "capturedAgainst": "codex 0.x / Linux",
+          "enabled": true,
+          "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
+          "pattern": "^\\s*Do you trust the contents of this directory\\?"
+        },
+        {
+          "capturedAgainst": "codex 0.153.2 / Windows",
+          "enabled": true,
+          "notification": "codex is waiting for you to answer the hooks-review menu in this terminal",
+          "pattern": "^[^A-Za-z0-9]*Hooks need review\\b"
+        }
+      ],
+      "color": "#112233",
+      "command": "codex",
+      "envs": [],
+      "id": "codex",
+      "isolatedHome": false,
+      "label": "Codex"
+    },
+    {
+      "blockingMenus": [],
+      "color": "#445566",
+      "command": "claude",
+      "envs": [],
+      "id": "claude",
+      "isolatedHome": false,
+      "label": "Claude"
+    }
+  ],
+  "alwaysShowSelectedWorkgroup": true,
+  "apiServerBind": "127.0.0.1",
+  "apiServerEnabled": false,
+  "apiServerPort": 8124,
+  "autoGenerateTaskTitle": true,
+  "autoSelfClearByAgent": {},
+  "autoSelfClearEnabled": true,
+  "codingAgentProfiles": {
+    "defaultProfileByAgent": {},
+    "profileLabelsByAgent": {},
+    "profileSlots": {
+      "A": {
+        "label": ""
+      }
+    },
+    "profilesByAgent": {
+      "claude": {
+        "A": {
+          "command": "",
+          "enabled": true,
+          "env": {},
+          "notes": ""
+        }
+      },
+      "codex": {
+        "A": {
+          "command": "",
+          "enabled": true,
+          "env": {},
+          "notes": ""
+        }
+      }
+    },
+    "schemaVersion": 2
+  },
+  "containerCredentialsFromHost": true,
+  "coordSortByActivity": false,
+  "coordinatorAutoCloseEnabled": true,
+  "coordinatorAutoCloseMinutes": 60,
+  "coordinatorAutoCloseSkipTelegramAssigned": false,
+  "coordinatorCascadeCloseEnabled": true,
+  "coordinatorIdleBadgeRedMinutes": 60,
+  "coordinatorIdleBadgeYellowMinutes": 30,
+  "darkfactoryZoom": 1.0,
+  "defaultShell": "gate8-shell",
+  "defaultShellArgs": [
+    "-NoLogo",
+    "-NoProfile"
+  ],
+  "geminiApiKey": "",
+  "geminiModel": "gemini-2.5-flash",
+  "gitSweepConcurrency": 1,
+  "gitSweepMinIntervalSecs": 10,
+  "guideZoom": 1.0,
+  "logLevel": "info",
+  "mainAlwaysOnTop": false,
+  "mainGeometry": {
+    "height": 400.0,
+    "width": 300.0,
+    "x": 1.0,
+    "y": 2.0
+  },
+  "mainResourceMonitorAttached": false,
+  "mainSidebarSide": "right",
+  "mainSidebarWidth": 240.0,
+  "mainZoom": 1.25,
+  "maxConcurrentAgentProcesses": 32,
+  "menuGuardEnabled": true,
+  "npmUpdateNotificationsEnabled": true,
+  "onboardingDismissed": false,
+  "railCollapsedProjects": [],
+  "railFavoritesCollapsed": false,
+  "raiseTerminalOnClick": true,
+  "resourceBackoffPolling": true,
+  "resourceKeepLastSnapshot": true,
+  "resourceMonitorEnabled": true,
+  "resourceWatchdogAction": "warn",
+  "restoreCoordinatorWakeState": false,
+  "screenshotCaptureHotkey": "Ctrl+Q",
+  "sidebarAlwaysOnTop": false,
+  "sidebarStyle": "noir-minimal",
+  "sidebarZoom": 1.0,
+  "soundsEnabled": true,
+  "specBoardEnabled": false,
+  "teamIdleBeepEnabled": true,
+  "telegramBots": [],
+  "telegramNetworkPollErrorLogging": {
+    "firstFailureLevel": "warn",
+    "recoveryLevel": "info",
+    "sustainedAfterSeconds": 60,
+    "sustainedLevel": "error",
+    "sustainedRepeatSeconds": 60,
+    "transientRepeatLevel": "debug"
+  },
+  "terminalSnapshotsEnabled": false,
+  "terminalZoom": 1.0,
+  "themeLight": false,
+  "voiceAutoExecute": true,
+  "voiceAutoExecuteDelay": 15,
+  "voiceToTextEnabled": false,
+  "watchers": {
+    "w1": {
+      "dedupe": "row",
+      "dedupeWindowMs": 2000,
+      "enabled": true,
+      "mode": "state",
+      "pattern": "^ready"
+    }
+  },
+  "watchersGeometry": {
+    "height": 400.0,
+    "width": 300.0,
+    "x": 10.0,
+    "y": 20.0
+  },
+  "webServerBind": "127.0.0.1",
+  "webServerEnabled": false,
+  "webServerPort": 8123
+}"##;
+
+        fn s6_normalized_non_project_settings() -> String {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            std::fs::write(&path, S6_FIXTURE_JSON).unwrap();
+            let loaded = load_settings_from_path(&path);
+            save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            let raw = std::fs::read_to_string(&path).unwrap();
+            let mut value: Value = serde_json::from_str(&raw).unwrap();
+            let object = value.as_object_mut().unwrap();
+            for key in [
+                FIELD_PROJECT_PATH,
+                FIELD_PROJECT_PATH_REL,
+                FIELD_PROJECT_PATHS,
+                FIELD_PROJECT_PATHS_REL,
+                FIELD_ARCHIVED,
+                FIELD_ARCHIVED_REL,
+                "rootToken",
+            ] {
+                object.remove(key);
+            }
+            let sorted: BTreeMap<String, Value> =
+                object.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            serde_json::to_string_pretty(&sorted).unwrap()
+        }
+
+        // S6
+        #[test]
+        fn a_no_overlay_save_writes_the_control_captured_on_the_pinned_base() {
+            assert_eq!(
+                s6_normalized_non_project_settings(),
+                EXPECTED_NON_PROJECT_SETTINGS_JSON
+            );
+        }
+
+        // S7
+        #[test]
+        fn an_overlay_key_absent_from_the_base_never_reaches_settings_json() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(
+                temp.path(),
+                Some(&base_fixture()),
+                Some(
+                    &json!({"watchersGeometry": {"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0}}),
+                ),
+            );
+            let settings = load_settings_from_path(&path);
+            assert!(settings.watchers_geometry.is_some());
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            assert!(
+                disk_object(&path).get("watchersGeometry").is_none(),
+                "the base file must never gain a key it did not have"
+            );
+        }
+
+        // S8
+        #[test]
+        fn the_startup_root_token_write_copies_no_overlay_value() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base.as_object_mut().unwrap().remove("rootToken");
+            base["logLevel"] = json!("info");
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"logLevel": "trace"})),
+            );
+
+            let settings = load_settings_from_path(&path);
+
+            assert_eq!(settings.log_level.as_deref(), Some("trace"));
+            assert!(!settings.local_overlay_state.is_empty());
+            let object = disk_object(&path);
+            assert_eq!(object["logLevel"], json!("info"));
+            assert!(object.get("rootToken").is_some(), "the token was generated");
+        }
+
+        // S9
+        #[test]
+        fn the_disk_ineligible_table_is_pinned_by_equality() {
+            assert_eq!(
+                OVERLAY_INELIGIBLE_DISK_KEYS,
+                &[
+                    "archivedProjectPaths",
+                    "archivedProjectPathsRelativeToInstance",
+                    "projectPath",
+                    "projectPathRelativeToInstance",
+                    "projectPaths",
+                    "projectPathsRelativeToInstance",
+                    "rootToken",
+                    "terminalSnapshotsEnabled",
+                ]
+            );
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[0], FIELD_ARCHIVED);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[1], FIELD_ARCHIVED_REL);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[2], FIELD_PROJECT_PATH);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[3], FIELD_PROJECT_PATH_REL);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[4], FIELD_PROJECT_PATHS);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[5], FIELD_PROJECT_PATHS_REL);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[6], "rootToken");
+            assert_eq!(
+                OVERLAY_INELIGIBLE_DISK_KEYS[7],
+                FIELD_TERMINAL_SNAPSHOTS_ENABLED
+            );
+            // `rootToken` is the serialized name of the field it protects.
+            let with_token = AppSettings {
+                root_token: Some("t".to_string()),
+                ..AppSettings::default()
+            };
+            let Value::Object(object) = serde_json::to_value(&with_token).unwrap() else {
+                unreachable!()
+            };
+            assert!(object.contains_key("rootToken"));
+        }
+
+        // S10
+        #[test]
+        fn the_legacy_ineligible_table_is_pinned_to_serialized_field_names() {
+            assert_eq!(
+                OVERLAY_INELIGIBLE_LEGACY_KEYS,
+                &[
+                    "sidebarAlwaysOnTop",
+                    "sidebarZoom",
+                    "startOnlyCoordinators",
+                    "terminalGeometry",
+                ]
+            );
+            let settings = AppSettings {
+                legacy_start_only_coordinators: Some(true),
+                terminal_geometry: Some(WindowGeometry {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                }),
+                ..AppSettings::default()
+            };
+            let Value::Object(object) = serde_json::to_value(&settings).unwrap() else {
+                unreachable!()
+            };
+            for key in OVERLAY_INELIGIBLE_LEGACY_KEYS {
+                assert!(
+                    object.contains_key(*key),
+                    "{key} is not a serialized AppSettings field"
+                );
+            }
+        }
+
+        // S11
+        #[test]
+        fn the_derived_id_closure_table_is_pinned_to_serialized_names() {
+            assert_eq!(OVERLAY_DERIVED_ID_CLOSURES.len(), 1);
+            let closure = &OVERLAY_DERIVED_ID_CLOSURES[0];
+            assert_eq!(closure.source_key, "agents");
+            assert_eq!(closure.id_field, "id");
+            assert_eq!(
+                closure.derived_prefix,
+                &["codingAgentProfiles", "profilesByAgent"]
+            );
+
+            let mut settings = AppSettings {
+                agents: vec![serde_json::from_value::<AgentConfig>(agent_json("probe")).unwrap()],
+                ..AppSettings::default()
+            };
+            settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .insert("probe".to_string(), BTreeMap::new());
+            let Value::Object(object) = serde_json::to_value(&settings).unwrap() else {
+                unreachable!()
+            };
+            assert!(object["agents"][0]
+                .as_object()
+                .unwrap()
+                .contains_key(closure.id_field));
+            assert!(object[closure.source_key].is_array());
+            assert!(object["codingAgentProfiles"]
+                .as_object()
+                .unwrap()
+                .contains_key("profilesByAgent"));
+        }
+
+        // S12
+        #[test]
+        fn an_overlay_naming_root_token_is_inert_in_memory_and_on_disk() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(
+                temp.path(),
+                Some(&base_fixture()),
+                Some(&json!({"rootToken": "override-token"})),
+            );
+            let settings = load_settings_from_path(&path);
+            assert_eq!(settings.root_token.as_deref(), Some("base-token"));
+            assert!(settings.local_overlay_state.is_empty());
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            assert_eq!(disk_object(&path)["rootToken"], json!("base-token"));
+        }
+
+        fn agent_json(id: &str) -> Value {
+            json!({
+                "id": id,
+                "label": id,
+                "command": id,
+                "color": "#000000",
+                "blockingMenus": [],
+            })
+        }
+
+        // S13
+        #[test]
+        fn a_repair_driven_by_an_overlay_agent_stays_out_of_the_base_file() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["agents"] = json!([agent_json("codex")]);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"agents": [agent_json("codex"), agent_json("scratch-agent")]})),
+            );
+
+            let settings = load_settings_from_path(&path);
+            assert!(settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .contains_key("scratch-agent"));
+            let object = disk_object(&path);
+            assert!(
+                object["codingAgentProfiles"]["profilesByAgent"]
+                    .get("scratch-agent")
+                    .is_none(),
+                "the overlay-introduced agent's cells must not reach the base file"
+            );
+
+            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+            let reloaded = load_settings_from_path(&path);
+            assert!(!reloaded
+                .coding_agent_profiles
+                .profiles_by_agent
+                .contains_key("scratch-agent"));
+            assert_eq!(reloaded.agents.len(), 1);
+        }
+
+        // S14
+        #[test]
+        fn the_save_time_repair_also_stays_out_of_the_base_file() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["agents"] = json!([agent_json("codex")]);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"agents": [agent_json("codex"), agent_json("scratch-agent")]})),
+            );
+            let mut settings = load_settings_from_path(&path);
+            settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .remove("scratch-agent");
+            validate_and_repair_settings(&mut settings).unwrap();
+            assert!(settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .contains_key("scratch-agent"));
+
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            assert!(disk_object(&path)["codingAgentProfiles"]["profilesByAgent"]
+                .get("scratch-agent")
+                .is_none());
+        }
+
+        // S15
+        #[test]
+        fn the_cas_early_return_carries_both_the_overlay_state_and_its_values() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = watcher_base();
+            base["terminalSnapshotsEnabled"] = json!(false);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"watchers": {"a": {"dedupeWindowMs": 50}}})),
+            );
+            let current = load_settings_from_path(&path);
+            assert_eq!(dedupe_window(&current), 50);
+
+            let candidate =
+                compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, false, false)
+                    .unwrap();
+            assert!(!candidate.local_overlay_state.is_empty());
+            assert_eq!(dedupe_window(&candidate), 50);
+        }
+
+        // S16
+        #[test]
+        fn the_cas_writing_branch_keeps_the_overlay_and_writes_base_leaves() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = watcher_base();
+            base["terminalSnapshotsEnabled"] = json!(false);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"watchers": {"a": {"dedupeWindowMs": 50}}})),
+            );
+            let current = load_settings_from_path(&path);
+
+            let written =
+                compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, false, true)
+                    .unwrap();
+            assert!(written.terminal_snapshots_enabled);
+            assert!(!written.local_overlay_state.is_empty());
+            assert_eq!(dedupe_window(&written), 50);
+            let object = disk_object(&path);
+            assert_eq!(object["watchers"]["a"]["dedupeWindowMs"], json!(500));
+            assert_eq!(object["terminalSnapshotsEnabled"], json!(true));
+        }
+
+        // S17
+        #[test]
+        fn reconcile_with_the_file_present_is_an_idempotent_restore() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(
+                temp.path(),
+                Some(&watcher_base()),
+                Some(&json!({"watchers": {"a": {"dedupeWindowMs": 50}}})),
+            );
+            let mut settings = load_settings_from_path(&path);
+            settings.project_paths = vec![temp.path().to_string_lossy().to_string()];
+
+            save_settings_with_project_paths_to_path(&settings, &path).unwrap();
+            assert_eq!(
+                disk_object(&path)["watchers"]["a"]["dedupeWindowMs"],
+                json!(500)
+            );
+
+            let written = reconcile_project_state_to_path(&settings, &path, true, true).unwrap();
+            assert_eq!(dedupe_window(&written), 50);
+            assert!(!written.local_overlay_state.is_empty());
+        }
+
+        // S18
+        #[test]
+        fn reconcile_with_the_file_absent_writes_no_overlay_value() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(
+                temp.path(),
+                Some(&watcher_base()),
+                Some(&json!({"watchers": {"a": {"dedupeWindowMs": 50}}})),
+            );
+            let settings = load_settings_from_path(&path);
+            std::fs::remove_file(&path).unwrap();
+
+            save_settings_with_project_paths_to_path(&settings, &path).unwrap();
+            assert_eq!(
+                disk_object(&path)["watchers"]["a"]["dedupeWindowMs"],
+                json!(500),
+                "the absent-file reconcile arm seeds `out` from the live settings, so restore_base is load-bearing"
+            );
+        }
+
+        // S19
+        #[test]
+        fn an_absent_base_still_applies_the_overlay_over_the_serialized_defaults() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(temp.path(), None, Some(&json!({"logLevel": "trace"})));
+            assert!(!path.exists());
+
+            let settings = load_settings_from_path(&path);
+            assert_eq!(settings.log_level.as_deref(), Some("trace"));
+            assert!(!settings.local_overlay_state.is_empty());
+            let object = disk_object(&path);
+            assert_eq!(
+                object.get("logLevel"),
+                Some(&Value::Null),
+                "the created file holds the DEFAULT value, not the override"
+            );
+
+            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+            let reloaded = load_settings_from_path(&path);
+            assert_eq!(reloaded.log_level, None);
+        }
+
+        // S20
+        #[test]
+        fn an_unparseable_base_still_applies_the_overlay_over_the_defaults() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            std::fs::write(&path, "{ not json").unwrap();
+            std::fs::write(
+                temp.path().join("settings.local.json"),
+                r#"{"logLevel": "trace"}"#,
+            )
+            .unwrap();
+
+            let settings = load_settings_from_path(&path);
+            assert_eq!(settings.log_level.as_deref(), Some("trace"));
+            assert!(!settings.local_overlay_state.is_empty());
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "{ not json",
+                "the preserve writer's disk gate refuses to overwrite a present-but-invalid file"
+            );
+        }
+
+        // S21
+        #[test]
+        fn the_routed_readers_serve_the_merged_value() {
+            let temp = tempfile::tempdir().unwrap();
+
+            // Neither file sets the key.
+            let path = seed(temp.path(), Some(&base_fixture()), None);
+            assert_eq!(read_log_level_from_path(&path), None);
+            assert!(!read_activity_log_enabled_from_path(&path));
+
+            // The base sets it; there is no overlay.
+            let mut base = base_fixture();
+            base["logLevel"] = json!("info");
+            base["activityLogEnabled"] = json!(true);
+            let path = seed(temp.path(), Some(&base), None);
+            assert_eq!(read_log_level_from_path(&path), Some("info".to_string()));
+            assert!(read_activity_log_enabled_from_path(&path));
+
+            // The overlay wins.
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"logLevel": "trace", "activityLogEnabled": false})),
+            );
+            assert_eq!(read_log_level_from_path(&path), Some("trace".to_string()));
+            assert!(!read_activity_log_enabled_from_path(&path));
+        }
+
+        // S22
+        #[test]
+        fn a_routed_reader_serves_the_overlay_over_an_unparseable_base() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            std::fs::write(&path, "{ not json").unwrap();
+            std::fs::write(
+                temp.path().join("settings.local.json"),
+                r#"{"logLevel": "trace", "activityLogEnabled": true}"#,
+            )
+            .unwrap();
+            assert_eq!(read_log_level_from_path(&path), Some("trace".to_string()));
+            assert!(read_activity_log_enabled_from_path(&path));
+        }
+
+        // S23
+        #[test]
+        fn a_wrong_typed_overlay_value_falls_back_to_the_base_and_not_to_defaults() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["mainZoom"] = json!(1.75);
+            base["geminiApiKey"] = json!("base-key");
+            let path = seed(temp.path(), Some(&base), Some(&json!({"mainZoom": "big"})));
+
+            let contents = std::fs::read_to_string(&path).unwrap();
+            let (settings, _) = parse_settings_json(&contents, "test", Some(&path)).unwrap();
+
+            assert_eq!(settings.main_zoom, 1.75, "the base value, not the default");
+            assert_eq!(settings.gemini_api_key, "base-key");
+            assert!(settings.local_overlay_state.is_empty());
+            assert!(matches!(
+                settings.local_overlay_state.rejection(),
+                Some(crate::config::local_overlay::OverlayRejection::MergedValueUndecodable(_))
+            ));
+        }
+
+        // S25
+        #[test]
+        fn the_five_json_side_diagnostic_records_are_asserted_through_the_typed_state() {
+            use crate::config::local_overlay::{OverlayDiagnostic, OverlayDiagnosticLevel};
+            let temp = tempfile::tempdir().unwrap();
+
+            // 1. Rejection.
+            let path = seed(temp.path(), Some(&base_fixture()), None);
+            std::fs::write(temp.path().join("settings.local.json"), "{ not json").unwrap();
+            let contents = std::fs::read_to_string(&path).unwrap();
+            let (settings, _) = parse_settings_json(&contents, "test", Some(&path)).unwrap();
+            let records = settings.local_overlay_state.diagnostics("local");
+            assert!(records
+                .iter()
+                .any(|r| matches!(r, OverlayDiagnostic::Rejected { .. })));
+
+            // 2 and 3. Both ineligible rules, plus 5, applied.
+            let path = seed(
+                temp.path(),
+                Some(&base_fixture()),
+                Some(&json!({
+                    "rootToken": "x",
+                    "sidebarZoom": 2.0,
+                    "logLevel": "trace",
+                })),
+            );
+            let contents = std::fs::read_to_string(&path).unwrap();
+            let (settings, _) = parse_settings_json(&contents, "test", Some(&path)).unwrap();
+            let records = settings.local_overlay_state.diagnostics("local");
+            let rules: Vec<&str> = records
+                .iter()
+                .filter_map(|r| match r {
+                    OverlayDiagnostic::IneligibleKeyDropped { rule, .. } => Some(*rule),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                rules,
+                vec![
+                    crate::config::local_overlay::RULE_DISK_AUTHORITATIVE,
+                    crate::config::local_overlay::RULE_LEGACY_MIGRATION_SOURCE,
+                ]
+            );
+            let applied: Vec<&OverlayDiagnostic> = records
+                .iter()
+                .filter(|r| matches!(r, OverlayDiagnostic::Applied { .. }))
+                .collect();
+            assert_eq!(applied.len(), 1);
+            assert_eq!(applied[0].level(), OverlayDiagnosticLevel::Info);
+            for record in &records {
+                if !matches!(record, OverlayDiagnostic::Applied { .. }) {
+                    assert_eq!(record.level(), OverlayDiagnosticLevel::Error);
+                }
+            }
+
+            // 4. Undecodable merge.
+            let mut base = base_fixture();
+            base["mainZoom"] = json!(1.75);
+            let path = seed(temp.path(), Some(&base), Some(&json!({"mainZoom": "big"})));
+            let contents = std::fs::read_to_string(&path).unwrap();
+            let (settings, _) = parse_settings_json(&contents, "test", Some(&path)).unwrap();
+            let records = settings.local_overlay_state.diagnostics("local");
+            assert!(records.iter().any(|r| matches!(
+                r,
+                OverlayDiagnostic::Rejected {
+                    rejection:
+                        crate::config::local_overlay::OverlayRejection::MergedValueUndecodable(_),
+                    ..
+                }
+            )));
+        }
+
+        /// The set of top-level keys added, removed, or changed between two objects.
+        fn mutated_keys(
+            before: &Map<String, Value>,
+            after: &Map<String, Value>,
+        ) -> BTreeSet<String> {
+            let mut keys = BTreeSet::new();
+            for (key, value) in before {
+                match after.get(key) {
+                    Some(other) if other == value => {}
+                    _ => {
+                        keys.insert(key.clone());
+                    }
+                }
+            }
+            for key in after.keys() {
+                if !before.contains_key(key) {
+                    keys.insert(key.clone());
+                }
+            }
+            keys
+        }
+
+        fn object_of(value: Value) -> Map<String, Value> {
+            match value {
+                Value::Object(object) => object,
+                other => panic!("not an object: {other}"),
+            }
+        }
+
+        // S26
+        #[test]
+        fn the_premigration_unsafe_set_is_derived_from_the_two_value_stage_functions() {
+            // Every project row is written by the decode: the two active keys are
+            // rebuilt from the selected pairs (an unresolvable registration selects
+            // nothing), the archived key is rebuilt from the archived pairs (a row
+            // that carries no usable absolute string contributes nothing), and the
+            // three companions are removed outright. An instance base is passed
+            // explicitly, so the test never depends on `production_instance_base()`.
+            let temp = tempfile::tempdir().unwrap();
+            let instance_base = temp.path();
+
+            let mut value = json!({
+                "logLevel": "info",
+                "activityLogEnabled": true,
+                "agents": [{"id": "codex", "label": "Codex", "command": "codex", "color": "#000"}],
+                "codingAgentProfiles": {
+                    "schemaVersion": 1,
+                    "letters": { "A": { "name": "Baseline" } },
+                    "matrix": { "codex": { "A": { "enabled": true, "argv": [], "env": {}, "notes": "" } } }
+                },
+                "projectPath": "no-such-project-directory",
+                "projectPathRelativeToInstance": "a",
+                "projectPaths": ["no-such-project-directory"],
+                "projectPathsRelativeToInstance": ["a"],
+                "archivedProjectPaths": [null],
+                "archivedProjectPathsRelativeToInstance": ["b"],
+            });
+            let before = object_of(value.clone());
+
+            migrate_settings_value_to_v2(&mut value);
+            let _ = apply_project_decode_to_value(
+                &mut value,
+                Some(instance_base),
+                &projects::FsCandidateResolver,
+            );
+            let after = object_of(value);
+
+            let mutated = mutated_keys(&before, &after);
+            let expected: BTreeSet<String> = OVERLAY_PREMIGRATION_UNSAFE_KEYS
+                .iter()
+                .map(|key| (*key).to_string())
+                .collect();
+            // Stated limit: this observes one fixture, not all inputs. It is the
+            // tripwire that fires if either function starts writing a key the D16
+            // shortcut does not list; it is not a proof.
+            assert_eq!(mutated, expected);
+        }
+
+        // S27
+        #[test]
+        fn the_load_time_chain_mutates_exactly_the_pinned_key_set() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+
+            let mut fixture = object_of(serde_json::to_value(AppSettings::default()).unwrap());
+            fixture.remove("rootToken");
+            fixture.insert(
+                FIELD_TERMINAL_SNAPSHOTS_ENABLED.to_string(),
+                Value::Bool(false),
+            );
+            fixture.insert(
+                "terminalGeometry".to_string(),
+                json!({"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0}),
+            );
+            fixture.insert("sidebarZoom".to_string(), json!(1.5));
+            fixture.insert("sidebarAlwaysOnTop".to_string(), json!(true));
+            fixture.insert("startOnlyCoordinators".to_string(), json!(true));
+            fixture.insert(
+                "agents".to_string(),
+                json!([{"id": "codex", "label": "Codex", "command": "codex", "color": "#000000"}]),
+            );
+            fixture.insert(
+                "codingAgentProfiles".to_string(),
+                json!({"schemaVersion": 2, "profileSlots": {}, "profilesByAgent": {}}),
+            );
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&Value::Object(fixture.clone())).unwrap(),
+            )
+            .unwrap();
+
+            let loaded = load_settings_from_path(&path);
+            let after = object_of(serde_json::to_value(&loaded).unwrap());
+
+            let mut mutated = mutated_keys(&fixture, &after);
+            for key in [
+                FIELD_PROJECT_PATH,
+                FIELD_PROJECT_PATH_REL,
+                FIELD_PROJECT_PATHS,
+                FIELD_PROJECT_PATHS_REL,
+                FIELD_ARCHIVED,
+                FIELD_ARCHIVED_REL,
+            ] {
+                mutated.remove(key);
+            }
+
+            let expected: BTreeSet<String> = [
+                "agents",
+                "codingAgentProfiles",
+                "mainAlwaysOnTop",
+                "mainGeometry",
+                "mainZoom",
+                "restoreCoordinatorWakeState",
+                "rootToken",
+                "startOnlyCoordinators",
+            ]
+            .iter()
+            .map(|key| (*key).to_string())
+            .collect();
+            assert_eq!(mutated, expected);
+        }
+
+        // S28
+        #[test]
+        fn the_save_time_repair_chain_mutates_exactly_the_pinned_key_set() {
+            let mut settings = AppSettings {
+                agents: vec![serde_json::from_value::<AgentConfig>(agent_json("codex")).unwrap()],
+                api_server_bind: "  127.0.0.1  ".to_string(),
+                ..AppSettings::default()
+            };
+            // Dirty `agents`: a container image with surrounding whitespace is what
+            // `normalize_agent_backend_configs` rewrites.
+            settings.agents[0].backend.kind = SessionBackendKind::ContainerTransport;
+            settings.agents[0].backend.image = Some("  example/image:tag  ".to_string());
+            settings.coding_agent_profiles.schema_version = 1;
+            let before = object_of(serde_json::to_value(&settings).unwrap());
+
+            validate_and_repair_settings(&mut settings).unwrap();
+            let after = object_of(serde_json::to_value(&settings).unwrap());
+
+            let expected: BTreeSet<String> = ["agents", "codingAgentProfiles", "apiServerBind"]
+                .iter()
+                .map(|key| (*key).to_string())
+                .collect();
+            assert_eq!(mutated_keys(&before, &after), expected);
+        }
+
+        // S29
+        #[test]
+        fn the_migration_destination_table_is_pinned_to_serialized_field_names() {
+            assert_eq!(
+                OVERLAY_MIGRATION_DESTINATION_KEYS,
+                &[
+                    "agents",
+                    "mainAlwaysOnTop",
+                    "mainGeometry",
+                    "mainZoom",
+                    "restoreCoordinatorWakeState",
+                ]
+            );
+            assert_eq!(OVERLAY_MIGRATION_DESTINATION_KEYS[0], OVERLAY_KEY_AGENTS);
+            assert_eq!(
+                OVERLAY_MIGRATION_DESTINATION_KEYS[1],
+                OVERLAY_KEY_MAIN_ALWAYS_ON_TOP
+            );
+            assert_eq!(
+                OVERLAY_MIGRATION_DESTINATION_KEYS[2],
+                OVERLAY_KEY_MAIN_GEOMETRY
+            );
+            assert_eq!(OVERLAY_MIGRATION_DESTINATION_KEYS[3], OVERLAY_KEY_MAIN_ZOOM);
+            assert_eq!(
+                OVERLAY_MIGRATION_DESTINATION_KEYS[4],
+                OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE
+            );
+
+            let settings = AppSettings {
+                main_geometry: Some(WindowGeometry {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                }),
+                restore_coordinator_wake_state: true,
+                ..AppSettings::default()
+            };
+            let object = object_of(serde_json::to_value(&settings).unwrap());
+            for key in OVERLAY_MIGRATION_DESTINATION_KEYS {
+                assert!(
+                    object.contains_key(*key),
+                    "{key} is not a serialized AppSettings field"
+                );
+            }
+        }
+
+        // #1757 (D11/D12) - an overlay that owns `agents` suppresses the migration.
+        #[test]
+        fn an_overlay_owned_agents_array_suppresses_the_1757_migration() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["agents"] = json!([codex_agent_with(json!([folder_trust_entry()]))]);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                // The overlay's array MUST be the non-empty one-entry shape: that is
+                // precisely what the migration would act on if the guard were absent.
+                Some(&json!({"agents": [codex_agent_with(json!([folder_trust_entry()]))]})),
+            );
+
+            let settings = load_settings_from_path(&path);
+            assert!(
+                settings
+                    .local_overlay_state
+                    .owns_top_level(OVERLAY_KEY_AGENTS),
+                "the fixture stopped producing an overlay-owned agents array"
+            );
+
+            fn in_memory(settings: &AppSettings) -> usize {
+                settings
+                    .agents
+                    .iter()
+                    .find(|a| a.id == "codex")
+                    .expect("codex agent")
+                    .blocking_menus
+                    .as_ref()
+                    .expect("blocking_menus present")
+                    .len()
+            }
+            fn on_disk(path: &Path) -> usize {
+                let object = disk_object(path);
+                object["agents"][0]["blockingMenus"]
+                    .as_array()
+                    .expect("blockingMenus array")
+                    .len()
+            }
+
+            // Deleting the owns_top_level(OVERLAY_KEY_AGENTS) early return makes this
+            // in-memory number 2. The on-disk number is 1 either way, because
+            // restore_base writes the captured base array back on every save.
+            assert_eq!(
+                in_memory(&settings),
+                1,
+                "the migration must not touch an overlay-owned agents array in memory"
+            );
+            assert_eq!(on_disk(&path), 1, "the base file must stay clean");
+
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+            assert_eq!(in_memory(&settings), 1);
+            assert_eq!(on_disk(&path), 1, "restore_base must keep the base array");
+        }
+
+        // S30
+        #[test]
+        fn the_default_arms_render_their_diagnostics_before_returning_defaults() {
+            use crate::config::local_overlay::OverlayDiagnostic;
+
+            let cases: [(&str, Option<&str>); 4] = [
+                ("invalid-json", Some("{ not json")),
+                ("top-level-array", Some("[1, 2]")),
+                ("unreadable", None), // a directory at the overlay path
+                (
+                    "all-ineligible",
+                    Some(r#"{"rootToken": "x", "projectPaths": []}"#),
+                ),
+            ];
+
+            for (label, bytes) in cases {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join("settings.json");
+                let local = temp.path().join("settings.local.json");
+                match bytes {
+                    Some(bytes) => std::fs::write(&local, bytes).unwrap(),
+                    None => std::fs::create_dir(&local).unwrap(),
+                }
+
+                let settings = default_settings_with_overlay(&path, "test");
+                let control = AppSettings::default();
+                assert_eq!(
+                    serde_json::to_value(&settings).unwrap(),
+                    serde_json::to_value(&control).unwrap(),
+                    "{label}: the value returned must equal AppSettings::default()"
+                );
+
+                // The diagnostics the arm renders, observed on the overlay it loaded.
+                let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+                let overlay = LocalSettingsOverlay::load_and_merge(
+                    &path,
+                    &mut value,
+                    OVERLAY_INELIGIBLE_DISK_KEYS,
+                    OVERLAY_INELIGIBLE_LEGACY_KEYS,
+                    OVERLAY_DERIVED_ID_CLOSURES,
+                );
+                let records = overlay.diagnostics("test");
+                assert!(!records.is_empty(), "{label}: expected a diagnostic");
+                if label == "all-ineligible" {
+                    assert!(records
+                        .iter()
+                        .all(|r| matches!(r, OverlayDiagnostic::IneligibleKeyDropped { .. })));
+                } else {
+                    assert!(records
+                        .iter()
+                        .any(|r| matches!(r, OverlayDiagnostic::Rejected { .. })));
+                }
+
+                // The same arm through the real loader, with an absent base.
+                let loaded = load_settings_from_path(&path);
+                assert!(
+                    loaded.local_overlay_state.is_empty(),
+                    "{label}: no overlay may be owned"
+                );
+            }
+
+            // The control: no local file at all renders nothing.
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+            let overlay = LocalSettingsOverlay::load_and_merge(
+                &path,
+                &mut value,
+                OVERLAY_INELIGIBLE_DISK_KEYS,
+                OVERLAY_INELIGIBLE_LEGACY_KEYS,
+                OVERLAY_DERIVED_ID_CLOSURES,
+            );
+            assert!(overlay.diagnostics("test").is_empty());
+        }
+
+        // S31
+        #[test]
+        fn owning_a_migration_destination_suppresses_the_migration_in_memory() {
+            let geometry = json!({"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0});
+
+            // R2: sidebarZoom 1.5 -> mainZoom, overridden to the default value 1.0.
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["sidebarZoom"] = json!(1.5);
+            let path = seed(temp.path(), Some(&base), Some(&json!({"mainZoom": 1.0})));
+            assert_eq!(load_settings_from_path(&path).main_zoom, 1.0);
+            let control_temp = tempfile::tempdir().unwrap();
+            let control = seed(control_temp.path(), Some(&base), None);
+            assert_eq!(load_settings_from_path(&control).main_zoom, 1.5);
+
+            // R3: sidebarAlwaysOnTop true -> mainAlwaysOnTop, overridden to false.
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["sidebarAlwaysOnTop"] = json!(true);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"mainAlwaysOnTop": false})),
+            );
+            assert!(!load_settings_from_path(&path).main_always_on_top);
+            let control_temp = tempfile::tempdir().unwrap();
+            let control = seed(control_temp.path(), Some(&base), None);
+            assert!(load_settings_from_path(&control).main_always_on_top);
+
+            // R1: terminalGeometry -> mainGeometry, overridden to an explicit null.
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["terminalGeometry"] = geometry.clone();
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"mainGeometry": null})),
+            );
+            assert!(load_settings_from_path(&path).main_geometry.is_none());
+            let control_temp = tempfile::tempdir().unwrap();
+            let control = seed(control_temp.path(), Some(&base), None);
+            assert!(load_settings_from_path(&control).main_geometry.is_some());
+
+            // R4: startOnlyCoordinators true -> restoreCoordinatorWakeState, false.
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["startOnlyCoordinators"] = json!(true);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"restoreCoordinatorWakeState": false})),
+            );
+            assert!(!load_settings_from_path(&path).restore_coordinator_wake_state);
+            let control_temp = tempfile::tempdir().unwrap();
+            let control = seed(control_temp.path(), Some(&base), None);
+            assert!(load_settings_from_path(&control).restore_coordinator_wake_state);
+        }
+
+        // S32
+        #[test]
+        fn the_248_legacy_carrier_survives_while_the_overlay_owns_the_destination() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["startOnlyCoordinators"] = json!(true);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"restoreCoordinatorWakeState": false})),
+            );
+
+            let settings = load_settings_from_path(&path);
+            assert!(!settings.restore_coordinator_wake_state);
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            assert_eq!(
+                disk_object(&path).get("startOnlyCoordinators"),
+                Some(&json!(true)),
+                "the legacy carrier is deferred, not dropped"
+            );
+
+            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+            let reloaded = load_settings_from_path(&path);
+            assert!(reloaded.restore_coordinator_wake_state);
+            assert!(
+                disk_object(&path).get("startOnlyCoordinators").is_none(),
+                "removing the overlay lets the migration finish"
+            );
+
+            // The control: with no overlay the key is removed on the first save.
+            let control_temp = tempfile::tempdir().unwrap();
+            let control = seed(control_temp.path(), Some(&base), None);
+            let settings = load_settings_from_path(&control);
+            assert!(settings.restore_coordinator_wake_state);
+            assert!(disk_object(&control).get("startOnlyCoordinators").is_none());
+        }
+
+        // S33
+        #[test]
+        fn a_skip_serializing_owned_key_keeps_its_override_across_every_save() {
+            let geometry = json!({"x": 100.0, "y": 100.0, "width": 800.0, "height": 600.0});
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = watcher_base();
+            base["watchersGeometry"] = geometry.clone();
+            base["watchers"]["a"]["commands"] = json!(["claude"]);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"watchersGeometry": null, "watchers": {"a": {"commands": null}}})),
+            );
+
+            let mut settings = load_settings_from_path(&path);
+            assert!(
+                settings.watchers_geometry.is_none(),
+                "the operator's intent"
+            );
+            assert!(settings.watchers["a"].valid().unwrap().commands.is_none());
+
+            settings.gemini_api_key = "unrelated-change".to_string();
+            let written = save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+            let object = disk_object(&path);
+            assert_eq!(object["watchersGeometry"], geometry);
+            assert_eq!(object["watchers"]["a"]["commands"], json!(["claude"]));
+            assert_eq!(object["geminiApiKey"], json!("unrelated-change"));
+            assert!(
+                written.watchers_geometry.is_none(),
+                "the value the caller adopts must still be the override"
+            );
+            assert!(written.watchers["a"].valid().unwrap().commands.is_none());
+
+            // A second save of the returned value must not resurrect the base value.
+            let again = save_settings_to_path_preserving_project_paths(&written, &path).unwrap();
+            assert!(again.watchers_geometry.is_none());
+            assert_eq!(disk_object(&path)["watchersGeometry"], geometry);
+
+            // The control: with no local file the same load-and-save keeps the base.
+            let control_temp = tempfile::tempdir().unwrap();
+            let control = seed(control_temp.path(), Some(&base), None);
+            let mut settings = load_settings_from_path(&control);
+            settings.gemini_api_key = "unrelated-change".to_string();
+            let written =
+                save_settings_to_path_preserving_project_paths(&settings, &control).unwrap();
+            assert!(written.watchers_geometry.is_some());
+        }
+
+        // S34
+        #[test]
+        fn the_cas_early_return_honours_the_removal_rule_too() {
+            let geometry = json!({"x": 100.0, "y": 100.0, "width": 800.0, "height": 600.0});
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["watchersGeometry"] = geometry;
+            base["terminalSnapshotsEnabled"] = json!(false);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"watchersGeometry": null})),
+            );
+
+            let current = load_settings_from_path(&path);
+            assert!(current.watchers_geometry.is_none());
+
+            let candidate =
+                compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, false, false)
+                    .unwrap();
+            assert!(
+                candidate.watchers_geometry.is_none(),
+                "the disk-decoded candidate must not hand back the base geometry"
+            );
+        }
     }
 }

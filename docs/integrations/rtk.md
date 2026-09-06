@@ -37,10 +37,10 @@ Repeat the row for every coding agent whose sessions you want to measure. ENVIRO
 | Property | What it buys you |
 |---|---|
 | `%AC_MATRIX_ROOT%` | Resolves to `<project>\.ac\_agent_<name>`, the agent's canonical Agent Matrix. Statistics aggregate **per agent type**, across every room replica that agent ever ran in. |
-| Absolute after expansion | RTK opens `RTK_DB_PATH` exactly as given. A relative value resolves against the session's current working directory, which changes as the agent moves between `repo-*` checkouts, so the history scatters into several files. |
+| Absolute after expansion | RTK opens `RTK_DB_PATH` exactly as given. A relative value resolves against the session's current working directory, which changes as the agent moves between `repo-*` work repos, so the history scatters into several files. |
 | Outside `room-*` | Room directories are disposable. A database under the Agent Matrix survives a room purge. |
 
-The `project_path` column keeps the second dimension. Every row records the working directory the command ran in, so one agent's database still tells you which replica or repository checkout each command came from.
+The `project_path` column keeps the second dimension. Every row records the working directory the command ran in, so one agent's database still tells you which replica or work repo each command came from.
 
 ## Make your agents use RTK
 
@@ -251,7 +251,7 @@ tech-lead                 15        1519
 architect                 22        1210
 ```
 
-To break one agent down by replica or repository checkout, swap the query for `SELECT project_path, COUNT(*), COALESCE(SUM(saved_tokens), 0) FROM commands GROUP BY project_path`.
+To break one agent down by replica or work repo, swap the query for `SELECT project_path, COUNT(*), COALESCE(SUM(saved_tokens), 0) FROM commands GROUP BY project_path`.
 
 Always open the databases read-only, as `?mode=ro` above does. A live session may be writing to one of them.
 
@@ -277,7 +277,7 @@ RTK Token Savings (Global Scope)
 Total commands:    1
 ```
 
-The header reads **Global Scope** and the number reads like an answer. It is the count for one directory. This is the failure mode to watch for, because the other two announce themselves and this one never does: an agent that moves between `repo-*` checkouts scatters its history across all of them, and every report you read is a fraction whose size you cannot see.
+The header reads **Global Scope** and the number reads like an answer. It is the count for one directory. This is the failure mode to watch for, because the other two announce themselves and this one never does: an agent that moves between `repo-*` work repos scatters its history across all of them, and every report you read is a fraction whose size you cannot see.
 
 Use `%AC_MATRIX_ROOT%`, or a literal absolute path, so every session of that agent writes to one file.
 
@@ -305,7 +305,7 @@ Only `%AC_REPLICA_ROOT%`, `%AC_WORKSPACE_ROOT%` and `%AC_MATRIX_ROOT%` are recog
 
 ## When `%AC_MATRIX_ROOT%` does not resolve
 
-`%AC_MATRIX_ROOT%` resolves only for a room replica launch root, that is a `__agent_*` directory under a `room-*` room. A session launched from a `repo-*` checkout, a bare `room-*` directory, an `_agent_*` matrix directory or the root agent fails at launch with:
+`%AC_MATRIX_ROOT%` resolves only for a room replica launch root, that is a `__agent_*` directory under a `room-*` room. A session launched from a `repo-*` work repo, a bare `room-*` directory, an `_agent_*` matrix directory or the root agent fails at launch with:
 
 ```text
 %AC_MATRIX_ROOT% requires an AC room replica launch root

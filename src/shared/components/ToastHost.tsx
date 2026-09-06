@@ -42,6 +42,23 @@ const ToastHost: Component = () => {
               on:mousedown={(e) => e.stopPropagation()}
             >
               <span class="toast-item__message">{toast.message}</span>
+              <Show when={toast.secondaryAction}>
+                {(action) => (
+                  <button
+                    class="toast-item__action"
+                    type="button"
+                    data-ac-testid="toast.item.action.secondary"
+                    onClick={() => {
+                      action().onClick();
+                      // #1669: `dismissOnClick === false` keeps the toast up (the blocked
+                      // menu is still unanswered). Omitted/true preserves #574 behavior.
+                      if (action().dismissOnClick !== false) toastStore.dismiss(toast.id);
+                    }}
+                  >
+                    {action().label}
+                  </button>
+                )}
+              </Show>
               <Show when={toast.action}>
                 {(action) => (
                   <button
@@ -50,7 +67,7 @@ const ToastHost: Component = () => {
                     data-ac-testid="toast.item.action"
                     onClick={() => {
                       action().onClick();
-                      toastStore.dismiss(toast.id);
+                      if (action().dismissOnClick !== false) toastStore.dismiss(toast.id);
                     }}
                   >
                     {action().label}

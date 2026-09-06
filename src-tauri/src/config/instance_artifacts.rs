@@ -145,6 +145,12 @@ pub(crate) const ORPHAN_ARCHIVE_ROTATION_GLOB: &str = "orphaned-sessions.archive
 pub(crate) const PROJECT_REFRESH_REQUESTS_DIR_NAME: &str = "project-refresh-requests";
 pub(crate) const PTY_INPUT_LOCKS_DIR_NAME: &str = "pty-input-locks";
 pub(crate) const SESSION_REQUESTS_DIR_NAME: &str = "session-requests";
+/// #1737 - operator-owned Markdown overrides. AC never creates, syncs, upgrades,
+/// retires or manifest-records one; the row exists so a machine-local override is
+/// not committed by accident.
+pub(crate) const LOCAL_MARKDOWN_OVERRIDE_GLOB: &str = "*.local.md";
+/// #1737 - the operator-owned settings overlay, read at load and never written by AC.
+pub(crate) const SETTINGS_LOCAL_OVERRIDE_FILE_NAME: &str = "settings.local.json";
 pub(crate) const SETTINGS_LOCK_FILE_NAME: &str = "settings.json.lock";
 /// Covers every settings migration backup instance. The concrete names are
 /// composed by their own migrations, so this glob is registry-owned and no
@@ -180,6 +186,12 @@ pub(crate) const CODING_AGENTS_CATALOG_DIR_NAME: &str = "coding-agents";
 /// generated file is rewritten, or names whose writer is deliberately left
 /// alone and guarded by the git fixture instead.
 pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
+    InstanceArtifact {
+        name: LOCAL_MARKDOWN_OVERRIDE_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: operator-owned .local.md context-template overrides; machine-local by design and never created by AC",
+    },
     InstanceArtifact {
         name: ATOMIC_WRITE_TMP_GLOB,
         kind: ArtifactKind::GlobAnyDepth,
@@ -417,6 +429,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: transient settings write lock",
+    },
+    InstanceArtifact {
+        name: SETTINGS_LOCAL_OVERRIDE_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: operator-owned settings overlay; machine-local by design and never written by AC",
     },
     InstanceArtifact {
         name: SETTINGS_MIGRATION_BACKUP_GLOB,
