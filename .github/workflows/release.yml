@@ -951,9 +951,15 @@ jobs:
             print substr($bytes, $separator + 2);
           ' < "$tag_bytes" > "$tag_payload"
           cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          file_sha256() {
+            perl -MDigest::SHA -e 'print Digest::SHA->new(256)->addfile($ARGV[0], "b")->hexdigest' -- "$1"
+          }
+          test "$(file_sha256 "$RELEASE_DIR/release-authority-v1.txt")" = "$EXPECTED_AUTHORITY_SHA256"
+          test "$(file_sha256 "$tag_payload")" = "$EXPECTED_AUTHORITY_SHA256"
+          REMOTE_TAG=()
+          while IFS= read -r remote_tag_line; do
+            REMOTE_TAG+=("$remote_tag_line")
+          done < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
           test "${#REMOTE_TAG[@]}" -eq 2
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
@@ -1101,9 +1107,15 @@ jobs:
             local asset_name
             local -a remaining
             local -a matches
-            mapfile -t remaining < <(remaining_bundle_assets "$@")
+            remaining=()
+            while IFS= read -r remaining_name; do
+              remaining+=("$remaining_name")
+            done < <(remaining_bundle_assets "$@")
             for asset_name in "${remaining[@]}"; do
-              mapfile -t matches < <(find "$TARGET_DIR/bundle" -type f -name "$asset_name" -print)
+              matches=()
+              while IFS= read -r match_path; do
+                matches+=("$match_path")
+              done < <(find "$TARGET_DIR/bundle" -type f -name "$asset_name" -print)
               test "${#matches[@]}" = 1
               cp -- "${matches[0]}" "$asset_dir/$asset_name"
             done
@@ -1190,7 +1202,8 @@ jobs:
           source "$RUNNER_TEMP/release-controls.sh"
           release_id="$(release_resolve_id draft "$EXPECTED_RELEASE_ID")"
           test "$release_id" = "$EXPECTED_RELEASE_ID"
-          mapfile -t asset_names < <(node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" <<'NODE'
+          asset_names_list="$(mktemp "$RUNNER_TEMP/producer-asset-names.XXXXXX")"
+          node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" <<'NODE' > "$asset_names_list"
           const assert = require('node:assert/strict');
           const fs = require('node:fs');
           const [ledgerPath, producer] = process.argv.slice(2);
@@ -1199,7 +1212,10 @@ jobs:
           assert.ok(assets.length > 0, 'producer has no ledger assets');
           for (const asset of assets) process.stdout.write(asset.name + '\n');
           NODE
-          )
+          asset_names=()
+          while IFS= read -r asset_name_line; do
+            asset_names+=("$asset_name_line")
+          done < "$asset_names_list"
           test "${#asset_names[@]}" -gt 0
           for asset_name in "${asset_names[@]}"; do
             test -s "$PRODUCER_ASSET_DIR/$asset_name"
