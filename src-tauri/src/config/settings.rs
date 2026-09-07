@@ -350,6 +350,21 @@ pub struct AppSettings {
         rename = "startOnlyCoordinators"
     )]
     pub legacy_start_only_coordinators: Option<bool>,
+    /// (#1793) Typed into an ORCHESTRATOR whose persisted row was working when
+    /// the app went down. Empty means inject nothing. No effect unless
+    /// `restore_coordinator_wake_state` is on: a deferred orchestrator has no PTY.
+    #[serde(default = "default_restart_resume_orchestrator_prompt")]
+    pub restart_resume_orchestrator_prompt: String,
+    /// (#1793) Typed into a NON-COORDINATOR replica whose persisted row was
+    /// working. Empty means inject nothing. No effect unless
+    /// `restart_resume_wake_working_agents` is on: a deferred replica has no PTY.
+    #[serde(default = "default_restart_resume_agent_prompt")]
+    pub restart_resume_agent_prompt: String,
+    /// (#1793) Wake a non-coordinator replica whose persisted row was working.
+    /// Off by default so the #248 policy (non-coordinators are never auto-woken)
+    /// is unchanged unless the user opts in. This wakes; the prompt above types.
+    #[serde(default)]
+    pub restart_resume_wake_working_agents: bool,
     /// Keep sidebar window always on top
     #[serde(default)]
     pub sidebar_always_on_top: bool,
@@ -811,6 +826,14 @@ fn default_gemini_model() -> String {
     "gemini-2.5-flash".to_string()
 }
 
+fn default_restart_resume_orchestrator_prompt() -> String {
+    "AgentsCommander was restarted. Continue with the work that was in flight.".to_string()
+}
+
+fn default_restart_resume_agent_prompt() -> String {
+    ".".to_string()
+}
+
 fn default_voice_delay() -> u32 {
     15
 }
@@ -924,6 +947,9 @@ impl Default for AppSettings {
             telegram_network_poll_error_logging: TelegramNetworkPollErrorLogging::default(),
             restore_coordinator_wake_state: false,
             legacy_start_only_coordinators: None,
+            restart_resume_orchestrator_prompt: default_restart_resume_orchestrator_prompt(),
+            restart_resume_agent_prompt: default_restart_resume_agent_prompt(),
+            restart_resume_wake_working_agents: false,
             sidebar_always_on_top: false,
             team_idle_beep_enabled: true,
             sounds_enabled: true,
@@ -8848,6 +8874,89 @@ mod tests {
         assert!(s.legacy_start_only_coordinators.is_none()); // dropped
     }
 
+    // ── Issue #1793 — restart-resume settings contract ─────────────────────
+
+    #[test]
+    fn restart_resume_defaults_are_the_decided_strings() {
+        let s = super::AppSettings::default();
+        assert_eq!(
+            s.restart_resume_orchestrator_prompt,
+            "AgentsCommander was restarted. Continue with the work that was in flight."
+        );
+        assert_eq!(s.restart_resume_agent_prompt, ".");
+        assert!(!s.restart_resume_wake_working_agents);
+    }
+
+    #[test]
+    fn restart_resume_keys_absent_from_disk_load_as_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        // No restartResume* key of any kind. `sidebarAlwaysOnTop: true` is a
+        // tripwire: it is not the default, so if this fixture failed to parse
+        // and the loader fell back to defaults, the assertions below would be
+        // comparing defaults with defaults and would prove nothing.
+        std::fs::write(
+            &path,
+            r#"{
+                "defaultShell": "bash",
+                "defaultShellArgs": [],
+                "agents": [],
+                "sidebarAlwaysOnTop": true
+            }"#,
+        )
+        .unwrap();
+
+        let s = super::load_settings_from_path(&path);
+        assert!(
+            s.sidebar_always_on_top,
+            "the fixture must have parsed; a fallback to defaults proves nothing"
+        );
+        assert_eq!(
+            s.restart_resume_orchestrator_prompt,
+            "AgentsCommander was restarted. Continue with the work that was in flight."
+        );
+        assert_eq!(s.restart_resume_agent_prompt, ".");
+        assert!(!s.restart_resume_wake_working_agents);
+    }
+
+    #[test]
+    fn restart_resume_empty_prompt_survives_a_round_trip() {
+        // Load-bearing: `#[serde(default = "...")]` fires only on ABSENCE, so an
+        // explicitly empty prompt must not be re-defaulted on the way back in.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+
+        let s = super::AppSettings {
+            restart_resume_orchestrator_prompt: String::new(),
+            restart_resume_agent_prompt: String::new(),
+            ..super::AppSettings::default()
+        };
+        super::save_settings_to_path_preserving_project_paths(&s, &path).unwrap();
+
+        let loaded = super::load_settings_from_path(&path);
+        assert_eq!(loaded.restart_resume_orchestrator_prompt, "");
+        assert_eq!(loaded.restart_resume_agent_prompt, "");
+    }
+
+    #[test]
+    fn restart_resume_serde_keys_are_camel_case() {
+        // A default round trip cannot detect a wrong or renamed serde key, so the
+        // raw key text is asserted here. Do not drop or merge these assertions.
+        let json = serde_json::to_string(&super::AppSettings::default()).unwrap();
+        assert!(
+            json.contains("\"restartResumeOrchestratorPrompt\""),
+            "the orchestrator prompt must serialize under its decided camelCase key"
+        );
+        assert!(
+            json.contains("\"restartResumeAgentPrompt\""),
+            "the agent prompt must serialize under its decided camelCase key"
+        );
+        assert!(
+            json.contains("\"restartResumeWakeWorkingAgents\""),
+            "the wake toggle must serialize under its decided camelCase key"
+        );
+    }
+
     #[test]
     fn coord_sort_by_activity_defaults_when_missing_from_json() {
         // Old settings.json without the new field must deserialize to false.
@@ -9932,6 +10041,9 @@ mod tests {
   "resourceKeepLastSnapshot": true,
   "resourceMonitorEnabled": true,
   "resourceWatchdogAction": "warn",
+  "restartResumeAgentPrompt": ".",
+  "restartResumeOrchestratorPrompt": "AgentsCommander was restarted. Continue with the work that was in flight.",
+  "restartResumeWakeWorkingAgents": false,
   "restoreCoordinatorWakeState": false,
   "screenshotCaptureHotkey": "Ctrl+Q",
   "selectedRowRailColor": "#630707",
