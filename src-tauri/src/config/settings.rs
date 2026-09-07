@@ -848,7 +848,7 @@ fn default_selected_row_rail_width() -> String {
 }
 
 fn default_selected_row_rail_color() -> String {
-    "#00ff5f".to_string()
+    "#630707".to_string()
 }
 
 fn default_main_sidebar_width() -> f64 {
@@ -9934,7 +9934,7 @@ mod tests {
   "resourceWatchdogAction": "warn",
   "restoreCoordinatorWakeState": false,
   "screenshotCaptureHotkey": "Ctrl+Q",
-  "selectedRowRailColor": "#00ff5f",
+  "selectedRowRailColor": "#630707",
   "selectedRowRailWidth": "9px",
   "sidebarAlwaysOnTop": false,
   "sidebarStyle": "noir-minimal",

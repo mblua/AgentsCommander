@@ -5,7 +5,7 @@
  *  must not reach the stylesheet, and a value that does not warn must. */
 
 export const RAIL_WIDTH_DEFAULT = "9px";
-export const RAIL_COLOR_DEFAULT = "#00ff5f";
+export const RAIL_COLOR_DEFAULT = "#630707";
 
 export const RAIL_WIDTH_PROPERTY = "--ac-selected-rail-width";
 export const RAIL_COLOR_PROPERTY = "--ac-selected-rail-color";

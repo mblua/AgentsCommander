@@ -57,7 +57,7 @@
      content on the same column. Rules that used to draw 2px redeclare the delta
      against 2px; rules that draw no rail redeclare it as 0px. */
   --ac-selected-rail-width: 9px;
-  --ac-selected-rail-color: #00ff5f;
+  --ac-selected-rail-color: #630707;
   --ac-rail-delta: calc(var(--ac-selected-rail-width) - 3px);
 }
 
