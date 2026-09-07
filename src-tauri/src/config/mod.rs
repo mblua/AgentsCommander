@@ -29,6 +29,7 @@ pub mod seeded_context_templates;
 pub mod session_context;
 pub mod sessions_persistence;
 pub mod settings;
+pub(crate) mod shared_locations;
 pub mod teams;
 
 use std::fmt;

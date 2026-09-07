@@ -414,6 +414,7 @@ agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::l
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::replica_identity
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::seed_manifest
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::settings
+agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::shared_locations
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::teams
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::path_utils
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::phone::messaging
@@ -644,15 +645,18 @@ agentscommander_lib::config::seeded_context_templates -> agentscommander_lib::co
 agentscommander_lib::config::seeded_context_templates -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::seeded_context_templates -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::seeded_context_templates -> agentscommander_lib::config::session_context
+agentscommander_lib::config::seeded_context_templates -> agentscommander_lib::config::shared_locations
 agentscommander_lib::config::session_context -> agentscommander_lib::commands::role_templates
 agentscommander_lib::config::session_context -> agentscommander_lib::config
 agentscommander_lib::config::session_context -> agentscommander_lib::config::ac_root
+agentscommander_lib::config::session_context -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::config::session_context -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::session_context -> agentscommander_lib::config::local_overlay
 agentscommander_lib::config::session_context -> agentscommander_lib::config::replica_identity
 agentscommander_lib::config::session_context -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::session_context -> agentscommander_lib::config::seed_manifest
 agentscommander_lib::config::session_context -> agentscommander_lib::config::seeded_context_templates
+agentscommander_lib::config::session_context -> agentscommander_lib::config::shared_locations
 agentscommander_lib::config::session_context -> agentscommander_lib::config::teams
 agentscommander_lib::config::session_context -> agentscommander_lib::path_utils
 agentscommander_lib::config::session_context -> agentscommander_lib::phone::messaging

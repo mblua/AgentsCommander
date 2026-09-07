@@ -1190,6 +1190,11 @@ pub(crate) async fn create_workgroup_on_disk(
         .map_err(|e| format!("Failed to create room directory: {}", e))?;
     std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
         .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
+    // #1795: `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
+    // created with the same hard `?` they use. A half-created room must not be
+    // reported as created.
+    crate::config::shared_locations::create_room_shared_dir(&wg_dir)
+        .map_err(|e| format!("Failed to create room shared directory: {}", e))?;
     std::fs::write(wg_dir.join("TASK.md"), build_task_content(&task_title))
         .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
 
@@ -7759,6 +7764,60 @@ mod tests {
                 .last_user_message_at("Proj:wg-1-team/coord")
                 .is_some(),
             "a failed delete must keep the clock key"
+        );
+    }
+
+    /// #1795 `T15` (`AC-17`). The new shared directories must be invisible to room
+    /// discovery. `room-shared` is the one name that needs the argument rather than
+    /// a prefix mismatch: `has_entity_prefix("room-shared")` IS true, so it is never
+    /// created under an `.ac` root, only under a room root. Both scanners below are
+    /// local to this file, which is why the test lives here: written in a `config::*`
+    /// test module it would add a `config::* -> commands::entity_creation` arc.
+    #[test]
+    fn shared_directories_are_invisible_to_room_discovery() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("ac root");
+
+        let number_before = determine_next_wg_number(&ac_root);
+        let rooms_before = list_workgroup_dirs(&ac_root);
+
+        crate::config::shared_locations::create_project_shared_dirs(&ac_root)
+            .expect("create the four project shared dirs");
+
+        assert_eq!(
+            determine_next_wg_number(&ac_root),
+            number_before,
+            "the four project shared dirs must not consume a room slot"
+        );
+        assert_eq!(
+            list_workgroup_dirs(&ac_root),
+            rooms_before,
+            "the four project shared dirs must not appear as rooms"
+        );
+
+        let wg_dir = ac_root.join("room-1-dev-team");
+        std::fs::create_dir_all(&wg_dir).expect("room dir");
+        let number_with_room = determine_next_wg_number(&ac_root);
+        let rooms_with_room = list_workgroup_dirs(&ac_root);
+        assert_eq!(
+            rooms_with_room,
+            vec![wg_dir.clone()],
+            "the fixture must contain exactly one real room"
+        );
+
+        crate::config::shared_locations::create_room_shared_dir(&wg_dir)
+            .expect("create the room shared dir");
+
+        assert_eq!(
+            determine_next_wg_number(&ac_root),
+            number_with_room,
+            "`room-shared` under a room root must not consume a room slot"
+        );
+        assert_eq!(
+            list_workgroup_dirs(&ac_root),
+            vec![wg_dir],
+            "`room-shared` under a room root must not appear as a phantom room"
         );
     }
 }
