@@ -1899,7 +1899,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           label: "Selected Row Bar Color",
           testId: "settings.general.selectedRowRailColor",
           isValid: isValidRailColor,
-          hint: "Not a valid colour. Enter a hash followed by six hex digits, for example #00ff5f. While this is invalid the bar shows the default #00ff5f.",
+          hint: "Not a valid colour. Enter a hash followed by six hex digits, for example #630707. While this is invalid the bar shows the default #630707.",
         })}
         <label class="settings-checkbox-field">
           <input
