@@ -170,3 +170,127 @@ describe("toastStore (#574)", () => {
     });
   });
 });
+
+// #1857: the aggregated blocked-menu notice is a single PINNED toast. These
+// pin the two measured ways the old per-session toasts were lost: eviction past
+// MAX_VISIBLE, and the dismiss animation deleting a freshly re-pushed message.
+describe("pinned toasts and the dismiss/re-push race (#1857)", () => {
+  it("1. survives the measured threshold: four sticky errors then a pinned info", () => {
+    for (let i = 0; i < 4; i++) toastStore.error(`error-${i}`);
+    toastStore.push({ message: "blocked", kind: "info", durationMs: null, pinned: true });
+    // Assert on the ARRAY, never on the returned id: without `pinned`, push
+    // returns a valid id for a toast that was evicted before it was ever painted.
+    expect(toastStore.items.some((t) => t.message === "blocked")).toBe(true);
+  });
+
+  it("2. the threshold is exactly four: the pinned toast survives 0..3 prior errors too", () => {
+    // Characterisation, NOT a falsifier: all four sub-cases pass against the
+    // pre-#1857 implementation as well. It pins WHERE the measured threshold is;
+    // test 1 is the falsifier. See acceptance criterion 6.
+    for (const priorErrors of [0, 1, 2, 3]) {
+      toastStore.clear();
+      for (let i = 0; i < priorErrors; i++) toastStore.error(`error-${i}`);
+      toastStore.push({ message: "blocked", kind: "info", durationMs: null, pinned: true });
+      expect(toastStore.items.some((t) => t.message === "blocked")).toBe(true);
+    }
+  });
+
+  it("3. a pinned toast is never the victim: a fifth error evicts an error instead", () => {
+    for (let i = 0; i < 4; i++) toastStore.error(`error-${i}`);
+    toastStore.push({ message: "blocked", kind: "info", durationMs: null, pinned: true });
+    toastStore.error("error-4");
+    expect(toastStore.items.some((t) => t.message === "blocked")).toBe(true);
+    // Tier 2 took an unpinned error. That is the deliberate trade-off.
+    expect(toastStore.items.some((t) => t.message === "error-1")).toBe(false);
+    expect(toastStore.items).toHaveLength(4);
+  });
+
+  it("4. the cap is still honest with a pinned toast up", () => {
+    toastStore.push({ message: "blocked", kind: "info", durationMs: null, pinned: true });
+    for (let i = 0; i < 4; i++) toastStore.info(`info-${i}`);
+    // MAX_VISIBLE is 4 and stays 4: pinning exempts a toast from the first two
+    // eviction tiers, not from the cap.
+    expect(toastStore.items).toHaveLength(4);
+    expect(toastStore.items.some((t) => t.message === "blocked")).toBe(true);
+  });
+
+  it("5. the physical-ceiling contract: five plain toasts leave exactly four", () => {
+    // `.toast-host` in src/shared/styles/toast.css declares NO `overflow` and NO
+    // `max-height`, so this cap is the only thing bounding the stack height on
+    // screen. Host scrolling is out of scope for this epic (and `pointer-events:
+    // none` on that rule would make the scrollbar unusable anyway).
+    for (let i = 0; i < 5; i++) toastStore.info(`plain-${i}`);
+    expect(toastStore.items).toHaveLength(4);
+  });
+
+  it("6. a tagged re-push REVIVES a dying toast and keeps the new message", async () => {
+    vi.useFakeTimers();
+    try {
+      toastStore.push({ message: "old text", durationMs: null, tag: "agg" });
+      toastStore.dismissByTag("agg");
+      expect(toastStore.items[0].exiting).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(50);
+      toastStore.push({ message: "new text", durationMs: null, tag: "agg" });
+      expect(toastStore.items[0].exiting).toBe(false);
+
+      // Past TOAST_EXIT_MS counted from the ORIGINAL dismiss. Reverting the
+      // revive kills the toast here, at exactly t=180.
+      await vi.advanceTimersByTimeAsync(TOAST_EXIT_MS);
+      expect(toastStore.items).toHaveLength(1);
+      expect(toastStore.items[0].message).toBe("new text");
+    } finally {
+      toastStore.clear();
+      vi.useRealTimers();
+    }
+  });
+
+  it("7. control: a normal dismiss with no re-push still removes the toast", async () => {
+    vi.useFakeTimers();
+    try {
+      toastStore.push({ message: "old text", durationMs: null, tag: "agg" });
+      toastStore.dismissByTag("agg");
+      await vi.advanceTimersByTimeAsync(50 + TOAST_EXIT_MS);
+      expect(toastStore.items).toHaveLength(0);
+    } finally {
+      toastStore.clear();
+      vi.useRealTimers();
+    }
+  });
+
+  it("20. the revive re-arms the auto-dismiss timer", async () => {
+    vi.useFakeTimers();
+    try {
+      toastStore.push({ message: "first", durationMs: 1000, tag: "agg" });
+      toastStore.dismissByTag("agg");
+      await vi.advanceTimersByTimeAsync(50);
+      toastStore.push({ message: "second", durationMs: 1000, tag: "agg" });
+      expect(toastStore.items).toHaveLength(1);
+
+      // `startToastExit` cleared the duration timer and the tag branch returns
+      // without re-arming it, so without the re-arm this toast stays up forever.
+      await vi.advanceTimersByTimeAsync(1000 + TOAST_EXIT_MS);
+      expect(toastStore.items).toHaveLength(0);
+    } finally {
+      toastStore.clear();
+      vi.useRealTimers();
+    }
+  });
+
+  it("20b. the re-arm is a no-op for a durationMs: null toast revived the same way", async () => {
+    vi.useFakeTimers();
+    try {
+      toastStore.push({ message: "sticky first", durationMs: null, tag: "agg" });
+      toastStore.dismissByTag("agg");
+      await vi.advanceTimersByTimeAsync(50);
+      toastStore.push({ message: "sticky second", durationMs: null, tag: "agg" });
+
+      await vi.advanceTimersByTimeAsync(1000 + TOAST_EXIT_MS);
+      expect(toastStore.items).toHaveLength(1);
+      expect(toastStore.items[0].message).toBe("sticky second");
+    } finally {
+      toastStore.clear();
+      vi.useRealTimers();
+    }
+  });
+});
