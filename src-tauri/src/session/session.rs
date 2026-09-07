@@ -245,6 +245,22 @@ pub fn is_working(s: &Session) -> bool {
     !s.waiting_for_input && matches!(s.status, SessionStatus::Active | SessionStatus::Running)
 }
 
+/// (#1793) The [`is_working`] rule over a PERSISTED row from `sessions.json`,
+/// whose inputs are `Option`. Absence is NOT working: an unknown row must never
+/// be nudged. That is the opposite direction from the #248 wake rule's fail-open
+/// `None`, deliberately: failing open there costs a woken session, failing open
+/// here costs unrequested work.
+pub fn persisted_is_working(
+    status: Option<&SessionStatus>,
+    waiting_for_input: Option<bool>,
+) -> bool {
+    waiting_for_input == Some(false)
+        && matches!(
+            status,
+            Some(SessionStatus::Active) | Some(SessionStatus::Running)
+        )
+}
+
 pub(crate) fn is_live_session_record(has_id: bool, status: Option<&SessionStatus>) -> bool {
     has_id && !matches!(status, Some(SessionStatus::Exited(_)))
 }
@@ -470,6 +486,37 @@ mod tests {
             start_fresh_on_restore: false,
             context_percent: None,
         }
+    }
+
+    #[test]
+    fn persisted_is_working_agrees_with_is_working_on_every_status() {
+        // Anti-drift net: every SessionStatus variant crossed with both
+        // waiting_for_input values. Must enumerate all four, not a subset.
+        for status in [
+            SessionStatus::Active,
+            SessionStatus::Running,
+            SessionStatus::Idle,
+            SessionStatus::Exited(0),
+        ] {
+            for waiting in [true, false] {
+                let mut s = sample_session(None);
+                s.status = status.clone();
+                s.waiting_for_input = waiting;
+                assert_eq!(
+                    persisted_is_working(Some(&s.status), Some(s.waiting_for_input)),
+                    is_working(&s),
+                    "disagreement for status={:?} waiting_for_input={waiting}",
+                    s.status
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn persisted_is_working_is_false_when_either_field_is_absent() {
+        assert!(!persisted_is_working(None, Some(false)));
+        assert!(!persisted_is_working(Some(&SessionStatus::Running), None));
+        assert!(!persisted_is_working(None, None));
     }
 
     #[test]
