@@ -2636,9 +2636,11 @@ mod tests {
     fn compute_peer_status_reads_the_chosen_session_that_is_neither_first_nor_last() {
         // #1774 / D3: `chosen` is the MIDDLE row, so it is neither `filtered[0]`
         // nor `filtered.last()`. Both neighbours are unblocked and the chosen row
-        // is blocked, so a read of either end drops a real block, its message and
-        // its session id. The two neighbour ids bracket `CHOSEN_SESSION_ID`, so a
-        // smallest-id or largest-id read lands on an unblocked row too.
+        // is blocked, so a read of either end reports no block and no message,
+        // while `session_id` and `session_status` go on naming the chosen blocked
+        // row. That disagreement is the D3 violation. The two neighbour ids
+        // bracket `CHOSEN_SESSION_ID`, so a smallest-id or largest-id read lands
+        // on an unblocked row too.
         // Priorities are 1, 3, 2, so `max_by_key` has no tie.
         let mut leading = ps_row("Session 1", r"C:\work", Some(SessionStatus::Idle), true);
         leading.id = Some(BELOW_CHOSEN_SESSION_ID.to_string());
@@ -2706,6 +2708,34 @@ mod tests {
             status.blocked_menu_message.as_deref(),
             Some(BLOCKED_MENU_MESSAGE)
         );
+        assert_eq!(status.session_status, "active");
+        assert_eq!(status.session_id.as_deref(), Some(CHOSEN_SESSION_ID));
+    }
+
+    #[test]
+    fn compute_peer_status_follows_priority_not_a_status_lookalike_on_an_active_tie() {
+        // #1822 / D3: BOTH rows are `Active`, so `priority` scores them equally
+        // and `max_by_key` resolves the tie by taking the LAST maximum, which is
+        // the unblocked row. The blocked row is FIRST, so a first-match status
+        // predicate, `find(|c| matches!(c.status, SessionStatus::Active))`, lands
+        // on it and reports a block that `session_id` and `session_status` do not
+        // describe. This fixture pins that the pair follows `priority`'s ranking,
+        // not a lookalike ranking that agrees with it only while a single row is
+        // `Active`.
+        let mut blocked_active = ps_row("Session 1", r"C:\work", Some(SessionStatus::Active), true);
+        blocked_active.id = Some(OTHER_SESSION_ID.to_string());
+        blocked_active.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            message: Some(BLOCKED_MENU_MESSAGE.into()),
+        });
+        let mut chosen_active = ps_row("Session 2", r"C:\work", Some(SessionStatus::Active), true);
+        chosen_active.id = Some(CHOSEN_SESSION_ID.to_string());
+        let index = build_session_index_from(&[blocked_active, chosen_active]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        assert!(!status.blocked_menu);
+        assert_eq!(status.blocked_menu_message, None);
         assert_eq!(status.session_status, "active");
         assert_eq!(status.session_id.as_deref(), Some(CHOSEN_SESSION_ID));
     }
