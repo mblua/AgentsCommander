@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, createMemo, on, onMount, onCleanup, Show } from "solid-js";
+import { Component, createSignal, createEffect, createMemo, on, onMount, onCleanup, untrack, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
 import type { UnlistenFn } from "../shared/transport";
 import type { TransportConnectionState } from "../shared/transport";
@@ -80,6 +80,7 @@ import { createUpdateToaster } from "./update-toast";
 import { wireScreenshotListeners } from "./listeners-screenshot";
 import { wireAgentUpdateListeners } from "./agent-update";
 import { applySelectedRowRail } from "./selected-row-rail";
+import { requestTaskbarAttention } from "./attention";
 import AgentUpdateOverlay from "./components/AgentUpdateOverlay";
 import "./styles/sidebar.css";
 import "../shared/styles/toast.css";
@@ -90,6 +91,11 @@ interface SidebarAppProps {
 }
 
 const HYDRATION_RETRY_DELAYS = [50, 100, 250, 500, 1000] as const;
+
+/// #1857: the ONE tag the aggregated blocked-menu toast is pushed under. The
+/// per-session tags keyed by session id are gone: N sticky toasts could bury
+/// one another past MAX_VISIBLE, and only one of them can be acted on at a time.
+export const BLOCKED_MENU_TAG = "blockedMenu";
 
 function isExitedStatus(status: SessionStatus): boolean {
   return typeof status === "object" && status !== null && "exited" in status;
@@ -307,6 +313,100 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     seenContextTemplateUpdates.add(contextTemplateUpdateKey(next));
     setContextTemplateUpdateError(null);
     setActiveContextTemplateUpdate(next);
+  });
+
+  // #1857: per-INSTANCE, deliberately not a module-level `Set` and deliberately
+  // not a signal. A module-level set would be shared by two `App` instances
+  // mounted at once, so the second would never flash; writing to a signal this
+  // effect reads would be a genuine self-trigger.
+  const flashedBlockedSessions = new Set<string>();
+
+  // #1857: the ONE aggregated blocked-menu notice, DERIVED from state instead of
+  // pushed from the event. Value objects, not session rows: reading `message` and
+  // `updatedAt` inside this `map` is what subscribes the memo to them. A memo
+  // that filtered only on `kind` and `visible` and read `updatedAt` in the sort
+  // comparator would not be subscribed to `message` at all, and with one element
+  // `Array.prototype.sort` never invokes the comparator, so not to `updatedAt`
+  // either. `set_blocked_menu` overwrites a changed menu in place, keeping `kind`
+  // and `visible` and moving only `message` and `updated_at`, so that transition
+  // would leave the previous text on screen forever.
+  const blockedMenuSessions = createMemo(() =>
+    sessionsStore.sessions
+      .filter((s) => {
+        const c = s.communication;
+        return c?.kind === "blockedMenu" && c.visible === true && !!c.message;
+      })
+      // The `?? ""` fallbacks are unreachable after that filter; they only keep
+      // the reads assertion-free.
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        message: s.communication?.message ?? "",
+        updatedAt: s.communication?.updatedAt ?? "",
+      }))
+      // Newest first. PARSE the timestamp: it is RFC3339 from
+      // `chrono::Utc::now().to_rfc3339()`, and comparing the strings is only
+      // accidentally correct while the offset and the fractional digits never vary.
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)),
+  );
+
+  createEffect(() => {
+    const blocked = blockedMenuSessions();
+    // `untrack` is hygiene, not a hang preventer. It keeps this effect's
+    // dependency set equal to the memo, so `toastStore.push` cannot subscribe it
+    // to `toasts.length` and run it a second time.
+    untrack(() => {
+      if (blocked.length === 0) {
+        toastStore.dismissByTag(BLOCKED_MENU_TAG);
+        flashedBlockedSessions.clear();
+        return;
+      }
+
+      // Build the text from the memo's value objects ONLY. Reaching back into
+      // `sessionsStore` here would move the subscription out of the memo.
+      const newest = blocked[0];
+      const suffix =
+        blocked.length > 1 ? ` (and ${blocked.length - 1} more waiting)` : "";
+      toastStore.push({
+        message: `${newest.name}: ${newest.message}${suffix}`,
+        kind: "info",
+        durationMs: null,
+        pinned: true,
+        tag: BLOCKED_MENU_TAG,
+        // #1669: leading action. Raises the blocked terminal (switch_session also
+        // focuses the terminal-<id> window when the session is detached) and does
+        // NOT dismiss: the menu is still unanswered, so the notice must survive.
+        // Both actions target the session whose text is on screen, never the oldest.
+        secondaryAction: {
+          label: "See terminal",
+          dismissOnClick: false,
+          onClick: () => {
+            void SessionAPI.switch(newest.id).catch(() => {});
+          },
+        },
+        action: {
+          label: "Resolved by user",
+          onClick: () => {
+            void resolveBlockingMenu(newest.id);
+          },
+        },
+      });
+
+      // Flash once per session ENTERING the blocked set, and not again until it
+      // leaves and re-enters.
+      let entered = false;
+      for (const session of blocked) {
+        if (!flashedBlockedSessions.has(session.id)) {
+          flashedBlockedSessions.add(session.id);
+          entered = true;
+        }
+      }
+      if (entered) void requestTaskbarAttention();
+      const stillBlocked = new Set(blocked.map((session) => session.id));
+      for (const id of flashedBlockedSessions) {
+        if (!stillBlocked.has(id)) flashedBlockedSessions.delete(id);
+      }
+    });
   });
 
   // #592 refreshes profileOutdated from the list. #1779 reconciles the waiting
@@ -736,36 +836,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     await register(
       onSessionCommunicationChanged(({ sessionId, communication }) => {
         sessionsStore.setCommunication(sessionId, communication);
-        if (
-          communication?.kind === "blockedMenu" &&
-          communication.visible === true &&
-          communication.message
-        ) {
-          toastStore.push({
-            message: communication.message,
-            kind: "info",
-            durationMs: null,
-            tag: `blockedMenu:${sessionId}`,
-            // #1669: leading action. Raises the blocked terminal (switch_session also
-            // focuses the terminal-<id> window when the session is detached) and does
-            // NOT dismiss: the menu is still unanswered, so the notice must survive.
-            secondaryAction: {
-              label: "See terminal",
-              dismissOnClick: false,
-              onClick: () => {
-                void SessionAPI.switch(sessionId).catch(() => {});
-              },
-            },
-            action: {
-              label: "Resolved by user",
-              onClick: () => {
-                void resolveBlockingMenu(sessionId);
-              },
-            },
-          });
-        } else {
-          toastStore.dismissByTag(`blockedMenu:${sessionId}`);
-        }
       })
     );
 
