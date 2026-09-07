@@ -4989,6 +4989,194 @@ pub(crate) async fn record_agent_turn_completed<R: tauri::Runtime>(
     );
 }
 
+/// (#1793) Settle before the first readiness poll. NOT a readiness guard: the
+/// idle detector SEEDS `activity` at PTY spawn (#260), so `waiting_for_input`
+/// reaches `true` for a session that has printed nothing, and waiting longer
+/// makes that more likely, not less. What makes readiness mean "the agent
+/// painted its prompt and then went quiet" is the second conjunct,
+/// `commands::pty::session_printed_since`. This settle covers only the agent
+/// that prints, pauses longer than `idle_threshold` mid-load, then prints
+/// again, and it keeps the pass off a machine still spawning a fleet of PTYs.
+/// Same magnitude as `auto_close::WAKE_GRACE` but NOT its rationale, which is
+/// kill-eligibility, ordering against `REPAINT_GRACE`, and a spawn race.
+/// The value is engineering judgement.
+const RESTART_RESUME_SETTLE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// (#1793) Poll cadence, matching the idle detector's own tick.
+const RESTART_RESUME_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// (#1793) Budget after the settle. A target that never reaches its prompt in
+/// this window gets NOTHING: fails closed on purpose, diverging from
+/// `loops::delivery::wait_for_session_idle`, which waits 90 s and fails OPEN.
+/// The direction is forced by the feature; the 300 s is engineering judgement
+/// (a restored fleet replays conversations concurrently), bounded above by the
+/// risk of nudging an agent the user has already picked up by hand.
+const RESTART_RESUME_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// (#1793) One agent the pass will nudge. Built inside the restore loop, where
+/// the persisted row and its new session id are both in hand, so no correlation
+/// key is needed. `working_directory` is for log lines only.
+#[derive(Debug, Clone)]
+pub(crate) struct RestartResumeTarget {
+    pub session_id: Uuid,
+    pub name: String,
+    pub working_directory: String,
+    pub prompt: String,
+    /// The instant the restore loop paired this persisted row with its new
+    /// session id. The PTY was already spawned by then, so
+    /// `IdleDetector::register_session` had already seeded `activity[id]` and
+    /// that seed stamp is at or before this instant. Readiness therefore asks
+    /// for printable output STRICTLY after this instant, which the spawn seed
+    /// alone can never satisfy.
+    pub collected_at: std::time::Instant,
+}
+
+/// (#1793) Pure: the exact text a restored row earns at restart, or `None`.
+pub(crate) fn restart_resume_prompt_for(
+    settings: &AppSettings,
+    is_coordinator: bool,
+    start_fresh_on_restore: bool,
+    persisted_working: bool,
+) -> Option<&str> {
+    if start_fresh_on_restore || !persisted_working {
+        return None;
+    }
+    let prompt = if is_coordinator {
+        settings.restart_resume_orchestrator_prompt.as_str()
+    } else {
+        settings.restart_resume_agent_prompt.as_str()
+    };
+    if prompt.is_empty() {
+        None
+    } else {
+        Some(prompt)
+    }
+}
+
+/// (#1793) Pure: the FIRST readiness conjunct. The session must still exist,
+/// must not have exited, and must be parked at its prompt. On its own this is
+/// NOT enough: `waiting_for_input` is also true for a session that has printed
+/// nothing since spawn (#260 seeds the activity clock). The second conjunct is
+/// applied by `partition_restart_resume_ready`.
+pub(crate) fn restart_resume_session_is_ready(session: Option<&SessionInfo>) -> bool {
+    match session {
+        Some(session) => {
+            session.waiting_for_input && !matches!(session.status, SessionStatus::Exited(_))
+        }
+        None => false,
+    }
+}
+
+/// (#1793) Pure: split the working set into the targets that stay and the
+/// targets that may be written to NOW. Both readiness conjuncts are applied
+/// here. Every input target is returned in EXACTLY ONE of the two vectors, and
+/// the caller assigns `remaining` back over its working set, so selection and
+/// removal cannot drift apart and a target can never be offered twice.
+pub(crate) fn partition_restart_resume_ready(
+    targets: Vec<RestartResumeTarget>,
+    live: &[SessionInfo],
+    printed_since_collection: impl Fn(&RestartResumeTarget) -> bool,
+) -> (Vec<RestartResumeTarget>, Vec<RestartResumeTarget>) {
+    let mut remaining: Vec<RestartResumeTarget> = Vec::with_capacity(targets.len());
+    let mut ready: Vec<RestartResumeTarget> = Vec::new();
+    for target in targets {
+        let id = target.session_id.to_string();
+        let session = live.iter().find(|s| s.id == id);
+        if restart_resume_session_is_ready(session) && printed_since_collection(&target) {
+            ready.push(target);
+        } else {
+            remaining.push(target);
+        }
+    }
+    (remaining, ready)
+}
+
+/// (#1793) Spawned once per app start from the restore tail in `lib.rs`, after
+/// the idle observer is running, with the targets the restore loop collected.
+/// Sequential by construction: at most one PTY write is in flight, so a fleet
+/// restart cannot produce a write storm.
+pub(crate) async fn run_restart_resume(app: &AppHandle, mut targets: Vec<RestartResumeTarget>) {
+    if targets.is_empty() {
+        return;
+    }
+    log::info!(
+        "[restart-resume] {} target(s); settling {}s before the first readiness poll",
+        targets.len(),
+        RESTART_RESUME_SETTLE.as_secs()
+    );
+    tokio::time::sleep(RESTART_RESUME_SETTLE).await;
+    let start = std::time::Instant::now();
+    let mut injected: usize = 0;
+    while !targets.is_empty() && start.elapsed() < RESTART_RESUME_DEADLINE {
+        tokio::time::sleep(RESTART_RESUME_POLL).await;
+        let live = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.list_sessions().await
+        };
+        let (remaining, ready) =
+            partition_restart_resume_ready(std::mem::take(&mut targets), &live, |target| {
+                crate::commands::pty::session_printed_since(
+                    app,
+                    target.session_id,
+                    target.collected_at,
+                )
+            });
+        targets = remaining;
+        for target in &ready {
+            inject_restart_resume_prompt(app, target).await;
+            injected += 1;
+        }
+    }
+    for target in &targets {
+        log::warn!(
+            "[restart-resume] '{}' ({}) never reached its prompt within {}s; nothing injected",
+            target.name,
+            target.working_directory,
+            RESTART_RESUME_DEADLINE.as_secs()
+        );
+    }
+    log::info!(
+        "[restart-resume] complete: {} injected, {} timed out",
+        injected,
+        targets.len()
+    );
+}
+
+/// (#1793) One injection. Root, exited, agentless and plain-shell rejection, the
+/// write permit, the menu guard, the two staggered Enters and the agent-turn
+/// arming all come from the canonical trusted-notice injector. This adds only
+/// the exact-text validation that injector leaves to its callers.
+async fn inject_restart_resume_prompt(app: &AppHandle, target: &RestartResumeTarget) {
+    if let Err(error) = crate::pty::inject::validate_pty_input_text(&target.prompt) {
+        log::warn!(
+            "[restart-resume] '{}' prompt rejected by the PTY text validator ({}); nothing injected",
+            target.name,
+            error
+        );
+        return;
+    }
+    let result = crate::pty::inject::inject_text_into_supported_agent_session_with_pre_write_check(
+        app,
+        target.session_id,
+        &target.prompt,
+        |_session| Ok(()),
+    )
+    .await;
+    match result {
+        Ok(()) => log::info!(
+            "[restart-resume] injected into '{}' ({})",
+            target.name,
+            target.working_directory
+        ),
+        Err(error) => log::warn!(
+            "[restart-resume] injection into '{}' failed: {}",
+            target.name,
+            error
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -4997,11 +5185,12 @@ mod tests {
         container_path_context_for_cwd, count_working_members, effective_restart_requested_profile,
         execute_manual_coordinator_destroy, inject_codex_resume, inject_pi_resume,
         injected_claude_config_dir_for_copy, maybe_inject_pi_resume,
-        pi_has_explicit_session_control, pi_is_non_conversation_invocation, resolve_actual_agent,
-        resolve_agent_command, resolve_agent_from_shell, resolve_claude_projects_dir,
-        resolve_launch_auto_self_clear, resolve_restart_selected_agent_id,
-        resolve_root_agent_command, resume_probe_target_for_config_dir, should_inject_continue,
-        CreateSelectionIntent, ExistingRootAction,
+        partition_restart_resume_ready, pi_has_explicit_session_control,
+        pi_is_non_conversation_invocation, resolve_actual_agent, resolve_agent_command,
+        resolve_agent_from_shell, resolve_claude_projects_dir, resolve_launch_auto_self_clear,
+        resolve_restart_selected_agent_id, resolve_root_agent_command, restart_resume_prompt_for,
+        restart_resume_session_is_ready, resume_probe_target_for_config_dir,
+        should_inject_continue, CreateSelectionIntent, ExistingRootAction, RestartResumeTarget,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::pty::backend::{PtyBackend, SessionBackendKind};
@@ -11372,5 +11561,248 @@ mod tests {
         let none_at = stored_stamp(none_dir.path()).expect("no mark must not suppress");
         chrono::DateTime::parse_from_rfc3339(&none_at).expect("the stored value is RFC3339");
         assert_one_event(&events, none, &none_at, "no control write");
+    }
+
+    // (#1793) Phase 1b: restart auto-resume wake policy and target selection.
+
+    fn restart_resume_info(
+        id: &str,
+        status: SessionStatus,
+        waiting_for_input: bool,
+    ) -> SessionInfo {
+        SessionInfo {
+            id: id.to_string(),
+            name: "s".to_string(),
+            shell: "claude".to_string(),
+            shell_args: Vec::new(),
+            backend_kind: SessionBackendKind::LocalProcess,
+            effective_shell_args: None,
+            created_at: "2026-09-07T00:00:00Z".to_string(),
+            working_directory: "/w".to_string(),
+            status,
+            waiting_for_input,
+            communication: None,
+            pending_review: false,
+            last_prompt: None,
+            agent_id: None,
+            agent_label: None,
+            git_repos: Vec::new(),
+            workgroup_task: None,
+            is_coordinator: false,
+            is_root_agent: false,
+            token: "t".to_string(),
+            agent_kind: None,
+            requested_profile: None,
+            effective_profile: None,
+            profile_fallback_chain: Vec::new(),
+            profile_fallback_applied: false,
+            effective_codex_home: None,
+            profile_content_hash: None,
+            trusted_configured_spawn: false,
+            profile_outdated: false,
+            telegram_bot_id: None,
+            was_detached: false,
+            detached_geometry: None,
+            start_fresh_on_restore: false,
+            context_percent: None,
+        }
+    }
+
+    fn restart_resume_target(session_id: Uuid, name: &str) -> RestartResumeTarget {
+        RestartResumeTarget {
+            session_id,
+            name: name.to_string(),
+            working_directory: "/w".to_string(),
+            prompt: ".".to_string(),
+            collected_at: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn restart_resume_prompt_for_truth_table() {
+        let settings = AppSettings::default();
+        let orchestrator = settings.restart_resume_orchestrator_prompt.clone();
+        for is_coordinator in [false, true] {
+            for start_fresh_on_restore in [false, true] {
+                for persisted_working in [false, true] {
+                    let got = restart_resume_prompt_for(
+                        &settings,
+                        is_coordinator,
+                        start_fresh_on_restore,
+                        persisted_working,
+                    );
+                    let expected = if start_fresh_on_restore || !persisted_working {
+                        None
+                    } else if is_coordinator {
+                        Some(orchestrator.as_str())
+                    } else {
+                        Some(".")
+                    };
+                    assert_eq!(
+                        got, expected,
+                        "is_coordinator={is_coordinator} start_fresh_on_restore={start_fresh_on_restore} persisted_working={persisted_working}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restart_resume_prompt_for_returns_none_for_an_empty_class_prompt() {
+        let settings = AppSettings {
+            restart_resume_orchestrator_prompt: String::new(),
+            ..Default::default()
+        };
+        assert_eq!(
+            restart_resume_prompt_for(&settings, true, false, true),
+            None
+        );
+        assert_eq!(
+            restart_resume_prompt_for(&settings, false, false, true),
+            Some(".")
+        );
+
+        let settings = AppSettings {
+            restart_resume_agent_prompt: String::new(),
+            ..Default::default()
+        };
+        assert_eq!(
+            restart_resume_prompt_for(&settings, false, false, true),
+            None
+        );
+        assert_eq!(
+            restart_resume_prompt_for(&settings, true, false, true),
+            Some(settings.restart_resume_orchestrator_prompt.as_str())
+        );
+    }
+
+    #[test]
+    fn restart_resume_prompt_for_keeps_a_whitespace_only_prompt() {
+        let settings = AppSettings {
+            restart_resume_agent_prompt: " ".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            restart_resume_prompt_for(&settings, false, false, true),
+            Some(" ")
+        );
+    }
+
+    #[test]
+    fn restart_resume_session_is_ready_truth_table() {
+        assert!(!restart_resume_session_is_ready(None));
+        for status in [
+            SessionStatus::Active,
+            SessionStatus::Running,
+            SessionStatus::Idle,
+            SessionStatus::Exited(0),
+        ] {
+            let not_waiting = restart_resume_info("id", status.clone(), false);
+            assert!(
+                !restart_resume_session_is_ready(Some(&not_waiting)),
+                "waiting_for_input=false must never be ready, status={status:?}"
+            );
+        }
+        for status in [
+            SessionStatus::Active,
+            SessionStatus::Running,
+            SessionStatus::Idle,
+        ] {
+            let waiting = restart_resume_info("id", status.clone(), true);
+            assert!(
+                restart_resume_session_is_ready(Some(&waiting)),
+                "status={status:?} must be ready when waiting_for_input"
+            );
+        }
+        let exited = restart_resume_info("id", SessionStatus::Exited(0), true);
+        assert!(!restart_resume_session_is_ready(Some(&exited)));
+    }
+
+    #[test]
+    fn partition_restart_resume_ready_requires_both_conjuncts() {
+        let id = Uuid::new_v4();
+        let live = vec![restart_resume_info(
+            &id.to_string(),
+            SessionStatus::Running,
+            true,
+        )];
+
+        let (remaining, ready) = partition_restart_resume_ready(
+            vec![restart_resume_target(id, "a")],
+            &live,
+            |_target| true,
+        );
+        assert_eq!(ready.len(), 1);
+        assert!(remaining.is_empty());
+
+        let (remaining, ready) = partition_restart_resume_ready(
+            vec![restart_resume_target(id, "a")],
+            &live,
+            |_target| false,
+        );
+        assert!(
+            ready.is_empty(),
+            "a session that has printed nothing must not be selected on waiting_for_input alone"
+        );
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn partition_restart_resume_ready_removes_what_it_selects() {
+        let first = Uuid::new_v4();
+        let middle = Uuid::new_v4();
+        let last = Uuid::new_v4();
+        let live = vec![restart_resume_info(
+            &middle.to_string(),
+            SessionStatus::Running,
+            true,
+        )];
+        let targets = vec![
+            restart_resume_target(first, "first"),
+            restart_resume_target(middle, "middle"),
+            restart_resume_target(last, "last"),
+        ];
+
+        let (remaining, ready) = partition_restart_resume_ready(targets, &live, |_target| true);
+
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].session_id, middle);
+        assert_eq!(
+            remaining
+                .iter()
+                .map(|t| t.session_id)
+                .collect::<Vec<Uuid>>(),
+            vec![first, last]
+        );
+        assert_eq!(remaining.len() + ready.len(), 3);
+    }
+
+    #[test]
+    fn partition_restart_resume_ready_never_offers_the_same_target_twice() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let live = vec![restart_resume_info(
+            &first.to_string(),
+            SessionStatus::Running,
+            true,
+        )];
+        let targets = vec![
+            restart_resume_target(first, "first"),
+            restart_resume_target(second, "second"),
+        ];
+
+        let (remaining, ready) = partition_restart_resume_ready(targets, &live, |_target| true);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].session_id, first);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].session_id, second);
+
+        let (remaining, ready) = partition_restart_resume_ready(remaining, &live, |_target| true);
+        assert!(
+            ready.is_empty(),
+            "an already-injected target must never be offered a second time"
+        );
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].session_id, second);
     }
 }
