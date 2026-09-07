@@ -1689,6 +1689,17 @@ fn ensure_project_context_templates_with_clock(
         )
     })?;
     validate_existing_dir(ac_root, "Context template directory")?;
+    // #1795: the four project-level shared directories are created when a
+    // project's `.ac` root is bootstrapped. Hard error, like the
+    // `create_dir_all(ac_root)` two lines above and on the same root: an `.ac`
+    // root that cannot take a subdirectory is already a broken bootstrap.
+    crate::config::shared_locations::create_project_shared_dirs(ac_root).map_err(|e| {
+        format!(
+            "failed to create project shared directories under {}: {}",
+            ac_root.display(),
+            e
+        )
+    })?;
     let mut loaded = load_state(ac_root, false)?;
     for spec in project_specs() {
         let execution =

@@ -35,20 +35,23 @@ npm root -g
 npm view @mblua/agentscommander@latest version
 ```
 
-`npm list` reports the installed package version and can exit nonzero when the package is absent. `npm root -g` exits 0 and prints the global `node_modules` directory. Use that root to inspect the installed `@mblua/agentscommander/package.json`, `install.js`, `run.js`, and native file under `bin/`. Correlate the package-manager record and `package.json` version with the install script's version and release URL, the launcher's exact native path, and the corresponding GitHub tag, asset, and checksum. `npm view` reports the selected registry version without installing it. If the local records, independent release evidence, native file, or selected version disagree or cannot be identified exactly, stop before mutation. Do not probe the native binary for a self-reported version unless its exact tag proves support; `v0.30.3` and `main` at this documentation commit do not support such a flag.
+`npm list` reports the installed package version and can exit nonzero when the package is absent. `npm root -g` exits 0 and prints the global `node_modules` directory. Use that root to inspect the installed `@mblua/agentscommander/package.json`, `install.js`, `run.js`, and native file under `bin/`. Correlate the package-manager record and `package.json` version with the install script's version and release URL, the launcher's exact native path, and the corresponding GitHub tag, asset, and checksum. `npm view` reports the selected registry version without installing it. If the local records, independent release evidence, native file, or selected version disagree or cannot be identified exactly, stop before mutation. Do not probe the native binary for a self-reported version unless its exact tag proves support; neither `v0.30.5` nor `main` at this documentation commit supports such a flag.
 
 The existing binary's exact resolver determines what must be preserved. The selected package's exact release tag determines post-install behavior. Verify both against the corresponding `v<version>` source tag; do not use `main` as evidence for a published npm package.
 
-### npm `0.30.3`
+### npm `0.30.5`
 
-The published `0.30.3` install script downloads the `v0.30.3` native release asset, and its launcher only spawns that binary from the package's `bin/` directory. It injects no configuration override. The native resolver:
+`0.30.5` is the npm `latest` at this documentation commit. Its published install script downloads the `v0.30.5` native release asset, verifies it against `SHASUMS256.txt`, and renames it to the executable in the package's `bin/` directory; the launcher only spawns that binary and injects no configuration override. The `v0.30.5` native resolver:
 
-1. immediately selects `<native-executable-folder>/.<native-executable-stem>` when the executable path has a parent and file stem; and
-2. uses `$HOME/.agentscommander-new` only when that parent and stem cannot be derived.
+1. selects the `AGENTSCOMMANDER_CONFIG_DIR` value verbatim when that variable is set and non-blank, running no probes;
+2. otherwise derives the candidate `<native-executable-folder>/.<native-executable-stem>`, checks for a `portable.txt` marker beside the executable, and write-probes the candidate;
+3. selects that candidate when the write probe succeeds, with or without the marker;
+4. falls back to `$HOME/.agentscommander-new` only when the executable's parent and stem cannot be derived, or when the marker is absent and the candidate is conclusively unwritable; and
+5. refuses to start on every other probe outcome (marker present but candidate unwritable, or an indeterminate probe), reporting an error that says to set `AGENTSCOMMANDER_CONFIG_DIR`.
 
-Release `v0.30.3` does not read `AGENTSCOMMANDER_CONFIG_DIR`, inspect `portable.txt`, probe candidate writability, or fall back to home because the adjacent path is read-only. For a normal npm `0.30.3` install, the selected directory is therefore `.agentscommander` beside the native executable under `@mblua/agentscommander/bin/`.
+The npm installer writes no `portable.txt`. For a normal npm `0.30.5` install with a writable global `node_modules`, the write probe succeeds and the selected directory is therefore `.agentscommander` beside the native executable under `@mblua/agentscommander/bin/`, the same location `0.30.3` selected, now confirmed by a probe instead of assumed.
 
-The public override, marker, write probes, and conclusively-unwritable home fallback documented for the newer resolver are present on `main` but unpublished in `0.30.3`. Apply them only to a development build from matching source, or to a later npm version after verifying that version's exact release tag and package launcher. For any other published version, inspect `src-tauri/src/config/mod.rs`, `src-tauri/src/config/profile.rs`, `npm/run.js`, and `npm/install.js` at its exact tag; do not extrapolate either `v0.30.3` or `main` and do not invent a cutoff version.
+The previous npm version, `0.30.3`, ships none of this: its resolver immediately selects `<native-executable-folder>/.<native-executable-stem>` whenever that parent and stem can be derived, uses `$HOME/.agentscommander-new` only when they cannot, and never reads `AGENTSCOMMANDER_CONFIG_DIR`, inspects `portable.txt`, probes writability, or falls back to home because the adjacent path is read-only. npm never published a `0.30.4` package; that number exists only as a GitHub release. For any other published version, inspect `src-tauri/src/config/mod.rs`, `src-tauri/src/config/profile.rs`, `npm/run.js`, and `npm/install.js` at its exact `v<version>` tag; do not extrapolate from `0.30.5`, `0.30.3`, or `main`.
 
 Before an npm update or uninstall, identify the active directory with the existing binary's verified rule and exact path. The presence of a directory alone is not proof of selection.
 

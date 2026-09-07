@@ -161,6 +161,7 @@ fn ensure_session_context_with_config(
         super::root_agent::ensure_default_root_agent_skills_at(Path::new(agent_root))?;
     }
     let matrix_root = resolve_replica_matrix_root(agent_root)?;
+    ensure_replica_shared_locations(agent_root, &canonical_root);
     let skill_owner_root = resolve_skill_owner_root(agent_root, matrix_root.as_deref());
     let skill_index = discover_skill_index(skill_owner_root.as_deref());
     let skills_section = render_skills_section(&skill_index);
@@ -214,6 +215,50 @@ fn ensure_session_context_with_config(
     );
 
     Ok(file_path.to_string_lossy().to_string())
+}
+
+/// #1795 backstop for a project or a room that predates #1795. Bootstrap
+/// (`config::seeded_context_templates`) and room creation (`commands::entity_creation`)
+/// create these eagerly and hard-error on failure.
+///
+/// Takes BOTH the raw and the canonical agent root and applies the SAME two-name Root
+/// guard as the content selection at :187-188. A Root Agent directory that is a junction
+/// onto a replica path has a raw basename of `ac-root-agent` and a canonical basename of
+/// `__agent_<name>`; guarding on one name only would create directories on that Root
+/// Agent's behalf. `T10` pins this.
+///
+/// Resolves with the SAME `replica_shared_roots` the renderer uses, from the SAME
+/// canonical root, so creation and rendering can never disagree about which directories
+/// entry 5 and entry 6 name. `T13` pins that a session start creates them and `T6b` that
+/// the resolver gates the creation.
+///
+/// Best-effort on purpose: refusing to start a session because a shared directory could
+/// not be created would be a worse outcome than the grant it protects. A grant over a
+/// directory that is missing fails at use time with an ordinary filesystem error, and
+/// the warning below names the path. `T11` pins that a failure does not fail the session.
+fn ensure_replica_shared_locations(agent_root: &str, canonical_root: &str) {
+    if super::root_agent::is_root_agent_dir_name(agent_root)
+        || super::root_agent::is_root_agent_dir_name(canonical_root)
+    {
+        return;
+    }
+    let Some((ac_root, room_root)) = replica_shared_roots(canonical_root) else {
+        return;
+    };
+    if let Err(e) = super::shared_locations::create_project_shared_dirs(&ac_root) {
+        log::warn!(
+            "[session_context] #1795 could not create project shared dirs under {}: {}",
+            ac_root.display(),
+            e
+        );
+    }
+    if let Err(e) = super::shared_locations::create_room_shared_dir(&room_root) {
+        log::warn!(
+            "[session_context] #1795 could not create room shared dir under {}: {}",
+            room_root.display(),
+            e
+        );
+    }
 }
 
 const MANAGED_CONTEXT_FILENAMES: &[&str] = &["last_ac_context.md", "CLAUDE.md", "AGENTS.md"];
@@ -1005,6 +1050,62 @@ fn canonical_or_original(path: &std::path::Path) -> std::path::PathBuf {
 
 fn find_ac_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
     crate::config::ac_root::find_ac_root_ancestor(path).map(|p| canonical_or_original(&p))
+}
+
+/// The project `.ac` root and the room root for an authoritative room replica, or
+/// `None` for anything else.
+///
+/// #1795. This is deliberately STRICTER than `phone::messaging::workgroup_root`, which
+/// gates Golden Rule branch A. `workgroup_root` walks ancestors and accepts any
+/// descendant, at any depth, of any `room-<n>-`/`wg-<n>-` directory under any parent
+/// (`phone/messaging.rs:146-157`, `:372-383`). Entry 4 can afford that, because it
+/// renders a path INSIDE the room. Entry 5 renders paths in the room's PARENT, so the
+/// loose predicate would grant read and write over `<anything>/plans`, `<anything>/tools`,
+/// `<anything>/errors` and `<anything>/project-shared` for an input such as
+/// `C:/x/room-1-t/__agent_dev/sub/nested` or `C:/x/room-1-t/notanagent`. Those are not
+/// attacks; they are ordinary directories that exist and resolve, and round 1's resolver
+/// would have granted them. This one fails closed instead.
+///
+/// The three checks below are exactly the first three of
+/// `config::ac_root::wg_replica_layout_from_agent_dir` (`config/ac_root.rs:127-173`),
+/// and they are pure NAME checks, so this function touches no disk and section 6's
+/// deterministic byte budget is unaffected (3.2).
+///
+/// There is no Root Agent check here and none is needed: `ROOT_AGENT_DIR_NAME` is
+/// `"ac-root-agent"` (`config/mod.rs:49`), which never begins with `__agent_`, so check
+/// one already rejects every Root Agent directory. The Root Agent exclusion that IS
+/// load-bearing lives at the call sites: `session_context.rs:187-188` for rendering and
+/// `ensure_replica_shared_locations` for creation, both testing the raw AND the
+/// canonical basename.
+fn replica_shared_roots(agent_root: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let agent_path = Path::new(agent_root);
+
+    // 1. the agent directory itself must be an `__agent_` replica
+    if !agent_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.starts_with("__agent_"))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    // 2. its DIRECT parent must be the room root. Using the parent rather than
+    //    `workgroup_root`'s ancestor walk is what rejects a nested non-replica.
+    let room_root = agent_path.parent()?;
+    if !crate::config::entity_prefix::has_entity_prefix(
+        room_root.file_name().and_then(|name| name.to_str())?,
+    ) {
+        return None;
+    }
+
+    // 3. the room's parent must be a Project AC Root BY NAME (`.ac`).
+    let ac_root = room_root.parent()?;
+    if !super::ac_root::is_ac_root_name(ac_root.file_name().and_then(|name| name.to_str())?) {
+        return None;
+    }
+
+    Some((ac_root.to_path_buf(), room_root.to_path_buf()))
 }
 
 pub fn create_default_context_templates(ac_root: &Path) -> Result<(), String> {
@@ -3531,6 +3632,11 @@ struct DefaultContextDynamicValues {
     replica_usage: String,
     matrix_section: String,
     workgroup_messaging_entry: Option<String>,
+    // #1795: rendered only for an AUTHORITATIVE room replica (4.2). Both are empty
+    // together or populated together. Branch B never names them, so a Root or
+    // direct-Matrix agent cannot receive them even if a future caller populated them.
+    project_shared_entry: String,
+    room_shared_entry: String,
     messaging_exception: String,
     messaging_allowed: String,
     forbidden_scope: String,
@@ -3547,15 +3653,78 @@ struct DefaultContextDynamicValues {
     root_authority_section: String,
 }
 
+/// #1795 entry 5. The four names come from `PROJECT_SHARED_DIRS`, the single
+/// source of truth shared with the creation side, and the paths are built by
+/// joining, never by string concatenation with a separator.
+fn render_project_shared_entry(ac_root: &std::path::Path) -> String {
+    let dirs = crate::config::shared_locations::PROJECT_SHARED_DIRS
+        .iter()
+        .map(|sub| display_path(&ac_root.join(sub)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"5. **Project shared locations, inside your project's `.ac` root:**
+
+You MAY read and write inside these four directories and their descendants. They are shared with every agent in this project, and AgentsCommander creates them:
+
+```
+{dirs}
+```
+
+Nothing else under the `.ac` root becomes readable or writable.
+
+"#,
+        dirs = dirs,
+    )
+}
+
+/// #1795 entry 6. `TASK.md` is a READ grant only; the four protections its CLI
+/// verbs enforce are named so an agent does not try a direct write and bypass all
+/// of them at once. `TASK.md` is deliberately NOT a constant in
+/// `config::shared_locations`: it is owned by `cli::task_ops`, and importing that
+/// name into `config` would add a `config -> cli` layering inversion.
+fn render_room_shared_entry(room_root: &std::path::Path) -> String {
+    format!(
+        r#"6. **Room shared locations, inside your own room root:**
+
+You MAY read and write inside this directory and its descendants, shared with every agent in your room:
+
+```
+{shared}
+```
+
+You MAY READ this file, which states your room's task:
+
+```
+{task}
+```
+
+Reading `TASK.md` is granted; writing it is NOT. Never create, edit, move, delete or overwrite `TASK.md` or any `TASK.md.*` sibling with filesystem tools. Only a room orchestrator may change it, and only through the `task-set-title` and `task-append-body` CLI verbs, which enforce the authorization check, an advisory lock, external-modification detection and a timestamped backup. A direct write bypasses all four.
+
+"#,
+        shared = display_path(&room_root.join(crate::config::shared_locations::ROOM_SHARED_DIR)),
+        task = display_path(&room_root.join("TASK.md")),
+    )
+}
+
 fn render_write_restrictions_block(
     agent_root: &str,
     rendered: &DefaultContextDynamicValues,
 ) -> String {
     if let Some(workgroup_messaging_entry) = &rendered.workgroup_messaging_entry {
+        // #1795: the range must describe what this call actually renders. Branch A is
+        // entered for any descendant of a room-named directory (3.2), but entries 5 and
+        // 6 render only for an authoritative replica (4.2), so hardcoding "entries 1-6"
+        // would print a false grant statement for every other branch-A input.
+        let entries_range = if rendered.project_shared_entry.is_empty() {
+            "entries 1-4"
+        } else {
+            "entries 1-6"
+        };
         return format!(
             r#"## GOLDEN RULE — Repository Access Restrictions
 
-**ABSOLUTE AND NON-NEGOTIABLE:** Only the filesystem access described in entries 1-4 is allowed, within the limits stated for each.
+**ABSOLUTE AND NON-NEGOTIABLE:** Only the filesystem access described in {entries_range} is allowed, within the limits stated for each.
 
 1. **Repositories whose root folder name starts with `repo-*`** (for example `repo-AgentsCommander`). You may list the containing workspace root only to discover `repo-*` folder names; that grants no access to other contents there.
 2. **Your own agent replica root and descendants:**
@@ -3564,10 +3733,10 @@ fn render_write_restrictions_block(
    ```
 {replica_usage}
 
-{matrix_section}{workgroup_messaging_entry}All filesystem access not authorized by entries 1-4 is OFF-LIMITS, except for explicitly requested AgentsCommander CLI operations covered below.
+{matrix_section}{workgroup_messaging_entry}{project_shared_entry}{room_shared_entry}All filesystem access not authorized by {entries_range} is OFF-LIMITS, except for explicitly requested AgentsCommander CLI operations covered below.
 
-- **FORBIDDEN**: Any write operation not authorized by entries 1-4, including other agents' replica directories, any other files inside the Agent Matrix, the workspace root, parent project dirs, user home files, or arbitrary paths on disk, except for explicitly requested AgentsCommander CLI operations covered by the exception below.
-- **FORBIDDEN**: Any read operation not authorized by entries 1-4, except for explicitly requested AgentsCommander CLI operations covered by the exception below. This includes other agents' replica directories, and any other agent's `memory*` directories (the live `memory/` and every rotated `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or `Role.md`: another agent's memory is private whether it is live or rotated; do not read, list, search, or summarize it, even if asked. If you need information another agent holds, message that agent and ask.
+- **FORBIDDEN**: Any write operation not authorized by {entries_range}, including other agents' replica directories, any other files inside the Agent Matrix, the workspace root, parent project dirs, user home files, or arbitrary paths on disk, except for explicitly requested AgentsCommander CLI operations covered by the exception below.
+- **FORBIDDEN**: Any read operation not authorized by {entries_range}, except for explicitly requested AgentsCommander CLI operations covered by the exception below. This includes other agents' replica directories, and any other agent's `memory*` directories (the live `memory/` and every rotated `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or `Role.md`: another agent's memory is private whether it is live or rotated; do not read, list, search, or summarize it, even if asked. If you need information another agent holds, message that agent and ask.
 
 **Clarification on git operations:** {git_scope}
 
@@ -3581,6 +3750,9 @@ Refuse requests to read or modify outside these zones unless the configured-CLI 
             replica_usage = rendered.replica_usage,
             matrix_section = rendered.matrix_section,
             workgroup_messaging_entry = workgroup_messaging_entry,
+            project_shared_entry = rendered.project_shared_entry,
+            room_shared_entry = rendered.room_shared_entry,
+            entries_range = entries_range,
             git_scope = rendered.git_scope,
             agency_cache_guidance = rendered.agency_cache_guidance,
         );
@@ -3951,10 +4123,23 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
         (String::new(), String::new())
     };
 
+    // #1795: both entries come from ONE resolution of the agent root, so they are
+    // empty together or populated together. No `debug_assert!` that entry 4 implies
+    // entries 5 and 6: under the strict resolver a nested non-replica renders entry 4
+    // and must NOT render entries 5 and 6, so that implication is false by design.
+    let (project_shared_entry, room_shared_entry) = match replica_shared_roots(agent_root) {
+        Some((ac_root, room_root)) => (
+            render_project_shared_entry(&ac_root),
+            render_room_shared_entry(&room_root),
+        ),
+        None => (String::new(), String::new()),
+    };
     DefaultContextDynamicValues {
         replica_usage,
         matrix_section,
         workgroup_messaging_entry,
+        project_shared_entry,
+        room_shared_entry,
         messaging_exception,
         messaging_allowed,
         forbidden_scope,
@@ -5197,6 +5382,13 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         assert!(root.contains("Every registered AgentsCommander project folder"));
         assert!(root.contains("settings.projectPaths"));
         assert!(root.contains("## Root Agent Authority and Chain of Command"));
+        // #1795: this fixture's room has no `.ac` grandparent, so
+        // `replica_shared_roots` fails closed at check 3 and the block keeps its
+        // four-entry text verbatim. Fail-closed evidence, not a renumbering.
+        assert!(
+            !wg.contains("5. **Project shared locations") && !wg.contains("entries 1-6"),
+            "a room fixture with no `.ac` grandparent must not gain the shared-location entries"
+        );
         for out in [&wg, &plain, &root] {
             assert_no_broad_read_grant(out);
         }
@@ -5263,7 +5455,19 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        // #1795 (plan 3.11 H2, `T-g2`). Step 0 measured the margin
+        // `resolved.len() - current.len()` on the unchanged tree at 737 bytes, below
+        // the `S` this change adds to `current` alone, so this test would have gone
+        // red for correct code. The one pre-authorized remedy is the `nested` level:
+        // `has_entity_prefix("nested")` is false, so `replica_shared_roots` rejects at
+        // check 2 and NEITHER side renders entries 5 or 6, while `find_ac_root` still
+        // resolves the template and `workgroup_root` still finds `wg-19-dev-team` so
+        // entry 4 still renders. The subject of the test, that a byte-exact legacy
+        // template is classified `Current` and returned verbatim, is untouched.
+        let replica_root = ac_root
+            .join("wg-19-dev-team")
+            .join("nested")
+            .join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         let agent_root = path_string(&replica_root);
@@ -6292,6 +6496,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         ] {
             assert!(policy.contains(required), "missing `{required}` in:\n{policy}");
         }
+        // #1795: this fixture's room has no `.ac` grandparent, so
+        // `replica_shared_roots` fails closed at check 3 and the block keeps its
+        // four-entry text verbatim. Fail-closed evidence, not a renumbering.
+        assert!(
+            !out.contains("5. **Project shared locations") && !out.contains("entries 1-6"),
+            "a room fixture with no `.ac` grandparent must not gain the shared-location entries"
+        );
     }
 
     #[test]
@@ -6567,6 +6778,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(wg.contains(
             "You may also READ message files inside this directory, and list your room root (`room-<N>-*`) to resolve that directory's path."
         ));
+        // #1795: this fixture's room has no `.ac` grandparent, so
+        // `replica_shared_roots` fails closed at check 3 and the block keeps its
+        // four-entry text verbatim. Fail-closed evidence, not a renumbering.
+        assert!(
+            !wg.contains("5. **Project shared locations") && !wg.contains("entries 1-6"),
+            "a room fixture with no `.ac` grandparent must not gain the shared-location entries"
+        );
 
         // Root: has its own messaging directory and exception paragraph.
         let root = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
@@ -7235,10 +7453,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn default_context_replica_with_matrix_and_messaging_renders_entries_three_and_four() {
+    fn default_context_replica_with_matrix_and_messaging_renders_entries_three_through_six() {
         let out = default_context(
-            "C:/fake/room-7-dev-team/__agent_architect",
-            Some("C:/fake/_agent_architect"),
+            "C:/fake/.ac/room-7-dev-team/__agent_architect",
+            Some("C:/fake/.ac/_agent_architect"),
             &no_skill_section(),
         );
         assert!(
@@ -7258,26 +7476,36 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(
             out.contains(
-                "All filesystem access not authorized by entries 1-4 is OFF-LIMITS, except for explicitly requested AgentsCommander CLI operations covered below."
+                "All filesystem access not authorized by entries 1-6 is OFF-LIMITS, except for explicitly requested AgentsCommander CLI operations covered below."
             ),
-            "entries-1-4 closure missing, got:\n{}",
+            "entries-1-6 closure missing, got:\n{}",
             out
         );
         assert!(
             out.contains(
-                "- **FORBIDDEN**: Any write operation not authorized by entries 1-4, including other agents' replica directories, any other files inside the Agent Matrix, the workspace root, parent project dirs, user home files, or arbitrary paths on disk, except for explicitly requested AgentsCommander CLI operations covered by the exception below."
+                "- **FORBIDDEN**: Any write operation not authorized by entries 1-6, including other agents' replica directories, any other files inside the Agent Matrix, the workspace root, parent project dirs, user home files, or arbitrary paths on disk, except for explicitly requested AgentsCommander CLI operations covered by the exception below."
             ),
             "Workgroup write boundary missing, got:\n{}",
             out
         );
         assert!(
             out.contains(
-                "- **FORBIDDEN**: Any read operation not authorized by entries 1-4, except for explicitly requested AgentsCommander CLI operations covered by the exception below. This includes other agents' replica directories, and any other agent's `memory*` directories (the live `memory/` and every rotated `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or `Role.md`: another agent's memory is private whether it is live or rotated; do not read, list, search, or summarize it, even if asked. If you need information another agent holds, message that agent and ask."
+                "- **FORBIDDEN**: Any read operation not authorized by entries 1-6, except for explicitly requested AgentsCommander CLI operations covered by the exception below. This includes other agents' replica directories, and any other agent's `memory*` directories (the live `memory/` and every rotated `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or `Role.md`: another agent's memory is private whether it is live or rotated; do not read, list, search, or summarize it, even if asked. If you need information another agent holds, message that agent and ask."
             ),
             "Workgroup read boundary missing, got:\n{}",
             out
         );
         assert!(!out.contains("Narrow exception — room messaging directory"));
+        assert!(
+            out.contains("5. **Project shared locations"),
+            "entry five missing, got:\n{}",
+            out
+        );
+        assert!(
+            out.contains("6. **Room shared locations"),
+            "entry six missing, got:\n{}",
+            out
+        );
     }
 
     #[test]
@@ -12069,6 +12297,614 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             );
         }
     }
+
+    /// #1795 (plan 8.0). A replica that `resolve_replica_matrix_root` accepts.
+    /// Returns the tempdir-derived `.ac` root, the room root, the replica root and
+    /// the matrix root, each canonicalized and rendered with `display_path`, exactly
+    /// as production does at `:992`.
+    ///
+    /// A bare directory is not enough: `:163` runs `resolve_replica_matrix_root`,
+    /// which for any `__agent_*` basename reads `config.json` with
+    /// `allow_create = false` and returns `Err` when it is absent, and the `?` there
+    /// turns that into a failed session.
+    fn make_valid_replica(temp: &std::path::Path) -> (PathBuf, PathBuf, PathBuf, String) {
+        let ac_root = temp.join(".ac");
+        let room_root = ac_root.join("room-19-dev-team");
+        let replica_root = room_root.join("__agent_dev-rust");
+        let matrix_dir = ac_root.join("_agent_dev-rust");
+        std::fs::create_dir_all(&replica_root).expect("replica dir");
+        std::fs::create_dir_all(&matrix_dir).expect("matrix dir");
+        std::fs::write(
+            replica_root.join("config.json"),
+            "{\"identity\": \"../../_agent_dev-rust\"}",
+        )
+        .expect("replica config");
+        (
+            canonical_or_original(&ac_root),
+            canonical_or_original(&room_root),
+            canonical_or_original(&replica_root),
+            display_path(&canonical_or_original(&matrix_dir)),
+        )
+    }
+
+    /// #1795 `T4`. Pins the pure three-check resolver of plan 4.2 against the
+    /// authoritative four-check `wg_replica_layout_from_agent_dir` on a layout where
+    /// the authority check can succeed, so reusing only the three pure name checks
+    /// cannot drift into a different answer than the validator gives.
+    #[test]
+    fn replica_shared_roots_matches_wg_replica_layout_on_disk() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ac_root, room_root, replica_root, _matrix_root) = make_valid_replica(temp.path());
+        let agent_root = display_path(&replica_root);
+
+        let (resolved_ac_root, resolved_room_root) = replica_shared_roots(&agent_root)
+            .expect("an authoritative room replica must resolve its shared roots");
+        let layout = crate::config::ac_root::wg_replica_layout_from_agent_dir(&replica_root)
+            .expect("the authoritative validator must not error")
+            .expect("the authoritative validator must accept this layout");
+
+        assert_eq!(
+            canonical_or_original(&resolved_ac_root),
+            canonical_or_original(&layout.ac_root),
+            "the resolver's `.ac` root must equal the authoritative validator's"
+        );
+        assert_eq!(
+            canonical_or_original(&resolved_room_root),
+            canonical_or_original(&layout.wg_dir),
+            "the resolver's room root must equal the authoritative validator's"
+        );
+        assert_eq!(
+            canonical_or_original(&resolved_ac_root),
+            canonical_or_original(&ac_root),
+            "the resolver's `.ac` root must be the fixture's `.ac` root"
+        );
+        assert_eq!(
+            canonical_or_original(&resolved_room_root),
+            canonical_or_original(&room_root),
+            "the resolver's room root must be the fixture's room root"
+        );
+
+        for (agent_root, why) in [
+            (
+                "C:/fake/.ac/room-7-dev-team/notanagent",
+                "check 1: the leaf is not an `__agent_` replica",
+            ),
+            (
+                "C:/fake/.ac/room-7-dev-team/__agent_dev/sub/nested",
+                "check 1: the leaf is `nested`, not an `__agent_` replica",
+            ),
+            (
+                "C:/fake/.ac/room-7-dev-team/sub/__agent_x",
+                "check 2: the direct parent `sub` carries no room prefix",
+            ),
+            (
+                "C:/fake/room-7-dev-team/__agent_dev",
+                "check 3: the room's parent is not named `.ac`",
+            ),
+        ] {
+            assert!(
+                replica_shared_roots(agent_root).is_none(),
+                "{agent_root} must not resolve ({why})"
+            );
+        }
+    }
+
+    /// #1795 `T8`. An integration test through the real bootstrap call chain
+    /// (`create_default_context_templates` ->
+    /// `ensure_project_context_templates_with_clock`), not a direct call to
+    /// `create_project_shared_dirs`: deleting the production call site must not
+    /// leave this green.
+    ///
+    /// The `project-shared` assertion is written FIRST on purpose. Control `C4`
+    /// deletes the whole creation call, so all four assertions would fail together
+    /// and the panic lands on whichever is written first; 8.3 names `project-shared`
+    /// as `C4`'s kill site.
+    #[test]
+    fn bootstrap_creates_project_shared_dirs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+
+        create_default_context_templates(&ac_root).expect("bootstrap the project `.ac` root");
+
+        assert!(
+            ac_root.join("project-shared").is_dir(),
+            "bootstrap must create `project-shared` under the project `.ac` root"
+        );
+        assert!(
+            ac_root.join("plans").is_dir(),
+            "bootstrap must create `plans` under the project `.ac` root"
+        );
+        assert!(
+            ac_root.join("tools").is_dir(),
+            "bootstrap must create `tools` under the project `.ac` root"
+        );
+        assert!(
+            ac_root.join("errors").is_dir(),
+            "bootstrap must create `errors` under the project `.ac` root"
+        );
+    }
+
+    /// #1795 `T6b`. The backstop creates for an authoritative replica and nothing
+    /// for a Root Agent or a direct-Matrix agent.
+    #[test]
+    fn ensure_replica_shared_locations_creates_for_replica_and_nothing_for_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ac_root, room_root, replica_root, _matrix_root) = make_valid_replica(temp.path());
+        let replica = display_path(&replica_root);
+
+        ensure_replica_shared_locations(&replica, &replica);
+
+        for name in ["plans", "tools", "errors", "project-shared"] {
+            assert!(
+                ac_root.join(name).is_dir(),
+                "the backstop must create `{name}` under the project `.ac` root"
+            );
+        }
+        assert!(
+            room_root.join("room-shared").is_dir(),
+            "the backstop must create `room-shared` under the room root"
+        );
+
+        let root_agent = temp.path().join("root-side").join("ac-root-agent");
+        std::fs::create_dir_all(&root_agent).expect("root agent dir");
+        let root_agent = display_path(&root_agent);
+        ensure_replica_shared_locations(&root_agent, &root_agent);
+
+        let direct_matrix = temp.path().join("matrix-side").join("_agent_dev-rust");
+        std::fs::create_dir_all(&direct_matrix).expect("direct matrix dir");
+        let direct_matrix = display_path(&direct_matrix);
+        ensure_replica_shared_locations(&direct_matrix, &direct_matrix);
+
+        for parent in ["root-side", "matrix-side"] {
+            let side = temp.path().join(parent);
+            assert!(
+                !side.join("room-shared").exists(),
+                "nothing may be created beside a {parent} agent"
+            );
+            for name in ["plans", "tools", "errors", "project-shared"] {
+                assert!(
+                    !side.join(name).exists(),
+                    "no `{name}` may be created beside a {parent} agent"
+                );
+            }
+        }
+    }
+
+    /// #1795 `T10`. Pins the two-name Root guard against a Root Agent whose
+    /// directory is an alias onto a replica path: the raw basename is
+    /// `ac-root-agent` and the canonical basename is `__agent_<name>`. Guarding on
+    /// one name only would create directories on that Root Agent's behalf. The
+    /// canonical argument is a layout the resolver ACCEPTS, which is what keeps
+    /// control `C8` alive: with a canonical root the resolver rejects anyway,
+    /// deleting the guard would change nothing. No junction and no privilege are
+    /// needed, because the guard is a pure function of the two strings.
+    ///
+    /// The `room-shared` absence is asserted FIRST: `C8` flips both creations at
+    /// once, so the panic lands on whichever absence is written first, and 8.3 names
+    /// `room-shared` as `C8`'s kill site.
+    #[test]
+    fn root_agent_alias_creates_no_shared_locations() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ac_root, room_root, replica_root, _matrix_root) = make_valid_replica(temp.path());
+        let replica = display_path(&replica_root);
+        let root_alias = display_path(&temp.path().join("alias").join("ac-root-agent"));
+
+        for (raw, canonical, order) in [
+            (
+                root_alias.as_str(),
+                replica.as_str(),
+                "raw Root, canonical replica",
+            ),
+            (
+                replica.as_str(),
+                root_alias.as_str(),
+                "raw replica, canonical Root",
+            ),
+        ] {
+            ensure_replica_shared_locations(raw, canonical);
+
+            assert!(
+                !room_root.join("room-shared").exists(),
+                "no `room-shared` may be created for a Root Agent alias ({order})"
+            );
+            for name in ["plans", "tools", "errors", "project-shared"] {
+                assert!(
+                    !ac_root.join(name).exists(),
+                    "no `{name}` may be created for a Root Agent alias ({order})"
+                );
+            }
+        }
+    }
+
+    /// #1795 `T1`. Renders through the production resolver from a template written
+    /// to a real temp disk, and asserts on paths derived from that same disk. This
+    /// is also the proof for row 1 of plan 3.7: the template is ALREADY
+    /// MATERIALIZED before the resolve, so it exercises the replace chain, not a
+    /// synthetic default. No literal fixture path appears in any assertion.
+    #[test]
+    fn golden_rule_room_replica_renders_entries_five_and_six_on_disk() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ac_root, room_root, replica_root, matrix_root) = make_valid_replica(temp.path());
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            get_default_agent_template(),
+        )
+        .expect("materialize the default template on disk");
+
+        let agent_root = display_path(&replica_root);
+        let skills = render_skills_section(&discover_skill_index(Some(&matrix_root)));
+        let out = resolve_agent_context_with_activation(
+            &agent_root,
+            Some(&matrix_root),
+            &skills,
+            &replica_root,
+            None,
+            None,
+            None,
+        )
+        .expect("resolve the materialized template");
+
+        assert_eq!(
+            out.matches("5. **Project shared locations").count(),
+            1,
+            "entry five must render exactly once"
+        );
+
+        // AC-9(1): exact join equality, computed in the test from the canonicalized
+        // tempdir. The four names are LITERALS here, never read from
+        // `PROJECT_SHARED_DIRS`, so control `C5` can kill this test.
+        let plans = display_path(&ac_root.join("plans"));
+        assert!(out.contains(&plans), "entry five must name `{plans}`");
+        let tools = display_path(&ac_root.join("tools"));
+        assert!(out.contains(&tools), "entry five must name `{tools}`");
+        let errors = display_path(&ac_root.join("errors"));
+        assert!(out.contains(&errors), "entry five must name `{errors}`");
+        let project_shared = display_path(&ac_root.join("project-shared"));
+        assert!(
+            out.contains(&project_shared),
+            "entry five must name `{project_shared}`"
+        );
+
+        assert_eq!(
+            out.matches("6. **Room shared locations").count(),
+            1,
+            "entry six must render exactly once"
+        );
+        let room_shared = display_path(&room_root.join("room-shared"));
+        assert!(
+            out.contains(&room_shared),
+            "entry six must name `{room_shared}`"
+        );
+        let task = display_path(&room_root.join("TASK.md"));
+        assert!(out.contains(&task), "entry six must name `{task}`");
+
+        assert!(
+            out.contains("Reading `TASK.md` is granted; writing it is NOT."),
+            "entry six must state the read/write split"
+        );
+        assert!(
+            out.contains("task-set-title"),
+            "entry six must name the verb"
+        );
+        assert!(
+            out.contains("task-append-body"),
+            "entry six must name the verb"
+        );
+        assert!(
+            out.contains("All filesystem access not authorized by entries 1-6 is OFF-LIMITS"),
+            "the closure sentence must claim six entries"
+        );
+        assert!(
+            !out.contains("entries 1-4"),
+            "no four-entry range may survive for an authoritative replica"
+        );
+        assert_eq!(out.matches("## GOLDEN RULE").count(), 1);
+        assert!(!out.contains("{{"));
+        assert!(!out.contains("}}"));
+
+        // AC-9(2): the ONE prefix relation this layout permits. `<ac>/plans` is a
+        // sibling of the room and `<room>/room-shared` is a sibling of the agent
+        // directory, so no prefix relation holds between them in either direction.
+        let ac_prefix = display_path(&ac_root);
+        for rendered in [
+            &plans,
+            &tools,
+            &errors,
+            &project_shared,
+            &room_shared,
+            &task,
+            &agent_root,
+        ] {
+            assert!(
+                rendered.starts_with(&ac_prefix),
+                "`{rendered}` must start with `{ac_prefix}`"
+            );
+        }
+    }
+
+    /// #1795 `T2`. The Root Agent must render no room entries and no duplicated
+    /// project grant. Built under a `.ac` AND a room ancestor on purpose: the
+    /// `temp_root_agent_dir` helper builds `temp/<ROOT_AGENT_DIR_NAME>` with
+    /// neither, which is why round 1's control against it was dead.
+    ///
+    /// The four absences are ONE loop so this test contributes exactly one
+    /// such range literal to the 3.9.1 counts.
+    #[test]
+    fn golden_rule_root_agent_renders_no_shared_location_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_dir = temp.path().join(".ac");
+        let root = ac_dir.join("wg-1-demo").join("ac-root-agent");
+        std::fs::create_dir_all(&root).expect("create root under a `.ac` and room ancestor");
+        let root_str = path_string(&root);
+
+        let out = default_context_as_root(&root_str, None, &no_skill_section());
+
+        for forbidden in [
+            "5. **Project shared locations",
+            "6. **Room shared locations",
+            "room-shared",
+            "entries 1-6",
+        ] {
+            assert!(
+                !out.contains(forbidden),
+                "the Root Agent block must not contain `{forbidden}`"
+            );
+        }
+        assert!(
+            out.contains("3. **Every registered AgentsCommander project folder"),
+            "the existing project-wide Root grant must still be present, not duplicated"
+        );
+        assert!(
+            !root
+                .parent()
+                .expect("room root")
+                .join("room-shared")
+                .exists(),
+            "no `room-shared` may be created beside the Root Agent"
+        );
+    }
+
+    /// #1795 `T3`. A direct-Matrix agent is rejected at check 1: its basename is
+    /// `_agent_`, not `__agent_`. One loop, one such range literal.
+    #[test]
+    fn golden_rule_direct_matrix_agent_renders_no_shared_location_entries() {
+        let out = default_context("C:/fake/.ac/_agent_dev-rust", None, &no_skill_section());
+
+        for forbidden in [
+            "5. **Project shared locations",
+            "6. **Room shared locations",
+            "room-shared",
+            "entries 1-6",
+        ] {
+            assert!(
+                !out.contains(forbidden),
+                "the direct-Matrix block must not contain `{forbidden}`"
+            );
+        }
+    }
+
+    /// #1795 `T3b`, the fail-closed test. Four inputs, each of which ENTERS branch A
+    /// (so entry 4 renders and the test is not vacuous) but is not an authoritative
+    /// replica. The `matrix_root` column is the entry-3 argument, not a resolver
+    /// input: `replica_shared_roots` is a function of `agent_root` alone, so it
+    /// cannot block or unblock entries 5 and 6. It is passed so entry 3 renders,
+    /// which proves the block under test is the full replica block.
+    ///
+    /// The assertion ORDER is load-bearing and prescribed by plan 8.1: the three
+    /// absences first, the range last. Controls `C3`, `C3b` and `C3c` flip an
+    /// input's entries and therefore die at assertion 2, told apart by the input
+    /// named at the start of the message; `C9` flips only the printed range and
+    /// therefore dies at assertion 5. Written as ONE loop, so this test contributes
+    /// exactly one literal of each range to the 3.9.1 counts.
+    #[test]
+    fn golden_rule_non_replica_under_a_room_keeps_the_four_entry_text() {
+        for (agent_root, matrix_root, why) in [
+            (
+                "C:/fake/.ac/room-7-dev-team/notanagent",
+                Some("C:/fake/.ac/_agent_dev"),
+                "check 1: the leaf is not an `__agent_` replica",
+            ),
+            (
+                "C:/fake/.ac/room-7-dev-team/__agent_dev/sub/nested",
+                Some("C:/fake/.ac/_agent_dev"),
+                "check 1: the leaf is `nested`",
+            ),
+            (
+                "C:/fake/.ac/room-7-dev-team/sub/__agent_x",
+                Some("C:/fake/.ac/_agent_dev"),
+                "check 2: the direct parent `sub` carries no room prefix",
+            ),
+            (
+                "C:/fake/room-7-dev-team/__agent_dev",
+                Some("C:/fake/_agent_dev"),
+                "check 3: the room's parent is not named `.ac`",
+            ),
+        ] {
+            let values =
+                default_context_dynamic_values(agent_root, matrix_root, &no_skill_section(), false);
+            let out = render_write_restrictions_block(agent_root, &values);
+
+            assert!(
+                out.contains("4. **Messaging access:**"),
+                "{agent_root}: must reach branch A, or this case is vacuous ({why})"
+            );
+            assert!(
+                !out.contains("5. **Project shared locations"),
+                "{agent_root}: must not render entry five ({why})"
+            );
+            assert!(
+                !out.contains("6. **Room shared locations"),
+                "{agent_root}: must not render entry six ({why})"
+            );
+            assert!(
+                !out.contains("room-shared"),
+                "{agent_root}: must not name a room-shared path ({why})"
+            );
+            assert!(
+                out.contains("All filesystem access not authorized by entries 1-4 is OFF-LIMITS"),
+                "{agent_root}: must keep the four-entry closure ({why})"
+            );
+            assert!(
+                !out.contains("entries 1-6"),
+                "{agent_root}: must not claim six entries ({why})"
+            );
+        }
+    }
+
+    /// #1795 `T7`. Pins row 2 of plan 3.7. A materialized template that has LOST
+    /// `{{WRITE_RESTRICTIONS}}` but KEPT `{{AGENT_ROOT}}` keeps its stale inline
+    /// Golden Rule block, because `coarse_section_dedup_safe` skips the fallback
+    /// append for that shape, so it never gains entries 5 and 6.
+    ///
+    /// This is the EXPLICIT SCOPE REDUCTION ruled by the tech lead (plan 2.1): that
+    /// template shape is out of scope for #1795 and the issue's acceptance criterion
+    /// was amended to match. This test pins the reduced behavior. It is NOT a claim
+    /// that the outcome is desirable, and `coarse_section_dedup_safe` is unchanged.
+    #[test]
+    fn materialized_template_without_write_restrictions_token_keeps_its_inline_block() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ac_root, _room_root, replica_root, matrix_root) = make_valid_replica(temp.path());
+        let template = concat!(
+            "# AgentsCommander Context\n\n",
+            "## GOLDEN RULE — Repository Access Restrictions\n\n",
+            "**ABSOLUTE AND NON-NEGOTIABLE:** this stale inline block was baked by an older build.\n\n",
+            "2. **Your own agent replica root and descendants:**\n   ```\n   {{AGENT_ROOT}}\n   ```\n",
+        );
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), template)
+            .expect("materialize a token-less Golden Rule template");
+
+        let agent_root = display_path(&replica_root);
+        let skills = render_skills_section(&discover_skill_index(Some(&matrix_root)));
+        let out = resolve_agent_context_with_activation(
+            &agent_root,
+            Some(&matrix_root),
+            &skills,
+            &replica_root,
+            None,
+            None,
+            None,
+        )
+        .expect("resolve the token-less template");
+
+        assert!(
+            !out.contains("5. **Project shared locations"),
+            "the reduced shape must not gain entry five"
+        );
+        assert_eq!(
+            out.matches("## GOLDEN RULE").count(),
+            1,
+            "the inline Golden Rule must not be duplicated by the fallback append"
+        );
+    }
+
+    /// #1795 `T9`. `T1` pre-canonicalizes its own fixture, so it never exercises
+    /// `ensure_session_context_with_config:157-159`. This one drives production
+    /// canonicalization: the replica root is spelled with a DOUBLED separator, which
+    /// `Path::components` skips and `std::fs::canonicalize` collapses on every
+    /// platform without needing any privilege.
+    #[test]
+    fn production_canonicalization_reaches_the_shared_location_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ac_root, room_root, _replica_root, _matrix_root) = make_valid_replica(temp.path());
+
+        let sep = std::path::MAIN_SEPARATOR;
+        // `display_path`, NOT `path_string`. `make_valid_replica` returns
+        // canonicalized paths, which on Windows carry the `\\?\` VERBATIM prefix, and
+        // Windows does not normalize a verbatim path: it is handed to the filesystem
+        // as-is, so `std::fs::canonicalize` FAILS on a verbatim path with a doubled
+        // separator and `:157-159` silently falls back to the raw string. The test
+        // would then pass while proving nothing. Stripping the prefix first gives a
+        // normal path, which Windows does collapse, so production really does
+        // canonicalize before it resolves.
+        let spelling = format!("{}{sep}{sep}__agent_dev-rust", display_path(&room_root));
+        assert!(
+            spelling != display_path(&canonical_or_original(Path::new(&spelling))),
+            "the fixture spelling must differ from its canonical form, or this test is vacuous"
+        );
+
+        let cached = ensure_session_context(&spelling).expect("ensure session context");
+        let out = std::fs::read_to_string(&cached).expect("read the cached context");
+
+        for expected in [
+            display_path(&ac_root.join("plans")),
+            display_path(&ac_root.join("tools")),
+            display_path(&ac_root.join("errors")),
+            display_path(&ac_root.join("project-shared")),
+            display_path(&room_root.join("room-shared")),
+            display_path(&room_root.join("TASK.md")),
+        ] {
+            assert!(
+                out.contains(&expected),
+                "the rendered path must be the canonical join `{expected}`"
+            );
+        }
+        assert!(
+            !out.contains(&format!("{sep}{sep}")),
+            "no doubled separator may survive into the rendered block"
+        );
+    }
+
+    /// #1795 `T11`. The session backstop is warn-and-continue: a shared directory
+    /// that cannot be created must not fail the session. A regular FILE is placed
+    /// where `plans` would go, so `create_dir_all` must fail.
+    #[test]
+    fn shared_location_creation_failure_does_not_fail_the_session() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ac_root, room_root, replica_root, _matrix_root) = make_valid_replica(temp.path());
+        std::fs::write(ac_root.join("plans"), b"not a directory").expect("block `plans`");
+
+        let cached = ensure_session_context(&display_path(&replica_root))
+            .expect("a creation failure must not fail the session");
+        assert!(
+            Path::new(&cached).exists(),
+            "the cached context file must still be written"
+        );
+        let out = std::fs::read_to_string(&cached).expect("read the cached context");
+        assert!(
+            out.contains("5. **Project shared locations"),
+            "entry five must still render when its directory could not be created"
+        );
+        assert!(
+            room_root.join("room-shared").is_dir(),
+            "the first creation failure must not abort the second creation"
+        );
+    }
+
+    /// #1795 `T13`. Proves the P4 WIRING, not the helper: a test that called
+    /// `ensure_replica_shared_locations` directly would stay green with the call
+    /// site deleted, which is what control `C7` probes. The four project
+    /// directories are asserted FIRST, because `C7` stops every creation at once and
+    /// 8.3 names that assertion as its kill site.
+    #[test]
+    fn session_start_creates_shared_locations_for_a_replica() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ac_root, room_root, replica_root, _matrix_root) = make_valid_replica(temp.path());
+        for name in ["plans", "tools", "errors", "project-shared"] {
+            assert!(
+                !ac_root.join(name).exists(),
+                "the fixture must start with no `{name}`"
+            );
+        }
+
+        let cached =
+            ensure_session_context(&display_path(&replica_root)).expect("ensure session context");
+
+        for name in ["plans", "tools", "errors", "project-shared"] {
+            assert!(
+                ac_root.join(name).is_dir(),
+                "a session start must create `{name}` under the project `.ac` root"
+            );
+        }
+        assert!(
+            room_root.join("room-shared").is_dir(),
+            "a session start must create `room-shared` under the room root"
+        );
+        let out = std::fs::read_to_string(&cached).expect("read the cached context");
+        assert!(
+            out.contains("5. **Project shared locations"),
+            "the cached content must carry entry five"
+        );
+    }
 }
 
 /// #1005 token-accounting harness (plan section 7). Renders the three boot
@@ -12088,7 +12924,20 @@ mod token_accounting {
     // Pure-string fake paths: `workgroup_root` is an ancestor NAME walk with no
     // fs check and `display_path` does not canonicalize, so these render
     // byte-identically on every machine.
-    const FAKE_REPLICA_ROOT: &str = "C:/fake/wg-1-team/__agent_dev";
+    //
+    // #1795: `FAKE_REPLICA_ROOT` gained its `.ac/` level so it is an AUTHORITATIVE
+    // room replica under `replica_shared_roots`; without it the budget test would
+    // measure a four-entry block that no real agent receives. That correction wakes
+    // one code path that was asleep: `{{HOST_PLATFORM_RULES}}` calls `find_ac_root`,
+    // a pure name walk with no existence test, which now returns `Some("C:/fake/.ac")`,
+    // so `ensure_platform_context_templates` is called. Its first statement is
+    // `validate_existing_dir`, which does NOT create the directory, so it returns
+    // `Err`, the call site logs a warning and continues, and the embedded default
+    // renders exactly as before: two extra failing metadata calls, zero bytes of
+    // difference, zero writes. This holds on the stated condition that
+    // `C:\fake\.ac` DOES NOT EXIST on the host; if it did, the seeder would write
+    // platform files there and the measurement would stop being machine-independent.
+    const FAKE_REPLICA_ROOT: &str = "C:/fake/.ac/wg-1-team/__agent_dev";
     const FAKE_MATRIX_ROOT: &str = "C:/fake/.ac/_agent_dev";
     const FAKE_ROOT_AGENT: &str = "C:/fake/ac-root-agent";
 
@@ -12165,6 +13014,22 @@ mod token_accounting {
         const V4_FULL_WG_PROFILE_BYTES: usize = 9_866;
         const V4_MAX_TOUCHED_OWNERS_BYTES: usize = 7_606;
         const V4_MAX_FULL_WG_PROFILE_BYTES: usize = 9_109;
+        // #1795 V5 generation, on the exact V3-to-V4 pattern. Every V3 and V4
+        // constant and every existing `assert_eq!` is kept; `REQUIRED_REDUCTION_BYTES`
+        // stays 757 and is not re-derived.
+        //
+        // The delta has TWO halves and both are measured INSIDE this test, so no
+        // unmeasured slack is load-bearing anywhere in the ladder. The two range
+        // literals are the same byte length, so the renumbering contributes zero.
+        const PRE_1795_FAKE_REPLICA_ROOT: &str = "C:/fake/wg-1-team/__agent_dev";
+        const AC_ROOT_FIXTURE_CORRECTION_BYTES: usize = 8;
+        const SHARED_LOCATIONS_ENTRY_DELTA_BYTES: usize = 1_103;
+        const V5_DELTA_BYTES: usize =
+            AC_ROOT_FIXTURE_CORRECTION_BYTES + SHARED_LOCATIONS_ENTRY_DELTA_BYTES;
+        const V5_TOUCHED_OWNERS_BYTES: usize = 9_474;
+        const V5_FULL_WG_PROFILE_BYTES: usize = 10_977;
+        const V5_MAX_TOUCHED_OWNERS_BYTES: usize = 8_717;
+        const V5_MAX_FULL_WG_PROFILE_BYTES: usize = 10_220;
 
         let skills = synthetic_replica_skills_section();
         let values = super::default_context_dynamic_values(
@@ -12181,6 +13046,90 @@ mod token_accounting {
             + super::DEFAULT_SESSION_CREDENTIALS.len()
             + super::DEFAULT_DELEGATED_TASK_REPORTING.len();
         let full_wg = super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
+
+        // #1795 6.1: the fixture half of the delta, measured against the pre-#1795
+        // fixture in this same run. That root has no `.ac` grandparent, so check 3
+        // rejects it, it renders the four-entry text, and the difference is exactly
+        // (corrected path) + (the two entries).
+        let pre_values = super::default_context_dynamic_values(
+            PRE_1795_FAKE_REPLICA_ROOT,
+            Some(FAKE_MATRIX_ROOT),
+            &skills,
+            false,
+        );
+        let pre_write_restrictions =
+            super::render_write_restrictions_block(PRE_1795_FAKE_REPLICA_ROOT, &pre_values);
+        let pre_messaging = super::render_inter_agent_messaging_block(&pre_values);
+        let pre_touched_owners = pre_write_restrictions.len()
+            + pre_messaging.len()
+            + super::DEFAULT_CLI_CONTEXT.len()
+            + super::DEFAULT_SESSION_CREDENTIALS.len()
+            + super::DEFAULT_DELEGATED_TASK_REPORTING.len();
+        let pre_full_wg =
+            super::default_context(PRE_1795_FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
+
+        // #1795 6.1: an oracle that depends on NO measured number. Equal deltas across
+        // the two rows would otherwise certify any wrong common text, because V5 is
+        // measured from the changed output itself.
+        assert!(
+            !values.project_shared_entry.is_empty(),
+            "the budget fixture must be an authoritative replica; see 6.3"
+        );
+        assert_eq!(
+            SHARED_LOCATIONS_ENTRY_DELTA_BYTES,
+            values.project_shared_entry.len() + values.room_shared_entry.len(),
+            "the entry half of the V5 delta must be exactly the two new entries"
+        );
+        assert!(
+            pre_values.project_shared_entry.is_empty(),
+            "the pre-#1795 fixture must render no shared-location entries"
+        );
+        assert_eq!(
+            touched_owners - pre_touched_owners,
+            V5_DELTA_BYTES,
+            "the touched-owner delta must be the corrected fixture path plus the two entries"
+        );
+        assert_eq!(
+            full_wg.len() - pre_full_wg.len(),
+            V5_DELTA_BYTES,
+            "the WG-profile delta must be the corrected fixture path plus the two entries"
+        );
+        // The pre-change tree's own gates, kept alive, so a red ladder says WHICH half
+        // moved instead of sending the implementer hunting.
+        assert!(
+            pre_touched_owners <= V4_MAX_TOUCHED_OWNERS_BYTES,
+            "pre-#1795 five touched owners are {pre_touched_owners} bytes against v4 ceiling {V4_MAX_TOUCHED_OWNERS_BYTES}"
+        );
+        assert!(
+            pre_full_wg.len() <= V4_MAX_FULL_WG_PROFILE_BYTES,
+            "pre-#1795 WG profile is {} bytes against v4 ceiling {V4_MAX_FULL_WG_PROFILE_BYTES}",
+            pre_full_wg.len()
+        );
+
+        assert_eq!(
+            V5_TOUCHED_OWNERS_BYTES,
+            V4_TOUCHED_OWNERS_BYTES + V5_DELTA_BYTES
+        );
+        assert_eq!(
+            V5_FULL_WG_PROFILE_BYTES,
+            V4_FULL_WG_PROFILE_BYTES + V5_DELTA_BYTES
+        );
+        assert_eq!(
+            V5_MAX_TOUCHED_OWNERS_BYTES,
+            V4_MAX_TOUCHED_OWNERS_BYTES + V5_DELTA_BYTES
+        );
+        assert_eq!(
+            V5_MAX_FULL_WG_PROFILE_BYTES,
+            V4_MAX_FULL_WG_PROFILE_BYTES + V5_DELTA_BYTES
+        );
+        assert_eq!(
+            V5_TOUCHED_OWNERS_BYTES - V5_MAX_TOUCHED_OWNERS_BYTES,
+            REQUIRED_REDUCTION_BYTES
+        );
+        assert_eq!(
+            V5_FULL_WG_PROFILE_BYTES - V5_MAX_FULL_WG_PROFILE_BYTES,
+            REQUIRED_REDUCTION_BYTES
+        );
 
         assert_eq!(
             V4_TOUCHED_OWNERS_BYTES,
@@ -12233,24 +13182,47 @@ mod token_accounting {
             "the platform block must render in the WG profile"
         );
 
+        // #1795 6.1: bind the exact bodies, so the ladder cannot certify wrong text of
+        // the right length. `display_path` does NOT normalize separators
+        // (`path_utils.rs:32-35`) and `Path::join` pushes `\` on Windows, so a
+        // rendered path literal must be compared against a separator-normalized copy,
+        // exactly as the existing tests at `:6249` and `:6278` do. Every byte count in
+        // this test is taken from the UNMODIFIED strings, so the ladder still measures
+        // what ships.
+        let normalized = write_restrictions.replace('\\', "/");
+        for required in [
+            "5. **Project shared locations, inside your project's `.ac` root:**",
+            "6. **Room shared locations, inside your own room root:**",
+            "C:/fake/.ac/plans",
+            "C:/fake/.ac/tools",
+            "C:/fake/.ac/errors",
+            "C:/fake/.ac/project-shared",
+            "C:/fake/.ac/wg-1-team/room-shared",
+            "C:/fake/.ac/wg-1-team/TASK.md",
+            "Reading `TASK.md` is granted; writing it is NOT.",
+            "All filesystem access not authorized by entries 1-6 is OFF-LIMITS",
+        ] {
+            assert!(normalized.contains(required), "missing `{required}`");
+        }
+
         assert!(
-            touched_owners <= V4_MAX_TOUCHED_OWNERS_BYTES,
-            "five touched owners are {touched_owners} bytes; v4 baseline {V4_TOUCHED_OWNERS_BYTES}, ceiling {V4_MAX_TOUCHED_OWNERS_BYTES}"
+            touched_owners <= V5_MAX_TOUCHED_OWNERS_BYTES,
+            "five touched owners are {touched_owners} bytes; v5 baseline {V5_TOUCHED_OWNERS_BYTES}, ceiling {V5_MAX_TOUCHED_OWNERS_BYTES}"
         );
         assert!(
-            V4_TOUCHED_OWNERS_BYTES - touched_owners >= REQUIRED_REDUCTION_BYTES,
+            V5_TOUCHED_OWNERS_BYTES - touched_owners >= REQUIRED_REDUCTION_BYTES,
             "five-owner reduction is only {} bytes",
-            V4_TOUCHED_OWNERS_BYTES - touched_owners
+            V5_TOUCHED_OWNERS_BYTES - touched_owners
         );
         assert!(
-            full_wg.len() <= V4_MAX_FULL_WG_PROFILE_BYTES,
-            "WG profile is {} bytes; v4 baseline {V4_FULL_WG_PROFILE_BYTES}, ceiling {V4_MAX_FULL_WG_PROFILE_BYTES}",
+            full_wg.len() <= V5_MAX_FULL_WG_PROFILE_BYTES,
+            "WG profile is {} bytes; v5 baseline {V5_FULL_WG_PROFILE_BYTES}, ceiling {V5_MAX_FULL_WG_PROFILE_BYTES}",
             full_wg.len()
         );
         assert!(
-            V4_FULL_WG_PROFILE_BYTES - full_wg.len() >= REQUIRED_REDUCTION_BYTES,
+            V5_FULL_WG_PROFILE_BYTES - full_wg.len() >= REQUIRED_REDUCTION_BYTES,
             "WG reduction is only {} bytes",
-            V4_FULL_WG_PROFILE_BYTES - full_wg.len()
+            V5_FULL_WG_PROFILE_BYTES - full_wg.len()
         );
     }
 

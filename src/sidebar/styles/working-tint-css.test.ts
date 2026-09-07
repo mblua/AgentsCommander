@@ -292,7 +292,7 @@ describe("#1755 working-tint CSS bytes (leg 1)", () => {
     expect(declValue(ruleBody(".replica-item:hover"), "background")).toBe("var(--sidebar-hover)");
     const active = ruleBody(".replica-item.active");
     expect(declValue(active, "background")).toBe("var(--sidebar-active)");
-    expect(declValue(active, "border-left-color")).toBe("var(--sidebar-accent)");
+    expect(declValue(active, "border-left-color")).toBe("var(--ac-selected-rail-color)");
     const quickActive = ruleBody(
       ".coord-quick-access .replica-item.active:has(.ac-discovery-badge.coord)"
     );

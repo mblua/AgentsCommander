@@ -120,6 +120,8 @@ function settings(overrides: Partial<AppSettings> = {}): SettingsSnapshot {
     defaultShellArgs: [],
     sidebarAlwaysOnTop: false,
     sidebarStyle: "noir-minimal",
+    selectedRowRailWidth: "9px",
+    selectedRowRailColor: "#00ff5f",
     themeLight: true,
     telegramNetworkPollErrorLogging: {
       firstFailureLevel: "warn",
