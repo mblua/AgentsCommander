@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import ProjectPanel from "./ProjectPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
@@ -270,13 +269,23 @@ describe("ProjectPanel blocked-menu communication slot (#1649)", () => {
 // toast.css, so getComputedStyle in jsdom cannot see any of these rules and a
 // DOM test would pass against a stylesheet that does not define them at all.
 describe("ProjectPanel blocked-menu chip and toast action stylesheets (#1858)", () => {
-  // This file runs under `@vitest-environment jsdom`, where import.meta.url is
-  // not a file: URL (readFileSync on it throws "The URL must be of scheme
-  // file"), so the sibling CSS-text tests' `new URL(..., import.meta.url)` trick
-  // is not available here. Resolve from the vitest root instead; a wrong path
-  // throws ENOENT and fails the test rather than passing on an empty string.
+  // The sibling stylesheet guards in src/sidebar/styles read their file with
+  // `new URL(relative, import.meta.url)`, which does NOT work here: this file
+  // runs under `@vitest-environment jsdom`, and jsdom's URL resolves the
+  // two-argument form against the document base, so that call yields
+  // `http://localhost:3000/...` and readFileSync rejects it with "The URL must
+  // be of scheme file". import.meta.url itself is still a file: URL, so build an
+  // absolute one-argument URL from it instead. It stays a URL on purpose:
+  // @types/node is deliberately not a dependency, and the node:fs declaration in
+  // src/vite-env.d.ts is narrowed to a URL argument.
+  const marker = "/src/sidebar/components/";
+  const markerAt = import.meta.url.indexOf(marker);
+  if (markerAt < 0) {
+    throw new Error(`cannot locate the repo root in import.meta.url: ${import.meta.url}`);
+  }
+  const repoRootUrl = import.meta.url.slice(0, markerAt);
   const readSource = (relative: string): string =>
-    readFileSync(resolve(process.cwd(), relative), "utf8");
+    readFileSync(new URL(`${repoRootUrl}/${relative}`), "utf8");
   const sidebarCss = readSource("src/sidebar/styles/sidebar.css");
   const variablesCss = readSource("src/sidebar/styles/variables.css");
   const toastCss = readSource("src/shared/styles/toast.css");
