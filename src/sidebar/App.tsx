@@ -316,6 +316,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   const refreshProfileOutdated = async () => {
     try {
       const generationAtRequest = sessionsStore.waitingEdgeGeneration;
+      const communicationGenerationAtRequest = sessionsStore.communicationGeneration;
       const list = await SessionAPI.list();
       if (disposed) return;
       // Evaluated ONCE, before the loop, because the clears below advance the
@@ -324,8 +325,15 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       // tick retries.
       const snapshotIsCurrent =
         sessionsStore.waitingEdgeGeneration === generationAtRequest;
+      // #1856 - same rule for the communication mirror, and evaluated ONCE here
+      // for the same reason: setCommunication inside the loop advances its own
+      // counter.
+      const communicationSnapshotIsCurrent =
+        sessionsStore.communicationGeneration === communicationGenerationAtRequest;
       for (const s of list) {
         sessionsStore.setProfileOutdated(s.id, s.profileOutdated ?? false);
+        if (communicationSnapshotIsCurrent)
+          sessionsStore.setCommunication(s.id, s.communication ?? null);
         if (!snapshotIsCurrent || !isSessionWorking(s)) continue;
         const row = sessionsStore.sessions.find((r) => r.id === s.id);
         if (row && (row.waitingForInput || row.pendingReview)) {
