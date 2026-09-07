@@ -1053,6 +1053,43 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSettings("data", key as any, value as any);
   };
 
+  /** #1796 - one shape for both selected-row rail fields, written once. `updateField`
+   *  writes the store synchronously, so `draft` already holds this keystroke in the
+   *  edited field's own position and the sibling's stored value in the other. An invalid
+   *  value persists as typed, is not published, and the hint uses the same predicate. */
+  const railField = (p: {
+    field: "selectedRowRailWidth" | "selectedRowRailColor";
+    label: string;
+    testId: string;
+    isValid: (value: string) => boolean;
+    hint: string;
+  }) => (
+    <>
+      <label class="settings-field">
+        <span class="settings-label">{p.label}</span>
+        <input
+          class="settings-input"
+          value={settings.data![p.field]}
+          onInput={(e) => {
+            updateField(p.field, e.currentTarget.value);
+            const draft = settings.data!;
+            applySelectedRowRail(
+              document.documentElement,
+              draft.selectedRowRailWidth,
+              draft.selectedRowRailColor
+            );
+          }}
+          data-ac-testid={p.testId}
+        />
+      </label>
+      <Show when={!p.isValid(settings.data?.[p.field] ?? "")}>
+        <div class="settings-hint settings-hint-error" data-ac-testid={`${p.testId}.warning`}>
+          {p.hint}
+        </div>
+      </Show>
+    </>
+  );
+
   // ── #1171 Watchers ────────────────────────────────────────────────────────
   // The map is `Record<string, WatcherEntry>`, not of `WatcherConfig`: the Rust side keeps
   // an entry it could not parse verbatim so one malformed watcher costs one watcher instead
@@ -1850,58 +1887,20 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <option value="neon-circuit">Neon Circuit</option>
           </select>
         </label>
-        <label class="settings-field">
-          <span class="settings-label">Selected Row Bar Width</span>
-          <input
-            class="settings-input"
-            value={settings.data!.selectedRowRailWidth}
-            onInput={(e) => {
-              updateField("selectedRowRailWidth", e.currentTarget.value);
-              applySelectedRowRail(
-                document.documentElement,
-                e.currentTarget.value,
-                settings.data!.selectedRowRailColor
-              );
-            }}
-            data-ac-testid="settings.general.selectedRowRailWidth"
-          />
-        </label>
-        <Show when={!isValidRailWidth(settings.data?.selectedRowRailWidth ?? "")}>
-          <div
-            class="settings-hint settings-hint-error"
-            data-ac-testid="settings.general.selectedRowRailWidth.warning"
-          >
-            Not a valid width. Enter a whole number from 1 to 14, optionally
-            followed by px, for example 9px. While this is invalid the bar shows
-            the default 9px.
-          </div>
-        </Show>
-        <label class="settings-field">
-          <span class="settings-label">Selected Row Bar Color</span>
-          <input
-            class="settings-input"
-            value={settings.data!.selectedRowRailColor}
-            onInput={(e) => {
-              updateField("selectedRowRailColor", e.currentTarget.value);
-              applySelectedRowRail(
-                document.documentElement,
-                settings.data!.selectedRowRailWidth,
-                e.currentTarget.value
-              );
-            }}
-            data-ac-testid="settings.general.selectedRowRailColor"
-          />
-        </label>
-        <Show when={!isValidRailColor(settings.data?.selectedRowRailColor ?? "")}>
-          <div
-            class="settings-hint settings-hint-error"
-            data-ac-testid="settings.general.selectedRowRailColor.warning"
-          >
-            Not a valid colour. Enter a hash followed by six hex digits, for
-            example #00ff5f. While this is invalid the bar shows the default
-            #00ff5f.
-          </div>
-        </Show>
+        {railField({
+          field: "selectedRowRailWidth",
+          label: "Selected Row Bar Width",
+          testId: "settings.general.selectedRowRailWidth",
+          isValid: isValidRailWidth,
+          hint: "Not a valid width. Enter a whole number from 1 to 14, optionally followed by px, for example 9px. While this is invalid the bar shows the default 9px.",
+        })}
+        {railField({
+          field: "selectedRowRailColor",
+          label: "Selected Row Bar Color",
+          testId: "settings.general.selectedRowRailColor",
+          isValid: isValidRailColor,
+          hint: "Not a valid colour. Enter a hash followed by six hex digits, for example #00ff5f. While this is invalid the bar shows the default #00ff5f.",
+        })}
         <label class="settings-checkbox-field">
           <input
             type="checkbox"
