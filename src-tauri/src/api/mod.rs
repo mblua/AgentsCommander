@@ -266,6 +266,17 @@ pub async fn wait_for_startup_ready(
     }
 }
 
+/// Where the API server's listening socket comes from.
+enum ApiBindSource {
+    /// Resolve `bind`/`port` and bind inside the server task. The production path.
+    Address { bind: String, port: u16 },
+    /// Adopt a socket the caller already bound and still holds. Test-only: it exists so the
+    /// terminal-snapshot acceptance tests can hand over a reserved loopback socket with no
+    /// window in which another process can take the port (#1768).
+    #[cfg(test)]
+    Prebound(std::net::TcpListener),
+}
+
 /// Start the control-plane API server on the shared tokio runtime, mirroring
 /// `web::start_server`. Returns the join handle plus a readiness receiver for
 /// the managed `ApiServerHandle`. On any startup failure (unresolvable config
@@ -275,6 +286,42 @@ pub async fn wait_for_startup_ready(
 pub fn start_server(
     bind: String,
     port: u16,
+    app_handle: tauri::AppHandle,
+    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: Arc<Mutex<PtyManager>>,
+    shutdown: CancellationToken,
+) -> ApiServerStart {
+    start_server_from(
+        ApiBindSource::Address { bind, port },
+        app_handle,
+        session_mgr,
+        pty_mgr,
+        shutdown,
+    )
+}
+
+/// Start the API server on a socket the caller already bound. The caller owns the port from the
+/// moment it binds until the server owns the same socket, so there is no reserve-then-rebind
+/// window (#1768). Test-only; production always goes through `start_server`.
+#[cfg(test)]
+pub(crate) fn start_server_on_listener(
+    listener: std::net::TcpListener,
+    app_handle: tauri::AppHandle,
+    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: Arc<Mutex<PtyManager>>,
+    shutdown: CancellationToken,
+) -> ApiServerStart {
+    start_server_from(
+        ApiBindSource::Prebound(listener),
+        app_handle,
+        session_mgr,
+        pty_mgr,
+        shutdown,
+    )
+}
+
+fn start_server_from(
+    source: ApiBindSource,
     app_handle: tauri::AppHandle,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: Arc<Mutex<PtyManager>>,
@@ -338,45 +385,58 @@ pub fn start_server(
             shutdown.clone(),
             dispatcher::DispatcherConfig::default(),
         );
-        let addr: SocketAddr =
-            match crate::config::settings::parse_api_server_socket_addr(&bind, port) {
-                Ok(a) => a,
+        let (listener, addr) = match source {
+            ApiBindSource::Address { bind, port } => {
+                let addr: SocketAddr =
+                    match crate::config::settings::parse_api_server_socket_addr(&bind, port) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            let message =
+                                format!("Invalid API server bind address {}:{}: {}", bind, port, e);
+                            log::error!("[api-server] {}", message);
+                            if let Some(tx) = readiness_tx.take() {
+                                let _ = tx.send(Err(message));
+                            }
+                            shutdown.cancel();
+                            wait_for_dispatcher(dispatcher_handle, "invalid-bind").await;
+                            return;
+                        }
+                    };
+
+                warn_on_non_loopback(addr);
+
+                // Bind-failure = log-and-return, NOT panic (§0.5 dev-rust F7).
+                match tokio::net::TcpListener::bind(addr).await {
+                    Ok(l) => (l, addr),
+                    Err(e) => {
+                        let message = format!("API server bind failed on {}: {}", addr, e);
+                        log::error!("[api-server] {}; API server not started", message);
+                        if let Some(tx) = readiness_tx.take() {
+                            let _ = tx.send(Err(message));
+                        }
+                        shutdown.cancel();
+                        wait_for_dispatcher(dispatcher_handle, "bind-failure").await;
+                        return;
+                    }
+                }
+            }
+            #[cfg(test)]
+            ApiBindSource::Prebound(prebound) => match adopt_prebound_listener(prebound) {
+                Ok((l, addr)) => {
+                    warn_on_non_loopback(addr);
+                    (l, addr)
+                }
                 Err(e) => {
-                    let message =
-                        format!("Invalid API server bind address {}:{}: {}", bind, port, e);
-                    log::error!("[api-server] {}", message);
+                    let message = format!("API server could not adopt prebound listener: {}", e);
+                    log::error!("[api-server] {}; API server not started", message);
                     if let Some(tx) = readiness_tx.take() {
                         let _ = tx.send(Err(message));
                     }
                     shutdown.cancel();
-                    wait_for_dispatcher(dispatcher_handle, "invalid-bind").await;
+                    wait_for_dispatcher(dispatcher_handle, "adopt-failure").await;
                     return;
                 }
-            };
-
-        // Loud warning on any non-loopback bind (§0.5 DESIGN DECISION).
-        if !addr.ip().is_loopback() {
-            let warning = format!(
-                "[api-server] WARNING: bound on {} (non-loopback); ensure a host firewall restricts this port to the Docker/WSL subnet.",
-                addr
-            );
-            log::warn!("{}", warning);
-            println!("{}", warning);
-        }
-
-        // Bind-failure = log-and-return, NOT panic (§0.5 dev-rust F7).
-        let listener = match tokio::net::TcpListener::bind(addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                let message = format!("API server bind failed on {}: {}", addr, e);
-                log::error!("[api-server] {}; API server not started", message);
-                if let Some(tx) = readiness_tx.take() {
-                    let _ = tx.send(Err(message));
-                }
-                shutdown.cancel();
-                wait_for_dispatcher(dispatcher_handle, "bind-failure").await;
-                return;
-            }
+            },
         };
 
         if let Some(tx) = readiness_tx.take() {
@@ -404,6 +464,30 @@ pub fn start_server(
         join_handle,
         readiness,
     }
+}
+
+/// Loud warning on any non-loopback bind (§0.5 DESIGN DECISION).
+fn warn_on_non_loopback(addr: SocketAddr) {
+    if !addr.ip().is_loopback() {
+        let warning = format!(
+            "[api-server] WARNING: bound on {} (non-loopback); ensure a host firewall restricts this port to the Docker/WSL subnet.",
+            addr
+        );
+        log::warn!("{}", warning);
+        println!("{}", warning);
+    }
+}
+
+/// Turn a caller-owned blocking listener into the tokio listener the server serves on, without
+/// ever releasing the port (#1768).
+#[cfg(test)]
+fn adopt_prebound_listener(
+    prebound: std::net::TcpListener,
+) -> std::io::Result<(tokio::net::TcpListener, SocketAddr)> {
+    let addr = prebound.local_addr()?;
+    prebound.set_nonblocking(true)?;
+    let listener = tokio::net::TcpListener::from_std(prebound)?;
+    Ok((listener, addr))
 }
 
 const DISPATCHER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
