@@ -149,6 +149,8 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     projectPaths: [],
     archivedProjectPaths: [],
     sidebarStyle: "noir-minimal",
+    selectedRowRailWidth: "9px",
+    selectedRowRailColor: "#00ff5f",
     onboardingDismissed: true,
     coordSortByActivity: false,
     alwaysShowSelectedWorkgroup: true,

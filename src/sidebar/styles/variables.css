@@ -49,6 +49,16 @@
   /* Radius */
   --radius-sm: 4px;
   --radius-md: 6px;
+
+  /* #1796 - selected-row rail. App.tsx and SettingsModal publish the first two as
+     inline custom properties on <html>, which beat these. --ac-rail-delta is how
+     much wider the rail is than the width the winning rule used to draw, so
+     `padding-left: max(0px, calc(<original> - var(--ac-rail-delta)))` keeps row
+     content on the same column. Rules that used to draw 2px redeclare the delta
+     against 2px; rules that draw no rail redeclare it as 0px. */
+  --ac-selected-rail-width: 9px;
+  --ac-selected-rail-color: #00ff5f;
+  --ac-rail-delta: calc(var(--ac-selected-rail-width) - 3px);
 }
 
 html.light-theme {
