@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import SettingsModal from "./SettingsModal";
 import type { AppSettings, SettingsSnapshot } from "../../shared/types";
-import { SettingsAPI } from "../../shared/ipc";
+import { PtyAPI, SettingsAPI } from "../../shared/ipc";
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
   AC_REPLICA_ROOT_PLACEHOLDER,
@@ -39,6 +39,28 @@ vi.mock("../../shared/ipc", async () => {
     install: { status: "installed", version: "1.0.0", path: `C:\\bin\\${command}.cmd`, seq: index + 1 },
   }));
   return {
+    // #1797 - SettingsModal's reach effect arms a debounced PtyAPI.previewWatcherReach on
+    // every mount, in every section, so any test whose render-to-dispose window crosses
+    // WATCHER_PREVIEW_DEBOUNCE_MS (300, SettingsModal.tsx:224) reads this export while the
+    // component is still mounted. Without it the read throws into the timer queue, Vitest
+    // collects it as an unhandled error, and the process exits 1 with every test still passing.
+    // previewWatcherPattern is the component's second live call site (SettingsModal.tsx:301);
+    // it sits behind a non-empty-pattern guard no test in this file reaches, so it is mocked
+    // for reachability, not behaviour, and only its presence is asserted.
+    PtyAPI: {
+      previewWatcherReach: vi.fn(() => Promise.resolve([])),
+      previewWatcherPattern: vi.fn(() =>
+        Promise.resolve({
+          compiles: true,
+          error: null,
+          sampled: false,
+          matchedRows: 0,
+          totalRows: 0,
+          samples: [],
+          capturesVolatile: false,
+        }),
+      ),
+    },
     SettingsAPI: {
       get: vi.fn(() => Promise.resolve(settings())),
       update: vi.fn(() => Promise.resolve()),
@@ -2468,6 +2490,27 @@ describe("SettingsModal automation hooks", () => {
     expect(cell().textContent).toBe("No");
     // the table reads the DRAFT: nothing was saved
     expect(vi.mocked(SettingsAPI.saveDraft)).not.toHaveBeenCalled();
+
+    dispose();
+  });
+
+  it("mounts against a mocked PtyAPI so the debounced reach preview cannot throw into the timer queue (#1797)", async () => {
+    // The wait must exceed WATCHER_PREVIEW_DEBOUNCE_MS (300, SettingsModal.tsx:224). That
+    // constant is not exported and SettingsModal.tsx must stay byte-identical to HEAD, so the
+    // wait is a local literal with margin. Raising the debounce well past this wait fails the
+    // first expectation loudly; raising it only just past 400 does not (measured: plan 3.3).
+    const REACH_DEBOUNCE_WAIT_MS = 400;
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+    await new Promise<void>((resolve) => setTimeout(resolve, REACH_DEBOUNCE_WAIT_MS));
+
+    expect(vi.mocked(PtyAPI.previewWatcherReach)).toHaveBeenCalled();
+    expect(vi.isMockFunction(PtyAPI.previewWatcherPattern)).toBe(true);
 
     dispose();
   });
