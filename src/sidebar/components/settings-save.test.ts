@@ -37,6 +37,10 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     coordSortByActivity: false,
     alwaysShowSelectedWorkgroup: true,
     restoreCoordinatorWakeState: true,
+    restartResumeWakeWorkingAgents: false,
+    restartResumeOrchestratorPrompt:
+      "AgentsCommander was restarted. Continue with the work that was in flight.",
+    restartResumeAgentPrompt: ".",
     soundsEnabled: true,
     teamIdleBeepEnabled: true,
     webServerEnabled: false,
@@ -461,5 +465,23 @@ describe("mergeSettingsForSavePreservingProjects api-server seed rebasing", () =
 
     expect("contextRegex" in (merged.agents[0] as object)).toBe(false);
     expect(merged.agents[0]?.id).toBe("absent");
+  });
+});
+
+describe("mergeSettingsForSavePreservingProjects (#1793 restart-resume fields)", () => {
+  it("carries the three #1793 restart-resume fields through a save", () => {
+    // The guard against the save path dropping an unknown key: all three are
+    // set away from their fixture defaults, and all three must survive verbatim.
+    const draft = settings({
+      restartResumeWakeWorkingAgents: true,
+      restartResumeOrchestratorPrompt: "orchestrator, carry on",
+      restartResumeAgentPrompt: "replica, carry on",
+    });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    expect(merged.restartResumeWakeWorkingAgents).toBe(true);
+    expect(merged.restartResumeOrchestratorPrompt).toBe("orchestrator, carry on");
+    expect(merged.restartResumeAgentPrompt).toBe("replica, carry on");
   });
 });
