@@ -20,6 +20,7 @@ import {
 import { stripFrontmatter } from "../../shared/markdown";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { focusOnMount } from "../../shared/focus-on-mount";
+import BlockedMenuIcon from "./BlockedMenuIcon";
 import RaiseHandIcon from "./RaiseHandIcon";
 import { projectStore } from "../stores/project";
 import {
@@ -2462,7 +2463,7 @@ const ProjectPanel: Component = () => {
                       title={communication()?.message ?? "Interactive menu requires user input"}
                       aria-label="Interactive menu requires user input"
                     >
-                      <RaiseHandIcon class="coord-communication-icon" />
+                      <BlockedMenuIcon class="coord-communication-icon" />
                     </span>
                   </Show>
                   {/* #592 - drift indicator for a WG replica session. Mirrors the

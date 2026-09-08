@@ -6028,6 +6028,16 @@ html.light-theme .settings-hint-error {
   line-height: 1;
 }
 
+/* #1858 — a blocked menu is not a raised hand: this sibling overrides only the
+   base slot's background and colour so the two chips never share one, and the
+   glyph inside is BlockedMenuIcon rather than the hand. No amber fallback value
+   on purpose: if --status-blocked is ever dropped the chip loses its colour
+   rather than impersonating a raised hand. */
+.coord-communication-slot--blocked-menu {
+  background: color-mix(in srgb, var(--status-blocked) 18%, transparent);
+  color: var(--status-blocked);
+}
+
 /* #775 — the raise-hand glyph inside the amber coordinator-row slot is now the
    shared SVG hand (RaiseHandIcon), sized to sit in the 15px amber chip and
    tinted by the slot's amber `color` via fill: currentColor. */
