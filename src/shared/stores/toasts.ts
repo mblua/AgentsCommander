@@ -20,6 +20,10 @@ export interface PushToastOptions {
   /** #1669: optional second action rendered BEFORE `action`. */
   secondaryAction?: ToastAction;
   tag?: string;
+  /** #1857: exempt this toast from kind-aware eviction. Exactly one such toast
+   *  exists, the aggregated blocked-menu notice, so `MAX_VISIBLE` remains an
+   *  honest cap: the last eviction tier can still take it. */
+  pinned?: boolean;
 }
 
 export interface Toast {
@@ -30,6 +34,7 @@ export interface Toast {
   action?: ToastAction;
   secondaryAction?: ToastAction;
   tag?: string;
+  pinned?: boolean;
 }
 
 // Errors stay until dismissed (the #574 failure MUST be noticed); info/success
@@ -40,10 +45,11 @@ const DEFAULT_DURATION_MS: Record<ToastKind, number | null> = {
   info: 4000,
 };
 
-// Cap on visible toasts. Past this, eviction is KIND-AWARE (#574 §15.3): the
-// oldest NON-error (auto-dismissing) toast is evicted first, so a transient
-// info/success can never silently bury an unread sticky error; only when every
-// visible toast is an error do we fall back to evicting the oldest error.
+// Cap on visible toasts. Past this, eviction walks three ordered tiers (#574
+// §15.3, #1857): the oldest NON-error unpinned toast, then the oldest unpinned
+// toast of any kind, then the oldest toast overall. A `pinned` toast is exempt
+// from the first two tiers only, so the aggregated blocked-menu notice outlives
+// a full stack of sticky errors while MAX_VISIBLE stays an honest hard cap.
 const MAX_VISIBLE = 4;
 export const TOAST_EXIT_MS = 180;
 
@@ -103,9 +109,35 @@ export const toastStore = {
     if (opts.tag) {
       const existingIndex = toasts.findIndex((toast) => toast.tag === opts.tag);
       if (existingIndex !== -1) {
+        // #1857: a tagged re-push onto a DYING toast must revive it. Without
+        // this, the exit timer armed by the dismiss deletes the freshly painted
+        // message 180 ms after that dismiss, counted from the dismiss.
+        const existing = toasts[existingIndex];
+        if (existing.exiting) {
+          clearExitTimer(existing.id);
+          setToasts(existingIndex, "exiting", false);
+          // `startToastExit` cleared the duration timer and this branch returns
+          // without re-arming it, so a revived non-sticky toast would otherwise
+          // stay on screen forever. Re-arm ONLY on this revive path: doing it on
+          // every tag update would stop a repeatedly re-pushed info toast from
+          // ever auto-dismissing, a behaviour change for existing callers. This
+          // branch never patches `kind`, so the existing kind is the right
+          // default source. This is a no-op for a `durationMs: null` toast.
+          const revivedDuration =
+            opts.durationMs === undefined
+              ? DEFAULT_DURATION_MS[existing.kind]
+              : opts.durationMs;
+          if (revivedDuration !== null) {
+            timers.set(
+              existing.id,
+              setTimeout(() => toastStore.dismiss(existing.id), revivedDuration),
+            );
+          }
+        }
         setToasts(existingIndex, "message", opts.message);
         setToasts(existingIndex, "action", opts.action);
         setToasts(existingIndex, "secondaryAction", opts.secondaryAction);
+        setToasts(existingIndex, "pinned", opts.pinned);
         return toasts[existingIndex].id;
       }
     }
@@ -120,16 +152,22 @@ export const toastStore = {
       action: opts.action,
       secondaryAction: opts.secondaryAction,
       tag: opts.tag,
+      pinned: opts.pinned,
     };
 
     const evicted: number[] = [];
     const next = [...toasts, toast];
-    // Kind-aware eviction (§15.3): evict the oldest NON-error first so an
-    // unread sticky error is never silently dropped by a transient toast.
-    // Fall back to the oldest overall only when all visible toasts are errors
-    // (keeps MAX_VISIBLE an honest hard cap).
+    // Three ordered eviction tiers (§15.3, #1857). Tier 1 keeps the kind-aware
+    // rule for unpinned toasts: a transient info/success goes before an unread
+    // sticky error. Tier 2 takes an unpinned ERROR, which fires when a pinned
+    // toast arrives and every other visible toast is an error. That trade-off is
+    // deliberate: a blocked session is unanswerable work the user asked to be
+    // un-losable, an error is a report. Tier 3 takes index 0 unconditionally; it
+    // is unreachable while only one toast is ever pinned, and exists so the loop
+    // always terminates and the cap cannot quietly become 5.
     while (next.length > MAX_VISIBLE) {
-      let victim = next.findIndex((t) => t.kind !== "error");
+      let victim = next.findIndex((t) => t.kind !== "error" && !t.pinned);
+      if (victim === -1) victim = next.findIndex((t) => !t.pinned);
       if (victim === -1) victim = 0;
       evicted.push(next.splice(victim, 1)[0].id);
     }

@@ -20,6 +20,7 @@ import {
 import { stripFrontmatter } from "../../shared/markdown";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { focusOnMount } from "../../shared/focus-on-mount";
+import BlockedMenuIcon from "./BlockedMenuIcon";
 import RaiseHandIcon from "./RaiseHandIcon";
 import { projectStore } from "../stores/project";
 import {
@@ -80,7 +81,9 @@ import { replicaDotClass } from "./replica-dot";
 import {
   findReplicaSession as replicaSession,
   isReplicaWorking,
+  replicaHasBlockedMenu,
   replicaSessionName,
+  workgroupHasBlockedMenu,
   workgroupIsWorking,
 } from "./workgroup-session";
 import {
@@ -2462,7 +2465,7 @@ const ProjectPanel: Component = () => {
                       title={communication()?.message ?? "Interactive menu requires user input"}
                       aria-label="Interactive menu requires user input"
                     >
-                      <RaiseHandIcon class="coord-communication-icon" />
+                      <BlockedMenuIcon class="coord-communication-icon" />
                     </span>
                   </Show>
                   {/* #592 - drift indicator for a WG replica session. Mirrors the
@@ -2604,6 +2607,21 @@ const ProjectPanel: Component = () => {
                   &#x25BE;
                 </span>
                 <div class="ac-wg-header-text">
+                  {/* #1859 - collapsing this subgroup hides the per-row chip, so
+                      the header has to carry the state itself. Presence only, no
+                      count, and it does not check wgCollapsed(): redundant while
+                      expanded is deliberate, and it is what makes the regex
+                      filter safe for free. */}
+                  <Show when={workgroupHasBlockedMenu(wg)}>
+                    <span
+                      class="ac-wg-header-blocked-menu"
+                      data-ac-testid={`workgroup.header.blockedMenu.${automationIdPart(wg.name)}`}
+                      title="A session is waiting on an interactive menu"
+                      aria-label="A session is waiting on an interactive menu"
+                    >
+                      <BlockedMenuIcon class="ac-wg-header-blocked-menu-icon" />
+                    </span>
+                  </Show>
                   <span class="ac-wg-name">{wg.name}</span>
                   <Show when={wg.taskTitle?.trim() || stripFrontmatter(wg.taskTitle ?? "").trim()}>
                     {(text) => <span class="ac-wg-task">{text()}</span>}
@@ -2639,6 +2657,23 @@ const ProjectPanel: Component = () => {
                 </span>
                 <span class="project-title">Project: {proj.folderName}</span>
               </button>
+              {/* #1859 - the last level that can hide the chip: collapsing the
+                  project panel removes every row and every subgroup header, so
+                  this badge is the one that must survive. Deliberately a SIBLING
+                  of .project-header-main, not a child: inside that <button> it
+                  would join the collapse toggle's hit area and its accessible
+                  name, and a screen reader would read the badge as part of
+                  "toggle this project". Out here it stays a status indicator. */}
+              <Show when={proj.workgroups.some(workgroupHasBlockedMenu)}>
+                <span
+                  class="ac-wg-header-blocked-menu"
+                  data-ac-testid="project.header.blockedMenu"
+                  title="A session is waiting on an interactive menu"
+                  aria-label="A session is waiting on an interactive menu"
+                >
+                  <BlockedMenuIcon class="ac-wg-header-blocked-menu-icon" />
+                </span>
+              </Show>
               <div
                 class="project-filter-row"
                 classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError() }}
@@ -2777,6 +2812,26 @@ const ProjectPanel: Component = () => {
                             &#x25BE;
                           </span>
                           <div class="ac-wg-header-text">
+                            {/* #1859 - same rollup for the orchestrators quick
+                                group. This one reads the per-replica helper, not
+                                the workgroup-level one: the section is a flat
+                                list of coordinator rows drawn from many
+                                workgroups, so a sibling worker's blocked menu
+                                must not light it. */}
+                            <Show
+                              when={filteredCoordinatorItems().some((item) =>
+                                replicaHasBlockedMenu(item.wg, item.replica)
+                              )}
+                            >
+                              <span
+                                class="ac-wg-header-blocked-menu"
+                                data-ac-testid="coordinators.header.blockedMenu"
+                                title="A session is waiting on an interactive menu"
+                                aria-label="A session is waiting on an interactive menu"
+                              >
+                                <BlockedMenuIcon class="ac-wg-header-blocked-menu-icon" />
+                              </span>
+                            </Show>
                             <span class="ac-wg-name">Orchestrators</span>
                           </div>
                           <span class="ac-team-count">{filteredCoordinatorItems().length}</span>

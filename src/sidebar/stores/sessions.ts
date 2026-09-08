@@ -24,6 +24,11 @@ let rowMembershipGeneration = 0;
 // await and compares it exactly once after.
 let waitingEdgeGeneration = 0;
 
+// #1856 - the same shape for communication: the sidebar's notice is fed only by
+// session_communication_changed, so a reconciliation from the polled list must
+// not apply a snapshot that an edge already superseded.
+let communicationGeneration = 0;
+
 // Combined sidebar interaction lock: the coordinator tile order stays frozen
 // while the pointer is inside the sidebar OR while any sidebar context menu
 // (or flyout) node is present in the DOM. Menus are rendered through Solid
@@ -392,6 +397,9 @@ export const sessionsStore = {
   get waitingEdgeGeneration() {
     return waitingEdgeGeneration;
   },
+  get communicationGeneration() {
+    return communicationGeneration;
+  },
 
   setSessions(sessions: Session[]) {
     advanceRowMembershipGeneration();
@@ -555,6 +563,7 @@ export const sessionsStore = {
   },
 
   setCommunication(sessionId: string, communication: SessionCommunication | null) {
+    communicationGeneration += 1;
     setState("sessions", (s) => s.id === sessionId, "communication", communication);
   },
 

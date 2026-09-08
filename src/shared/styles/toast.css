@@ -52,6 +52,28 @@
   word-break: break-word;
 }
 
+/* #1858 — the action button had no rule at all, so it fell back to the browser
+   default 13.333px Arial with the global reset stripping its padding, and its
+   label wrapped to two lines (a 52px toast against an error's 32px).
+   `white-space: nowrap` is the declaration that stops the wrap; `font: inherit`
+   puts the label back on the toast's own font. currentColor for the border and
+   background so one rule reads correctly on the error, info and success
+   variants, which do not share a background. */
+.toast-item__action {
+  flex: 0 0 auto;
+  font: inherit;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  border-radius: var(--radius-md);
+  color: inherit;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  cursor: pointer;
+}
+.toast-item__action:hover {
+  background: color-mix(in srgb, currentColor 20%, transparent);
+}
+
 .toast-item__dismiss {
   flex: 0 0 auto;
   background: transparent;

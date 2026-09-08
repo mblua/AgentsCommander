@@ -4028,6 +4028,28 @@ html.light-theme .settings-hint-error {
   fill: currentColor;
 }
 
+/* #1859 - the blocked-menu rollup on a group-rail tab. Same inline layout and
+   pointer-events as its raise-hand neighbour above (the tab stays uniformly
+   clickable) and the same 8px glyph, so the two indicators line up when a group
+   has both. Only the colour differs: var(--status-blocked), the token #1858
+   added, with no amber fallback on purpose - if the token is ever dropped the
+   glyph loses its colour rather than impersonating a raised hand. */
+.workgroup-group-rail-button .workgroup-group-rail-blocked-menu {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--status-blocked);
+  pointer-events: none;
+}
+
+.workgroup-group-rail-button .workgroup-group-rail-blocked-menu-icon {
+  width: 8px;
+  height: 8px;
+  display: block;
+  fill: currentColor;
+}
+
 .workgroup-group-rail-error {
   margin: 4px auto;
   width: 20px;
@@ -6028,6 +6050,16 @@ html.light-theme .settings-hint-error {
   line-height: 1;
 }
 
+/* #1858 — a blocked menu is not a raised hand: this sibling overrides only the
+   base slot's background and colour so the two chips never share one, and the
+   glyph inside is BlockedMenuIcon rather than the hand. No amber fallback value
+   on purpose: if --status-blocked is ever dropped the chip loses its colour
+   rather than impersonating a raised hand. */
+.coord-communication-slot--blocked-menu {
+  background: color-mix(in srgb, var(--status-blocked) 18%, transparent);
+  color: var(--status-blocked);
+}
+
 /* #775 — the raise-hand glyph inside the amber coordinator-row slot is now the
    shared SVG hand (RaiseHandIcon), sized to sit in the 15px amber chip and
    tinted by the slot's amber `color` via fill: currentColor. */
@@ -6326,6 +6358,31 @@ html.light-theme .ac-discovery-badge.running-peer {
   flex-direction: column;
   gap: 1px;
   min-width: 0;
+}
+
+/* #1859 - the blocked-menu rollup shared by the three header levels that can
+   hide a row: the workgroup subgroup header, the orchestrators quick-group
+   header and the project header. Same layout and pointer-events as the rail
+   indicator, and the same var(--status-blocked) with no amber fallback; the
+   glyph is sized to the header text line (matching the 11px of the per-row
+   chip's .coord-communication-icon) rather than the rail's 8px, because it sits
+   next to header text rather than inside a narrow tab. align-self keeps it from
+   stretching inside .ac-wg-header-text, which is a flex column. */
+.ac-wg-header-blocked-menu {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--status-blocked);
+  pointer-events: none;
+}
+
+.ac-wg-header-blocked-menu-icon {
+  width: 11px;
+  height: 11px;
+  display: block;
+  fill: currentColor;
 }
 
 .ac-wg-name {
