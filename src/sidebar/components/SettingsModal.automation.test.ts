@@ -135,6 +135,10 @@ function settings(overrides: Partial<AppSettings> = {}): SettingsSnapshot {
     coordSortByActivity: false,
     alwaysShowSelectedWorkgroup: true,
     restoreCoordinatorWakeState: true,
+    restartResumeWakeWorkingAgents: false,
+    restartResumeOrchestratorPrompt:
+      "AgentsCommander was restarted. Continue with the work that was in flight.",
+    restartResumeAgentPrompt: ".",
     soundsEnabled: true,
     teamIdleBeepEnabled: true,
     webServerEnabled: false,
@@ -2513,6 +2517,108 @@ describe("SettingsModal automation hooks", () => {
 
     expect(vi.mocked(PtyAPI.previewWatcherReach)).toHaveBeenCalled();
     expect(vi.isMockFunction(PtyAPI.previewWatcherPattern)).toBe(true);
+
+    dispose();
+  });
+
+  it("moves the wake-orchestrators checkbox into the On app restart section (#1793)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>(
+      "settings.general.restoreCoordinatorWakeState",
+    );
+    // The label text is unchanged by the move.
+    expect(checkbox.closest("label")?.textContent).toContain(
+      "On start, wake orchestrators that were awake when the app closed",
+    );
+    // MEMBERSHIP, not presence: the checkbox must now sit inside the new
+    // section. A presence-only assertion would pass with it left in Window.
+    expect(
+      checkbox
+        .closest(".settings-section")
+        ?.querySelector(".settings-section-title")?.textContent,
+    ).toBe("On app restart");
+
+    dispose();
+  });
+
+  it("round-trips restartResumeWakeWorkingAgents through the On app restart checkbox (#1793)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>(
+      "settings.general.restartResumeWakeWorkingAgents",
+    );
+    expect(checkbox.closest("label")?.textContent).toContain(
+      "On start, wake agent replicas that were working when the app closed",
+    );
+    expect(
+      checkbox
+        .closest(".settings-section")
+        ?.querySelector(".settings-section-title")?.textContent,
+    ).toBe("On app restart");
+    // Seeded off.
+    expect(checkbox.checked).toBe(false);
+
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.restartResumeWakeWorkingAgents).toBe(true);
+
+    dispose();
+  });
+
+  it("round-trips both restart prompts through the On app restart text inputs (#1793)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const orchestrator = byTestId<HTMLInputElement>(
+      "settings.general.restartResumeOrchestratorPrompt",
+    );
+    const replica = byTestId<HTMLInputElement>(
+      "settings.general.restartResumeAgentPrompt",
+    );
+    expect(orchestrator.value).toBe(
+      "AgentsCommander was restarted. Continue with the work that was in flight.",
+    );
+    expect(replica.value).toBe(".");
+
+    orchestrator.value = "resume please";
+    orchestrator.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    // The empty case is load-bearing: it proves an emptied field is saved as
+    // empty and is neither dropped nor re-defaulted by the draft path.
+    replica.value = "";
+    replica.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.restartResumeOrchestratorPrompt).toBe("resume please");
+    expect(saved?.restartResumeAgentPrompt).toBe("");
 
     dispose();
   });

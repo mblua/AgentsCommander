@@ -118,6 +118,10 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
       recoveryLevel: "info",
     },
     restoreCoordinatorWakeState: true,
+    restartResumeWakeWorkingAgents: false,
+    restartResumeOrchestratorPrompt:
+      "AgentsCommander was restarted. Continue with the work that was in flight.",
+    restartResumeAgentPrompt: ".",
     sidebarAlwaysOnTop: false,
     raiseTerminalOnClick: true,
     soundsEnabled: false,

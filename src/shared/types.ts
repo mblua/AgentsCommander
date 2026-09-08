@@ -621,6 +621,9 @@ export interface AppSettings {
   telegramBots: TelegramBotConfig[];
   telegramNetworkPollErrorLogging: TelegramNetworkPollErrorLogging;
   restoreCoordinatorWakeState: boolean;
+  restartResumeWakeWorkingAgents: boolean;
+  restartResumeOrchestratorPrompt: string;
+  restartResumeAgentPrompt: string;
   sidebarAlwaysOnTop: boolean;
   raiseTerminalOnClick: boolean;
   soundsEnabled: boolean;
