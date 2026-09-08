@@ -980,13 +980,29 @@ pub(crate) fn should_wake_on_restore(
     }
 }
 
+/// (#1793) The non-coordinator arm of the restore wake decision. #248's
+/// `should_wake_on_restore` covers coordinators and is left unchanged. This is
+/// the ONLY rule that can wake a non-coordinator, and the two arms are disjoint
+/// on `is_coord`, so they can never both fire for one row.
+pub(crate) fn should_wake_working_agent_on_restore(
+    resume_agents_on: bool,
+    is_coord: bool,
+    persisted_working: bool,
+) -> bool {
+    resume_agents_on && !is_coord && persisted_working
+}
+
 pub(crate) fn restore_session_should_wake(
     archived_session: bool,
     setting_on: bool,
+    resume_agents_on: bool,
     is_coord: bool,
     persisted_status: Option<&crate::session::session::SessionStatus>,
+    persisted_working: bool,
 ) -> bool {
-    !archived_session && should_wake_on_restore(setting_on, is_coord, persisted_status)
+    !archived_session
+        && (should_wake_on_restore(setting_on, is_coord, persisted_status)
+            || should_wake_working_agent_on_restore(resume_agents_on, is_coord, persisted_working))
 }
 
 pub(crate) fn restore_session_should_become_active(
@@ -1646,6 +1662,13 @@ pub(crate) fn spawn_restore_startup(
         let mut completion =
             RestoreCompletionGuard::new(restore_barrier, Arc::clone(&restore_observer_barrier));
 
+        // (#1793) Collected in the restore loop, consumed once by the pass in
+        // the tail. Shared rather than returned so a body panic still hands the
+        // tail the targets restored before it.
+        let restart_resume_targets: Arc<Mutex<Vec<commands::session::RestartResumeTarget>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let restart_resume_targets_for_body = Arc::clone(&restart_resume_targets);
+
         // #1341 - a panic inside the restore body degrades (logged + partial
         // restore, retried next boot) instead of aborting the task and
         // skipping the startup continuation. Mirrors the FinishGuard "never
@@ -2049,11 +2072,17 @@ pub(crate) fn spawn_restore_startup(
                     &ps.working_directory,
                     &archived_roots,
                 );
+                let persisted_working = crate::session::session::persisted_is_working(
+                    ps.status.as_ref(),
+                    ps.waiting_for_input,
+                );
                 let wake = restore_session_should_wake(
                     archived_session,
                     setting_on,
+                    settings_snapshot.restart_resume_wake_working_agents,
                     is_coord,
                     ps.status.as_ref(),
+                    persisted_working,
                 );
 
                 if !wake {
@@ -2200,6 +2229,35 @@ pub(crate) fn spawn_restore_startup(
                                 mgr.set_last_prompt(uuid, prompt.clone()).await;
                             }
                         }
+                        // (#1793) Pair the row with the session it just became;
+                        // both are in hand, so no correlation key is needed.
+                        if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                            let prompt = commands::session::restart_resume_prompt_for(
+                                &settings_snapshot,
+                                is_coord,
+                                ps.start_fresh_on_restore,
+                                persisted_working,
+                            );
+                            if let Some(prompt) = prompt {
+                                let target = commands::session::RestartResumeTarget {
+                                    session_id: uuid,
+                                    name: ps.name.clone(),
+                                    working_directory: ps.working_directory.clone(),
+                                    prompt: prompt.to_string(),
+                                    // (#1793) Stamped HERE, after the PTY was
+                                    // spawned and therefore after
+                                    // `register_session` seeded the activity
+                                    // clock, so "printable output strictly
+                                    // after this instant" cannot be satisfied
+                                    // by the spawn seed alone.
+                                    collected_at: std::time::Instant::now(),
+                                };
+                                restart_resume_targets_for_body
+                                    .lock()
+                                    .unwrap_or_else(|error| error.into_inner())
+                                    .push(target);
+                            }
+                        }
 
                         // Phase 3 restore: reconstruct detach state for the live session.
                         // Deferred sessions (handled above with a `continue`) never reach
@@ -2310,6 +2368,31 @@ pub(crate) fn spawn_restore_startup(
                 idle_detector.start(shutdown.clone());
             }) {
                 log::error!("[restore] observer 'idle' start failed: {}", e);
+            }
+
+            // (#1793) After the idle observer start, because that observer
+            // maintains the `waiting_for_input` this polls, and before the rest
+            // of the tail so a later tail panic cannot lose it. This single
+            // drain is the whole once-per-app-start latch.
+            let restart_resume_batch: Vec<commands::session::RestartResumeTarget> =
+                restart_resume_targets
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .drain(..)
+                    .collect();
+            if !restart_resume_batch.is_empty() {
+                let resume_app = app.app_handle().clone();
+                let resume_shutdown = shutdown.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::select! {
+                        biased;
+                        _ = resume_shutdown.token().cancelled() => {}
+                        _ = commands::session::run_restart_resume(
+                            &resume_app,
+                            restart_resume_batch,
+                        ) => {}
+                    }
+                });
             }
 
             if let Err(e) = restore_observer_barrier.start("git", || {
@@ -4075,12 +4158,12 @@ mod tests {
         normalize_persisted_active_flags, prepare_app_outbox, resolve_is_coord_for_restore,
         restore_session_should_become_active, restore_session_should_wake,
         should_auto_create_root_agent_on_first_restore, should_wake_on_restore,
-        should_wake_root_agent_on_restore, skip_auto_resume_for_restore, ApiServerHandle,
-        ApiServerTask, ContextPatternSource, ContextSample, ContextSampleSink,
-        PersistedActiveFlagNormalization, RestoreObserverStartBarrier, ScraperPatterns,
-        ScraperSamples, SettingsState, StartupError, StartupErrorKind, WebServerHandle,
-        WebServerLifecycle, WebServerLifecycleSnapshot, WebServerStopWaiter,
-        WEB_SERVER_START_CANCELLED,
+        should_wake_root_agent_on_restore, should_wake_working_agent_on_restore,
+        skip_auto_resume_for_restore, ApiServerHandle, ApiServerTask, ContextPatternSource,
+        ContextSample, ContextSampleSink, PersistedActiveFlagNormalization,
+        RestoreObserverStartBarrier, ScraperPatterns, ScraperSamples, SettingsState, StartupError,
+        StartupErrorKind, WebServerHandle, WebServerLifecycle, WebServerLifecycleSnapshot,
+        WebServerStopWaiter, WEB_SERVER_START_CANCELLED,
     };
     use crate::config::sessions_persistence::PersistedSession;
     use crate::config::settings::{AgentConfig, AppSettings};
@@ -5309,14 +5392,131 @@ mod tests {
         assert!(!restore_session_should_wake(
             true,
             true,
+            false,
             true,
-            Some(&SessionStatus::Running)
+            Some(&SessionStatus::Running),
+            false
+        ));
+        assert!(restore_session_should_wake(
+            false,
+            true,
+            false,
+            true,
+            Some(&SessionStatus::Running),
+            false
+        ));
+    }
+
+    #[test]
+    fn should_wake_working_agent_on_restore_truth_table() {
+        for resume_agents_on in [false, true] {
+            for is_coord in [false, true] {
+                for persisted_working in [false, true] {
+                    let got = should_wake_working_agent_on_restore(
+                        resume_agents_on,
+                        is_coord,
+                        persisted_working,
+                    );
+                    let expected = resume_agents_on && !is_coord && persisted_working;
+                    assert_eq!(
+                        got, expected,
+                        "resume_agents_on={resume_agents_on} is_coord={is_coord} persisted_working={persisted_working}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restore_session_should_wake_wakes_a_working_replica_only_when_opted_in() {
+        assert!(!restore_session_should_wake(
+            false,
+            true,
+            false,
+            false,
+            Some(&SessionStatus::Running),
+            true
         ));
         assert!(restore_session_should_wake(
             false,
             true,
             true,
+            false,
+            Some(&SessionStatus::Running),
+            true
+        ));
+        // The two arms are independent: the replica arm fires with the
+        // coordinator setting OFF.
+        assert!(restore_session_should_wake(
+            false,
+            false,
+            true,
+            false,
+            Some(&SessionStatus::Running),
+            true
+        ));
+    }
+
+    #[test]
+    fn restore_session_should_wake_never_wakes_an_idle_replica() {
+        for status in [
+            Some(SessionStatus::Idle),
+            Some(SessionStatus::Running),
+            None,
+        ] {
+            assert!(
+                !restore_session_should_wake(false, true, true, false, status.as_ref(), false),
+                "an idle replica must never wake, status={status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_session_should_wake_arms_are_disjoint_on_is_coord() {
+        // Coordinator: wakes through the #248 arm, and the replica arm is false
+        // for it.
+        assert!(restore_session_should_wake(
+            false,
+            true,
+            true,
+            true,
+            Some(&SessionStatus::Running),
+            true
+        ));
+        assert!(!should_wake_working_agent_on_restore(true, true, true));
+
+        // Non-coordinator: wakes through the new arm, and the #248 arm is false
+        // for it.
+        assert!(restore_session_should_wake(
+            false,
+            true,
+            true,
+            false,
+            Some(&SessionStatus::Running),
+            true
+        ));
+        assert!(!should_wake_on_restore(
+            true,
+            false,
             Some(&SessionStatus::Running)
+        ));
+
+        // Archived beats both arms.
+        assert!(!restore_session_should_wake(
+            true,
+            true,
+            true,
+            true,
+            Some(&SessionStatus::Running),
+            true
+        ));
+        assert!(!restore_session_should_wake(
+            true,
+            true,
+            true,
+            false,
+            Some(&SessionStatus::Running),
+            true
         ));
     }
 

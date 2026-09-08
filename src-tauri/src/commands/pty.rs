@@ -116,6 +116,33 @@ pub(crate) fn clear_control_write_mark<R: tauri::Runtime>(app: &AppHandle<R>, se
     }
 }
 
+/// (#1793) True iff this session has emitted PRINTABLE PTY output strictly
+/// after `since`. The restart-resume pass pairs this with `waiting_for_input`
+/// to tell "the agent painted its prompt and went quiet" apart from "the agent
+/// has printed nothing at all since spawn": `IdleDetector::register_session`
+/// SEEDS `activity[id]` at spawn (#260), so the idle flag on its own reaches
+/// `true` for a session that never printed.
+///
+/// Lives in this module, not in `commands::session`, purely for the module
+/// graph: this file already resolves the detector through `try_state` and
+/// already owns the arc to `pty::idle_detector`, while `commands::session` does
+/// not. Calling the detector from there would add a module arc for one call.
+///
+/// Fails CLOSED when the detector is not managed, DELIBERATELY the opposite
+/// direction from the neighbouring `try_state` helpers in this file: a missing
+/// detector costs them a skipped bookkeeping update, but would cost this an
+/// unrequested write into a user's agent.
+pub(crate) fn session_printed_since<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    since: Instant,
+) -> bool {
+    match app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
+        Some(idle) => idle.has_printable_activity_since(session_id, since),
+        None => false,
+    }
+}
+
 /// #552 Record a real user message to `session_id`: always reset the auto-close
 /// silence clock; if the session is a coordinator, reset its badge clock and
 /// emit `coordinator_clock_updated` (and clear any "auto-closed" marker).
@@ -2096,5 +2123,61 @@ mod tests {
         assert!(record_fresh(&f).await);
         assert!(mirror_fresh(&f));
         assert!(!inject_continue_after_restore(record_fresh(&f).await));
+    }
+
+    /// (#1793) The #260 case: `IdleDetector::register_session` seeds
+    /// `activity[id]` at spawn, so a session that has printed nothing still
+    /// reaches `waiting_for_input`. The seed alone must NOT read as printable
+    /// output, which is the whole reason this helper exists.
+    #[test]
+    fn session_printed_since_is_false_for_a_session_that_only_has_the_spawn_seed() {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+        let app = user_input_test_app_with_idle_detector(session_mgr, clocks);
+        let id = Uuid::new_v4();
+        app.state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .register_session(id, crate::session::profile::IdleTuning::DEFAULT);
+
+        let t = Instant::now();
+
+        assert!(
+            !session_printed_since(app.handle(), id, t),
+            "the spawn seed alone must never count as printable output"
+        );
+    }
+
+    /// (#1793) Real printable output after the reference instant does count.
+    #[test]
+    fn session_printed_since_is_true_after_real_printable_output() {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+        let app = user_input_test_app_with_idle_detector(session_mgr, clocks);
+        let id = Uuid::new_v4();
+        app.state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .register_session(id, crate::session::profile::IdleTuning::DEFAULT);
+
+        let t = Instant::now();
+        app.state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .record_activity_with_bytes(id, 1);
+
+        assert!(
+            session_printed_since(app.handle(), id, t),
+            "printable output after the reference instant must be visible"
+        );
+    }
+
+    /// (#1793) Fail CLOSED without a managed detector. This is the OPPOSITE
+    /// direction from every neighbouring `try_state` helper in this file, so it
+    /// is pinned explicitly: a missing detector must never authorise a write.
+    #[test]
+    fn session_printed_since_fails_closed_without_a_managed_detector() {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+        let app = user_input_test_app(session_mgr, clocks);
+
+        assert!(
+            !session_printed_since(app.handle(), Uuid::new_v4(), Instant::now()),
+            "no managed detector must fail closed, never open"
+        );
     }
 }
