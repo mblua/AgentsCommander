@@ -91,6 +91,88 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib --bins --tests
 
+      # IS #1850: focused debug execution of every issue_1850 test. Guards
+      # mirror the #1577 step: pipefail catches a failing test, the identifier
+      # greps catch a filter that selected nothing or something else, and the
+      # anchored result line requires a positive passing count with no failure.
+      - name: "cargo test (IS #1850 focused, debug)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib issue_1850 -- --test-threads=1 --nocapture 2>&1 | tee test-1850-debug.log
+
+          for name in \
+            'config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent' \
+            'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
+            'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
+            'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
+            'tests::issue_1850_default_root_subprocess'; do
+            grep -qF "test ${name} ..." test-1850-debug.log || {
+              echo "::error::${name} never ran in the focused #1850 debug run; it was renamed, moved, or gated out."
+              exit 1
+            }
+          done
+          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-debug.log || {
+            echo "::error::the focused #1850 debug run did not report a positive passing count with zero failures."
+            exit 1
+          }
+          # Ordinary Windows runs prove unit behavior and refusal safety only.
+          # The real-profile eight-case acceptance belongs to the dedicated
+          # issue-1850-windows-profile job, so this run must take the
+          # refusal-only route and must not claim the profile proof.
+          grep -qF 'ISSUE1850_REFUSAL_ONLY' test-1850-debug.log || {
+            echo "::error::the #1850 subprocess test did not take the refusal-only route in the ordinary Windows run."
+            exit 1
+          }
+          if grep -qF 'ISSUE1850_WINDOWS_PROFILE_PROOF_OK' test-1850-debug.log; then
+            echo "::error::the ordinary Windows run must not claim the real-profile proof."
+            exit 1
+          fi
+
+      # IS #1850: focused release execution of every issue_1850 test. Guards
+      # mirror the #1577 step: pipefail catches a failing test, the identifier
+      # greps catch a filter that selected nothing or something else, and the
+      # anchored result line requires a positive passing count with no failure.
+      - name: "cargo test (IS #1850 focused, release)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --lib issue_1850 -- --test-threads=1 --nocapture 2>&1 | tee test-1850-release.log
+
+          for name in \
+            'config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent' \
+            'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
+            'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
+            'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
+            'tests::issue_1850_default_root_subprocess'; do
+            grep -qF "test ${name} ..." test-1850-release.log || {
+              echo "::error::${name} never ran in the focused #1850 release run; it was renamed, moved, or gated out."
+              exit 1
+            }
+          done
+          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-release.log || {
+            echo "::error::the focused #1850 release run did not report a positive passing count with zero failures."
+            exit 1
+          }
+          # Ordinary Windows runs prove unit behavior and refusal safety only.
+          # The real-profile eight-case acceptance belongs to the dedicated
+          # issue-1850-windows-profile job, so this run must take the
+          # refusal-only route and must not claim the profile proof.
+          grep -qF 'ISSUE1850_REFUSAL_ONLY' test-1850-release.log || {
+            echo "::error::the #1850 subprocess test did not take the refusal-only route in the ordinary Windows run."
+            exit 1
+          }
+          if grep -qF 'ISSUE1850_WINDOWS_PROFILE_PROOF_OK' test-1850-release.log; then
+            echo "::error::the ordinary Windows run must not claim the real-profile proof."
+            exit 1
+          fi
+
   rust-regression-linux:
     name: rust-regression-linux
     # Skip branch-deletion push events while still requiring pull request validation.
@@ -205,6 +287,64 @@ jobs:
             exit 1
           }
 
+      # IS #1850: focused debug execution of every issue_1850 test. Guards
+      # mirror the #1577 step: pipefail catches a failing test, the identifier
+      # greps catch a filter that selected nothing or something else, and the
+      # anchored result line requires a positive passing count with no failure.
+      - name: "cargo test (IS #1850 focused, debug)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib issue_1850 -- --test-threads=1 --nocapture 2>&1 | tee test-1850-debug.log
+
+          for name in \
+            'config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent' \
+            'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
+            'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
+            'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
+            'tests::issue_1850_default_root_subprocess'; do
+            grep -qF "test ${name} ..." test-1850-debug.log || {
+              echo "::error::${name} never ran in the focused #1850 debug run; it was renamed, moved, or gated out."
+              exit 1
+            }
+          done
+          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-debug.log || {
+            echo "::error::the focused #1850 debug run did not report a positive passing count with zero failures."
+            exit 1
+          }
+
+      # IS #1850: focused release execution of every issue_1850 test. Guards
+      # mirror the #1577 step: pipefail catches a failing test, the identifier
+      # greps catch a filter that selected nothing or something else, and the
+      # anchored result line requires a positive passing count with no failure.
+      - name: "cargo test (IS #1850 focused, release)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --lib issue_1850 -- --test-threads=1 --nocapture 2>&1 | tee test-1850-release.log
+
+          for name in \
+            'config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent' \
+            'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
+            'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
+            'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
+            'tests::issue_1850_default_root_subprocess'; do
+            grep -qF "test ${name} ..." test-1850-release.log || {
+              echo "::error::${name} never ran in the focused #1850 release run; it was renamed, moved, or gated out."
+              exit 1
+            }
+          done
+          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-release.log || {
+            echo "::error::the focused #1850 release run did not report a positive passing count with zero failures."
+            exit 1
+          }
+
   rust-regression-macos:
     name: rust-regression-macos
     # Skip branch-deletion push events while still requiring pull request validation.
@@ -246,6 +386,64 @@ jobs:
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
+
+      # IS #1850: focused debug execution of every issue_1850 test. Guards
+      # mirror the #1577 step: pipefail catches a failing test, the identifier
+      # greps catch a filter that selected nothing or something else, and the
+      # anchored result line requires a positive passing count with no failure.
+      - name: "cargo test (IS #1850 focused, debug)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib issue_1850 -- --test-threads=1 --nocapture 2>&1 | tee test-1850-debug.log
+
+          for name in \
+            'config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent' \
+            'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
+            'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
+            'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
+            'tests::issue_1850_default_root_subprocess'; do
+            grep -qF "test ${name} ..." test-1850-debug.log || {
+              echo "::error::${name} never ran in the focused #1850 debug run; it was renamed, moved, or gated out."
+              exit 1
+            }
+          done
+          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-debug.log || {
+            echo "::error::the focused #1850 debug run did not report a positive passing count with zero failures."
+            exit 1
+          }
+
+      # IS #1850: focused release execution of every issue_1850 test. Guards
+      # mirror the #1577 step: pipefail catches a failing test, the identifier
+      # greps catch a filter that selected nothing or something else, and the
+      # anchored result line requires a positive passing count with no failure.
+      - name: "cargo test (IS #1850 focused, release)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --lib issue_1850 -- --test-threads=1 --nocapture 2>&1 | tee test-1850-release.log
+
+          for name in \
+            'config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent' \
+            'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
+            'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
+            'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
+            'tests::issue_1850_default_root_subprocess'; do
+            grep -qF "test ${name} ..." test-1850-release.log || {
+              echo "::error::${name} never ran in the focused #1850 release run; it was renamed, moved, or gated out."
+              exit 1
+            }
+          done
+          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-release.log || {
+            echo "::error::the focused #1850 release run did not report a positive passing count with zero failures."
+            exit 1
+          }
 
   rust-fmt:
     name: rust-fmt
@@ -339,6 +537,118 @@ jobs:
         with:
           name: windows-release-cli-smoke-logs
           path: artifacts/cli-release-smoke
+          if-no-files-found: ignore
+
+  # IS #1850: Windows default-route acceptance on the ACTUAL account profile of
+  # a disposable GitHub-hosted VM. `dirs::home_dir()` resolves through the
+  # Windows known-folder API, not environment relocation, so a spoofed
+  # HOME/USERPROFILE would prove nothing; a fresh hosted VM is the only honest
+  # fixture. Each matrix leg is its own VM. The step below is the ONLY place
+  # that sets the cfg(test)-only admission marker; the test additionally
+  # requires GITHUB_ACTIONS=true, RUNNER_ENVIRONMENT=github-hosted and a
+  # known-folder HOME equal to the inherited USERPROFILE, refuses if any
+  # `.agentscommander*` profile entry pre-exists, and runs all eight cases
+  # serially with per-case inventories and cleanup. Ordinary Windows runs
+  # (rust-regression) take the refusal-only safety route instead.
+  issue-1850-windows-profile:
+    name: issue-1850-windows-profile (${{ matrix.mode }})
+    # Skip branch-deletion push events while still requiring pull request validation.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - debug
+          - release
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend assets for Tauri config validation
+        run: npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      # Restores only the Cargo registry and the workspace target; nothing is
+      # ever restored into the account profile's `.agentscommander*` entries.
+      - name: Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: '. -> target'
+          shared-key: 'gate-${{ matrix.mode }}'
+          env-vars: 'ImageOS'
+          save-if: 'false'
+
+      - name: "IS #1850 real-profile eight-case proof (${{ matrix.mode }})"
+        shell: pwsh
+        timeout-minutes: 20
+        env:
+          AC_ISSUE1850_DISPOSABLE_PROFILE: '1'
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $mode = '${{ matrix.mode }}'
+          $log = "issue-1850-windows-profile-$mode.log"
+          Write-Host "job=$env:GITHUB_JOB head=$env:GITHUB_SHA profile=$env:USERPROFILE runner=$env:RUNNER_ENVIRONMENT marker=$env:AC_ISSUE1850_DISPOSABLE_PROFILE"
+
+          $cargoArgs = @('test', '--locked', '--manifest-path', 'src-tauri/Cargo.toml')
+          if ($mode -eq 'release') { $cargoArgs += '--release' }
+          $cargoArgs += @('--lib', 'tests::issue_1850_default_root_subprocess', '--', '--exact', '--test-threads=1', '--nocapture')
+          Write-Host "cargo $($cargoArgs -join ' ')"
+          & cargo @cargoArgs 2>&1 | Tee-Object -FilePath $log
+          $cargoExit = $LASTEXITCODE
+
+          function Fail([string]$why) {
+            Write-Host "::error::IS #1850 ($mode): $why"
+            exit 1
+          }
+          if (-not (Test-Path -LiteralPath $log)) { Fail 'the task log was not written' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($null -eq $text) { $text = '' }
+
+          if ($cargoExit -ne 0) { Fail "cargo test exited $cargoExit" }
+          if ($text -notmatch 'test tests::issue_1850_default_root_subprocess \.\.\. ') { Fail 'the parent test never ran' }
+          if ($text -notmatch '(?m)^test result: ok\. 1 passed; 0 failed') { Fail 'expected exactly one passing parent test' }
+          $cases = @(
+            'adjacent-legacy-alone',
+            'home-new-alone',
+            'home-new-dev-alone',
+            'all-legacy-conflicting',
+            'canonical-valid-settings',
+            'canonical-invalid-settings',
+            'canonical-absent-with-marker',
+            'canonical-absent-without-marker'
+          )
+          foreach ($case in $cases) {
+            $pattern = '(?m)^ISSUE1850_CASE_OK case=' + [regex]::Escape($case) + '\s*$'
+            if ($text -notmatch $pattern) { Fail "missing case-success record for $case" }
+          }
+          $unique = @([regex]::Matches($text, '(?m)^ISSUE1850_CASE_OK case=(\S+)\s*$') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+          if ($unique.Count -ne 8) { Fail "expected 8 unique case-success records, found $($unique.Count)" }
+          if ($text -notmatch '(?m)^ISSUE1850_WINDOWS_PROFILE_PROOF_OK cases=8\s*$') { Fail 'the final profile-proof record is missing' }
+          if ($text -match 'ISSUE1850_REFUSAL_ONLY') { Fail 'a refusal-only record is present; the real-profile route was not taken' }
+          Write-Host "IS #1850 ($mode): real-profile proof verified, 8 cases"
+
+      - name: "Upload IS #1850 profile-proof logs"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-1850-windows-profile-${{ matrix.mode }}-logs
+          path: issue-1850-windows-profile-${{ matrix.mode }}.log
           if-no-files-found: ignore
 
   frontend-regression:

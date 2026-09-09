@@ -4532,6 +4532,848 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// #1850/#1868: cold-start proof that an UNSUFFIXED executable selects
+    /// `HOME/.agentscommander` and that default resolution neither reads nor
+    /// touches any legacy root. Reuses the #1577 copied-executable, sentinel
+    /// dispatch and timeout/kill/reap mechanics.
+    ///
+    /// The parent copies the test executable as `agentscommander` (or
+    /// `agentscommander.exe`) into an owned TempDir and re-executes exactly this
+    /// test in a fresh child per case, so the config `OnceLock` can never hide a
+    /// path change. Linux/macOS children get a child-local fresh HOME. Windows
+    /// children use the actual account profile of a disposable GitHub-hosted VM
+    /// (the dedicated `issue-1850-windows-profile` job); HOME/USERPROFILE
+    /// spoofing is never used as isolation evidence. Without that job's
+    /// admission marker the Windows run proves refusal safety only.
+    #[test]
+    fn issue_1850_default_root_subprocess() {
+        use std::collections::BTreeMap;
+        use std::path::{Path, PathBuf};
+        use std::process::{Command, Stdio};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        const CHILD_SENTINEL: &str = "AGENTSCOMMANDER_ISSUE_1850_CHILD";
+        const EXPECTED_HOME_ENV: &str = "AGENTSCOMMANDER_ISSUE_1850_EXPECTED_HOME";
+        const CASE_ENV: &str = "AGENTSCOMMANDER_ISSUE_1850_CASE";
+        #[cfg(windows)]
+        const DISPOSABLE_PROFILE_ENV: &str = "AC_ISSUE1850_DISPOSABLE_PROFILE";
+        const TEST_NAME: &str = "tests::issue_1850_default_root_subprocess";
+        const INSTANCE_ID: &str = "00000000-0000-4000-8000-000000001850";
+        const CANONICAL_NAME: &str = ".agentscommander";
+        const LEGACY_HOME_NEW: &str = ".agentscommander-new";
+        const LEGACY_HOME_NEW_DEV: &str = ".agentscommander-new-dev";
+        const PROFILE_ENTRIES: [&str; 3] = [CANONICAL_NAME, LEGACY_HOME_NEW, LEGACY_HOME_NEW_DEV];
+        const CANONICAL_TOKEN: &str = "canonical-root-token-1850";
+        const LEGACY_ADJACENT_TOKEN: &str = "legacy-adjacent-token-1850";
+        const LEGACY_HOME_NEW_TOKEN: &str = "legacy-home-new-token-1850";
+        const LEGACY_HOME_NEW_DEV_TOKEN: &str = "legacy-home-new-dev-token-1850";
+        const LEGACY_TOKENS: [&str; 3] = [
+            LEGACY_ADJACENT_TOKEN,
+            LEGACY_HOME_NEW_TOKEN,
+            LEGACY_HOME_NEW_DEV_TOKEN,
+        ];
+        const LEGACY_PAYLOAD: &[u8] = b"\x00\xff legacy opaque payload 1850 \x01\xfe";
+        const LEGACY_LOG: &[u8] = b"legacy app.log line 1850\n";
+        const CANONICAL_SENTINEL: &[u8] = b"\x7f canonical sentinel 1850 \x00\x80";
+        const INVALID_SETTINGS: &[u8] =
+            b"{ \"rootToken\": \"broken-1850\", \"onboardingDismissed\": tru";
+        const MARKER_BYTES: &[u8] = b"portable marker beside an unsuffixed executable\n";
+        const CHILD_TIMEOUT: Duration = Duration::from_secs(90);
+
+        /// Windows admission for the real-profile route. Identical checks in
+        /// parent and child; the child evaluates it before any config access.
+        #[cfg(windows)]
+        fn windows_disposable_profile_admission() -> Result<PathBuf, String> {
+            let marker = std::env::var(DISPOSABLE_PROFILE_ENV)
+                .map_err(|_| format!("{DISPOSABLE_PROFILE_ENV} is not set"))?;
+            if marker != "1" {
+                return Err(format!(
+                    "{DISPOSABLE_PROFILE_ENV}={marker:?}, expected \"1\""
+                ));
+            }
+            for (key, expected) in [
+                ("GITHUB_ACTIONS", "true"),
+                ("RUNNER_ENVIRONMENT", "github-hosted"),
+            ] {
+                let value = std::env::var(key).map_err(|_| format!("{key} is not set"))?;
+                if value != expected {
+                    return Err(format!("{key}={value:?}, expected {expected:?}"));
+                }
+            }
+            let home = dirs::home_dir().ok_or("dirs::home_dir() returned None")?;
+            if home.as_os_str().is_empty() || !home.is_absolute() {
+                return Err(format!(
+                    "dirs::home_dir() {} is not absolute",
+                    home.display()
+                ));
+            }
+            let user_profile =
+                PathBuf::from(std::env::var_os("USERPROFILE").ok_or("USERPROFILE is not set")?);
+            let home_canonical = std::fs::canonicalize(&home)
+                .map_err(|error| format!("canonicalize {} failed: {error}", home.display()))?;
+            let profile_canonical = std::fs::canonicalize(&user_profile).map_err(|error| {
+                format!("canonicalize {} failed: {error}", user_profile.display())
+            })?;
+            if home_canonical != profile_canonical {
+                return Err(format!(
+                    "dirs::home_dir() {} != USERPROFILE {} after canonicalization",
+                    home_canonical.display(),
+                    profile_canonical.display()
+                ));
+            }
+            Ok(home)
+        }
+
+        if std::env::var_os(CHILD_SENTINEL).is_some() {
+            // Records start at column 0 even though the harness prints the
+            // test name prefix on the current line under --test-threads=1.
+            println!();
+            #[cfg(windows)]
+            {
+                if let Err(reason) = windows_disposable_profile_admission() {
+                    println!("ISSUE1850_PROFILE_REFUSED {reason}");
+                    panic!("issue 1850 child refused the account profile: {reason}");
+                }
+            }
+            let expected_home =
+                PathBuf::from(std::env::var_os(EXPECTED_HOME_ENV).expect("expected HOME"));
+            let case = std::env::var(CASE_ENV).expect("case name");
+            assert_eq!(
+                dirs::home_dir(),
+                Some(expected_home.clone()),
+                "child home must equal the parent-supplied HOME"
+            );
+            let canonical = expected_home.join(CANONICAL_NAME);
+            assert_eq!(
+                crate::config::config_dir(),
+                Some(canonical.clone()),
+                "unsuffixed executable must select HOME/.agentscommander"
+            );
+            assert_eq!(crate::config::instance_base(), None);
+            assert!(crate::config::config_startup_error().is_none());
+            assert!(crate::config::adjacent_fallback_diagnostic().is_none());
+            assert_eq!(crate::config::agent_local_dir_name(), ".agentscommander");
+
+            super::preflight_config_startup().expect("preflight");
+            let (outbox_path, _outbox) =
+                prepare_app_outbox(&canonical, INSTANCE_ID).expect("app outbox");
+            assert_eq!(
+                outbox_path,
+                canonical.join("instances").join(INSTANCE_ID).join("outbox")
+            );
+            let settings = crate::config::settings::load_settings();
+            println!(
+                "ISSUE1850_CHILD_SETTINGS case={case} root_token={} onboarding_dismissed={}",
+                settings.root_token.as_deref().unwrap_or("<none>"),
+                settings.onboarding_dismissed
+            );
+            println!(
+                "ISSUE1850_CHILD_OK case={case} config_dir={}",
+                canonical.display()
+            );
+            return;
+        }
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum Canonical {
+            Absent,
+            Valid,
+            Invalid,
+        }
+
+        struct Case {
+            name: &'static str,
+            adjacent_legacy: bool,
+            home_new: bool,
+            home_new_dev: bool,
+            canonical: Canonical,
+            marker: bool,
+        }
+
+        let cases = [
+            Case {
+                name: "adjacent-legacy-alone",
+                adjacent_legacy: true,
+                home_new: false,
+                home_new_dev: false,
+                canonical: Canonical::Absent,
+                marker: false,
+            },
+            Case {
+                name: "home-new-alone",
+                adjacent_legacy: false,
+                home_new: true,
+                home_new_dev: false,
+                canonical: Canonical::Absent,
+                marker: false,
+            },
+            Case {
+                name: "home-new-dev-alone",
+                adjacent_legacy: false,
+                home_new: false,
+                home_new_dev: true,
+                canonical: Canonical::Absent,
+                marker: false,
+            },
+            Case {
+                name: "all-legacy-conflicting",
+                adjacent_legacy: true,
+                home_new: true,
+                home_new_dev: true,
+                canonical: Canonical::Absent,
+                marker: false,
+            },
+            Case {
+                name: "canonical-valid-settings",
+                adjacent_legacy: false,
+                home_new: false,
+                home_new_dev: false,
+                canonical: Canonical::Valid,
+                marker: false,
+            },
+            Case {
+                name: "canonical-invalid-settings",
+                adjacent_legacy: false,
+                home_new: false,
+                home_new_dev: false,
+                canonical: Canonical::Invalid,
+                marker: false,
+            },
+            Case {
+                name: "canonical-absent-with-marker",
+                adjacent_legacy: false,
+                home_new: false,
+                home_new_dev: false,
+                canonical: Canonical::Absent,
+                marker: true,
+            },
+            Case {
+                name: "canonical-absent-without-marker",
+                adjacent_legacy: false,
+                home_new: false,
+                home_new_dev: false,
+                canonical: Canonical::Absent,
+                marker: false,
+            },
+        ];
+
+        type Inventory = BTreeMap<String, (String, Vec<u8>)>;
+
+        fn inventory_into(root: &Path, dir: &Path, out: &mut Inventory) -> Result<(), String> {
+            let entries = std::fs::read_dir(dir)
+                .map_err(|error| format!("read_dir {} failed: {error}", dir.display()))?;
+            for entry in entries {
+                let entry = entry
+                    .map_err(|error| format!("read entry in {} failed: {error}", dir.display()))?;
+                let path = entry.path();
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|error| format!("strip prefix failed: {error}"))?
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+                    format!("symlink_metadata {} failed: {error}", path.display())
+                })?;
+                let file_type = metadata.file_type();
+                if file_type.is_symlink() {
+                    out.insert(relative, ("symlink".to_string(), Vec::new()));
+                } else if file_type.is_dir() {
+                    out.insert(relative, ("dir".to_string(), Vec::new()));
+                    inventory_into(root, &path, out)?;
+                } else if file_type.is_file() {
+                    let bytes = std::fs::read(&path)
+                        .map_err(|error| format!("read {} failed: {error}", path.display()))?;
+                    out.insert(relative, ("file".to_string(), bytes));
+                } else {
+                    out.insert(relative, ("other".to_string(), Vec::new()));
+                }
+            }
+            Ok(())
+        }
+
+        fn inventory(root: &Path) -> Result<Inventory, String> {
+            let mut out = Inventory::new();
+            inventory_into(root, root, &mut out)?;
+            Ok(out)
+        }
+
+        fn write_legacy_root(root: &Path, token: &str) -> Result<(), String> {
+            std::fs::create_dir(root)
+                .map_err(|error| format!("create_dir {} failed: {error}", root.display()))?;
+            let settings = format!(
+                "{{\"rootToken\":\"{token}\",\"onboardingDismissed\":false,\"legacyMarker\":\"{token}\"}}"
+            );
+            for (name, bytes) in [
+                ("settings.json", settings.as_bytes()),
+                ("app.log", LEGACY_LOG),
+                ("payload.bin", LEGACY_PAYLOAD),
+            ] {
+                std::fs::write(root.join(name), bytes).map_err(|error| {
+                    format!("write {} failed: {error}", root.join(name).display())
+                })?;
+            }
+            let nested = root.join("instances").join("legacy");
+            std::fs::create_dir_all(&nested)
+                .map_err(|error| format!("create {} failed: {error}", nested.display()))?;
+            std::fs::write(nested.join("web-token.txt"), token.as_bytes())
+                .map_err(|error| format!("write nested legacy token failed: {error}"))?;
+            Ok(())
+        }
+
+        fn copy_test_executable(case_root: &Path) -> Result<PathBuf, String> {
+            let name = if cfg!(windows) {
+                "agentscommander.exe"
+            } else {
+                "agentscommander"
+            };
+            let copied = case_root.join(name);
+            let source =
+                std::env::current_exe().map_err(|error| format!("current_exe failed: {error}"))?;
+            std::fs::copy(&source, &copied).map_err(|error| {
+                format!(
+                    "copy {} -> {} failed: {error}",
+                    source.display(),
+                    copied.display()
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut permissions = std::fs::metadata(&copied)
+                    .map_err(|error| format!("copied executable metadata failed: {error}"))?
+                    .permissions();
+                permissions.set_mode(permissions.mode() | 0o111);
+                std::fs::set_permissions(&copied, permissions)
+                    .map_err(|error| format!("set executable mode failed: {error}"))?;
+            }
+            Ok(copied)
+        }
+
+        struct ChildRun {
+            status: Option<i32>,
+            success: bool,
+            stdout: String,
+            stderr: String,
+        }
+
+        fn run_child(command: &mut Command, label: &str) -> Result<ChildRun, String> {
+            let mut child = command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("spawn child for {label} failed: {error}"))?;
+            let deadline = Instant::now() + CHILD_TIMEOUT;
+            let mut status_poll_error = None;
+            let terminal_status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Some(status),
+                    Ok(None) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    Ok(None) => break None,
+                    Err(error) => {
+                        status_poll_error = Some(error);
+                        break None;
+                    }
+                }
+            };
+            if terminal_status.is_none() {
+                let kill_error = child.kill().err();
+                let reap_deadline = Instant::now() + Duration::from_secs(5);
+                let reaped = loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break true,
+                        Ok(None) if Instant::now() < reap_deadline => {
+                            thread::sleep(Duration::from_millis(25));
+                        }
+                        Ok(None) | Err(_) => break false,
+                    }
+                };
+                if !reaped {
+                    return Err(format!(
+                        "{label}: child did not reap within 5 seconds; kill_error={kill_error:?} poll_error={status_poll_error:?}"
+                    ));
+                }
+                let output = child.wait_with_output().map_err(|error| {
+                    format!("{label}: timed-out child final reap failed: {error}")
+                })?;
+                return Err(format!(
+                    "{label}: child did not reach a clean terminal status; kill_error={kill_error:?} poll_error={status_poll_error:?} status={:?} stdout={:?} stderr={:?}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            let output = child
+                .wait_with_output()
+                .map_err(|error| format!("{label}: child output collection failed: {error}"))?;
+            Ok(ChildRun {
+                status: output.status.code(),
+                success: output.status.success(),
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            })
+        }
+
+        fn print_retained(label: &str, run: &ChildRun) {
+            println!("[child {label}] status={:?}", run.status);
+            for line in run.stdout.lines() {
+                println!("[child {label} stdout] {line}");
+            }
+            for line in run.stderr.lines() {
+                println!("[child {label} stderr] {line}");
+            }
+        }
+
+        fn profile_entry_absent(home: &Path, name: &str) -> Result<(), String> {
+            let path = home.join(name);
+            match std::fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!(
+                    "symlink_metadata {} failed with {:?}: {error}",
+                    path.display(),
+                    error.kind()
+                )),
+                Ok(metadata) => Err(format!(
+                    "profile entry {} already exists ({:?}); refusing to create, open, clean or adopt it",
+                    path.display(),
+                    metadata.file_type()
+                )),
+            }
+        }
+
+        fn parse_child_settings(stdout: &str, case: &str) -> Result<(String, bool), String> {
+            let prefix = format!("ISSUE1850_CHILD_SETTINGS case={case} root_token=");
+            let line = stdout
+                .lines()
+                .find(|line| line.starts_with(&prefix))
+                .ok_or_else(|| format!("child settings record missing for {case}: {stdout:?}"))?;
+            let rest = &line[prefix.len()..];
+            let (token, flag) = rest
+                .split_once(" onboarding_dismissed=")
+                .ok_or_else(|| format!("malformed child settings record: {line:?}"))?;
+            let dismissed = match flag.trim() {
+                "true" => true,
+                "false" => false,
+                other => return Err(format!("malformed onboarding flag {other:?} in {line:?}")),
+            };
+            Ok((token.to_string(), dismissed))
+        }
+
+        // Parent route selection. Non-Windows hosts always run the eight cases
+        // against a child-local fresh HOME. Windows runs them only in the
+        // dedicated disposable-VM job; elsewhere it proves refusal safety.
+        #[cfg(windows)]
+        let profile_home: Option<PathBuf> = {
+            if std::env::var_os(DISPOSABLE_PROFILE_ENV).is_none() {
+                None
+            } else {
+                match windows_disposable_profile_admission() {
+                    Ok(home) => Some(home),
+                    Err(reason) => panic!(
+                        "{DISPOSABLE_PROFILE_ENV} is set but admission failed; no profile root was touched: {reason}"
+                    ),
+                }
+            }
+        };
+
+        #[cfg(windows)]
+        {
+            if profile_home.is_none() {
+                // Refusal-only safety route: the child must reject before any
+                // config or settings access. This is NOT Windows default-route
+                // acceptance; that belongs to the dedicated CI job.
+                let case_temp = tempfile::TempDir::new().unwrap();
+                let case_root = case_temp.path().to_path_buf();
+                let copied = copy_test_executable(&case_root).unwrap();
+                let before = inventory(&case_root).unwrap();
+                let mut command = Command::new(&copied);
+                command
+                    .arg(TEST_NAME)
+                    .arg("--exact")
+                    .arg("--test-threads=1")
+                    .arg("--nocapture")
+                    .env_remove(DISPOSABLE_PROFILE_ENV)
+                    .env_remove("AGENTSCOMMANDER_CONFIG_DIR")
+                    .env_remove("AGENTSCOMMANDER_TEST_CONFIG_DIR")
+                    .env_remove(EXPECTED_HOME_ENV)
+                    .env_remove(CASE_ENV)
+                    .env(CHILD_SENTINEL, "1");
+                let run = run_child(&mut command, "refusal-only").unwrap();
+                print_retained("refusal-only", &run);
+                assert!(
+                    !run.success,
+                    "refused child must fail, got {:?}",
+                    run.status
+                );
+                assert_eq!(
+                    run.status,
+                    Some(101),
+                    "refused child must fail through the harness"
+                );
+                assert!(
+                    run.stdout.contains("ISSUE1850_PROFILE_REFUSED"),
+                    "child must emit the refusal record before any config access"
+                );
+                assert!(
+                    !run.stdout.contains("ISSUE1850_CHILD_OK")
+                        && !run.stdout.contains("ISSUE1850_CHILD_SETTINGS"),
+                    "refused child must not reach config or settings"
+                );
+                let after = inventory(&case_root).unwrap();
+                assert_eq!(
+                    before, after,
+                    "refused child must leave the owned TempDir unchanged"
+                );
+                println!("ISSUE1850_REFUSAL_ONLY");
+                return;
+            }
+        }
+
+        #[cfg(windows)]
+        let profile_home = profile_home.expect("admitted profile home");
+        #[cfg(windows)]
+        {
+            println!(
+                "ISSUE1850_WINDOWS_PROFILE job={} head={} profile={}",
+                std::env::var("GITHUB_JOB").unwrap_or_default(),
+                std::env::var("GITHUB_SHA").unwrap_or_default(),
+                profile_home.display()
+            );
+        }
+
+        let mut passed = 0usize;
+        for case in &cases {
+            let case_temp = tempfile::TempDir::new().unwrap();
+            let case_root = case_temp.path().to_path_buf();
+            #[cfg(not(windows))]
+            let home_temp = tempfile::TempDir::new().unwrap();
+            #[cfg(not(windows))]
+            let home = home_temp.path().to_path_buf();
+            #[cfg(windows)]
+            let home = profile_home.clone();
+
+            let result = (|| -> Result<(), String> {
+                let copied = copy_test_executable(&case_root)?;
+                for entry in PROFILE_ENTRIES {
+                    profile_entry_absent(&home, entry)?;
+                }
+
+                // Only the roots this case needs, non-recursively, so a
+                // collision fails instead of adopting foreign state.
+                let mut owned_home_roots: Vec<PathBuf> = Vec::new();
+                let adjacent_legacy = case_root.join(CANONICAL_NAME);
+                if case.adjacent_legacy {
+                    write_legacy_root(&adjacent_legacy, LEGACY_ADJACENT_TOKEN)?;
+                }
+                let home_new = home.join(LEGACY_HOME_NEW);
+                if case.home_new {
+                    write_legacy_root(&home_new, LEGACY_HOME_NEW_TOKEN)?;
+                    owned_home_roots.push(home_new.clone());
+                }
+                let home_new_dev = home.join(LEGACY_HOME_NEW_DEV);
+                if case.home_new_dev {
+                    write_legacy_root(&home_new_dev, LEGACY_HOME_NEW_DEV_TOKEN)?;
+                    owned_home_roots.push(home_new_dev.clone());
+                }
+                let canonical = home.join(CANONICAL_NAME);
+                match case.canonical {
+                    Canonical::Absent => {}
+                    Canonical::Valid => {
+                        std::fs::create_dir(&canonical).map_err(|error| {
+                            format!("create_dir {} failed: {error}", canonical.display())
+                        })?;
+                        let fixture = AppSettings {
+                            root_token: Some(CANONICAL_TOKEN.to_string()),
+                            onboarding_dismissed: true,
+                            ..AppSettings::default()
+                        };
+                        let json = serde_json::to_string_pretty(&fixture)
+                            .map_err(|error| format!("serialize fixture failed: {error}"))?;
+                        std::fs::write(canonical.join("settings.json"), json)
+                            .map_err(|error| format!("write canonical settings failed: {error}"))?;
+                        std::fs::write(canonical.join("sentinel.bin"), CANONICAL_SENTINEL)
+                            .map_err(|error| format!("write canonical sentinel failed: {error}"))?;
+                    }
+                    Canonical::Invalid => {
+                        std::fs::create_dir(&canonical).map_err(|error| {
+                            format!("create_dir {} failed: {error}", canonical.display())
+                        })?;
+                        std::fs::write(canonical.join("settings.json"), INVALID_SETTINGS)
+                            .map_err(|error| format!("write invalid settings failed: {error}"))?;
+                    }
+                }
+                // The canonical path was absent at the pre-check, so its
+                // startup output is test-owned in every case.
+                owned_home_roots.push(canonical.clone());
+                let marker = case_root.join("portable.txt");
+                if case.marker {
+                    std::fs::write(&marker, MARKER_BYTES)
+                        .map_err(|error| format!("write marker failed: {error}"))?;
+                }
+                println!(
+                    "ISSUE1850_CASE_FIXTURES case={} adjacent_legacy={} home_new={} home_new_dev={} canonical={:?} marker={} case_root={} home={}",
+                    case.name,
+                    case.adjacent_legacy,
+                    case.home_new,
+                    case.home_new_dev,
+                    case.canonical,
+                    case.marker,
+                    case_root.display(),
+                    home.display()
+                );
+
+                let case_before = inventory(&case_root)?;
+                let mut legacy_before: Vec<(PathBuf, Option<Inventory>)> = Vec::new();
+                for root in [&adjacent_legacy, &home_new, &home_new_dev] {
+                    let snapshot = if root.exists() {
+                        Some(inventory(root)?)
+                    } else {
+                        None
+                    };
+                    legacy_before.push((root.clone(), snapshot));
+                }
+                let invalid_before = (case.canonical == Canonical::Invalid)
+                    .then(|| std::fs::read(canonical.join("settings.json")))
+                    .transpose()
+                    .map_err(|error| format!("read invalid settings failed: {error}"))?;
+
+                let mut command = Command::new(&copied);
+                command
+                    .arg(TEST_NAME)
+                    .arg("--exact")
+                    .arg("--test-threads=1")
+                    .arg("--nocapture")
+                    .env_remove("AGENTSCOMMANDER_CONFIG_DIR")
+                    .env_remove("AGENTSCOMMANDER_TEST_CONFIG_DIR")
+                    .env(CHILD_SENTINEL, "1")
+                    .env(EXPECTED_HOME_ENV, &home)
+                    .env(CASE_ENV, case.name);
+                #[cfg(not(windows))]
+                {
+                    command.env("HOME", &home);
+                }
+                let run = run_child(&mut command, case.name)?;
+                print_retained(case.name, &run);
+
+                if !run.success {
+                    return Err(format!(
+                        "{}: child failed status={:?} stdout={:?} stderr={:?}",
+                        case.name, run.status, run.stdout, run.stderr
+                    ));
+                }
+                for text in [&run.stdout, &run.stderr] {
+                    if text.contains("panicked at") || text.contains("stack backtrace:") {
+                        return Err(format!(
+                            "{}: child emitted panic/backtrace text stdout={:?} stderr={:?}",
+                            case.name, run.stdout, run.stderr
+                        ));
+                    }
+                }
+                if !run.stdout.contains(TEST_NAME) {
+                    return Err(format!(
+                        "{}: child never selected {TEST_NAME}: {:?}",
+                        case.name, run.stdout
+                    ));
+                }
+                if !run
+                    .stdout
+                    .lines()
+                    .any(|line| line.starts_with("test result: ok. 1 passed; 0 failed"))
+                {
+                    return Err(format!(
+                        "{}: child did not report exactly one passing test: {:?}",
+                        case.name, run.stdout
+                    ));
+                }
+                let child_ok = format!("ISSUE1850_CHILD_OK case={}", case.name);
+                if !run.stdout.lines().any(|line| line.starts_with(&child_ok)) {
+                    return Err(format!(
+                        "{}: child success record missing: {:?}",
+                        case.name, run.stdout
+                    ));
+                }
+                let (root_token, onboarding_dismissed) =
+                    parse_child_settings(&run.stdout, case.name)?;
+
+                // Preservation: every legacy root is byte-for-byte unchanged and
+                // no legacy root was created.
+                for (root, before) in &legacy_before {
+                    match before {
+                        Some(before) => {
+                            let after = inventory(root)?;
+                            if *before != after {
+                                return Err(format!(
+                                    "{}: legacy root {} changed: before={:?} after={:?}",
+                                    case.name,
+                                    root.display(),
+                                    before.keys().collect::<Vec<_>>(),
+                                    after.keys().collect::<Vec<_>>()
+                                ));
+                            }
+                        }
+                        None => {
+                            if root.exists() {
+                                return Err(format!(
+                                    "{}: legacy root {} was created by startup",
+                                    case.name,
+                                    root.display()
+                                ));
+                            }
+                        }
+                    }
+                }
+                let case_after = inventory(&case_root)?;
+                if case_before != case_after {
+                    return Err(format!(
+                        "{}: executable directory changed: before={:?} after={:?}",
+                        case.name,
+                        case_before.keys().collect::<Vec<_>>(),
+                        case_after.keys().collect::<Vec<_>>()
+                    ));
+                }
+
+                // Selection: the canonical root carries startup output and no
+                // legacy sentinel or payload.
+                let outbox = canonical.join("instances").join(INSTANCE_ID).join("outbox");
+                if !outbox.is_dir() {
+                    return Err(format!(
+                        "{}: expected outbox missing: {}",
+                        case.name,
+                        outbox.display()
+                    ));
+                }
+                let canonical_after = inventory(&canonical)?;
+                for (relative, (kind, bytes)) in &canonical_after {
+                    let leaf = relative.rsplit('/').next().unwrap_or(relative.as_str());
+                    if leaf == "app.log" || leaf == "payload.bin" || relative.contains("legacy") {
+                        return Err(format!(
+                            "{}: legacy entry {relative} appeared in the canonical root",
+                            case.name
+                        ));
+                    }
+                    if kind == "file" && (bytes == LEGACY_PAYLOAD || bytes == LEGACY_LOG) {
+                        return Err(format!(
+                            "{}: legacy bytes appeared in canonical {relative}",
+                            case.name
+                        ));
+                    }
+                    if kind == "file" {
+                        let text = String::from_utf8_lossy(bytes);
+                        if LEGACY_TOKENS.iter().any(|token| text.contains(token)) {
+                            return Err(format!(
+                                "{}: legacy token leaked into canonical {relative}",
+                                case.name
+                            ));
+                        }
+                    }
+                }
+                if LEGACY_TOKENS.contains(&root_token.as_str()) || root_token == "<none>" {
+                    return Err(format!(
+                        "{}: child reported legacy or missing root token {root_token:?}",
+                        case.name
+                    ));
+                }
+                match case.canonical {
+                    Canonical::Valid => {
+                        if root_token != CANONICAL_TOKEN || !onboarding_dismissed {
+                            return Err(format!(
+                                "{}: canonical values not returned unchanged: token={root_token:?} dismissed={onboarding_dismissed}",
+                                case.name
+                            ));
+                        }
+                        let sentinel = std::fs::read(canonical.join("sentinel.bin"))
+                            .map_err(|error| format!("read canonical sentinel failed: {error}"))?;
+                        if sentinel != CANONICAL_SENTINEL {
+                            return Err(format!("{}: canonical sentinel bytes changed", case.name));
+                        }
+                        let on_disk = std::fs::read_to_string(canonical.join("settings.json"))
+                            .map_err(|error| format!("read canonical settings failed: {error}"))?;
+                        let value: serde_json::Value = serde_json::from_str(&on_disk)
+                            .map_err(|error| format!("canonical settings unparsable: {error}"))?;
+                        if value.get("rootToken").and_then(|v| v.as_str()) != Some(CANONICAL_TOKEN)
+                            || value.get("onboardingDismissed").and_then(|v| v.as_bool())
+                                != Some(true)
+                        {
+                            return Err(format!(
+                                "{}: canonical settings on disk lost user values: {on_disk}",
+                                case.name
+                            ));
+                        }
+                    }
+                    Canonical::Invalid => {
+                        let after = std::fs::read(canonical.join("settings.json"))
+                            .map_err(|error| format!("read invalid settings failed: {error}"))?;
+                        if Some(after) != invalid_before {
+                            return Err(format!(
+                                "{}: invalid canonical settings bytes were rewritten by startup",
+                                case.name
+                            ));
+                        }
+                    }
+                    Canonical::Absent => {
+                        if onboarding_dismissed {
+                            return Err(format!(
+                                "{}: fresh canonical state must not carry a legacy preference",
+                                case.name
+                            ));
+                        }
+                    }
+                }
+
+                // Cleanup of this case's owned roots only, then prove the
+                // profile is empty again before the next case.
+                for root in &owned_home_roots {
+                    if root.exists() {
+                        std::fs::remove_dir_all(root).map_err(|error| {
+                            format!("remove owned root {} failed: {error}", root.display())
+                        })?;
+                    }
+                }
+                for entry in PROFILE_ENTRIES {
+                    profile_entry_absent(&home, entry)?;
+                }
+                Ok(())
+            })();
+
+            match result {
+                Ok(()) => {
+                    passed += 1;
+                    println!("ISSUE1850_CASE_OK case={}", case.name);
+                }
+                Err(error) => {
+                    // Retain diagnostics: keep the owned directories on disk and
+                    // stop the remaining cases.
+                    let kept_case = case_temp.keep();
+                    #[cfg(not(windows))]
+                    let kept_home = home_temp.keep();
+                    #[cfg(windows)]
+                    let kept_home = home.clone();
+                    panic!(
+                        "issue 1850 case {} failed after {passed} passing case(s): {error}\nretained case_root={} home={}",
+                        case.name,
+                        kept_case.display(),
+                        kept_home.display()
+                    );
+                }
+            }
+        }
+
+        assert_eq!(passed, cases.len());
+        #[cfg(windows)]
+        {
+            println!("ISSUE1850_WINDOWS_PROFILE_PROOF_OK cases={passed}");
+        }
+        #[cfg(not(windows))]
+        {
+            println!("ISSUE1850_DEFAULT_ROOT_PROOF_OK cases={passed}");
+        }
+    }
+
     fn api_test_addr(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
     }

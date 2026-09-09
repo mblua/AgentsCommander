@@ -638,11 +638,15 @@ fn probe_candidate_write(candidate: &Path) -> WriteProbeOutcome {
 /// depend on the test-runner executable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstanceLocation {
-    /// The app config directory. Honors the debug `AGENTSCOMMANDER_TEST_CONFIG_DIR`
-    /// override verbatim, then the portable `<exe-parent>/.<exe-stem>` form, then
-    /// the `$HOME/<profile::config_dir_name()>` fallback. `None` only when every
-    /// source is unavailable (no override, no usable `current_exe()` parent/stem,
-    /// and no home directory).
+    /// The app config directory. Honors the public `AGENTSCOMMANDER_CONFIG_DIR`
+    /// override verbatim, then the debug `AGENTSCOMMANDER_TEST_CONFIG_DIR`
+    /// override verbatim. Without an effective override an executable whose
+    /// stem has no underscore suffix selects the canonical
+    /// `$HOME/.agentscommander` (#1868) and never an adjacent directory; a
+    /// suffixed executable takes the portable `<exe-parent>/.<exe-stem>` form
+    /// with its marker/write table, falling back to
+    /// `$HOME/<profile::config_dir_name()>`. `None` only when every source is
+    /// unavailable (no override, no adjacent selection, and no home directory).
     pub config_dir: Option<PathBuf>,
     /// Local agent directory stem derived from the running executable
     /// (`current_exe().file_stem()`), falling back to `"agentscommander"`. This
@@ -700,6 +704,24 @@ fn override_location(raw: &str, local_dir_stem: String) -> InstanceLocation {
     }
 }
 
+/// The HOME location: `$HOME/<fallback_config_dir_name>` with no instance
+/// base, no startup error and no fallback diagnostic; `None` when no home
+/// directory is available. Shared by the #1868 unsuffixed route and the
+/// existing no-executable fallback.
+fn home_location(
+    home_dir: Option<PathBuf>,
+    fallback_config_dir_name: &str,
+    local_dir_stem: String,
+) -> InstanceLocation {
+    InstanceLocation {
+        config_dir: home_dir.map(|home| home.join(fallback_config_dir_name)),
+        local_dir_stem,
+        instance_base: None,
+        startup_error: None,
+        fallback_diagnostic: None,
+    }
+}
+
 fn blocked_adjacent_location(
     paths: AdjacentPaths,
     local_dir_stem: String,
@@ -729,7 +751,15 @@ fn blocked_adjacent_location(
 ///   relative override selects the config directory verbatim but reports NO
 ///   portable base (never absolutized through CWD).
 /// - `current_exe_result`: the outcome of `std::env::current_exe()`.
-/// - `home_dir`: `dirs::home_dir()` for the legacy fallback.
+/// - `home_dir`: `dirs::home_dir()` for the HOME locations.
+/// - `fallback_config_dir_name`: the HOME directory name derived by
+///   `profile::config_dir_name_for_executable` from the same executable.
+///
+/// #1868: after the overrides, an executable without an underscore suffix
+/// returns the HOME location immediately. It ignores BUILD_PROFILE, install
+/// location, the portable marker and whatever probe outcomes were supplied;
+/// no startup error and no fallback diagnostic can arise on that route. Only
+/// suffixed executables reach the adjacent marker/write table.
 pub(crate) fn resolve_instance_location(
     public_override: Option<String>,
     test_override: Option<String>,
@@ -756,18 +786,15 @@ pub(crate) fn resolve_instance_location(
         return override_location(raw, local_dir_stem);
     }
 
-    let Some(paths) = current_exe_result
+    // #1868: route on the same first-underscore parser the profile uses. An
+    // unsuffixed executable never constructs adjacent candidates; it selects
+    // the canonical HOME location before `adjacent_paths` is consulted.
+    let suffixed_executable = current_exe_result
         .as_ref()
         .ok()
-        .and_then(|path| adjacent_paths(path))
-    else {
-        return InstanceLocation {
-            config_dir: home_dir.map(|home| home.join(fallback_config_dir_name)),
-            local_dir_stem,
-            instance_base: None,
-            startup_error: None,
-            fallback_diagnostic: None,
-        };
+        .filter(|path| profile::binary_suffix_from_path(path).is_some());
+    let Some(paths) = suffixed_executable.and_then(|path| adjacent_paths(path)) else {
+        return home_location(home_dir, fallback_config_dir_name, local_dir_stem);
     };
 
     match marker_probe {
@@ -843,6 +870,67 @@ pub(crate) fn resolve_instance_location(
     }
 }
 
+/// #1868: the lazy production orchestration behind [`instance_location`].
+/// Decides whether the adjacent probes run at all, runs them in the existing
+/// order (marker first; write only after a conclusive `Present`/`Absent`
+/// marker) and hands the collected outcomes to [`resolve_instance_location`].
+///
+/// An effective override or an executable without an underscore suffix never
+/// constructs the adjacent candidate and never invokes either probe; both
+/// outcomes stay `NotRun`. The probes are closures so tests can drive this
+/// exact production path with counting or panicking probes and no filesystem.
+/// It keeps no state and abstracts no I/O of its own.
+fn resolve_instance_location_with_probes<MarkerProbe, WriteProbe>(
+    public_override: Option<String>,
+    test_override: Option<String>,
+    current_exe_result: Result<PathBuf, std::io::Error>,
+    home_dir: Option<PathBuf>,
+    fallback_config_dir_name: &str,
+    mut marker_probe: MarkerProbe,
+    mut write_probe: WriteProbe,
+) -> InstanceLocation
+where
+    MarkerProbe: FnMut(&Path) -> MarkerProbeOutcome,
+    WriteProbe: FnMut(&Path) -> WriteProbeOutcome,
+{
+    let override_selected = nonblank_override(public_override.as_ref()).is_some()
+        || nonblank_override(test_override.as_ref()).is_some();
+    let adjacent = if override_selected {
+        None
+    } else {
+        current_exe_result
+            .as_ref()
+            .ok()
+            .filter(|path| profile::binary_suffix_from_path(path).is_some())
+            .and_then(|path| adjacent_paths(path))
+    };
+    let (marker_outcome, write_outcome) = match adjacent {
+        None => (MarkerProbeOutcome::NotRun, WriteProbeOutcome::NotRun),
+        Some(adjacent) => {
+            let marker_outcome = marker_probe(&adjacent.marker_path);
+            let write_outcome = match marker_outcome {
+                MarkerProbeOutcome::Present | MarkerProbeOutcome::Absent => {
+                    write_probe(&adjacent.config_dir)
+                }
+                MarkerProbeOutcome::NotRun | MarkerProbeOutcome::Indeterminate(_) => {
+                    WriteProbeOutcome::NotRun
+                }
+            };
+            (marker_outcome, write_outcome)
+        }
+    };
+
+    resolve_instance_location(
+        public_override,
+        test_override,
+        current_exe_result,
+        home_dir,
+        fallback_config_dir_name,
+        marker_outcome,
+        write_outcome,
+    )
+}
+
 /// Cached, process-wide [`InstanceLocation`], resolved once at first call.
 fn instance_location() -> &'static InstanceLocation {
     static LOC: OnceLock<InstanceLocation> = OnceLock::new();
@@ -859,36 +947,14 @@ fn instance_location() -> &'static InstanceLocation {
             current_exe_result.as_ref().ok().map(PathBuf::as_path),
         );
 
-        let override_selected = nonblank_override(public_override.as_ref()).is_some()
-            || nonblank_override(test_override.as_ref()).is_some();
-        let adjacent = current_exe_result
-            .as_ref()
-            .ok()
-            .and_then(|path| adjacent_paths(path));
-        let (marker_probe, write_probe) = match (override_selected, adjacent) {
-            (true, _) | (_, None) => (MarkerProbeOutcome::NotRun, WriteProbeOutcome::NotRun),
-            (false, Some(adjacent)) => {
-                let marker_probe = probe_portable_marker(&adjacent.marker_path);
-                let write_probe = match marker_probe {
-                    MarkerProbeOutcome::Present | MarkerProbeOutcome::Absent => {
-                        probe_candidate_write(&adjacent.config_dir)
-                    }
-                    MarkerProbeOutcome::NotRun | MarkerProbeOutcome::Indeterminate(_) => {
-                        WriteProbeOutcome::NotRun
-                    }
-                };
-                (marker_probe, write_probe)
-            }
-        };
-
-        resolve_instance_location(
+        resolve_instance_location_with_probes(
             public_override,
             test_override,
             current_exe_result,
             home_dir,
             fallback_config_dir_name,
-            marker_probe,
-            write_probe,
+            probe_portable_marker,
+            probe_candidate_write,
         )
     })
 }
@@ -904,10 +970,11 @@ pub fn agent_local_dir_name() -> String {
     format!(".{}", instance_location().local_dir_stem)
 }
 
-/// Returns the app config directory — portable, next to the binary.
-/// Pattern: `<binary_parent_dir>/.<binary_file_stem>/`
-/// E.g., `C:\tools\agentscommander_standalone.exe` → `C:\tools\.agentscommander_standalone\`
-/// Fallback: `$HOME/<profile::config_dir_name()>` if current_exe() fails.
+/// Returns the app config directory.
+/// Unsuffixed executable (e.g. `agentscommander.exe`): `$HOME/.agentscommander` (#1868).
+/// Suffixed executable: portable `<binary_parent_dir>/.<binary_file_stem>/`,
+/// e.g. `C:\tools\agentscommander_standalone.exe` → `C:\tools\.agentscommander_standalone\`,
+/// falling back to `$HOME/<profile::config_dir_name()>`.
 /// Cached via the shared [`InstanceLocation`] — resolved once at first call.
 pub fn config_dir() -> Option<PathBuf> {
     instance_location().config_dir.clone()
@@ -939,7 +1006,27 @@ mod tests {
         Err(Error::new(ErrorKind::NotFound, "no current_exe"))
     }
 
+    /// A SUFFIXED absolute executable: the only kind that still reaches the
+    /// adjacent marker/write table after #1868. Its complete stem names the
+    /// adjacent directory.
     fn absolute_executable() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\bundle\agentscommander_portable.exe")
+        } else {
+            PathBuf::from("/opt/bundle/agentscommander_portable")
+        }
+    }
+
+    fn expected_adjacent() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\bundle\.agentscommander_portable")
+        } else {
+            PathBuf::from("/opt/bundle/.agentscommander_portable")
+        }
+    }
+
+    /// The canonical unsuffixed executable of a packaged install (#1868).
+    fn unsuffixed_executable() -> PathBuf {
         if cfg!(windows) {
             PathBuf::from(r"C:\bundle\agentscommander.exe")
         } else {
@@ -947,12 +1034,27 @@ mod tests {
         }
     }
 
-    fn expected_adjacent() -> PathBuf {
-        if cfg!(windows) {
-            PathBuf::from(r"C:\bundle\.agentscommander")
-        } else {
-            PathBuf::from("/opt/bundle/.agentscommander")
-        }
+    fn canonical_home(home: &Path) -> PathBuf {
+        home.join(".agentscommander")
+    }
+
+    /// The HOME name production derives for this executable outcome.
+    fn production_config_dir_name(current_exe_result: &Result<PathBuf, Error>) -> &'static str {
+        profile::config_dir_name_for_executable(
+            current_exe_result.as_ref().ok().map(PathBuf::as_path),
+        )
+    }
+
+    fn marker_failure() -> ProbeFailure {
+        ProbeFailure::from_retry(
+            RetryPlatform::Other,
+            ProbeOperation::MarkerEntryMetadata,
+            expected_marker(),
+            RetriedIoError {
+                error: Error::other("marker failed"),
+                attempts: 1,
+            },
+        )
     }
 
     fn expected_marker() -> PathBuf {
@@ -981,33 +1083,25 @@ mod tests {
 
     #[test]
     fn packaged_absolute_executable_yields_portable_config_and_base() {
-        let exe = if cfg!(windows) {
-            PathBuf::from(r"C:\bundle\agentscommander.exe")
-        } else {
-            PathBuf::from("/opt/bundle/agentscommander")
-        };
+        // #1868: portable selection is a suffixed-executable behavior; the
+        // fixture carries a suffix and its complete stem names the directory.
         let loc = resolve_instance_location(
             None,
             None,
-            Ok(exe),
+            Ok(absolute_executable()),
             Some(PathBuf::from("/home/u")),
             profile::config_dir_name(),
             MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
-        let expected_config = if cfg!(windows) {
-            PathBuf::from(r"C:\bundle\.agentscommander")
-        } else {
-            PathBuf::from("/opt/bundle/.agentscommander")
-        };
         let expected_base = if cfg!(windows) {
             PathBuf::from(r"C:\bundle")
         } else {
             PathBuf::from("/opt/bundle")
         };
-        assert_eq!(loc.config_dir.as_deref(), Some(expected_config.as_path()));
+        assert_eq!(loc.config_dir, Some(expected_adjacent()));
         assert_eq!(loc.instance_base.as_deref(), Some(expected_base.as_path()));
-        assert_eq!(loc.local_dir_stem, "agentscommander");
+        assert_eq!(loc.local_dir_stem, "agentscommander_portable");
     }
 
     #[test]
@@ -1090,9 +1184,9 @@ mod tests {
     #[test]
     fn blank_debug_override_is_ignored() {
         let exe = if cfg!(windows) {
-            PathBuf::from(r"C:\bundle\ac.exe")
+            PathBuf::from(r"C:\bundle\ac_portable.exe")
         } else {
-            PathBuf::from("/opt/bundle/ac")
+            PathBuf::from("/opt/bundle/ac_portable")
         };
         let loc = resolve_instance_location(
             None,
@@ -1103,11 +1197,12 @@ mod tests {
             MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
-        // Falls through to the portable executable-derived config.
+        // Falls through to the portable executable-derived config (suffixed
+        // fixture: the unsuffixed route selects HOME instead, see #1868).
         let expected_config = if cfg!(windows) {
-            PathBuf::from(r"C:\bundle\.ac")
+            PathBuf::from(r"C:\bundle\.ac_portable")
         } else {
-            PathBuf::from("/opt/bundle/.ac")
+            PathBuf::from("/opt/bundle/.ac_portable")
         };
         assert_eq!(loc.config_dir.as_deref(), Some(expected_config.as_path()));
         assert!(loc.instance_base.is_some());
@@ -1115,10 +1210,11 @@ mod tests {
 
     #[test]
     fn relative_executable_keeps_relative_config_but_no_base() {
+        // Suffixed fixture: a relative UNSUFFIXED executable selects HOME (#1868).
         let loc = resolve_instance_location(
             None,
             None,
-            Ok(PathBuf::from("bin/agentscommander")),
+            Ok(PathBuf::from("bin/agentscommander_portable")),
             Some(PathBuf::from("/home/u")),
             profile::config_dir_name(),
             MarkerProbeOutcome::Absent,
@@ -1126,13 +1222,13 @@ mod tests {
         );
         assert_eq!(
             loc.config_dir.as_deref(),
-            Some(Path::new("bin/.agentscommander"))
+            Some(Path::new("bin/.agentscommander_portable"))
         );
         assert_eq!(
             loc.instance_base, None,
             "relative exe exposes no portable base"
         );
-        assert_eq!(loc.local_dir_stem, "agentscommander");
+        assert_eq!(loc.local_dir_stem, "agentscommander_portable");
     }
 
     #[test]
@@ -1745,7 +1841,7 @@ mod tests {
         };
         assert_eq!(failure.class, ProbeFailureClass::Indeterminate);
 
-        let executable = temp.path().join("agentscommander.exe");
+        let executable = temp.path().join("agentscommander_issue1577.exe");
         let loc = resolve_instance_location(
             None,
             None,
@@ -1964,5 +2060,368 @@ mod tests {
                 candidate.display()
             )
         );
+    }
+
+    #[test]
+    fn issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome() {
+        let home = PathBuf::from("/home/u");
+        let root = if cfg!(windows) {
+            PathBuf::from(r"C:\")
+        } else {
+            PathBuf::from("/")
+        };
+        let hyphenated = if cfg!(windows) {
+            PathBuf::from(r"C:\bundle\agentscommander-stage.exe")
+        } else {
+            PathBuf::from("/opt/bundle/agentscommander-stage")
+        };
+        // `None` stands for a failing `current_exe()`.
+        let executables: Vec<(Option<PathBuf>, &str)> = vec![
+            (Some(unsuffixed_executable()), "agentscommander"),
+            (Some(hyphenated), "agentscommander-stage"),
+            (
+                Some(PathBuf::from("bin/agentscommander")),
+                "agentscommander",
+            ),
+            (Some(PathBuf::from("ac")), "ac"),
+            (Some(root), "agentscommander"),
+            (None, "agentscommander"),
+        ];
+        let write_outcomes = || {
+            [
+                WriteProbeOutcome::NotRun,
+                WriteProbeOutcome::Success,
+                WriteProbeOutcome::Failed(failed_write(
+                    RetryPlatform::Other,
+                    ProbeOperation::CreateConfigurationDirectory,
+                    expected_adjacent(),
+                    Error::new(ErrorKind::PermissionDenied, "denied"),
+                    1,
+                )),
+                WriteProbeOutcome::Failed(failed_write(
+                    RetryPlatform::Other,
+                    ProbeOperation::CreateProbeFile,
+                    expected_adjacent().join("probe.tmp"),
+                    Error::new(ErrorKind::AlreadyExists, "collision"),
+                    1,
+                )),
+            ]
+        };
+        let marker_outcomes = || {
+            [
+                MarkerProbeOutcome::NotRun,
+                MarkerProbeOutcome::Absent,
+                MarkerProbeOutcome::Present,
+                MarkerProbeOutcome::Indeterminate(marker_failure()),
+            ]
+        };
+
+        for (executable, stem) in &executables {
+            for marker in marker_outcomes() {
+                for write in write_outcomes() {
+                    for home in [Some(home.clone()), None] {
+                        let current_exe_result = match executable {
+                            Some(path) => Ok(path.clone()),
+                            None => exe_err(),
+                        };
+                        let name = production_config_dir_name(&current_exe_result);
+                        assert_eq!(name, ".agentscommander");
+                        let loc = resolve_instance_location(
+                            None,
+                            None,
+                            current_exe_result,
+                            home.clone(),
+                            name,
+                            marker.clone(),
+                            write.clone(),
+                        );
+                        let context = format!(
+                            "executable={executable:?} marker={marker:?} write={write:?} home={home:?}"
+                        );
+                        assert_eq!(
+                            loc.config_dir,
+                            home.as_deref().map(canonical_home),
+                            "{context}"
+                        );
+                        assert_eq!(loc.instance_base, None, "{context}");
+                        assert!(loc.startup_error.is_none(), "{context}");
+                        assert!(loc.fallback_diagnostic.is_none(), "{context}");
+                        assert_eq!(loc.local_dir_stem, *stem, "{context}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn issue_1850_overrides_keep_precedence_and_identity_over_canonical_home() {
+        let public = if cfg!(windows) {
+            r"C:\public config"
+        } else {
+            "/public config"
+        };
+        let debug = if cfg!(windows) {
+            r"C:\debug\.override"
+        } else {
+            "/debug/.override"
+        };
+        let home = PathBuf::from("/home/u");
+        let name = production_config_dir_name(&Ok(unsuffixed_executable()));
+
+        let loc = resolve_instance_location(
+            Some(public.to_string()),
+            Some(debug.to_string()),
+            Ok(unsuffixed_executable()),
+            Some(home.clone()),
+            name,
+            MarkerProbeOutcome::NotRun,
+            WriteProbeOutcome::NotRun,
+        );
+        assert_eq!(loc.config_dir.as_deref(), Some(Path::new(public)));
+        assert_eq!(
+            loc.instance_base.as_deref(),
+            Path::new(public).parent(),
+            "absolute public override keeps its parent as the instance base"
+        );
+        assert_eq!(loc.local_dir_stem, "agentscommander");
+
+        let loc = resolve_instance_location(
+            Some(" ".to_string()),
+            Some(debug.to_string()),
+            Ok(unsuffixed_executable()),
+            Some(home.clone()),
+            name,
+            MarkerProbeOutcome::NotRun,
+            WriteProbeOutcome::NotRun,
+        );
+        assert_eq!(loc.config_dir.as_deref(), Some(Path::new(debug)));
+        assert_eq!(loc.instance_base.as_deref(), Path::new(debug).parent());
+
+        let loc = resolve_instance_location(
+            None,
+            Some("relative/.override".to_string()),
+            Ok(unsuffixed_executable()),
+            Some(home.clone()),
+            name,
+            MarkerProbeOutcome::NotRun,
+            WriteProbeOutcome::NotRun,
+        );
+        assert_eq!(
+            loc.config_dir.as_deref(),
+            Some(Path::new("relative/.override"))
+        );
+        assert_eq!(loc.instance_base, None);
+
+        let loc = resolve_instance_location(
+            Some("   ".to_string()),
+            Some("\t".to_string()),
+            Ok(unsuffixed_executable()),
+            Some(home.clone()),
+            name,
+            MarkerProbeOutcome::Absent,
+            WriteProbeOutcome::Success,
+        );
+        assert_eq!(loc.config_dir, Some(canonical_home(&home)));
+        assert_eq!(loc.instance_base, None);
+        assert!(loc.startup_error.is_none());
+        assert!(loc.fallback_diagnostic.is_none());
+    }
+
+    fn never_marker(_: &Path) -> MarkerProbeOutcome {
+        panic!("marker probe must not run on this route");
+    }
+
+    fn never_write(_: &Path) -> WriteProbeOutcome {
+        panic!("write probe must not run on this route");
+    }
+
+    #[test]
+    fn issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes() {
+        let home = PathBuf::from("/home/u");
+        let public = if cfg!(windows) {
+            r"C:\public config"
+        } else {
+            "/public config"
+        };
+
+        for executable in [
+            Ok(unsuffixed_executable()),
+            Ok(PathBuf::from("bin/agentscommander")),
+            exe_err(),
+        ] {
+            let name = production_config_dir_name(&executable);
+            let loc = resolve_instance_location_with_probes(
+                None,
+                None,
+                executable,
+                Some(home.clone()),
+                name,
+                never_marker,
+                never_write,
+            );
+            assert_eq!(loc.config_dir, Some(canonical_home(&home)));
+            assert_eq!(loc.instance_base, None);
+            assert!(loc.startup_error.is_none());
+            assert!(loc.fallback_diagnostic.is_none());
+        }
+
+        let loc = resolve_instance_location_with_probes(
+            Some(public.to_string()),
+            None,
+            Ok(absolute_executable()),
+            Some(home.clone()),
+            profile::config_dir_name(),
+            never_marker,
+            never_write,
+        );
+        assert_eq!(loc.config_dir.as_deref(), Some(Path::new(public)));
+
+        let loc = resolve_instance_location_with_probes(
+            Some("  ".to_string()),
+            Some(public.to_string()),
+            Ok(absolute_executable()),
+            Some(home),
+            profile::config_dir_name(),
+            never_marker,
+            never_write,
+        );
+        assert_eq!(loc.config_dir.as_deref(), Some(Path::new(public)));
+    }
+
+    #[test]
+    fn issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once() {
+        struct Probes {
+            calls: std::cell::RefCell<Vec<(&'static str, PathBuf)>>,
+        }
+        impl Probes {
+            fn run(
+                &self,
+                marker: MarkerProbeOutcome,
+                write: WriteProbeOutcome,
+                home: Option<PathBuf>,
+            ) -> InstanceLocation {
+                self.calls.borrow_mut().clear();
+                resolve_instance_location_with_probes(
+                    None,
+                    None,
+                    Ok(absolute_executable()),
+                    home,
+                    ".injected-profile",
+                    |path: &Path| {
+                        self.calls.borrow_mut().push(("marker", path.to_path_buf()));
+                        marker.clone()
+                    },
+                    |path: &Path| {
+                        self.calls.borrow_mut().push(("write", path.to_path_buf()));
+                        write.clone()
+                    },
+                )
+            }
+            fn calls(&self) -> Vec<(&'static str, PathBuf)> {
+                self.calls.borrow().clone()
+            }
+        }
+        let probes = Probes {
+            calls: std::cell::RefCell::new(Vec::new()),
+        };
+        let home = PathBuf::from("/home/u");
+        let both = vec![
+            ("marker", expected_marker()),
+            ("write", expected_adjacent()),
+        ];
+        let marker_only = vec![("marker", expected_marker())];
+
+        let loc = probes.run(
+            MarkerProbeOutcome::Absent,
+            WriteProbeOutcome::Success,
+            Some(home.clone()),
+        );
+        assert_eq!(probes.calls(), both);
+        assert_eq!(loc.config_dir, Some(expected_adjacent()));
+        assert!(loc.startup_error.is_none());
+        assert!(loc.fallback_diagnostic.is_none());
+
+        let loc = probes.run(
+            MarkerProbeOutcome::Present,
+            WriteProbeOutcome::Success,
+            Some(home.clone()),
+        );
+        assert_eq!(probes.calls(), both);
+        assert_eq!(loc.config_dir, Some(expected_adjacent()));
+        assert!(loc.startup_error.is_none());
+
+        let loc = probes.run(
+            MarkerProbeOutcome::Present,
+            WriteProbeOutcome::Failed(failed_write(
+                RetryPlatform::Other,
+                ProbeOperation::CreateConfigurationDirectory,
+                expected_adjacent(),
+                Error::new(ErrorKind::PermissionDenied, "denied"),
+                1,
+            )),
+            Some(home.clone()),
+        );
+        assert_eq!(probes.calls(), both);
+        assert_eq!(loc.config_dir, Some(expected_adjacent()));
+        let error = loc.startup_error.expect("marked unwritable is hard");
+        assert!(error
+            .to_string()
+            .contains(&expected_marker().display().to_string()));
+
+        let loc = probes.run(
+            MarkerProbeOutcome::Indeterminate(marker_failure()),
+            WriteProbeOutcome::Success,
+            Some(home.clone()),
+        );
+        assert_eq!(
+            probes.calls(),
+            marker_only,
+            "no write after an indeterminate marker"
+        );
+        assert_eq!(loc.config_dir, Some(expected_adjacent()));
+        let ConfigStartupError::AdjacentSelectionBlocked { marker_path, .. } =
+            loc.startup_error.expect("indeterminate marker is hard");
+        assert_eq!(marker_path, Some(expected_marker()));
+
+        let conclusive = failed_write(
+            RetryPlatform::Other,
+            ProbeOperation::CreateConfigurationDirectory,
+            expected_adjacent(),
+            Error::new(ErrorKind::PermissionDenied, "denied"),
+            1,
+        );
+        let loc = probes.run(
+            MarkerProbeOutcome::Absent,
+            WriteProbeOutcome::Failed(conclusive.clone()),
+            Some(home.clone()),
+        );
+        assert_eq!(probes.calls(), both);
+        assert_eq!(loc.config_dir, Some(home.join(".injected-profile")));
+        assert_eq!(loc.instance_base, None);
+        assert!(loc.startup_error.is_none());
+        assert_eq!(
+            loc.fallback_diagnostic,
+            Some(AdjacentFallbackDiagnostic {
+                candidate: expected_adjacent(),
+                selected_home: Some(home.join(".injected-profile")),
+                failure: conclusive,
+            })
+        );
+
+        let loc = probes.run(
+            MarkerProbeOutcome::Absent,
+            WriteProbeOutcome::Failed(failed_write(
+                RetryPlatform::Other,
+                ProbeOperation::CreateProbeFile,
+                expected_adjacent().join("probe.tmp"),
+                Error::new(ErrorKind::AlreadyExists, "collision"),
+                1,
+            )),
+            Some(home),
+        );
+        assert_eq!(probes.calls(), both);
+        assert_eq!(loc.config_dir, Some(expected_adjacent()));
+        assert!(loc.startup_error.is_some());
+        assert!(loc.fallback_diagnostic.is_none());
     }
 }
