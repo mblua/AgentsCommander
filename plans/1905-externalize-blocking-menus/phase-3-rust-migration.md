@@ -24,7 +24,12 @@ applying through the guard's layer 0.
 ## Decisions (inlined, binding)
 
 - **Where:** `export_blocking_menus_to_local_file(&mut AppSettings, settings_path)` is called from
-  the GUI loader only, in the `[settings-migration]` block, and sets `needs_save`.
+  `load_settings_from_path`, the loader behind `load_settings()`, in the `[settings-migration]`
+  block, and sets `needs_save`. That loader runs in the GUI process and inside every CLI process
+  that calls `load_settings()` (`cli/mod.rs:388` in `validate_cli_token`, `cli/send.rs:864`,
+  `cli/list_peers.rs:865,994,1091`, `cli/close_session.rs:178`), so the export can run in two
+  processes at once; it needs no lock because the `.local` writer is per-pid atomic and the strip
+  is a settings save under `SettingsFileLock` (T11, T12). The two `_for_cli` loaders never run it.
 - **When:** only while at least one agent has `blocking_menus == Some(_)`. After the first
   successful run no agent has `Some`, so it is a no-op forever (state-keyed idempotency).
 - **Overlay-owned `agents`:** return `false` after one `info!` per affected agent; those arrays
@@ -32,8 +37,14 @@ applying through the guard's layer 0.
 - **Schema parity:** the complete `.local` text is validated with `parse_blocking_menus_file`
   before any mutation, and the merged bytes are validated with it again before the write. What
   the runtime rejects, the export refuses to touch.
-- **Collision:** two agents with `Some` sharing an id and holding different arrays abort the
-  export (nothing stripped, layer 0 keeps serving both); equal arrays are one candidate.
+- **Collision:** two agents with `Some` sharing an id and holding different arrays, or equal
+  arrays under different commands (the pristine test depends on the command, so one `byAgent[id]`
+  row cannot serve both), abort the export (nothing stripped, layer 0 keeps serving both); equal
+  arrays under one command are one candidate.
+- **Valid entries are written in canonical form:** a candidate array goes through
+  `serde_json::to_value(&entries)`, so a `Valid` entry is written with `enabled` explicit and
+  without unknown keys inside the entry (every base save of `settings.json` already drops them);
+  an `Invalid` entry is written verbatim.
 - **Pristine:** after `apply_issue_1757_migration` in memory, an array equal to
   `default_blocking_menus_for_command(&agent.command)` produces no `.local` entry. `[]` on `pi`
   or `codex` differs from the shipped set and is exported. `[]` on a stem whose shipped set is
@@ -58,9 +69,10 @@ applying through the guard's layer 0.
 Insert immediately after `apply_issue_1757_migration` (base `:1137`):
 
 ```rust
-/// Every failure path of the export: log, and leave settings.json untouched.
+/// Every failure path of the export: log, strip nothing. The loader may still save
+/// settings.json for another migration's reason; the arrays survive that save unchanged.
 fn abort_blocking_menus_export(local_path: &Path, why: &str) -> bool {
-    log::error!("[settings-migration] #1905 - {why} ({}); leaving settings.json untouched", local_path.display());
+    log::error!("[settings-migration] #1905 - {why} ({}); no blockingMenus array stripped", local_path.display());
     false
 }
 
@@ -78,16 +90,18 @@ pub(crate) fn export_blocking_menus_to_local_file(settings: &mut AppSettings, se
         return false;
     }
     apply_issue_1757_migration(settings);
-    // One id, one array: two agents sharing an id with different arrays cannot both live under
-    // byAgent[id], so the export aborts and the guard's layer 0 keeps serving both.
+    // One id, one array, one command: two agents sharing an id with different arrays cannot
+    // both live under byAgent[id], and equal arrays under different commands would make the
+    // pristine test below order-dependent, so the export aborts and layer 0 keeps serving both.
     let mut by_id: BTreeMap<&str, (&str, &Vec<BlockingMenuEntry>)> = BTreeMap::new();
     for agent in &settings.agents {
         let Some(entries) = agent.blocking_menus.as_ref() else {
             continue;
         };
-        if let Some((_, previous)) = by_id.insert(agent.id.as_str(), (agent.command.as_str(), entries)) {
-            if previous != entries {
-                return abort_blocking_menus_export(&local_path, &format!("two agents share the id '{}' with different blockingMenus arrays", agent.id));
+        let current = (agent.command.as_str(), entries);
+        if let Some(previous) = by_id.insert(agent.id.as_str(), current) {
+            if previous != current {
+                return abort_blocking_menus_export(&local_path, &format!("two agents share the id '{}' with different blockingMenus arrays or commands", agent.id));
             }
         }
     }
@@ -110,6 +124,7 @@ pub(crate) fn export_blocking_menus_to_local_file(settings: &mut AppSettings, se
             }
             match serde_json::from_str::<Value>(contents) {
                 Ok(Value::Object(map)) => map,
+                // Unreachable once the parser above rejected non-objects; kept as a guard.
                 _ => return abort_blocking_menus_export(&local_path, "the file is not a JSON object"),
             }
         }
@@ -203,23 +218,46 @@ first load, `assert!(!blocking_menus_local_path(&path).exists())` and
 `assert_eq!(BlockingMenusStore::load_from_settings_path(&path).resolve_for(&settings.agents[0]).len(), 1)`
 (layer 0: the overlay's one-entry array, not the shipped two); its four numeric assertions stay true.
 
-New tests in `blocking_menus_1905`. Fixture entries as JSON values: `ft` = `folder_trust_entry()`,
-`hooks` = `serde_json::to_value(codex_hooks_review_menu())`, `custom` = a valid entry with pattern
-`^custom-1905`, `custom2` = the same with pattern `^custom-1905-b`. `agent_json(id, command,
-menus)` builds `{"id","label":id,"command","color":"#000000","blockingMenus": menus}` (the
-`codex_agent_with` shape with id and command as parameters). Every test seeds `base_fixture()`
-plus an `agents` array through `seed`, loads with `load_settings_from_path`, reads the disk with
-`disk_object`, and checks resolution with `BlockingMenusStore::load_from_settings_path(&path).resolve_for(agent)`
-over the agents of the returned settings. "Keys present" means every seeded agent still has its
-`blockingMenus` array on disk, byte-equal to the seed after `1757` is applied where the seed was a
-pristine one-entry codex array.
+New tests in `blocking_menus_1905`. Fixture entries as JSON values, every one carrying all four
+fields because the export writes a `Valid` entry through the typed round-trip, which adds
+`"enabled": true` when absent, so an equality assertion against a three-field fixture fails:
+`ft` = `folder_trust_entry()` (`:9738`, four fields); `hooks` =
+`serde_json::to_value(codex_hooks_review_menu())`; `custom` =
+`{"pattern": "^custom-1905", "notification": "custom 1905 notification", "enabled": true, "capturedAgainst": "test"}`;
+`custom2` = the same object with pattern `^custom-1905-b`. `ft(enabled:false)` is `ft` with
+`"enabled": false`.
+
+Fixture policy (binding, one rule for every test below): `agent_json(id, command, menus:
+Option<Value>)` builds `{"id","label":id,"command","color":"#000000"}` plus `"blockingMenus":
+menus` when `Some` (the `codex_agent_with` shape with id, command and an optional array).
+`fixture_with(agents: &[Value]) -> Value` returns `base_fixture()` with its `agents` replaced by
+the slice and with a `codingAgentProfiles` object of the shape at base `:9633-9640`
+(`schemaVersion: 2`, `profileSlots: {"A": {"label": ""}}`, `defaultProfileByAgent: {}`) whose
+`profilesByAgent` holds `{"A": {"enabled": true, "command": "", "env": {}, "notes": ""}}` for
+every distinct `id` in the slice. Reason: `repair_coding_agent_profiles_config` (base
+`:1594-1603`) inserts a profile cell `A` for every agent without one and forces a save, so a
+fixture without it is rewritten on its first load whatever the export returns; with the cell
+present, and `base_fixture`'s `rootToken`, the export is the only `needs_save` source in this
+module, which is what T9 and every "keys present" assertion rely on. Every test seeds
+`fixture_with(...)` through `seed`, loads with `load_settings_from_path`, reads the disk with
+`disk_object`, and checks resolution with
+`BlockingMenusStore::load_from_settings_path(&path).resolve_for(agent)` over the agents of the
+returned settings.
+
+"Keys present" means: the `settings.json` bytes are identical to what `seed` wrote, so every
+seeded agent still has its `blockingMenus` array on disk exactly as seeded (no 1757 entry is
+added on disk on an abort path, because the export returns `false` without setting `needs_save`;
+the in-memory `apply_issue_1757_migration` step still ran, which is why `resolve_for(codex)`
+below reads `[ft, hooks]` while the disk reads `[ft]`). "Keys gone" means no agent on disk has a
+`blockingMenus` key.
 
 - T6 `export_moves_customized_arrays_and_drops_pristine_ones_then_is_idempotent`: agents `pi`
   with `[]`, `codex` with `[ft, hooks]`, `codex-old` (command `codex`) with `[ft]`, `codex-off`
   (command `codex`) with `[]`, `claude` with `[]`, `mine` (command `claude`) with `[custom, 12345]`.
   After load: no agent on disk has `blockingMenus`; `.local` parses with `schemaVersion == 1`,
   `byAgent` keys exactly `["codex-off", "mine", "pi"]`, `byAgent.pi == []`, `byAgent["codex-off"] == []`,
-  `byAgent.mine` equal to the two elements verbatim; resolution: `pi` and `codex-off` empty,
+  `byAgent.mine == [custom, 12345]` (`custom` already carries all four fields, so the typed
+  round-trip reproduces it; `12345` is `Invalid` and is written verbatim); resolution: `pi` and `codex-off` empty,
   `codex` and `codex-old` equal to the shipped codex set, `claude` empty, `mine` two entries.
   Load again: `.local` and `settings.json` bytes unchanged.
 - T7 `export_keeps_an_existing_local_entry_and_preserves_unknown_keys`: pre-seed `.local` with
@@ -232,9 +270,12 @@ pristine one-entry codex array.
   `codex` with `[ft]` and `mine` (command `claude`) with `[custom]`. After load: keys present,
   `.local` bytes unchanged, `resolve_for(codex) == [ft, hooks]` (layer 0 with the in-memory
   1757 step, what the current binary serves) and `resolve_for(mine) == [custom]`.
-- T9 `export_is_state_keyed`: a fixture with no `blockingMenus` key anywhere loads without creating
-  the `.local` file and with `settings.json` bytes identical before and after (`base_fixture`
-  carries a `rootToken`, so no other migration writes).
+- T9 `export_is_state_keyed`: agents `codex` and `mine` (command `claude`) built with
+  `agent_json(.., None)`, so no `blockingMenus` key exists anywhere. After load: the `.local` file
+  does not exist and the `settings.json` bytes are identical to what `seed` wrote (the fixture
+  policy above makes the export the only `needs_save` source, and it returned `false`);
+  `resolve_for(codex)` equals the shipped codex set and `resolve_for(mine)` is empty (the
+  migrated steady state is served by the files).
 - T10 `export_aborts_when_the_local_file_cannot_be_written`: create a DIRECTORY at
   `dir.join(format!(".settings-blocking-menus.local.json.{}.tmp", std::process::id()))` (the
   name `write_file_atomic` will try to create, `local_config_io.rs:122-128`); agents `mine`
@@ -258,19 +299,24 @@ pristine one-entry codex array.
   `{"note":42,"byAgent":{}}`, `{"schemaVersion":2}`, `[1]`: fresh tempdir, agents `codex` with
   `[ft]` and `mine` (command `claude`) with `[custom]`; after load: keys present, `.local` bytes
   unchanged, `resolve_for(mine) == [custom]`, and `parse_blocking_menus_file(text).is_err()`.
-- T14 `duplicate_agent_ids_abort_unless_their_arrays_are_equal`: agents `dup` (command `claude`)
-  with `[custom]` and a second `dup` (command `claude`) with `[custom2]`: after load keys present,
-  `.local` absent, `resolve_for` of each loaded agent equals its own array. Second tempdir, both
-  `dup` with `[custom]`: after load keys gone, `byAgent` keys exactly `["dup"]`, `byAgent.dup == [custom]`.
+- T14 `duplicate_agent_ids_abort_unless_their_arrays_and_commands_are_equal`: agents `dup`
+  (command `claude`) with `[custom]` and a second `dup` (command `claude`) with `[custom2]`: after
+  load keys present, `.local` absent, `resolve_for` of each loaded agent equals its own array.
+  Second tempdir, `dup` (command `claude`) with `[ft, hooks]` and `dup` (command `codex`) with
+  `[ft, hooks]` (equal arrays, different commands: pristine for one, custom for the other): after
+  load keys present, `.local` absent, `resolve_for` of each loaded agent is `[ft, hooks]`. Third
+  tempdir, both `dup` (command `claude`) with `[custom]`: after load keys gone, `byAgent` keys
+  exactly `["dup"]`, `byAgent.dup == [custom]`.
 
 ## Required behavior and failure behavior
 
 - Upgrade with pristine arrays: `settings.json` loses every `blockingMenus` key, `.local` is not
   created, detection is unchanged.
 - Upgrade with customized arrays (a custom entry, a disabled entry, an invalid entry, `[]` on
-  `pi` or `codex`): those arrays appear under `byAgent` in `.local`, verbatim.
-- `.local` unreadable, invalid, or unwritable; duplicate ids with different arrays: nothing moves,
-  one `error!`, retry next start, layer 0 serves the arrays meanwhile.
+  `pi` or `codex`): those arrays appear under `byAgent` in `.local`, valid entries in canonical
+  form, invalid entries verbatim.
+- `.local` unreadable, invalid, or unwritable; duplicate ids with different arrays or commands:
+  nothing moves, one `error!`, retry next start, layer 0 serves the arrays meanwhile.
 - Settings save fails after the `.local` write: the files serve the same entries; next start finds
   the ids present, inserts nothing, strips again.
 - Overlay owns `agents`: nothing moves, one `info!` per agent with an array, layer 0 serves them.
@@ -290,11 +336,14 @@ cargo test --lib --bins --tests
 - AC2 `rg -n "materialize_blocking_menus" src-tauri/src` prints nothing and exits 1; control:
   `rg -n "export_blocking_menus_to_local_file" src-tauri/src/config/settings.rs` prints 2 or more lines.
 - AC3 `awk '/^pub fn load_settings_for_cli\(/,/^}/' src-tauri/src/config/settings.rs | rg -c "blocking_menus|1757"`
-  prints nothing and exits 1, and likewise for `load_settings_for_cli_strict\(`; control: the same
-  pipeline over `load_settings_from_path\(` prints `1` or more and exits 0.
-- AC4 `rg -c "apply_issue_1757_migration\(" src-tauri/src/config/settings.rs` at the phase head
-  equals the base count minus 3 (the deleted GUI and two CLI calls) plus 1 (the export step) plus
-  the count added by T7; state all four numbers in the phase reply.
+  prints nothing and exits 1, and likewise for `/^pub fn load_settings_for_cli_strict\(/`;
+  control: `awk '/^pub\(crate\) fn load_settings_from_path\(/,/^}/' src-tauri/src/config/settings.rs | rg -c "blocking_menus|1757"`
+  prints `1` or more and exits 0 (the loader is `pub(crate)` at base `:2100`, so a `^pub fn`
+  pattern matches nothing and would make the control vacuous).
+- AC4 `rg -c "apply_issue_1757_migration\(" src-tauri/src/config/settings.rs` prints `10` at base
+  and `9` at the phase head: 10, minus 3 (the deleted GUI call and the two CLI calls), plus 1 (the
+  export step), plus 1 (the T7 call). Any other head count is explained line by line in the
+  phase reply.
 - AC5 The four verification commands exit 0; the filtered run reports 13 or more
   `blocking_menus_1905` tests passed (T1 to T4 from phase 1, T6 to T14 here) and the five renamed
   or amended tests pass; T11 is allowed to take about 2 seconds.

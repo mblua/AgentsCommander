@@ -10,7 +10,8 @@ Every line number below is pinned to that base and describes the tree BEFORE thi
 Add the store the menu guard will read in phase 2: `settings-blocking-menus.json`, which AC owns
 and rewrites from embedded content whenever it differs, and `settings-blocking-menus.local.json`,
 which the user owns and AC only reads. Nothing in production calls the store yet and the settings
-loader is untouched, so this phase changes no behavior.
+loader is untouched, so guard evaluation is base; the one visible change is two more lines in
+every instance `.gitignore` at startup (the registry rows of Edit 3).
 
 ## Files (no other file changes)
 
@@ -26,8 +27,11 @@ loader is untouched, so this phase changes no behavior.
   (optional string, ignored), byCommand: {stem: [BlockingMenuEntry]}, byAgent: {agentId: [BlockingMenuEntry]} }`.
   Maps are `BTreeMap`. Unknown top-level keys are tolerated on read. A wrong type for `note`,
   `byCommand` or `byAgent`, a non-object, or `schemaVersion != 1` rejects the whole file.
-- **One parser.** `parse_blocking_menus_file(&str)` is the only path from text to typed file.
-  The loader and, in phase 3, the migration both use it, so they accept and reject the same bytes.
+- **One parser.** `parse_blocking_menus_file(&str)` is the only path from text to typed file:
+  parse to `serde_json::Value`, require `Value::Object` (a serde struct whose fields all have
+  defaults also decodes from a JSON array, so without this check `[1]` and `[]` would pass as an
+  empty file), then `from_value`, then the `schemaVersion` check. The loader and, in phase 3,
+  the migration both use it, so they accept and reject the same bytes.
 - **Precedence, replace-whole:** layer 0 `agent.blocking_menus == Some(array)` (legacy, still in
   memory), else `local.byAgent[id]`, else `local.byCommand[stem]`, else `shipped.byCommand[stem]`,
   else `[]`. The shipped `byAgent` is ignored and pinned empty. `stem` is
@@ -99,9 +103,7 @@ const EMBEDDED_BLOCKING_MENUS_JSON: &str =
 
 pub const BLOCKING_MENUS_SCHEMA_VERSION: u32 = 1;
 
-fn default_blocking_menus_schema_version() -> u32 {
-    BLOCKING_MENUS_SCHEMA_VERSION
-}
+fn default_blocking_menus_schema_version() -> u32 { BLOCKING_MENUS_SCHEMA_VERSION }
 
 /// #1905 - one blocking-menus file; the shipped file and the `.local` file share this shape.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -128,10 +130,15 @@ impl Default for BlockingMenusFile {
     }
 }
 
-/// #1905 (D6) - the one parser both files go through. The migration validates against it
-/// too, so what the export writes is exactly what this loader accepts.
+/// #1905 (D6) - the one parser both files go through; the migration validates against it too.
+/// The `Value` step rejects a JSON array, which serde would otherwise decode as an empty file.
 pub(crate) fn parse_blocking_menus_file(contents: &str) -> Result<BlockingMenusFile, String> {
-    let file = serde_json::from_str::<BlockingMenusFile>(contents)
+    let value =
+        serde_json::from_str::<Value>(contents).map_err(|e| format!("does not parse: {e}"))?;
+    if !value.is_object() {
+        return Err("is not a JSON object".to_string());
+    }
+    let file = serde_json::from_value::<BlockingMenusFile>(value)
         .map_err(|e| format!("does not parse: {e}"))?;
     if file.schema_version != BLOCKING_MENUS_SCHEMA_VERSION {
         return Err(format!(
@@ -277,9 +284,9 @@ impl BlockingMenusStore {
 
 2c. Tests: new module `blocking_menus_1905` as the LAST item of `mod tests` (after the closing
 brace of `mod local_overlay_1737`), opening with `use super::super::*;` and `use serde_json::json;`
-like `local_overlay_1737` (`:9695-9696`). Each test uses `tempfile::tempdir()` and a
-`settings.json` path inside it; no settings file needs to exist. `agent_1757(id, command,
-blocking_menus)` (`:9425`) is reachable as `super::agent_1757` and builds every `AgentConfig` below.
+like `local_overlay_1737` (`:9695-9696`). Each test uses `tempfile::tempdir()` and a `settings.json`
+path inside it; no settings file needs to exist. `super::agent_1757(id, command, blocking_menus)`
+(`:9425`) builds every `AgentConfig` below.
 
 - T1 `embedded_content_matches_the_rust_literals`: `shipped_blocking_menus()` has
   `schema_version == 1`, `note.is_some()`, empty `by_agent`, `by_command` keys exactly
@@ -289,22 +296,20 @@ blocking_menus)` (`:9425`) is reachable as `super::agent_1757` and builds every 
   `captured_against == Some("codex 0.x / Linux")`;
   `by_command["codex"][1] == BlockingMenuEntry::Valid(codex_hooks_review_menu())`.
 - T2 `resolve_precedence_is_legacy_then_local_agent_then_local_command_then_shipped`: `X`, `Y`,
-  `Z` are three `Valid` entries with distinct patterns; local
-  `by_agent = {"codex-b": [X], "pi-off": []}`, `by_command = {"codex": [Y]}`; assert
-  `resolve("codex-b","codex") == [X]`, `resolve("codex-a","codex") == [Y]`,
+  `Z` are three `Valid` entries with distinct patterns; local `by_agent = {"codex-b": [X], "pi-off": []}`,
+  `by_command = {"codex": [Y]}`; assert `resolve("codex-b","codex") == [X]`, `resolve("codex-a","codex") == [Y]`,
   `resolve("codex-a", "Codex.exe --search") == [Y]` (directory-free on purpose: `file_stem` of a
-  backslash path differs on Unix), `resolve("pi-off","pi")` empty,
-  `resolve("pi-1","pi") == default_blocking_menus_for_command("pi")`, `resolve("claude-1","claude")` empty.
-  Layer 0: `resolve_for(&agent_1757("codex-b", "codex", Some(vec![Z])))` is `[Z]` although
-  `by_agent["codex-b"]` is `[X]`; `resolve_for(&agent_1757("pi-1", "pi", Some(vec![])))` is empty;
-  `resolve_for(&agent_1757("codex-b", "codex", None)) == [X]`.
+  backslash path differs on Unix), `resolve("pi-off","pi")` empty, `resolve("claude-1","claude")` empty,
+  `resolve("pi-1","pi") == default_blocking_menus_for_command("pi")`. Layer 0:
+  `resolve_for(&agent_1757("codex-b", "codex", Some(vec![Z])))` is `[Z]` although `by_agent["codex-b"]`
+  is `[X]`; `resolve_for(&agent_1757("pi-1", "pi", Some(vec![])))` is empty; `resolve_for(&agent_1757("codex-b", "codex", None)) == [X]`.
 - T3 `shipped_file_is_written_when_absent_or_stale_and_left_alone_when_equal`: first `refresh`
   returns true and the bytes equal `pretty_json_bytes(shipped_blocking_menus())`; second returns
   false; append `x`; third returns true and the bytes equal canonical again.
 - T4 `local_file_rejections_yield_an_empty_layer_and_match_the_parser`: for each text in
-  `{ not json`, `[1]`, `{"schemaVersion": 2}`, `{"schemaVersion":1,"byCommand":42,"byAgent":{}}`,
-  `{"byAgent":{"codex":42}}`, `{"note":42,"byAgent":{}}`: `parse_blocking_menus_file` is `Err`
-  and, written to the `.local` path, `load_local_blocking_menus_file` returns
+  `{ not json`, `[1]`, `[]`, `null`, `{"schemaVersion": 2}`, `{"schemaVersion":1,"byCommand":42,"byAgent":{}}`,
+  `{"byAgent":{"codex":42}}`, `{"note":42,"byAgent":{}}`: `parse_blocking_menus_file` is `Err` and,
+  written to the `.local` path, `load_local_blocking_menus_file` returns
   `BlockingMenusFile::default()`. Absent also returns the default. A valid file with one
   `byAgent` entry and an `"extra": true` key parses `Ok` and loads that entry.
   `{"byAgent":{"codex":[42]}}` parses `Ok` with one `Invalid(42)` entry (kept verbatim, as today).
@@ -338,8 +343,8 @@ In the fixture list, after `"settings.json.lock",` (`:1027`) add
 
 ## Required behavior and failure behavior
 
-- Production behavior is identical to base: nothing constructs the store outside tests, the
-  loader still materializes, the guard still reads `agent.blocking_menus`. Green on `main` alone.
+- Guard evaluation is identical to base: nothing constructs the store outside tests, the loader
+  still materializes, the guard still reads `agent.blocking_menus`. Green on `main` alone.
 - Store, when built: absent or stale shipped file is written with one `info!`; unwritable
   directory or broken `.local` logs one `error!` and the embedded content serves.
 
@@ -384,10 +389,9 @@ git diff --stat src-tauri/module-arcs.txt
 
   Expected: the two `--write-baseline` runs exit 0 and each records exactly 1 module cycle with
   86 members (id `40d22fc71179d71f` at base); the comparison prints `SCC member sets identical`
-  and exits 0; `--emit-graph` exits 1 (cycles exist; only exit 3 means no graph);
-  `record:arcs` exits 0; the diff shows exactly one insertion, the line
-  `agentscommander_lib::config::settings -> agentscommander_lib::config::local_config_io`, which
-  this phase commits. Any other diff line or a `differ` verdict fails the gate.
+  and exits 0; `--emit-graph` exits 1 (cycles exist; only exit 3 means no graph); `record:arcs`
+  exits 0; the diff shows exactly one insertion, `agentscommander_lib::config::settings -> agentscommander_lib::config::local_config_io`,
+  which this phase commits. Any other diff line or a `differ` verdict fails the gate.
 
 ## Preserve
 

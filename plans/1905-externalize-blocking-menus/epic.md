@@ -1,6 +1,6 @@
 # Epic Plan #1905: externalize blocking-menu patterns into `settings-blocking-menus.json` with a `.local.json` overlay
 
-Author: ac-architect-v4, room-5, 2026-09-09 UTC. Full `code-implementation-workflow` path, Round 2 candidate.
+Author: ac-architect-v4, room-5, 2026-09-09 UTC. Full `code-implementation-workflow` path, Round 3 candidate.
 Status: READY_FOR_IMPLEMENTATION
 
 Issue: [mblua/AgentsCommander#1905](https://github.com/mblua/AgentsCommander/issues/1905)
@@ -61,14 +61,16 @@ each part pinned by a test that drives the real loader over a tempdir (phase 3):
 2. Write before strip: the `.local` file is published atomically before any array is set to
    `None`; every failure before that point returns with nothing stripped (D7).
 3. No clobber and no loss: an existing `byAgent[id]` wins; two agents sharing an id with
-   different arrays abort the export; explicit `[]` on a stem with shipped patterns is exported
-   (D7 steps 3 and 5).
+   different arrays or different commands abort the export; explicit `[]` on a stem with
+   shipped patterns is exported (D7 steps 3 and 5).
 4. State-keyed retry: the export runs while any `Some` array is on disk, so a save that fails
    after the `.local` write is completed at the next start, and a restart between the two writes
    finishes the job (D7, tests T11 and T12).
 5. Compatibility for what was not moved: the guard evaluates a still-present array first (D3
    layer 0, D12), so an aborted export or an overlay-owned array changes no behavior.
-6. Concurrency: stated in D13; no new lock is added because every interleaving converges.
+6. Concurrency: stated in D13. The loader that runs D7 also runs inside CLI processes (E13),
+   so no process-local lock could serialize it; no new lock is added because every
+   interleaving converges through the per-pid atomic writers and the settings file lock.
 
 Reversal is by hand and needs an older binary; phase 4 documents it.
 
@@ -90,7 +92,9 @@ every install carries a materialized array today, `[]` included for stems withou
 overlay owns `agents`). `docs/features/menu-guard.md:39` documents that a materialized `[]` "is
 indistinguishable on disk from 'I turned this off deliberately'" and calls that intentional.
 
-E3. Load-time call sites. GUI loader `load_settings_from_path` (`:2100`): `materialize` at `:2185`,
+E3. Load-time call sites. `load_settings()` (`:2084`) resolves the config path and calls
+`load_settings_from_path` (`:2100`, `pub(crate)`); the two are one loader, and E13 lists every
+process and thread that calls it. In that loader: `materialize` at `:2185`,
 `1757` at `:2189`, `repair_coding_agent_profiles_config` at `:2193`, then `needs_save` routes through
 `save_settings_to_path_preserving_project_paths_typed` (`:5075`, PRESERVE mode) and adopts the fresh
 decode (`settings = written`, `:2227`); a failed save is logged by `report_settings_save_error`
@@ -161,10 +165,21 @@ read-back); `:9694` `mod local_overlay_1737` with private helpers `base_fixture`
 with four numeric assertions (`:10887-10897`). `menu_guard/mod.rs:534` T11 replays a vt100 frame
 against the shipped codex entries. `tempfile` is a dev-dependency (`Cargo.toml:77`).
 
-E13. GUI loads of settings. `config::settings::load_settings()` runs at `lib.rs:2648` before the
-Tauri builder, then at `:2989`, `:3028`, `:3117`, `:3163` inside the synchronous `setup` body on
-the main thread, then from three commands after setup (`commands/config.rs:1811`, `:1827`,
-`:1923`). The first call runs before any other thread that loads settings exists.
+E13. Every caller of the loader that runs the migration block (`load_settings()`, E3), at base.
+GUI process, main thread: `lib.rs:2648` before the Tauri builder, then `:2989`, `:3028`, `:3117`,
+`:3163` inside the synchronous `setup` body. GUI process, other threads after setup (async
+commands and handlers): `commands/config.rs:1811`, `:1827`, `:1923`; `commands/window.rs:618`,
+`:933`; `phone/mailbox.rs:6857`, `:9362`; `config/teams.rs:1689`; `pty/container_backend.rs:3360`;
+`testability/ui_automation.rs:1131`. CLI processes (one process per verb, spawned by agents at any
+time): `cli/mod.rs:388` inside `validate_cli_token`, which every token-bearing verb runs (`send`,
+`list-peers-lean`, ...); `cli/send.rs:864`; `cli/list_peers.rs:865`, `:994`, `:1091`;
+`cli/close_session.rs:178`. Read-only loaders that never save: `lib.rs:2496` calls
+`load_settings_for_cli()` before `:2648`, and the CLI verbs also use `load_settings_for_cli` and
+`load_settings_for_cli_strict` elsewhere. So the GUI's first load has no in-process peer, but a
+CLI process can run the same loader at the same time; D13 is written for that premise. The
+settings save inside the loader (`save_settings_value`, `:4050`) takes `SettingsFileLock` (E10),
+writes `settings.json.<pid>.<op_id>.tmp` (`:4832`) and publishes by a retried rename
+(`replace_settings_file_atomic`, `:4897`, `:5027`).
 
 E14. Docs: `docs/features/menu-guard.md` (sections at `:25`, `:76`, `:102-121` claude example with
 its entry at `:113-118`, `:129`, `:137`, `:151`, `:160`, `:182`; ten `blockingMenus` mentions),
@@ -241,16 +256,21 @@ embedded content, never the disk copy. The refresh lives in `BlockingMenusStore:
 not in the settings loader, so a test that wants the file on disk builds the store explicitly.
 
 D6. **One parser for both files.** `parse_blocking_menus_file(&str) -> Result<BlockingMenusFile, String>`
-is the only way any `.local` text becomes a typed file: JSON parse into the typed struct, then the
-`schemaVersion == 1` check. The loader uses it (absent is normal and yields an empty layer; any
+is the only way any `.local` text becomes a typed file: JSON parse into a `serde_json::Value`,
+reject anything that is not `Value::Object` (serde-derived structs also accept a JSON array,
+because every field has a default, so `[1]` and `[]` would otherwise decode as an empty file),
+decode the object into the typed struct, then the `schemaVersion == 1` check. The loader uses it
+(absent is normal and yields an empty layer; any
 `Err`, or an unreadable file, logs once at error level and yields an empty layer for the session).
 The migration uses the same function on the raw text before merging and on the merged bytes before
 writing, so what the export writes is by construction what the runtime accepts (blocker A). AC never
 rewrites the `.local` file except in D7.
 
 D7. **One-shot migration, state-keyed and no-clobber.** `export_blocking_menus_to_local_file`
-runs in the GUI loader only, in the `[settings-migration]` block where `materialize` and `1757` run
-today (E3), and only when at least one agent has `blocking_menus == Some(_)`. Steps, in order:
+runs in `load_settings_from_path`, the loader behind `load_settings()`, which the GUI and the CLI
+verbs both call (E13), in the `[settings-migration]` block where `materialize` and `1757` run today
+(E3), and only when at least one agent has `blocking_menus == Some(_)`. The two `_for_cli` loaders
+never run it (D8). Steps, in order:
 
 1. If the overlay owns `agents` (E4), return `false` without touching anything. Those arrays keep
    applying through layer 0 (D12); one info line per such agent names the id and the `.local` file.
@@ -258,14 +278,19 @@ today (E3), and only when at least one agent has `blocking_menus == Some(_)`. St
    pre-#1757 pristine codex array compares equal to the shipped set, and so the in-memory arrays are
    exactly what the current binary would have served if a later step aborts.
 3. Collision check: over every agent with `Some`, group by id. Two agents sharing an id with
-   different arrays abort the export (one error line naming the id); nothing is stripped and layer 0
-   keeps serving both. Equal arrays under one id are one candidate.
+   different arrays, or with equal arrays but different commands (the pristine test of step 5
+   depends on the command, so one `byAgent[id]` row cannot serve both), abort the export (one
+   error line naming the id); nothing is stripped and layer 0 keeps serving both. Equal arrays
+   under one id and one command are one candidate.
 4. Read the `.local` file. Absent means an empty object. Present: run `parse_blocking_menus_file`
    on the complete text; any `Err` (not JSON, not an object, wrong `schemaVersion`, wrong type for
    `note`, `byCommand` or `byAgent`, or an unreadable file) aborts with nothing stripped.
 5. Candidates: for each id from step 3, if `array == default_blocking_menus_for_command(command)`
-   the array is pristine and produces no entry; otherwise `byAgent[id] = array`, verbatim, `Invalid`
-   entries included. `[]` on `pi` or `codex` differs from the shipped set and is exported. `[]` on a
+   the array is pristine and produces no entry; otherwise `byAgent[id] = array` through the typed
+   round-trip (`serde_json::to_value(&entries)`): a `Valid` entry lands in AC's canonical form
+   (`enabled` written explicitly, unknown keys inside the entry dropped, exactly as every base
+   save of `settings.json` already drops them), an `Invalid` entry lands verbatim. `[]` on `pi`
+   or `codex` differs from the shipped set and is exported. `[]` on a
    stem whose shipped set is `[]` (claude, gemini, every other stem) is pristine and is dropped: it
    is the byte shape `materialize_blocking_menus` wrote on every such agent on every install (E2),
    the page documents it as indistinguishable from a deliberate off, and exporting it would freeze
@@ -318,29 +343,55 @@ in force. Phase 3 pins the overlay case and both abort cases with real-loader te
 resolved entries, not a log line.
 
 D13. **Concurrency of the migration (blocker D).** The transaction (read `settings.json`, merge and
-publish `.local`, strip, save) is not held under one lock, and no lock is added. It does not need
-one: the first GUI load (`lib.rs:2648`, E13) runs before any other settings-loading thread or
-command exists, so on the upgrade start it has no peer. If its save fails, later loads retry. A
-retry that overlaps a command's load computes the same candidates from the same bytes, finds them
-present in `.local` (no write) or writes identical content (the E9 process-local mutex serializes the
-two writers), and strips through the `SettingsFileLock`. A CLI save that read the keys before the
-GUI strip and wrote after it puts the keys back; the next GUI load re-exports (existing entries win,
-nothing is lost) and strips again. Every interleaving converges to the stripped `settings.json`
-with the `.local` content of the first successful export.
+publish `.local`, strip, save) is not held under one lock, and no lock is added. Premise: the
+loader that runs D7 also runs inside every CLI process (E13), so on the upgrade start an agent's
+`send` in a second process can run D7 at the same time as the GUI's first load, and no
+process-local lock can serialize that. Within one process the E9 mutex serializes `.local`
+writers; across processes the mechanism is different and is what makes every interleaving
+converge:
+
+1. Both processes compute the same candidates from the same `settings.json` bytes, so the
+   `.local` content they would write is identical.
+2. Each `.local` write goes through `write_file_atomic`: a per-pid temp file
+   (`.<name>.<pid>.tmp`, E9) and publication by rename, so two writers never share a temp file
+   and the published file is always one writer's complete bytes. Whichever lands second writes
+   the same bytes.
+3. A process that reads `.local` after the other's publish finds every id present, inserts
+   nothing, and goes on to strip (D7 step 6 and 8).
+4. The strip is the loader's settings save under `SettingsFileLock` (E10, E13): a save that
+   cannot take the lock within 2 seconds fails, is logged, and leaves the arrays on disk; on
+   Windows a rename over a `settings.json` that another process holds open fails after the
+   bounded #537-style retry (`replace_settings_file_atomic`) with the same result. In both cases
+   the `.local` write has already landed, so the next load inserts nothing and strips again.
+5. A CLI save that read the keys before another process's strip and wrote after it puts the keys
+   back; the next load re-exports (existing `byAgent` entries win, nothing is lost) and strips
+   again.
+
+Every interleaving converges to the stripped `settings.json` with the `.local` content of the
+first successful export. Test T11 pins step 4 and test T12 pins the intermediate state.
 
 ## 6. Scope, files, and compatibility
 
 Phase 1 (Rust store, 4 files plus the arc record): `src-tauri/resources/blocking-menus/settings-blocking-menus.json`
 (new), `src-tauri/src/config/settings.rs`, `src-tauri/src/config/instance_artifacts.rs`,
 `src-tauri/src/config/instance_gitignore.rs`, plus the regenerated `src-tauri/module-arcs.txt`
-(section 7). Nothing in production calls the store yet; `materialize` still runs; behavior is base.
+(section 7). Nothing in production calls the store yet and `materialize` still runs, so guard
+evaluation is base; the only visible change is that every instance `.gitignore` gains the two
+registry rows' lines at startup (D11).
 Phase 2 (Rust guard, 2 files): `src-tauri/src/pty/menu_guard/mod.rs`, `src-tauri/src/lib.rs`. The
-guard reads layer 0 first, and every agent still carries a materialized array, so behavior is base.
-Phase 3 (Rust migration, 1 file): `src-tauri/src/config/settings.rs`.
+guard reads layer 0 first, and every agent still carries a materialized array, so guard evaluation
+is base; the visible change is that `settings-blocking-menus.json` is written at GUI startup (D5).
+Phase 3 (Rust migration, 1 file): `src-tauri/src/config/settings.rs`. The only behavior change.
 Phase 4 (docs, 3 files): `docs/features/menu-guard.md`, `docs/reference/settings.md`,
 `docs/reference/directory-layout.md`.
 
 The four phases ship in one PR; each is a separate commit that leaves `main` green on its own.
+
+Phase 2 is carried over byte-identical from round 2 (both Rust reviewers voted it executable).
+Its test T5a uses a test-only `CUSTOM` entry whose pattern is `^\s*Do you trust the files in this
+folder\?`; phase 4 AC5 refers to the page bytes at `docs/features/menu-guard.md:113-118`, whose
+pattern is `^[^A-Za-z0-9]*Do you trust the files in this folder\?`. The two are independent: the
+test's pattern only has to match its own `CLAUDE_ROW`, and no test binds it to the page.
 
 Compatibility:
 

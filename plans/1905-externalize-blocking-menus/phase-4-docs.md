@@ -36,23 +36,35 @@ from the old place, and how to undo it.
   `settings.local.json`), then `.local` `byAgent[id]`, then `.local` `byCommand[stem]`, then the
   shipped `byCommand[stem]`, then nothing.
 - What ships: the same three patterns as today (`pi` one, `codex` two), now under `byCommand` in
-  the shipped file. Every other stem detects nothing until the user adds a pattern.
-- Turning off: `enabled: false` on an entry in a `.local` copy of the array; `"byAgent": {"<id>": []}`
-  or `"byCommand": {"<stem>": []}` in `.local` for one agent or one command; `menuGuardEnabled`
-  in `settings.json` (overlay-able) for everything. An entry can now be removed durably by owning
-  the array in `.local` without it; the hooks-review entry is no longer special.
+  the shipped file. For every other stem the shipped defaults detect nothing; a legacy array still
+  on the agent or a `.local` entry can still apply.
+- Turning off, each form effective only when no higher layer supplies an array for that agent
+  (a legacy array still on the agent wins over `.local`): `enabled: false` on an entry in a
+  `.local` copy of the array; `"byAgent": {"<id>": []}` or `"byCommand": {"<stem>": []}` in
+  `.local` for one agent or one command; `menuGuardEnabled` in `settings.json` (overlay-able) for
+  everything. An entry can now be removed durably by owning the array in `.local` without it; the
+  hooks-review entry is no longer special.
+- Replace-whole has a cost the page must state: a `byAgent.<id>` row in `.local` (written by hand
+  or by the migration) freezes that agent against every future shipped pattern for its stem,
+  because the row replaces the shipped array instead of adding to it. A user who wants shipped
+  updates plus one extra pattern keeps the shipped entries in the row and revisits it after upgrades.
+- The durable off form for a stem that ships nothing (claude, gemini, ...) is now
+  `"byAgent": {"<id>": []}` in `.local`; a `[]` left in `settings.json` for such a stem is treated
+  as AC's own materialized default and is dropped by the migration.
 - Migration: on the first start after upgrade, every `blockingMenus` array still in
   `settings.json` is compared with the shipped set for its stem. Equal arrays are dropped, and so
   is `[]` on a stem that ships nothing (that is what AC itself wrote there). Every other array,
   including `[]` on `pi` or `codex`, a disabled entry, a custom entry, an entry AC cannot read, is
-  copied verbatim into `.local` under `byAgent.<id>`, and the key leaves `settings.json`. An id
-  that already exists in `.local` is kept, not overwritten. The `.local` file is written before
+  copied into `.local` under `byAgent.<id>` (readable entries in AC's own form, with `enabled`
+  written out; unreadable entries verbatim), and the key leaves `settings.json`. An id that
+  already exists in `.local` is kept, not overwritten. The `.local` file is written before
   `settings.json` is touched.
 - Migration exceptions, each leaving the arrays in place and applying as before: `.local` exists
   but does not parse or has the wrong shape; `.local` cannot be written; two agents share an id
-  with different arrays; the `agents` array is owned by `settings.local.json`. The log says which.
-  The migration retries at every start until the cause is fixed; for an overlay-owned array, the
-  fix is to move the entries into `.local` by hand and delete them from the overlay.
+  with different arrays or different commands; the `agents` array is owned by
+  `settings.local.json`. The log says which. The migration retries at every start (the GUI's and
+  every CLI verb's) until the cause is fixed; for an overlay-owned array, the fix is to move the
+  entries into `.local` by hand and delete those agents' `blockingMenus` keys from the overlay.
 - Undo, which needs an older binary: with AC closed, copy each `byAgent.<id>` array from `.local`
   back under that agent as `blockingMenus` in `settings.json`, delete both new files, and run the
   older version; starting the new version instead migrates again at once. Command-wide entries
@@ -80,7 +92,10 @@ from the old place, and how to undo it.
 - "Turning the guard off" (`:137-149`): rewrite the table to the three `.local` forms plus
   `menuGuardEnabled`; delete the paragraph that says the hooks-review entry cannot be removed (`:149`).
 - Add "## Upgrading from a `blockingMenus` array" with the migration facts, the exceptions, and the
-  undo recipe. This section is the one place on the page that may instruct writing `blockingMenus`.
+  undo recipe. Insertion point: immediately after the end of "Turning the guard off" (its last
+  paragraph is `:149` at base) and before `## Settings` (`:151`), so that AC2's awk range
+  `/^## Upgrading from a/,/^## Settings/` is bounded. This section is the one place on the page
+  that may instruct writing `blockingMenus`.
 - "Settings" table (`:151-158`): `blockingMenus` row becomes "legacy; moved to
   `settings-blocking-menus.local.json` on the first start after upgrade; while still present it
   applies as before"; add rows for the two files pointing at the reference page.
@@ -107,7 +122,7 @@ After the `settings.pre-384-v1.json` row (`:81`) add:
 | Entry | What it is | Source |
 |---|---|---|
 | `settings-blocking-menus.json` | Blocking-menu patterns AC ships; rewritten at start when the content differs from the binary's | `config/settings.rs` |
-| `settings-blocking-menus.local.json` | User-owned blocking-menu patterns; read at start, written once by the #1905 migration | `config/settings.rs` |
+| `settings-blocking-menus.local.json` | User-owned blocking-menu patterns; read at start, written by AC only when the #1905 migration succeeds (once on a normal upgrade; again after a failed or retried migration, never overwriting an existing entry) | `config/settings.rs` |
 
 ## Verification (repository root)
 
