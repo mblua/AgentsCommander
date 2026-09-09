@@ -2012,9 +2012,14 @@ pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Resul
     // Pi selectors are user-authored configuration and intentionally outrank AC
     // automation. Canonical Pi identity must win before the independent legacy
     // provider-token scans below inspect model or provider option values.
-    if CodingAgentKind::detect(&normalized.shell, &normalized.shell_args)
-        == Some(CodingAgentKind::Pi)
-    {
+    // #1873 - the same holds for a directly configured Muse: any configured
+    // argument (resume, --last, UUID, prompt, --workspace ...) is user-authored,
+    // suppresses AC injection, and is neither validated nor rewritten here. A
+    // wrapper (`env muse ...`) is not Muse and keeps the legacy scans below.
+    if matches!(
+        CodingAgentKind::detect(&normalized.shell, &normalized.shell_args),
+        Some(CodingAgentKind::Pi | CodingAgentKind::Muse)
+    ) {
         return Ok(());
     }
 
@@ -7130,6 +7135,61 @@ mod tests {
                     "provider={provider:?} selector={selector:?}"
                 );
             }
+        }
+    }
+
+    /// #1873 - a directly configured Muse recipe is user-authored: a Codex-looking
+    /// value plus manual `resume --last` passes, and the legacy Codex scan never
+    /// runs. Base recipe and composed profile cell behave the same.
+    #[test]
+    fn validate_agent_commands_allows_direct_muse_arguments_with_legacy_provider_collision() {
+        for command in [
+            "muse",
+            "muse --workspace /tmp/codex resume --last",
+            "/opt/muse/bin/muse --workspace /tmp/codex resume --last",
+            "muse resume 0f3d2a5c-9c1e-4b7e-8f6a-2b1c3d4e5f60",
+            "muse --no-session-log --continue -c",
+            "muse --model claude-sonnet --provider agy --continue",
+        ] {
+            let settings = settings_with_agents(&[("Muse", command)]);
+            assert!(
+                validate_agent_commands(&settings).is_ok(),
+                "command={command:?}"
+            );
+        }
+        let mut settings = settings_with_agents(&[("Muse", "muse")]);
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("agent-0".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: "--workspace /tmp/codex resume --last".to_string(),
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+        assert!(validate_agent_commands(&settings).is_ok());
+    }
+
+    /// #1873 - the same token sequence behind an `env` wrapper is not Muse, so
+    /// the pre-existing Codex manual-resume rejection still fires before spawn.
+    #[test]
+    fn validate_agent_commands_rejects_wrapped_muse_collision_before_spawn() {
+        for command in [
+            "env muse --workspace /tmp/codex resume --last",
+            "cmd /C muse --workspace /tmp/codex resume --last",
+        ] {
+            let settings = settings_with_agents(&[("Muse", command)]);
+            let err = validate_agent_commands(&settings).unwrap_err();
+            assert_eq!(
+                err,
+                "Agent \"Muse\": Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically",
+                "command={command:?}"
+            );
         }
     }
 

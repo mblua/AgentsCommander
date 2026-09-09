@@ -84,6 +84,11 @@ pub(crate) fn derive_reader(
         }
         Some(CodingAgentKind::Antigravity) => Ok(None),
         Some(CodingAgentKind::Pi) => Ok(None),
+        // #1873 - Muse has no reader and no PTY fallback contract; every caller
+        // returns before any bridge or filter is created.
+        Some(CodingAgentKind::Muse) => {
+            Err("Telegram bridge does not support Muse sessions".to_string())
+        }
         None => Ok(None), // No agent detected - caller falls back to PTY mode.
     }
 }
@@ -654,6 +659,40 @@ mod tests {
                 None,
             );
             assert!(result.unwrap().is_none(), "backend={backend:?}");
+        }
+    }
+
+    /// #1873 - Muse is rejected with one exact message on both backends, before
+    /// `TelegramBridgeManager::attach` could create a bridge or filter.
+    #[test]
+    fn derive_reader_rejects_muse_for_all_backends_before_bridge_creation() {
+        for backend in [
+            SessionBackendKind::LocalProcess,
+            SessionBackendKind::ContainerTransport,
+        ] {
+            for (shell, args) in [
+                ("muse", Vec::<String>::new()),
+                (
+                    "/opt/muse/bin/muse",
+                    vec!["resume".to_string(), "--last".to_string()],
+                ),
+            ] {
+                let result = derive_reader(
+                    shell,
+                    &args,
+                    "/srv/work/repo",
+                    backend,
+                    Some(CodingAgentKind::Muse),
+                    None,
+                    None,
+                );
+                let err = result.expect_err("Muse must be rejected");
+                assert_eq!(
+                    err,
+                    "Telegram bridge does not support Muse sessions".to_string(),
+                    "backend={backend:?} shell={shell:?}"
+                );
+            }
         }
     }
 
