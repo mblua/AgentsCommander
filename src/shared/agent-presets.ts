@@ -11,9 +11,9 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
-    // #1318/#1325/#1546 - mirror of the embedded default: claude, pi, codex,
-    // hermes, opencode, and antigravity ship the update command; cursor ships
-    // none; every entry defaults autoUpdate to false.
+    // #1318/#1325/#1546/#1861 - mirror of the embedded default: claude, pi,
+    // codex, hermes, opencode, and antigravity ship the update command; cursor
+    // and muse ship none; every entry defaults autoUpdate to false.
     updateCommands: ["claude --update"],
     autoUpdate: false,
   },
@@ -94,6 +94,18 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     removable: true,
     // #1482/#1546 - mirror of the embedded default: Antigravity ships the verified 'agy update' command (autoUpdate stays false).
     updateCommands: ["agy update"],
+    autoUpdate: false,
+  },
+  {
+    key: "muse",
+    label: "Muse Code",
+    description: "Meta terminal coding agent (beta; macOS/Linux host only)",
+    color: "#0668E1",
+    command: "muse",
+    envs: [],
+    isolatedHome: false,
+    removable: true,
+    updateCommands: [],
     autoUpdate: false,
   },
 ];

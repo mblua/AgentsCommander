@@ -79,4 +79,37 @@ describe("rootAgentCodingAgentAction", () => {
       skipAutoResume: false,
     });
   });
+
+  // #1861 - Muse rides the same provider-neutral mapping. The frontend never
+  // invents Muse argv; the backend (#1873) maps the intent to a fresh `muse`
+  // or `muse resume --last`.
+  describe("Muse Code (#1861)", () => {
+    it("creates a new root with muse when no root exists (fresh create path)", () => {
+      expect(rootAgentCodingAgentAction(undefined, "muse")).toStrictEqual({
+        kind: "create",
+        agentId: "muse",
+      });
+    });
+
+    it("restarts a live root with skipAutoResume OMITTED: fresh replacement, never live reuse", () => {
+      const live = rootAgentCodingAgentAction(mkRoot("running"), "muse");
+      expect(live).toStrictEqual({ kind: "restart", id: "root-id", agentId: "muse" });
+      // Equality alone is not omission proof: the key must not exist at all, so
+      // it serializes as null and the backend defaults null to fresh.
+      expect(live).not.toHaveProperty("skipAutoResume");
+      expect("skipAutoResume" in live).toBe(false);
+    });
+
+    it("restarts a dormant root with an own skipAutoResume:false so the backend may resume", () => {
+      const dormant = rootAgentCodingAgentAction(mkRoot({ exited: 0 }), "muse");
+      expect(dormant).toStrictEqual({
+        kind: "restart",
+        id: "root-id",
+        agentId: "muse",
+        skipAutoResume: false,
+      });
+      expect(Object.prototype.hasOwnProperty.call(dormant, "skipAutoResume")).toBe(true);
+      expect(dormant).toHaveProperty("skipAutoResume", false);
+    });
+  });
 });

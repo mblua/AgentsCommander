@@ -53,7 +53,7 @@ interface CatalogEntry {
   updateCommands: string[];
 }
 
-/** The embedded default catalog (plan 3.2): seven entries, cursor ships no update command. */
+/** The embedded default catalog (plan 3.2, #1861): eight entries; cursor and muse ship no update command. */
 const DEFAULT_CATALOG: CatalogEntry[] = [
   { key: "claude", label: "Claude Code", command: "claude", color: "#d97706", updateCommands: ["claude --update"] },
   { key: "codex", label: "Codex", command: "codex", color: "#10b981", updateCommands: ["codex update"] },
@@ -62,6 +62,7 @@ const DEFAULT_CATALOG: CatalogEntry[] = [
   { key: "pi", label: "Pi", command: "pi", color: "#ec4899", updateCommands: ["pi update"] },
   { key: "opencode", label: "OpenCode", command: "opencode", color: "#64748b", updateCommands: ["opencode upgrade"] },
   { key: "antigravity", label: "Antigravity", command: "agy", color: "#f97316", updateCommands: ["agy update"] },
+  { key: "muse", label: "Muse Code", command: "muse", color: "#0668E1", updateCommands: [] },
 ];
 
 /**
@@ -130,7 +131,7 @@ function node(command: string, installBefore?: InstallState): AgentUpdateNode {
 const NO_LIVE = { running: [] as AgentUpdateCommandRef[], results: [] as AgentUpdateResult[] };
 
 describe("deriveAutoUpdateRows and its cell derivations (#1551)", () => {
-  it("keeps catalog order, keeps every update-capable row and never lists cursor", () => {
+  it("keeps catalog order, keeps every update-capable row and never lists cursor or muse", () => {
     const views = deriveAutoUpdateRows(overviewRows(DEFAULT_CATALOG), {
       autoUpdateByCommand: {},
       registeredCommands: [],
@@ -145,6 +146,8 @@ describe("deriveAutoUpdateRows and its cell derivations (#1551)", () => {
       "antigravity",
     ]);
     expect(views.some((view) => view.key === "cursor" || view.command === "agent")).toBe(false);
+    // #1861 - Muse ships an empty update sequence, so it is excluded separately from cursor.
+    expect(views.some((view) => view.key === "muse" || view.command === "muse")).toBe(false);
     expect(views[1]).toMatchObject({ key: "codex", label: "Codex", command: "codex", color: "#10b981" });
   });
 
@@ -161,6 +164,7 @@ describe("deriveAutoUpdateRows and its cell derivations (#1551)", () => {
     const piRows = views.filter((view) => view.command === "pi");
     expect(piRows.map((view) => view.key)).toEqual(["pi", "pi-alt"]);
     expect(piRows.map((view) => view.installed.label)).toEqual(["0.84.3", "0.84.3"]);
+    // Six updateable defaults plus pi-alt: this is not the built-in catalog count (#1861).
     expect(views).toHaveLength(7);
   });
 
