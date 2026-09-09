@@ -269,11 +269,16 @@ Both are manual-only (no UI) and are read from the in-memory settings, so an edi
 | `railCollapsedProjects` | string[] | `[]` | Rail project sections the user collapsed by clicking their header. Entries are frontend-normalized project paths (lowercase, forward slashes, no trailing slash). Written only by the dedicated rail collapse action; whole-settings writers restore it from live memory. |
 | `railFavoritesCollapsed` | bool | `false` | Collapsed state of the rail's cross-project Favorites section. Same protection as `railCollapsedProjects`. |
 
-### Orchestrator wake state
+### On app restart
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `restoreCoordinatorWakeState` | bool | `false` | On app start, wake orchestrators whose PTY was awake at shutdown. Non-orchestrators always stay asleep until clicked. |
+| `restoreCoordinatorWakeState` | bool | `false` | On app start, wake orchestrators whose PTY was awake at shutdown. Non-orchestrators stay asleep until clicked, unless `restartResumeWakeWorkingAgents` is also on. |
+| `restartResumeWakeWorkingAgents` | bool | `false` | On app start, also wake non-orchestrator replicas whose last recorded state was working (`status` Running or Active with `waitingForInput` false in `sessions.json`). Off by default, so the standing policy that non-orchestrators stay asleep until clicked is unchanged unless you opt in. |
+| `restartResumeOrchestratorPrompt` | string | `AgentsCommander was restarted. Continue with the work that was in flight.` | Typed into an orchestrator that was working at shutdown, once its PTY is back and its prompt is up. Empty means type nothing. Has no effect unless `restoreCoordinatorWakeState` is on, because a sleeping orchestrator has no prompt to type into. |
+| `restartResumeAgentPrompt` | string | `.` | Typed into a non-orchestrator replica that was working at shutdown, once its PTY is back and its prompt is up. Empty means type nothing. Has no effect unless `restartResumeWakeWorkingAgents` is on. |
+
+Each checkbox tries to bring back one class of session, and the matching text is what AgentsCommander tries to type into the ones that were mid-task. A text setting does nothing on its own: if the checkbox for that class is off, nothing in that class is woken and nothing is typed. A session that was idle at shutdown is never typed into: nudging an agent that was not mid-task starts work nobody asked for. A session you restarted, or whose conversation you cleared from the phone, is never typed into, even when it comes back. Text is typed at most once per app start, and only once the agent is back at its prompt and has actually printed something; an agent that never gets there within the time AgentsCommander allows is left alone rather than typed into blind.
 
 ### Session auto-close
 
