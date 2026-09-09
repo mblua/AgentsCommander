@@ -63,10 +63,43 @@ function rel(globKey: string): string {
   return normalized;
 }
 
-/** Every module specifier the file names, from the syntax tree. */
+/** Strip the trivia wrappers an expression can carry without changing what it
+ *  names: `(x)`, `x as T`, `<T>x`, `x satisfies T`, `x!`. Loops so a wrapper
+ *  around a wrapper is stripped too. */
+function unwrapExpression(node: ts.Expression): ts.Expression {
+  let current = node;
+  for (;;) {
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current) ||
+      ts.isSatisfiesExpression(current) ||
+      ts.isNonNullExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    return current;
+  }
+}
+
+/** Every module specifier the file names, from the syntax tree. Throws, so the
+ *  assertion fails loudly instead of the allowlist passing on a partial tree,
+ *  when the source has a parse error or names a dynamic import whose argument
+ *  is not a string literal after unwrapping (an identifier, a template with
+ *  substitutions, or a wrapper kind nobody has listed yet). */
 export function specifiersOf(source: string, fileName = "probe.tsx"): string[] {
   const kind = fileName.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, false, kind);
+  const diagnostics =
+    (file as unknown as { parseDiagnostics?: ts.DiagnosticWithLocation[] }).parseDiagnostics ?? [];
+  if (diagnostics.length > 0) {
+    const first = diagnostics[0];
+    throw new Error(
+      `${fileName}: parse error at offset ${first.start}: ` +
+        ts.flattenDiagnosticMessageText(first.messageText, "\n"),
+    );
+  }
   const found = new Set<string>();
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
@@ -91,11 +124,18 @@ export function specifiersOf(source: string, fileName = "probe.tsx"): string[] {
       found.add(node.argument.literal.text);
     } else if (
       ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length > 0 &&
-      ts.isStringLiteralLike(node.arguments[0])
+      node.expression.kind === ts.SyntaxKind.ImportKeyword
     ) {
-      found.add(node.arguments[0].text);
+      const argument = node.arguments.length > 0 ? unwrapExpression(node.arguments[0]) : undefined;
+      if (argument !== undefined && ts.isStringLiteralLike(argument)) {
+        found.add(argument.text);
+      } else {
+        // Unclassified dependency: never drop it silently.
+        throw new Error(
+          `${fileName}: dynamic import at offset ${node.getStart(file)} has no string-literal ` +
+            `specifier (${argument === undefined ? "no argument" : ts.SyntaxKind[argument.kind]})`,
+        );
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -176,10 +216,29 @@ describe("#1871 context-menu import boundary", () => {
       ["a re-export", `export { s } from "${STORE}";`],
       ["a star re-export", `export * from "${STORE}";`],
       ["a dynamic import", `const p = () => import("${STORE}");`],
+      ["a dynamic import with a parenthesised argument", `const p = () => import(("${STORE}"));`],
+      ["a dynamic import with an `as` cast", `const p = () => import("${STORE}" as string);`],
+      ["a dynamic import with a `satisfies` wrapper", `const p = () => import("${STORE}" satisfies string);`],
+      ["a dynamic import with a non-null wrapper", `const p = () => import("${STORE}"!);`],
+      ["a dynamic import with nested wrappers", `const p = () => import((("${STORE}" as string)!));`],
       ["a typeof import type query", `type T = typeof import("${STORE}");`],
       ["an import-equals of a require", `import s = require("${STORE}");`],
     ])("collects %s", (_name, line) => {
       expect(specifiersOf(BASE + line + "\n")).toEqual(["../../stores/sessions", "./a"]);
+    });
+
+    // Loud failure, never a silent drop: a partial tree or an unclassified
+    // dynamic import throws, so assertion 1 cannot pass on it.
+    it("throws on a source with a parse error instead of walking the recovery tree", () => {
+      expect(() => specifiersOf("const x = ;\n")).toThrow(/parse error/);
+    });
+
+    it.each([
+      ["an identifier argument", `const p = (m: string) => import(m);`],
+      ["a template with substitutions", "const p = (m: string) => import(`./${m}`);"],
+      ["no argument", `const p = () => import();`],
+    ])("throws on a dynamic import with %s", (_name, line) => {
+      expect(() => specifiersOf(BASE + line + "\n")).toThrow(/no string-literal specifier/);
     });
   });
 });
