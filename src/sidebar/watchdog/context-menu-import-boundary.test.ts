@@ -6,21 +6,20 @@
 // form ("no file matches these forbidden specifiers") is deliberately not used
 // anywhere in this file: a violations list that comes out empty passes for any
 // specifier nobody thought to forbid.
+//
+// Extraction is PARSER-BACKED, not a regex over text. Two regex generations
+// were defeated by legal syntax (an import after `do {} while(false)`, comment
+// trivia between `import` and its specifier) and by a false boundary (a `;`
+// inside a string literal). A pattern over raw text cannot tell a declaration
+// from a comment or a string in general; the TypeScript parser can, and it is
+// already a devDependency (`npm run typecheck`). Collected, per file: import
+// declarations (`import x from`, `import type`, bare `import "x"`),
+// re-exports with a specifier (`export ... from`), `import x = require("x")`,
+// `typeof import("x")` type queries, and dynamic `import("x")` calls with a
+// literal argument. Comments and string contents are never specifiers.
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-// A declaration import is collected at any STATEMENT BOUNDARY, not only at line
-// start: after `;`, after `}`, after a closing block comment, at file start or at
-// line start. Anchoring on `^` alone let `const x = 1; import "store";` and
-// `/* c */ import "store";` through. Over-collection was checked against the
-// green tree before widening: the boundary alternation changes no specifier set
-// in any of the 351 files under src/, so `import` inside a string or a comment
-// in a real product file is not picked up.
-const IMPORT_RE =
-  /(?:^|(?<=[;}])|(?<=\*\/))\s*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']/gm;
-const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*["']([^"']+)["']/g;
-// A bare side-effect import (`import "x";`) has no `from`, so IMPORT_RE cannot
-// see it; without this a forbidden store dependency passes the layering proof.
-const SIDE_EFFECT_IMPORT_RE = /(?:^|(?<=[;}])|(?<=\*\/))\s*import\s*["']([^"']+)["']\s*;?/gm;
 const SELF = "sidebar/watchdog/context-menu-import-boundary.test.ts";
 const SOURCES = import.meta.glob<string>("../../**/*.{ts,tsx}", {
   query: "?raw",
@@ -64,11 +63,43 @@ function rel(globKey: string): string {
   return normalized;
 }
 
-function specifiersOf(source: string): string[] {
+/** Every module specifier the file names, from the syntax tree. */
+export function specifiersOf(source: string, fileName = "probe.tsx"): string[] {
+  const kind = fileName.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, false, kind);
   const found = new Set<string>();
-  for (const match of source.matchAll(IMPORT_RE)) found.add(match[1]);
-  for (const match of source.matchAll(DYNAMIC_IMPORT_RE)) found.add(match[1]);
-  for (const match of source.matchAll(SIDE_EFFECT_IMPORT_RE)) found.add(match[1]);
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      found.add(node.moduleSpecifier.text);
+    } else if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier !== undefined &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      found.add(node.moduleSpecifier.text);
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      ts.isStringLiteral(node.moduleReference.expression)
+    ) {
+      found.add(node.moduleReference.expression.text);
+    } else if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteral(node.argument.literal)
+    ) {
+      found.add(node.argument.literal.text);
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length > 0 &&
+      ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      found.add(node.arguments[0].text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
   return Array.from(found).sort();
 }
 
@@ -89,7 +120,7 @@ describe("#1871 context-menu import boundary", () => {
       if (relativeFile === SELF) continue;
       if (!relativeFile.startsWith(CONTEXT_MENU_DIR)) continue;
       if (isTestFile(relativeFile)) continue;
-      actual[relativeFile] = specifiersOf(source);
+      actual[relativeFile] = specifiersOf(source, relativeFile);
     }
 
     const sortedActual = Object.fromEntries(
@@ -110,10 +141,45 @@ describe("#1871 context-menu import boundary", () => {
     for (const [file, source] of Object.entries(SOURCES)) {
       const relativeFile = rel(file);
       if (relativeFile === SELF) continue;
-      for (const specifier of specifiersOf(source)) {
+      for (const specifier of specifiersOf(source, relativeFile)) {
         if (endsWithContextMenuSurface(specifier)) importers.add(relativeFile);
       }
     }
     expect(Array.from(importers).sort()).toEqual(ALLOWED_SURFACE_IMPORTERS.slice().sort());
+  });
+
+  // The extractor's own contract, as fixtures. These are cases, not controls:
+  // the false-positive rows prove that a `;` or an `import` inside a string or
+  // a comment does NOT change the collected set, which is what keeps correct
+  // code green; the declaration rows prove every legal placement is collected.
+  describe("extraction distinguishes declarations from comments and strings", () => {
+    const BASE = 'import { a } from "./a";\n';
+    const STORE = "../../stores/sessions";
+
+    it.each([
+      ["a string literal containing `; import \"...\";`", `const example = '; import "${STORE}";';`],
+      ["a line comment", `// import "${STORE}";`],
+      ["a block comment", `/* import "${STORE}"; */`],
+      ["a template literal", "const t = `}\nimport \"" + STORE + "\";`;"],
+    ])("does not collect from %s", (_name, line) => {
+      expect(specifiersOf(BASE + line + "\n")).toEqual(specifiersOf(BASE));
+      expect(specifiersOf(BASE + line + "\n")).toEqual(["./a"]);
+    });
+
+    it.each([
+      ["a bare side-effect import at line start", `import "${STORE}";`],
+      ["a side-effect import after a statement on the same line", `const x = 1; import "${STORE}";`],
+      ["a side-effect import after a block comment", `/* review */ import "${STORE}";`],
+      ["an import after do-while ASI", `do {} while(false) import "${STORE}";`],
+      ["comment trivia between import and its specifier", `import /* comment */ "${STORE}";`],
+      ["a type-only import after a statement", `const x = 1; import type { s } from "${STORE}";`],
+      ["a re-export", `export { s } from "${STORE}";`],
+      ["a star re-export", `export * from "${STORE}";`],
+      ["a dynamic import", `const p = () => import("${STORE}");`],
+      ["a typeof import type query", `type T = typeof import("${STORE}");`],
+      ["an import-equals of a require", `import s = require("${STORE}");`],
+    ])("collects %s", (_name, line) => {
+      expect(specifiersOf(BASE + line + "\n")).toEqual(["../../stores/sessions", "./a"]);
+    });
   });
 });
