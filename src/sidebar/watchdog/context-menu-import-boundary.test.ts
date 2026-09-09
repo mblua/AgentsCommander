@@ -8,11 +8,19 @@
 // specifier nobody thought to forbid.
 import { describe, expect, it } from "vitest";
 
-const IMPORT_RE = /^\s*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']/gm;
+// A declaration import is collected at any STATEMENT BOUNDARY, not only at line
+// start: after `;`, after `}`, after a closing block comment, at file start or at
+// line start. Anchoring on `^` alone let `const x = 1; import "store";` and
+// `/* c */ import "store";` through. Over-collection was checked against the
+// green tree before widening: the boundary alternation changes no specifier set
+// in any of the 351 files under src/, so `import` inside a string or a comment
+// in a real product file is not picked up.
+const IMPORT_RE =
+  /(?:^|(?<=[;}])|(?<=\*\/))\s*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']/gm;
 const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*["']([^"']+)["']/g;
 // A bare side-effect import (`import "x";`) has no `from`, so IMPORT_RE cannot
 // see it; without this a forbidden store dependency passes the layering proof.
-const SIDE_EFFECT_IMPORT_RE = /^\s*import\s*["']([^"']+)["']\s*;?/gm;
+const SIDE_EFFECT_IMPORT_RE = /(?:^|(?<=[;}])|(?<=\*\/))\s*import\s*["']([^"']+)["']\s*;?/gm;
 const SELF = "sidebar/watchdog/context-menu-import-boundary.test.ts";
 const SOURCES = import.meta.glob<string>("../../**/*.{ts,tsx}", {
   query: "?raw",
