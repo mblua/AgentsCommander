@@ -1,6 +1,20 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
+    }
+    command
+}
+
+fn config_dir_for_bin(bin: &Path) -> PathBuf {
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    bin.parent().expect("bin parent").join(format!(".{stem}"))
+}
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -37,7 +51,10 @@ fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
 }
 
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
-    let out = Command::new(bin).args(args).output().expect("spawn binary");
+    let out = command_for_binary(bin)
+        .args(args)
+        .output()
+        .expect("spawn binary");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -46,7 +63,7 @@ fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
 }
 
 fn run_with_env(bin: &Path, env_value: &str) -> (Option<i32>, String, String) {
-    let out = Command::new(bin)
+    let out = command_for_binary(bin)
         .env("AC_TEST_WINDOW_PLACEMENT", env_value)
         .output()
         .expect("spawn binary");

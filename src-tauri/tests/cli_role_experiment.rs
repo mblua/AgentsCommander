@@ -5,6 +5,15 @@ use std::process::Command;
 
 const FAKE_EXECUTOR_TEST_ENV: &str = "AGENTSCOMMANDER_ROLE_EXPERIMENT_TEST_FAKE_EXECUTOR";
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
+    }
+    command
+}
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -77,7 +86,7 @@ fn project_with_source(tmp: &Path) -> PathBuf {
 }
 
 fn run(bin: &Path, args: &[&str]) -> (i32, serde_json::Value, String) {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = command_for_binary(bin).args(args).output().expect("spawn");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let json: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("stdout json: {}\n{}", e, stdout));
@@ -96,7 +105,7 @@ fn run_ok(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_fake(bin: &Path, args: &[&str]) -> (i32, serde_json::Value, String) {
-    let out = Command::new(bin)
+    let out = command_for_binary(bin)
         .env(FAKE_EXECUTOR_TEST_ENV, "1")
         .args(args)
         .output()

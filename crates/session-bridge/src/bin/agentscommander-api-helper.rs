@@ -1829,12 +1829,12 @@ fn create_snapshot_leaf_in_parent(
     let name = snapshot_child_name(parent, path)?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        return open_snapshot_leaf_at(
+        open_snapshot_leaf_at(
             parent,
             &name,
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             0o600,
-        );
+        )
     }
     #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
     {

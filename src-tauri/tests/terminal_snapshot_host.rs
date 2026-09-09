@@ -16,6 +16,20 @@ use terminal_snapshot_renderer::{
 
 static HOST_PROCESS_LOCK: Mutex<()> = Mutex::new(());
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
+    }
+    command
+}
+
+fn config_dir_for_bin(bin: &Path) -> PathBuf {
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    bin.parent().expect("bin parent").join(format!(".{stem}"))
+}
+
 fn host_process_guard() -> MutexGuard<'static, ()> {
     HOST_PROCESS_LOCK
         .lock()
@@ -49,7 +63,7 @@ fn copied_binary(directory: &Path) -> PathBuf {
 }
 
 fn run(binary: &Path, arguments: &[&str]) -> Output {
-    Command::new(binary)
+    command_for_binary(binary)
         .args(arguments)
         .env("RUST_LOG", "vt100=trace,agentscommander=trace")
         .output()
@@ -57,7 +71,7 @@ fn run(binary: &Path, arguments: &[&str]) -> Output {
 }
 
 fn run_with_closed_stdout(binary: &Path, arguments: &[&str]) -> Output {
-    let mut child = Command::new(binary)
+    let mut child = command_for_binary(binary)
         .args(arguments)
         .env("RUST_LOG", "vt100=trace,agentscommander=trace")
         .stdout(Stdio::piped())

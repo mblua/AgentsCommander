@@ -1,6 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
+    }
+    command
+}
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -121,7 +130,7 @@ fn seed_cache(config_dir: &Path) {
 fn agency_templates_unknown_subcommand_exits_one_with_usage() {
     let tmp = Tmp::new("agency-unknown-subcommand");
     let bin = copy_binary_into(tmp.path());
-    let output = Command::new(&bin)
+    let output = command_for_binary(&bin)
         .args(["agency-templates", "unknown-subcommand"])
         .output()
         .expect("run unknown subcommand");
@@ -147,7 +156,7 @@ fn agency_templates_update_prints_json_on_success_and_noop() {
     write_git_redirect_config(&git_config, &source_repo);
 
     let run_update = || {
-        Command::new(&bin)
+        command_for_binary(&bin)
             .env("GIT_CONFIG_GLOBAL", &git_config)
             .args([
                 "agency-templates",
@@ -195,7 +204,7 @@ fn agency_templates_update_prints_json_on_success_and_noop() {
 fn agency_templates_status_missing_cache_returns_json() {
     let tmp = Tmp::new("agency-status-missing");
     let bin = copy_binary_into(tmp.path());
-    let output = Command::new(&bin)
+    let output = command_for_binary(&bin)
         .args(["agency-templates", "status", "--json"])
         .output()
         .expect("run status");
@@ -212,7 +221,7 @@ fn agency_templates_status_missing_cache_returns_json() {
 fn agency_templates_list_missing_cache_returns_empty_array() {
     let tmp = Tmp::new("agency-list-missing");
     let bin = copy_binary_into(tmp.path());
-    let output = Command::new(&bin)
+    let output = command_for_binary(&bin)
         .args(["agency-templates", "list", "--json"])
         .output()
         .expect("run list");
@@ -231,7 +240,7 @@ fn agency_templates_list_pretty_returns_cached_metadata() {
     let config = config_dir_for_bin(&bin);
     seed_cache(&config);
 
-    let output = Command::new(&bin)
+    let output = command_for_binary(&bin)
         .args(["agency-templates", "list", "--pretty"])
         .output()
         .expect("run list");
@@ -259,7 +268,7 @@ fn agency_templates_status_reports_locked_cache() {
         .open(&lock_path)
         .expect("hold lock");
 
-    let output = Command::new(&bin)
+    let output = command_for_binary(&bin)
         .args(["agency-templates", "status"])
         .output()
         .expect("run status");

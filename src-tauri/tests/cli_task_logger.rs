@@ -17,6 +17,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
+    }
+    command
+}
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -120,7 +129,7 @@ fn task_set_title_audit_line_reaches_file_sink() {
     let outside_sentinel = tmp.path().join("outside-sentinel.txt");
     std::fs::write(&outside_sentinel, "keep").expect("write outside sentinel");
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "task-set-title",
             "--token",
@@ -201,7 +210,7 @@ fn task_append_body_audit_line_reaches_file_sink_and_preserves_title() {
     let outside_sentinel = tmp.path().join("outside-sentinel.txt");
     std::fs::write(&outside_sentinel, "keep").expect("write outside sentinel");
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "task-append-body",
             "--token",

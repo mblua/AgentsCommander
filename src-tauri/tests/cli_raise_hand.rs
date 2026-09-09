@@ -10,6 +10,20 @@ use std::time::{Duration, Instant};
 
 const VALID_TOKEN: &str = "11111111-1111-1111-1111-111111111111";
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
+    }
+    command
+}
+
+fn config_dir_for_bin(bin: &Path) -> PathBuf {
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    bin.parent().expect("bin parent").join(format!(".{stem}"))
+}
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -392,7 +406,7 @@ fn run_raise_hand_with_simulator(
 
     let simulator = spawn_daemon_simulator(tmp, &outbox_dir, &responses_dir, response_body);
 
-    let out = Command::new(&fix.bin)
+    let out = command_for_binary(&fix.bin)
         .args([
             "raise-hand",
             "--token",

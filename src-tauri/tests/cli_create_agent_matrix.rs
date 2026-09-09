@@ -6,6 +6,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
+    }
+    command
+}
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -188,7 +197,7 @@ fn create_agent_matrix_success_prints_json_and_writes_layout() {
     let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -246,7 +255,7 @@ fn create_agent_matrix_resolves_project_name_from_settings_for_unrelated_root() 
     std::fs::create_dir_all(&root).expect("root dir");
     let root_s = root.to_string_lossy().to_string();
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -304,7 +313,7 @@ fn create_agent_matrix_rejects_ambiguous_project_name_without_writing() {
         }),
     );
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -347,7 +356,7 @@ fn create_agent_project_mode_requires_description() {
     );
     let project = project_with_workspace(tmp.path());
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent",
             "--project",
@@ -377,7 +386,7 @@ fn create_agent_rejects_parent_argument() {
     std::fs::create_dir_all(&parent).expect("create parent");
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent",
             "--parent",
@@ -409,7 +418,7 @@ fn create_agent_rejects_project_path_input_without_writing() {
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
     let project_path = project.to_string_lossy().to_string();
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent",
             "--project",
@@ -443,7 +452,7 @@ fn create_agent_matrix_rejects_project_path_input_without_writing() {
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
     let project_path = project.to_string_lossy().to_string();
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -476,7 +485,7 @@ fn create_agent_matrix_success_writes_project_refresh_request() {
     let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -521,7 +530,7 @@ fn create_agent_matrix_project_name_resolves_from_settings_not_cwd() {
         }),
     );
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .current_dir(&caller_cwd)
         .args([
             "create-agent-matrix",
@@ -575,7 +584,7 @@ fn create_agent_project_mode_delegates_to_matrix_creation() {
         }),
     );
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent",
             "--project",
@@ -632,7 +641,7 @@ fn create_agent_matrix_local_template_writes_role_and_skills() {
     )
     .expect("write local template skill");
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -674,7 +683,7 @@ fn create_agent_matrix_invalid_template_exits_1_without_target_dir() {
     let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -718,7 +727,7 @@ fn create_agent_matrix_from_cached_agency_template_seeds_role_without_skills() {
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
     seed_agency_cache(&config_dir);
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -823,7 +832,7 @@ fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
         watch_and_answer_session_request(&watcher_config_dir, "created", Some("sess-1"), None);
     });
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -914,7 +923,7 @@ fn create_agent_matrix_launch_rejection_is_reported() {
         );
     });
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -982,7 +991,7 @@ fn create_agent_matrix_whitespace_launch_command_warns_without_request() {
         }),
     );
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -1037,7 +1046,7 @@ fn create_agent_matrix_empty_launch_request_warns_without_request() {
         }),
     );
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent-matrix",
             "--project",
@@ -1092,7 +1101,7 @@ fn create_agent_project_mode_blank_launch_command_warns_without_request() {
         }),
     );
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "create-agent",
             "--project",

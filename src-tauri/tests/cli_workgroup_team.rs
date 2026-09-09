@@ -6,6 +6,15 @@ use agentscommander_lib::config::sessions_persistence::{
 };
 use agentscommander_lib::session::session::SessionStatus;
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
+    }
+    command
+}
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -172,7 +181,7 @@ fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
 }
 
 fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = command_for_binary(bin).args(args).output().expect("spawn");
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -184,7 +193,7 @@ fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_json_machine(bin: &Path, args: &[&str]) -> serde_json::Value {
-    let out = Command::new(bin)
+    let out = command_for_binary(bin)
         .env("AC_MACHINE_OUTPUT", "1")
         .args(args)
         .output()
@@ -200,7 +209,7 @@ fn run_json_machine(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_fail(bin: &Path, args: &[&str]) -> String {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = command_for_binary(bin).args(args).output().expect("spawn");
     assert!(
         !out.status.success(),
         "expected failure\nstdout: {}\nstderr: {}",
@@ -212,7 +221,7 @@ fn run_fail(bin: &Path, args: &[&str]) -> String {
 
 #[cfg(target_os = "windows")]
 fn run_fail_output(bin: &Path, args: &[&str]) -> (String, String) {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = command_for_binary(bin).args(args).output().expect("spawn");
     assert!(
         !out.status.success(),
         "expected failure\nstdout: {}\nstderr: {}",
@@ -226,7 +235,7 @@ fn run_fail_output(bin: &Path, args: &[&str]) -> (String, String) {
 }
 
 fn run_stdout(bin: &Path, args: &[&str]) -> String {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = command_for_binary(bin).args(args).output().expect("spawn");
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -1009,7 +1018,7 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
         .join(".ac")
         .join("room-1-dev-team")
         .join("__agent_architect");
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "list-peers-lean",
             "--root",
@@ -1150,7 +1159,7 @@ fn list_peers_surfaces_context_percent_for_matching_live_session() {
         .join("__agent_architect");
 
     for verb in ["list-peers", "list-peers-lean"] {
-        let out = Command::new(&bin)
+        let out = command_for_binary(&bin)
             .args([
                 verb,
                 "--root",
@@ -1386,7 +1395,7 @@ fn workgroup_add_legacy_missing_team_still_bootstraps_with_warning() {
     write_settings(&config_dir, tmp.path());
     let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
 
-    let out = Command::new(&bin)
+    let out = command_for_binary(&bin)
         .args([
             "workgroup",
             "add",
@@ -2085,7 +2094,7 @@ fn purge_room_and_purge_wg_produce_identical_outbox_messages() {
         let root = tmp.path().join(format!("root-{}", slot));
         std::fs::create_dir_all(&root).expect("create agent root");
 
-        let mut child = Command::new(&bin)
+        let mut child = command_for_binary(&bin)
             .args([
                 sub,
                 "--token",
