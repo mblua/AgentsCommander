@@ -1013,19 +1013,18 @@ fn rename_into_place(staging: &Path, dest: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// (key, label, description, color, command, instructionsFilename) for the 7
-    /// current presets. Drift guard: the embedded default must equal these exact
-    /// values so the externalized catalog is byte-for-byte the pre-#769 list. The
-    /// frontend keeps a parallel `FALLBACK_CODING_AGENTS` test (E7).
+    /// (key, label, description, color, command, instructionsFilename, seed dest)
+    /// for the eight current presets. The embedded default must match these
+    /// values. The frontend keeps a parallel `FALLBACK_CODING_AGENTS` test (E7).
     #[allow(clippy::type_complexity)]
-    const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, &str, Option<&str>); 7] = [
+    const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, Option<&str>, Option<&str>); 8] = [
         (
             "claude",
             "Claude Code",
             "Coding Agent by Anthropic",
             "#d97706",
             "claude",
-            "CLAUDE.md",
+            Some("CLAUDE.md"),
             Some(".claude"),
         ),
         (
@@ -1034,7 +1033,7 @@ mod tests {
             "Coding Agent by OpenAI",
             "#10b981",
             "codex",
-            "AGENTS.md",
+            Some("AGENTS.md"),
             Some(".codex"),
         ),
         (
@@ -1043,7 +1042,7 @@ mod tests {
             "Coding Agent by Nous Research",
             "#8b5cf6",
             "hermes",
-            "AGENTS.md",
+            Some("AGENTS.md"),
             None,
         ),
         (
@@ -1052,7 +1051,7 @@ mod tests {
             "Coding Agent by Cursor",
             "#22d3ee",
             "agent",
-            "AGENTS.md",
+            Some("AGENTS.md"),
             None,
         ),
         (
@@ -1061,7 +1060,7 @@ mod tests {
             "Coding Agent by Earendil Inc",
             "#ec4899",
             "pi",
-            "AGENTS.md",
+            Some("AGENTS.md"),
             None,
         ),
         (
@@ -1070,7 +1069,7 @@ mod tests {
             "Open-source terminal coding agent by Anomaly",
             "#64748b",
             "opencode",
-            "AGENTS.md",
+            Some("AGENTS.md"),
             Some(".opencode"),
         ),
         (
@@ -1079,7 +1078,16 @@ mod tests {
             "Coding Agent by Google",
             "#4285F4",
             "agy",
-            "AGENTS.md",
+            Some("AGENTS.md"),
+            None,
+        ),
+        (
+            "muse",
+            "Muse Code",
+            "Meta terminal coding agent (beta; macOS/Linux host only)",
+            "#0668E1",
+            "muse",
+            None,
             None,
         ),
     ];
@@ -1093,7 +1101,7 @@ mod tests {
     }
 
     #[test]
-    fn embedded_default_parses_with_seven_agents_in_order() {
+    fn embedded_default_parses_with_eight_agents_in_order() {
         let catalog = embedded_default_catalog();
         assert_eq!(catalog.schema_version, CATALOG_SCHEMA_VERSION);
         let keys: Vec<&str> = catalog.agents.iter().map(|a| a.key.as_str()).collect();
@@ -1106,18 +1114,19 @@ mod tests {
                 "cursor",
                 "pi",
                 "opencode",
-                "antigravity"
+                "antigravity",
+                "muse"
             ]
         );
-        // Antigravity is last, after OpenCode.
+        // Muse is last, immediately after Antigravity.
         let last = catalog.agents.last().unwrap();
-        assert_eq!(last.key, "antigravity");
-        assert_eq!(last.command, "agy");
+        assert_eq!(last.key, "muse");
+        assert_eq!(last.command, "muse");
     }
 
     #[test]
     fn embedded_default_matches_current_presets_exactly() {
-        // Drift guard vs the pre-#769 AGENT_PRESETS field values.
+        // Drift guard for every current preset field.
         let catalog = embedded_default_catalog();
         assert_eq!(catalog.agents.len(), EXPECTED_PRESETS.len());
         for (def, (key, label, desc, color, command, filename, seed_dest)) in
@@ -1128,9 +1137,9 @@ mod tests {
             assert_eq!(def.description, desc);
             assert_eq!(def.color, color);
             assert_eq!(def.command, command);
-            assert_eq!(def.instructions_filename.as_deref(), Some(filename));
+            assert_eq!(def.instructions_filename.as_deref(), filename);
             // #769 P2: Claude/Codex/OpenCode ship an active configSeed; the other
-            // three ship none (no master, no re-seed button).
+            // five ship none (no master, no re-seed button).
             match seed_dest {
                 Some(dest) => {
                     let cs = def
@@ -1149,6 +1158,39 @@ mod tests {
             assert!(def.envs.is_empty());
             assert!(!def.isolated_home);
         }
+        let raw: serde_json::Value = serde_json::from_str(EMBEDDED_DEFAULT_CATALOG_JSON).unwrap();
+        assert_eq!(raw["schemaVersion"], 1);
+        assert_eq!(
+            raw["agents"].as_array().unwrap().last().unwrap(),
+            &serde_json::json!({
+                "key": "muse",
+                "label": "Muse Code",
+                "description": "Meta terminal coding agent (beta; macOS/Linux host only)",
+                "color": "#0668E1",
+                "command": "muse",
+                "envs": [],
+                "isolatedHome": false,
+                "removable": true,
+                "updateCommands": [],
+                "autoUpdate": false
+            })
+        );
+        assert_eq!(
+            catalog
+                .agents
+                .iter()
+                .filter(|def| def.config_seed.is_some())
+                .count(),
+            3
+        );
+        assert_eq!(
+            catalog
+                .agents
+                .iter()
+                .filter(|def| def.config_seed.is_none())
+                .count(),
+            5
+        );
     }
 
     #[test]
@@ -1188,7 +1230,8 @@ mod tests {
     fn load_missing_manifest_returns_embedded_default() {
         let dir = seed_dir();
         let agents = load_catalog(dir.path());
-        assert_eq!(agents.len(), 7);
+        assert_eq!(agents.len(), 8);
+        assert_eq!(agents.last().unwrap().key, "muse");
         assert_eq!(agents[0].key, "claude");
     }
 
@@ -1203,9 +1246,10 @@ mod tests {
         let agents = load_catalog(dir.path());
         assert_eq!(
             agents.len(),
-            7,
+            8,
             "corrupt file self-heals to embedded default"
         );
+        assert_eq!(agents.last().unwrap().key, "muse");
         // G3: the corrupt file is preserved byte-for-byte, never overwritten.
         assert_eq!(std::fs::read(&path).unwrap(), garbage);
     }
@@ -1265,7 +1309,7 @@ mod tests {
 
         ensure_seeded(dir.path(), None);
         assert!(path.exists(), "seed writes the manifest when absent");
-        assert_eq!(load_catalog(dir.path()).len(), 7);
+        assert_eq!(load_catalog(dir.path()).len(), 8);
 
         // Idempotent + never clobbers a user edit: hand-edit to a single custom
         // agent, re-seed, and confirm the edit is preserved.
@@ -1494,18 +1538,18 @@ mod tests {
         let project = seed_dir();
         let legacy = legacy_dir();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 7);
+        assert_eq!(load_catalog(project.path()).len(), 8);
 
         // Legacy agents.json is a DIRECTORY -> not a regular file -> embedded.
         let project = seed_dir();
         std::fs::create_dir_all(legacy.path().join("agents.json")).unwrap();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 7);
+        assert_eq!(load_catalog(project.path()).len(), 8);
 
         // No legacy at all -> embedded default.
         let project = seed_dir();
         ensure_seeded(project.path(), None);
-        assert_eq!(load_catalog(project.path()).len(), 7);
+        assert_eq!(load_catalog(project.path()).len(), 8);
     }
 
     #[test]
@@ -1638,7 +1682,7 @@ mod tests {
         };
 
         // Primary file absent -> embedded default (self-heal).
-        assert_eq!(load_catalog_for_settings(&settings).len(), 7);
+        assert_eq!(load_catalog_for_settings(&settings).len(), 8);
 
         // Hand-edited primary file is observable (primary wins over everything).
         let custom = manifest_json(
@@ -1652,7 +1696,7 @@ mod tests {
 
         // Primary file DELETED -> embedded default, never a legacy copy.
         std::fs::remove_file(manifest_path(&ac_dir)).unwrap();
-        assert_eq!(load_catalog_for_settings(&settings).len(), 7);
+        assert_eq!(load_catalog_for_settings(&settings).len(), 8);
     }
 
     #[test]
@@ -1712,11 +1756,11 @@ mod tests {
             "corrupt legacy content is user data and is copied verbatim"
         );
         // The read path self-heals to the embedded default in memory.
-        assert_eq!(load_catalog(project.path()).len(), 7);
+        assert_eq!(load_catalog(project.path()).len(), 8);
         // Recovery: deleting the project file re-seeds the embedded default.
         std::fs::remove_file(&project_file).unwrap();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 7);
+        assert_eq!(load_catalog(project.path()).len(), 8);
     }
 
     #[test]
@@ -1941,12 +1985,12 @@ mod tests {
     }
 
     #[test]
-    fn embedded_default_ships_update_commands_for_all_but_cursor() {
+    fn embedded_default_ships_update_commands_for_all_but_cursor_and_muse() {
         // #1318/#1325/#1546 drift guard: claude, pi, codex, hermes, opencode,
-        // and antigravity ship the update command; cursor ships none; every
+        // and antigravity ship the update command; cursor and Muse ship none; every
         // entry defaults autoUpdate to false.
         let catalog = embedded_default_catalog();
-        assert_eq!(catalog.agents.len(), 7);
+        assert_eq!(catalog.agents.len(), 8);
         for def in &catalog.agents {
             assert!(
                 !def.auto_update,
@@ -1962,9 +2006,10 @@ mod tests {
                 }
                 "opencode" => assert_eq!(def.update_commands, vec!["opencode upgrade".to_string()]),
                 "antigravity" => assert_eq!(def.update_commands, vec!["agy update".to_string()]),
-                "cursor" => assert!(
+                "cursor" | "muse" => assert!(
                     def.update_commands.is_empty(),
-                    "cursor must ship no update command"
+                    "{} must ship no update command",
+                    def.key
                 ),
                 other => panic!("unexpected key {other:?}"),
             }

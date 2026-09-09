@@ -3,10 +3,10 @@
 Status: `REVIEW_REQUIRED`. This generated bundle is not approval to implement, tag, publish, release, or deploy.
 
 Repository: `mblua/AgentsCommander`  
-Release issue: https://github.com/mblua/AgentsCommander/issues/1621  
+Release issue: https://github.com/mblua/AgentsCommander/issues/1893  
 Candidate: `0.31.0` / `v0.31.0`  
-Planning base: `af7711ad649e99e24baec19321bfb68a553acdd6`  
-Predecessor: `v0.30.3`
+Planning base: `f5c4720f46a164cb03a01b3d2283d73653133e15`  
+Predecessor: `v0.30.5`
 
 ## 1. Exact review identity
 
@@ -60,41 +60,62 @@ The final canonical release-hardening plan is not generated or sealed by this bu
 
 ## 2. Frozen read-only facts
 
-- Git remote main and GitHub API agree at `af7711ad649e99e24baec19321bfb68a553acdd6`.
-- Ordered planning-base parents: [6610d25f5657feadf30f1ede86676a2046a45d4a, 496ee8476304cbff28293cce35de1ef6b9c7b4ca].
-- Base `.github/workflows/release.yml` blob: `1d8a8473b99a2c8e9ee10137daf30aadce7c4d34`; content SHA-256: `6f37ef0212ce4d18c1190d48071bc640158fc06f43e5bcddd780cfec4e98f1c8`.
-- Predecessor annotated object: `f8c3b2cba39dbb734b9959352ff592d7c0332539`; peeled commit: `9ffc24911685906c0222d53eb79898ce9dbdff3e`.
-- Predecessor immutable GitHub Release id: `377473922`.
-- npm latest: `0.30.3`; candidate tag, Release, and npm version are absent at both discovery snapshots.
+- Git remote main and GitHub API agree at `f5c4720f46a164cb03a01b3d2283d73653133e15`.
+- Ordered planning-base parents: [54d0ac3e54420ef0a90a353cf3d6edf64dba408e, 9097700655123b6b0111dc7bd0388ee7bbff85f3].
+- Base `.github/workflows/release.yml` blob: `af2a50413e83837a4ab32e0f0e0059172eb47cee`; content SHA-256: `bda546d06d78935e9fa0f06ba91714f9b76d0c48c70526d2ff1111f12ae62c03`.
+- Predecessor annotated object: `69e00f8f2c8cd3c72ef611d310a0487247616db1`; peeled commit: `535ceb1502049b813154ab32c6bb2197300c6f33`.
+- Predecessor immutable GitHub Release id: `383676971`.
+- npm latest: `0.30.5`; candidate tag, Release, and npm version are absent at both discovery snapshots.
 - Ruleset/reviewer authority: rules require approval; `mblua` has the documented admin exception only for unavailable self-review after every check passes.
 - Tag immutability/binding policy: the repository lacks a selected tag-protection guarantee, so every job/rerun and final verifier fail on any object/peeled movement.
 - Release asset upload design: direct uploader jobs receive job-local contents: write and no id-token.
-- Frozen GitHub CLI: `gh 2.86.0`, archive `gh_2.86.0_linux_amd64.tar.gz`, SHA-256 `f3b08bd6a28420cc2229b0a1a687fa25f2b838d3f04b297414c1041ca68103c7`.
+- Frozen GitHub CLI: `gh 2.100.0`, archive `gh_2.100.0_linux_amd64.tar.gz`, SHA-256 `e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be`.
 
 Resolved action pins:
 
-- `actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09` (discovered from `v5`)
-- `actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444` (discovered from `v5`)
+- `actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09` (discovered from `fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09`)
+- `actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444` (discovered from `a0853c24544627f65ddf259abe73b1d18a591444`)
+- `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02` (discovered from `ea165f8d65b6e75b540449e92b4886f43607fa02`)
 - `dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c` (discovered from `4360b52568e2003a75bf9bc1d59f33a8e3fc893c`)
 - `swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6` (discovered from `6323deb102c322ba6fcbdcafc7e3dddab59af2b6`)
-- `tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5` (discovered from `v0`)
+- `tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5` (discovered from `84b9d35b5fc46c1e45415bdb6144030364f7ebc5`)
 
 Current version surfaces to advance with the repository's version tool:
 
-- `package.json` `/version`: `0.30.3` (blob `500c8d71e61227547a8efe589e03ba474cfc6f21`)
-- `package-lock.json` `/version`: `0.30.3` (blob `57871c0ee6ee84f29f3f6ae7cc232060dbb7b4c2`)
-- `package-lock.json` `/packages//version`: `0.30.3` (blob `57871c0ee6ee84f29f3f6ae7cc232060dbb7b4c2`)
-- `npm/package.json` `/version`: `0.30.3` (blob `60d4d5a520a0983a4f41318c7e318ea06fecaf9f`)
-- `npm/install.js` `const VERSION`: `0.30.3` (blob `743dc4340d1bad212bcd9291c6561fca78a859cf`)
-- `src-tauri/Cargo.toml` `[package].version`: `0.30.3` (blob `dcf4505b60fcd1410a4d23de98d2866501580f22`)
-- `Cargo.lock` `agentscommander-new.version`: `0.30.3` (blob `390ca303bac12aea3949250fd699e7f78459fb46`)
-- `src-tauri/tauri.conf.json` `/version`: `0.30.3` (blob `48e40156e2f605e25a100d149f0cc643658bc687`)
+- `package.json` `/version`: `0.30.5` (blob `7b0f57bd86aaa456cfba8482365abe19d643cc0a`)
+- `package-lock.json` `/version`: `0.30.5` (blob `554842c7d623342416825558df616434c7b88631`)
+- `package-lock.json` `/packages//version`: `0.30.5` (blob `554842c7d623342416825558df616434c7b88631`)
+- `npm/package.json` `/version`: `0.30.5` (blob `46e2d3f9a82784f9616aa483b7362b4fcbacfab5`)
+- `npm/install.js` `const VERSION`: `0.30.5` (blob `3e0cea91d890745a29f6c0fa4719a96f4c1f4808`)
+- `src-tauri/Cargo.toml` `[package].version`: `0.30.5` (blob `6ccf7e57fe010085ed2fd087c801d81b38d03af2`)
+- `Cargo.lock` `agentscommander-new.version`: `0.30.5` (blob `a9930f49f5a0bae8db63d8194e2470daba8260db`)
+- `src-tauri/tauri.conf.json` `/version`: `0.30.5` (blob `7cf8ad920c8019e253f5433f22b2a41e80aa7223`)
 
 Approved scope:
 
-- feature: Rename Workgroups to Rooms while preserving legacy behavior ([#1614](https://github.com/mblua/AgentsCommander/issues/1614), [PR #1633](https://github.com/mblua/AgentsCommander/pull/1633))
-- fix: Preserve release-path compatibility required by the Room change ([#1625](https://github.com/mblua/AgentsCommander/issues/1625), [PR #1631](https://github.com/mblua/AgentsCommander/pull/1631))
-- fix: Include the protected-main release correction ([#1627](https://github.com/mblua/AgentsCommander/issues/1627), [PR #1627](https://github.com/mblua/AgentsCommander/pull/1627))
+- fix: fix(api): close the available_loopback_port() TOCTOU race (refs #1768) ([#1768](https://github.com/mblua/AgentsCommander/issues/1768), [PR #1870](https://github.com/mblua/AgentsCommander/pull/1870))
+- fix: fix(testability): name the testable_gui_active mutex holder and close panic-path leaks (refs #1773) ([#1773](https://github.com/mblua/AgentsCommander/issues/1773), [PR #1890](https://github.com/mblua/AgentsCommander/pull/1890))
+- feature: feat(#1795): seed six shared filesystem locations in the Golden Rule block ([#1795](https://github.com/mblua/AgentsCommander/issues/1795), [PR #1845](https://github.com/mblua/AgentsCommander/pull/1845))
+- fix: fix(test): mock PtyAPI so npm test cannot exit non-zero with every test passing (refs #1797) ([#1797](https://github.com/mblua/AgentsCommander/issues/1797), [PR #1846](https://github.com/mblua/AgentsCommander/pull/1846))
+- feature: feat(#1801): add the restart-resume settings contract and the persisted-working predicate ([#1801](https://github.com/mblua/AgentsCommander/issues/1801), [PR #1848](https://github.com/mblua/AgentsCommander/pull/1848))
+- feature: feat(#1802): phase 1b - wake policy, target collection and the restart auto-resume pass ([#1802](https://github.com/mblua/AgentsCommander/issues/1802), [PR #1872](https://github.com/mblua/AgentsCommander/pull/1872))
+- feature: feat(settings): add the On app restart section to Settings > General (refs #1803) ([#1803](https://github.com/mblua/AgentsCommander/issues/1803), [PR #1878](https://github.com/mblua/AgentsCommander/pull/1878))
+- docs: docs(settings): document the On app restart settings (refs #1804) ([#1804](https://github.com/mblua/AgentsCommander/issues/1804), [PR #1880](https://github.com/mblua/AgentsCommander/pull/1880))
+- maintenance: test(list-peers): pin D3 against a status-predicate selector, and fix an inverted fixture comment (refs #1822) ([#1822](https://github.com/mblua/AgentsCommander/issues/1822), [PR #1849](https://github.com/mblua/AgentsCommander/pull/1849))
+- maintenance: ci(1826): harden publish-npm verification; add --version to the CLI root ([#1826](https://github.com/mblua/AgentsCommander/issues/1826), [PR #1827](https://github.com/mblua/AgentsCommander/pull/1827))
+- feature: feat(sidebar): persist and tokenise the selected-row rail (refs #1796) ([#1828](https://github.com/mblua/AgentsCommander/issues/1828), [PR #1836](https://github.com/mblua/AgentsCommander/pull/1836))
+- feature: feat(#1829): mirror the two rail fields in the TypeScript AppSettings contract ([#1829](https://github.com/mblua/AgentsCommander/issues/1829), [PR #1837](https://github.com/mblua/AgentsCommander/pull/1837))
+- feature: feat(#1830): publish the selected-row rail settings to the DOM and edit them in the modal ([#1830](https://github.com/mblua/AgentsCommander/issues/1830), [PR #1838](https://github.com/mblua/AgentsCommander/pull/1838))
+- docs: docs(npm): describe published 0.30.5 resolver on the package page (refs #1834) ([#1834](https://github.com/mblua/AgentsCommander/issues/1834), [PR #1843](https://github.com/mblua/AgentsCommander/pull/1843))
+- feature: feat(#1844): default the selected row bar color to #630707 ([#1844](https://github.com/mblua/AgentsCommander/issues/1844), [PR #1847](https://github.com/mblua/AgentsCommander/pull/1847))
+- fix: fix(1856): reconcile session communication from the polled listing ([#1856](https://github.com/mblua/AgentsCommander/issues/1856), [PR #1864](https://github.com/mblua/AgentsCommander/pull/1864))
+- fix: fix(1857): derived aggregated blocked-menu toast, taskbar attention, pinned toasts, exit race ([#1857](https://github.com/mblua/AgentsCommander/issues/1857), [PR #1866](https://github.com/mblua/AgentsCommander/pull/1866))
+- fix: fix(1858): give the blocked menu its own glyph and colour, and style .toast-item__action ([#1858](https://github.com/mblua/AgentsCommander/issues/1858), [PR #1869](https://github.com/mblua/AgentsCommander/pull/1869))
+- fix: fix(1859): roll the blocked-menu state up through every level that can hide a row ([#1859](https://github.com/mblua/AgentsCommander/issues/1859), [PR #1874](https://github.com/mblua/AgentsCommander/pull/1874))
+- feature: feat(catalog): add Muse Code to the embedded coding-agents catalog (#1860) ([#1860](https://github.com/mblua/AgentsCommander/issues/1860), [PR #1888](https://github.com/mblua/AgentsCommander/pull/1888))
+- maintenance: refactor(sidebar): one catalogue component for session-row context menus; Root Agent menu at parity (#1871) ([#1871](https://github.com/mblua/AgentsCommander/issues/1871), [PR #1886](https://github.com/mblua/AgentsCommander/pull/1886))
+- docs: docs: document codebase-memory-mcp for Claude Code and drop the MCP stance (#1882) ([#1882](https://github.com/mblua/AgentsCommander/issues/1882), [PR #1885](https://github.com/mblua/AgentsCommander/pull/1885))
+- docs: docs(1893): fill Unreleased for 0.31.0 ([#1893](https://github.com/mblua/AgentsCommander/issues/1893), [PR #1894](https://github.com/mblua/AgentsCommander/pull/1894))
 
 ## 3. One mandatory order
 
@@ -115,7 +136,7 @@ No implementation, PR, merge, tag, or publication occurs before steps 1-5. There
 
 ## 4. Planning-base gate
 
-Before implementation, independently query remote main through raw Git and the GitHub ref API. Both must equal `af7711ad649e99e24baec19321bfb68a553acdd6`; the GitHub commit API must return the ordered parent list [6610d25f5657feadf30f1ede86676a2046a45d4a, 496ee8476304cbff28293cce35de1ef6b9c7b4ca]; the contents API must return workflow blob `1d8a8473b99a2c8e9ee10137daf30aadce7c4d34`. Any mismatch is `FROZEN_INPUT_CHANGED`: discard the bundle and run the generator again from a new config/output path.
+Before implementation, independently query remote main through raw Git and the GitHub ref API. Both must equal `f5c4720f46a164cb03a01b3d2283d73653133e15`; the GitHub commit API must return the ordered parent list [54d0ac3e54420ef0a90a353cf3d6edf64dba408e, 9097700655123b6b0111dc7bd0388ee7bbff85f3]; the contents API must return workflow blob `af2a50413e83837a4ab32e0f0e0059172eb47cee`. Any mismatch is `FROZEN_INPUT_CHANGED`: discard the bundle and run the generator again from a new config/output path.
 
 This gate is not reused after required merges. Later gates bind `FINAL_CANDIDATE_MAIN` instead.
 
@@ -133,7 +154,7 @@ docs/releases/v0.31.0/release-authority-v1.txt
 docs/releases/v0.31.0/release-body.md
 docs/releases/v0.31.0/release-plan.md
 docs/releases/v0.31.0/SHA256SUMS
-plans/1621-v0310-release-hardening.md
+plans/1893-v0310-release-hardening.md
 ```
 
 The allowlist is closed: no wildcard and no other changed path is permitted. Its final entry is the canonical plan path derived solely from the release issue number and candidate version; it is not a bundle artifact. The bundle files must be copied byte-for-byte from the reviewed output and verified against `SHA256SUMS` on the PR head. The workflow implementation must be generic for every normal `vX.Y.Z`; candidate-specific values live only in `docs/releases/$TAG/`.
@@ -141,7 +162,7 @@ The allowlist is closed: no wildcard and no other changed path is permitted. Its
 For the selected merge method, record `HARDENING_HEAD` only after exact-head review. After protected merge, require a two-parent merge commit and assert the ordered parent vector is exactly:
 
 ```text
-[af7711ad649e99e24baec19321bfb68a553acdd6, HARDENING_HEAD]
+[f5c4720f46a164cb03a01b3d2283d73653133e15, HARDENING_HEAD]
 ```
 
 Set `HARDENING_MERGE_SHA` to that merge commit. A squash, rebase, reversed parent order, extra parent, or intervening main commit invalidates this bundle.
@@ -195,7 +216,7 @@ guard -> platform producers -> checksums -> publish-github -> publish-npm
 
 Only `publish-npm` receives `id-token: write`; it receives `contents: read`, uses `actions/setup-node` at an immutable commit with `node-version: 22` and `registry-url: https://registry.npmjs.org`, installs exact npm `11.6.2`, asserts both versions, and publishes with provenance. It must fail if `NODE_AUTH_TOKEN`, `NPM_TOKEN`, or the legacy package token is present. No other job receives OIDC.
 
-Jobs that run GitHub attestation verification receive `attestations: read` and explicit `GH_TOKEN: ${{ github.token }}`. Before either attestation path, download only `gh_2.86.0_linux_amd64.tar.gz`, verify SHA-256 `f3b08bd6a28420cc2229b0a1a687fa25f2b838d3f04b297414c1041ca68103c7`, install from that verified archive, and require `gh version 2.86.0` before use.
+Jobs that run GitHub attestation verification receive `attestations: read` and explicit `GH_TOKEN: ${{ github.token }}`. Before either attestation path, download only `gh_2.100.0_linux_amd64.tar.gz`, verify SHA-256 `e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be`, install from that verified archive, and require `gh version 2.100.0` before use.
 
 Each macOS architecture is built once. The raw binary, app archive, and installer for that architecture must derive from that one build and one recorded digest manifest; no second macOS build may generate a competing asset.
 
@@ -205,13 +226,21 @@ Derive the immediate predecessor dynamically by strict normal-SemVer comparison,
 
 Replace the exact current `Unreleased` body once: remove it from `Unreleased` and insert it under `## 0.31.0`. The expected complete result is `CHANGELOG.release.md`; use `release-body.md` verbatim for the GitHub Release. Duplicate or residual copies fail.
 
-For this Room release the bytes preserve independent Room/legacy numbering, no rename or migration, every deprecated alias (`workgroup`, `purge-wg`, `--wg`, `--workgroup`), and identical legacy behavior, side effects, exit codes, and output.
+Every version-side scope/changelog declaration below is mandatory; a missing scope issue, summary substring, changelog substring, or whole-word alternative fails closed:
+
+- Scope issue #1802: summary requires every case-insensitive substring ["auto-resume","wake policy"]; changelog requires every case-insensitive substring ["on app restart","restart prompts"] and at least one whole-word match from each alternative group [["resume","resumes"]].
+- Scope issue #1857: summary requires every case-insensitive substring ["aggregated","toast"]; changelog requires every case-insensitive substring ["aggregated toast","taskbar attention"] and at least one whole-word match from each alternative group [["toast","toasts"]].
+- Scope issue #1860: summary requires every case-insensitive substring ["muse code","catalog"]; changelog requires every case-insensitive substring ["muse code","beta preset"] and at least one whole-word match from each alternative group [["muse"]].
 
 ### Package and asset gates
 
 Run the repository version tool for `0.31.0`; do not hand-edit version surfaces. Require all eight parsed surfaces to equal the candidate on the version PR head. Run `npm pack --dry-run`, create the tarball, inspect it, and smoke-install from that exact tarball before tagging.
 
-Predecessor ledger: exactly 16 unique uploaded nonempty assets. Candidate ledger: exactly 17 unique names, with the portable Windows ZIP present only in the candidate. Any missing, extra, duplicate, zero-size, digest mismatch, or name mismatch fails.
+Predecessor ledger: exactly 17 unique uploaded nonempty assets. Candidate ledger: exactly 17 unique names derived from predecessor version substitution plus exactly these declared candidate-only assets:
+
+- No candidate-only assets are declared.
+
+Any missing, extra, duplicate, zero-size, digest mismatch, producer mismatch, or name mismatch fails.
 
 ## 6. Version/evidence PR and exact topology
 

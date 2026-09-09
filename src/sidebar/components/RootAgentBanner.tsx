@@ -1,4 +1,4 @@
-import { Component, createEffect, createMemo, createSignal, Show, For, onCleanup } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, Show, For } from "solid-js";
 import { Portal } from "solid-js/web";
 import iconUrl from "../../../src-tauri/icons/64x64.png";
 import { isTauri } from "../../shared/platform";
@@ -24,17 +24,32 @@ import { TelegramIcon } from "./TelegramIcon";
 import DetachIcon from "./DetachIcon";
 import ReattachIcon from "./ReattachIcon";
 import { sessionDotClass } from "./session-status";
-
-const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
+import SessionRowMenu from "./context-menu/SessionRowMenu";
+import {
+  addToGroupSpec,
+  clearTaskTitleSpec,
+  closeSpec,
+  deleteAgentSpec,
+  detachSpec,
+  matrixFolderSpec,
+  openFolderSpec,
+  reposSpec,
+  taskTitleSpec,
+  telegramSpec,
+} from "./context-menu/session-row-menu-specs";
 
 const RootAgentBanner: Component = () => {
   const [busy, setBusy] = createSignal(false);
-  const [showContextMenu, setShowContextMenu] = createSignal(false);
-  const [contextMenuPos, setContextMenuPos] = createSignal({ x: 0, y: 0 });
+  // #1871 - the menu is open iff menuPos() !== null. menuEpoch is a plain let,
+  // not a signal, exactly as replicaCtxMenuEpoch is in ProjectPanel: nothing
+  // renders from it.
+  const [menuPos, setMenuPos] = createSignal<{ x: number; y: number } | null>(null);
+  const [menuTelegramBots, setMenuTelegramBots] =
+    createSignal<{ epoch: number; sessionId: string; bots: TelegramBotConfig[] } | null>(null);
+  let menuEpoch = 0;
   const [showAgentPicker, setShowAgentPicker] = createSignal(false);
   const [showBotMenu, setShowBotMenu] = createSignal(false);
   const [availableBots, setAvailableBots] = createSignal<TelegramBotConfig[]>([]);
-  let contextMenuEl: HTMLDivElement | undefined;
 
   const rootSession = createMemo<Session | undefined>(() =>
     sessionsStore.sessions.find((s) => s.isRootAgent)
@@ -118,54 +133,24 @@ const RootAgentBanner: Component = () => {
     }
   };
 
-  let dismissContextMenu: ((ev?: Event) => void) | null = null;
-
-  const cleanupContextMenu = () => {
-    if (dismissContextMenu) {
-      window.removeEventListener("click", dismissContextMenu);
-      window.removeEventListener("contextmenu", dismissContextMenu);
-      window.removeEventListener("keydown", dismissContextMenu as EventListener);
-      dismissContextMenu = null;
-    }
+  // #1871 - transcribed from advanceReplicaCtxMenuEpoch / closeReplicaCtxMenu
+  // in ProjectPanel. An expanded bot list never survives an epoch change.
+  const advanceMenuEpoch = () => {
+    menuEpoch += 1;
+    setMenuTelegramBots(null);
+    return menuEpoch;
   };
-
-  onCleanup(cleanupContextMenu);
-
-  const positionContextMenu = (x: number, y: number) => {
-    if (!contextMenuEl) return;
-    const { width, height } = contextMenuEl.getBoundingClientRect();
-    const maxX = Math.max(
-      CONTEXT_MENU_VIEWPORT_MARGIN,
-      window.innerWidth - width - CONTEXT_MENU_VIEWPORT_MARGIN
-    );
-    const maxY = Math.max(
-      CONTEXT_MENU_VIEWPORT_MARGIN,
-      window.innerHeight - height - CONTEXT_MENU_VIEWPORT_MARGIN
-    );
-    setContextMenuPos({
-      x: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, x), maxX),
-      y: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, y), maxY),
-    });
+  const closeMenu = () => {
+    setMenuPos(null);
+    advanceMenuEpoch();
   };
 
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    cleanupContextMenu();
-    setContextMenuPos({ x: e.clientX, y: e.clientY });
-    setShowContextMenu(true);
-    const dismiss = (ev?: Event) => {
-      if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
-      setShowContextMenu(false);
-      cleanupContextMenu();
-    };
-    dismissContextMenu = dismiss;
-    setTimeout(() => {
-      positionContextMenu(e.clientX, e.clientY);
-      window.addEventListener("click", dismiss);
-      window.addEventListener("contextmenu", dismiss);
-      window.addEventListener("keydown", dismiss as EventListener);
-    });
+    setShowBotMenu(false); // mutual exclusion with the row's bot chooser
+    advanceMenuEpoch(); // on-open reset; both live models do it
+    setMenuPos({ x: e.clientX, y: e.clientY });
   };
 
   const handleClick = async () => {
@@ -195,8 +180,6 @@ const RootAgentBanner: Component = () => {
   };
 
   const handleRestart = async () => {
-    setShowContextMenu(false);
-    cleanupContextMenu();
     if (busy()) return;
     const r = rootSession();
     if (!r) return;
@@ -214,8 +197,6 @@ const RootAgentBanner: Component = () => {
   };
 
   const handleCodingAgent = () => {
-    setShowContextMenu(false);
-    cleanupContextMenu();
     setShowAgentPicker(true);
   };
 
@@ -295,8 +276,6 @@ const RootAgentBanner: Component = () => {
   };
 
   const handleContextDetachToggle = async () => {
-    setShowContextMenu(false);
-    cleanupContextMenu();
     if (!hasLivePty()) return;
     const r = rootSession();
     if (!r) return;
@@ -313,6 +292,7 @@ const RootAgentBanner: Component = () => {
 
   const handleTelegramClick = async (e: MouseEvent) => {
     e.stopPropagation();
+    closeMenu();
     if (!hasLivePty()) return;
     const r = rootSession();
     if (!r) return;
@@ -351,6 +331,117 @@ const RootAgentBanner: Component = () => {
       console.error("[RootAgentBanner] Failed to close Root Agent:", error);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // #1871 - menu-side handlers. The catalogue's onSelect takes no MouseEvent,
+  // so the two row handlers that take one (handleOpenExplorer, handleClose)
+  // are copied here minus their e.stopPropagation(); the originals keep
+  // serving the row buttons. SessionRowMenu dismisses before it invokes
+  // onSelect, so none of these calls closeMenu() itself.
+  const menuOpenFolder = async () => {
+    const r = rootSession();
+    if (!r) return;
+    try {
+      await WindowAPI.openInExplorer(r.workingDirectory);
+    } catch (err) {
+      console.error("Failed to open explorer:", err);
+    }
+  };
+
+  const menuClose = async () => {
+    const r = rootSession();
+    if (!r || busy()) return;
+    setBusy(true);
+    voiceRecorder.revokeSession(r.id);
+    try {
+      await SessionAPI.destroy(r.id);
+    } catch (error) {
+      console.error("[RootAgentBanner] Failed to close Root Agent:", error);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const menuOpenRepo = async (sourcePath: string) => {
+    try {
+      await WindowAPI.openInExplorer(sourcePath);
+    } catch (e) {
+      console.error("Failed to open repo folder:", e);
+    }
+  };
+
+  type MenuTelegramToken = {
+    epoch: number;
+    sessionId: string;
+    startingBridge: ReturnType<typeof bridge>;
+  };
+
+  // Mirrors currentReplicaTelegramInvocation (ProjectPanel): after the await
+  // the menu must still be open, on the same session, still live, and the
+  // bridge must not have changed underneath.
+  const menuTelegramStillCurrent = (tok: MenuTelegramToken): boolean =>
+    menuEpoch === tok.epoch &&
+    menuPos() !== null &&
+    hasLivePty() &&
+    rootSession()?.id === tok.sessionId &&
+    (bridge() ?? null) === (tok.startingBridge ?? null);
+
+  const menuTelegram = async () => {
+    const r = rootSession();
+    const startingBridge = bridge();
+    const startedLive = hasLivePty() && !!r;
+    const epoch = advanceMenuEpoch(); // invalidates any in-flight fetch
+    if (!r || !startedLive) {
+      closeMenu();
+      return;
+    }
+    const tok: MenuTelegramToken = { epoch, sessionId: r.id, startingBridge };
+    try {
+      if (startingBridge) {
+        closeMenu();
+        await TelegramAPI.detach(r.id);
+        return;
+      }
+      const settings = await SettingsAPI.get();
+      if (!menuTelegramStillCurrent(tok)) return; // stale: publish nothing
+      const bots = settings.telegramBots || [];
+      if (bots.length === 0) {
+        closeMenu(); // parity with ProjectPanel: zero bots closes the menu
+        return;
+      }
+      if (bots.length === 1) {
+        closeMenu();
+        await TelegramAPI.attach(r.id, bots[0].id);
+        return;
+      }
+      setShowBotMenu(false); // mutual exclusion with the row's bot chooser
+      setMenuTelegramBots({ epoch, sessionId: r.id, bots }); // menu deliberately stays open
+    } catch (e) {
+      console.error("[RootAgentBanner] telegram menu action failed:", e);
+    }
+  };
+
+  const menuSelectBot = async (botId: string) => {
+    const r = rootSession();
+    const choices = menuTelegramBots();
+    if (
+      !choices ||
+      choices.epoch !== menuEpoch ||
+      menuPos() === null ||
+      !r ||
+      !hasLivePty() ||
+      choices.sessionId !== r.id ||
+      (bridge() ?? null) !== null
+    ) {
+      return; // parity with ProjectPanel's bot-select guard
+    }
+    const sessionId = r.id;
+    closeMenu();
+    try {
+      await TelegramAPI.attach(sessionId, botId);
+    } catch (e) {
+      console.error("[RootAgentBanner] telegram bot attach failed:", e);
     }
   };
 
@@ -568,48 +659,41 @@ const RootAgentBanner: Component = () => {
           />
         </Portal>
       </Show>
-      <Show when={showContextMenu()}>
-        <Portal>
-          <div
-            class="session-context-menu"
-            ref={contextMenuEl}
-            style={{
-              left: `${contextMenuPos().x}px`,
-              top: `${contextMenuPos().y}px`,
-            }}
-            onClick={(e) => e.stopPropagation()}
-            data-ac-testid="rootAgent.menu"
-            data-ac-role="menu"
-          >
-            <button
-              class="session-context-option context-option-danger"
-              onClick={handleRestart}
-              disabled={!rootSession()}
-              data-ac-testid="rootAgent.restart"
-              data-ac-role="menuitem"
-            >
-              Restart Session
-            </button>
-            <button class="session-context-option" onClick={handleCodingAgent}>
-              Coding Agent
-            </button>
-            <Show when={rootSession()}>
-              <Show when={hasLivePty()}>
-                <div class="context-separator" />
-                <button
-                  class="session-context-option"
-                  onClick={handleContextDetachToggle}
-                  data-ac-testid="rootAgent.menu.detachToggle"
-                  data-ac-role="menuitem"
-                  data-ac-state={isDetached() ? "detached" : "attached"}
-                >
-                  {isDetached() ? "Re-attach session" : "Detach session"}
-                </button>
-              </Show>
-            </Show>
-          </div>
-        </Portal>
-      </Show>
+      {/* #1871 - every item is derived from data by a *Spec helper. A literal
+          `false` on any key is a defect: the day the root carries repo data,
+          the same reposSpec expression turns the entries on with no code
+          change. root-menu-derived-caps.test.tsx pins this record exactly. */}
+      <SessionRowMenu
+        open={menuPos() !== null}
+        x={menuPos()?.x ?? 0}
+        y={menuPos()?.y ?? 0}
+        testIdPrefix="rootAgent"
+        onDismiss={closeMenu}
+        caps={{
+          restart: { onSelect: () => void handleRestart(), disabled: !rootSession() },
+          codingAgent: { onSelect: handleCodingAgent },
+          openFolder: openFolderSpec(rootSession(), { onSelect: () => void menuOpenFolder() }),
+          repos: reposSpec(rootSession()?.gitRepos ?? [], {
+            browseItems: () => [],
+            onOpenRepo: (p) => void menuOpenRepo(p),
+            onOpenBrowse: () => {},
+          }),
+          matrixFolder: matrixFolderSpec(undefined),
+          close: closeSpec(rootSession(), { onSelect: () => void menuClose() }),
+          deleteAgent: deleteAgentSpec(undefined),
+          detach: detachSpec(hasLivePty(), isDetached(), () => void handleContextDetachToggle()),
+          telegram: telegramSpec(hasLivePty() ? rootSession() : undefined, {
+            on: !!bridge(),
+            bridgeColor: bridge()?.color ?? null,
+            bots: menuTelegramBots()?.bots ?? null,
+            onSelect: () => void menuTelegram(),
+            onSelectBot: (id) => void menuSelectBot(id),
+          }),
+          addToGroup: addToGroupSpec(undefined),
+          editTaskTitle: taskTitleSpec(undefined),
+          clearTaskTitle: clearTaskTitleSpec(undefined),
+        }}
+      />
     </>
   );
 };
