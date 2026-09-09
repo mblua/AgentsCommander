@@ -11,7 +11,9 @@ use std::time::Duration;
 use tauri::Manager;
 use uuid::Uuid;
 
-use crate::config::settings::{BlockingMenuConfig, BlockingMenuEntry, SettingsState};
+use crate::config::settings::{
+    AgentConfig, BlockingMenuConfig, BlockingMenuEntry, BlockingMenusStore, SettingsState,
+};
 use crate::pty::manager::PtyManager;
 use crate::pty::watchers::frame::{logical_rows, LogicalRow};
 use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
@@ -47,6 +49,7 @@ pub struct MenuGuard {
     sessions: Mutex<HashMap<Uuid, MenuGuardSessionState>>,
     compiled_patterns: Mutex<HashMap<String, Result<regex::Regex, String>>>,
     next_episode_id: AtomicU64,
+    store: BlockingMenusStore,
 }
 
 impl Default for MenuGuard {
@@ -55,6 +58,7 @@ impl Default for MenuGuard {
             sessions: Mutex::new(HashMap::new()),
             compiled_patterns: Mutex::new(HashMap::new()),
             next_episode_id: AtomicU64::new(1),
+            store: BlockingMenusStore::shipped_only(),
         }
     }
 }
@@ -62,6 +66,19 @@ impl Default for MenuGuard {
 impl MenuGuard {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// #1905 - production constructor: the store built from the config dir at startup.
+    pub fn with_store(store: BlockingMenusStore) -> Self {
+        Self {
+            store,
+            ..Self::default()
+        }
+    }
+
+    /// #1905 - the entries evaluated for one agent's sessions (D3, layer 0 first).
+    pub(crate) fn entries_for(&self, agent: &AgentConfig) -> Vec<BlockingMenuEntry> {
+        self.store.resolve_for(agent)
     }
 
     fn get_or_compile_regex(&self, pattern: &str) -> Option<regex::Regex> {
@@ -266,7 +283,7 @@ impl MenuGuard {
                 .agent_id
                 .as_deref()
                 .and_then(|aid| settings.agents.iter().find(|a| a.id == aid))
-                .and_then(|agent| agent.blocking_menus.clone())
+                .map(|agent| self.entries_for(agent))
                 .unwrap_or_default();
 
             let last_seen_stamp = {
@@ -387,6 +404,7 @@ impl MenuGuard {
 mod tests {
     use super::*;
     use crate::config::settings::default_blocking_menus_for_command;
+    use crate::config::settings::BlockingMenusStore;
     // #1757 - T11 builds a real ScreenFrame. Test-module only: widening the
     // production use statement at the top of this file would remove a production line.
     use crate::pty::watchers::ScreenFrame;
@@ -597,5 +615,148 @@ mod tests {
                 "negative corpus row must not match: {text:?}"
             );
         }
+    }
+
+    // #1905 phase 2 fixtures. `agent` builds an `AgentConfig` with the eleven fields exactly
+    // as the loader tests in `settings.rs` do; `CUSTOM` is the docs page's own example entry
+    // (`docs/features/menu-guard.md`), test-only and independent of the shipped file.
+    fn agent(
+        id: &str,
+        command: &str,
+        blocking_menus: Option<Vec<BlockingMenuEntry>>,
+    ) -> AgentConfig {
+        AgentConfig {
+            id: id.to_string(),
+            label: id.to_string(),
+            command: command.to_string(),
+            color: "#000000".to_string(),
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+            context_regex: None,
+            blocking_menus,
+            backend: Default::default(),
+        }
+    }
+
+    const CUSTOM_NOTIFICATION: &str =
+        "claude is waiting for you to answer the folder-trust menu in this terminal";
+
+    fn custom(enabled: bool) -> BlockingMenuEntry {
+        BlockingMenuEntry::Valid(BlockingMenuConfig {
+            pattern: r"^\s*Do you trust the files in this folder\?".to_string(),
+            notification: CUSTOM_NOTIFICATION.to_string(),
+            enabled,
+            captured_against: Some("claude 2.1 / Windows".to_string()),
+        })
+    }
+
+    fn claude_row() -> Vec<LogicalRow> {
+        vec![LogicalRow {
+            start: 0,
+            end: 0,
+            text: "  Do you trust the files in this folder? (y/n)".to_string(),
+        }]
+    }
+
+    fn pi_row() -> Vec<LogicalRow> {
+        vec![LogicalRow {
+            start: 0,
+            end: 0,
+            text: "Trust project folder?".to_string(),
+        }]
+    }
+
+    /// The production loader against a tempdir whose `.local` file carries `byAgent` rows.
+    fn production_store(dir: &std::path::Path) -> BlockingMenusStore {
+        let local = serde_json::json!({
+            "schemaVersion": 1,
+            "byAgent": {
+                "claude-1": [custom(true)],
+                "claude-off": [custom(false)],
+                "pi-off": [],
+            }
+        });
+        std::fs::write(
+            dir.join("settings-blocking-menus.local.json"),
+            serde_json::to_vec_pretty(&local).unwrap(),
+        )
+        .unwrap();
+        let store = BlockingMenusStore::load_from_settings_path(&dir.join("settings.json"));
+        assert!(
+            dir.join("settings-blocking-menus.json").exists(),
+            "the production loader writes the shipped file"
+        );
+        store
+    }
+
+    #[test]
+    fn a_custom_pattern_on_disk_reaches_the_evaluator_through_the_production_store() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let guard = MenuGuard::with_store(production_store(temp.path()));
+        let control = MenuGuard::new();
+
+        // 1. byAgent["claude-1"] = [CUSTOM]: the on-disk pattern blocks the row.
+        let claude_1 = agent("claude-1", "claude", None);
+        let entries = guard.entries_for(&claude_1);
+        assert_eq!(entries.len(), 1);
+        let eval = guard.evaluate_logical_rows(Uuid::new_v4(), &claude_row(), &entries);
+        assert!(eval.is_blocked);
+        assert_eq!(
+            eval.matched_notification.as_deref(),
+            Some(CUSTOM_NOTIFICATION)
+        );
+        // Control: the shipped-only guard has nothing for claude, so a store that always
+        // returned `[]` would fail the assertions above, not pass them by accident.
+        let control_entries = control.entries_for(&claude_1);
+        assert!(control_entries.is_empty());
+        let control_eval =
+            control.evaluate_logical_rows(Uuid::new_v4(), &claude_row(), &control_entries);
+        assert!(!control_eval.is_blocked);
+
+        // 2. byAgent["claude-off"] = [CUSTOM disabled]: present, but does not block.
+        let entries = guard.entries_for(&agent("claude-off", "claude", None));
+        assert_eq!(entries.len(), 1);
+        let eval = guard.evaluate_logical_rows(Uuid::new_v4(), &claude_row(), &entries);
+        assert!(!eval.is_blocked);
+
+        // 3. byAgent["pi-off"] = []: an explicit empty array switches the shipped set off.
+        let pi_off = agent("pi-off", "pi", None);
+        let entries = guard.entries_for(&pi_off);
+        assert!(entries.is_empty());
+        let eval = guard.evaluate_logical_rows(Uuid::new_v4(), &pi_row(), &entries);
+        assert!(!eval.is_blocked);
+        let control_entries = control.entries_for(&pi_off);
+        let control_eval =
+            control.evaluate_logical_rows(Uuid::new_v4(), &pi_row(), &control_entries);
+        assert!(control_eval.is_blocked);
+    }
+
+    #[test]
+    fn a_legacy_array_on_the_agent_wins_over_both_files() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let guard = MenuGuard::with_store(production_store(temp.path()));
+
+        // Some(vec![]) on the agent beats byAgent["claude-1"] = [CUSTOM].
+        let entries = guard.entries_for(&agent("claude-1", "claude", Some(vec![])));
+        assert!(entries.is_empty());
+        let eval = guard.evaluate_logical_rows(Uuid::new_v4(), &claude_row(), &entries);
+        assert!(!eval.is_blocked);
+
+        // Some([CUSTOM]) on the agent beats byAgent["pi-off"] = [].
+        let entries = guard.entries_for(&agent("pi-off", "pi", Some(vec![custom(true)])));
+        assert_eq!(entries.len(), 1);
+        let eval = guard.evaluate_logical_rows(Uuid::new_v4(), &claude_row(), &entries);
+        assert!(eval.is_blocked);
+
+        // The materialized state every agent is in until phase 3.
+        let entries = guard.entries_for(&agent(
+            "pi-2",
+            "pi",
+            Some(default_blocking_menus_for_command("pi")),
+        ));
+        let eval = guard.evaluate_logical_rows(Uuid::new_v4(), &pi_row(), &entries);
+        assert!(eval.is_blocked);
     }
 }
