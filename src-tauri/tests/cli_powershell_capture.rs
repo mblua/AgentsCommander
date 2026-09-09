@@ -620,11 +620,12 @@ fn issue_1867_isolation_source_contract() {
         (
             "cli_ui_automation.rs",
             include_str!("cli_ui_automation.rs"),
-            3,
+            4,
             &[
                 ("run", 1),
                 ("run_with_env", 1),
                 ("run_without_draining_output_until_exit", 1),
+                ("reap_on_drop_kills_the_child_when_the_caller_panics", 1),
             ],
             &[],
         ),
