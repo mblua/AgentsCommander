@@ -115,17 +115,6 @@ AgentsCommander trims both parts and joins them with one space. Assign the profi
 
 `--strict-mcp-config` tells Claude Code to use only servers supplied by `--mcp-config` and ignore its other MCP configuration sources, which is why the examples pair the flags.
 
-## Set the cache directory from the profile
-
-Profile-cell environment variables reach the child process and override a same-named variable from the coding agent's base environment. Add `CBM_CACHE_DIR` when you want to choose where codebase-memory stores indexes:
-
-| Use | `CBM_CACHE_DIR` value |
-|---|---|
-| One cache shared by concurrent replicas | `%AC_WORKSPACE_ROOT%/project-shared/cbm-cache` |
-| A replica-specific cache used one at a time | `%AC_REPLICA_ROOT%/.cache/codebase-memory-mcp` |
-
-Current upstream behavior allows only one canonical cache root per account while any codebase-memory process is active. Point concurrent replicas at the same root; close all active codebase-memory sessions and commands before switching to another value. See the upstream [environment-variable reference](https://github.com/DeusData/codebase-memory-mcp/blob/main/docs/CONFIGURATION.md#4-environment-variables).
-
 ## Keep profile parameters on resume
 
 When AgentsCommander resumes Claude Code, it appends `--continue` after every profile parameter; it does not replace the profile parameters. On a fresh launch it may append `--session-id <uuid>` instead. Both injected options start with `--`, so either safely terminates the variadic `--mcp-config` value list.
