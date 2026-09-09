@@ -1905,17 +1905,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <input
             type="checkbox"
             class="settings-checkbox"
-            checked={settings.data!.restoreCoordinatorWakeState}
-            onChange={(e) =>
-              updateField("restoreCoordinatorWakeState", e.currentTarget.checked)
-            }
-          />
-          <span>On start, wake orchestrators that were awake when the app closed</span>
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
             checked={settings.data!.sidebarAlwaysOnTop}
             onChange={(e) =>
               updateField("sidebarAlwaysOnTop", e.currentTarget.checked)
@@ -1943,6 +1932,65 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               updateField("screenshotCaptureHotkey", e.currentTarget.value)
             }
             data-ac-testid="settings.general.screenshotCaptureHotkey"
+          />
+        </label>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">On app restart</div>
+        <div class="settings-hint">
+          What AgentsCommander does with agents that were running when the app
+          was last closed. Each checkbox tries to bring back one class of agent, and the
+          matching text box is what AgentsCommander tries to type into the ones that were mid-task.
+          A session you restarted, or whose conversation you cleared from the phone, is never typed into, even when it comes back.
+          A text box does nothing on its own: if the checkbox for that class is
+          off, nothing in that class is woken and nothing is typed. Leave a text
+          box empty to type nothing into that class.
+        </div>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.restoreCoordinatorWakeState}
+            onChange={(e) =>
+              updateField("restoreCoordinatorWakeState", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.general.restoreCoordinatorWakeState"
+          />
+          <span>On start, wake orchestrators that were awake when the app closed</span>
+        </label>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.restartResumeWakeWorkingAgents}
+            onChange={(e) =>
+              updateField("restartResumeWakeWorkingAgents", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.general.restartResumeWakeWorkingAgents"
+          />
+          <span>On start, wake agent replicas that were working when the app closed</span>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Type into orchestrators that were working</span>
+          <input
+            class="settings-input"
+            value={settings.data!.restartResumeOrchestratorPrompt}
+            onInput={(e) =>
+              updateField("restartResumeOrchestratorPrompt", e.currentTarget.value)
+            }
+            data-ac-testid="settings.general.restartResumeOrchestratorPrompt"
+          />
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Type into agent replicas that were working</span>
+          <input
+            class="settings-input"
+            value={settings.data!.restartResumeAgentPrompt}
+            onInput={(e) =>
+              updateField("restartResumeAgentPrompt", e.currentTarget.value)
+            }
+            data-ac-testid="settings.general.restartResumeAgentPrompt"
           />
         </label>
       </div>

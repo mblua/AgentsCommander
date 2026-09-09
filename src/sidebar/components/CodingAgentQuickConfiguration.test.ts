@@ -61,6 +61,10 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     coordSortByActivity: false,
     alwaysShowSelectedWorkgroup: true,
     restoreCoordinatorWakeState: true,
+    restartResumeWakeWorkingAgents: false,
+    restartResumeOrchestratorPrompt:
+      "AgentsCommander was restarted. Continue with the work that was in flight.",
+    restartResumeAgentPrompt: ".",
     soundsEnabled: true,
     teamIdleBeepEnabled: true,
     webServerEnabled: false,

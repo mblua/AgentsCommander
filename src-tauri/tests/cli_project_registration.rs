@@ -643,8 +643,24 @@ fn new_project_seeds_catalog_into_ac() {
     let parsed: serde_json::Value = serde_json::from_str(&catalog).expect("catalog parses");
     assert_eq!(
         parsed["agents"].as_array().map(Vec::len),
-        Some(7),
-        "the seeded catalog carries the 7 built-ins: {catalog}"
+        Some(8),
+        "the seeded catalog carries the 8 built-ins: {catalog}"
+    );
+    assert_eq!(parsed["schemaVersion"], 1);
+    assert_eq!(
+        parsed["agents"].as_array().unwrap().last().unwrap(),
+        &serde_json::json!({
+            "key": "muse",
+            "label": "Muse Code",
+            "description": "Meta terminal coding agent (beta; macOS/Linux host only)",
+            "color": "#0668E1",
+            "command": "muse",
+            "envs": [],
+            "isolatedHome": false,
+            "removable": true,
+            "updateCommands": [],
+            "autoUpdate": false
+        })
     );
     let claude = parsed["agents"]
         .as_array()
@@ -674,6 +690,13 @@ fn new_project_seeds_catalog_into_ac() {
             "{dest} master must be seeded"
         );
     }
+    let seed_root = project.join(".ac").join("coding-agents").join("_seed");
+    let mut seed_names: Vec<_> = std::fs::read_dir(&seed_root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    seed_names.sort();
+    assert_eq!(seed_names, [".claude", ".codex", ".opencode"]);
     // Seed manifest declares the catalog publication (coverage v2 after the
     // one-shot upgrade).
     let manifest = std::fs::read_to_string(project.join(".ac").join("seed-manifest.toml"))
@@ -723,13 +746,32 @@ fn cli_catalog_serves_legacy_fallback_then_embedded_without_projects() {
         "the legacy catalog is served when no project is registered: {out}"
     );
     assert_eq!(out[0]["key"], "mine");
+    assert_eq!(
+        std::fs::read_to_string(legacy_dir.join("agents.json")).unwrap(),
+        legacy
+    );
 
-    // No legacy -> 7 embedded built-ins.
+    // No legacy -> 8 embedded built-ins.
     std::fs::remove_dir_all(&legacy_dir).unwrap();
     let out = run_json(&bin, &["coding-agent", "catalog"]);
     assert_eq!(
         out.as_array().map(Vec::len),
-        Some(7),
+        Some(8),
         "without a legacy catalog the embedded default is served: {out}"
+    );
+    assert_eq!(
+        out.as_array().unwrap().last().unwrap(),
+        &serde_json::json!({
+            "key": "muse",
+            "label": "Muse Code",
+            "description": "Meta terminal coding agent (beta; macOS/Linux host only)",
+            "color": "#0668E1",
+            "command": "muse",
+            "envs": [],
+            "isolatedHome": false,
+            "removable": true,
+            "updateCommands": [],
+            "autoUpdate": false
+        })
     );
 }
