@@ -411,34 +411,7 @@ describe("#1871 root menu is derived from data", () => {
     });
   });
 
-  describe("the two bot choosers exclude each other", () => {
-    it("row to menu: right-clicking the banner closes the row chooser", async () => {
-      sessionsStore.setSessions([liveRoot()]);
-      const fake = newFake();
-      fake.resolve("get_settings", baseSettings({ telegramBots: [BOT_1, BOT_2] }));
-      renderRoot(fake);
-      click(banner().querySelector(".session-item-telegram")!);
-      await waitFor(() => expect(document.querySelector(".session-item-bot-menu")).not.toBeNull());
-      contextMenu(banner());
-      expect(document.querySelector(".session-item-bot-menu")).toBeNull();
-      expect(q("rootAgent.menu")).not.toBeNull();
-    });
-
-    it("menu to row: clicking the row's telegram button closes the menu and its bot list", async () => {
-      sessionsStore.setSessions([liveRoot()]);
-      const fake = newFake();
-      fake.resolve("get_settings", baseSettings({ telegramBots: [BOT_1, BOT_2] }));
-      renderRoot(fake);
-      await openRootMenu();
-      click(q("rootAgent.menu.telegram")!);
-      await waitFor(() => expect(q("rootAgent.menu.telegram.bot.b1")).not.toBeNull());
-      // The element bound to handleTelegramClick, whose own stopPropagation
-      // keeps this click away from the surface's window listener.
-      click(banner().querySelector(".session-item-telegram")!);
-      expect(q("rootAgent.menu")).toBeNull();
-      expect(q("rootAgent.menu.telegram.bot.b1")).toBeNull();
-    });
-
+  describe("#1896: the menu's bot list dismisses with the menu", () => {
     it("a left click on something that stops nothing dismisses the menu and clears its bot list", async () => {
       sessionsStore.setSessions([liveRoot()]);
       const fake = newFake();

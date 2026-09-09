@@ -1,4 +1,4 @@
-import { Component, createEffect, createMemo, createSignal, Show, For } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import iconUrl from "../../../src-tauri/icons/64x64.png";
 import { isTauri } from "../../shared/platform";
@@ -7,7 +7,6 @@ import {
   SettingsAPI,
   TelegramAPI,
   WindowAPI,
-  emitOpenSettings,
 } from "../../shared/ipc";
 import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
@@ -21,8 +20,6 @@ import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal"
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
 import { rootAgentCodingAgentAction } from "./root-agent-action";
 import { TelegramIcon } from "./TelegramIcon";
-import DetachIcon from "./DetachIcon";
-import ReattachIcon from "./ReattachIcon";
 import { sessionDotClass } from "./session-status";
 import SessionRowMenu from "./context-menu/SessionRowMenu";
 import {
@@ -48,8 +45,6 @@ const RootAgentBanner: Component = () => {
     createSignal<{ epoch: number; sessionId: string; bots: TelegramBotConfig[] } | null>(null);
   let menuEpoch = 0;
   const [showAgentPicker, setShowAgentPicker] = createSignal(false);
-  const [showBotMenu, setShowBotMenu] = createSignal(false);
-  const [availableBots, setAvailableBots] = createSignal<TelegramBotConfig[]>([]);
 
   const rootSession = createMemo<Session | undefined>(() =>
     sessionsStore.sessions.find((s) => s.isRootAgent)
@@ -148,7 +143,6 @@ const RootAgentBanner: Component = () => {
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setShowBotMenu(false); // mutual exclusion with the row's bot chooser
     advanceMenuEpoch(); // on-open reset; both live models do it
     setMenuPos({ x: e.clientX, y: e.clientY });
   };
@@ -226,18 +220,6 @@ const RootAgentBanner: Component = () => {
     }
   };
 
-  const handleMicClick = (e: MouseEvent) => {
-    e.stopPropagation();
-    if (!hasLivePty()) return;
-    if (!settingsStore.voiceEnabled) {
-      emitOpenSettings("integrations").catch(console.error);
-      return;
-    }
-    const r = rootSession();
-    if (!r) return;
-    voiceRecorder.toggle(r.id);
-  };
-
   const handleCancelRecording = (e: MouseEvent) => {
     e.stopPropagation();
     voiceRecorder.cancel();
@@ -246,33 +228,6 @@ const RootAgentBanner: Component = () => {
   const handleCancelAutoExecute = (e: MouseEvent) => {
     e.stopPropagation();
     voiceRecorder.cancelAutoExecute();
-  };
-
-  const handleOpenExplorer = async (e: MouseEvent) => {
-    e.stopPropagation();
-    const r = rootSession();
-    if (!r) return;
-    try {
-      await WindowAPI.openInExplorer(r.workingDirectory);
-    } catch (err) {
-      console.error("Failed to open explorer:", err);
-    }
-  };
-
-  const handleDetachToggle = async (e: MouseEvent) => {
-    e.stopPropagation();
-    if (!hasLivePty()) return;
-    const r = rootSession();
-    if (!r) return;
-    try {
-      if (isDetached()) {
-        await WindowAPI.attach(r.id);
-      } else {
-        await WindowAPI.detach(r.id);
-      }
-    } catch (err) {
-      console.error("detach/attach toggle failed:", err);
-    }
   };
 
   const handleContextDetachToggle = async () => {
@@ -290,55 +245,10 @@ const RootAgentBanner: Component = () => {
     }
   };
 
-  const handleTelegramClick = async (e: MouseEvent) => {
-    e.stopPropagation();
-    closeMenu();
-    if (!hasLivePty()) return;
-    const r = rootSession();
-    if (!r) return;
-    const b = bridge();
-    if (b) {
-      await TelegramAPI.detach(r.id);
-    } else {
-      const settings = await SettingsAPI.get();
-      const bots = settings.telegramBots || [];
-      if (bots.length === 1) {
-        await TelegramAPI.attach(r.id, bots[0].id);
-      } else if (bots.length > 1) {
-        setAvailableBots(bots);
-        setShowBotMenu(true);
-      }
-    }
-  };
-
-  const handleBotSelect = async (botId: string) => {
-    setShowBotMenu(false);
-    if (!hasLivePty()) return;
-    const r = rootSession();
-    if (!r) return;
-    await TelegramAPI.attach(r.id, botId);
-  };
-
-  const handleClose = async (e: MouseEvent) => {
-    e.stopPropagation();
-    const r = rootSession();
-    if (!r || busy()) return;
-    setBusy(true);
-    voiceRecorder.revokeSession(r.id);
-    try {
-      await SessionAPI.destroy(r.id);
-    } catch (error) {
-      console.error("[RootAgentBanner] Failed to close Root Agent:", error);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   // #1871 - menu-side handlers. The catalogue's onSelect takes no MouseEvent,
-  // so the two row handlers that take one (handleOpenExplorer, handleClose)
-  // are copied here minus their e.stopPropagation(); the originals keep
-  // serving the row buttons. SessionRowMenu dismisses before it invokes
-  // onSelect, so none of these calls closeMenu() itself.
+  // so these take none. Since #1896 the banner has no row buttons, so these are
+  // the only open-folder and close paths. SessionRowMenu dismisses before it
+  // invokes onSelect, so none of these calls closeMenu() itself.
   const menuOpenFolder = async () => {
     const r = rootSession();
     if (!r) return;
@@ -415,7 +325,6 @@ const RootAgentBanner: Component = () => {
         await TelegramAPI.attach(r.id, bots[0].id);
         return;
       }
-      setShowBotMenu(false); // mutual exclusion with the row's bot chooser
       setMenuTelegramBots({ epoch, sessionId: r.id, bots }); // menu deliberately stays open
     } catch (e) {
       console.error("[RootAgentBanner] telegram menu action failed:", e);
@@ -576,75 +485,18 @@ const RootAgentBanner: Component = () => {
             </button>
           </Show>
           <Show when={hasLivePty()}>
-            <button
-              class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
-              onClick={handleMicClick}
-              title={
-                !settingsStore.voiceEnabled
-                  ? "Enable voice-to-text in Settings and set a Gemini API key to use this."
-                  : isRecording()
-                    ? "Stop recording"
-                    : isProcessing()
-                      ? "Transcribing..."
-                      : voiceRecorder.micError()
-                        ? voiceRecorder.micError()!
-                        : "Voice to text"
-              }
-            >
-              &#x1F399;
-            </button>
-          </Show>
-          <button
-            class="session-item-explorer"
-            onClick={handleOpenExplorer}
-            title="Open folder in explorer"
-          >
-            &#x1F4C2;
-          </button>
-          <Show when={hasLivePty()}>
-            <button
-              class="session-item-detach"
-              classList={{ attached: isDetached() }}
-              onClick={handleDetachToggle}
-              title={isDetached() ? "Re-attach session" : "Detach session"}
-              data-ac-testid="rootAgent.detachToggle"
-              data-ac-role="button"
-              data-ac-state={isDetached() ? "detached" : "attached"}
-            >
-              {isDetached() ? <ReattachIcon /> : <DetachIcon />}
-            </button>
-
-            <button
-              class={`session-item-telegram ${bridge() ? "active" : ""}`}
-              onClick={handleTelegramClick}
-              title={bridge() ? `Detach Telegram: ${bridge()!.botLabel}` : "Attach Telegram"}
-              style={bridge() ? { color: bridge()!.color } : {}}
-            ><TelegramIcon /></button>
-            <Show when={showBotMenu()}>
-              <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
-                <For each={availableBots()}>
-                  {(bot) => (
-                    <button
-                      class="session-item-bot-option"
-                      onClick={() => handleBotSelect(bot.id)}
-                    >
-                      <span class="settings-color-dot" style={{ background: bot.color }} />
-                      {bot.label}
-                    </button>
-                  )}
-                </For>
-              </div>
+            {/* #1896 - the replica row's bridge indicator (ProjectPanel), not a
+                button: attach and detach live in the menu (rootAgent.menu.telegram). */}
+            <Show when={bridge()}>
+              <span
+                class="session-item-bridge-icon"
+                style={{ color: bridge()!.color }}
+                title={`Telegram: ${bridge()!.botLabel}`}
+              >
+                <TelegramIcon />
+              </span>
             </Show>
           </Show>
-          <button
-            class="session-item-close"
-            onClick={(event) => void handleClose(event)}
-            title="Close session (Ctrl+Shift+W)"
-            data-ac-testid="rootAgent.destroy"
-            data-ac-role="button"
-          >
-            &#x2715;
-          </button>
         </Show>
       </div>
       <Show when={showAgentPicker()}>

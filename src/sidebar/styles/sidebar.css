@@ -1352,9 +1352,6 @@ html, body, #root {
   text-align: left;
   font-family: var(--font-ui);
   transition: background var(--transition-fast);
-  /* Containing block for the absolutely-positioned bot picker
-     (.session-item-bot-menu uses right:0; top:100%). Mirrors .session-item. */
-  position: relative;
 }
 
 .root-agent-banner:hover {
@@ -1371,15 +1368,6 @@ html, body, #root {
    mirroring .session-item-info inside .session-item. */
 .root-agent-banner .root-agent-text {
   flex: 1;
-}
-
-/* Mirror SessionItem's hover-reveal for action buttons. */
-.root-agent-banner:hover .session-item-mic,
-.root-agent-banner:hover .session-item-explorer,
-.root-agent-banner:hover .session-item-detach,
-.root-agent-banner:hover .session-item-telegram,
-.root-agent-banner:hover .session-item-close {
-  display: flex;
 }
 
 .root-agent-avatar {
