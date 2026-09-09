@@ -229,8 +229,11 @@ pub fn compute_config_dir_warning(
     let key = match CodingAgentKind::detect(shell, shell_args) {
         Some(CodingAgentKind::Claude) => "CLAUDE_CONFIG_DIR",
         Some(CodingAgentKind::Codex) => "CODEX_HOME",
-        // Antigravity and Pi have no AC-managed config-dir env to compare against.
-        Some(CodingAgentKind::Antigravity | CodingAgentKind::Pi) => return None,
+        // Antigravity, Pi and Muse (#1873) have no AC-managed config-dir env to
+        // compare against.
+        Some(CodingAgentKind::Antigravity | CodingAgentKind::Pi | CodingAgentKind::Muse) => {
+            return None
+        }
         None => {
             if crate::config::agent_command::command_runs_opencode(shell, shell_args) {
                 "OPENCODE_CONFIG_DIR"
@@ -2365,6 +2368,95 @@ mod tests {
         )
         .expect("warning");
         assert!(w.contains("active"), "{w}");
+    }
+
+    /// #1873 - Muse has no AC-managed config-dir warning and ships no built-in
+    /// seed, factory master, or credential flow; a user-configured `configSeed`
+    /// still resolves provider-neutrally through the same path every agent uses.
+    #[test]
+    fn muse_has_no_config_dir_warning_or_seed_contract() {
+        let dest = abs(r"C:\replica\.muse", "/replica/.muse");
+        let mut env = BTreeMap::new();
+        env.insert("MUSE_HOME".to_string(), "/elsewhere/.muse".to_string());
+        env.insert(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            "/elsewhere/.claude".to_string(),
+        );
+        env.insert("CODEX_HOME".to_string(), "/elsewhere/.codex".to_string());
+        for (shell, args) in [
+            ("muse", Vec::<String>::new()),
+            (
+                "/opt/muse/bin/muse",
+                vec!["resume".to_string(), "--last".to_string()],
+            ),
+            (
+                "muse",
+                vec!["--workspace".to_string(), "/tmp/codex".to_string()],
+            ),
+        ] {
+            assert_eq!(
+                CodingAgentKind::detect(shell, &args),
+                Some(CodingAgentKind::Muse)
+            );
+            assert!(
+                compute_config_dir_warning(&dest, shell, &args, &env, &env, None).is_none(),
+                "shell={shell:?} args={args:?}"
+            );
+        }
+
+        // No built-in seed/factory master and no automatic credential flow.
+        let catalog = crate::config::coding_agents_catalog::embedded_default_catalog();
+        let muse = catalog
+            .agents
+            .iter()
+            .find(|a| a.key == "muse")
+            .expect("#1860 catalog ships the Muse built-in");
+        assert!(
+            muse.config_seed.is_none(),
+            "Muse must ship configSeed UNSET"
+        );
+        assert!(
+            !crate::config::coding_agents_catalog::reseedable_command_basenames()
+                .iter()
+                .any(|b| b == "muse"),
+            "no embedded seed master for Muse"
+        );
+        assert!(CodingAgentKind::Muse
+            .profile()
+            .container_credential
+            .is_none());
+
+        // A user-configured active seed resolves provider-neutrally: same
+        // candidates/dest as any other agent, and no Muse-specific warning.
+        let replica = abs(r"C:\proj\.ac\wg-1\__agent_x", "/proj/.ac/wg-1/__agent_x");
+        let ac_root = abs(r"C:\proj\.ac", "/proj/.ac");
+        let matrix = abs(r"C:\proj\.ac\_agent_x", "/proj/.ac/_agent_x");
+        let ctx = ctx_with(&replica, Some(&ac_root), Some(&matrix));
+        let resolved = resolve_config_seed(&seed_cfg(".muse"), "A", Some(&ctx))
+            .expect("active user seed resolves");
+        assert_eq!(resolved.dest, replica.join(".muse"));
+        assert_eq!(
+            resolved
+                .candidates
+                .iter()
+                .map(|(tier, _)| *tier)
+                .collect::<Vec<_>>(),
+            vec![
+                ConfigSeedTier::WorkspaceProfile,
+                ConfigSeedTier::WorkspaceBase,
+                ConfigSeedTier::MatrixProfile,
+                ConfigSeedTier::MatrixBase,
+            ]
+        );
+        assert_eq!(
+            resolved.candidates[0].1,
+            ac_root.join("default_profile_a.muse")
+        );
+        assert!(resolved.config_dir_warning.is_none());
+        // Identical resolution for a non-Muse agent proves provider neutrality.
+        let other = resolve_config_seed(&seed_cfg(".muse"), "A", Some(&ctx)).unwrap();
+        assert_eq!(other.dest, resolved.dest);
+        assert_eq!(other.candidates, resolved.candidates);
     }
 
     #[test]
