@@ -87,17 +87,25 @@ fn execute_inner(args: TestResetArgs) -> Result<TestResetOutput, String> {
         })?;
     }
 
-    let (active, _mutex_guard) =
-        crate::testability::acquire_profile_mutex_probe().map_err(|e| {
-            error_json(
-                "profile_mutex_probe_failed",
-                serde_json::json!({"message": e, "plannedDelete": &candidates}),
-            )
-        })?;
+    let (active, mutex_guard) = crate::testability::acquire_profile_mutex_probe().map_err(|e| {
+        error_json(
+            "profile_mutex_probe_failed",
+            serde_json::json!({"message": e, "plannedDelete": &candidates}),
+        )
+    })?;
     if active {
+        // #1773: name the holder so a red test points at its cause. Diagnostic
+        // only: the refusal below does not depend on the lookup's outcome.
+        let lookup = crate::testability::mutex_holders::find_holders(&mutex_guard);
         return Err(error_json(
             "testable_gui_active",
-            serde_json::json!({"exePath": &exe_path, "plannedDelete": &candidates}),
+            serde_json::json!({
+                "exePath": &exe_path,
+                "plannedDelete": &candidates,
+                "mutex": lookup.mutex_name,
+                "holders": lookup.holders,
+                "holderLookup": lookup.scan,
+            }),
         ));
     }
 

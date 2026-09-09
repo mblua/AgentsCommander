@@ -108,6 +108,54 @@ fn open_without_delete_share(path: &Path) -> std::fs::File {
         .expect("open with restricted share mode")
 }
 
+/// #1773: a harness-owned handle to a named mutex. Closed on drop, so a panic
+/// between creation and the end of the test cannot leave the mutex held for the
+/// rest of this test binary's run.
+#[cfg(target_os = "windows")]
+struct HeldMutex(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(target_os = "windows")]
+impl HeldMutex {
+    fn create(name: &str) -> Self {
+        use windows_sys::Win32::System::Threading::CreateMutexW;
+        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, wide.as_ptr()) };
+        assert!(!handle.is_null(), "failed to create mutex {name}");
+        Self(handle)
+    }
+
+    /// The same string `mutex_holders` prints for this handle in the payload.
+    fn payload_handle(&self) -> String {
+        format!("0x{:X}", self.0 as usize)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for HeldMutex {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+/// Opens (never creates) the named mutex, mirroring `gui_instance_running()`.
+#[cfg(target_os = "windows")]
+fn mutex_exists(name: &str) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::OpenMutexW;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let handle = unsafe { OpenMutexW(SYNCHRONIZE, 0, wide.as_ptr()) };
+    if handle.is_null() {
+        return false;
+    }
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    true
+}
+
 #[test]
 fn missing_confirm_refuses() {
     let _guard = testable_reset_identity_lock();
@@ -294,30 +342,74 @@ fn symlink_target_refuses_and_deletes_nothing() {
     );
 }
 
+/// #1773 positive control. This harness process holds the mutex and is a different
+/// process from the binary under test, so the refusal must name it: our PID, our
+/// image name and the exact handle value we hold. The harness also holds a decoy,
+/// a second Mutant handle to a different named object; a lookup that reports
+/// Mutant handles without comparing identity would report the decoy too, and this
+/// test rejects that. Other holders (a running manual test GUI) may appear as
+/// other PIDs; the test constrains only the entries attributed to this process.
 #[cfg(target_os = "windows")]
 #[test]
 fn held_testable_mutex_refuses_and_deletes_nothing() {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::CreateMutexW;
-
     let _guard = testable_reset_identity_lock();
     let tmp = Tmp::new("reset-active-mutex");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     let config_dir = tmp.path().join(".agentscommander_testeable");
     std::fs::create_dir_all(&config_dir).unwrap();
 
-    let mutex_name: Vec<u16> = "Local\\AgentsCommander_SingleInstance_Testeable\0"
-        .encode_utf16()
-        .collect();
-    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr()) };
-    assert!(!handle.is_null(), "failed to create mutex");
+    let held = HeldMutex::create("Local\\AgentsCommander_SingleInstance_Testeable");
+    let decoy = HeldMutex::create("Local\\AgentsCommander_1773_PositiveControlDecoy");
+    let expected_handle = held.payload_handle();
+    let decoy_handle = decoy.payload_handle();
+    assert_ne!(
+        expected_handle, decoy_handle,
+        "two open handles in one process never share a value"
+    );
 
     let (code, stdout, stderr) = run(&bin, &["test-reset", "--confirm-testeable"]);
-    unsafe {
-        let _ = CloseHandle(handle);
-    }
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    assert_eq!(stderr_json(&stderr)["error"], "testable_gui_active");
+    let payload = stderr_json(&stderr);
+    assert_eq!(payload["error"], "testable_gui_active");
+    assert_eq!(
+        payload["mutex"],
+        "Local\\AgentsCommander_SingleInstance_Testeable"
+    );
+    assert_eq!(
+        payload["holderLookup"]["status"], "found",
+        "payload: {payload}"
+    );
+
+    let me = u64::from(std::process::id());
+    let my_image = std::env::current_exe()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let mine: Vec<&Value> = payload["holders"]
+        .as_array()
+        .expect("holders array")
+        .iter()
+        .filter(|h| h["pid"] == me)
+        .collect();
+    let mine_handles: Vec<&str> = mine
+        .iter()
+        .map(|h| h["handle"].as_str().expect("handle is a string"))
+        .collect();
+    assert!(
+        !mine_handles.contains(&decoy_handle.as_str()),
+        "the decoy handle {decoy_handle} refers to a different mutex and must not be reported: {payload}"
+    );
+    assert_eq!(
+        mine_handles,
+        [expected_handle.as_str()],
+        "this harness (pid {me}) holds exactly one handle to the mutex, {expected_handle}: {payload}"
+    );
+    assert!(
+        mine.iter().all(|h| h["imageName"] == my_image.as_str()),
+        "the holder attributed to pid {me} must carry image {my_image}: {payload}"
+    );
     assert!(config_dir.exists(), "active GUI refusal should not delete");
 }
 
@@ -352,5 +444,37 @@ fn junction_target_refuses_and_deletes_nothing() {
     assert!(
         project_dir.exists(),
         "other candidate should not be deleted after refusal"
+    );
+}
+
+/// #1773: the guard must release the handle on the panic path, not only on the
+/// happy path. Uses its own mutex name so it never interacts with the real gate.
+/// Every prerequisite is asserted outside `catch_unwind`, so a failed setup fails
+/// the test instead of being caught; the closure contains nothing but the move and
+/// the deliberate panic, and the caught payload must be that panic's sentinel.
+#[cfg(target_os = "windows")]
+#[test]
+fn held_mutex_guard_releases_the_handle_when_the_test_panics() {
+    const NAME: &str = "Local\\AgentsCommander_1773_HeldMutexGuardProbe";
+    const SENTINEL: &str = "1773 HeldMutex sentinel panic 6c1f";
+
+    assert!(!mutex_exists(NAME), "probe mutex must not pre-exist");
+    let held = HeldMutex::create(NAME);
+    assert!(mutex_exists(NAME), "guard must hold the mutex while alive");
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _held = held;
+        std::panic::panic_any(SENTINEL);
+    }));
+
+    let payload = outcome.expect_err("the closure must panic");
+    assert_eq!(
+        payload.downcast_ref::<&'static str>(),
+        Some(&SENTINEL),
+        "the caught panic must be the sentinel, not a failed assertion"
+    );
+    assert!(
+        !mutex_exists(NAME),
+        "the guard must close the handle during unwinding"
     );
 }

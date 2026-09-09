@@ -1031,8 +1031,11 @@ agentscommander_lib::telegram::output -> agentscommander_lib::network
 agentscommander_lib::telegram::output -> agentscommander_lib::telegram::api
 agentscommander_lib::telegram::output -> agentscommander_lib::telegram::redact
 agentscommander_lib::testability -> agentscommander_lib::config::profile
+agentscommander_lib::testability::mutex_holders -> agentscommander_lib::config::profile
+agentscommander_lib::testability::mutex_holders -> agentscommander_lib::testability
 agentscommander_lib::testability::reset -> agentscommander_lib
 agentscommander_lib::testability::reset -> agentscommander_lib::testability
+agentscommander_lib::testability::reset -> agentscommander_lib::testability::mutex_holders
 agentscommander_lib::testability::reset -> agentscommander_lib::testability::window_placement
 agentscommander_lib::testability::ui_automation -> agentscommander_lib
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::config

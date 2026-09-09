@@ -1,3 +1,4 @@
+pub mod mutex_holders;
 pub mod reset;
 pub mod ui_automation;
 pub mod window_info;
@@ -15,8 +16,16 @@ impl Drop for ProfileMutexGuard {
     }
 }
 
+/// Probe the single-instance mutex for this binary identity.
+///
+/// Returns `(active, guard)`. `guard` is this process's own handle to the mutex on
+/// both branches: when `active` is false it keeps the name reserved for the rest of
+/// the reset; when `active` is true it is the reference object that
+/// `mutex_holders::find_holders` compares other processes' handles against. It is
+/// closed on drop either way. #1773 removed the early `CloseHandle` on the active
+/// branch; `active` itself still comes only from `ERROR_ALREADY_EXISTS`.
 #[cfg(target_os = "windows")]
-pub fn acquire_profile_mutex_probe() -> Result<(bool, Option<ProfileMutexGuard>), String> {
+pub fn acquire_profile_mutex_probe() -> Result<(bool, ProfileMutexGuard), String> {
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::Threading::CreateMutexW;
 
@@ -30,17 +39,10 @@ pub fn acquire_profile_mutex_probe() -> Result<(bool, Option<ProfileMutexGuard>)
     }
 
     let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
-    if already_exists {
-        unsafe {
-            let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
-        }
-        Ok((true, None))
-    } else {
-        Ok((false, Some(ProfileMutexGuard(handle))))
-    }
+    Ok((already_exists, ProfileMutexGuard(handle)))
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn acquire_profile_mutex_probe() -> Result<(bool, Option<()>), String> {
-    Ok((false, None))
+pub fn acquire_profile_mutex_probe() -> Result<(bool, ()), String> {
+    Ok((false, ()))
 }
