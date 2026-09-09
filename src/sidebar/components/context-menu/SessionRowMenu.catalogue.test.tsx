@@ -821,6 +821,26 @@ describe("#1871 SessionRowMenu catalogue", () => {
       expect(count("sentinel.create.input")).toBe(1);
       expect(count("sentinel.create.save")).toBe(1);
       expect(count("sentinel.create")).toBe(0);
+      // Section 7.6: every item button carries data-ac-role="menuitem", the
+      // flyout's choice and create buttons included.
+      expect(q("sentinel.nonstop")!.getAttribute("data-ac-role")).toBe("menuitem");
+      expect(q("sentinel.choice.g1")!.getAttribute("data-ac-role")).toBe("menuitem");
+      expect(q("sentinel.create.save")!.getAttribute("data-ac-role")).toBe("menuitem");
+    });
+
+    it("every choice button and both create buttons carry data-ac-role=menuitem", () => {
+      const handle = mount({ addToGroup: groupSpec() });
+      const flyout = openGroupFlyout();
+      const choices = flyout.querySelectorAll("button.session-context-group-option");
+      expect(choices).toHaveLength(2);
+      for (const button of Array.from(choices)) {
+        expect(button.getAttribute("data-ac-role")).toBe("menuitem");
+      }
+      expect(q(GROUP_TEST_IDS.create)!.getAttribute("data-ac-role")).toBe("menuitem");
+      handle.setCaps({
+        addToGroup: groupSpec({ create: { active: true, draft: "", onDraft: noop, onStart: noop, onSave: noop } }),
+      });
+      expect(q(GROUP_TEST_IDS.createSave)!.getAttribute("data-ac-role")).toBe("menuitem");
     });
 
     it("renders checked, disabled and pinned choices as the live surface does", () => {

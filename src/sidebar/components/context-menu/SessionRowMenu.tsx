@@ -358,6 +358,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
                     data-ac-testid={
                       index() === 0 ? spec().testIds.nonstop : spec().testIds.choice(choice.id)
                     }
+                    data-ac-role="menuitem"
                   >
                     <span class="session-context-option-check">{choice.checked ? "✓" : ""}</span>
                     <span>{choice.name}</span>
@@ -385,6 +386,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
                     class="session-context-option"
                     onClick={() => spec().create.onStart()}
                     data-ac-testid={spec().testIds.create}
+                    data-ac-role="menuitem"
                   >
                     <span class="session-context-option-icon" aria-hidden="true">
                       {"\u{1F465}"}
@@ -411,6 +413,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
                     class="session-context-option"
                     onClick={() => spec().create.onSave()}
                     data-ac-testid={spec().testIds.createSave}
+                    data-ac-role="menuitem"
                   >
                     Create
                   </button>

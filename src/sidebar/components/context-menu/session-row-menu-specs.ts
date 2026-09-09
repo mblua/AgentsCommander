@@ -149,7 +149,8 @@ export function matrixFolderSpec(
   path: string | null | undefined,
   h?: SelectHandler,
 ): false | ActionSpec {
-  if (!path || !h) return false;
+  // Absent iff undefined or null. There is no value rule: "" is a present input.
+  if (path == null || !h) return false;
   return { onSelect: h.onSelect, title: path };
 }
 

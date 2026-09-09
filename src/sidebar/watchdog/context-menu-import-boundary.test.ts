@@ -10,6 +10,9 @@ import { describe, expect, it } from "vitest";
 
 const IMPORT_RE = /^\s*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']/gm;
 const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*["']([^"']+)["']/g;
+// A bare side-effect import (`import "x";`) has no `from`, so IMPORT_RE cannot
+// see it; without this a forbidden store dependency passes the layering proof.
+const SIDE_EFFECT_IMPORT_RE = /^\s*import\s*["']([^"']+)["']\s*;?/gm;
 const SELF = "sidebar/watchdog/context-menu-import-boundary.test.ts";
 const SOURCES = import.meta.glob<string>("../../**/*.{ts,tsx}", {
   query: "?raw",
@@ -57,6 +60,7 @@ function specifiersOf(source: string): string[] {
   const found = new Set<string>();
   for (const match of source.matchAll(IMPORT_RE)) found.add(match[1]);
   for (const match of source.matchAll(DYNAMIC_IMPORT_RE)) found.add(match[1]);
+  for (const match of source.matchAll(SIDE_EFFECT_IMPORT_RE)) found.add(match[1]);
   return Array.from(found).sort();
 }
 

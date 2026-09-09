@@ -226,6 +226,16 @@ describe("session-row-menu-specs", () => {
     expect(clear.title).toBe("clean");
   });
 
+  // matrixFolderSpec has no value rule (section 8.2): only undefined and null are
+  // absent, so the empty string is a present input and yields an ActionSpec.
+  it("matrixFolderSpec treats the empty string as a present input", () => {
+    const onMatrix = vi.fn();
+    const spec = matrixFolderSpec("", { onSelect: onMatrix });
+    expect(spec).not.toBe(false);
+    expect(spec.onSelect).toBe(onMatrix);
+    expect(spec.title).toBe("");
+  });
+
   // 3. reposSpec's filter, the one helper with real logic. Matches
   //    SessionItem's repoMenuEntries filter (section 5.5 parity).
   describe("reposSpec filter", () => {
