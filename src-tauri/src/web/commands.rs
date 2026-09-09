@@ -1932,7 +1932,8 @@ mod tests {
             .await
             .expect("catalog route");
         let rows = catalog.as_array().expect("catalog array");
-        assert_eq!(rows.len(), 7);
+        assert_eq!(rows.len(), 8);
+        assert_eq!(rows.last().unwrap()["key"], "muse");
         assert_eq!(
             rows.iter()
                 .filter(|row| !row["updateCommands"]
