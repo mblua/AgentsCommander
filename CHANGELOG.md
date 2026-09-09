@@ -6,6 +6,25 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- **Agents resume automatically after an app restart.** Settings > General gains an **On app restart** section with two checkboxes and two editable restart prompts. When enabled, AgentsCommander restores the saved sessions, wakes the replicas that were working when the app closed, waits until each one is ready for input, and types the configured prompt into it once, so a team picks up where it left off without anyone retyping into every terminal. The existing `Orchestrator wake state` control moves into that section. ([#1793](https://github.com/mblua/AgentsCommander/issues/1793), [#1801](https://github.com/mblua/AgentsCommander/issues/1801), [#1802](https://github.com/mblua/AgentsCommander/issues/1802), [#1803](https://github.com/mblua/AgentsCommander/issues/1803), [#1804](https://github.com/mblua/AgentsCommander/issues/1804))
+- **The bar that marks the selected sidebar row now has user-settable width and colour.** Two new fields in Settings set the rail width (up to 14px) and its colour; both are persisted, published to the DOM and validated in the modal. The factory colour is now `#630707`. ([#1796](https://github.com/mblua/AgentsCommander/issues/1796), [#1828](https://github.com/mblua/AgentsCommander/issues/1828), [#1829](https://github.com/mblua/AgentsCommander/issues/1829), [#1830](https://github.com/mblua/AgentsCommander/issues/1830), [#1831](https://github.com/mblua/AgentsCommander/issues/1831), [#1844](https://github.com/mblua/AgentsCommander/issues/1844))
+- **Muse Code joins the embedded coding-agent catalog** as a beta preset: command `muse`, macOS and Linux hosts only, no config seed and no update commands. ([#1860](https://github.com/mblua/AgentsCommander/issues/1860))
+- **`agentscommander --version` (and `-V`) prints the CLI version.** The npm clean-install check in the release pipeline relies on it, and that pipeline's post-publish verification now tolerates registry propagation delays and compares the provenance registry URL canonically. ([#1826](https://github.com/mblua/AgentsCommander/issues/1826))
+- **The Golden Rule block seeded to every room replica now lists six shared filesystem locations:** the project-level `plans`, `tools`, `errors` and `project-shared` directories under the project `.ac` root (read and write), plus the room's `TASK.md` (read-only) and `room-shared/` (read and write). AgentsCommander creates the directories; an already-materialized context picks them up with no migration. ([#1795](https://github.com/mblua/AgentsCommander/issues/1795))
+- **New documentation page for running Claude Code with the third-party `codebase-memory-mcp` server**, directly or through an AgentsCommander profile cell. The earlier "why not MCP" stance is removed from the README and the FAQ. ([#1882](https://github.com/mblua/AgentsCommander/issues/1882))
+
+### Changed
+
+- **The Root Agent's right-click menu reaches parity with the replica rows.** Every session-row context menu is now rendered by one catalogue component, so the same items, separators and dismissal behaviour apply everywhere. ([#1871](https://github.com/mblua/AgentsCommander/issues/1871))
+
+### Fixed
+
+- **Blocked-menu notices no longer get lost.** Each session's communication state is reconciled from the 5-second listing poll, so a raised hand and a blocked menu no longer overwrite each other and a dropped event, a reconnect or a window reload heals within seconds ([#1856](https://github.com/mblua/AgentsCommander/issues/1856)); blocked menus surface as one pinned, aggregated toast carrying the latest notice text and requesting taskbar attention ([#1857](https://github.com/mblua/AgentsCommander/issues/1857)); the blocked-menu chip has its own glyph and colour, distinct from a raised hand, and the toast action button is styled ([#1858](https://github.com/mblua/AgentsCommander/issues/1858)); and collapsed projects, teams and orchestrator groups, as well as the sidebar filter, roll the blocked state up so it stays visible ([#1859](https://github.com/mblua/AgentsCommander/issues/1859)).
+- **`test-reset --confirm-testeable` now names the process holding the single-instance mutex** (PID, image name, path and handle) instead of only reporting `testable_gui_active`, and the panic paths that leaked a testable process are closed. Windows only. ([#1773](https://github.com/mblua/AgentsCommander/issues/1773))
+- **`npm test` can no longer exit non-zero while every test passes.** A debounced settings-preview call fired against an incomplete mock after the test finished. ([#1797](https://github.com/mblua/AgentsCommander/issues/1797))
+
 ## 0.30.5
 
 ### Changed
