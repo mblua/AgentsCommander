@@ -1,123 +1,130 @@
 {
-  "assetCount": 16,
+  "assetCount": 17,
   "assets": [
     {
-      "id": 531472759,
-      "name": "Agents.Commander-0.30.3-1.x86_64.rpm",
-      "sha256": "d3703256f03c7b2daf64beab4bf29a1b46b40a8ba0626c576abd8a946defc939",
-      "size": 22065642,
+      "id": 547541162,
+      "name": "Agents.Commander-0.30.5-1.x86_64.rpm",
+      "sha256": "24230f40bf71f67c661de32e1ea109bbe7c89faf7e0869c93af4d7bdeea63b7a",
+      "size": 22975620,
       "state": "uploaded"
     },
     {
-      "id": 531470401,
-      "name": "Agents.Commander_0.30.3_aarch64.dmg",
-      "sha256": "016b4a109838b901c7a7d2240e8e5f94a2dd59e1dbb970f40966230e9c65f363",
-      "size": 23673434,
+      "id": 547544767,
+      "name": "Agents.Commander_0.30.5_aarch64.dmg",
+      "sha256": "adfff868654f1498c2622c2d35ae357a6c8a15000dd337eeda862b8fb4b86c1c",
+      "size": 24572923,
       "state": "uploaded"
     },
     {
-      "id": 531472771,
-      "name": "Agents.Commander_0.30.3_amd64.AppImage",
-      "sha256": "56a1e39bf3616094695bfb16bfc53c2028c6ba66668089d163b65269328260d3",
-      "size": 99604984,
+      "id": 547541215,
+      "name": "Agents.Commander_0.30.5_amd64.AppImage",
+      "sha256": "8b56e0d134cca6fb5bac3d906db049f26898adfc049c229f0e6be17e5d87399d",
+      "size": 100444664,
       "state": "uploaded"
     },
     {
-      "id": 531472751,
-      "name": "Agents.Commander_0.30.3_amd64.deb",
-      "sha256": "e5eb5bd48550e5d1fe45918b22b7e36f2d188f9d3de0862da7f1fc22db7b5128",
-      "size": 22066524,
+      "id": 547541284,
+      "name": "Agents.Commander_0.30.5_amd64.deb",
+      "sha256": "f60dcadb19731ead7cb04bd17d0d70a13e43e32a74e919936dbfd3f1ebe1bb95",
+      "size": 22972598,
       "state": "uploaded"
     },
     {
-      "id": 531476141,
-      "name": "Agents.Commander_0.30.3_x64-setup.exe",
-      "sha256": "6dcd64d869dbd2884ecee1a903e7dd9595678344f19f5e974ea35788792f9127",
-      "size": 15426159,
+      "id": 547544507,
+      "name": "Agents.Commander_0.30.5_x64-setup.exe",
+      "sha256": "429c72004dcba2343d147bf9e0283c03cc85ddc12edcf6cc7202759f4ca380df",
+      "size": 15933357,
       "state": "uploaded"
     },
     {
-      "id": 531470011,
-      "name": "Agents.Commander_0.30.3_x64.dmg",
-      "sha256": "b863f0d6ed2827c00401e6601c22dd010d99138067292f7c472a0128efd214ba",
-      "size": 24267845,
+      "id": 547539266,
+      "name": "Agents.Commander_0.30.5_x64.dmg",
+      "sha256": "ffadc39cce7dd531098f2c07f231906804e7c5115f21f6ad2c0446e3ce5f8552",
+      "size": 25165849,
       "state": "uploaded"
     },
     {
-      "id": 531470427,
+      "id": 547544846,
       "name": "Agents.Commander_aarch64.app.tar.gz",
-      "sha256": "656d4df3aa20a06e0d050cfd5b723ba40257fe79a9d3a3241e0c10b22d3a52ed",
-      "size": 21396953,
+      "sha256": "c28e5d7968e2bad7fd70b69b24ee87d335e63d218b68b71a0e2f33d0b207c149",
+      "size": 22262689,
       "state": "uploaded"
     },
     {
-      "id": 531470062,
+      "id": 547539376,
       "name": "Agents.Commander_x64.app.tar.gz",
-      "sha256": "944f4d8cec2404b3b382e5f4301edebb2012fa01af8b4b98634bec4b49545f63",
-      "size": 22023088,
+      "sha256": "68ea75336a50a789c82c05d47835f7417c036dc09d039662ad21f7fd981ed784",
+      "size": 22917514,
       "state": "uploaded"
     },
     {
-      "id": 531477019,
+      "id": 547546005,
       "name": "SHASUMS256.txt",
-      "sha256": "a1c383a502345630d0335c256eefe313b799875b2fa95e7a23017249afa96489",
-      "size": 1515,
+      "sha256": "d39a4a18bc5d89361222b6374a736ff229e8da34687c0ebc9458d08f634b4cd4",
+      "size": 1632,
       "state": "uploaded"
     },
     {
-      "id": 531472827,
+      "id": 547544578,
+      "name": "agentscommander-0.30.5-windows-x86_64-portable.zip",
+      "sha256": "a6c18a365d6cabf74361f75f377e97fb7c0a0ac67bca6fa947378c798079ab50",
+      "size": 22732272,
+      "state": "uploaded"
+    },
+    {
+      "id": 547541354,
       "name": "agentscommander-linux-x86_64",
-      "sha256": "2e671750479c6efccec39d81e03272c31dcc8a7b4c46b21520140022a41c1c97",
-      "size": 62565448,
+      "sha256": "b39ba4153785d4de77510167536585ba04bd8922207476e126366aaf910e6f74",
+      "size": 64620776,
       "state": "uploaded"
     },
     {
-      "id": 531470491,
+      "id": 547544918,
       "name": "agentscommander-mac-aarch64",
-      "sha256": "259c3182c3a226a06855400854c8a62f1a04feceb9bacdb44e0bae063627f727",
-      "size": 50962320,
+      "sha256": "50b472aeb45db4749573d4b77469f5a411a8767e3ad8e3a8a1df09ef170b4b8a",
+      "size": 52860912,
       "state": "uploaded"
     },
     {
-      "id": 531470538,
+      "id": 547545021,
       "name": "agentscommander-mac-aarch64.app.tar.gz",
-      "sha256": "656d4df3aa20a06e0d050cfd5b723ba40257fe79a9d3a3241e0c10b22d3a52ed",
-      "size": 21396953,
+      "sha256": "c28e5d7968e2bad7fd70b69b24ee87d335e63d218b68b71a0e2f33d0b207c149",
+      "size": 22262689,
       "state": "uploaded"
     },
     {
-      "id": 531470104,
+      "id": 547539452,
       "name": "agentscommander-mac-x86_64",
-      "sha256": "9bb630e6fe8a4dc0b2dffd1f6bc48eaca191ae91bdce506602d5535399a8c9f0",
-      "size": 53052728,
+      "sha256": "3f2d2b86228b8ce7d493edef932111739a62d495d3e077ebfca6ae5740fd61a1",
+      "size": 55003080,
       "state": "uploaded"
     },
     {
-      "id": 531470152,
+      "id": 547539570,
       "name": "agentscommander-mac-x86_64.app.tar.gz",
-      "sha256": "944f4d8cec2404b3b382e5f4301edebb2012fa01af8b4b98634bec4b49545f63",
-      "size": 22023088,
+      "sha256": "68ea75336a50a789c82c05d47835f7417c036dc09d039662ad21f7fd981ed784",
+      "size": 22917514,
       "state": "uploaded"
     },
     {
-      "id": 531476324,
+      "id": 547544663,
       "name": "agentscommander-testeable-windows-x86_64.exe",
-      "sha256": "7a5271f4dbd31b96d1fe70ddd7ae37ff3840fc69ec21aaee35ef3f201ce252c4",
-      "size": 59721216,
+      "sha256": "e66dc320ce27b3de5a085e7e7453e85d1e4931e07ef9ac7b048d18fd1be33a27",
+      "size": 62340096,
       "state": "uploaded"
     },
     {
-      "id": 531476299,
+      "id": 547544737,
       "name": "agentscommander-windows-x86_64.exe",
-      "sha256": "7a5271f4dbd31b96d1fe70ddd7ae37ff3840fc69ec21aaee35ef3f201ce252c4",
-      "size": 59721216,
+      "sha256": "e66dc320ce27b3de5a085e7e7453e85d1e4931e07ef9ac7b048d18fd1be33a27",
+      "size": 62340096,
       "state": "uploaded"
     }
   ],
   "immutable": true,
   "kind": "predecessor",
-  "releaseId": 377473922,
+  "releaseId": 383676971,
   "repository": "mblua/AgentsCommander",
   "schema": "prepare-agentscommander-release/asset-ledger/v1",
-  "tag": "v0.30.3"
+  "tag": "v0.30.5"
 }
