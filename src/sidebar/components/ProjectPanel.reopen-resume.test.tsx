@@ -31,6 +31,10 @@ import type {
 // NOT resume. This drives the real ProjectPanel → AgentPickerModal → SessionAPI
 // .create flow through the FakeTransport and asserts the recorded create_session
 // `skipAutoResume` payload, per the frontend-visual-verification discipline.
+//
+// #1861 - the configured agent is the beta Muse Code preset: the frontend sends
+// the same provider-neutral intent (agentId, cwd, skipAutoResume) and the
+// backend alone maps it to `muse resume --last` or a fresh `muse` (#1873).
 
 const projectPath = "C:\\Project";
 const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
@@ -38,13 +42,13 @@ const coordPath = `${workgroupPath}\\__agent_dev-webpage-ui`;
 const coordName = "dev-webpage-ui";
 const coordSessionName = `wg-2-dev-team/${coordName}`;
 
-/** A single configured coding agent so the picker can enable "Apply". */
-function claudeAgent(): AgentConfig {
+/** A single configured coding agent (Muse Code, #1861) so the picker can enable "Apply". */
+function museAgent(): AgentConfig {
   return {
-    id: "claude",
-    label: "Claude Code",
-    command: "claude",
-    color: "#d97706",
+    id: "muse",
+    label: "Muse Code",
+    command: "muse",
+    color: "#0668E1",
     envs: [],
     isolatedHome: false,
   };
@@ -118,7 +122,7 @@ function applyResult(): ApplyCodingAgentProfileSelectionResult {
 function mountWith(coord: Partial<AcAgentReplica>) {
   const fake = new FakeTransport();
   fake.resolve("new_project", { path: projectPath, registered: true, created: false });
-  fake.resolve("get_settings", baseSettings({ agents: [claudeAgent()] }));
+  fake.resolve("get_settings", baseSettings({ agents: [museAgent()] }));
   fake.resolve("discover_project", coordDiscovery(coord));
   fake.resolve("resolve_coding_agent_profile", resolution());
   fake.resolve("preview_coding_agent_profile_selection", previewResult());
@@ -181,7 +185,7 @@ describe("ProjectPanel coordinator reopen resume (#599 R1)", () => {
       // signal → resume the prior conversation.
       expect(args.skipAutoResume).toBe(false);
       expect(args.cwd).toBe(coordPath);
-      expect(args.agentId).toBe("claude");
+      expect(args.agentId).toBe("muse");
     } finally {
       rendered.cleanup();
     }
@@ -192,6 +196,8 @@ describe("ProjectPanel coordinator reopen resume (#599 R1)", () => {
     try {
       const args = await reopenAndCapture(fake, rendered);
       expect(args.skipAutoResume).toBe(false);
+      expect(args.cwd).toBe(coordPath);
+      expect(args.agentId).toBe("muse");
     } finally {
       rendered.cleanup();
     }
@@ -206,6 +212,9 @@ describe("ProjectPanel coordinator reopen resume (#599 R1)", () => {
       // SessionAPI.create maps an omitted skipAutoResume to null (the backend
       // treats absent/None as "skip resume = current behavior").
       expect(args.skipAutoResume).toBeNull();
+      // Same identity and cwd as the reopen path: only the intent differs.
+      expect(args.cwd).toBe(coordPath);
+      expect(args.agentId).toBe("muse");
     } finally {
       rendered.cleanup();
     }
