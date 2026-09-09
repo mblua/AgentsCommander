@@ -1794,7 +1794,9 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
     // re-deriving agent identity here. Guarantees this stripper agrees with
     // the `agent_kind` that `create_session_inner` stamped on the session.
     let (is_claude, is_codex, is_antigravity) = match CodingAgentKind::detect(shell, args) {
-        Some(CodingAgentKind::Pi) => return args.to_vec(),
+        // #1873 - Muse takes Pi's preserve path: `resume --last` in a persisted
+        // recipe is user-authored (AC tokens live only in the effective vector).
+        Some(CodingAgentKind::Pi | CodingAgentKind::Muse) => return args.to_vec(),
         Some(CodingAgentKind::Claude) => (true, false, false),
         Some(CodingAgentKind::Codex) => (false, true, false),
         Some(CodingAgentKind::Antigravity) => (false, false, true),
@@ -2912,6 +2914,85 @@ mod tests {
 
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].shell_args, configured);
+    }
+
+    /// #1873 - every configured Muse recipe survives stripping byte-for-byte, and a
+    /// snapshot persists the configured argv, never the effective `resume --last`.
+    #[tokio::test]
+    async fn muse_recipes_and_snapshots_preserve_configured_args_not_effective_resume() {
+        let s = |tokens: &[&str]| tokens.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        let recipes: Vec<(&str, Vec<String>)> = vec![
+            ("muse", s(&[])),
+            ("muse", s(&["--workspace", "/srv/work"])),
+            ("muse", s(&["resume", "--last"])),
+            (
+                "muse",
+                s(&["resume", "0f3d2a5c-9c1e-4b7e-8f6a-2b1c3d4e5f60"]),
+            ),
+            ("muse", s(&["--no-session-log"])),
+            ("muse", s(&["Summarize the open pull requests"])),
+            (
+                "muse",
+                s(&["--workspace", "/tmp/codex", "resume", "--last"]),
+            ),
+            ("muse", s(&["--root", "/srv/root", "--continue", "-c"])),
+            (
+                "/opt/muse/bin/muse",
+                s(&["resume", "--last", "--no-session-log"]),
+            ),
+            ("env", s(&["muse", "resume", "--last"])),
+            ("bash", s(&["-lc", "muse resume --last"])),
+            ("cmd.exe", s(&["/C", "muse", "resume", "--last"])),
+            ("Muse", s(&["resume", "--last"])),
+            ("MUSE", s(&["--continue"])),
+        ];
+        for (shell, args) in &recipes {
+            assert_eq!(
+                &strip_auto_injected_args(shell, args),
+                args,
+                "shell={shell:?} args={args:?}"
+            );
+        }
+
+        let mgr = SessionManager::new();
+        let configured: Vec<String> = Vec::new();
+        let session = mgr
+            .create_session(
+                "muse".to_string(),
+                configured.clone(),
+                "/tmp/work".to_string(),
+                Some("muse".to_string()),
+                Some("Muse".to_string()),
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.set_effective_shell_args(session.id, s(&["resume", "--last"]))
+            .await;
+
+        let snapshot = snapshot_sessions(&mgr).await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].shell, "muse");
+        assert_eq!(snapshot[0].shell_args, configured);
+        assert!(
+            !snapshot[0]
+                .shell_args
+                .iter()
+                .any(|a| a == "resume" || a == "--last"),
+            "effective resume tokens must never persist"
+        );
+
+        // Round trip through the persisted JSON shape keeps the configured argv.
+        let json = serde_json::to_string(&snapshot[0]).expect("serialize");
+        let back: PersistedSession = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.shell, "muse");
+        assert_eq!(back.shell_args, configured);
+        assert_eq!(
+            strip_auto_injected_args(&back.shell, &back.shell_args),
+            configured
+        );
     }
 
     #[tokio::test]

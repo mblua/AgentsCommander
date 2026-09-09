@@ -205,7 +205,8 @@ pub fn default_instructions_filename_for_command(command: &str) -> &'static str 
             Some(CodingAgentKind::Claude) => "CLAUDE.md",
             Some(CodingAgentKind::Codex)
             | Some(CodingAgentKind::Pi)
-            | Some(CodingAgentKind::Antigravity) => "AGENTS.md",
+            | Some(CodingAgentKind::Antigravity)
+            | Some(CodingAgentKind::Muse) => "AGENTS.md",
             // OpenCode, custom, and unknown commands also use AGENTS.md.
             None => "AGENTS.md",
         },
@@ -1701,6 +1702,72 @@ mod tests {
             "AGENTS.md"
         );
         assert_eq!(default_instructions_filename_for_command(""), "AGENTS.md");
+    }
+
+    /// #1873 - direct/absolute Muse maps to AGENTS.md through the same detector
+    /// the launch path uses; a Codex-looking value does not change the target.
+    #[test]
+    fn muse_default_instructions_filename_is_agents_md() {
+        for command in [
+            "muse",
+            "/opt/muse/bin/muse",
+            "muse --workspace /tmp/codex resume --last",
+            "muse --model claude-sonnet",
+        ] {
+            assert_eq!(
+                default_instructions_filename_for_command(command),
+                "AGENTS.md",
+                "command={command:?}"
+            );
+            let normalized = normalize_legacy_agent_command(command).unwrap();
+            assert_eq!(
+                crate::session::profile::CodingAgentKind::detect(
+                    &normalized.shell,
+                    &normalized.shell_args
+                ),
+                Some(crate::session::profile::CodingAgentKind::Muse),
+                "command={command:?}"
+            );
+        }
+        let muse = agent("muse", "muse");
+        assert_eq!(resolve_instructions_filename(&muse), "AGENTS.md");
+        assert_eq!(
+            resolve_target_filename(
+                Some("muse"),
+                &AppSettings {
+                    agents: vec![muse],
+                    ..AppSettings::default()
+                },
+                None,
+            )
+            .as_deref(),
+            Some("AGENTS.md")
+        );
+    }
+
+    /// #1873 - an explicit, safe filename wins over the Muse default.
+    #[test]
+    fn muse_explicit_instructions_filename_wins() {
+        let mut muse = agent("muse", "/opt/muse/bin/muse");
+        muse.instructions_filename = Some("  Squad.md  ".to_string());
+        assert_eq!(resolve_instructions_filename(&muse), "Squad.md");
+        let settings = AppSettings {
+            agents: vec![muse.clone()],
+            ..AppSettings::default()
+        };
+        assert_eq!(
+            resolve_target_filename(Some("muse"), &settings, None).as_deref(),
+            Some("Squad.md")
+        );
+        assert_eq!(
+            managed_instructions_filenames(&settings),
+            vec!["Squad.md".to_string()]
+        );
+        // Unsafe or blank explicit values fall back to the Muse default.
+        muse.instructions_filename = Some("../escape.md".to_string());
+        assert_eq!(resolve_instructions_filename(&muse), "AGENTS.md");
+        muse.instructions_filename = Some("   ".to_string());
+        assert_eq!(resolve_instructions_filename(&muse), "AGENTS.md");
     }
 
     #[test]
