@@ -151,6 +151,10 @@ pub(crate) const SESSION_REQUESTS_DIR_NAME: &str = "session-requests";
 pub(crate) const LOCAL_MARKDOWN_OVERRIDE_GLOB: &str = "*.local.md";
 /// #1737 - the operator-owned settings overlay, read at load and never written by AC.
 pub(crate) const SETTINGS_LOCAL_OVERRIDE_FILE_NAME: &str = "settings.local.json";
+/// #1905 - AC-owned shipped blocking-menu patterns; rewritten from embedded content at startup.
+pub(crate) const BLOCKING_MENUS_SHIPPED_FILE_NAME: &str = "settings-blocking-menus.json";
+/// #1905 - the operator-owned blocking-menu overlay, read at load; written once by the export.
+pub(crate) const BLOCKING_MENUS_LOCAL_FILE_NAME: &str = "settings-blocking-menus.local.json";
 pub(crate) const SETTINGS_LOCK_FILE_NAME: &str = "settings.json.lock";
 /// Covers every settings migration backup instance. The concrete names are
 /// composed by their own migrations, so this glob is registry-owned and no
@@ -417,6 +421,18 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: persisted session state",
+    },
+    InstanceArtifact {
+        name: BLOCKING_MENUS_SHIPPED_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: shipped blocking-menu patterns; rewritten from the binary at every start",
+    },
+    InstanceArtifact {
+        name: BLOCKING_MENUS_LOCAL_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: operator-owned blocking-menu overlay; machine-local by design",
     },
     InstanceArtifact {
         name: "settings.json",

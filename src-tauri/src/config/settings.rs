@@ -4,10 +4,12 @@ use std::collections::{BTreeMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
-use crate::config::instance_artifacts::SETTINGS_LOCK_FILE_NAME;
+use crate::config::instance_artifacts::{
+    BLOCKING_MENUS_LOCAL_FILE_NAME, BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
+};
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
 use crate::pty::backend::SessionBackendKind;
@@ -1028,9 +1030,9 @@ impl Default for AppSettings {
 }
 
 /// #1757 - the Codex "Hooks need review" startup dialog. One literal, two consumers:
-/// `default_blocking_menus_for_command` (new installs) and `apply_issue_1757_migration`
-/// (installs whose `blockingMenus` array was already materialized against the older default).
-/// Neither writes the pattern inline, so the two paths cannot drift.
+/// `apply_issue_1757_migration` (installs whose `blockingMenus` array was already materialized
+/// against the older default) and test T1 `embedded_content_matches_the_rust_literals`, which
+/// pins the embedded `settings-blocking-menus.json` to this constant so the two cannot drift.
 pub(crate) const CODEX_HOOKS_REVIEW_PATTERN: &str = r"^[^A-Za-z0-9]*Hooks need review\b";
 
 fn codex_hooks_review_menu() -> BlockingMenuConfig {
@@ -1043,29 +1045,202 @@ fn codex_hooks_review_menu() -> BlockingMenuConfig {
     }
 }
 
-/// #1646 / #1647 - default blocking menu patterns for known commands.
+/// #1905 - the patterns AC ships, embedded at build time. The config-dir copy is a
+/// materialization of this content; the runtime evaluates this constant, never the disk file.
+const EMBEDDED_BLOCKING_MENUS_JSON: &str =
+    include_str!("../../resources/blocking-menus/settings-blocking-menus.json");
+
+pub const BLOCKING_MENUS_SCHEMA_VERSION: u32 = 1;
+
+fn default_blocking_menus_schema_version() -> u32 {
+    BLOCKING_MENUS_SCHEMA_VERSION
+}
+
+/// #1905 - one blocking-menus file; the shipped file and the `.local` file share this shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockingMenusFile {
+    #[serde(default = "default_blocking_menus_schema_version")]
+    pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub by_command: BTreeMap<String, Vec<BlockingMenuEntry>>,
+    #[serde(default)]
+    pub by_agent: BTreeMap<String, Vec<BlockingMenuEntry>>,
+}
+
+impl Default for BlockingMenusFile {
+    fn default() -> Self {
+        Self {
+            schema_version: BLOCKING_MENUS_SCHEMA_VERSION,
+            note: None,
+            by_command: BTreeMap::new(),
+            by_agent: BTreeMap::new(),
+        }
+    }
+}
+
+/// #1905 (D6) - the one parser both files go through; the migration validates against it too.
+/// The `Value` step rejects a JSON array, which serde would otherwise decode as an empty file.
+pub(crate) fn parse_blocking_menus_file(contents: &str) -> Result<BlockingMenusFile, String> {
+    let value =
+        serde_json::from_str::<Value>(contents).map_err(|e| format!("does not parse: {e}"))?;
+    if !value.is_object() {
+        return Err("is not a JSON object".to_string());
+    }
+    let file = serde_json::from_value::<BlockingMenusFile>(value)
+        .map_err(|e| format!("does not parse: {e}"))?;
+    if file.schema_version != BLOCKING_MENUS_SCHEMA_VERSION {
+        return Err(format!(
+            "has schemaVersion {}; only {} is supported",
+            file.schema_version, BLOCKING_MENUS_SCHEMA_VERSION
+        ));
+    }
+    Ok(file)
+}
+
+/// A parse failure is a build defect T1 catches; production logs once and serves an empty file.
+pub fn shipped_blocking_menus() -> &'static BlockingMenusFile {
+    static SHIPPED: OnceLock<BlockingMenusFile> = OnceLock::new();
+    SHIPPED.get_or_init(|| {
+        parse_blocking_menus_file(EMBEDDED_BLOCKING_MENUS_JSON).unwrap_or_else(|e| {
+            log::error!("[blocking-menus] embedded settings-blocking-menus.json {e}");
+            BlockingMenusFile::default()
+        })
+    })
+}
+
+/// #1646 / #1647 / #1905 - the shipped patterns for a command, by executable stem.
 pub fn default_blocking_menus_for_command(command: &str) -> Vec<BlockingMenuEntry> {
-    let stem = crate::config::coding_agents_catalog::command_executable_basename(command);
-    match stem.as_deref() {
-        Some("pi") => vec![BlockingMenuEntry::Valid(BlockingMenuConfig {
-            pattern: r"^\s*Trust project folder\?".to_string(),
-            notification: "pi is waiting for you to answer the folder-trust menu in this terminal"
-                .to_string(),
-            enabled: true,
-            captured_against: Some("pi 0.52 / Windows".to_string()),
-        })],
-        Some("codex") => vec![
-            BlockingMenuEntry::Valid(BlockingMenuConfig {
-                pattern: r"^\s*Do you trust the contents of this directory\?".to_string(),
-                notification:
-                    "codex is waiting for you to answer the folder-trust menu in this terminal"
-                        .to_string(),
-                enabled: true,
-                captured_against: Some("codex 0.x / Linux".to_string()),
-            }),
-            BlockingMenuEntry::Valid(codex_hooks_review_menu()),
-        ],
-        _ => vec![],
+    let Some(stem) = crate::config::coding_agents_catalog::command_executable_basename(command)
+    else {
+        return Vec::new();
+    };
+    shipped_blocking_menus()
+        .by_command
+        .get(&stem)
+        .cloned()
+        .unwrap_or_default()
+}
+
+pub(crate) fn blocking_menus_shipped_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(BLOCKING_MENUS_SHIPPED_FILE_NAME)
+}
+
+pub(crate) fn blocking_menus_local_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(BLOCKING_MENUS_LOCAL_FILE_NAME)
+}
+
+/// Pretty JSON plus one trailing newline: the only byte shape AC writes for both files.
+pub(crate) fn pretty_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::Error> {
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+/// #1905 (D5) - make the on-disk shipped file equal to the embedded content. True when written.
+pub(crate) fn refresh_shipped_blocking_menus_file(settings_path: &Path) -> bool {
+    let path = blocking_menus_shipped_path(settings_path);
+    let Ok(canonical) = pretty_json_bytes(shipped_blocking_menus()) else {
+        return false;
+    };
+    if matches!(std::fs::read(&path), Ok(existing) if existing == canonical) {
+        return false;
+    }
+    match crate::config::local_config_io::write_file_atomic(&path, &canonical) {
+        Ok(()) => {
+            log::info!(
+                "[blocking-menus] wrote the shipped patterns to {}",
+                path.display()
+            );
+            true
+        }
+        Err(e) => {
+            log::error!("[blocking-menus] could not write {}: {e}", path.display());
+            false
+        }
+    }
+}
+
+/// #1905 (D6) - the user layer. Every rejection logs once and yields an empty layer.
+pub(crate) fn load_local_blocking_menus_file(settings_path: &Path) -> BlockingMenusFile {
+    let path = blocking_menus_local_path(settings_path);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return BlockingMenusFile::default(),
+        Err(e) => {
+            log::error!("[blocking-menus] could not read {}: {e}", path.display());
+            return BlockingMenusFile::default();
+        }
+    };
+    match parse_blocking_menus_file(&contents) {
+        Ok(file) => file,
+        Err(e) => {
+            log::error!("[blocking-menus] {} {e}; ignoring the file", path.display());
+            BlockingMenusFile::default()
+        }
+    }
+}
+
+/// #1905 (D3, D10) - what the menu guard evaluates. Built once per process; no file watcher.
+#[derive(Debug, Clone)]
+pub struct BlockingMenusStore {
+    shipped: &'static BlockingMenusFile,
+    local: BlockingMenusFile,
+}
+
+impl BlockingMenusStore {
+    pub fn shipped_only() -> Self {
+        Self::with_local(BlockingMenusFile::default())
+    }
+
+    pub fn with_local(local: BlockingMenusFile) -> Self {
+        Self {
+            shipped: shipped_blocking_menus(),
+            local,
+        }
+    }
+
+    /// GUI startup entry point: refresh the shipped file, then read the user layer.
+    pub fn load_from_config_dir() -> Self {
+        match settings_path() {
+            Some(path) => Self::load_from_settings_path(&path),
+            None => Self::shipped_only(),
+        }
+    }
+
+    pub(crate) fn load_from_settings_path(settings_path: &Path) -> Self {
+        refresh_shipped_blocking_menus_file(settings_path);
+        Self::with_local(load_local_blocking_menus_file(settings_path))
+    }
+
+    /// D3 layers 1 to 4: the two files only.
+    pub fn resolve(&self, agent_id: &str, command: &str) -> Vec<BlockingMenuEntry> {
+        if let Some(entries) = self.local.by_agent.get(agent_id) {
+            return entries.clone();
+        }
+        let Some(stem) = crate::config::coding_agents_catalog::command_executable_basename(command)
+        else {
+            return Vec::new();
+        };
+        if let Some(entries) = self.local.by_command.get(&stem) {
+            return entries.clone();
+        }
+        self.shipped
+            .by_command
+            .get(&stem)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// D3 layer 0 first: an array still on the agent (settings.json not yet migrated, or an
+    /// overlay-owned agents array) is what applied before #1905 and keeps applying unchanged.
+    pub fn resolve_for(&self, agent: &AgentConfig) -> Vec<BlockingMenuEntry> {
+        match &agent.blocking_menus {
+            Some(entries) => entries.clone(),
+            None => self.resolve(&agent.id, &agent.command),
+        }
     }
 }
 
@@ -2012,9 +2187,14 @@ pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Resul
     // Pi selectors are user-authored configuration and intentionally outrank AC
     // automation. Canonical Pi identity must win before the independent legacy
     // provider-token scans below inspect model or provider option values.
-    if CodingAgentKind::detect(&normalized.shell, &normalized.shell_args)
-        == Some(CodingAgentKind::Pi)
-    {
+    // #1873 - the same holds for a directly configured Muse: any configured
+    // argument (resume, --last, UUID, prompt, --workspace ...) is user-authored,
+    // suppresses AC injection, and is neither validated nor rewritten here. A
+    // wrapper (`env muse ...`) is not Muse and keeps the legacy scans below.
+    if matches!(
+        CodingAgentKind::detect(&normalized.shell, &normalized.shell_args),
+        Some(CodingAgentKind::Pi | CodingAgentKind::Muse)
+    ) {
         return Ok(());
     }
 
@@ -7133,6 +7313,61 @@ mod tests {
         }
     }
 
+    /// #1873 - a directly configured Muse recipe is user-authored: a Codex-looking
+    /// value plus manual `resume --last` passes, and the legacy Codex scan never
+    /// runs. Base recipe and composed profile cell behave the same.
+    #[test]
+    fn validate_agent_commands_allows_direct_muse_arguments_with_legacy_provider_collision() {
+        for command in [
+            "muse",
+            "muse --workspace /tmp/codex resume --last",
+            "/opt/muse/bin/muse --workspace /tmp/codex resume --last",
+            "muse resume 0f3d2a5c-9c1e-4b7e-8f6a-2b1c3d4e5f60",
+            "muse --no-session-log --continue -c",
+            "muse --model claude-sonnet --provider agy --continue",
+        ] {
+            let settings = settings_with_agents(&[("Muse", command)]);
+            assert!(
+                validate_agent_commands(&settings).is_ok(),
+                "command={command:?}"
+            );
+        }
+        let mut settings = settings_with_agents(&[("Muse", "muse")]);
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("agent-0".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: "--workspace /tmp/codex resume --last".to_string(),
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+        assert!(validate_agent_commands(&settings).is_ok());
+    }
+
+    /// #1873 - the same token sequence behind an `env` wrapper is not Muse, so
+    /// the pre-existing Codex manual-resume rejection still fires before spawn.
+    #[test]
+    fn validate_agent_commands_rejects_wrapped_muse_collision_before_spawn() {
+        for command in [
+            "env muse --workspace /tmp/codex resume --last",
+            "cmd /C muse --workspace /tmp/codex resume --last",
+        ] {
+            let settings = settings_with_agents(&[("Muse", command)]);
+            let err = validate_agent_commands(&settings).unwrap_err();
+            assert_eq!(
+                err,
+                "Agent \"Muse\": Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically",
+                "command={command:?}"
+            );
+        }
+    }
+
     #[test]
     fn validate_agent_commands_allows_plain_codex() {
         let settings = settings_with_agents(&[("Codex", "codex")]);
@@ -11139,6 +11374,202 @@ mod tests {
             assert!(
                 candidate.watchers_geometry.is_none(),
                 "the disk-decoded candidate must not hand back the base geometry"
+            );
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // #1905 - the blocking-menus store: shipped file, `.local` overlay, precedence.
+    // ─────────────────────────────────────────────────────────────────────────
+    mod blocking_menus_1905 {
+        use super::super::*;
+        use serde_json::json;
+
+        fn valid_entry(pattern: &str, notification: &str) -> BlockingMenuEntry {
+            BlockingMenuEntry::Valid(BlockingMenuConfig {
+                pattern: pattern.to_string(),
+                notification: notification.to_string(),
+                enabled: true,
+                captured_against: None,
+            })
+        }
+
+        fn settings_path_in(temp: &tempfile::TempDir) -> PathBuf {
+            temp.path().join("settings.json")
+        }
+
+        // T1
+        #[test]
+        fn embedded_content_matches_the_rust_literals() {
+            let shipped = shipped_blocking_menus();
+            assert_eq!(shipped.schema_version, 1);
+            assert!(shipped.note.is_some());
+            assert!(shipped.by_agent.is_empty());
+            let keys: Vec<&str> = shipped.by_command.keys().map(String::as_str).collect();
+            assert_eq!(keys, ["codex", "pi"]);
+
+            let pi = &shipped.by_command["pi"];
+            assert_eq!(pi.len(), 1);
+            let pi_entry = pi[0].valid().expect("the pi entry is Valid");
+            assert_eq!(pi_entry.pattern, r"^\s*Trust project folder\?");
+            assert!(pi_entry.enabled);
+            assert_eq!(
+                pi_entry.captured_against.as_deref(),
+                Some("pi 0.52 / Windows")
+            );
+
+            let codex = &shipped.by_command["codex"];
+            assert_eq!(codex.len(), 2);
+            let trust = codex[0].valid().expect("codex[0] is Valid");
+            assert_eq!(
+                trust.pattern,
+                r"^\s*Do you trust the contents of this directory\?"
+            );
+            assert_eq!(trust.captured_against.as_deref(), Some("codex 0.x / Linux"));
+            assert_eq!(
+                codex[1],
+                BlockingMenuEntry::Valid(codex_hooks_review_menu())
+            );
+        }
+
+        // T2
+        #[test]
+        fn resolve_precedence_is_legacy_then_local_agent_then_local_command_then_shipped() {
+            let x = valid_entry("^X", "x");
+            let y = valid_entry("^Y", "y");
+            let z = valid_entry("^Z", "z");
+            let mut local = BlockingMenusFile::default();
+            local
+                .by_agent
+                .insert("codex-b".to_string(), vec![x.clone()]);
+            local.by_agent.insert("pi-off".to_string(), vec![]);
+            local
+                .by_command
+                .insert("codex".to_string(), vec![y.clone()]);
+            let store = BlockingMenusStore::with_local(local);
+
+            assert_eq!(store.resolve("codex-b", "codex"), vec![x.clone()]);
+            assert_eq!(store.resolve("codex-a", "codex"), vec![y.clone()]);
+            // Directory-free on purpose: `file_stem` of a backslash path differs on Unix.
+            assert_eq!(
+                store.resolve("codex-a", "Codex.exe --search"),
+                vec![y.clone()]
+            );
+            assert!(store.resolve("pi-off", "pi").is_empty());
+            assert!(store.resolve("claude-1", "claude").is_empty());
+            assert_eq!(
+                store.resolve("pi-1", "pi"),
+                default_blocking_menus_for_command("pi")
+            );
+
+            // Layer 0: an array still on the agent wins over every file layer.
+            assert_eq!(
+                store.resolve_for(&super::agent_1757(
+                    "codex-b",
+                    "codex",
+                    Some(vec![z.clone()])
+                )),
+                vec![z]
+            );
+            assert!(store
+                .resolve_for(&super::agent_1757("pi-1", "pi", Some(vec![])))
+                .is_empty());
+            assert_eq!(
+                store.resolve_for(&super::agent_1757("codex-b", "codex", None)),
+                vec![x]
+            );
+        }
+
+        // T3
+        #[test]
+        fn shipped_file_is_written_when_absent_or_stale_and_left_alone_when_equal() {
+            let temp = tempfile::tempdir().unwrap();
+            let settings = settings_path_in(&temp);
+            let shipped = blocking_menus_shipped_path(&settings);
+            let canonical = pretty_json_bytes(shipped_blocking_menus()).unwrap();
+
+            assert!(
+                refresh_shipped_blocking_menus_file(&settings),
+                "absent: written"
+            );
+            assert_eq!(std::fs::read(&shipped).unwrap(), canonical);
+
+            assert!(
+                !refresh_shipped_blocking_menus_file(&settings),
+                "equal: left alone"
+            );
+            assert_eq!(std::fs::read(&shipped).unwrap(), canonical);
+
+            {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&shipped)
+                    .unwrap();
+                file.write_all(b"x").unwrap();
+            }
+            assert_ne!(std::fs::read(&shipped).unwrap(), canonical);
+
+            assert!(
+                refresh_shipped_blocking_menus_file(&settings),
+                "stale: rewritten"
+            );
+            assert_eq!(std::fs::read(&shipped).unwrap(), canonical);
+        }
+
+        // T4
+        #[test]
+        fn local_file_rejections_yield_an_empty_layer_and_match_the_parser() {
+            let temp = tempfile::tempdir().unwrap();
+            let settings = settings_path_in(&temp);
+            let local = blocking_menus_local_path(&settings);
+
+            // Absent is the empty layer.
+            assert_eq!(
+                load_local_blocking_menus_file(&settings),
+                BlockingMenusFile::default()
+            );
+
+            let rejected = [
+                "{ not json",
+                "[1]",
+                "[]",
+                "null",
+                r#"{"schemaVersion": 2}"#,
+                r#"{"schemaVersion":1,"byCommand":42,"byAgent":{}}"#,
+                r#"{"byAgent":{"codex":42}}"#,
+                r#"{"note":42,"byAgent":{}}"#,
+            ];
+            for text in rejected {
+                assert!(
+                    parse_blocking_menus_file(text).is_err(),
+                    "{text:?} must be rejected by the parser"
+                );
+                std::fs::write(&local, text).unwrap();
+                assert_eq!(
+                    load_local_blocking_menus_file(&settings),
+                    BlockingMenusFile::default(),
+                    "{text:?} must load as the empty layer"
+                );
+            }
+
+            // A valid file with one `byAgent` entry and an unknown top-level key.
+            let valid_text = json!({
+                "schemaVersion": 1,
+                "extra": true,
+                "byAgent": {"codex-b": [{"pattern": "^X", "notification": "n"}]}
+            })
+            .to_string();
+            let parsed = parse_blocking_menus_file(&valid_text).unwrap();
+            assert_eq!(parsed.by_agent["codex-b"], vec![valid_entry("^X", "n")]);
+            std::fs::write(&local, &valid_text).unwrap();
+            assert_eq!(load_local_blocking_menus_file(&settings), parsed);
+
+            // A malformed entry is kept verbatim as `Invalid`, as today.
+            let kept = parse_blocking_menus_file(r#"{"byAgent":{"codex":[42]}}"#).unwrap();
+            assert_eq!(
+                kept.by_agent["codex"],
+                vec![BlockingMenuEntry::Invalid(json!(42))]
             );
         }
     }

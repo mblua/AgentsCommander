@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "note": "Owned by AgentsCommander. Rewritten from the running version's embedded content at every start, so edits here are lost. Put your own patterns in settings-blocking-menus.local.json next to this file.",
+  "byCommand": {
+    "codex": [
+      {
+        "pattern": "^\\s*Do you trust the contents of this directory\\?",
+        "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "codex 0.x / Linux"
+      },
+      {
+        "pattern": "^[^A-Za-z0-9]*Hooks need review\\b",
+        "notification": "codex is waiting for you to answer the hooks-review menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "codex 0.153.2 / Windows"
+      }
+    ],
+    "pi": [
+      {
+        "pattern": "^\\s*Trust project folder\\?",
+        "notification": "pi is waiting for you to answer the folder-trust menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "pi 0.52 / Windows"
+      }
+    ]
+  },
+  "byAgent": {}
+}

@@ -675,6 +675,7 @@ agentscommander_lib::config::settings -> agentscommander_lib::config
 agentscommander_lib::config::settings -> agentscommander_lib::config::agent_command
 agentscommander_lib::config::settings -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::config::settings -> agentscommander_lib::config::instance_artifacts
+agentscommander_lib::config::settings -> agentscommander_lib::config::local_config_io
 agentscommander_lib::config::settings -> agentscommander_lib::config::local_overlay
 agentscommander_lib::config::settings -> agentscommander_lib::config::placeholders
 agentscommander_lib::config::settings -> agentscommander_lib::config::profile
