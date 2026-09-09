@@ -8,6 +8,15 @@ use std::time::{Duration, Instant};
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for(bin));
+    }
+    command
+}
+
 fn test_lock() -> MutexGuard<'static, ()> {
     TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -63,7 +72,10 @@ fn default_capability_allows_resource_monitor_window() {
 }
 
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
-    let out = Command::new(bin).args(args).output().expect("spawn binary");
+    let out = command_for_binary(bin)
+        .args(args)
+        .output()
+        .expect("spawn binary");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -77,7 +89,7 @@ fn run_with_env(
     env_value: &str,
     args: &[&str],
 ) -> (Option<i32>, String, String) {
-    let out = Command::new(bin)
+    let out = command_for_binary(bin)
         .env(env_name, env_value)
         .args(args)
         .output()
@@ -94,7 +106,7 @@ fn run_without_draining_output_until_exit(
     args: &[&str],
     timeout: Duration,
 ) -> (Option<i32>, String, String, bool) {
-    let mut child = Command::new(bin)
+    let mut child = command_for_binary(bin)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

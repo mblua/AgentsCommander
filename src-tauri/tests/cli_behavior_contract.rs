@@ -5,6 +5,15 @@ use std::process::Command;
 const VALID_TOKEN: &str = "00000000-0000-0000-0000-000000000487";
 const LEAK_PROBE_TOKEN: &str = "zzzz-leakprobe-487-not-a-token";
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
+    }
+    command
+}
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -50,7 +59,7 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
 }
 
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = command_for_binary(bin).args(args).output().expect("spawn");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -881,7 +890,7 @@ fn run_task_title(
     master: &str,
     title: &str,
 ) -> (Option<i32>, String, String) {
-    let out = Command::new(bin)
+    let out = command_for_binary(bin)
         .args([
             "task-set-title",
             "--token",

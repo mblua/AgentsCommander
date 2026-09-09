@@ -6,6 +6,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
+    }
+    command
+}
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -109,7 +118,7 @@ fn assert_registration_request(request: &serde_json::Value, project: &Path) {
 }
 
 fn run_success(bin: &Path, args: &[&str]) {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = command_for_binary(bin).args(args).output().expect("spawn");
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -120,7 +129,7 @@ fn run_success(bin: &Path, args: &[&str]) {
 }
 
 fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = command_for_binary(bin).args(args).output().expect("spawn");
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -132,7 +141,7 @@ fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_failure(bin: &Path, args: &[&str]) {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = command_for_binary(bin).args(args).output().expect("spawn");
     assert!(
         !out.status.success(),
         "expected failure\nstdout: {}\nstderr: {}",

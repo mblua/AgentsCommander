@@ -15,6 +15,20 @@ use std::sync::mpsc;
 #[cfg(not(target_os = "windows"))]
 use std::time::{Duration, Instant};
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
+    }
+    command
+}
+
+fn config_dir_for_bin(bin: &Path) -> PathBuf {
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    bin.parent().expect("bin parent").join(format!(".{stem}"))
+}
+
 struct Tmp(PathBuf);
 impl Drop for Tmp {
     fn drop(&mut self) {
@@ -577,7 +591,7 @@ fn run_close_session_in_mode(
         mode,
     );
 
-    let out = Command::new(&fix.bin)
+    let out = command_for_binary(&fix.bin)
         .args([
             "close-session",
             "--token",

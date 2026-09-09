@@ -2,6 +2,15 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn command_for_binary(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+    if !stem.contains('_') {
+        command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for(bin));
+    }
+    command
+}
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -47,7 +56,10 @@ fn config_dir_for(bin: &Path) -> PathBuf {
 }
 
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
-    let out = Command::new(bin).args(args).output().expect("spawn binary");
+    let out = command_for_binary(bin)
+        .args(args)
+        .output()
+        .expect("spawn binary");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
