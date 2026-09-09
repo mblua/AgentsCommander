@@ -65,13 +65,15 @@ Let the upstream installer or Claude Code's own configuration workflow register 
 
 ### 3. Pass inline JSON
 
-The maintainer uses this working command when starting Claude Code directly:
+Use this command when starting native `claude.exe` directly in PowerShell 7 (`pwsh`) or Git Bash:
 
 ```powershell
 claude --strict-mcp-config --mcp-config '{"mcpServers":{"codebase-memory-mcp":{"type":"stdio","command":"codebase-memory-mcp","args":[],"env":{}}}}' --dangerously-skip-permissions --model claude-opus-5 --effort high
 ```
 
 It opens an interactive Claude Code session. `--dangerously-skip-permissions` bypasses permission checks; remove it unless you deliberately want that behavior.
+
+**Windows PowerShell 5.1: this direct command fails.** The shell strips the inner JSON quotes when passing the argument to `claude.exe`, which reports the misleading `MCP config file not found: ...` error. Use `pwsh` or the [JSON-file form](#1-load-a-json-file-from-the-profile); for a direct file launch, run `claude --mcp-config ./codebase-memory-mcp.json --strict-mcp-config` from the directory containing that file. AgentsCommander's PowerShell adapter builds the native process arguments itself, so its native `claude.exe` path avoids this direct-shell failure.
 
 For an AgentsCommander profile, remove the leading `claude` because the cell contains parameters, not the binary. A focused inline cell is:
 
@@ -143,7 +145,7 @@ Inline JSON behaves differently after AgentsCommander hands the parsed arguments
 | `cmd.exe` | Rejected before PTY creation with `adapter_error` |
 | Git Bash | Works |
 
-The blank-pane case is easy to misdiagnose: PowerShell found Claude, but AgentsCommander's batch branch refuses an argument containing JSON quotes and exits without child output. Use the JSON-file form or configure Claude Code once. Changing the outer single quotes to double quotes does not help because AgentsCommander's tokenizer produces the same logical argument.
+The blank-pane case is easy to misdiagnose: PowerShell found Claude, but AgentsCommander's batch branch refuses an argument containing JSON quotes and exits without child output. Use the JSON-file form or configure Claude Code once. Replacing only the outer single quotes with double quotes strips the inner JSON quotes during tokenization. Double-quoted grouping requires escaping the inner quotes to preserve valid JSON; it does not fix the `.cmd`-shim or `cmd.exe` failures.
 
 ### Configuration traps
 
