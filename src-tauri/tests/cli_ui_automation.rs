@@ -89,17 +89,33 @@ fn run_with_env(
     )
 }
 
+/// #1773: `std::process::Child` does not kill on drop, so a panic between spawn and
+/// wait leaks the child. This guard kills and reaps it on every exit path. After a
+/// normal exit both calls are no-ops: `kill` errors on an exited child and `wait`
+/// returns the cached status.
+struct ReapOnDrop(std::process::Child);
+
+impl Drop for ReapOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn run_without_draining_output_until_exit(
     bin: &Path,
     args: &[&str],
     timeout: Duration,
 ) -> (Option<i32>, String, String, bool) {
-    let mut child = Command::new(bin)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn binary");
+    let mut guard = ReapOnDrop(
+        Command::new(bin)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn binary"),
+    );
+    let child = &mut guard.0;
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait().expect("poll child") {
@@ -1401,4 +1417,99 @@ fn stale_prior_session_with_running_daemon_reports_automation_not_enabled_on_std
     assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
     assert_eq!(parsed["error"], "automation_not_enabled");
+}
+
+/// #1773: the guard must kill and reap the child on the panic path. The child is the
+/// real binary running `ui-query` with no responder: it writes its request file
+/// (`ui_automation.rs:1399`) and then polls for a response for the whole
+/// `--timeout-ms` (`:1412-1464`); the only exits from that loop are a response file,
+/// which nothing writes here, and the 30 s deadline. Readiness (request file present,
+/// child alive) is asserted outside `catch_unwind`; the closure only moves the guard
+/// and panics; the caught payload must be the sentinel. Windows-only because
+/// `pid_is_alive` is a stub elsewhere.
+#[cfg(target_os = "windows")]
+#[test]
+fn reap_on_drop_kills_the_child_when_the_caller_panics() {
+    use agentscommander_lib::testability::ui_automation::pid_is_alive;
+    const SENTINEL: &str = "1773 ReapOnDrop sentinel panic 2b9d";
+
+    let _guard = test_lock();
+    let pid = fake_live_pid().expect("PID 4 (System) is always alive on Windows");
+    let tmp = Tmp::new("ui-reap-on-drop");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, pid, &["main"]);
+    let requests_dir = config_dir_for(&bin).join("ui-automation").join("requests");
+
+    let started = Instant::now();
+    let guard = ReapOnDrop(
+        Command::new(&bin)
+            .args([
+                "ui-query",
+                "--window",
+                "main",
+                "--selector",
+                "does.not.exist",
+                "--timeout-ms",
+                "30000",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn binary"),
+    );
+    let child_pid = guard.0.id();
+
+    // Readiness: the child has written its request file and is therefore in, or
+    // entering, its response-poll loop. Asserted here, outside catch_unwind.
+    let request_file = loop {
+        let pending = std::fs::read_dir(&requests_dir)
+            .expect("requests dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .find(|path| {
+                path.extension().and_then(|extension| extension.to_str()) == Some("json")
+                    && !path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".inflight.json"))
+            });
+        if let Some(path) = pending {
+            break path;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "child {child_pid} never wrote its request file into {}",
+            requests_dir.display()
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        pid_is_alive(child_pid),
+        "child {child_pid} must be alive inside its request wait before the panic"
+    );
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _guard = guard;
+        std::panic::panic_any(SENTINEL);
+    }));
+
+    let payload = outcome.expect_err("the closure must panic");
+    assert_eq!(
+        payload.downcast_ref::<&'static str>(),
+        Some(&SENTINEL),
+        "the caught panic must be the sentinel, not a failed assertion"
+    );
+    let unwound_after = started.elapsed();
+    assert!(
+        unwound_after < Duration::from_secs(10),
+        "the guard must kill the child, not wait for its 30 s timeout: {unwound_after:?}"
+    );
+    assert!(
+        !pid_is_alive(child_pid),
+        "the guard must kill and reap the child during unwinding (pid {child_pid})"
+    );
+    assert!(
+        request_file.exists(),
+        "a child that leaves the loop on its own removes its request file (ui_automation.rs:1458); the file survives only because the child was terminated: {}",
+        request_file.display()
+    );
 }
