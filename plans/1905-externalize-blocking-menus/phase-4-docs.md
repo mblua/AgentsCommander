@@ -5,8 +5,8 @@ Class: patterned (mirrors the existing `menu-guard.md` and `settings.md` section
 Owner: docs. Depends on: phases 1, 2 and 3 (the behavior described here must be on the branch).
 Parallel with: nothing.
 Branch: `feature/1905-externalize-blocking-menus`. Base: `main` at `80aeb85`.
-Line numbers are pinned to that base. Round 4 changed only this file; phases 1-3 are
-byte-identical to round 3.
+Line numbers are pinned to that base. Rounds 4 and 5 changed only this file; phases 1-3 are
+byte-identical to round 3. Phase 4 lands as one commit, which is what AC1's `HEAD~1..HEAD` reads.
 
 ## Objective
 
@@ -48,7 +48,9 @@ from the old place, and how to undo it.
   `"byAgent": {"<id>": []}` or `"byCommand": {"<stem>": []}` in `.local` for one agent or one
   command. The third form, `"menuGuardEnabled": false` in `settings.json` (overlay-able), stops
   everything regardless of layers. An entry can now be removed durably by owning the array in
-  `.local` without it; the hooks-review entry is no longer special.
+  `.local` without it; once the array lives in `.local`, the hooks-review entry is no longer
+  special (the migration itself still back-fills it once, on the way in; see the back-fill fact
+  below).
 - Replace-whole has a cost the page must state: a `byAgent.<id>` row in `.local` (written by hand
   or by the migration) freezes that agent against every future shipped pattern for its stem,
   because the row replaces the shipped array instead of adding to it. A user who wants shipped
@@ -64,20 +66,33 @@ from the old place, and how to undo it.
   with `enabled` written out; unreadable entries verbatim). Then the key leaves `settings.json`.
   An id that already exists in `.local` is kept, not overwritten. The `.local` file is written
   before `settings.json` is touched.
+- Back-fill before the compare (the page must state it): a non-empty array on a `codex`-stem
+  agent that lacks the hooks-review pattern gets that entry appended first (the #1757 back-fill
+  runs once more, inside the migration; a disabled copy counts as present). So a codex array
+  holding only the folder-trust entry, or one whose hooks-review entry was deleted by hand,
+  becomes the shipped set, is pristine, and is dropped: that deletion is lost and the agent gets
+  the shipped set. A customised codex array such as `[folder-trust, custom]` is exported as
+  `[folder-trust, custom, hooks-review]`, gaining an entry the user never wrote; remove it from
+  the `.local` row afterwards if you do not want it.
 - Migration exceptions, each leaving the arrays in place and applying as before: `.local` exists
   but does not parse or has the wrong shape; `.local` cannot be written; two agents share an id
   with different arrays or different commands; the `agents` array is owned by
   `settings.local.json`. The log says which. AC retries on every settings load, which is every
-  GUI start, every settings reload the running GUI performs, and every CLI verb, and logs one
-  error line per attempt until the cause is fixed; for an overlay-owned array, the fix is to move
-  the entries into `.local` by hand and delete those agents' `blockingMenus` keys from the overlay.
+  GUI start, every settings reload the running GUI performs, and every CLI verb that validates a
+  session token (send, list-peers, close-session and the others); verbs such as open-project,
+  new-project and create-agent-matrix load settings another way and never retry. Each attempt
+  logs one line until the cause is fixed: an error line, or for an overlay-owned array one info
+  line per agent; for an overlay-owned array, the fix is to move the entries into `.local` by
+  hand and delete those agents' `blockingMenus` keys from the overlay.
 - Undo, which needs an older binary: with AC closed, copy each `byAgent.<id>` array from `.local`
   back under that agent as `blockingMenus` in `settings.json`, delete both new files, and run the
   older version; starting the new version instead migrates again at once. Command-wide entries
   the user added under `byCommand` have no place in `settings.json` and are lost by this undo.
-- The hand-edit rule survives for the `.local` file: close AC first, because the guard reads it
-  once, when AC starts, and a Settings save never rewrites it; there is still no Settings screen
-  and no CLI verb.
+- The hand-edit rule for the `.local` file: AC never rewrites it, so editing it while AC runs
+  loses nothing, but the guard reads it once, when AC starts, so restart AC after editing. That
+  one rule is what the walkthrough's step 4 and Troubleshooting cause 1 both say; the base
+  "close AC first" advice belonged to `settings.json` and does not carry over. There is still no
+  Settings screen and no CLI verb.
 - `capturedAgainst` and `note` are free text AC never parses.
 
 ## Page edits
@@ -89,8 +104,9 @@ from the old place, and how to undo it.
   an empty array and detects nothing ... you write the pattern by hand") to the fact that every
   other stem ships nothing, a legacy array still on the agent or a `.local` entry can still apply,
   and the walkthrough below shows how; delete the paragraph about `[]` materialization (`:39`) and
-  the paragraph about the #1757 back-fill (`:41`); replace them with one paragraph on the refresh
-  rule ("rewritten at start when the content differs").
+  the paragraph about the #1757 back-fill (`:41`; its fact moves to the Upgrading section below);
+  replace them with one paragraph on the refresh rule ("rewritten at start when the content
+  differs").
 - `:62`, inside "How a pattern is matched" (`:43-62`): replace `has no \`blockingMenus\` array`
   with `has no patterns`. That sentence is stale (patterns no longer live on the agent) and it is
   the only edit inside `:43-62`; Preserve names the exception. After it, `:62` no longer holds the
@@ -98,24 +114,32 @@ from the old place, and how to undo it.
 - `:74`, last paragraph of "Episodes and re-arming": keep unchanged. The sentence is about the root
   switch, `menuGuardEnabled`, which stays in `settings.json` after this plan, so "the one that reads
   your edited `settings.json`" is still true. Not stale; Preserve holds.
-- Replace "Adding a pattern by hand" (`:76-127`) with a `.local`-based walkthrough: same capture and
-  pattern steps 1 and 2, then step 3 writes a `settings-blocking-menus.local.json` example with
-  `byAgent.claude` holding the entry object at `:113-118` (pattern, notification, enabled,
-  capturedAgainst; same bytes, indentation may differ, see AC5), step 4 unchanged.
+- Replace "Adding a pattern by hand" (`:76-127`) with a `.local`-based walkthrough: the opening
+  paragraphs (`:78-80`, "Close AgentsCommander first") become the `.local` rule from the facts
+  (edit any time, nothing rewrites the file, it is read once at start, so restart afterwards);
+  same capture and pattern steps 1 and 2; then step 3 writes a
+  `settings-blocking-menus.local.json` example with `byAgent.claude` holding the entry object at
+  `:113-118` (pattern, notification, enabled, capturedAgainst; same bytes, indentation may differ,
+  see AC5); step 4 ("Restart AC and reproduce") unchanged.
 - Replace "Why `settings.local.json` does not help here" (`:129-135`) with "The two files and their
-  precedence": the precedence list including the still-on-the-agent layer, the replace-whole rule,
-  the `byCommand` versus `byAgent` choice, and a one-line note that `menuGuardEnabled` still belongs
-  to `settings.json` and its overlay.
+  precedence": the two files and who writes each, the file shape (`schemaVersion` must be `1`,
+  optional `note`, `byCommand` keyed by lowercase stem, `byAgent` keyed by agent id, whole-file
+  rejection with one error line), the precedence list including the still-on-the-agent layer, the
+  replace-whole rule, the `byCommand` versus `byAgent` choice, and a one-line note that
+  `menuGuardEnabled` still belongs to `settings.json` and its overlay.
 - "Turning the guard off" (`:137-149`): rewrite the table to the three `.local` forms plus
-  `menuGuardEnabled`; delete the paragraph that says the hooks-review entry cannot be removed (`:149`).
-- Add "## Upgrading from a `blockingMenus` array" with the migration facts, the exceptions, and the
-  undo recipe. Insertion point: immediately after the end of "Turning the guard off" (its last
-  paragraph is `:149` at base) and before `## Settings` (`:151`), so that AC2's awk range
-  `/^## Upgrading from a/,/^## Settings/` is bounded. This section is the one place on the page
-  that may instruct writing `blockingMenus`.
+  `menuGuardEnabled`; delete the paragraph that says the hooks-review entry cannot be removed
+  (`:149`); what survives of it is the back-fill sentence in the Upgrading section.
+- Add "## Upgrading from a `blockingMenus` array" with the migration facts, the back-fill, the
+  exceptions with the retry rule, and the undo recipe. Insertion point: immediately after the end
+  of "Turning the guard off" (its last paragraph is `:149` at base) and before `## Settings`
+  (`:151`), so that AC2's awk range `/^## Upgrading from a/,/^## Settings/` is bounded. This
+  section is the one place on the page that may instruct writing `blockingMenus`.
 - "Settings" table (`:151-158`): `blockingMenus` row becomes "legacy; moved to
   `settings-blocking-menus.local.json` on the first start after upgrade; while still present it
-  applies as before"; add rows for the two files pointing at the reference page.
+  applies as before". The two files are not keys, and the table is headed `Key | What it controls`,
+  so they go in one sentence under the table (before the existing "See Settings reference" line),
+  pointing at the reference page and holding no `blockingMenus` literal.
 - Troubleshooting (`:160-180`):
   - "My agent stalls" (`:162`): the `"blockingMenus": []` materialization sentence goes; say only
     the `pi` and `codex` stems ship patterns and point at the `.local` walkthrough.
@@ -140,12 +164,17 @@ from the old place, and how to undo it.
   on the first start after upgrade and then absent, unless the migration could not run (see
   [Menu guard](#menu-guard)); while present it applies as before."
 - `:460-481` Menu guard section: `:462` now says patterns are hand-edited in
-  `settings-blocking-menus.local.json` with AC closed; keep the `menuGuardEnabled` row; replace the
-  `blockingMenus` paragraph (`:468`) with the two-file description, a `BlockingMenusFile` table
-  (`schemaVersion`, `note`, `byCommand`, `byAgent`), the precedence list, the refresh rule and the
-  migration summary with its exceptions; keep the `BlockingMenuConfig` table and the keep-invalid
-  paragraph (`:479`), extending the latter to whole-file rejection.
-- `:530` See also line: keep, wording may mention the two files.
+  `settings-blocking-menus.local.json`, applied at the next start; keep the `menuGuardEnabled`
+  row; replace the `blockingMenus` paragraph (`:468`) with the two-file description, a
+  `BlockingMenusFile` table (`schemaVersion`, `note`, `byCommand`, `byAgent`), the precedence
+  list, the refresh rule and the migration summary with its exceptions (the back-fill included);
+  keep the `BlockingMenuConfig` table and the keep-invalid paragraph (`:479`), extending the
+  latter to whole-file rejection. The literal `blockingMenus` inside this section is reserved
+  for the precedence list and the migration summary; the `byAgent` row of the
+  `BlockingMenusFile` table and the overlay-exception fix say "the legacy array" instead. That
+  uses two of the three lines AC2 allows the section.
+- `:530` See also line: reword so it no longer holds the literal `blockingMenus`; name
+  `menuGuardEnabled` and the two `settings-blocking-menus` files instead.
 
 ### `docs/reference/directory-layout.md`
 
@@ -155,7 +184,7 @@ existing table. The header lines are shown for column reference only; do not pas
 | Entry | What it is | Source |
 |---|---|---|
 | `settings-blocking-menus.json` | Blocking-menu patterns AC ships; rewritten at start when the content differs from the binary's | `config/settings.rs` |
-| `settings-blocking-menus.local.json` | User-owned blocking-menu patterns; read at start, written by AC only when the #1905 migration succeeds (once on a normal upgrade; again after a failed or retried migration, never overwriting an existing entry) | `config/settings.rs` |
+| `settings-blocking-menus.local.json` | User-owned blocking-menu patterns; read at start, written by AC only when the #1905 migration succeeds (once on a normal upgrade, or when a later retry succeeds after an earlier failure; never overwriting an existing entry) | `config/settings.rs` |
 
 ## Verification (repository root, Git Bash)
 
@@ -170,19 +199,29 @@ npm run typecheck
 
 ## Acceptance criteria
 
-- AC1 `git diff --name-only HEAD~1..HEAD` lists exactly the three docs files.
+- AC1 `git diff --name-only HEAD~1..HEAD` lists exactly the three docs files (phase 4 is one
+  commit).
 - AC2 In `menu-guard.md`, every `blockingMenus` line printed by the first command that is NOT
   inside the "Upgrading from a `blockingMenus` array" section (the second command counts those)
   contains "legacy" or "still" (case-insensitive), and there are at most 4 such lines. Budget:
   the precedence list 1, the Settings row 1, Troubleshooting at most 2 (`:62` no longer holds the
   literal after its edit). Outside that section the page no longer instructs adding
   `blockingMenus` to `agents[]`. In `settings.md` at most 4 lines, each containing "legacy",
-  "while present", "still" or "See also" (case-insensitive); `:97` and `:530` account for two, so
-  the rewritten Menu guard section may hold the literal on at most two lines. Control: at base the
-  first command prints 10 lines for `menu-guard.md` and 3 for `settings.md`.
+  "while present" or "still" (case-insensitive); `:97` accounts for one and `:530` no longer
+  holds the literal, so the rewritten Menu guard section may hold the literal on at most three
+  lines. Control: at base the first command prints 10 lines for `menu-guard.md` and 3 for
+  `settings.md`.
 - AC3 The third command prints at least 6 for `menu-guard.md`, at least 4 for `settings.md`,
-  exactly 2 for `directory-layout.md` (at base all three are 0).
+  exactly 2 for `directory-layout.md`. At base it prints nothing and exits 1, because `rg -c`
+  prints no line for a file with zero matches.
 - AC4 Every fact in "Facts to state" appears on `menu-guard.md`; the reviewer ticks the list.
+  Landing spots: the two files, the file shape and the precedence in "The two files and their
+  precedence"; what ships and the refresh rule in "What ships by default"; the three off forms,
+  the replace-whole cost and the `[]` form for a stem that ships nothing in "Turning the guard
+  off" or in "The two files and their precedence"; the migration, the back-fill, the exceptions
+  with the retry rule, and the undo in "Upgrading from a `blockingMenus` array"; the hand-edit
+  rule in the walkthrough and in Troubleshooting cause 1; `capturedAgainst` and `note` in the
+  walkthrough.
 - AC5 The claude example entry in the new walkthrough is identical to the object at base
   `docs/features/menu-guard.md:113-118` (pattern, notification, enabled, capturedAgainst) ignoring
   indentation: the fourth command prints exactly one line number (the string occurs once on the
