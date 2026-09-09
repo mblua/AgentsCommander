@@ -1,53 +1,51 @@
 # #1905 Phase 1: the blocking-menus store, the shipped file and the `.local` overlay
 
+Status: READY_FOR_IMPLEMENTATION
 Class: design-bearing. Owner: Rust. Depends on: nothing. Parallel with: nothing.
 Branch: `feature/1905-externalize-blocking-menus`. Base: `main` at `80aeb85`.
 Every line number below is pinned to that base and describes the tree BEFORE this phase's edits.
 
 ## Objective
 
-The menu guard stops reading `AgentConfig.blocking_menus` and resolves its entries through a
-store built from two files next to `settings.json`: `settings-blocking-menus.json`, which AC owns
+Add the store the menu guard will read in phase 2: `settings-blocking-menus.json`, which AC owns
 and rewrites from embedded content whenever it differs, and `settings-blocking-menus.local.json`,
-which the user owns and AC only reads. After this phase, `settings.json` still carries the old
-arrays (phase 2 moves them); they are materialized but no longer read. Phases 1 and 2 land in the
-same PR, so that intermediate state never ships alone.
+which the user owns and AC only reads. Nothing in production calls the store yet and the settings
+loader is untouched, so this phase changes no behavior.
 
-## Files
+## Files (no other file changes)
 
 1. `src-tauri/resources/blocking-menus/settings-blocking-menus.json` (new)
 2. `src-tauri/src/config/settings.rs`
-3. `src-tauri/src/pty/menu_guard/mod.rs`
-4. `src-tauri/src/lib.rs`
-5. `src-tauri/src/config/instance_artifacts.rs`
-6. `src-tauri/src/config/instance_gitignore.rs`
-7. `src-tauri/module-arcs.txt` (regenerated, AC8)
-
-No other file changes. Every `blocking_menus: None` constructor elsewhere and both hand-built
-entry lists (`phone/mailbox.rs:26940`, `pty/inject.rs:1009`) compile unchanged.
+3. `src-tauri/src/config/instance_artifacts.rs`
+4. `src-tauri/src/config/instance_gitignore.rs`
+5. `src-tauri/module-arcs.txt` (regenerated, AC8)
 
 ## Decisions (inlined, binding)
 
 - **One schema, two files.** `BlockingMenusFile { schemaVersion (default 1, must be 1), note
-  (optional, ignored), byCommand: {stem: [BlockingMenuEntry]}, byAgent: {agentId: [BlockingMenuEntry]} }`.
-  Maps are `BTreeMap`. Unknown top-level keys are tolerated on read.
-- **Precedence, replace-whole:** `local.byAgent[id]`, else `local.byCommand[stem]`, else
-  `shipped.byCommand[stem]`, else `[]`. The shipped `byAgent` is ignored and pinned empty. `stem`
-  is `command_executable_basename(command)` (`coding_agents_catalog.rs:626`), exact match.
-- **Shipped file refresh:** at GUI startup, canonical bytes = `serde_json::to_vec_pretty(embedded)`
+  (optional string, ignored), byCommand: {stem: [BlockingMenuEntry]}, byAgent: {agentId: [BlockingMenuEntry]} }`.
+  Maps are `BTreeMap`. Unknown top-level keys are tolerated on read. A wrong type for `note`,
+  `byCommand` or `byAgent`, a non-object, or `schemaVersion != 1` rejects the whole file.
+- **One parser.** `parse_blocking_menus_file(&str)` is the only path from text to typed file.
+  The loader and, in phase 3, the migration both use it, so they accept and reject the same bytes.
+- **Precedence, replace-whole:** layer 0 `agent.blocking_menus == Some(array)` (legacy, still in
+  memory), else `local.byAgent[id]`, else `local.byCommand[stem]`, else `shipped.byCommand[stem]`,
+  else `[]`. The shipped `byAgent` is ignored and pinned empty. `stem` is
+  `command_executable_basename(command)` (`coding_agents_catalog.rs:626`), exact match.
+- **Shipped file refresh:** when the store is built, canonical bytes = `serde_json::to_vec_pretty(embedded)`
   plus one `\n`. Absent or different on disk means write through `write_file_atomic`
   (`local_config_io.rs:80`); equal means no write. Embedded content is the in-memory truth always.
-- **`.local` read:** absent is empty. Unreadable, invalid JSON, not an object, or
-  `schemaVersion != 1` logs one `error!` line and yields an empty layer. AC never writes it here.
-- **Store ownership:** `MenuGuard` owns a `BlockingMenusStore`. `MenuGuard::new()` is shipped-only;
-  `MenuGuard::with_store(store)` is what `lib.rs` uses.
+  The refresh lives in the store constructor, not in the settings loader.
+- **`.local` read:** absent is empty. Unreadable or rejected by the parser logs one `error!` line
+  and yields an empty layer. AC never writes it in this phase.
 - `default_blocking_menus_for_command` keeps its name and signature and reads the embedded
   content, so every test caller keeps meaning "the shipped set for this command".
 
 ## Edit 1: the shipped resource (new file)
 
 Exact bytes of `src-tauri/resources/blocking-menus/settings-blocking-menus.json` (LF, one trailing
-newline; `.gitattributes:4` pins `*.json` to LF). Regex backslashes are doubled in JSON:
+newline; `.gitattributes:4` pins `*.json` to LF). Regex backslashes are doubled in JSON; test T1
+binds these bytes to the Rust literals, so a lost backslash fails the tests:
 
 ```json
 {
@@ -81,15 +79,13 @@ newline; `.gitattributes:4` pins `*.json` to LF). Regex backslashes are doubled 
 }
 ```
 
-Test T1 binds these bytes to the Rust literals, so a lost backslash fails the tests.
-
 ## Edit 2: `src-tauri/src/config/settings.rs`
 
 2a. Line 10 becomes
 `use crate::config::instance_artifacts::{BLOCKING_MENUS_LOCAL_FILE_NAME, BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_LOCK_FILE_NAME};`
 and line 7 becomes `use std::sync::{Arc, OnceLock};`.
 
-2b. Replace `default_blocking_menus_for_command` (`:1046-1071`) with the block below. Leave
+2b. Replace `default_blocking_menus_for_command` (`:1046-1070`) with the block below. Leave
 `CODEX_HOOKS_REVIEW_PATTERN` (`:1034`), `codex_hooks_review_menu` (`:1036`),
 `materialize_blocking_menus` (`:1073`) and `apply_issue_1757_migration` (`:1105`) untouched;
 rewrite the doc comment at `:1030-1033` to name the two consumers now: `apply_issue_1757_migration`
@@ -132,12 +128,26 @@ impl Default for BlockingMenusFile {
     }
 }
 
+/// #1905 (D6) - the one parser both files go through. The migration validates against it
+/// too, so what the export writes is exactly what this loader accepts.
+pub(crate) fn parse_blocking_menus_file(contents: &str) -> Result<BlockingMenusFile, String> {
+    let file = serde_json::from_str::<BlockingMenusFile>(contents)
+        .map_err(|e| format!("does not parse: {e}"))?;
+    if file.schema_version != BLOCKING_MENUS_SCHEMA_VERSION {
+        return Err(format!(
+            "has schemaVersion {}; only {} is supported",
+            file.schema_version, BLOCKING_MENUS_SCHEMA_VERSION
+        ));
+    }
+    Ok(file)
+}
+
 /// A parse failure is a build defect T1 catches; production logs once and serves an empty file.
 pub fn shipped_blocking_menus() -> &'static BlockingMenusFile {
     static SHIPPED: OnceLock<BlockingMenusFile> = OnceLock::new();
     SHIPPED.get_or_init(|| {
-        serde_json::from_str::<BlockingMenusFile>(EMBEDDED_BLOCKING_MENUS_JSON).unwrap_or_else(|e| {
-            log::error!("[blocking-menus] embedded settings-blocking-menus.json does not parse: {e}");
+        parse_blocking_menus_file(EMBEDDED_BLOCKING_MENUS_JSON).unwrap_or_else(|e| {
+            log::error!("[blocking-menus] embedded settings-blocking-menus.json {e}");
             BlockingMenusFile::default()
         })
     })
@@ -199,14 +209,10 @@ pub(crate) fn load_local_blocking_menus_file(settings_path: &Path) -> BlockingMe
             return BlockingMenusFile::default();
         }
     };
-    match serde_json::from_str::<BlockingMenusFile>(&contents) {
-        Ok(file) if file.schema_version == BLOCKING_MENUS_SCHEMA_VERSION => file,
-        Ok(file) => {
-            log::error!("[blocking-menus] {} has schemaVersion {}; only {} is supported, ignoring the file", path.display(), file.schema_version, BLOCKING_MENUS_SCHEMA_VERSION);
-            BlockingMenusFile::default()
-        }
+    match parse_blocking_menus_file(&contents) {
+        Ok(file) => file,
         Err(e) => {
-            log::error!("[blocking-menus] {} does not parse, ignoring the file: {e}", path.display());
+            log::error!("[blocking-menus] {} {e}; ignoring the file", path.display());
             BlockingMenusFile::default()
         }
     }
@@ -241,6 +247,7 @@ impl BlockingMenusStore {
         Self::with_local(load_local_blocking_menus_file(settings_path))
     }
 
+    /// D3 layers 1 to 4: the two files only.
     pub fn resolve(&self, agent_id: &str, command: &str) -> Vec<BlockingMenuEntry> {
         if let Some(entries) = self.local.by_agent.get(agent_id) {
             return entries.clone();
@@ -254,13 +261,25 @@ impl BlockingMenusStore {
         }
         self.shipped.by_command.get(&stem).cloned().unwrap_or_default()
     }
+
+    /// D3 layer 0 first: an array still on the agent (settings.json not yet migrated, or an
+    /// overlay-owned agents array) is what applied before #1905 and keeps applying unchanged.
+    pub fn resolve_for(&self, agent: &AgentConfig) -> Vec<BlockingMenuEntry> {
+        match &agent.blocking_menus {
+            Some(entries) => entries.clone(),
+            None => self.resolve(&agent.id, &agent.command),
+        }
+    }
 }
 ```
 
-`cargo fmt` rewraps the long `log::error!` lines; the texts are binding.
+`cargo fmt` rewraps the long lines; the log texts are binding.
 
-2c. Tests: new module `blocking_menus_1905` inside `mod tests`, using `tempfile::tempdir()` and
-a `settings.json` path inside it (no settings file needs to exist for T1 to T4).
+2c. Tests: new module `blocking_menus_1905` as the LAST item of `mod tests` (after the closing
+brace of `mod local_overlay_1737`), opening with `use super::super::*;` and `use serde_json::json;`
+like `local_overlay_1737` (`:9695-9696`). Each test uses `tempfile::tempdir()` and a
+`settings.json` path inside it; no settings file needs to exist. `agent_1757(id, command,
+blocking_menus)` (`:9425`) is reachable as `super::agent_1757` and builds every `AgentConfig` below.
 
 - T1 `embedded_content_matches_the_rust_literals`: `shipped_blocking_menus()` has
   `schema_version == 1`, `note.is_some()`, empty `by_agent`, `by_command` keys exactly
@@ -269,54 +288,30 @@ a `settings.json` path inside it (no settings file needs to exist for T1 to T4).
   `by_command["codex"][0]` has pattern `r"^\s*Do you trust the contents of this directory\?"` and
   `captured_against == Some("codex 0.x / Linux")`;
   `by_command["codex"][1] == BlockingMenuEntry::Valid(codex_hooks_review_menu())`.
-- T2 `resolve_precedence_is_local_agent_then_local_command_then_shipped`: local
+- T2 `resolve_precedence_is_legacy_then_local_agent_then_local_command_then_shipped`: `X`, `Y`,
+  `Z` are three `Valid` entries with distinct patterns; local
   `by_agent = {"codex-b": [X], "pi-off": []}`, `by_command = {"codex": [Y]}`; assert
   `resolve("codex-b","codex") == [X]`, `resolve("codex-a","codex") == [Y]`,
-  `resolve("codex-a", r"C:\tools\Codex.exe --search") == [Y]`, `resolve("pi-off","pi")` empty,
+  `resolve("codex-a", "Codex.exe --search") == [Y]` (directory-free on purpose: `file_stem` of a
+  backslash path differs on Unix), `resolve("pi-off","pi")` empty,
   `resolve("pi-1","pi") == default_blocking_menus_for_command("pi")`, `resolve("claude-1","claude")` empty.
+  Layer 0: `resolve_for(&agent_1757("codex-b", "codex", Some(vec![Z])))` is `[Z]` although
+  `by_agent["codex-b"]` is `[X]`; `resolve_for(&agent_1757("pi-1", "pi", Some(vec![])))` is empty;
+  `resolve_for(&agent_1757("codex-b", "codex", None)) == [X]`.
 - T3 `shipped_file_is_written_when_absent_or_stale_and_left_alone_when_equal`: first `refresh`
   returns true and the bytes equal `pretty_json_bytes(shipped_blocking_menus())`; second returns
   false; append `x`; third returns true and the bytes equal canonical again.
-- T4 `local_file_rejections_yield_an_empty_layer`: absent, `{ not json`, `[1]`,
-  `{"schemaVersion": 2}` each load as `BlockingMenusFile::default()`; a valid file with one
-  `byAgent` entry loads it.
+- T4 `local_file_rejections_yield_an_empty_layer_and_match_the_parser`: for each text in
+  `{ not json`, `[1]`, `{"schemaVersion": 2}`, `{"schemaVersion":1,"byCommand":42,"byAgent":{}}`,
+  `{"byAgent":{"codex":42}}`, `{"note":42,"byAgent":{}}`: `parse_blocking_menus_file` is `Err`
+  and, written to the `.local` path, `load_local_blocking_menus_file` returns
+  `BlockingMenusFile::default()`. Absent also returns the default. A valid file with one
+  `byAgent` entry and an `"extra": true` key parses `Ok` and loads that entry.
+  `{"byAgent":{"codex":[42]}}` parses `Ok` with one `Invalid(42)` entry (kept verbatim, as today).
 
 Existing tests `:9230`, `:9331`, `:9371`, `:9505-9612` and `:10845` are unchanged in this phase.
 
-## Edit 3: `src-tauri/src/pty/menu_guard/mod.rs`
-
-- Line 15 becomes
-  `use crate::config::settings::{BlockingMenuConfig, BlockingMenuEntry, BlockingMenusStore, SettingsState};`.
-- `MenuGuard` (`:47-51`) gains `store: BlockingMenusStore`; `impl Default` (`:53-61`) sets
-  `store: BlockingMenusStore::shipped_only()`. Add to `impl MenuGuard`:
-
-```rust
-    pub fn with_store(store: BlockingMenusStore) -> Self {
-        Self {
-            store,
-            ..Self::default()
-        }
-    }
-
-    pub(crate) fn entries_for(&self, agent_id: &str, command: &str) -> Vec<BlockingMenuEntry> {
-        self.store.resolve(agent_id, command)
-    }
-```
-
-- Scan loop `:265-270`: replace `.and_then(|agent| agent.blocking_menus.clone())` with
-  `.map(|agent| self.entries_for(&agent.id, &agent.command))`; the rest of the chain stays.
-- T5 `with_store_overrides_the_shipped_set_for_one_agent` in the existing `mod tests`: a store
-  with local `by_agent = {"pi-1": []}`; `MenuGuard::with_store(store).entries_for("pi-1","pi")` is
-  empty while `MenuGuard::new().entries_for("pi-1","pi").len() == 1`. Tests at `:395`, `:433`,
-  `:483`, `:534` are unchanged.
-
-## Edit 4: `src-tauri/src/lib.rs`
-
-Line 2969 becomes
-`let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::with_store(config::settings::BlockingMenusStore::load_from_config_dir()));`
-(wrapped by `cargo fmt`). It runs after `load_settings()` at `:2648`. `lib.rs:4601` is untouched.
-
-## Edit 5: `src-tauri/src/config/instance_artifacts.rs`
+## Edit 3: `src-tauri/src/config/instance_artifacts.rs`
 
 After `:153` add:
 
@@ -331,11 +326,11 @@ Insert two `Ignore` rows of `kind: ArtifactKind::File` immediately BEFORE the `s
 (`:421`), first `BLOCKING_MENUS_SHIPPED_FILE_NAME` with comment
 `# AgentsCommander: shipped blocking-menu patterns; rewritten from the binary at every start`, then
 `BLOCKING_MENUS_LOCAL_FILE_NAME` with comment
-`# AgentsCommander: operator-owned blocking-menu overlay; machine-local by design`. The shape is
-the `settings.local.json` row at `:433-438`; `ignore_rows_are_unique_and_byte_sorted_by_name`
-(`:556`) proves the position (`-` sorts before `.`).
+`# AgentsCommander: operator-owned blocking-menu overlay; machine-local by design`. Shape: the
+`settings.local.json` row at `:433-438`; `ignore_rows_are_unique_and_byte_sorted_by_name` (`:556`)
+proves the position (`-` sorts before `.`).
 
-## Edit 6: `src-tauri/src/config/instance_gitignore.rs`
+## Edit 4: `src-tauri/src/config/instance_gitignore.rs`
 
 In the fixture list, after `"settings.json.lock",` (`:1027`) add
 `"settings-blocking-menus.json",` and `"settings-blocking-menus.local.json",`.
@@ -343,53 +338,62 @@ In the fixture list, after `"settings.json.lock",` (`:1027`) add
 
 ## Required behavior and failure behavior
 
-- No files yet: shipped file written once; `.local` absent; pi and codex detect what they detect today.
-- Stale shipped file: rewritten with one `info!`. Unwritable dir: one `error!`, embedded content serves.
-- `.local` broken: one `error!`, shipped content serves.
-- An agent whose `settings.json` array was customized is served by the shipped set until phase 2
-  moves the array; this is the documented same-PR intermediate state.
-- `menuGuardEnabled: false` still clears every held session on the next tick (untouched code).
+- Production behavior is identical to base: nothing constructs the store outside tests, the
+  loader still materializes, the guard still reads `agent.blocking_menus`. Green on `main` alone.
+- Store, when built: absent or stale shipped file is written with one `info!`; unwritable
+  directory or broken `.local` logs one `error!` and the embedded content serves.
 
 ## Verification (from `src-tauri`)
 
 ```
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --lib -- blocking_menus_1905 menu_guard instance_artifacts instance_gitignore
+cargo test --lib -- blocking_menus_1905 instance_artifacts instance_gitignore
 cargo test --lib --bins --tests
 ```
 
 ## Acceptance criteria
 
-- AC1 `git diff --name-only $(git merge-base main HEAD)..HEAD` lists exactly the seven files above
-  plus `plans/1905-externalize-blocking-menus/*`.
-- AC2 `rg -n "\.blocking_menus" src-tauri/src/pty/menu_guard/mod.rs` prints nothing and exits 1;
-  control: the same over `src-tauri/src/config/settings.rs` prints 3 or more lines.
+- AC1 `git diff --name-only HEAD~1..HEAD` lists exactly the five files above.
+- AC2 `rg -n "parse_blocking_menus_file" src-tauri/src/config/settings.rs` prints 3 or more lines.
 - AC3 `rg -n "include_str" src-tauri/src/config/settings.rs` prints exactly 1 line naming
   `settings-blocking-menus.json`.
 - AC4 `node -e "const f=require('./src-tauri/resources/blocking-menus/settings-blocking-menus.json'); console.log(f.byCommand.pi[0].pattern, f.byCommand.codex[1].pattern)"`
-  prints `^\s*Trust project folder\? ^[^A-Za-z0-9]*Hooks need review\b` (single backslashes).
-- AC5 The four verification commands exit 0; the filtered run reports 5 or more newly added tests
-  passed (T1 to T5) and every pre-existing `menu_guard` test still passes.
-- AC6 Manual, once: launch the phase head with an empty config dir; `settings-blocking-menus.json`
-  appears with the Edit 1 content re-serialized (LF, trailing newline); launch again and its
-  modification time does not change. Quote both listings in the phase reply.
+  (repository root) prints `^\s*Trust project folder\? ^[^A-Za-z0-9]*Hooks need review\b`.
+- AC5 The four verification commands exit 0; the filtered run reports the 4 new
+  `blocking_menus_1905` tests passed and every pre-existing `instance_artifacts` and
+  `instance_gitignore` test still passes.
+- AC6 `rg -n "blocking_menus" src-tauri/src/pty/menu_guard/mod.rs src-tauri/src/lib.rs` prints
+  the same lines as at base (`menu_guard/mod.rs:269,389,399,400,436,536`, `lib.rs:4601`): this
+  phase does not touch the consumer.
 - AC7 CI on the exact PR head: `rust-regression`, `rust-regression-linux`, `rust-regression-macos`,
-  `rust-fmt`, `test-debt` and the typecheck job all green.
-- AC8 Cycle gate, clean tree at the phase head:
-  `node "<VAULT>\rust\01-rust_module-dependency-cycles.mjs" src-tauri --emit-graph post.json --quiet`
-  (exit 1 is the normal outcome; only 3 means no graph), then
-  `node scripts/02-module-arc-record.mjs --graph post.json --out src-tauri/module-arcs.txt`.
-  `git diff --stat src-tauri/module-arcs.txt` shows exactly one insertion, the line
-  `agentscommander_lib::config::settings -> agentscommander_lib::config::local_config_io`, committed
-  in this phase; `summary.moduleCycles` in `post.json` is `1` and the cyclic SCC has the same 85
-  members as at base (Tarjan over `edges` with `cfgGated` excluded, or `--baseline`).
+  `rust-fmt`, `test-debt` and `frontend-regression` all green.
+- AC8 Cycle gate. Working directory: the repository root (the directory holding `src-tauri/` and
+  `scripts/`), clean tree at the phase head. `SCRATCH` is any directory outside the repository.
+
+```
+VAULT="../repo-personal/ObsidianVault/Coding Agents/IA-Programming/rust"
+mkdir -p "$SCRATCH/base" && git archive 80aeb85 src-tauri | tar -x -C "$SCRATCH/base"
+node "$VAULT/01-rust_module-dependency-cycles.mjs" "$SCRATCH/base/src-tauri" --write-baseline "$SCRATCH/pre-cycles.json" --quiet
+node "$VAULT/01-rust_module-dependency-cycles.mjs" src-tauri --write-baseline "$SCRATCH/post-cycles.json" --quiet
+node -e "const p=require('path');const [a,b]=process.argv.slice(1).map(f=>require(p.resolve(f)).moduleCycles.map(c=>[...c.members].sort().join('|')).sort());const same=JSON.stringify(a)===JSON.stringify(b);console.log(same?'SCC member sets identical':'SCC member sets differ');process.exit(same?0:1)" "$SCRATCH/pre-cycles.json" "$SCRATCH/post-cycles.json"
+node "$VAULT/01-rust_module-dependency-cycles.mjs" src-tauri --emit-graph "$SCRATCH/post.json" --quiet
+npm run record:arcs -- --graph "$SCRATCH/post.json"
+git diff --stat src-tauri/module-arcs.txt
+```
+
+  Expected: the two `--write-baseline` runs exit 0 and each records exactly 1 module cycle with
+  86 members (id `40d22fc71179d71f` at base); the comparison prints `SCC member sets identical`
+  and exits 0; `--emit-graph` exits 1 (cycles exist; only exit 3 means no graph);
+  `record:arcs` exits 0; the diff shows exactly one insertion, the line
+  `agentscommander_lib::config::settings -> agentscommander_lib::config::local_config_io`, which
+  this phase commits. Any other diff line or a `differ` verdict fails the gate.
 
 ## Preserve
 
 `evaluate_logical_rows` signature and behavior; `BlockingMenuEntry` and `BlockingMenuConfig` serde
 shapes; `CODEX_HOOKS_REVIEW_PATTERN` and `codex_hooks_review_menu`; `materialize_blocking_menus`
-and `apply_issue_1757_migration` and their call sites (phase 2 owns them); the name and signature
+and `apply_issue_1757_migration` and their call sites (phase 3 owns them); the name and signature
 of `default_blocking_menus_for_command`; `AgentConfig.blocking_menus`; `menu_guard_enabled`;
-`ERR_MENU_GUARD_DEFERRED`; the T11 replay test at `menu_guard/mod.rs:534`; every
+`ERR_MENU_GUARD_DEFERRED`; `menu_guard/mod.rs` and `lib.rs` in full (phase 2 owns them); every
 `blocking_menus: None` constructor listed in the epic; `commands/session.rs:11119`.
