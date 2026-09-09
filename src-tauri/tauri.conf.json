@@ -18,6 +18,7 @@
     "active": true,
     "targets": "all",
     "publisher": "AgentsCommander Contributors",
+    "category": "Development",
     "resources": {
       "../dist": "dist/"
     },
