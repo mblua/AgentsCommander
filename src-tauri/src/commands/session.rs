@@ -10936,13 +10936,11 @@ mod tests {
 
     const MUSE_SUPPORTED_HOST: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 
+    /// The plan's LITERAL workspace-latest selector. Deliberately NOT derived from
+    /// `MUSE_PROFILE.resume_tokens`: these tests must fail when the constant under
+    /// test carries a wrong token (Grinch mutation `--last` -> `--first`).
     fn muse_resume_tokens() -> Vec<String> {
-        CodingAgentKind::Muse
-            .profile()
-            .resume_tokens
-            .iter()
-            .map(|t| t.to_string())
-            .collect()
+        vec!["resume".to_string(), "--last".to_string()]
     }
 
     /// Effective argv the backend must see for a resume-intent Muse launch on this host.
@@ -11017,7 +11015,9 @@ mod tests {
             );
         }
 
-        // Prefix names, mixed case, exe suffix, wrappers: never Muse identity.
+        // Prefix names, mixed case and wrappers are never Muse identity; `muse.exe`
+        // IS Muse kind (exact stem) but its file name is not `muse`, so only the
+        // injection predicate rejects it.
         for command in [
             "muse-agent",
             "Muse",
@@ -11421,23 +11421,41 @@ mod tests {
             "configured args stay empty: {:?}",
             created.shell_args
         );
-        assert_eq!(
-            created.effective_shell_args.clone().unwrap_or_default(),
-            expected_muse_resume_argv()
-        );
+        let effective = created.effective_shell_args.clone().unwrap_or_default();
         let wire = serde_json::to_value(&created).expect("SessionInfo serializes");
         assert_eq!(wire["agentKind"], serde_json::json!("muse"));
         assert_eq!(wire["shellArgs"], serde_json::json!([]));
+        // PRIMARY: the literal plan tokens, never read back from the profile constant.
+        if MUSE_SUPPORTED_HOST {
+            assert_eq!(effective, ["resume", "--last"]);
+            assert_eq!(
+                wire["effectiveShellArgs"],
+                serde_json::json!(["resume", "--last"])
+            );
+        } else {
+            assert!(
+                effective.is_empty(),
+                "unsupported hosts stay plain: {effective:?}"
+            );
+            assert_eq!(wire["effectiveShellArgs"], serde_json::json!([]));
+        }
+        // Secondary cross-check: the profile constant equals the same literal.
         assert_eq!(
-            wire["effectiveShellArgs"],
-            serde_json::to_value(expected_muse_resume_argv()).unwrap()
+            CodingAgentKind::Muse.profile().resume_tokens,
+            ["resume", "--last"]
         );
+        assert_eq!(effective, expected_muse_resume_argv());
 
         {
             let specs = backend.specs.lock().unwrap();
             assert_eq!(specs.len(), 1, "exactly one process attempt");
             let spec = &specs[0];
             assert_eq!(spec.cmd, "muse");
+            if MUSE_SUPPORTED_HOST {
+                assert_eq!(spec.args, ["resume", "--last"]);
+            } else {
+                assert!(spec.args.is_empty(), "{:?}", spec.args);
+            }
             assert_eq!(spec.args, expected_muse_resume_argv());
             assert_eq!(spec.coding_agent, Some(CodingAgentKind::Muse));
             assert_eq!(spec.agent_id.as_deref(), Some("muse"));
