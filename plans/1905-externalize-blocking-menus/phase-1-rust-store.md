@@ -90,10 +90,9 @@ binds these bytes to the Rust literals, so a lost backslash fails the tests:
 and line 7 becomes `use std::sync::{Arc, OnceLock};`.
 
 2b. Replace `default_blocking_menus_for_command` (`:1046-1070`) with the block below. Leave
-`CODEX_HOOKS_REVIEW_PATTERN` (`:1034`), `codex_hooks_review_menu` (`:1036`),
-`materialize_blocking_menus` (`:1073`) and `apply_issue_1757_migration` (`:1105`) untouched;
-rewrite the doc comment at `:1030-1033` to name the two consumers now: `apply_issue_1757_migration`
-and test T1, which pins the embedded JSON to the constant.
+`CODEX_HOOKS_REVIEW_PATTERN` (`:1034`), `codex_hooks_review_menu` (`:1036`), `materialize_blocking_menus`
+(`:1073`) and `apply_issue_1757_migration` (`:1105`) untouched; rewrite the doc comment at `:1030-1033`
+to name the two consumers now: `apply_issue_1757_migration` and test T1, which pins the embedded JSON to the constant.
 
 ```rust
 /// #1905 - the patterns AC ships, embedded at build time. The config-dir copy is a
@@ -330,10 +329,9 @@ pub(crate) const BLOCKING_MENUS_LOCAL_FILE_NAME: &str = "settings-blocking-menus
 Insert two `Ignore` rows of `kind: ArtifactKind::File` immediately BEFORE the `settings.json` row
 (`:421`), first `BLOCKING_MENUS_SHIPPED_FILE_NAME` with comment
 `# AgentsCommander: shipped blocking-menu patterns; rewritten from the binary at every start`, then
-`BLOCKING_MENUS_LOCAL_FILE_NAME` with comment
-`# AgentsCommander: operator-owned blocking-menu overlay; machine-local by design`. Shape: the
-`settings.local.json` row at `:433-438`; `ignore_rows_are_unique_and_byte_sorted_by_name` (`:556`)
-proves the position (`-` sorts before `.`).
+`BLOCKING_MENUS_LOCAL_FILE_NAME` with comment `# AgentsCommander: operator-owned blocking-menu overlay; machine-local by design`.
+Shape: the `settings.local.json` row at `:433-438`; `ignore_rows_are_unique_and_byte_sorted_by_name`
+(`:556`) proves the position (`-` sorts before `.`).
 
 ## Edit 4: `src-tauri/src/config/instance_gitignore.rs`
 
@@ -396,8 +394,7 @@ git diff --stat src-tauri/module-arcs.txt
 ## Preserve
 
 `evaluate_logical_rows` signature and behavior; `BlockingMenuEntry` and `BlockingMenuConfig` serde
-shapes; `CODEX_HOOKS_REVIEW_PATTERN` and `codex_hooks_review_menu`; `materialize_blocking_menus`
-and `apply_issue_1757_migration` and their call sites (phase 3 owns them); the name and signature
-of `default_blocking_menus_for_command`; `AgentConfig.blocking_menus`; `menu_guard_enabled`;
-`ERR_MENU_GUARD_DEFERRED`; `menu_guard/mod.rs` and `lib.rs` in full (phase 2 owns them); every
-`blocking_menus: None` constructor listed in the epic; `commands/session.rs:11119`.
+shapes; `CODEX_HOOKS_REVIEW_PATTERN` and `codex_hooks_review_menu`; `materialize_blocking_menus` and
+`apply_issue_1757_migration` and their call sites (phase 3 owns them); the name and signature of
+`default_blocking_menus_for_command`; `AgentConfig.blocking_menus`; `menu_guard_enabled`; `ERR_MENU_GUARD_DEFERRED`;
+`menu_guard/mod.rs` and `lib.rs` in full (phase 2 owns them); every `blocking_menus: None` constructor listed in the epic; `commands/session.rs:11119`.
