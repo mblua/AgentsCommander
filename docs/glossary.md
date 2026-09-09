@@ -98,7 +98,7 @@ A per-project group of rooms AC watches, alerting you when one stops working. Se
 
 ## Orchestrator
 
-The single agent in a team that can send messages to any team member, edit the team's brief, and close other members' sessions. Members can only message peers they share a team with and their orchestrator.
+The single agent in a team that can send messages to any team member, edit the team's brief, and close other members' sessions. Members can only message peers they share a team with and their orchestrator. Formerly called **Coordinator**, this role still appears as `coordinator` in many code identifiers, reason codes, and file names; both terms refer to the same role. The name changed to **Orchestrator** for its familiarity to users, although **Coordinator** describes the role more accurately in conceptual terms.
 
 ## Origin agent
 
