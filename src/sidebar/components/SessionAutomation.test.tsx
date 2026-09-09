@@ -117,16 +117,41 @@ describe("session workflow automation hooks", () => {
       expect(avatar?.getAttribute("alt")).toBe("");
       expect(rendered.root.querySelector(".root-agent-avatar svg")).toBeNull();
 
-      const detach = rendered.root.querySelector('[data-ac-testid="rootAgent.detachToggle"]');
+      // #1896 - a live, quiet banner carries no row buttons; every action is
+      // menu-only. The banner itself is a div with role="button", so the count
+      // is over descendants. Quiet: not recording, no auto-execute countdown,
+      // profileOutdated unset (ProfileOutdatedBadge renders a <button>).
+      expect(banner!.querySelectorAll("button")).toHaveLength(0);
+      for (const cls of [
+        "session-item-mic",
+        "session-item-explorer",
+        "session-item-detach",
+        "session-item-telegram",
+        "session-item-close",
+        "session-item-bot-menu",
+      ]) {
+        expect(banner!.querySelector(`.${cls}`)).toBeNull();
+      }
+      expect(rendered.root.querySelector('[data-ac-testid="rootAgent.detachToggle"]')).toBeNull();
+      expect(rendered.root.querySelector('[data-ac-testid="rootAgent.destroy"]')).toBeNull();
+
+      contextMenu(banner!);
+      await waitFor(() =>
+        expect(document.querySelector('[data-ac-testid="rootAgent.menu.detachToggle"]')).not.toBeNull()
+      );
+      const detach = document.querySelector('[data-ac-testid="rootAgent.menu.detachToggle"]');
       expect(detach?.getAttribute("data-ac-state")).toBe("attached");
       click(detach!);
+      expect(document.querySelector('[data-ac-testid="rootAgent.menu"]')).toBeNull();
       await waitFor(() =>
         expect(fake.lastCall("detach_terminal")?.args).toEqual({ sessionId: "root-1" })
       );
 
-      const destroy = rendered.root.querySelector('[data-ac-testid="rootAgent.destroy"]');
-      expect(destroy).not.toBeNull();
-      click(destroy!);
+      contextMenu(banner!);
+      await waitFor(() =>
+        expect(document.querySelector('[data-ac-testid="rootAgent.close"]')).not.toBeNull()
+      );
+      click(document.querySelector('[data-ac-testid="rootAgent.close"]')!);
       await waitFor(() =>
         expect(fake.lastCall("destroy_session")?.args).toEqual({ id: "root-1" })
       );
@@ -200,6 +225,9 @@ describe("session workflow automation hooks", () => {
       status: { exited: 137 },
     });
     sessionsStore.setSessions([root]);
+    // #1896 - a bridge still recorded for a dormant root must show no indicator:
+    // the span is live-gated exactly like the replica row's.
+    bridgesStore.setBridges([bridge({ sessionId: "root-dormant" })]);
     const fake = new FakeTransport();
     fake.resolve("destroy_session", undefined);
     fake.resolve("restart_session", session({ ...root, status: "running" }));
@@ -208,12 +236,21 @@ describe("session workflow automation hooks", () => {
     try {
       const banner = rendered.root.querySelector('[data-ac-testid="rootAgent.banner"]');
       expect(banner?.getAttribute("data-ac-state")).toBe("dormant");
+      expect(banner!.querySelectorAll("button")).toHaveLength(0);
       expect(rendered.root.querySelector(".session-item-mic")).toBeNull();
       expect(rendered.root.querySelector(".session-item-detach")).toBeNull();
       expect(rendered.root.querySelector(".session-item-telegram")).toBeNull();
-      const destroy = rendered.root.querySelector('[data-ac-testid="rootAgent.destroy"]');
-      expect(destroy).not.toBeNull();
-      click(destroy!);
+      expect(rendered.root.querySelector(".session-item-explorer")).toBeNull();
+      expect(rendered.root.querySelector(".session-item-close")).toBeNull();
+      expect(rendered.root.querySelector(".session-item-bridge-icon")).toBeNull();
+      expect(rendered.root.querySelector('[data-ac-testid="rootAgent.destroy"]')).toBeNull();
+
+      contextMenu(banner!);
+      await waitFor(() =>
+        expect(document.querySelector('[data-ac-testid="rootAgent.close"]')).not.toBeNull()
+      );
+      expect(document.querySelector('[data-ac-testid="rootAgent.menu.detachToggle"]')).toBeNull();
+      click(document.querySelector('[data-ac-testid="rootAgent.close"]')!);
       await waitFor(() => expect(fake.callsFor("destroy_session")).toHaveLength(1));
       expect(sessionsStore.sessions[0]?.status).toEqual({ exited: 137 });
       expect(fake.callsFor("switch_session")).toHaveLength(0);
@@ -248,9 +285,18 @@ describe("session workflow automation hooks", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const rendered = renderWithFakeTransport(() => <RootAgentBanner />, fake);
     try {
-      const close = rendered.root.querySelector('[data-ac-testid="rootAgent.destroy"]');
-      click(close!);
-      click(close!);
+      const banner = rendered.root.querySelector('[data-ac-testid="rootAgent.banner"]');
+      const closeItem = () => document.querySelector('[data-ac-testid="rootAgent.close"]');
+      // #1896 - close is menu-only. An item dismisses the menu before it
+      // selects, so the second attempt needs its own open; handleContextMenu has
+      // no busy gate, menuClose does.
+      contextMenu(banner!);
+      await waitFor(() => expect(closeItem()).not.toBeNull());
+      click(closeItem()!);
+      expect(closeItem()).toBeNull();
+      contextMenu(banner!);
+      await waitFor(() => expect(closeItem()).not.toBeNull());
+      click(closeItem()!);
       expect(fake.callsFor("destroy_session")).toHaveLength(1);
       rejectDestroy("destroy-failed");
       await waitFor(() => expect(error).toHaveBeenCalledOnce());
@@ -336,33 +382,38 @@ describe("Telegram indicator after #1730", () => {
     vi.restoreAllMocks();
   });
 
-  it("carries the bot label on the root banner button while a bridge is attached", async () => {
+  it("#1896: shows the button-less Telegram indicator on the root banner while a bridge is attached", async () => {
     sessionsStore.setSessions([session({ id: "root-1", isRootAgent: true, status: "running" })]);
-    bridgesStore.setBridges([bridge({ sessionId: "root-1" })]);
+    // A named colour: jsdom rewrites hex in style.color to rgb(), the replica
+    // test (ProjectPanel.context-menu.test.tsx) uses "red" for the same reason.
+    bridgesStore.setBridges([bridge({ sessionId: "root-1", color: "red" })]);
 
     const fake = new FakeTransport();
     const rendered = renderWithFakeTransport(() => <RootAgentBanner />, fake);
     try {
-      const button = rendered.root.querySelector(".session-item-telegram.active");
-      expect(button).not.toBeNull();
-      expect(button?.getAttribute("title")).toBe("Detach Telegram: Ops Bot");
+      const icon = rendered.root.querySelector<HTMLElement>(".root-agent-banner .session-item-bridge-icon");
+      expect(icon).not.toBeNull();
+      expect(icon?.tagName).toBe("SPAN");
+      expect(icon?.style.color).toBe("red");
+      expect(icon?.getAttribute("title")).toBe("Telegram: Ops Bot");
+      expect(icon?.querySelector("svg")).not.toBeNull();
+      expect(rendered.root.querySelector(".session-item-telegram")).toBeNull();
       expect(rendered.root.querySelector(".session-item-bridge-dot")).toBeNull();
+      expect(rendered.root.querySelector(".root-agent-banner button")).toBeNull();
     } finally {
       rendered.cleanup();
     }
   });
 
-  it("leaves the root banner button unattached and untitled by a bot with no bridge", async () => {
+  it("#1896: renders neither indicator nor Telegram button on the root banner with no bridge", async () => {
     sessionsStore.setSessions([session({ id: "root-1", isRootAgent: true, status: "running" })]);
     bridgesStore.setBridges([]);
 
     const fake = new FakeTransport();
     const rendered = renderWithFakeTransport(() => <RootAgentBanner />, fake);
     try {
-      const button = rendered.root.querySelector(".session-item-telegram");
-      expect(button).not.toBeNull();
-      expect(rendered.root.querySelector(".session-item-telegram.active")).toBeNull();
-      expect(button?.getAttribute("title")).toBe("Attach Telegram");
+      expect(rendered.root.querySelector(".session-item-bridge-icon")).toBeNull();
+      expect(rendered.root.querySelector(".session-item-telegram")).toBeNull();
       expect(rendered.root.querySelector(".session-item-bridge-dot")).toBeNull();
     } finally {
       rendered.cleanup();
