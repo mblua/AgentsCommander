@@ -6,6 +6,8 @@ import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   baseSettings,
   discovery,
+  click,
+  input,
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
@@ -261,6 +263,192 @@ describe("ProjectPanel blocked-menu communication slot (#1649)", () => {
     expect(rendered.root.querySelector(handSlotSelector)?.getAttribute("data-kind")).toBe(
       "raiseHand"
     );
+  });
+});
+
+
+// #1859 - the collapse-proof rollup. Three collapses and one regex filter can
+// each hide the row that carries the #1858 chip, so every level that can hide a
+// row now summarises what it hides. These drive the real UI (clicking the real
+// headers, typing in the real filter input) rather than poking the collapse
+// stores, so they fail if a badge is placed under something a collapse removes.
+describe("ProjectPanel blocked-menu rollup badges (#1859)", () => {
+  let cleanupDom: (() => void) | null = null;
+  let rendered: Awaited<ReturnType<typeof mountProject>> | null = null;
+
+  const rollupWg = "room-rollup";
+  const coordName = "orchestrator";
+  const workerName = "dev-rust";
+  const coordSessionId = `${rollupWg}-${coordName}`;
+
+  const subgroupBadge = `[data-ac-testid="workgroup.header.blockedMenu.${rollupWg}"]`;
+  const coordinatorsBadge = '[data-ac-testid="coordinators.header.blockedMenu"]';
+  const projectBadge = '[data-ac-testid="project.header.blockedMenu"]';
+  const allBadges = [subgroupBadge, coordinatorsBadge, projectBadge];
+
+  // A blocked coordinator draws a row in BOTH sections: the orchestrators quick
+  // group ("quick") and the Rooms subgroup ("workgroups").
+  const quickRow = `[data-ac-testid="${rowSlotTestId(rollupWg, coordName, "quick")}"]`;
+  const subgroupRow = `[data-ac-testid="${rowSlotTestId(rollupWg, coordName, "workgroups")}"]`;
+
+  /** One workgroup, one coordinator, plus any extra replicas. */
+  function rollupWorkgroup(extra: AcAgentReplica[] = []): AcWorkgroup {
+    return {
+      name: rollupWg,
+      path: wgPath(rollupWg),
+      task: null,
+      taskTitle: "Coordinate",
+      agents: [replica(rollupWg, coordName, true), ...extra],
+    };
+  }
+
+  const present = (selector: string) => rendered!.root.querySelector(selector) !== null;
+  const badgePresence = () => allBadges.map(present);
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    rendered?.cleanup();
+    rendered = null;
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+  });
+
+  it("shows the row chip and all three enclosing badges with everything expanded", async () => {
+    rendered = await mountProject(
+      [rollupWorkgroup()],
+      [blockedMenuSession(rollupWg, coordName, true)]
+    );
+
+    expect(present(quickRow)).toBe(true);
+    expect(present(subgroupRow)).toBe(true);
+    expect(badgePresence()).toEqual([true, true, true]);
+
+    // The project badge is a SIBLING of the collapse button, never a child:
+    // inside it, it would join the toggle's hit area and its accessible name.
+    const badge = rendered.root.querySelector(projectBadge)!;
+    const header = rendered.root.querySelector(".project-header")!;
+    const toggle = rendered.root.querySelector(".project-header-main")!;
+    expect(badge.parentElement).toBe(header);
+    expect(toggle.contains(badge)).toBe(false);
+    expect(badge.getAttribute("aria-label")).toBe("A session is waiting on an interactive menu");
+  });
+
+  it("keeps all three badges when the workgroup subgroup is collapsed away", async () => {
+    rendered = await mountProject(
+      [rollupWorkgroup()],
+      [blockedMenuSession(rollupWg, coordName, true)]
+    );
+    expect(present(subgroupRow)).toBe(true);
+
+    click(rendered.root.querySelector(".ac-wg-subgroup > .ac-wg-header--collapsible")!);
+    await waitFor(() => expect(present(subgroupRow)).toBe(false));
+
+    expect(badgePresence()).toEqual([true, true, true]);
+  });
+
+  it("keeps the project badge when the whole project panel is collapsed away", async () => {
+    rendered = await mountProject(
+      [rollupWorkgroup()],
+      [blockedMenuSession(rollupWg, coordName, true)]
+    );
+    expect(present(quickRow)).toBe(true);
+
+    click(rendered.root.querySelector(".project-header-main")!);
+    await waitFor(() => expect(present(quickRow)).toBe(false));
+
+    // Every row and both inner headers go with .project-content; this badge is
+    // the only thing left, which is the whole point of the phase.
+    expect(present(subgroupRow)).toBe(false);
+    expect(badgePresence()).toEqual([false, false, true]);
+  });
+
+  it("keeps all three badges when the regex filter hides the blocked row", async () => {
+    // The worker matches the pattern and is working, so (a) the subgroup still
+    // renders and (b) the coordinator survives filteredCoordinatorItems via its
+    // running-peer text. The coordinator matches nothing in "dev-rust", so the
+    // only blocked row in the Rooms subgroup is filtered out while the subgroup
+    // badge stays lit: it is lit by a row that is no longer on screen.
+    rendered = await mountProject(
+      [rollupWorkgroup([replica(rollupWg, workerName, false)])],
+      [
+        blockedMenuSession(rollupWg, coordName, true),
+        session({
+          id: `${rollupWg}-${workerName}`,
+          name: `${rollupWg}/${workerName}`,
+          workingDirectory: replicaPath(rollupWg, workerName),
+          status: "running",
+        }),
+      ]
+    );
+    expect(present(subgroupRow)).toBe(true);
+
+    input(
+      rendered.root.querySelector<HTMLInputElement>(
+        '[data-ac-testid="project.regexFilter.input"]'
+      )!,
+      workerName
+    );
+    await waitFor(() => expect(present(subgroupRow)).toBe(false));
+
+    expect(badgePresence()).toEqual([true, true, true]);
+  });
+
+  it("shows no badge anywhere with nothing blocked, then lights all three when one blocks", async () => {
+    rendered = await mountProject(
+      [rollupWorkgroup()],
+      [
+        session({
+          id: coordSessionId,
+          name: `${rollupWg}/${coordName}`,
+          workingDirectory: replicaPath(rollupWg, coordName),
+          isCoordinator: true,
+          status: "running",
+        }),
+      ]
+    );
+
+    // Positive control first: the two headers this phase adds a badge to really
+    // did render, so the absences below are absences of a badge, not of a mount.
+    expect(rendered.root.querySelector(".ac-wg-subgroup")).not.toBeNull();
+    expect(rendered.root.querySelector(".coord-quick-access-group")).not.toBeNull();
+    expect(present(quickRow)).toBe(false);
+    expect(badgePresence()).toEqual([false, false, false]);
+
+    // The half a hardcoded `false` predicate cannot survive: same mount, same
+    // selectors, one blocked menu later.
+    sessionsStore.setCommunication(coordSessionId, {
+      kind: "blockedMenu",
+      visible: true,
+      updatedAt,
+      message: menuMessage,
+    });
+    await waitFor(() => expect(badgePresence()).toEqual([true, true, true]));
+  });
+
+  it("never lights a blocked-menu badge for a raised hand, and lights all three when that session blocks", async () => {
+    rendered = await mountProject([rollupWorkgroup()], [raiseHandSession(rollupWg, coordName)]);
+
+    // The hand is up and visible on the row...
+    await waitFor(() =>
+      expect(rendered!.root.querySelector(quickRow)?.getAttribute("data-kind")).toBe("raiseHand")
+    );
+    // ...and it lights none of the three blocked-menu badges.
+    expect(badgePresence()).toEqual([false, false, false]);
+
+    // Swapping only the communication kind on that same session lights all
+    // three, so the badges track `blockedMenu` and not "has any communication".
+    sessionsStore.setCommunication(coordSessionId, {
+      kind: "blockedMenu",
+      visible: true,
+      updatedAt,
+      message: menuMessage,
+    });
+    await waitFor(() => expect(badgePresence()).toEqual([true, true, true]));
   });
 });
 

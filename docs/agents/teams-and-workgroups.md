@@ -198,7 +198,7 @@ Membership edits are scoped to the selected room. Other existing rooms for the s
 
 ## Recovery
 
-AC restores sessions at startup based on the persisted state in each instance's `sessions.json`. If `restore_coordinator_wake_state` is true (Settings → General), orchestrators that were running at shutdown wake up; non-orchestrators stay asleep until you click them.
+AC restores sessions at startup based on the persisted state in each instance's `sessions.json`; a session whose project root you archived, whose working directory no longer exists, or that AC had not yet reached when you last quit the app, is left out of everything below. If `restore_coordinator_wake_state` is true (Settings → General → On app restart), AC tries to wake orchestrators that were running at shutdown. Non-orchestrators stay asleep until you click them, unless `restartResumeWakeWorkingAgents` is also on, which makes AC try to wake replicas whose last recorded state was working. Whatever comes back awake and was working is then sent its configured restart line, `restartResumeOrchestratorPrompt` for orchestrators and `restartResumeAgentPrompt` for replicas, so the work that was in flight continues without a manual pass over the fleet, unless that line is empty, or you restarted that session or cleared its conversation from the phone, or it never gets back to its prompt in time, or that line cannot be typed into that particular session on that start; in any of those cases it is woken and left alone. See [Settings reference](../reference/settings.md) for these fields and their defaults.
 
 See [`docs/troubleshooting.md`](../troubleshooting.md) for what to do when a room gets stuck.
 

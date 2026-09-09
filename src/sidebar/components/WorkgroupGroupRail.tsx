@@ -18,10 +18,12 @@ import {
 import {
   isReplicaWorking,
   splitWorkgroupsByWorking,
+  workgroupHasBlockedMenu,
   workgroupHasRaisedHand,
 } from "./workgroup-session";
 import WorkgroupGroupsModal from "./WorkgroupGroupsModal";
 import RaiseHandIcon from "./RaiseHandIcon";
+import BlockedMenuIcon from "./BlockedMenuIcon";
 import ArchiveIcon from "./ArchiveIcon";
 import ArchivedProjectsModal from "./ArchivedProjectsModal";
 
@@ -35,6 +37,7 @@ interface GroupButton {
   counter: string;
   working: boolean;
   raiseHand: boolean;
+  blockedMenu: boolean;
   selection: WorkgroupGroupSelection;
   workgroups: AcWorkgroup[];
   title: string;
@@ -99,22 +102,29 @@ function tooltipFor(folderName: string, workgroups: AcWorkgroup[]): string {
 function buttonContent(
   name: string,
   workgroups: AcWorkgroup[]
-): Pick<GroupButton, "name" | "counter" | "working" | "raiseHand"> {
+): Pick<GroupButton, "name" | "counter" | "working" | "raiseHand" | "blockedMenu"> {
   const working = splitWorkgroupsByWorking(workgroups).working.length;
   return {
     name,
     counter: `${working}/${workgroups.length}`,
     working: working > 0,
     raiseHand: workgroups.some(workgroupHasRaisedHand),
+    blockedMenu: workgroups.some(workgroupHasBlockedMenu),
   };
 }
 
-type RailButtonTestIds = { button: string; raiseHand: string; dot: string };
+type RailButtonTestIds = {
+  button: string;
+  raiseHand: string;
+  blockedMenu: string;
+  dot: string;
+};
 
 function projectRailTestIds(key: string): RailButtonTestIds {
   return {
     button: `workgroupGroups.button.${key}`,
     raiseHand: `workgroupGroups.raiseHand.${key}`,
+    blockedMenu: `workgroupGroups.blockedMenu.${key}`,
     dot: `workgroupGroups.dot.${key}`,
   };
 }
@@ -124,6 +134,7 @@ function favoriteRailTestIds(folderName: string, groupId: string): RailButtonTes
   return {
     button: `workgroupGroups.favoriteButton.${key}`,
     raiseHand: `workgroupGroups.favoriteRaiseHand.${key}`,
+    blockedMenu: `workgroupGroups.favoriteBlockedMenu.${key}`,
     dot: `workgroupGroups.favoriteDot.${key}`,
   };
 }
@@ -137,6 +148,7 @@ function nonStopFavoriteRailTestIds(folderName: string): RailButtonTestIds {
   return {
     button: `workgroupGroups.favoriteNonStopButton.${folderName}`,
     raiseHand: `workgroupGroups.favoriteNonStopRaiseHand.${folderName}`,
+    blockedMenu: `workgroupGroups.favoriteNonStopBlockedMenu.${folderName}`,
     dot: `workgroupGroups.favoriteNonStopDot.${folderName}`,
   };
 }
@@ -246,6 +258,22 @@ const RailButton: Component<{
     data-ac-testid={props.testIds.button}
   >
     <span class="workgroup-group-rail-title-line">
+      {/* #1859 - the blocked-menu rollup, mirroring the raise-hand indicator
+          right below it. Blocked menu first, then raised hand, in every render
+          site. Like the hand it does NOT check collapse: a group holding a
+          blocked menu lights whether or not the tab is collapsed, which also
+          covers the sidebar regex filter for free (a filtered-out row is
+          hidden while its section is still expanded). */}
+      <Show when={props.button.blockedMenu}>
+        <span
+          class="workgroup-group-rail-blocked-menu"
+          data-ac-testid={props.testIds.blockedMenu}
+          title="A session is waiting on an interactive menu"
+          aria-label="A session is waiting on an interactive menu"
+        >
+          <BlockedMenuIcon class="workgroup-group-rail-blocked-menu-icon" />
+        </span>
+      </Show>
       <Show when={props.button.raiseHand}>
         <span
           class="workgroup-group-rail-raise-hand"
@@ -387,6 +415,7 @@ const ProjectRailSection: Component<{
         key: "all",
         ...buttonContent("All", props.project.workgroups),
         raiseHand: false,
+        blockedMenu: false,
         selection: { kind: "all" },
         workgroups: props.project.workgroups,
         title: tooltipFor(props.project.folderName, props.project.workgroups),

@@ -113,7 +113,7 @@ Full comparison with trade-offs and honest losses: [`docs/comparison.md`](docs/c
 
 These are not accidents.
 
-- **Start with files and CLIs.** AgentsCommander keeps the core workflow in plain files and real terminal sessions. External protocols, including MCP, belong where they improve a concrete integration without hiding the workflow.
+- **Start with files and CLIs.** AgentsCommander keeps the core workflow in plain files and real terminal sessions.
 - **Configuration is source code.** Canonical agent, Team, and Loop configuration lives in plain Markdown, JSON, and TOML under each Project's `.ac/` tree. Commit those shared files and review them like code. Gitignored runtime and machine-local state (Rooms, Loop state, and project-local settings) can also live under `.ac/`; keep it distinct from the versioned configuration.
 - **Files before databases.** Shared configuration and inter-agent messages use plain files that are easy to inspect and debug. Databases can be introduced for performance-critical runtime paths without hiding how a Team is defined or how its agents coordinate.
 - **One agent = one directory.** An agent is defined by a `CLAUDE.md` file (or equivalent role-prompt file) inside its own directory. Multiple role prompts within the same directory or its subdirectories are forbidden. Coding agents assume the entire contents of their working directory are relevant context; if two role prompts coexisted, an agent could read another agent's role and leak context.

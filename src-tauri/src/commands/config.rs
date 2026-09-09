@@ -3290,6 +3290,116 @@ mod tests {
         );
     }
 
+    /// #1768 fix case. The port is held continuously from reservation to service, so nothing can
+    /// take it in between. **This is the discriminating test**: section 7.3 runs it against the
+    /// unfixed shape (mutant M1) and records it red, then against the fixed shape and records it
+    /// green.
+    #[tokio::test]
+    async fn api_start_server_adopts_the_prebound_listener_and_never_releases_the_port() {
+        let app = api_server_command_test_app(AppSettings::default());
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve loopback port");
+        let port = listener
+            .local_addr()
+            .expect("reserved loopback address")
+            .port();
+        // Mutation tripwire. This duplicate handle keeps the port bound even if the
+        // implementation drops the listener it was handed, so a drop-then-rebind implementation
+        // fails readiness instead of quietly passing.
+        let keeper = listener.try_clone().expect("duplicate reserved listener");
+
+        let session_mgr = app.state::<Arc<RwLock<SessionManager>>>();
+        let pty_mgr = app.state::<Arc<Mutex<crate::pty::manager::PtyManager>>>();
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let start = crate::api::start_server_on_listener(
+            listener,
+            app.handle().clone(),
+            session_mgr.inner().clone(),
+            pty_mgr.inner().clone(),
+            shutdown.clone(),
+        );
+
+        let addr = crate::api::wait_for_startup_ready(start.readiness)
+            .await
+            .expect("prebound listener adopted");
+        assert_eq!(addr.port(), port, "server must serve the reserved port");
+
+        // The port assertion and a bare `TcpStream::connect` are BOTH satisfied by an
+        // implementation that keeps `keeper`'s port bound and serves Axum on a different socket:
+        // `keeper` is a listening socket, so the OS completes the TCP handshake into its backlog
+        // even though nothing ever accepts. Only a timed application-level response proves that
+        // THIS server is the thing answering on the reserved address, so that is what is asserted.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("healthz client");
+        let url = format!("http://{}/api/v1/healthz", addr);
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            client
+                .get(&url)
+                .send()
+                .await
+                .expect("healthz request")
+                .text()
+                .await
+                .expect("healthz body")
+        })
+        .await
+        .expect("healthz deadline on the reserved address");
+        assert_eq!(
+            body, "{\"ok\":true}",
+            "the reserved address must be served by this server"
+        );
+
+        shutdown.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), start.join_handle)
+            .await
+            .expect("API server shutdown deadline")
+            .expect("API server task");
+        drop(keeper);
+    }
+
+    /// #1768 readiness-error **contract** test for the unchanged `Address` path. It pins the
+    /// wording and the shape of the bind-failure readiness error that CI logs show. It is NOT a
+    /// control for this change: it exercises only the `Address` path, which this plan does not
+    /// alter, so it passes identically on the unfixed and the fixed code. Section 7.3 M1 is the
+    /// red-before / green-after evidence; this test is not.
+    #[tokio::test]
+    async fn api_start_server_address_path_bind_failure_readiness_contract() {
+        let app = api_server_command_test_app(AppSettings::default());
+        let adversary =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("adversary loopback port");
+        let port = adversary
+            .local_addr()
+            .expect("adversary loopback address")
+            .port();
+
+        let session_mgr = app.state::<Arc<RwLock<SessionManager>>>();
+        let pty_mgr = app.state::<Arc<Mutex<crate::pty::manager::PtyManager>>>();
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let start = crate::api::start_server(
+            "127.0.0.1".to_string(),
+            port,
+            app.handle().clone(),
+            session_mgr.inner().clone(),
+            pty_mgr.inner().clone(),
+            shutdown.clone(),
+        );
+
+        let err = crate::api::wait_for_startup_ready(start.readiness)
+            .await
+            .expect_err("a taken port must fail readiness");
+        assert!(err.contains("API server bind failed"), "{err}");
+        assert!(err.contains(&port.to_string()), "{err}");
+
+        shutdown.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), start.join_handle)
+            .await
+            .expect("API server shutdown deadline")
+            .expect("API server task");
+        drop(adversary);
+    }
+
     struct MintApiClientFixture {
         _temp: tempfile::TempDir,
         path: PathBuf,

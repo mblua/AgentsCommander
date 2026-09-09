@@ -38,10 +38,6 @@ Through plain markdown files in `<room-root>/messaging/`. The sender writes a fi
 
 Files are inspectable with `cat`, version-controllable with `git`, and editable with any text editor. We may introduce a database later for performance-critical paths once the data model is stable — not before. See the "Files over databases" design principle in [`README.md`](../README.md).
 
-## Why not MCP?
-
-The Model Context Protocol adds little practical value over simpler alternatives (HTTP APIs, direct IPC) for the surface AC needs. AC will use it only when a specific integration strictly requires it.
-
 ## What does the "Agents Agency" picker do?
 
 It is the role-template browser shown when you create a new agent. AC can download a validated cache of [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents) so the catalog works offline after an explicit `agency-templates update`. See [Coding agents](integrations/coding-agents.md#role-template-picker).

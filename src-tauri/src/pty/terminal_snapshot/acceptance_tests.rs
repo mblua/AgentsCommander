@@ -3587,12 +3587,11 @@ impl Drop for BodyStreamDropProbe {
     }
 }
 
-fn available_loopback_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("reserve loopback port")
-        .local_addr()
-        .expect("reserved loopback address")
-        .port()
+/// A loopback listener the caller keeps until the API server adopts it (#1768). Returning the
+/// socket rather than a bare port number is the whole point: nothing else can take the port
+/// between reservation and service.
+fn reserved_loopback_listener() -> std::net::TcpListener {
+    std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve loopback port")
 }
 
 fn contains_raw(haystack: &[u8], needle: &[u8]) -> bool {
@@ -5094,9 +5093,8 @@ fn real_host_and_api_daemon_paths_enforce_no_oracle_and_final_handoff() {
     runtime.block_on(async move {
         let fixture = AcceptanceFixture::new(temporary).await;
         let api_shutdown = tokio_util::sync::CancellationToken::new();
-        let start = crate::api::start_server(
-            "127.0.0.1".to_string(),
-            available_loopback_port(),
+        let start = crate::api::start_server_on_listener(
+            reserved_loopback_listener(),
             fixture
                 .app
                 .as_ref()
@@ -6101,9 +6099,8 @@ fn real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement() {
         log::trace!(target: "vt100::parser", "{OSC_CLIPBOARD_SENTINEL}");
 
         let api_shutdown = tokio_util::sync::CancellationToken::new();
-        let start = crate::api::start_server(
-            "127.0.0.1".to_string(),
-            available_loopback_port(),
+        let start = crate::api::start_server_on_listener(
+            reserved_loopback_listener(),
             fixture.app.as_ref().expect("fixture app is alive").handle().clone(),
             Arc::clone(&fixture.session_manager),
             Arc::clone(&fixture.pty_manager),
@@ -6579,9 +6576,8 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
         log::trace!(target: "vt100::parser", "{OSC_CLIPBOARD_SENTINEL}");
 
         let api_shutdown = tokio_util::sync::CancellationToken::new();
-        let start = crate::api::start_server(
-            "127.0.0.1".to_string(),
-            available_loopback_port(),
+        let start = crate::api::start_server_on_listener(
+            reserved_loopback_listener(),
             fixture.app.as_ref().expect("fixture app is alive").handle().clone(),
             Arc::clone(&fixture.session_manager),
             Arc::clone(&fixture.pty_manager),
