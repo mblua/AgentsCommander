@@ -673,21 +673,54 @@ fn issue_1867_isolation_source_contract() {
             isolation_tokens(&expected),
             "{file}: suffix and override contract"
         );
-        let path_helper = isolation_function(&tokens, config);
+        // Freeze the complete construction: counting parent/join calls alone lets
+        // a ../ prefix escape the fixture and share state between sibling tests.
+        let expected_path_helper = match file {
+            "cli_agency_templates.rs"
+            | "cli_behavior_contract.rs"
+            | "cli_create_agent_matrix.rs"
+            | "cli_loop.rs"
+            | "cli_project_registration.rs"
+            | "cli_role_experiment.rs"
+            | "cli_workgroup_team.rs" => {
+                r#"fn config_dir_for_bin(bin: &Path) -> PathBuf {
+                let stem = bin.file_stem().expect("bin stem").to_string_lossy().to_string();
+                bin.parent().expect("bin parent").join(format!(".{}", stem))
+            }"#
+            }
+            "cli_close_session.rs"
+            | "cli_raise_hand.rs"
+            | "cli_window_placement.rs"
+            | "terminal_snapshot_host.rs" => {
+                r#"fn config_dir_for_bin(bin: &Path) -> PathBuf {
+                let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+                bin.parent().expect("bin parent").join(format!(".{stem}"))
+            }"#
+            }
+            "cli_harness.rs" => {
+                r#"fn config_dir_for(bin: &Path) -> PathBuf {
+                let stem = bin.file_stem().unwrap().to_string_lossy().to_string();
+                bin.parent().unwrap().join(format!(".{}", stem))
+            }"#
+            }
+            "cli_task_logger.rs" => {
+                r#"fn config_dir_for_bin(bin: &Path) -> PathBuf {
+                let stem = bin.file_stem().expect("bin has stem").to_string_lossy().to_string();
+                bin.parent().expect("bin parent").join(format!(".{}", stem))
+            }"#
+            }
+            "cli_ui_automation.rs" => {
+                r#"fn config_dir_for(bin: &Path) -> PathBuf {
+                let stem = bin.file_stem().unwrap().to_string_lossy();
+                bin.parent().unwrap().join(format!(".{stem}"))
+            }"#
+            }
+            _ => panic!("unrecognized isolation fixture: {file}"),
+        };
         assert_eq!(
-            isolation_occurrences(path_helper, "bin.file_stem()"),
-            1,
-            "{file}"
-        );
-        assert_eq!(
-            isolation_occurrences(path_helper, "bin.parent()"),
-            1,
-            "{file}"
-        );
-        assert_eq!(
-            isolation_occurrences(path_helper, ".join(format!"),
-            1,
-            "{file}"
+            isolation_function(&tokens, config),
+            isolation_tokens(expected_path_helper),
+            "{file}: config path must stay inside its owned fixture"
         );
         assert_eq!(
             isolation_occurrences(&tokens, "command_for_binary("),
