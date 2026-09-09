@@ -1025,6 +1025,8 @@ mod tests {
             "sessions.json",
             "settings.json",
             "settings.json.lock",
+            "settings-blocking-menus.json",
+            "settings-blocking-menus.local.json",
             // #1737: the operator-owned overlay and the two managed context
             // template overrides. The `settings.json` row is an exact-name rule and
             // does not reach `settings.local.json`, which is why the row exists.
