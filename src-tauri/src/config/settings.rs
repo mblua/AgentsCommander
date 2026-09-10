@@ -86,11 +86,9 @@ pub struct AgentConfig {
     /// workgroup coordinator, but it never drives remedial or destructive session action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_regex: Option<String>,
-    /// #1646 / #1647 - proactive detection patterns for terminal blocking menus (e.g. folder trust).
-    /// None = unmaterialized defaults (materialized at load time). Some(vec![]) = explicitly disabled.
-    /// `Some(vec![])` is also what stops a future default from being back-filled by a
-    /// one-shot migration; per-entry `enabled: false` is the way to disable one pattern
-    /// while keeping the array active.
+    /// #1905 - legacy. Read by `export_blocking_menus_to_local_file`, which moves it to
+    /// `settings-blocking-menus.local.json` and sets it to `None`, and by the menu guard as
+    /// layer 0 while it is still present. No production writer sets `Some`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocking_menus: Option<Vec<BlockingMenuEntry>>,
     /// Backend used for future non-local session transports. Omitted/default
@@ -1244,37 +1242,26 @@ impl BlockingMenusStore {
     }
 }
 
-/// #1646 / #1647 - populate absent `blocking_menus` (`None`) on agents with command-derived defaults.
-/// Returns true if any agent's `blocking_menus` was initialized.
-pub fn materialize_blocking_menus(agents: &mut [AgentConfig]) -> bool {
-    let mut changed = false;
-    for agent in agents {
-        if agent.blocking_menus.is_none() {
-            agent.blocking_menus = Some(default_blocking_menus_for_command(&agent.command));
-            changed = true;
-        }
-    }
-    changed
-}
-
 /// #1757 - one-shot migration for installs whose Codex `blockingMenus` array was already
 /// materialized against the pre-#1757 default, which is every install created before this
-/// change. `materialize_blocking_menus` only fills `None`, so those users would otherwise
-/// never receive the hooks-review pattern.
+/// change. The legacy materialize step only filled `None` arrays, so those users would
+/// otherwise never receive the hooks-review pattern.
 ///
 /// Keyed by content, not by a marker field: the entry is appended only when no valid entry
 /// already carries `CODEX_HOOKS_REVIEW_PATTERN`, so the function is idempotent across
 /// restarts and adds no key to the settings schema. The check ignores `enabled`, so setting
 /// `enabled: false` on the entry is a durable off switch; deleting it is not (#1757 D2).
 ///
-/// Extends an ACTIVE set, never activates an inactive one: `None` belongs to
-/// `materialize_blocking_menus`, and `Some(vec![])` is the field's documented
+/// Extends an ACTIVE set, never activates an inactive one: it only fills arrays that
+/// already exist (never `None`), and `Some(vec![])` is the field's documented
 /// "explicitly disabled" state.
 ///
 /// #1737 (D7c): an overlay that owns `agents` supplies the whole array and `restore_base`
 /// writes the base array back on save, so appending here would be discarded on write and
 /// would overwrite the operator's in-memory array meanwhile. Owning `agents` therefore
 /// suppresses the migration, which then runs correctly the first time the overlay is removed.
+///
+/// Since #1905 this runs only as the second step of `export_blocking_menus_to_local_file`.
 ///
 /// Returns true when any agent's array changed.
 pub fn apply_issue_1757_migration(settings: &mut AppSettings) -> bool {
@@ -1309,6 +1296,154 @@ pub fn apply_issue_1757_migration(settings: &mut AppSettings) -> bool {
         changed = true;
     }
     changed
+}
+
+/// Every failure path of the export: log, strip nothing. The loader may still save
+/// settings.json for another migration's reason; the arrays survive that save unchanged.
+fn abort_blocking_menus_export(local_path: &Path, why: &str) -> bool {
+    log::error!(
+        "[settings-migration] #1905 - {why} ({}); no blockingMenus array stripped",
+        local_path.display()
+    );
+    false
+}
+
+/// #1905 (D7) - one-shot, state-keyed export of every `blockingMenus` array still in
+/// `settings.json`. Writes the `.local` file before it strips anything; true means "save".
+pub(crate) fn export_blocking_menus_to_local_file(
+    settings: &mut AppSettings,
+    settings_path: &Path,
+) -> bool {
+    if settings.agents.iter().all(|a| a.blocking_menus.is_none()) {
+        return false;
+    }
+    let local_path = blocking_menus_local_path(settings_path);
+    if settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_AGENTS)
+    {
+        for agent in settings
+            .agents
+            .iter()
+            .filter(|a| a.blocking_menus.is_some())
+        {
+            log::info!("[settings-migration] #1905 - agent '{}' carries blockingMenus inside an overlay-owned agents array; it keeps applying from there and is not exported; move it to {} to use the new file", agent.id, BLOCKING_MENUS_LOCAL_FILE_NAME);
+        }
+        return false;
+    }
+    apply_issue_1757_migration(settings);
+    // One id, one array, one command: two agents sharing an id with different arrays cannot
+    // both live under byAgent[id], and equal arrays under different commands would make the
+    // pristine test below order-dependent, so the export aborts and layer 0 keeps serving both.
+    let mut by_id: BTreeMap<&str, (&str, &Vec<BlockingMenuEntry>)> = BTreeMap::new();
+    for agent in &settings.agents {
+        let Some(entries) = agent.blocking_menus.as_ref() else {
+            continue;
+        };
+        let current = (agent.command.as_str(), entries);
+        if let Some(previous) = by_id.insert(agent.id.as_str(), current) {
+            if previous != current {
+                return abort_blocking_menus_export(&local_path, &format!("two agents share the id '{}' with different blockingMenus arrays or commands", agent.id));
+            }
+        }
+    }
+    let candidates: Vec<(String, Vec<BlockingMenuEntry>)> = by_id
+        .iter()
+        .filter(|(_, (command, entries))| **entries != default_blocking_menus_for_command(command))
+        .map(|(id, (_, entries))| ((*id).to_string(), (*entries).clone()))
+        .collect();
+    let raw = match std::fs::read_to_string(&local_path) {
+        Ok(contents) => Some(contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return abort_blocking_menus_export(
+                &local_path,
+                &format!("could not read the file: {e}"),
+            )
+        }
+    };
+    let mut root = match raw.as_deref() {
+        None => Map::new(),
+        Some(contents) => {
+            // Schema parity: the runtime's own parser, on the complete file, before any mutation.
+            if let Err(e) = parse_blocking_menus_file(contents) {
+                return abort_blocking_menus_export(&local_path, &format!("the file {e}"));
+            }
+            match serde_json::from_str::<Value>(contents) {
+                Ok(Value::Object(map)) => map,
+                // Unreachable once the parser above rejected non-objects; kept as a guard.
+                _ => {
+                    return abort_blocking_menus_export(
+                        &local_path,
+                        "the file is not a JSON object",
+                    )
+                }
+            }
+        }
+    };
+    root.entry("schemaVersion")
+        .or_insert_with(|| Value::from(BLOCKING_MENUS_SCHEMA_VERSION));
+    let Some(by_agent) = root
+        .entry("byAgent")
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+    else {
+        return abort_blocking_menus_export(&local_path, "byAgent is not an object");
+    };
+    let mut inserted = 0usize;
+    for (id, entries) in candidates {
+        if by_agent.contains_key(&id) {
+            log::info!(
+                "[settings-migration] #1905 - {} already has byAgent['{id}']; keeping it",
+                local_path.display()
+            );
+            continue;
+        }
+        match serde_json::to_value(&entries) {
+            Ok(value) => {
+                by_agent.insert(id, value);
+                inserted += 1;
+            }
+            Err(e) => {
+                return abort_blocking_menus_export(
+                    &local_path,
+                    &format!("could not serialize blockingMenus of '{id}': {e}"),
+                )
+            }
+        }
+    }
+    if inserted > 0 {
+        let bytes = match pretty_json_bytes(&Value::Object(root)) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return abort_blocking_menus_export(
+                    &local_path,
+                    &format!("could not serialize the file: {e}"),
+                )
+            }
+        };
+        // Schema parity again, on the exact bytes about to be published.
+        if let Err(e) = std::str::from_utf8(&bytes)
+            .map_err(|e| e.to_string())
+            .and_then(parse_blocking_menus_file)
+        {
+            return abort_blocking_menus_export(&local_path, &format!("the merged file {e}"));
+        }
+        if let Err(e) = crate::config::local_config_io::write_file_atomic(&local_path, &bytes) {
+            return abort_blocking_menus_export(
+                &local_path,
+                &format!("could not write the file: {e}"),
+            );
+        }
+        log::info!(
+            "[settings-migration] #1905 - exported {inserted} blockingMenus array(s) to {}",
+            local_path.display()
+        );
+    }
+    for agent in &mut settings.agents {
+        agent.blocking_menus = None;
+    }
+    true
 }
 
 pub(crate) fn command_token_basename(token: &str) -> String {
@@ -2362,12 +2497,8 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
 
     // Auto-generate root token if missing.
     let mut needs_save = issue_248_migrated || profile_migrated_to_v2;
-    if materialize_blocking_menus(&mut settings.agents) {
-        log::info!("[settings-migration] materialized default blocking menus");
-        needs_save = true;
-    }
-    if apply_issue_1757_migration(&mut settings) {
-        log::info!("[settings-migration] #1757 - added the Codex hooks-review blocking menu");
+    if export_blocking_menus_to_local_file(&mut settings, path) {
+        log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
         needs_save = true;
     }
     if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
@@ -2518,8 +2649,6 @@ pub fn load_settings_for_cli() -> AppSettings {
     // next GUI launch finalizes the migration to disk via load_settings.
     apply_issue_248_migration(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
-    materialize_blocking_menus(&mut settings.agents);
-    apply_issue_1757_migration(&mut settings);
 
     // NO root_token auto-gen, NO save_settings call.
     settings
@@ -2590,8 +2719,6 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
     }
     apply_issue_248_migration(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
-    materialize_blocking_menus(&mut settings.agents);
-    apply_issue_1757_migration(&mut settings);
 
     Ok(settings)
 }
@@ -9462,54 +9589,12 @@ mod tests {
     // ---- #1646 / #1647: blocking menus and menu guard -----------------------------
 
     #[test]
-    fn test_blocking_menus_defaults_materialization() {
-        let mut agents = vec![
-            AgentConfig {
-                id: "pi".to_string(),
-                label: "Pi".to_string(),
-                command: "pi".to_string(),
-                color: "#10b981".to_string(),
-                envs: Vec::new(),
-                isolated_home: false,
-                instructions_filename: None,
-                config_seed: None,
-                context_regex: None,
-                blocking_menus: None,
-                backend: Default::default(),
-            },
-            AgentConfig {
-                id: "codex".to_string(),
-                label: "Codex".to_string(),
-                command: "codex".to_string(),
-                color: "#10b981".to_string(),
-                envs: Vec::new(),
-                isolated_home: false,
-                instructions_filename: None,
-                config_seed: None,
-                context_regex: None,
-                blocking_menus: None,
-                backend: Default::default(),
-            },
-            AgentConfig {
-                id: "claude".to_string(),
-                label: "Claude".to_string(),
-                command: "claude".to_string(),
-                color: "#10b981".to_string(),
-                envs: Vec::new(),
-                isolated_home: false,
-                instructions_filename: None,
-                config_seed: None,
-                context_regex: None,
-                blocking_menus: None,
-                backend: Default::default(),
-            },
-        ];
-
-        let changed = super::materialize_blocking_menus(&mut agents);
-        assert!(changed);
+    fn shipped_defaults_serve_pi_and_codex_only() {
+        // The shipped patterns, not any per-agent materialization: the #1905 export
+        // drops pristine arrays and the store serves these defaults for `None`.
 
         // Pi
-        let pi_menus = agents[0].blocking_menus.as_ref().unwrap();
+        let pi_menus = super::default_blocking_menus_for_command("pi");
         assert_eq!(pi_menus.len(), 1);
         let pi_cfg = pi_menus[0].valid().unwrap();
         assert_eq!(pi_cfg.pattern, r"^\s*Trust project folder\?");
@@ -9524,8 +9609,12 @@ mod tests {
         );
 
         // Codex
-        let codex_menus = agents[1].blocking_menus.as_ref().unwrap();
+        let codex_menus = super::default_blocking_menus_for_command("codex");
         assert_eq!(codex_menus.len(), 2);
+        assert_eq!(
+            codex_menus[1],
+            super::BlockingMenuEntry::Valid(super::codex_hooks_review_menu())
+        );
         let codex_cfg = codex_menus[0].valid().unwrap();
         assert_eq!(
             codex_cfg.pattern,
@@ -9554,12 +9643,9 @@ mod tests {
             Some("codex 0.153.2 / Windows")
         );
 
-        // Claude -> empty array
-        let claude_menus = agents[2].blocking_menus.as_ref().unwrap();
+        // Claude -> empty array: no shipped set, nothing materialized anymore.
+        let claude_menus = super::default_blocking_menus_for_command("claude");
         assert!(claude_menus.is_empty());
-
-        // Subsequent call returns false
-        assert!(!super::materialize_blocking_menus(&mut agents));
     }
 
     #[test]
@@ -9616,13 +9702,11 @@ mod tests {
             serde_json::from_str(json).expect("deserializes explicit empty array");
         assert_eq!(agent.blocking_menus, Some(vec![]));
 
-        let mut agents = vec![agent];
-        let changed = super::materialize_blocking_menus(&mut agents);
+        let serialized = serde_json::to_string(&agent).expect("serializes");
         assert!(
-            !changed,
-            "explicit empty array must not be overwritten by materialize_blocking_menus"
+            serialized.contains(r#""blockingMenus":[]"#),
+            "an explicit empty array round-trips: {serialized}"
         );
-        assert_eq!(agents[0].blocking_menus, Some(vec![]));
     }
 
     #[test]
@@ -9841,10 +9925,10 @@ mod tests {
     }
 
     // T9 - the only new test that observes the real load chain. Every other
-    // needs_save source is deliberately inert on this fixture, so the migration's
+    // needs_save source is deliberately inert on this fixture, so the export's
     // own flag is the only thing that can drive the write.
     #[test]
-    fn issue_1757_reaches_settings_json_through_the_real_load_chain() {
+    fn a_pre_1757_pristine_codex_array_is_dropped_by_the_export() {
         const FIXTURE: &str = r##"{
   "defaultShell": "test-shell",
   "defaultShellArgs": [],
@@ -9878,8 +9962,7 @@ mod tests {
         // Tripwire: a single-backslash escape here is not legal JSON, the load would
         // fall back to default_settings_with_overlay with zero agents, and this test
         // would silently stop testing anything.
-        serde_json::from_str::<serde_json::Value>(FIXTURE)
-            .expect("the T9 fixture must be valid JSON");
+        serde_json::from_str::<serde_json::Value>(FIXTURE).expect("the fixture must be valid JSON");
 
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
@@ -9892,34 +9975,30 @@ mod tests {
             "the fixture must parse; zero agents means the loader fell back to defaults"
         );
 
+        // The in-memory 1757 step ran (fixture had only folder-trust) and the array
+        // then matched the shipped codex set, so the export dropped it as pristine:
+        // the key is gone from settings.json and no `.local` file was created.
         let raw = std::fs::read_to_string(&path).unwrap();
         let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        let menus = value["agents"][0]["blockingMenus"]
-            .as_array()
-            .expect("blockingMenus array on disk");
-        assert_eq!(
-            menus.len(),
-            2,
-            "the migration must have appended and the loader must have saved"
+        assert!(
+            value["agents"][0].get("blockingMenus").is_none(),
+            "the pristine array must be stripped from settings.json"
+        );
+        assert!(
+            !super::blocking_menus_local_path(&path).exists(),
+            "pristine arrays must not create the .local file"
         );
 
+        // The stripped agent is served by the shipped file from now on.
+        let store = super::BlockingMenusStore::load_from_settings_path(&path);
         assert_eq!(
-            menus[0]["pattern"].as_str(),
-            Some(r"^\s*Do you trust the contents of this directory\?")
+            store.resolve_for(&settings.agents[0]),
+            super::default_blocking_menus_for_command("codex"),
+            "the shipped codex set (two entries) must serve the agent"
         );
-        assert_eq!(
-            menus[0]["notification"].as_str(),
-            Some("codex is waiting for you to answer the folder-trust menu in this terminal")
-        );
-        assert_eq!(menus[0]["enabled"].as_bool(), Some(true));
-        assert_eq!(
-            menus[0]["capturedAgainst"].as_str(),
-            Some("codex 0.x / Linux")
-        );
-
-        assert_eq!(
-            menus[1]["pattern"].as_str(),
-            Some(super::CODEX_HOOKS_REVIEW_PATTERN)
+        assert!(
+            super::blocking_menus_shipped_path(&path).exists(),
+            "the store must have materialized the shipped file"
         );
     }
 
@@ -9935,7 +10014,7 @@ mod tests {
         /// A base `settings.json` carrying the three fields that have no
         /// `#[serde(default)]`, plus a root token so a load does not autogenerate
         /// one unless the test wants it to.
-        fn base_fixture() -> Value {
+        pub(super) fn base_fixture() -> Value {
             json!({
                 "defaultShell": "test-shell",
                 "defaultShellArgs": [],
@@ -9944,7 +10023,7 @@ mod tests {
             })
         }
 
-        fn seed(dir: &Path, base: Option<&Value>, local: Option<&Value>) -> PathBuf {
+        pub(super) fn seed(dir: &Path, base: Option<&Value>, local: Option<&Value>) -> PathBuf {
             let path = dir.join("settings.json");
             if let Some(base) = base {
                 std::fs::write(&path, serde_json::to_string_pretty(base).unwrap()).unwrap();
@@ -9959,7 +10038,7 @@ mod tests {
             path
         }
 
-        fn disk_object(path: &Path) -> Map<String, Value> {
+        pub(super) fn disk_object(path: &Path) -> Map<String, Value> {
             let raw = std::fs::read_to_string(path).unwrap();
             match serde_json::from_str::<Value>(&raw).unwrap() {
                 Value::Object(object) => object,
@@ -9970,7 +10049,7 @@ mod tests {
         /// #1757 - the folder-trust entry exactly as a materialized codex
         /// `blockingMenus` array carries it. NOT built from `agent_json`, whose
         /// hardcoded empty array would make T10 pass with or without the guard.
-        fn folder_trust_entry() -> Value {
+        pub(super) fn folder_trust_entry() -> Value {
             json!({
                 "pattern": r"^\s*Do you trust the contents of this directory\?",
                 "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
@@ -9979,7 +10058,7 @@ mod tests {
             })
         }
 
-        fn codex_agent_with(blocking_menus: Value) -> Value {
+        pub(super) fn codex_agent_with(blocking_menus: Value) -> Value {
             json!({
                 "id": "codex",
                 "label": "Codex",
@@ -10159,6 +10238,9 @@ mod tests {
         /// remaining key is pinned. The fixture pins `defaultShell`,
         /// `defaultShellArgs` and `agents` (no `#[serde(default)]`) and the two
         /// profile-aware ports, so the platform this runs on is not load-bearing.
+        /// #1905: re-captured after phase 3 - the loader no longer materializes
+        /// `blockingMenus` and the export strips every array (claude's explicit `[]`
+        /// is pristine and is dropped), so the control carries no `blockingMenus`.
         const EXPECTED_NON_PROJECT_SETTINGS_JSON: &str = r##"{
   "activityLogEnabled": true,
   "agentAutoUpdateByCommand": {},
@@ -10168,20 +10250,6 @@ mod tests {
   "agentTemplatesPath": null,
   "agents": [
     {
-      "blockingMenus": [
-        {
-          "capturedAgainst": "codex 0.x / Linux",
-          "enabled": true,
-          "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
-          "pattern": "^\\s*Do you trust the contents of this directory\\?"
-        },
-        {
-          "capturedAgainst": "codex 0.153.2 / Windows",
-          "enabled": true,
-          "notification": "codex is waiting for you to answer the hooks-review menu in this terminal",
-          "pattern": "^[^A-Za-z0-9]*Hooks need review\\b"
-        }
-      ],
       "color": "#112233",
       "command": "codex",
       "envs": [],
@@ -10190,7 +10258,6 @@ mod tests {
       "label": "Codex"
     },
     {
-      "blockingMenus": [],
       "color": "#445566",
       "command": "claude",
       "envs": [],
@@ -11096,6 +11163,16 @@ mod tests {
                     .owns_top_level(OVERLAY_KEY_AGENTS),
                 "the fixture stopped producing an overlay-owned agents array"
             );
+            // #1905: the overlay-owned array is not exported (one info! per agent), so
+            // no blocking-menus `.local` file appears and layer 0 keeps serving the
+            // overlay's one-entry array rather than the shipped two.
+            assert!(!blocking_menus_local_path(&path).exists());
+            assert_eq!(
+                BlockingMenusStore::load_from_settings_path(&path)
+                    .resolve_for(&settings.agents[0])
+                    .len(),
+                1
+            );
 
             fn in_memory(settings: &AppSettings) -> usize {
                 settings
@@ -11383,7 +11460,9 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────
     mod blocking_menus_1905 {
         use super::super::*;
+        use super::local_overlay_1737::{base_fixture, disk_object, folder_trust_entry, seed};
         use serde_json::json;
+        use std::time::Duration;
 
         fn valid_entry(pattern: &str, notification: &str) -> BlockingMenuEntry {
             BlockingMenuEntry::Valid(BlockingMenuConfig {
@@ -11571,6 +11650,552 @@ mod tests {
                 kept.by_agent["codex"],
                 vec![BlockingMenuEntry::Invalid(json!(42))]
             );
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // T6-T14 - the #1905 one-shot export out of settings.json.
+        // Fixture policy: every fixture entry carries all four fields, because the
+        // export writes a `Valid` entry through the typed round-trip, which adds
+        // `"enabled": true` when absent, so an equality assertion against a
+        // three-field fixture fails.
+        // ─────────────────────────────────────────────────────────────────────────
+
+        /// `{id, label: id, command, color}` plus `"blockingMenus": menus` when `Some`.
+        fn agent_json(id: &str, command: &str, menus: Option<Value>) -> Value {
+            let mut agent = json!({
+                "id": id,
+                "label": id,
+                "command": command,
+                "color": "#000000",
+            });
+            if let Some(menus) = menus {
+                agent["blockingMenus"] = menus;
+            }
+            agent
+        }
+
+        /// `base_fixture()` with its `agents` replaced and a `codingAgentProfiles`
+        /// object holding an `A` cell for every distinct id, so that
+        /// `repair_coding_agent_profiles_config` is inert and the export is the
+        /// only possible `needs_save` source in this module.
+        fn fixture_with(agents: &[Value]) -> Value {
+            let mut base = base_fixture();
+            base["agents"] = Value::Array(agents.to_vec());
+            let mut profiles_by_agent = Map::new();
+            for agent in agents {
+                profiles_by_agent
+                    .entry(agent["id"].as_str().expect("agent id").to_string())
+                    .or_insert_with(|| {
+                        json!({
+                            "A": { "enabled": true, "command": "", "env": {}, "notes": "" }
+                        })
+                    });
+            }
+            base["codingAgentProfiles"] = json!({
+                "schemaVersion": 2,
+                "profileSlots": { "A": { "label": "" } },
+                "defaultProfileByAgent": {},
+            });
+            base["codingAgentProfiles"]["profilesByAgent"] = Value::Object(profiles_by_agent);
+            base
+        }
+
+        /// The shipped folder-trust entry as JSON (four fields).
+        fn ft() -> Value {
+            folder_trust_entry()
+        }
+
+        /// `ft` with `enabled: false`.
+        fn ft_disabled() -> Value {
+            let mut entry = ft();
+            entry["enabled"] = json!(false);
+            entry
+        }
+
+        /// The shipped codex hooks-review entry as canonical JSON.
+        fn hooks() -> Value {
+            serde_json::to_value(codex_hooks_review_menu()).unwrap()
+        }
+
+        /// A user-customized entry (all four fields).
+        fn custom_entry(pattern: &str) -> Value {
+            json!({
+                "pattern": pattern,
+                "notification": "custom 1905 notification",
+                "enabled": true,
+                "capturedAgainst": "test",
+            })
+        }
+
+        fn agent_by_id<'a>(settings: &'a AppSettings, id: &str) -> &'a AgentConfig {
+            settings
+                .agents
+                .iter()
+                .find(|a| a.id == id)
+                .unwrap_or_else(|| panic!("no agent {id}"))
+        }
+
+        /// The blocking-menus `.local` file parsed back as JSON.
+        fn local_disk_object(settings_path: &Path) -> Value {
+            let raw = std::fs::read_to_string(blocking_menus_local_path(settings_path)).unwrap();
+            serde_json::from_str(&raw).expect(".local file must parse as JSON")
+        }
+
+        fn resolve_json(store: &BlockingMenusStore, agent: &AgentConfig) -> Value {
+            serde_json::to_value(store.resolve_for(agent)).unwrap()
+        }
+
+        fn assert_no_blocking_menus_on_disk(path: &Path) {
+            let object = disk_object(path);
+            let agents = object["agents"].as_array().expect("agents array");
+            for agent in agents {
+                assert!(
+                    agent.get("blockingMenus").is_none(),
+                    "blockingMenus must be stripped from settings.json"
+                );
+            }
+        }
+
+        fn assert_blocking_menus_on_disk_unchanged(path: &Path, seeded: &[Value]) {
+            let object = disk_object(path);
+            let agents = object["agents"].as_array().expect("agents array");
+            assert_eq!(agents.len(), seeded.len());
+            for (agent, expected) in agents.iter().zip(seeded) {
+                assert_eq!(agent.get("blockingMenus"), expected.get("blockingMenus"));
+            }
+        }
+
+        // T6
+        #[test]
+        fn export_moves_customized_arrays_and_drops_pristine_ones_then_is_idempotent() {
+            let temp = tempfile::tempdir().unwrap();
+            let seeded = [
+                agent_json("pi", "pi", Some(json!([]))),
+                agent_json("codex", "codex", Some(json!([ft(), hooks()]))),
+                agent_json("codex-old", "codex", Some(json!([ft()]))),
+                agent_json("codex-off", "codex", Some(json!([]))),
+                agent_json("claude", "claude", Some(json!([]))),
+                agent_json(
+                    "mine",
+                    "claude",
+                    Some(json!([custom_entry("^custom-1905"), 12345])),
+                ),
+            ];
+            let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+
+            let settings = load_settings_from_path(&path);
+
+            // Every customized or explicit array moved; pristine ones were dropped.
+            assert_no_blocking_menus_on_disk(&path);
+            let local = local_disk_object(&path);
+            assert_eq!(local["schemaVersion"], 1);
+            let by_agent = local["byAgent"].as_object().expect("byAgent object");
+            let mut keys: Vec<&str> = by_agent.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["codex-off", "mine", "pi"]);
+            assert_eq!(by_agent["pi"], json!([]));
+            assert_eq!(by_agent["codex-off"], json!([]));
+            assert_eq!(
+                by_agent["mine"],
+                json!([custom_entry("^custom-1905"), 12345])
+            );
+
+            let store = BlockingMenusStore::load_from_settings_path(&path);
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "pi")),
+                json!([])
+            );
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "codex-off")),
+                json!([])
+            );
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "codex")),
+                serde_json::to_value(default_blocking_menus_for_command("codex")).unwrap()
+            );
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "codex-old")),
+                serde_json::to_value(default_blocking_menus_for_command("codex")).unwrap()
+            );
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "claude")),
+                json!([])
+            );
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "mine"))
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+
+            // Idempotent: the second load changes neither file.
+            let settings_bytes = std::fs::read(&path).unwrap();
+            let local_bytes = std::fs::read(blocking_menus_local_path(&path)).unwrap();
+            load_settings_from_path(&path);
+            assert_eq!(std::fs::read(&path).unwrap(), settings_bytes);
+            assert_eq!(
+                std::fs::read(blocking_menus_local_path(&path)).unwrap(),
+                local_bytes
+            );
+        }
+
+        // T7
+        #[test]
+        fn export_keeps_an_existing_local_entry_and_preserves_unknown_keys() {
+            let temp = tempfile::tempdir().unwrap();
+            let seeded = [
+                agent_json("codex", "codex", Some(json!([ft_disabled()]))),
+                agent_json(
+                    "mine",
+                    "claude",
+                    Some(json!([custom_entry("^custom-1905-b")])),
+                ),
+            ];
+            let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            std::fs::write(
+                blocking_menus_local_path(&path),
+                r#"{"extra": true, "byAgent": {"codex": [{"pattern": "^custom-1905", "notification": "custom 1905 notification", "enabled": true, "capturedAgainst": "test"}]}}"#,
+            )
+            .unwrap();
+
+            let settings = load_settings_from_path(&path);
+
+            let local = local_disk_object(&path);
+            assert_eq!(
+                local["byAgent"]["codex"],
+                json!([custom_entry("^custom-1905")]),
+                "the existing byAgent entry wins over the candidate"
+            );
+            assert_eq!(
+                local["byAgent"]["mine"],
+                json!([custom_entry("^custom-1905-b")])
+            );
+            assert_eq!(local["extra"], json!(true), "unknown keys survive");
+            assert_eq!(local["schemaVersion"], 1);
+            assert_no_blocking_menus_on_disk(&path);
+
+            let store = BlockingMenusStore::load_from_settings_path(&path);
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "codex")),
+                json!([custom_entry("^custom-1905")])
+            );
+
+            // The 1757 step ran before the byAgent comparison: on a copy of the
+            // fixture settings it appends the hooks entry to codex's array.
+            let mut copy: AppSettings = serde_json::from_value(fixture_with(&seeded)).unwrap();
+            apply_issue_1757_migration(&mut copy);
+            assert_eq!(
+                serde_json::to_value(agent_by_id(&copy, "codex").blocking_menus.as_ref().unwrap())
+                    .unwrap(),
+                json!([ft_disabled(), hooks()])
+            );
+        }
+
+        // T8
+        #[test]
+        fn export_refuses_when_the_local_file_is_unparseable() {
+            let temp = tempfile::tempdir().unwrap();
+            let seeded = [
+                agent_json("codex", "codex", Some(json!([ft()]))),
+                agent_json(
+                    "mine",
+                    "claude",
+                    Some(json!([custom_entry("^custom-1905")])),
+                ),
+            ];
+            let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            std::fs::write(blocking_menus_local_path(&path), "{ not json").unwrap();
+
+            let settings = load_settings_from_path(&path);
+
+            // Nothing moved, nothing was rewritten: the on-disk arrays are exactly
+            // what was seeded (no 1757 entry is added on disk on an abort path).
+            assert_blocking_menus_on_disk_unchanged(&path, &seeded);
+            assert_eq!(
+                std::fs::read(blocking_menus_local_path(&path)).unwrap(),
+                b"{ not json"
+            );
+
+            // Layer 0 keeps serving both arrays; codex's is the in-memory 1757 step's
+            // result, which is what the current binary serves.
+            let store = BlockingMenusStore::load_from_settings_path(&path);
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "codex")),
+                json!([ft(), hooks()])
+            );
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "mine")),
+                json!([custom_entry("^custom-1905")])
+            );
+        }
+
+        // T9
+        #[test]
+        fn export_is_state_keyed() {
+            let temp = tempfile::tempdir().unwrap();
+            let seeded = [
+                agent_json("codex", "codex", None),
+                agent_json("mine", "claude", None),
+            ];
+            let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            let seeded_bytes = std::fs::read(&path).unwrap();
+
+            let settings = load_settings_from_path(&path);
+
+            // No agent had `Some`, so the export is a no-op: no save, no `.local`.
+            assert!(!blocking_menus_local_path(&path).exists());
+            assert_eq!(std::fs::read(&path).unwrap(), seeded_bytes);
+
+            // The migrated steady state is served by the files.
+            let store = BlockingMenusStore::load_from_settings_path(&path);
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "codex")),
+                serde_json::to_value(default_blocking_menus_for_command("codex")).unwrap()
+            );
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "mine")),
+                json!([])
+            );
+        }
+
+        // T10
+        #[test]
+        fn export_aborts_when_the_local_file_cannot_be_written() {
+            let temp = tempfile::tempdir().unwrap();
+            let seeded = [agent_json(
+                "mine",
+                "claude",
+                Some(json!([custom_entry("^custom-1905")])),
+            )];
+            let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            let tmp_dir = temp.path().join(format!(
+                ".settings-blocking-menus.local.json.{}.tmp",
+                std::process::id()
+            ));
+            std::fs::create_dir(&tmp_dir).unwrap();
+            let seeded_bytes = std::fs::read(&path).unwrap();
+
+            let settings = load_settings_from_path(&path);
+
+            assert_eq!(std::fs::read(&path).unwrap(), seeded_bytes);
+            assert!(!blocking_menus_local_path(&path).exists());
+            let store = BlockingMenusStore::load_from_settings_path(&path);
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "mine")),
+                json!([custom_entry("^custom-1905")])
+            );
+
+            // The retry on the next start finishes the export.
+            std::fs::remove_dir(&tmp_dir).unwrap();
+            load_settings_from_path(&path);
+            let local = local_disk_object(&path);
+            assert_eq!(
+                local["byAgent"]["mine"],
+                json!([custom_entry("^custom-1905")])
+            );
+            assert_no_blocking_menus_on_disk(&path);
+        }
+
+        // T11 - takes about 2 seconds by design: the loader's own save waits its
+        // 2-second SettingsFileLock timeout while the test holds the lock.
+        #[test]
+        fn a_failed_settings_save_after_a_successful_export_is_completed_at_the_next_start() {
+            let temp = tempfile::tempdir().unwrap();
+            let seeded = [
+                agent_json("codex", "codex", Some(json!([ft(), hooks()]))),
+                agent_json(
+                    "mine",
+                    "claude",
+                    Some(json!([custom_entry("^custom-1905")])),
+                ),
+            ];
+            let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            let seeded_bytes = std::fs::read(&path).unwrap();
+
+            let held = SettingsFileLock::acquire(&path, Duration::from_millis(50)).unwrap();
+            let settings = load_settings_from_path(&path);
+
+            // The `.local` write succeeded inside the export; the settings save failed.
+            let local = local_disk_object(&path);
+            assert_eq!(
+                local["byAgent"]["mine"],
+                json!([custom_entry("^custom-1905")])
+            );
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                seeded_bytes,
+                "the failed save must leave settings.json untouched"
+            );
+            let store = BlockingMenusStore::load_from_settings_path(&path);
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "mine")),
+                json!([custom_entry("^custom-1905")]),
+                "the file serves the entries; the in-memory array is None"
+            );
+
+            drop(held);
+            let local_bytes = std::fs::read(blocking_menus_local_path(&path)).unwrap();
+            let settings = load_settings_from_path(&path);
+
+            assert_no_blocking_menus_on_disk(&path);
+            assert_eq!(
+                std::fs::read(blocking_menus_local_path(&path)).unwrap(),
+                local_bytes,
+                "the second start finds the ids present, inserts nothing, strips again"
+            );
+            let store = BlockingMenusStore::load_from_settings_path(&path);
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "mine")),
+                json!([custom_entry("^custom-1905")])
+            );
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "codex")),
+                serde_json::to_value(default_blocking_menus_for_command("codex")).unwrap()
+            );
+        }
+
+        // T12
+        #[test]
+        fn a_restart_between_the_two_writes_finishes_the_export() {
+            let temp = tempfile::tempdir().unwrap();
+            let seeded = [
+                agent_json("codex", "codex", Some(json!([ft(), hooks()]))),
+                agent_json(
+                    "mine",
+                    "claude",
+                    Some(json!([custom_entry("^custom-1905")])),
+                ),
+            ];
+            let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            // The exact on-disk state T11 leaves after its first load.
+            let local_text = r#"{"schemaVersion": 1, "byAgent": {"mine": [{"pattern": "^custom-1905", "notification": "custom 1905 notification", "enabled": true, "capturedAgainst": "test"}]}}"#;
+            std::fs::write(blocking_menus_local_path(&path), local_text).unwrap();
+
+            let settings = load_settings_from_path(&path);
+
+            assert_no_blocking_menus_on_disk(&path);
+            assert_eq!(
+                std::fs::read(blocking_menus_local_path(&path)).unwrap(),
+                local_text.as_bytes(),
+                "nothing was inserted, so the .local file is untouched"
+            );
+            let store = BlockingMenusStore::load_from_settings_path(&path);
+            assert_eq!(
+                resolve_json(&store, agent_by_id(&settings, "mine")),
+                json!([custom_entry("^custom-1905")])
+            );
+        }
+
+        // T13
+        #[test]
+        fn schema_parity_rejects_what_the_runtime_rejects() {
+            let texts = [
+                r#"{"schemaVersion":1,"byCommand":42,"byAgent":{}}"#,
+                r#"{"byAgent":{"codex":42}}"#,
+                r#"{"note":42,"byAgent":{}}"#,
+                r#"{"schemaVersion":2}"#,
+                "[1]",
+            ];
+            for text in texts {
+                let temp = tempfile::tempdir().unwrap();
+                let seeded = [
+                    agent_json("codex", "codex", Some(json!([ft()]))),
+                    agent_json(
+                        "mine",
+                        "claude",
+                        Some(json!([custom_entry("^custom-1905")])),
+                    ),
+                ];
+                let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+                std::fs::write(blocking_menus_local_path(&path), text).unwrap();
+                let seeded_bytes = std::fs::read(&path).unwrap();
+
+                let settings = load_settings_from_path(&path);
+
+                assert_eq!(
+                    std::fs::read(&path).unwrap(),
+                    seeded_bytes,
+                    "{text:?}: an abort must leave settings.json untouched"
+                );
+                assert_eq!(
+                    std::fs::read(blocking_menus_local_path(&path)).unwrap(),
+                    text.as_bytes(),
+                    "{text:?}: the .local file must stay untouched"
+                );
+                let store = BlockingMenusStore::load_from_settings_path(&path);
+                assert_eq!(
+                    resolve_json(&store, agent_by_id(&settings, "mine")),
+                    json!([custom_entry("^custom-1905")]),
+                    "{text:?}: layer 0 keeps serving the in-memory array"
+                );
+                assert!(parse_blocking_menus_file(text).is_err(), "{text:?}");
+            }
+        }
+
+        // T14
+        #[test]
+        fn duplicate_agent_ids_abort_unless_their_arrays_and_commands_are_equal() {
+            // Different arrays under one command: abort.
+            let temp = tempfile::tempdir().unwrap();
+            let seeded = [
+                agent_json("dup", "claude", Some(json!([custom_entry("^custom-1905")]))),
+                agent_json(
+                    "dup",
+                    "claude",
+                    Some(json!([custom_entry("^custom-1905-b")])),
+                ),
+            ];
+            let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            let settings = load_settings_from_path(&path);
+            assert_blocking_menus_on_disk_unchanged(&path, &seeded);
+            assert!(!blocking_menus_local_path(&path).exists());
+            let store = BlockingMenusStore::load_from_settings_path(&path);
+            assert_eq!(
+                resolve_json(&store, &settings.agents[0]),
+                json!([custom_entry("^custom-1905")])
+            );
+            assert_eq!(
+                resolve_json(&store, &settings.agents[1]),
+                json!([custom_entry("^custom-1905-b")])
+            );
+
+            // Equal arrays under different commands (pristine for one, custom for the
+            // other): abort, layer 0 keeps serving both.
+            let temp = tempfile::tempdir().unwrap();
+            let seeded = [
+                agent_json("dup", "claude", Some(json!([ft(), hooks()]))),
+                agent_json("dup", "codex", Some(json!([ft(), hooks()]))),
+            ];
+            let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            let settings = load_settings_from_path(&path);
+            assert_blocking_menus_on_disk_unchanged(&path, &seeded);
+            assert!(!blocking_menus_local_path(&path).exists());
+            let store = BlockingMenusStore::load_from_settings_path(&path);
+            assert_eq!(
+                resolve_json(&store, &settings.agents[0]),
+                json!([ft(), hooks()])
+            );
+            assert_eq!(
+                resolve_json(&store, &settings.agents[1]),
+                json!([ft(), hooks()])
+            );
+
+            // Equal arrays under one command: one candidate, exported.
+            let temp = tempfile::tempdir().unwrap();
+            let seeded = [
+                agent_json("dup", "claude", Some(json!([custom_entry("^custom-1905")]))),
+                agent_json("dup", "claude", Some(json!([custom_entry("^custom-1905")]))),
+            ];
+            let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            load_settings_from_path(&path);
+            assert_no_blocking_menus_on_disk(&path);
+            let local = local_disk_object(&path);
+            let by_agent = local["byAgent"].as_object().expect("byAgent object");
+            let mut keys: Vec<&str> = by_agent.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["dup"]);
+            assert_eq!(by_agent["dup"], json!([custom_entry("^custom-1905")]));
         }
     }
 }
