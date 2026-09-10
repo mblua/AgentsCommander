@@ -352,15 +352,18 @@ jobs:
           SPA_DEB: libspa-0.2-dev_1.0.5-1ubuntu3.3_amd64.deb
           SPA_SHA256: 93a60e7656fb35c97a78159fd0556842c62c2d8b9aff096009f9a20c64c1f272
           SPA_SNAPSHOT: https://snapshot.ubuntu.com/ubuntu/20260901T000000Z/pool/main/p/pipewire
-          SPA_FALLBACK: http://security.ubuntu.com/ubuntu/pool/main/p/pipewire
+          SPA_FALLBACK: https://security.ubuntu.com/ubuntu/pool/main/p/pipewire
         run: |
           set -euo pipefail
           prefix="$RUNNER_TEMP/spa-noble"
           deb="$RUNNER_TEMP/$SPA_DEB"
           mkdir -p "$prefix"
-          curl -sSfL -o "$deb" "$SPA_SNAPSHOT/$SPA_DEB" \
-            || curl -sSfL -o "$deb" "$SPA_FALLBACK/$SPA_DEB"
-          # The digest is the trust boundary, not the hostname.
+          curl -sSfL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$deb" "$SPA_SNAPSHOT/$SPA_DEB" \
+            || curl -sSfL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$deb" "$SPA_FALLBACK/$SPA_DEB"
+          # The digest is the trust boundary, not the hostname. Both sources are
+          # HTTPS-enforced (--proto/--proto-redir), so a redirect can never
+          # downgrade the transfer and the SonarCloud clear-text/redirect checks
+          # stay green without weakening the pinned-digest gate.
           echo "$SPA_SHA256  $deb" | sha256sum -c -
           dpkg-deb -x "$deb" "$prefix"
           pc="$prefix/usr/lib/x86_64-linux-gnu/pkgconfig/libspa-0.2.pc"
