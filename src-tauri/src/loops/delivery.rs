@@ -367,6 +367,8 @@ async fn spawn_coordinator_session(
     let cwd = crate::path_utils::path_to_string_without_windows_verbatim_prefix(
         &target.coordinator_replica_dir,
     );
+    // #1873 - decided BEFORE the command's fields move into the create call.
+    let skip_auto_resume = loop_spawn_skip_auto_resume(had_existing_match, &command);
     let info = crate::commands::session::create_session_inner(
         app,
         session_mgr.inner(),
@@ -379,7 +381,7 @@ async fn spawn_coordinator_session(
         command.agent_label,
         false,
         Vec::<SessionRepo>::new(),
-        loop_spawn_skip_auto_resume(had_existing_match),
+        skip_auto_resume,
         command.resolved_spawn,
         // #1271 - the configured host shell paired with the resolved agent,
         // carried through ResolvedLoopAgentCommand from the same settings
@@ -402,8 +404,21 @@ async fn spawn_coordinator_session(
         .ok_or_else(|| format!("Spawned session {} was not found", info.id))
 }
 
-fn loop_spawn_skip_auto_resume(_had_existing_match: bool) -> bool {
-    false
+/// Provider auto-resume policy for a loop spawn. Every prior provider keeps its
+/// historical `false` (cold creation and known-state wake both allow the
+/// provider's own resume logic). #1873: a cold Muse creation (`had_existing_match
+/// == false`) on a trusted, exact, empty-argv local recipe must launch plain
+/// `muse`; a Muse exited/missing-PTY wake (`true`) resumes with `resume --last`.
+fn loop_spawn_skip_auto_resume(
+    had_existing_match: bool,
+    command: &ResolvedLoopAgentCommand,
+) -> bool {
+    !had_existing_match
+        && crate::commands::session::trusted_muse_auto_resume_spawn(
+            command.resolved_spawn.as_ref(),
+            &command.shell,
+            &command.shell_args,
+        )
 }
 
 async fn wait_for_session_idle(app: &AppHandle, session_id: Uuid) -> Result<(), String> {
@@ -596,10 +611,87 @@ mod tests {
         app
     }
 
+    fn loop_command_for(
+        settings: &crate::config::settings::AppSettings,
+        agent_id: &str,
+    ) -> ResolvedLoopAgentCommand {
+        let spawn = crate::config::agent_command::resolve_agent_spawn_command(
+            settings, agent_id, None, None, false,
+        )
+        .expect("loop test spawn should resolve without filesystem preparation");
+        ResolvedLoopAgentCommand {
+            shell: spawn.shell.clone(),
+            shell_args: spawn.shell_args.clone(),
+            agent_id: Some(spawn.trusted_agent_id.clone()),
+            agent_label: Some(spawn.trusted_agent_label.clone()),
+            resolved_spawn: Some(spawn),
+            resolved_agent_host_shell: None,
+        }
+    }
+
+    /// #1873 - cold Muse is fresh, known-state Muse resumes, and every prior
+    /// provider (plus ad-hoc, argument-bearing and recipe-mismatched Muse) keeps
+    /// the historical `false` on both branches.
     #[test]
-    fn loop_spawn_allows_provider_resume_for_cold_and_known_state_wakes() {
-        assert!(!loop_spawn_skip_auto_resume(false));
-        assert!(!loop_spawn_skip_auto_resume(true));
+    fn muse_loop_cold_is_fresh_and_known_state_resumes_without_provider_drift() {
+        use crate::config::settings::{AgentConfig, AppSettings};
+        let agent = |id: &str, command: &str| AgentConfig {
+            id: id.to_string(),
+            label: id.to_string(),
+            command: command.to_string(),
+            color: "#000000".to_string(),
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+            context_regex: None,
+            blocking_menus: None,
+            backend: Default::default(),
+        };
+        let settings = AppSettings {
+            agents: vec![
+                agent("muse", "muse"),
+                agent("muse-abs", "/opt/muse/bin/muse"),
+                agent("muse-args", "muse --workspace /srv/work"),
+                agent("muse-manual", "muse resume --last"),
+                agent("claude", "claude"),
+                agent("codex", "codex"),
+                agent("agy", "agy"),
+                agent("pi", "pi"),
+            ],
+            ..AppSettings::default()
+        };
+
+        let expected_muse_cold = cfg!(any(target_os = "macos", target_os = "linux"));
+        for id in ["muse", "muse-abs"] {
+            let command = loop_command_for(&settings, id);
+            assert_eq!(
+                loop_spawn_skip_auto_resume(false, &command),
+                expected_muse_cold,
+                "cold Muse creation is fresh on supported hosts, id={id}"
+            );
+            assert!(
+                !loop_spawn_skip_auto_resume(true, &command),
+                "known-state Muse wake resumes, id={id}"
+            );
+        }
+
+        // Configured arguments, prior providers: unchanged `false` on both branches.
+        for id in ["muse-args", "muse-manual", "claude", "codex", "agy", "pi"] {
+            let command = loop_command_for(&settings, id);
+            assert!(!loop_spawn_skip_auto_resume(false, &command), "id={id}");
+            assert!(!loop_spawn_skip_auto_resume(true, &command), "id={id}");
+        }
+
+        // Ad-hoc Muse (no resolved spawn) and a recipe mismatch never qualify.
+        let mut adhoc = loop_command_for(&settings, "muse");
+        adhoc.resolved_spawn = None;
+        assert!(!loop_spawn_skip_auto_resume(false, &adhoc));
+        assert!(!loop_spawn_skip_auto_resume(true, &adhoc));
+        let mut mismatch = loop_command_for(&settings, "muse");
+        mismatch.shell_args = vec!["--workspace".to_string(), "/srv/work".to_string()];
+        assert!(!loop_spawn_skip_auto_resume(false, &mismatch));
+        assert!(!loop_spawn_skip_auto_resume(true, &mismatch));
     }
 
     #[test]

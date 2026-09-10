@@ -448,6 +448,19 @@ impl SpawnRecord {
     /// #1271 - the last liveness the child monitor observed before it stopped
     /// polling. `Some(Exited { code, .. })` is the awaited child's exit code;
     /// `Some(Gone)` means the PTY instance was removed first (AC teardown).
+    /// #1873 test-only: whether `log_child_exit` has already reported this child's
+    /// exit (the duplicate-suppression latch). Production reads nothing here.
+    #[cfg(test)]
+    pub fn exit_reported(&self) -> bool {
+        self.exit_reported.load(Ordering::SeqCst)
+    }
+
+    /// #1873 test-only: the cause stamped by the single accepted `log_child_exit`.
+    #[cfg(test)]
+    pub fn exit_cause(&self) -> Option<ExitCause> {
+        *self.exit_cause.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn final_liveness(&self) -> Option<ChildLiveness> {
         self.final_liveness
             .lock()

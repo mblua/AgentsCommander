@@ -30,6 +30,10 @@ pub enum CodingAgentKind {
     Codex,
     Antigravity,
     Pi,
+    /// #1873 - Muse Code. Detected only as a direct shell whose exact stem is
+    /// `muse` (bare or absolute path); prefix names and argument-only identity
+    /// inside `env`/shell/PowerShell/`cmd`/compound wrappers are never Muse.
+    Muse,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +85,16 @@ fn is_exact_pi_executable(value: &str) -> bool {
         executable_leaf(value).to_ascii_lowercase().as_str(),
         "pi" | "pi.exe" | "pi.cmd"
     )
+}
+
+/// #1873 - true only for a direct shell whose exact, case-sensitive file stem is
+/// `muse` (`muse`, `/opt/muse/bin/muse`, `muse.exe`). Prefix names (`muse-agent`,
+/// `musee`) and mixed case (`Muse`) are rejected; arguments are never inspected.
+fn is_exact_muse_executable(shell: &str) -> bool {
+    std::path::Path::new(shell)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        == Some("muse")
 }
 
 fn is_reserved_pi_executable(value: &str) -> bool {
@@ -774,6 +788,14 @@ impl CodingAgentKind {
             Err(_) => return None,
         }
 
+        // #1873 - Muse is a direct-shell-only identity and outranks the legacy
+        // token scans below, so a Codex-looking argument value such as
+        // `muse --workspace /tmp/codex` stays Muse. Wrappers (`env muse`,
+        // `cmd /C muse`) never reach here as Muse: the shell is the wrapper.
+        if is_exact_muse_executable(shell) {
+            return Some(CodingAgentKind::Muse);
+        }
+
         // Mirror of `crate::commands::session::executable_basename`
         // (`session.rs:1506`, identical body). Deliberately NOT shared:
         // importing it would invert the dependency direction — the `session`
@@ -817,6 +839,7 @@ impl CodingAgentKind {
             CodingAgentKind::Codex => "codex",
             CodingAgentKind::Antigravity => "agy",
             CodingAgentKind::Pi => "pi",
+            CodingAgentKind::Muse => "muse",
         }
     }
 
@@ -827,6 +850,7 @@ impl CodingAgentKind {
             CodingAgentKind::Codex => CODEX_PROFILE,
             CodingAgentKind::Antigravity => ANTIGRAVITY_PROFILE,
             CodingAgentKind::Pi => PI_PROFILE,
+            CodingAgentKind::Muse => MUSE_PROFILE,
         }
     }
 }
@@ -923,6 +947,8 @@ pub struct CodingAgentProfile {
     /// - Codex: `["resume", "--last"]` (prepended as a subcommand)
     /// - Antigravity: `["--continue"]` (prepended)
     /// - Pi: `["--continue"]` (inserted immediately after the executable)
+    /// - Muse: `["resume", "--last"]` (appended to an EMPTY configured argv only;
+    ///   any configured argument suppresses injection, #1873)
     pub resume_tokens: &'static [&'static str],
     /// #930 - host credential file this agent reuses in a container (None = no
     /// copy-in for this agent).
@@ -932,7 +958,7 @@ pub struct CodingAgentProfile {
     pub auto_self_clear_supported: bool,
 }
 
-// All four agents currently use `IdleTuning::DEFAULT`, identical to the
+// All five agents currently use `IdleTuning::DEFAULT`, identical to the
 // pre-#260 hard-coded constants, which GUARANTEES zero behavior change. The
 // per-profile `idle` field exists so a future agent can diverge (e.g. a
 // longer `resize_grace` for a heavier TUI) without re-plumbing the detector.
@@ -982,6 +1008,16 @@ const PI_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Pi,
     idle: IdleTuning::DEFAULT,
     resume_tokens: &["--continue"],
+    container_credential: None,
+    auto_self_clear_supported: false,
+};
+// #1873 - Muse Code. Workspace-latest resume (`muse resume --last`) is injected
+// only by the trusted empty-argv local macOS/Linux seam in `commands::session`;
+// no container credential flow, no auto-self-clear, no logical PTY submission.
+const MUSE_PROFILE: CodingAgentProfile = CodingAgentProfile {
+    kind: CodingAgentKind::Muse,
+    idle: IdleTuning::DEFAULT,
+    resume_tokens: &["resume", "--last"],
     container_credential: None,
     auto_self_clear_supported: false,
 };
@@ -1850,6 +1886,161 @@ mod tests {
         }
     }
 
+    /// #1873 - Muse is a serde-stable first-class kind whose identity is a direct
+    /// shell with the exact stem `muse`; it never becomes a logical PTY
+    /// submission agent and its profile carries the exact workspace-latest tokens.
+    #[test]
+    fn muse_serde_profile_detection_and_submission_boundary_are_stable() {
+        // Serde/as_str wire value.
+        assert_eq!(
+            serde_json::to_string(&CodingAgentKind::Muse).unwrap(),
+            "\"muse\""
+        );
+        assert_eq!(
+            serde_json::from_str::<CodingAgentKind>("\"muse\"").unwrap(),
+            CodingAgentKind::Muse
+        );
+        assert_eq!(CodingAgentKind::Muse.as_str(), "muse");
+
+        // Exact profile.
+        let profile = CodingAgentKind::Muse.profile();
+        assert_eq!(profile.kind, CodingAgentKind::Muse);
+        assert_eq!(profile.idle, IdleTuning::DEFAULT);
+        assert_eq!(profile.resume_tokens, ["resume", "--last"]);
+        assert!(profile.container_credential.is_none());
+        assert!(!profile.auto_self_clear_supported);
+        assert_eq!(
+            idle_tuning_for(Some(CodingAgentKind::Muse)),
+            IdleTuning::DEFAULT
+        );
+
+        // Direct positives: bare, absolute (both separators), and an exe stem.
+        let codex_looking = vec![
+            "--workspace".to_string(),
+            "/tmp/codex".to_string(),
+            "resume".to_string(),
+            "--last".to_string(),
+        ];
+        for shell in ["muse", "/opt/muse/bin/muse", "/usr/local/bin/muse"] {
+            assert_eq!(
+                CodingAgentKind::detect(shell, &[]),
+                Some(CodingAgentKind::Muse),
+                "shell={shell:?}"
+            );
+            assert_eq!(
+                CodingAgentKind::detect(shell, &codex_looking),
+                Some(CodingAgentKind::Muse),
+                "direct Muse outranks a Codex-looking argument value, shell={shell:?}"
+            );
+            assert_eq!(
+                CodingAgentKind::detect(shell, &["--provider".into(), "claude".into()]),
+                Some(CodingAgentKind::Muse),
+                "shell={shell:?}"
+            );
+        }
+        assert_eq!(
+            CodingAgentKind::detect("muse.exe", &[]),
+            Some(CodingAgentKind::Muse)
+        );
+
+        // Negatives: prefix names, mixed case, and argument-only identity inside
+        // env/shell/PowerShell/cmd/compound wrappers.
+        for shell in ["muse-agent", "musee", "Muse", "MUSE", "amuse", "muse2"] {
+            assert_ne!(
+                CodingAgentKind::detect(shell, &[]),
+                Some(CodingAgentKind::Muse),
+                "shell={shell:?}"
+            );
+        }
+        let muse_args = vec![
+            "muse".to_string(),
+            "resume".to_string(),
+            "--last".to_string(),
+        ];
+        for shell in ["env", "bash", "sh", "pwsh", "powershell.exe", "zsh"] {
+            assert_eq!(
+                CodingAgentKind::detect(shell, &muse_args),
+                None,
+                "wrapper shell={shell:?}"
+            );
+        }
+        assert_eq!(
+            CodingAgentKind::detect(
+                "bash",
+                &["-lc".to_string(), "muse resume --last".to_string()]
+            ),
+            None
+        );
+        assert_eq!(
+            CodingAgentKind::detect(
+                "cmd.exe",
+                &["/C".to_string(), "muse".to_string(), "resume".to_string()]
+            ),
+            None
+        );
+        assert_eq!(
+            CodingAgentKind::detect(
+                "cmd",
+                &[
+                    "/K".to_string(),
+                    "git pull && muse resume --last".to_string()
+                ]
+            ),
+            None
+        );
+        // A wrapper with a Codex-looking value keeps the legacy Codex detection,
+        // never Muse.
+        assert_eq!(
+            CodingAgentKind::detect(
+                "env",
+                &[
+                    "muse".to_string(),
+                    "--workspace".to_string(),
+                    "/tmp/codex".to_string(),
+                    "resume".to_string(),
+                    "--last".to_string(),
+                ]
+            ),
+            Some(CodingAgentKind::Codex)
+        );
+
+        // Prior-provider precedence is untouched.
+        assert_eq!(
+            CodingAgentKind::detect("claude", &["muse".into()]),
+            Some(CodingAgentKind::Claude)
+        );
+        assert_eq!(
+            CodingAgentKind::detect("pi", &["--provider".into(), "muse".into()]),
+            Some(CodingAgentKind::Pi)
+        );
+
+        // Muse is outside logical/privileged PTY submission on every shape.
+        for shell in ["muse", "/opt/muse/bin/muse"] {
+            for configured_wrapper in [false, true] {
+                assert_eq!(
+                    detect_pty_submission_agent(shell, &[], Some(CodingAgentKind::Muse)),
+                    None,
+                    "shell={shell:?}"
+                );
+                assert_eq!(
+                    detect_pty_submission_agent_with_provenance(
+                        shell,
+                        &[],
+                        Some(CodingAgentKind::Muse),
+                        configured_wrapper
+                    ),
+                    None,
+                    "shell={shell:?} configured_wrapper={configured_wrapper}"
+                );
+            }
+        }
+        assert_eq!(
+            detect_pty_submission_agent("claude", &[], Some(CodingAgentKind::Muse)),
+            None,
+            "a Muse hint never agrees with another provider's executable"
+        );
+    }
+
     #[test]
     fn detect_plain_shell_and_literal_space_path_are_none() {
         assert_eq!(
@@ -1997,6 +2188,7 @@ mod tests {
             CodingAgentKind::Codex,
             CodingAgentKind::Antigravity,
             CodingAgentKind::Pi,
+            CodingAgentKind::Muse,
         ] {
             assert!(kind.profile().idle.seed_initial_activity);
             assert_eq!(kind.profile().idle, IdleTuning::DEFAULT);
