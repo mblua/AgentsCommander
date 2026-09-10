@@ -82,11 +82,11 @@ Agents Commander never captures an OS window, monitor, desktop, WebView, or unre
 
 ### Room Repository Clone
 
-**User-initiated.** When you create a Room from a team, AC clones each repository URL in the team into that Room with your local `git` binary.
+**User-initiated.** When you create a Room from a team, or add a member to an existing Room, AC clones each repository URL in the team into that Room with your local `git` binary.
 
 - **Command**: `git clone --depth 1 <url>`, once per repository that is not already in the Room.
 - **Destination**: The host named by the team's repository URLs. You configure those URLs, and they can point at GitHub, GitLab, or any other server.
-- **When**: Only while a Room is created.
+- **When**: When you create a Room from a team, or add a member to an existing Room. AC clones only the repositories that are not already in the Room.
 - **Data disclosed**: Your IP address, the request time, and anything `git` sends to authenticate, such as a credential from your git configuration. The repository host is the one you configured, so its privacy policy applies.
 - **Turn it off**: There is no separate setting: remove the repository URLs from the team, and AC clones nothing.
 
@@ -106,7 +106,7 @@ Agents Commander never captures an OS window, monitor, desktop, WebView, or unre
 - No crash reports
 - No fingerprinting or device identification
 - No data to Agents Commander developers or to any third party beyond the destinations described above
-- No session content, prompts, or terminal output in the npm update check, the Home panel request, the Agency template download, the Room repository clone, or the container image pull
+- No session content, prompts, or terminal output in the npm update check, the Home panel request, the coding-agent update commands, the Agency template download, the Room repository clone, or the container image pull
 - No terminal snapshot content to a third-party snapshot or rendering service
 
 ## Credential Storage
