@@ -1,7 +1,7 @@
 ARG BRIDGE_IMAGE=agentscommander/session-bridge:latest
 FROM ${BRIDGE_IMAGE} AS bridge
 
-FROM node:22-bookworm-slim
+FROM node:22.23.2-trixie-slim
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash ca-certificates git \
