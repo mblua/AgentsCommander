@@ -1055,6 +1055,62 @@ jobs:
             libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
             libgbm-dev libdrm-dev libegl1-mesa-dev libdbus-1-dev
 
+      # IS #1915: ubuntu-22.04's libspa-0.2-dev (0.3.48) has no `flags` field in
+      # spa/param/video/raw.h and an int64_t `modifier`; libspa 0.9.2 --
+      # reached through xcap 0.9.6 -> pipewire 0.9.2 -> libspa-sys 0.9.2's
+      # build-time bindgen -- writes both and fails to compile with 5 errors
+      # before the linker. 24.04's headers match, which is why every other leg
+      # is green.
+      #
+      # libspa-0.2-dev ships NO library: `pkg-config --libs libspa-0.2` is
+      # empty and the .deb contains zero .so files. This therefore changes the
+      # COMPILE only -- never the link, never a DT_NEEDED, never the shipped
+      # binary's minimum glibc. Do not "simplify" this into moving the runner
+      # or into bumping libpipewire-0.3-dev: the first raises the shipped
+      # minimum glibc, which is the user's decision, and the second is
+      # unnecessary (measured) and would put 1.0.5 headers in front of a
+      # 0.3.48 .so at link time.
+      - name: Use noble libspa-0.2 headers on ubuntu-22.04 (IS #1915)
+        if: matrix.runner == 'ubuntu-22.04'
+        shell: bash
+        env:
+          SPA_DEB: libspa-0.2-dev_1.0.5-1ubuntu3.3_amd64.deb
+          SPA_SHA256: 93a60e7656fb35c97a78159fd0556842c62c2d8b9aff096009f9a20c64c1f272
+          SPA_SNAPSHOT: https://snapshot.ubuntu.com/ubuntu/20260901T000000Z/pool/main/p/pipewire
+          SPA_FALLBACK: http://security.ubuntu.com/ubuntu/pool/main/p/pipewire
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/spa-noble"
+          deb="$RUNNER_TEMP/$SPA_DEB"
+          mkdir -p "$prefix"
+          curl -sSfL -o "$deb" "$SPA_SNAPSHOT/$SPA_DEB" \
+            || curl -sSfL -o "$deb" "$SPA_FALLBACK/$SPA_DEB"
+          # The digest is the trust boundary, not the hostname.
+          echo "$SPA_SHA256  $deb" | sha256sum -c -
+          dpkg-deb -x "$deb" "$prefix"
+          pc="$prefix/usr/lib/x86_64-linux-gnu/pkgconfig/libspa-0.2.pc"
+          sed -i "s|^prefix=/usr$|prefix=$prefix/usr|" "$pc"
+          pcdir="$prefix/usr/lib/x86_64-linux-gnu/pkgconfig"
+          echo "PKG_CONFIG_PATH=$pcdir:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+
+          # Two postconditions, and neither is decoration. PKG_CONFIG_PATH
+          # entries are searched BEFORE pkg-config's built-in path, so the
+          # apt-installed jammy libspa-0.2.pc is shadowed rather than removed
+          # -- and a shadow that silently fails to take reads exactly like a
+          # pass. Guard 1 proves the shadow took; guard 2 proves the shadowing
+          # headers are the ones this fix was measured against, so a future
+          # digest bump to a header set WITHOUT `flags` cannot land green.
+          resolved="$(PKG_CONFIG_PATH="$pcdir" pkg-config --cflags-only-I libspa-0.2)"
+          echo "resolved libspa-0.2 include flags: $resolved"
+          case "$resolved" in
+            *"$prefix"*) ;;
+            *) echo "::error::PKG_CONFIG_PATH did not take; libspa-0.2 still resolves to the runner's 0.3.48 headers and the build will fail in libspa."; exit 1 ;;
+          esac
+          grep -q 'uint32_t flags;' "$prefix/usr/include/spa-0.2/spa/param/video/raw.h" || {
+            echo "::error::the unpacked spa header has no uint32_t flags field; the pinned .deb is not the header set this fix was measured against."
+            exit 1
+          }
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
