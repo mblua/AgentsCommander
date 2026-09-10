@@ -505,7 +505,9 @@ pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<Settings
 /// resolved (a genuine environment failure the compiled fallback cannot
 /// satisfy). The frontend's never-empty fallback fires only on this
 /// `Err`/transport path, so keeping the self-heal on the `Ok` side is load-
-/// bearing for that contract.
+/// bearing for that contract. #1912: a `false` row in `BUILTIN_AGENT_SUPPORT`
+/// (`src-tauri/src/config/coding_agents_catalog.rs`) already dropped that key
+/// here via the `validate_and_filter` read gate.
 #[tauri::command]
 pub async fn get_coding_agent_catalog(
     settings: State<'_, SettingsState>,
