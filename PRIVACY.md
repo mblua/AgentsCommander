@@ -1,16 +1,16 @@
 # Privacy Policy
 
-**Agents Commander** is a local desktop application. It does not collect telemetry, analytics, or usage data. There are no tracking mechanisms, no crash reporting services, and no automatic update checks.
+**Agents Commander** is a local desktop application. It does not collect telemetry, analytics, or usage data. There are no tracking mechanisms and no crash reporting services. It makes a small number of automatic outbound requests. The [Network Features](#network-features) section describes them together with the features you start yourself.
 
 All configuration and session data is stored locally on your machine in `~/.agentscommander/`.
 
 ## Network Features
 
-The following features transmit data to external services **only when explicitly enabled and initiated by the user**:
+Agents Commander transmits data to external services in two ways: when you enable or start a feature, and through automatic requests. Each entry below states which it is, when it runs, and how to turn it off where an option exists.
 
 ### Telegram Bridge
 
-When the user attaches a Telegram bot to a terminal session:
+**User-initiated.** When the user attaches a Telegram bot to a terminal session:
 
 - **Data sent**: Terminal output text (filtered and rate-limited) is sent to the [Telegram Bot API](https://core.telegram.org/bots/api) (`api.telegram.org`)
 - **Data received**: Messages sent by the user via Telegram are written to the terminal session
@@ -19,7 +19,7 @@ When the user attaches a Telegram bot to a terminal session:
 
 ### Voice-to-Text
 
-When the user activates voice recording:
+**User-initiated.** When the user activates voice recording:
 
 - **Data sent**: Audio recording (WebM/Opus format) is sent to the [Google Gemini API](https://ai.google.dev/) (`generativelanguage.googleapis.com`) for transcription
 - **Data received**: Transcribed text, which is then written to the terminal session
@@ -32,7 +32,7 @@ The internal messaging system between agents is **local by default**: the file-b
 
 ### Terminal Snapshots
 
-Terminal snapshots are off by default. When the user enables `terminalSnapshotsEnabled`, an identity-authorized Root Agent or same-room Orchestrator can request the current backend terminal viewport as JSON or deterministic PNG.
+**User-initiated.** Terminal snapshots are off by default. When the user enables `terminalSnapshotsEnabled`, an identity-authorized Root Agent or same-room Orchestrator can request the current backend terminal viewport as JSON or deterministic PNG.
 
 - **Data processed locally**: Current visible backend rows, cells, text, colors, represented styles, cursor, dimensions, selected session metadata, and fidelity metadata. Terminal content can include passwords, tokens, source code, prompts, and personal data. Agents Commander does not redact it.
 - **Host transport**: A host requester exchanges bounded transient files in dedicated requester-side terminal snapshot directories. Snapshot content does not enter ordinary messages, conversations, delivered or rejected message artifacts, or PTY-input state. The daemon normally removes identity-stable protocol files after use or 60 seconds. A crash plus removal of the only project registration can leave an undiscoverable residual.
@@ -43,13 +43,70 @@ Terminal snapshots are off by default. When the user enables `terminalSnapshotsE
 
 Agents Commander never captures an OS window, monitor, desktop, WebView, or unrelated pixel for this feature. See [Terminal snapshots](docs/features/terminal-snapshots.md) for the complete authorization, fidelity, output, and cleanup contract.
 
+### npm Update Check
+
+**Automatic.** On startup, in a detached background task, Agents Commander asks the npm registry whether a newer published version of `@mblua/agentscommander` exists, and shows an in-app notice when one does. The task never blocks or delays startup, and it is fail-silent: a timeout, a network error, or an unusable response produces no notice and no error.
+
+- **Endpoint**: `https://registry.npmjs.org/-/package/@mblua%2Fagentscommander/dist-tags`
+- **When**: On startup. AC contacts the registry only when the cache is missing or older than 24 hours. The last check time and the last seen version are cached in `update-check.json` in your config directory, and AC reuses the cached result inside the 24-hour window without contacting the registry. A failed or offline check is not cached, so the next startup tries again.
+- **Limits**: 10-second request timeout, and the response body is capped at 64 KB.
+- **Data disclosed**: Your IP address, the request time, and a `User-Agent` header of `agentscommander/<version>`. No account, no identifier, and no session content.
+- **Turn it off**: Clear **Notify me when a new version is available** in Settings, or set `npmUpdateNotificationsEnabled` to `false` in `settings.json` in your config directory. The setting is on by default and also silences the update notice that the CLI prints.
+
+### Home Panel Markdown
+
+**Automatic.** The Home panel shows a getting-started page maintained in the Agents Commander repository. The app downloads the page from GitHub when it first renders the panel with no copy loaded.
+
+- **Endpoint**: `https://raw.githubusercontent.com/mblua/AgentsCommander/main/docs/home-en.md`
+- **When**: When the Home panel is first shown with no copy loaded. The main window shows the Home panel at startup, so this request normally runs at app start. The page is kept in memory only and is not written to disk.
+- **Limits**: 5-second request timeout, and the response body is capped at 256 KB.
+- **Data disclosed**: Your IP address, the request time, and a `User-Agent` header of `agentscommander/<version>`. No account, no identifier, and no session content.
+- **Turn it off**: There is no setting for this request.
+
+### Coding-Agent Auto-Update
+
+**Automatic, opt-in.** When you allow auto-update for a registered coding agent, Agents Commander runs that agent's update command at every app startup. AC runs the command from your catalog; in the shipped catalog that command is the vendor's own CLI, and the CLI contacts its vendor. AC does not contact those vendors itself.
+
+- **Commands**: The update command comes from your coding-agent catalog. The shipped catalog uses `claude --update` (Anthropic), `codex update` (OpenAI), `hermes update --yes` (Nous Research), `pi update` (Earendil), `opencode upgrade` (Anomaly), and `agy update` (Google).
+- **When**: At every app startup, for each command you allowed. For each command, the first startup after you register it asks once whether to update it; the default answer is No. An unanswered or timed-out question updates nothing and is asked again at the next startup.
+- **Data disclosed**: AC sends nothing. The vendor's CLI decides what it sends to its vendor, so the vendor's privacy policy applies.
+- **Turn it off**: Set **Auto-update** to **No** in Settings. Answering No to the startup question also records the answer and stops the question.
+
+### Agency Template Download
+
+**User-initiated.** When you update the Agency templates from the app or run `agentscommander agency-templates update`, AC downloads the default Agency Agents repository from GitHub with your local `git` binary.
+
+- **Endpoint**: `https://github.com/msitarzewski/agency-agents`, the default repository. The `--repo` option can point the download at another repository.
+- **When**: Only during an Agency-template update. No Agency download runs at startup.
+- **Data disclosed**: Your IP address and the request time. The download is a read-only `git` fetch of a public repository. AC sends no account, identifier, or session content.
+
+### Room Repository Clone
+
+**User-initiated.** When you create a Room from a team, or add a member to an existing Room, AC clones each repository URL in the team into that Room with your local `git` binary.
+
+- **Command**: `git clone --depth 1 <url>`, once per repository that is not already in the Room.
+- **Destination**: The host named by the team's repository URLs. You configure those URLs, and they can point at GitHub, GitLab, or any other server.
+- **When**: When you create a Room from a team, or add a member to an existing Room. AC clones only the repositories that are not already in the Room.
+- **Data disclosed**: Your IP address, the request time, and anything `git` sends to authenticate, such as a credential from your git configuration. The repository host is the one you configured, so its privacy policy applies.
+- **Turn it off**: There is no separate setting: remove the repository URLs from the team, and AC clones nothing.
+
+### Container Image Pull
+
+**User-initiated.** When you start a session on the Container runtime and the Docker image is not on your machine, Docker pulls the image from its registry.
+
+- **Image**: The Docker image you configure for the agent in Settings, or the `AGENTSCOMMANDER_CONTAINER_IMAGE` variable when you leave the field blank. There is no built-in image.
+- **Destination**: The registry named by the image reference, for example Docker Hub.
+- **When**: Only when a container session starts and the image is missing locally.
+- **Data disclosed**: Docker sends the request, not AC. AC passes the image name to `docker run` and sends nothing itself. The registry is the one named by your image, so its privacy policy applies.
+- **Turn it off**: There is no separate setting: Docker contacts a registry only when the image is missing locally, and it uses an image already on your machine as is.
+
 ## What Is NOT Transmitted
 
 - No telemetry or analytics
 - No crash reports
-- No automatic update checks
 - No fingerprinting or device identification
-- No data to Agents Commander developers or any third party beyond the services listed above
+- No data to Agents Commander developers or to any third party beyond the destinations described above
+- No session content, prompts, or terminal output in the npm update check, the Home panel request, the coding-agent update commands, the Agency template download, the Room repository clone, or the container image pull
 - No terminal snapshot content to a third-party snapshot or rendering service
 
 ## Credential Storage
@@ -58,10 +115,14 @@ API keys and tokens are stored in plaintext in `~/.agentscommander/settings.json
 
 ## Third-Party Services
 
-When the optional features above are enabled, the respective third-party privacy policies apply:
+When a network feature contacts a third-party service, the respective third-party privacy policy applies:
 
 - [Telegram Privacy Policy](https://telegram.org/privacy)
 - [Google API Privacy Policy](https://policies.google.com/privacy)
+- [npm Privacy Policy](https://www.npmjs.com/policies/privacy)
+- [GitHub Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-privacy-statement)
+- Coding-agent vendors: when you allow startup auto-update, each coding agent's own CLI contacts its vendor. The shipped catalog covers Anthropic, OpenAI, Nous Research, Earendil, Anomaly, and Google. The vendor's privacy policy applies.
+- Destinations you choose: your team repository hosts, your container registries, and the operator-configured `AGENTSCOMMANDER_API_URL`. These are not fixed services, so the privacy policy of the host you or your operator point AC at applies.
 
 ## Contact
 

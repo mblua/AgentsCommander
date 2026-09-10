@@ -5,19 +5,26 @@
 //! - `agentscommander_test-1.exe` -> [TEST-1]
 //! - `agentscommander.exe` (no underscore) -> prod (no badge)
 //!
-//! BUILD_PROFILE (set by build.rs) is the fallback for `cargo run` where the
-//! binary name has no underscore suffix.
+//! BUILD_PROFILE (set by build.rs) is the fallback for titles, badges, ports
+//! and the single-instance mutex when the binary name has no underscore
+//! suffix. It does NOT influence the configuration directory name (#1868): an
+//! unsuffixed executable always maps to the canonical `.agentscommander`.
 
 use std::path::Path;
 use std::sync::OnceLock;
 
 /// Build profile string — "dev", "prod", or "stage".
-/// Used as fallback when binary name has no underscore suffix.
+/// Used as fallback for titles, badges, ports and the mutex name when the
+/// binary name has no underscore suffix. Never consulted for the config
+/// directory name (#1868).
 pub const BUILD_PROFILE: &str = env!("BUILD_PROFILE");
 
 /// Extract suffix from binary name: `agentscommander_foo` -> Some("foo").
 /// Returns None for plain `agentscommander` (no underscore = prod).
-fn binary_suffix_from_path(path: &Path) -> Option<String> {
+/// First-underscore parsing: `agentscommander_` is `Some("")` and hyphens are
+/// never suffixes. `pub(super)` so the parent `config` resolver can route on
+/// the same parser instead of growing a second one (#1868).
+pub(super) fn binary_suffix_from_path(path: &Path) -> Option<String> {
     path.file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
         .and_then(|name| name.find('_').map(|index| name[index + 1..].to_string()))
@@ -46,15 +53,18 @@ fn capitalize_suffix(suffix: &str) -> String {
 }
 
 /// Config directory name under $HOME.
-/// Only "dev" (via suffix or BUILD_PROFILE) gets a separate dir.
-/// Everyone else shares the legacy `.agentscommander-new` data directory for
-/// settings compatibility. This is internal storage, not release identity.
+///
+/// #1868: an executable without an underscore suffix (or no usable executable
+/// at all) selects the canonical `.agentscommander`, independently of
+/// BUILD_PROFILE, install location and any portable marker. Suffixed
+/// executables keep their existing HOME names: exact `dev` gets
+/// `.agentscommander-new-dev`, every other suffix shares
+/// `.agentscommander-new`. This is internal storage, not release identity.
 fn config_dir_name_for_suffix(suffix: Option<&str>) -> &'static str {
-    let is_dev = suffix == Some("dev") || (suffix.is_none() && BUILD_PROFILE == "dev");
-    if is_dev {
-        ".agentscommander-new-dev"
-    } else {
-        ".agentscommander-new"
+    match suffix {
+        None => ".agentscommander",
+        Some("dev") => ".agentscommander-new-dev",
+        Some(_) => ".agentscommander-new",
     }
 }
 
@@ -251,23 +261,65 @@ mod tests {
     }
 
     #[test]
-    fn issue_1577_config_name_derivation_preserves_profile_fallback() {
-        let expected_fallback = if BUILD_PROFILE == "dev" {
-            ".agentscommander-new-dev"
-        } else {
-            ".agentscommander-new"
-        };
-        assert_eq!(config_dir_name_for_executable(None), expected_fallback);
-        assert_eq!(
-            config_dir_name_for_executable(Some(Path::new("agentscommander.exe"))),
-            expected_fallback
-        );
+    fn issue_1577_config_name_derivation_keeps_suffixed_home_names() {
         assert_eq!(
             config_dir_name_for_executable(Some(Path::new("agentscommander_dev.exe"))),
             ".agentscommander-new-dev"
         );
         assert_eq!(
             config_dir_name_for_executable(Some(Path::new("agentscommander_stage.exe"))),
+            ".agentscommander-new"
+        );
+    }
+
+    /// #1868: the unsuffixed mapping must not branch on BUILD_PROFILE. The
+    /// assertions below are literal on purpose so the same table passes in
+    /// debug and release focused runs.
+    #[test]
+    fn issue_1850_config_dir_name_table_is_profile_independent() {
+        let canonical = ".agentscommander";
+        assert_eq!(config_dir_name_for_executable(None), canonical);
+        for unsuffixed in [
+            "agentscommander.exe",
+            "agentscommander",
+            "ac.exe",
+            "agentscommander-stage.exe",
+            "agentscommander-new",
+            "bin/agentscommander",
+            r"relative\dir\agentscommander.exe",
+        ] {
+            assert_eq!(
+                config_dir_name_for_executable(Some(Path::new(unsuffixed))),
+                canonical,
+                "{unsuffixed} must select the canonical HOME name"
+            );
+            assert_eq!(binary_suffix_from_path(Path::new(unsuffixed)), None);
+        }
+        assert_eq!(config_dir_name_for_suffix(None), canonical);
+        assert_eq!(
+            config_dir_name_for_suffix(Some("dev")),
+            ".agentscommander-new-dev"
+        );
+        assert_eq!(
+            config_dir_name_for_executable(Some(Path::new("agentscommander_dev.exe"))),
+            ".agentscommander-new-dev"
+        );
+        for suffixed in [
+            "agentscommander_stage.exe",
+            "agentscommander_unknown",
+            "agentscommander_.exe",
+            "agentscommander_stage_blue.exe",
+            "agentscommander_DEV.exe",
+        ] {
+            assert_eq!(
+                config_dir_name_for_executable(Some(Path::new(suffixed))),
+                ".agentscommander-new",
+                "{suffixed} must keep the shared suffixed HOME name"
+            );
+        }
+        assert_eq!(config_dir_name_for_suffix(Some("")), ".agentscommander-new");
+        assert_eq!(
+            config_dir_name_for_suffix(Some("stage")),
             ".agentscommander-new"
         );
     }
