@@ -94,7 +94,7 @@ Besides the GUI Settings dialog and Onboarding, `agents[]` has a scriptable writ
 | `isolatedHome` | bool | `false` | Provide an isolated `CODEX_HOME` at spawn (Codex). |
 | `instructionsFilename` | string \| null | `null` | Bare `.md` filename AC writes into the agent root at launch. |
 | `contextRegex` | string \| null | `null` | Regex pattern for the per-agent context scraper reading. Absent or blank disables the reading; the value is used byte-for-byte (never trimmed). |
-| `blockingMenus` | `BlockingMenuEntry[]` \| absent | absent | Blocking-menu patterns for this agent. **Absent** means "materialize the defaults for my `command` stem at the next load", which AC then writes back to disk. `[]` means explicitly off, and is never repopulated. See [Menu guard](#menu-guard). |
+| `blockingMenus` | `BlockingMenuEntry[]` \| absent | absent | Legacy. Moved to `settings-blocking-menus.local.json` on the first start after upgrade and then absent, unless the migration could not run (see [Menu guard](#menu-guard)); while present it applies as before. |
 | `backend` | `AgentBackendConfig` | `{ "kind": "local" }` | Runtime backend. See below. |
 | `configSeed` | `ConfigSeedConfig` \| absent | absent | Optional config-folder seed copied into each replica at spawn. Absent (the default) means no seeding. See [Config seed](../features/config-seed.md). |
 
@@ -459,13 +459,29 @@ See [Watchers](../features/watchers.md).
 
 ### Menu guard
 
-Proactive detection of terminal blocking menus, such as a folder-trust prompt an agent will not move past. One root switch, plus a per-agent array on each entry of `agents[]`. There is no Settings UI and no CLI verb for either: hand-edit `settings.json` with AC closed.
+Proactive detection of terminal blocking menus, such as a folder-trust prompt an agent will not move past. One root switch, plus two blocking-menus files next to `settings.json`. There is no Settings UI and no CLI verb: hand-edit `settings-blocking-menus.local.json`, which is read at the next start.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `menuGuardEnabled` | bool | `true` | Root switch for the whole feature. With `false`, each 250 ms tick clears any session the guard was holding and evaluates nothing. |
 
-`blockingMenus` is a field on `AgentConfig` (see [Coding agents](#coding-agents)). Absent means AC materializes the defaults for that agent's `command` executable stem at load and saves them; `[]` means off for that agent and is never refilled. Only the `pi` and `codex` stems ship defaults.
+| File | Who writes it | When |
+|---|---|---|
+| `settings-blocking-menus.json` | AC | Rewritten at start whenever its content differs from the running version's embedded content; edits there are lost. |
+| `settings-blocking-menus.local.json` | You | Read at start. AC writes it only when the #1905 migration succeeds, and that write inserts `byAgent` rows without overwriting an existing one. |
+
+`BlockingMenusFile` (both files share this shape):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `schemaVersion` | number | `1` | Must be `1`. Any other value rejects the whole file. |
+| `note` | string \| absent | absent | Free text AC never parses. |
+| `byCommand` | object | `{}` | Keys are the lowercase executable stem, exact match; values are entry arrays. |
+| `byAgent` | object | `{}` | Keys are agent ids; values are entry arrays. The migration writes the exported legacy array here. |
+
+Precedence, first present wins and replaces the layers below it whole: an array still on the agent (a legacy `blockingMenus` array the migration could not move, or one inside an `agents` array owned by `settings.local.json`), then `byAgent[id]` in `.local`, then `byCommand[stem]` in `.local`, then `byCommand[stem]` in the shipped file, then nothing.
+
+Use `byCommand` when the pattern should follow the command, `byAgent` when it should follow one agent id; a `byAgent` row always wins.
 
 `BlockingMenuConfig` (one valid entry):
 
@@ -476,7 +492,9 @@ Proactive detection of terminal blocking menus, such as a folder-trust prompt an
 | `enabled` | bool | `true` | Whether this entry is evaluated. `false` is the durable way to switch off a shipped default. |
 | `capturedAgainst` | string \| null | `null` | Free text (e.g. "codex 0.153.2 / Windows"). Never validated, never parsed. Omitted from the file when absent. |
 
-An entry AC cannot read as a `BlockingMenuConfig` is kept verbatim, skipped at evaluation, and written back untouched on the next save. It never invalidates the settings file.
+The first settings load after an upgrade moves every legacy `blockingMenus` array from `settings.json` into `.local` under `byAgent.<id>`, dropping only arrays equal to the shipped set (a `[]` on a stem that ships nothing counts as equal); an id already present in `.local` is kept and the legacy copy in `settings.json` is discarded, not merged, and the `.local` file is written before `settings.json` is touched. Before the compare, a non-empty codex array missing the hooks-review pattern gets it back-filled once. If the migration cannot run, the arrays stay in place and apply as before: a `.local` that cannot be read, a `.local` that does not parse or has the wrong shape, a `.local` that cannot be written, two agents sharing an id with different arrays or commands, or an `agents` array owned by `settings.local.json`. Each settings load retries and logs one line per attempt while the cause stands; for an overlay-owned `agents` array, move the entries into `.local` by hand and delete those agents' legacy arrays from the overlay.
+
+An entry AC cannot read as a `BlockingMenuConfig` is kept verbatim, skipped at evaluation, and left in place; it never invalidates the file. A `.local` file with the wrong shape — not an object, another `schemaVersion`, or the wrong type for `note`, `byCommand` or `byAgent` — is ignored whole, with one error line in the log, and the layers below it still apply. The shipped file is never parsed at runtime: AC rewrites it from the binary's embedded copy at start and evaluates that embedded copy.
 
 See [Menu guard](../features/menu-guard.md).
 
@@ -527,5 +545,5 @@ Use any JSON validator. AC will refuse to start if the file is not valid JSON an
 - [Portable instances](../features/portable-instances.md) — per-instance config rules
 - [CLI reference](cli.md) — verbs that read/write this file
 - [Terminal snapshots](../features/terminal-snapshots.md) - the default-off screen-content read capability
-- [Menu guard](../features/menu-guard.md) - `menuGuardEnabled` and `blockingMenus` in use
+- [Menu guard](../features/menu-guard.md) - `menuGuardEnabled` and the two `settings-blocking-menus` files in use
 - [`PRIVACY.md`](../../PRIVACY.md) — what credentials live here and how they are transmitted

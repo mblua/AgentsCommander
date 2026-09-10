@@ -1,5 +1,9 @@
 import type { AgentConfig, CodingAgentDefinition } from "./types";
 
+// Mirror of the ENABLED rows of `BUILTIN_AGENT_SUPPORT`
+// (`src-tauri/src/config/coding_agents_catalog.rs`), same order and fields as
+// `agents.default.json`. Served only when the IPC catalog call rejects, so it
+// must never resurrect a de-supported built-in.
 export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
   {
     key: "claude",
@@ -94,6 +98,18 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     removable: true,
     // #1482/#1546 - mirror of the embedded default: Antigravity ships the verified 'agy update' command (autoUpdate stays false).
     updateCommands: ["agy update"],
+    autoUpdate: false,
+  },
+  {
+    key: "muse",
+    label: "Muse Code",
+    description: "Meta terminal coding agent (beta; macOS/Linux host only)",
+    color: "#0668E1",
+    command: "muse",
+    envs: [],
+    isolatedHome: false,
+    removable: true,
+    updateCommands: [],
     autoUpdate: false,
   },
 ];

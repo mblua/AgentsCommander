@@ -26,6 +26,15 @@
 //! present-but-corrupt file is **never overwritten**; the command serves the
 //! embedded default in memory for that session (self-heal is a return value, not
 //! a disk write).
+//!
+//! #1912 - code-level support switch for the built-in coding agents:
+//! `BUILTIN_AGENT_SUPPORT` below is the ONLY place a built-in is turned on or
+//! off. A `false` row is enforced by the READ GATE in `validate_and_filter` (the
+//! key disappears from every read path: embedded default, project and legacy
+//! manifests, backfill source) and by the SEED GATE on the embedded manifest
+//! bytes `ensure_seeded` writes and on the config-folder masters. Already-seeded
+//! user-owned files are NEVER rewritten or trimmed by a `false` row; the read
+//! gate covers them.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -56,6 +65,25 @@ const CATALOG_SCHEMA_VERSION: u32 = 1;
 /// or unparseable.
 const EMBEDDED_DEFAULT_CATALOG_JSON: &str =
     include_str!("../../resources/coding-agents/agents.default.json");
+
+/// #1912 - the ONLY place a built-in coding agent is turned on or off. One row
+/// per key in `agents.default.json`, same order (a test pins both). `false` =
+/// de-supported: dropped by `validate_and_filter` on EVERY read path (embedded
+/// default, project manifest, legacy manifest, backfill source), omitted from
+/// the embedded bytes `ensure_seeded` writes, and its config-folder master is
+/// neither seeded nor re-seedable. Already-seeded files are never rewritten or
+/// trimmed; the read gate covers them. A key absent from this table (a
+/// user-authored entry) is always kept.
+pub(crate) const BUILTIN_AGENT_SUPPORT: &[(&str, bool)] = &[
+    ("claude", true),
+    ("codex", true),
+    ("hermes", true),
+    ("cursor", true),
+    ("pi", true),
+    ("opencode", true),
+    ("antigravity", true),
+    ("muse", true),
+];
 
 /// Unique-suffix counter for the seed temp file (mirrors the pattern in
 /// `seeded_context_templates::unique_state_temp_path`).
@@ -142,8 +170,9 @@ fn manifest_path(ac_dir: &Path) -> PathBuf {
 /// Parse the compiled-in default catalog. The content is authored valid and a
 /// unit test guards it, so the error branch is unreachable in practice; it logs
 /// and returns an empty catalog rather than panicking (this runs on the boot and
-/// IPC paths).
-pub fn embedded_default_catalog() -> CodingAgentCatalog {
+/// IPC paths). RAW and UNGATED by design: the seed and the tests read it; every
+/// consumer-facing read goes through `validate_and_filter`.
+pub(crate) fn embedded_default_catalog() -> CodingAgentCatalog {
     serde_json::from_str(EMBEDDED_DEFAULT_CATALOG_JSON).unwrap_or_else(|e| {
         log::error!("[coding-agents] embedded default catalog failed to parse: {e}");
         CodingAgentCatalog {
@@ -192,15 +221,58 @@ fn validate_definition(def: &CodingAgentDefinition) -> Result<(), String> {
     Ok(())
 }
 
+/// `false` only for a key present in `table` with a `false` row.
+fn is_supported_builtin(key: &str, table: &[(&str, bool)]) -> bool {
+    !table.iter().any(|(k, on)| *k == key && !*on)
+}
+
+/// The table in force: the shipped const, or the test override on this thread.
+fn active_builtin_agent_support() -> &'static [(&'static str, bool)] {
+    #[cfg(test)]
+    if let Some(table) = BUILTIN_AGENT_SUPPORT_OVERRIDE.with(|cell| cell.get()) {
+        return table;
+    }
+    BUILTIN_AGENT_SUPPORT
+}
+
+#[cfg(test)]
+thread_local! {
+    static BUILTIN_AGENT_SUPPORT_OVERRIDE:
+        std::cell::Cell<Option<&'static [(&'static str, bool)]>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// #1912 test-only: run `f` with `table` in force instead of
+/// `BUILTIN_AGENT_SUPPORT` on the CURRENT THREAD; the previous value is
+/// restored when `f` returns or panics. Sync closures only: never use it from
+/// a multi-thread `#[tokio::test]`.
+#[cfg(test)]
+pub(crate) fn with_builtin_agent_support_for_test<R>(
+    table: &'static [(&'static str, bool)],
+    f: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<&'static [(&'static str, bool)]>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            BUILTIN_AGENT_SUPPORT_OVERRIDE.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(BUILTIN_AGENT_SUPPORT_OVERRIDE.with(|cell| cell.replace(Some(table))));
+    f()
+}
+
 /// Validate entries per-entry (G7): a bad entry is logged and skipped, the valid
 /// rest are kept. Duplicate keys are dropped (first wins). `source` labels the
-/// origin in log lines (the manifest path, or the embedded default).
+/// origin in log lines (the manifest path, or the embedded default). #1912 read
+/// gate: a key with a `false` row in `BUILTIN_AGENT_SUPPORT` (the table in
+/// force) is dropped here too, whatever the file carries.
 fn validate_and_filter(
     agents: Vec<CodingAgentDefinition>,
     source: &str,
 ) -> Vec<CodingAgentDefinition> {
     let mut out: Vec<CodingAgentDefinition> = Vec::with_capacity(agents.len());
     let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let table = active_builtin_agent_support();
     for def in agents {
         if let Err(e) = validate_definition(&def) {
             log::warn!("[coding-agents] skipping invalid entry in {source}: {e}");
@@ -213,6 +285,13 @@ fn validate_and_filter(
             );
             continue;
         }
+        if !is_supported_builtin(&def.key, table) {
+            log::info!(
+                "[coding-agents] skipping de-supported built-in '{}' in {source}",
+                def.key
+            );
+            continue;
+        }
         out.push(def);
     }
     out
@@ -220,6 +299,7 @@ fn validate_and_filter(
 
 /// The embedded default, validated (defensive; also dedups). Used as the
 /// in-memory fallback when the on-disk manifest is missing or unparseable.
+/// #1912: a `false` row in `BUILTIN_AGENT_SUPPORT` is dropped here.
 fn validated_embedded_default() -> Vec<CodingAgentDefinition> {
     validate_and_filter(
         embedded_default_catalog().agents,
@@ -234,6 +314,7 @@ fn validated_embedded_default() -> Vec<CodingAgentDefinition> {
 /// non-empty sequences ALWAYS win (never overwritten). Entries with no
 /// embedded match (custom commands, cursor's `agent`) stay empty. Never
 /// writes to disk: the catalog is user-owned after the first seed (G3).
+/// #1912: a de-supported built-in no longer donates its sequence.
 fn backfill_update_commands_from_embedded_default(
     agents: Vec<CodingAgentDefinition>,
 ) -> Vec<CodingAgentDefinition> {
@@ -264,7 +345,9 @@ fn backfill_update_commands_from_embedded_default(
 /// `command` and a non-empty sequence); user-authored sequences always win;
 /// nothing is written to disk. A **missing** or **unparseable** manifest
 /// self-heals to the embedded default IN MEMORY only, never writing to disk
-/// (G3 corrupt-preserve).
+/// (G3 corrupt-preserve). #1912: a `false` row in `BUILTIN_AGENT_SUPPORT` is
+/// dropped on every read path here - embedded default, parsed manifest, and
+/// legacy read alike.
 /// `ac_dir` is the project's `.ac` directory (or, for the legacy read fallback,
 /// the legacy config dir, which yields `<config_dir>/coding-agents/agents.json`
 /// through the same relative layout).
@@ -367,6 +450,34 @@ pub fn load_catalog_for_settings(settings: &AppSettings) -> Vec<CodingAgentDefin
     }
 }
 
+/// #1912 - the bytes `ensure_seeded` writes when seeding from the embedded
+/// default. Every row enabled (the shipped state): the raw resource, byte-
+/// identical to today. Otherwise the enabled rows, re-serialized (pretty, one
+/// trailing newline). The unreachable serialization error (the struct round-
+/// trips in `embedded_default_matches_current_presets_exactly`) logs `error`
+/// and falls back to the raw bytes: a seeded-but-hidden key is recoverable
+/// through the read gate, an unseeded project is not better.
+fn embedded_seed_bytes() -> Vec<u8> {
+    let table = active_builtin_agent_support();
+    if table.iter().all(|(_, on)| *on) {
+        return EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes().to_vec();
+    }
+    let mut catalog = embedded_default_catalog();
+    catalog
+        .agents
+        .retain(|def| is_supported_builtin(&def.key, table));
+    match serde_json::to_vec_pretty(&catalog) {
+        Ok(mut bytes) => {
+            bytes.push(b'\n');
+            bytes
+        }
+        Err(e) => {
+            log::error!("[coding-agents] failed to serialize the filtered embedded catalog ({e}); seeding the raw resource");
+            EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes().to_vec()
+        }
+    }
+}
+
 /// Seed the manifest ONCE at boot: write the embedded default iff `agents.json`
 /// is absent, then never touch it (§14.1 whole-file seed-once). Fail-soft: logs
 /// and returns `None` on any error; it must never panic or abort boot.
@@ -377,7 +488,11 @@ pub fn load_catalog_for_settings(settings: &AppSettings) -> Vec<CodingAgentDefin
 /// present, the legacy bytes are copied VERBATIM (a present-but-corrupt legacy
 /// file is copied too: corrupt content is user data, the read path self-heals;
 /// the legacy original is never touched). Any other legacy shape (absent,
-/// dir/symlink) seeds the embedded default. Returns the `Utc::now()` publication
+/// dir/symlink) seeds the embedded default, whose bytes are the ENABLED rows of
+/// `BUILTIN_AGENT_SUPPORT` only (`embedded_seed_bytes`; byte-identical to the
+/// raw resource while every row is `true`). #1912: a `false` row never rewrites
+/// or trims an already-seeded user-owned file, and the legacy copy stays
+/// verbatim. Returns the `Utc::now()` publication
 /// time sampled at the commit point of the atomic write, or `None` when nothing
 /// was written.
 pub fn ensure_seeded(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) -> Option<DateTime<Utc>> {
@@ -423,15 +538,15 @@ pub fn ensure_seeded(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) -> Option
                             "[coding-agents] failed to read legacy catalog {} ({e}); seeding embedded default",
                             legacy_path.display()
                         );
-                        EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes().to_vec()
+                        embedded_seed_bytes()
                     }
                 },
                 // Absent, a directory, or a symlink: not a regular file -> the
                 // embedded default wins.
-                _ => EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes().to_vec(),
+                _ => embedded_seed_bytes(),
             }
         }
-        None => EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes().to_vec(),
+        None => embedded_seed_bytes(),
     };
 
     // A verbatim legacy copy is log-checked, never a decision: corrupt content
@@ -539,6 +654,8 @@ struct EmbeddedMasterFile {
 
 /// A dest-keyed embedded master: the shipped default config folder for a built-in.
 struct EmbeddedSeedMaster {
+    /// The catalog `key` this master belongs to (the #1912 support identity).
+    key: &'static str,
     /// The command executable basename (lowercase) this master belongs to. Used
     /// for the re-seed button's exact-basename gating.
     command_basename: &'static str,
@@ -554,6 +671,7 @@ struct EmbeddedSeedMaster {
 /// (Maria approves before land); swapping it is a resource-file-only change.
 const EMBEDDED_SEED_MASTERS: &[EmbeddedSeedMaster] = &[
     EmbeddedSeedMaster {
+        key: "claude",
         command_basename: "claude",
         dest: ".claude",
         files: &[EmbeddedMasterFile {
@@ -562,6 +680,7 @@ const EMBEDDED_SEED_MASTERS: &[EmbeddedSeedMaster] = &[
         }],
     },
     EmbeddedSeedMaster {
+        key: "codex",
         command_basename: "codex",
         dest: ".codex",
         files: &[EmbeddedMasterFile {
@@ -570,6 +689,7 @@ const EMBEDDED_SEED_MASTERS: &[EmbeddedSeedMaster] = &[
         }],
     },
     EmbeddedSeedMaster {
+        key: "opencode",
         command_basename: "opencode",
         dest: ".opencode",
         files: &[EmbeddedMasterFile {
@@ -578,6 +698,14 @@ const EMBEDDED_SEED_MASTERS: &[EmbeddedSeedMaster] = &[
         }],
     },
 ];
+
+/// #1912 - the masters whose key is enabled in the table in force.
+fn supported_embedded_masters() -> impl Iterator<Item = &'static EmbeddedSeedMaster> {
+    let table = active_builtin_agent_support();
+    EMBEDDED_SEED_MASTERS
+        .iter()
+        .filter(move |m| is_supported_builtin(m.key, table))
+}
 
 /// Result of a re-seed, returned to the frontend for the success toast.
 #[derive(Debug, Clone, Serialize)]
@@ -598,18 +726,17 @@ pub fn master_dir_for_dest(ac_dir: &Path, dest: &str) -> PathBuf {
 }
 
 fn embedded_master_for_command_basename(basename: &str) -> Option<&'static EmbeddedSeedMaster> {
-    EMBEDDED_SEED_MASTERS
-        .iter()
-        .find(|m| m.command_basename == basename)
+    supported_embedded_masters().find(|m| m.command_basename == basename)
 }
 
 /// Lowercased command executable basenames that ship a non-empty embedded default
-/// config-folder master. The frontend enables the re-seed button only for a
-/// catalog def whose command reduces to one of these; the reseed command
-/// re-checks server-side. Derived from the shipped masters, so it stays in sync.
+/// config-folder master AND whose key is enabled in `BUILTIN_AGENT_SUPPORT` (the
+/// table in force). The frontend enables the re-seed button only for a catalog
+/// def whose command reduces to one of these; the reseed command
+/// re-checks server-side. Derived from the supported (enabled) masters, so it
+/// stays in sync.
 pub fn reseedable_command_basenames() -> Vec<String> {
-    EMBEDDED_SEED_MASTERS
-        .iter()
+    supported_embedded_masters()
         .map(|m| m.command_basename.to_string())
         .collect()
 }
@@ -650,7 +777,8 @@ fn write_embedded_files_into(dir: &Path, master: &EmbeddedSeedMaster) -> Result<
     Ok(())
 }
 
-/// Seed the dest-keyed masters ONCE at boot: for each built-in master, if
+/// Seed the dest-keyed masters ONCE at boot: for each SUPPORTED built-in
+/// master (its key is enabled in `BUILTIN_AGENT_SUPPORT`), if
 /// `_seed/<dest>/` is absent, stage the embedded default into a sibling temp dir
 /// and atomically rename it into place (first-writer-wins across a first-run
 /// race). Present masters are user-owned and never touched. Fail-soft: logs and
@@ -666,9 +794,10 @@ fn write_embedded_files_into(dir: &Path, master: &EmbeddedSeedMaster) -> Result<
 /// legacy-copy ERROR the partial destination is removed and the embedded master
 /// is staged instead (a partial copy must never win). No size cap: a large
 /// legacy master is copied into every registered project (the verbatim promise
-/// wins).
+/// wins). #1912: a de-supported master (a `false` row) is skipped ENTIRELY from
+/// every source - embedded staging and legacy `_seed/<dest>` tree copy alike.
 pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
-    for master in EMBEDDED_SEED_MASTERS {
+    for master in supported_embedded_masters() {
         let dir = master_dir_for_dest(ac_dir, master.dest);
         match std::fs::symlink_metadata(&dir) {
             Ok(_) => continue, // present (any form) -> user-owned, leave alone
@@ -745,6 +874,15 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
     }
 }
 
+/// #1912 - existence-only steady-state check: the catalog manifest and every
+/// SUPPORTED master dir exist. A de-supported master is never required, or
+/// every boot would take the project gate for nothing.
+fn all_seeds_present(ac_dir: &Path) -> bool {
+    std::fs::symlink_metadata(manifest_path(ac_dir)).is_ok()
+        && supported_embedded_masters()
+            .all(|m| std::fs::symlink_metadata(master_dir_for_dest(ac_dir, m.dest)).is_ok())
+}
+
 /// Seed the catalog + masters for one registered project root, then record the
 /// catalog publication in that project's seed manifest.
 ///
@@ -753,7 +891,8 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
 /// relative to the process CWD) or a missing root (a deleted/stale registered
 /// root must never be resurrected by the seed's `create_dir_all`) is logged and
 /// skipped. Steady-state pre-check BEFORE gate acquisition: when the catalog
-/// manifest AND every built-in master dir exist, return immediately (no lock,
+/// manifest AND every SUPPORTED built-in master dir exist (#1912: a de-supported
+/// master is never required), return immediately (no lock,
 /// no canonicalize, no manifest read, no write), keeping boot cheap and free of
 /// gate contention for the common already-seeded case; masters self-heal is
 /// preserved (the pre-check covers masters too).
@@ -795,11 +934,7 @@ pub(crate) fn ensure_seeded_for_project_with_token(
 
     // Steady-state pre-check: everything already seeded -> nothing to publish;
     // no lock file, no canonicalize, no bounded manifest read, no write.
-    if std::fs::symlink_metadata(manifest_path(&ac_dir)).is_ok()
-        && EMBEDDED_SEED_MASTERS.iter().all(|master| {
-            std::fs::symlink_metadata(master_dir_for_dest(&ac_dir, master.dest)).is_ok()
-        })
-    {
+    if all_seeds_present(&ac_dir) {
         return;
     }
 
@@ -1100,6 +1235,31 @@ mod tests {
         tempfile::tempdir().expect("tempdir")
     }
 
+    /// #1912 - support-override test tables: all 8 rows spelled out, in the
+    /// shipped order, exactly one `false` each. Reaching the PRODUCTION
+    /// wrappers through `with_builtin_agent_support_for_test` is the point: the
+    /// controls below prove behavior on the real call chain, not on copies.
+    const TABLE_MUSE_OFF: &[(&str, bool)] = &[
+        ("claude", true),
+        ("codex", true),
+        ("hermes", true),
+        ("cursor", true),
+        ("pi", true),
+        ("opencode", true),
+        ("antigravity", true),
+        ("muse", false),
+    ];
+    const TABLE_CLAUDE_OFF: &[(&str, bool)] = &[
+        ("claude", false),
+        ("codex", true),
+        ("hermes", true),
+        ("cursor", true),
+        ("pi", true),
+        ("opencode", true),
+        ("antigravity", true),
+        ("muse", true),
+    ];
+
     #[test]
     fn embedded_default_parses_with_eight_agents_in_order() {
         let catalog = embedded_default_catalog();
@@ -1377,6 +1537,10 @@ mod tests {
             assert_eq!(
                 cs.dest, m.dest,
                 "master dest must match the def configSeed dest"
+            );
+            assert_eq!(
+                def.key, m.key,
+                "#1912 master key must match the catalog def key it maps to"
             );
             assert!(
                 !m.files.is_empty(),
@@ -2013,6 +2177,460 @@ mod tests {
                 ),
                 other => panic!("unexpected key {other:?}"),
             }
+        }
+    }
+
+    // ---- #1912 support switch: read gate + seed gate --------------------
+
+    fn assert_no_key(agents: &[CodingAgentDefinition], key: &str) {
+        assert!(!agents.iter().any(|a| a.key == key), "{key} must be absent");
+    }
+
+    fn keys_of(agents: &[CodingAgentDefinition]) -> Vec<&str> {
+        agents.iter().map(|a| a.key.as_str()).collect()
+    }
+
+    #[test]
+    fn builtin_agent_support_table_matches_embedded_default_keys_in_order() {
+        // R1: the table and the embedded JSON must list the same keys in the
+        // same order (exact order implies set equality both ways and no dupes).
+        let table_keys: Vec<&str> = BUILTIN_AGENT_SUPPORT.iter().map(|(k, _)| *k).collect();
+        let catalog = embedded_default_catalog();
+        let json_keys: Vec<&str> = catalog.agents.iter().map(|def| def.key.as_str()).collect();
+        assert_eq!(table_keys, json_keys);
+    }
+
+    #[test]
+    fn builtin_agent_support_ships_every_row_enabled() {
+        // R2: shipped state is all-true; the flip-time follow-up edits this test.
+        assert!(
+            BUILTIN_AGENT_SUPPORT.iter().all(|(_, on)| *on),
+            "every row must ship enabled"
+        );
+    }
+
+    #[test]
+    fn support_override_scopes_to_closure_and_restores_shipped_table() {
+        // R3: the override reaches load_catalog and restores the shipped table.
+        let dir = seed_dir();
+        let before = load_catalog(dir.path());
+        assert_eq!(before.len(), 8);
+        assert!(before.iter().any(|a| a.key == "muse"));
+
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            let inside = load_catalog(dir.path());
+            assert_eq!(inside.len(), 7);
+            assert_no_key(&inside, "muse");
+        });
+
+        let after = load_catalog(dir.path());
+        assert_eq!(after.len(), 8);
+        assert!(after.iter().any(|a| a.key == "muse"));
+    }
+
+    #[test]
+    fn desupported_row_dropped_from_embedded_self_heal_paths() {
+        // R4: missing and corrupt manifests self-heal to the embedded default
+        // with the de-supported row dropped; the corrupt file is preserved.
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            let dir = seed_dir();
+            let agents = load_catalog(dir.path());
+            assert_eq!(agents.len(), 7);
+            assert_no_key(&agents, "muse");
+            assert_eq!(agents[0].key, "claude");
+
+            let dir = seed_dir();
+            let path = manifest_path(dir.path());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let garbage = b"{ this is not valid json";
+            std::fs::write(&path, garbage).unwrap();
+            let agents = load_catalog(dir.path());
+            assert_eq!(agents.len(), 7);
+            assert_no_key(&agents, "muse");
+            assert_eq!(std::fs::read(&path).unwrap(), garbage);
+        });
+    }
+
+    #[test]
+    fn desupported_row_dropped_from_parsed_manifest_and_dedup_cannot_resurrect_it() {
+        // R5: a duplicate-bearing user manifest cannot resurrect a de-supported
+        // key; a user entry with ANOTHER key and the same command is kept.
+        let agents = r##"[
+            {"key":"muse","label":"First","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true},
+            {"key":"muse","label":"Second","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true},
+            {"key":"mine","label":"Mine","description":"d","color":"#111","command":"muse","envs":[],"isolatedHome":false,"removable":true}
+        ]"##;
+
+        // Control: no override -> duplicate key dedups first-wins, custom key kept.
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), manifest_json(agents)).unwrap();
+        let loaded = load_catalog(dir.path());
+        assert_eq!(keys_of(&loaded), ["muse", "mine"]);
+        assert_eq!(loaded[0].label, "First");
+
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            let dir = seed_dir();
+            std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+            std::fs::write(manifest_path(dir.path()), manifest_json(agents)).unwrap();
+            let loaded = load_catalog(dir.path());
+            assert_eq!(keys_of(&loaded), ["mine"]);
+            assert_eq!(loaded[0].command, "muse");
+        });
+    }
+
+    #[test]
+    fn desupported_row_dropped_from_load_catalog_for_settings_primary() {
+        // R6: the settings read root (primary project) honors the read gate on
+        // both the self-heal path and the parsed user file path.
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            let primary = seed_dir();
+            let ac_dir = primary.path().join(".ac");
+            let settings = AppSettings {
+                project_paths: vec![primary.path().to_string_lossy().to_string()],
+                ..AppSettings::default()
+            };
+
+            let loaded = load_catalog_for_settings(&settings);
+            assert_eq!(loaded.len(), 7);
+            assert_no_key(&loaded, "muse");
+
+            let user_file = manifest_json(
+                r##"[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true},
+                {"key":"custom","label":"Custom","description":"d","color":"#333","command":"custom","envs":[],"isolatedHome":false,"removable":true}]"##,
+            );
+            std::fs::create_dir_all(manifest_path(&ac_dir).parent().unwrap()).unwrap();
+            std::fs::write(manifest_path(&ac_dir), &user_file).unwrap();
+            let loaded = load_catalog_for_settings(&settings);
+            assert_eq!(keys_of(&loaded), ["custom"]);
+        });
+    }
+
+    #[test]
+    fn desupported_builtin_no_longer_donates_update_commands_in_backfill() {
+        // R7: the in-memory backfill source is gated, so a de-supported built-in
+        // no longer donates its update sequence to a same-command entry.
+        let manifest = manifest_json(
+            r##"[{"key":"my-claude","label":"My Claude","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+
+        // Control: without the override the embedded claude donates its sequence.
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), &manifest).unwrap();
+        let loaded = load_catalog(dir.path());
+        assert_eq!(
+            loaded[0].update_commands,
+            vec!["claude --update".to_string()]
+        );
+
+        with_builtin_agent_support_for_test(TABLE_CLAUDE_OFF, || {
+            let dir = seed_dir();
+            std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+            std::fs::write(manifest_path(dir.path()), &manifest).unwrap();
+            let loaded = load_catalog(dir.path());
+            assert!(loaded[0].update_commands.is_empty());
+        });
+    }
+
+    #[test]
+    fn desupported_row_absent_from_seeded_manifest_bytes() {
+        // R8: `ensure_seeded` with no legacy dir (arm `:434`) writes only the
+        // enabled rows under a false row; the all-enabled control keeps seeding
+        // the raw resource byte-for-byte.
+        let dir = seed_dir();
+        let published = ensure_seeded(dir.path(), None);
+        assert!(published.is_some());
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes(),
+            "all rows enabled: seeded bytes must equal the raw resource"
+        );
+
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            let dir = seed_dir();
+            let published = ensure_seeded(dir.path(), None);
+            assert!(published.is_some(), "a first seed publishes");
+            let bytes = std::fs::read(manifest_path(dir.path())).unwrap();
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(
+                !text.contains("\"muse\""),
+                "seeded bytes must not carry the de-supported key"
+            );
+            let catalog: CodingAgentCatalog =
+                serde_json::from_slice(&bytes).expect("seeded manifest parses");
+            assert_eq!(catalog.schema_version, CATALOG_SCHEMA_VERSION);
+            assert_eq!(catalog.agents.len(), 7);
+            let loaded = load_catalog(dir.path());
+            assert_eq!(loaded.len(), 7);
+            assert_no_key(&loaded, "muse");
+        });
+    }
+
+    #[test]
+    fn legacy_catalog_copied_verbatim_even_when_it_carries_a_desupported_key() {
+        // R9: the legacy REGULAR-file copy stays verbatim: user bytes are never
+        // filtered; the read gate hides the de-supported key from consumers.
+        let legacy_bytes = manifest_json(
+            r##"[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true},
+            {"key":"custom","label":"Custom","description":"d","color":"#333","command":"custom","envs":[],"isolatedHome":false,"removable":true}]"##,
+        )
+        .into_bytes();
+
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            let project = seed_dir();
+            let legacy = legacy_dir();
+            std::fs::write(legacy.path().join("agents.json"), &legacy_bytes).unwrap();
+            let published = ensure_seeded(project.path(), Some(legacy.path()));
+            assert!(published.is_some());
+            assert_eq!(
+                std::fs::read(manifest_path(project.path())).unwrap(),
+                legacy_bytes,
+                "legacy bytes are user data: copied verbatim even with a de-supported key"
+            );
+            let loaded = load_catalog(project.path());
+            assert_eq!(keys_of(&loaded), ["custom"]);
+        });
+    }
+
+    #[test]
+    fn already_seeded_manifest_never_trimmed_by_a_false_row() {
+        // R10: seed-once is absolute: a false row never rewrites or trims an
+        // already-seeded user-owned file; the read gate hides the key only.
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        let seeded = std::fs::read(manifest_path(dir.path())).unwrap();
+
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            assert!(
+                ensure_seeded(dir.path(), None).is_none(),
+                "present manifest: no rewrite at all"
+            );
+            assert_eq!(
+                std::fs::read(manifest_path(dir.path())).unwrap(),
+                seeded,
+                "bytes must be untouched"
+            );
+            let loaded = load_catalog(dir.path());
+            assert_eq!(loaded.len(), 7);
+            assert_no_key(&loaded, "muse");
+        });
+    }
+
+    #[test]
+    fn desupported_master_not_seeded_not_reseedable_and_reseed_refused() {
+        // R11: a de-supported key's master is not seeded, is not listed as
+        // reseedable, and its re-seed is refused server-side; the other masters
+        // are unaffected.
+        let dir = seed_dir();
+        ensure_seeded_masters(dir.path(), None);
+        for dest in [".claude", ".codex", ".opencode"] {
+            assert!(
+                crate::config::config_seed::is_nonempty_seed_dir(&master_dir_for_dest(
+                    dir.path(),
+                    dest
+                )),
+                "{dest} master should be non-empty"
+            );
+        }
+        let mut got = reseedable_command_basenames();
+        got.sort();
+        assert_eq!(got, vec!["claude", "codex", "opencode"]);
+
+        with_builtin_agent_support_for_test(TABLE_CLAUDE_OFF, || {
+            let dir = seed_dir();
+            ensure_seeded_masters(dir.path(), None);
+            assert!(
+                !master_dir_for_dest(dir.path(), ".claude").exists(),
+                "de-supported master must not be seeded"
+            );
+            for dest in [".codex", ".opencode"] {
+                assert!(
+                    crate::config::config_seed::is_nonempty_seed_dir(&master_dir_for_dest(
+                        dir.path(),
+                        dest
+                    )),
+                    "{dest} master must still be seeded"
+                );
+            }
+            let mut got = reseedable_command_basenames();
+            got.sort();
+            assert_eq!(got, vec!["codex", "opencode"]);
+            let err = reseed_master_for_command(dir.path(), "claude").unwrap_err();
+            assert!(err.contains("not a recognized built-in"), "{err}");
+            assert!(reseed_master_for_command(dir.path(), "codex").is_ok());
+        });
+    }
+
+    #[test]
+    fn desupported_master_skips_legacy_tree_copy_too() {
+        // R12: the legacy `_seed/<dest>` tree copy is skipped for a de-supported
+        // key; supported masters are still copied verbatim; the legacy tree is
+        // untouched.
+        let project = seed_dir();
+        let legacy = legacy_dir();
+        let legacy_seed = legacy.path().join("_seed");
+        std::fs::create_dir_all(legacy_seed.join(".claude")).unwrap();
+        std::fs::create_dir_all(legacy_seed.join(".codex")).unwrap();
+        std::fs::write(legacy_seed.join(".claude/settings.json"), b"LEGACY CLAUDE").unwrap();
+        std::fs::write(legacy_seed.join(".codex/config.toml"), b"LEGACY CODEX").unwrap();
+
+        with_builtin_agent_support_for_test(TABLE_CLAUDE_OFF, || {
+            ensure_seeded_masters(project.path(), Some(legacy.path()));
+            assert!(
+                !master_dir_for_dest(project.path(), ".claude").exists(),
+                "de-supported master must not be copied from the legacy tree"
+            );
+            assert_eq!(
+                std::fs::read(master_dir_for_dest(project.path(), ".codex").join("config.toml"))
+                    .unwrap(),
+                b"LEGACY CODEX"
+            );
+            assert_eq!(
+                std::fs::read(legacy_seed.join(".claude/settings.json")).unwrap(),
+                b"LEGACY CLAUDE",
+                "the legacy tree itself is never touched"
+            );
+        });
+    }
+
+    #[test]
+    fn all_seeds_present_ignores_desupported_master() {
+        // R13: the steady-state pre-check requires only SUPPORTED masters, so a
+        // claude-off install is steady without `.claude`; the gate-wiring probe
+        // shows the tokenized entry returns BEFORE `acquire_project_gate_soft`
+        // when steady (no lock file), and falls through (lock created) when a
+        // supported master is missing.
+        let project = seed_dir();
+        let root = project.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let ac_dir = root.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
+
+        with_builtin_agent_support_for_test(TABLE_CLAUDE_OFF, || {
+            ensure_seeded(&ac_dir, None);
+            ensure_seeded_masters(&ac_dir, None);
+            assert!(manifest_path(&ac_dir).is_file());
+            assert!(!master_dir_for_dest(&ac_dir, ".claude").exists());
+            assert!(crate::config::config_seed::is_nonempty_seed_dir(
+                &master_dir_for_dest(&ac_dir, ".codex")
+            ));
+            assert!(crate::config::config_seed::is_nonempty_seed_dir(
+                &master_dir_for_dest(&ac_dir, ".opencode")
+            ));
+            assert!(
+                all_seeds_present(&ac_dir),
+                "steady inside the override: `.claude` must not be required"
+            );
+
+            // A missing SUPPORTED master makes the predicate false and is
+            // re-seeded by the plain project entry point; `.claude` stays absent.
+            let codex_dir = master_dir_for_dest(&ac_dir, ".codex");
+            std::fs::remove_dir_all(&codex_dir).unwrap();
+            assert!(!all_seeds_present(&ac_dir));
+            ensure_seeded_for_project(&root);
+            assert!(crate::config::config_seed::is_nonempty_seed_dir(&codex_dir));
+            assert!(!master_dir_for_dest(&ac_dir, ".claude").exists());
+            assert!(all_seeds_present(&ac_dir));
+
+            // Gate-wiring probe: steady again -> the tokenized entry returns at
+            // the pre-check, BEFORE acquire_project_gate_soft: no lock file.
+            let lock_path = ac_dir.join(crate::config::seed_manifest::SEED_MANIFEST_LOCK_FILENAME);
+            assert!(!lock_path.exists(), "no lock from the ungated seeds above");
+            let token = ManifestActivationToken::for_test();
+            ensure_seeded_for_project_with_token(&root, Some(&token));
+            assert!(
+                !lock_path.exists(),
+                "steady pre-check must return before the gate: no lock file created"
+            );
+
+            // Contrast: a missing supported master falls through the pre-check,
+            // acquires the gate (lock file created and persistent), re-seeds
+            // `.codex`, still never `.claude`, manifest bytes untouched.
+            let manifest_bytes = std::fs::read(manifest_path(&ac_dir)).unwrap();
+            std::fs::remove_dir_all(&codex_dir).unwrap();
+            ensure_seeded_for_project_with_token(&root, Some(&token));
+            assert!(lock_path.is_file(), "the gate must have been acquired");
+            assert!(crate::config::config_seed::is_nonempty_seed_dir(&codex_dir));
+            assert!(!master_dir_for_dest(&ac_dir, ".claude").exists());
+            assert_eq!(
+                std::fs::read(manifest_path(&ac_dir)).unwrap(),
+                manifest_bytes,
+                "manifest bytes unchanged by the fall-through re-seed"
+            );
+        });
+
+        // Outside the override the same tree is NOT steady: `.claude` is
+        // required by the shipped table and absent.
+        assert!(!all_seeds_present(&ac_dir));
+    }
+
+    #[test]
+    fn already_seeded_master_never_removed_by_a_false_row() {
+        // R14: an already-present master is user-owned and never removed by a
+        // false row; only the reseedable list reflects the switch.
+        let dir = seed_dir();
+        ensure_seeded_masters(dir.path(), None);
+        let claude_file = master_dir_for_dest(dir.path(), ".claude").join("settings.json");
+        let seeded = std::fs::read(&claude_file).unwrap();
+
+        with_builtin_agent_support_for_test(TABLE_CLAUDE_OFF, || {
+            ensure_seeded_masters(dir.path(), None);
+            assert_eq!(
+                std::fs::read(&claude_file).unwrap(),
+                seeded,
+                "an already-present master is never removed or rewritten"
+            );
+            let mut got = reseedable_command_basenames();
+            got.sort();
+            assert_eq!(got, vec!["codex", "opencode"]);
+        });
+    }
+
+    #[test]
+    fn desupported_row_absent_from_seeded_manifest_bytes_in_legacy_dir_arms() {
+        // R15: the legacy-dir arms (`:431` non-regular-file branches) seed the
+        // enabled rows only under a false row. Shape (a): legacy dir present but
+        // `agents.json` absent. Shape (b): `legacy/agents.json` is a DIRECTORY.
+        for shape in ["absent", "directory"] {
+            // Control (both shapes, no override): the raw resource is seeded
+            // byte-for-byte - arm `:431` keeps writing the raw bytes while every
+            // row is enabled.
+            let project = seed_dir();
+            let legacy = legacy_dir();
+            if shape == "directory" {
+                std::fs::create_dir_all(legacy.path().join("agents.json")).unwrap();
+            }
+            let published = ensure_seeded(project.path(), Some(legacy.path()));
+            assert!(published.is_some(), "{shape}: a first seed publishes");
+            assert_eq!(
+                std::fs::read(manifest_path(project.path())).unwrap(),
+                EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes(),
+                "{shape}: all rows enabled -> raw resource bytes"
+            );
+
+            with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+                let project = seed_dir();
+                let legacy = legacy_dir();
+                if shape == "directory" {
+                    std::fs::create_dir_all(legacy.path().join("agents.json")).unwrap();
+                }
+                let published = ensure_seeded(project.path(), Some(legacy.path()));
+                assert!(published.is_some(), "{shape}: a first seed publishes");
+                let bytes = std::fs::read(manifest_path(project.path())).unwrap();
+                let text = String::from_utf8_lossy(&bytes);
+                assert!(
+                    !text.contains("\"muse\""),
+                    "{shape}: seeded bytes must not carry the de-supported key"
+                );
+                let catalog: CodingAgentCatalog =
+                    serde_json::from_slice(&bytes).expect("seeded manifest parses");
+                assert_eq!(catalog.schema_version, CATALOG_SCHEMA_VERSION);
+                assert_eq!(catalog.agents.len(), 7, "{shape}: 7 agents seeded");
+                let loaded = load_catalog(project.path());
+                assert_eq!(loaded.len(), 7);
+                assert_no_key(&loaded, "muse");
+                assert_eq!(loaded[0].key, "claude");
+            });
         }
     }
 }

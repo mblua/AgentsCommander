@@ -4,9 +4,12 @@ import type { CodingAgentDefinition } from "./types";
 
 // #769 — FALLBACK_CODING_AGENTS is a second copy of the backend's embedded
 // default (`src-tauri/resources/coding-agents/agents.default.json`). This is the
-// FE half of the drift guard: it pins the fallback to the exact same 7 built-ins
+// FE half of the drift guard: it pins the fallback to the exact same 8 built-ins
 // the backend ships, so the two copies cannot silently diverge (the backend's
 // `embedded_default_matches_current_presets_exactly` pins the other half).
+// #1912 — the mirror rule: FALLBACK_CODING_AGENTS must equal the ENABLED rows of
+// `BUILTIN_AGENT_SUPPORT` (`src-tauri/src/config/coding_agents_catalog.rs`), in
+// the same order; it must never resurrect a de-supported built-in.
 const EXPECTED_BUILTINS: Array<
   Pick<
     CodingAgentDefinition,
@@ -20,10 +23,11 @@ const EXPECTED_BUILTINS: Array<
   { key: "pi", label: "Pi", description: "Coding Agent by Earendil Inc", color: "#ec4899", command: "pi", instructionsFilename: "AGENTS.md" },
   { key: "opencode", label: "OpenCode", description: "Open-source terminal coding agent by Anomaly", color: "#64748b", command: "opencode", instructionsFilename: "AGENTS.md" },
   { key: "antigravity", label: "Antigravity", description: "Coding Agent by Google", color: "#4285F4", command: "agy", instructionsFilename: "AGENTS.md" },
+  { key: "muse", label: "Muse Code", description: "Meta terminal coding agent (beta; macOS/Linux host only)", color: "#0668E1", command: "muse" },
 ];
 
 describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
-  it("matches the backend embedded default: 7 built-ins, exact order and fields", () => {
+  it("matches the backend embedded default: 8 built-ins, exact order and fields", () => {
     expect(FALLBACK_CODING_AGENTS.map((a) => a.key)).toEqual([
       "claude",
       "codex",
@@ -32,6 +36,7 @@ describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
       "pi",
       "opencode",
       "antigravity",
+      "muse",
     ]);
     for (const expected of EXPECTED_BUILTINS) {
       const actual = FALLBACK_CODING_AGENTS.find((a) => a.key === expected.key);

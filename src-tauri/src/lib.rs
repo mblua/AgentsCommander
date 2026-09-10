@@ -2966,7 +2966,9 @@ pub fn run(
             app.manage(Arc::clone(&watcher_engine));
             app.manage(watcher_history);
             // #1646 / #1647 - proactive detection of terminal blocking menus
-            let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::new());
+            let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::with_store(
+                config::settings::BlockingMenusStore::load_from_config_dir(),
+            ));
             menu_guard.start(app.handle().clone(), shutdown_for_setup.clone());
             // (#1652) Started at the top of setup and NOT in the post-restore
             // tail: a freeze detector that waits for the restore is blind for
