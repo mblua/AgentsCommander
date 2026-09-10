@@ -342,7 +342,7 @@ pub fn register_configured_hotkey(app: &AppHandle, configured: &str) -> Result<(
     let shortcut = parsed_to_shortcut(&parsed)?;
 
     #[cfg(target_os = "linux")]
-    if classify_display_server(&*app.state::<DisplayEnvSnapshot>()) == LinuxDisplayServer::Wayland {
+    if classify_display_server(&app.state::<DisplayEnvSnapshot>()) == LinuxDisplayServer::Wayland {
         // The snapshot is READ here and TAKEN in run() during builder assembly
         // (§3.5.1). Do not replace this with a call to display_env_snapshot():
         // by the time this line runs, GTK has already unsetenv()'d
@@ -434,6 +434,7 @@ fn hotkey_status_after_attempt(
 ///   - "superseded before overlays opened" (the tail of `begin_capture`) — the
 ///     reporting task is its own stale self, and the lifecycle now belongs to a
 ///     later press it never observed.
+///
 /// Naming the capture instead of passing `None` is what stops the Linux
 /// second-press cancel from destroying an unrelated capture (#1842).
 pub enum BeginOutcome {
@@ -571,7 +572,7 @@ pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
             // would pollute the in-flight frozen capture). Answer from the lock
             // that observed the state: the payload is the capture this press is
             // entitled to cancel.
-            return Ok(BeginOutcome::Busy(cancellable_capture_id(&*guard)));
+            return Ok(BeginOutcome::Busy(cancellable_capture_id(&guard)));
         }
         *guard = ScreenshotCaptureLifecycle::Starting(ScreenshotCaptureStarting {
             id: capture_id,
@@ -673,7 +674,7 @@ async fn busy_pregate(state: &ScreenshotCaptureState) -> Option<BeginOutcome> {
     if matches!(&*guard, ScreenshotCaptureLifecycle::Idle) {
         None
     } else {
-        Some(BeginOutcome::Busy(cancellable_capture_id(&*guard)))
+        Some(BeginOutcome::Busy(cancellable_capture_id(&guard)))
     }
 }
 

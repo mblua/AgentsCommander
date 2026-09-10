@@ -242,6 +242,15 @@ jobs:
           #      nothing exits 0 and prints "0 passed", so green alone proves
           #      nothing. linux_display_server_classification is Linux-gated and
           #      cannot exist unless mod.rs really compiled `native` on Linux.
+          #      Not redundant with 3: a sentinel renamed, or moved out of the
+          #      filter, with the count left at 22 keeps guards 1 and 3 green
+          #      and only this grep red -- that is probe P1, measured. The
+          #      other way mod.rs can lose `native` on Linux, narrowing its
+          #      cfg, never reaches this line: the crate stops compiling, cargo
+          #      exits 101, and guard 1 takes it. The match is a PREFIX (-F on
+          #      the module path), so a rename that only appends a suffix stays
+          #      green -- correctly: a Linux-gated test with that prefix still
+          #      ran, which is all this control asserts.
           #   3. The anchored count is the MUTATION PROBE: gating a test out
           #      moves the number.
           grep -qF 'screenshot::native::tests::linux_display_server_classification' test-1842.log || {

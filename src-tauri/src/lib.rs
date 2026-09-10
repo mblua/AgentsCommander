@@ -2464,9 +2464,9 @@ pub fn run(
     // calls wl_display_connect(), which unsetenv()s WAYLAND_SOCKET, so a
     // session identified only by an inherited fd loses its only signal the
     // moment GTK starts. Tao initialises GTK when it builds the event loop, in
-    // `.run(..)`; `.setup` and register_configured_hotkey both run after that
-    // and would read an erased variable and answer X11 — the silent dead hotkey
-    // this phase exists to prevent.
+    // `.run(..)`; `.setup` and register_configured_hotkey (2809) both run after
+    // that and would read an erased variable and answer X11 — the silent dead
+    // hotkey this phase exists to prevent.
     //
     // THE REAL INVARIANT IS "before anything initialises GTK", not "before
     // `.setup`". §8's controls check the second because it is mechanically
