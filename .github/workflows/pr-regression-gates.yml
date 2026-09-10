@@ -91,6 +91,32 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib --bins --tests
 
+      # IS #1850: ordinary Windows runs prove the copy-and-run mechanism and
+      # refusal safety only. Refusal safety and the mechanism control moved off
+      # the lib target (whose `ISSUE1850_REFUSAL_ONLY` printer this round
+      # deletes) onto the integration target that actually runs here.
+      - name: "cargo test (IS #1850 default-route acceptance, integration)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          cargo test --locked --test issue_1850_default_root -- --test-threads=1 --nocapture 2>&1 | tee test-1850-refusal.log
+          for name in issue_1850_admission_gate_table issue_1850_default_root_acceptance; do
+            grep -qF "test ${name} ..." test-1850-refusal.log || { echo "::error::${name} never ran in the ordinary Windows run"; exit 1; }
+          done
+          grep -qE '^ISSUE1850_MECHANISM_OK' test-1850-refusal.log || { echo "::error::the copied-binary mechanism control did not report success in the ordinary Windows run"; exit 1; }
+          grep -qE '^ISSUE1850_REFUSAL_ONLY' test-1850-refusal.log || { echo "::error::the ordinary Windows run did not take the refusal-only route"; exit 1; }
+          if grep -qF 'ISSUE1850_WINDOWS_PROFILE_PROOF_OK' test-1850-refusal.log; then
+            echo "::error::the ordinary Windows run must not claim the real-profile proof"
+            exit 1
+          fi
+          if grep -qF 'ISSUE1850_CASE_OK' test-1850-refusal.log; then
+            echo "::error::the ordinary Windows run must not execute real-profile cases"
+            exit 1
+          fi
+          grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-refusal.log || { echo "::error::expected exactly two passing tests"; exit 1; }
+
       # IS #1850: focused debug execution of every issue_1850 test. Guards
       # mirror the #1577 step: pipefail catches a failing test, the identifier
       # greps catch a filter that selected nothing or something else, and the
@@ -108,8 +134,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
-            'tests::issue_1850_default_root_subprocess'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
             grep -qF "test ${name} ..." test-1850-debug.log || {
               echo "::error::${name} never ran in the focused #1850 debug run; it was renamed, moved, or gated out."
               exit 1
@@ -117,14 +142,6 @@ jobs:
           done
           grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-debug.log || {
             echo "::error::the focused #1850 debug run did not report a positive passing count with zero failures."
-            exit 1
-          }
-          # Ordinary Windows runs prove unit behavior and refusal safety only.
-          # The real-profile eight-case acceptance belongs to the dedicated
-          # issue-1850-windows-profile job, so this run must take the
-          # refusal-only route and must not claim the profile proof.
-          grep -qF 'ISSUE1850_REFUSAL_ONLY' test-1850-debug.log || {
-            echo "::error::the #1850 subprocess test did not take the refusal-only route in the ordinary Windows run."
             exit 1
           }
           if grep -qF 'ISSUE1850_WINDOWS_PROFILE_PROOF_OK' test-1850-debug.log; then
@@ -149,8 +166,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
-            'tests::issue_1850_default_root_subprocess'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
             grep -qF "test ${name} ..." test-1850-release.log || {
               echo "::error::${name} never ran in the focused #1850 release run; it was renamed, moved, or gated out."
               exit 1
@@ -158,14 +174,6 @@ jobs:
           done
           grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-release.log || {
             echo "::error::the focused #1850 release run did not report a positive passing count with zero failures."
-            exit 1
-          }
-          # Ordinary Windows runs prove unit behavior and refusal safety only.
-          # The real-profile eight-case acceptance belongs to the dedicated
-          # issue-1850-windows-profile job, so this run must take the
-          # refusal-only route and must not claim the profile proof.
-          grep -qF 'ISSUE1850_REFUSAL_ONLY' test-1850-release.log || {
-            echo "::error::the #1850 subprocess test did not take the refusal-only route in the ordinary Windows run."
             exit 1
           }
           if grep -qF 'ISSUE1850_WINDOWS_PROFILE_PROOF_OK' test-1850-release.log; then
@@ -304,8 +312,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
-            'tests::issue_1850_default_root_subprocess'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
             grep -qF "test ${name} ..." test-1850-debug.log || {
               echo "::error::${name} never ran in the focused #1850 debug run; it was renamed, moved, or gated out."
               exit 1
@@ -333,8 +340,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
-            'tests::issue_1850_default_root_subprocess'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
             grep -qF "test ${name} ..." test-1850-release.log || {
               echo "::error::${name} never ran in the focused #1850 release run; it was renamed, moved, or gated out."
               exit 1
@@ -344,6 +350,32 @@ jobs:
             echo "::error::the focused #1850 release run did not report a positive passing count with zero failures."
             exit 1
           }
+
+      # IS #1850: the debug acceptance target on a native Linux filesystem. The
+      # copied product binary must select the injected HOME, run all eight
+      # cases, and materialise app.log/.gitignore only under
+      # <home>/.agentscommander. Release behaviour of this route differs only
+      # by the debug-only override being compiled out, which the Windows
+      # real-profile release leg and the release focused lib tests cover.
+      - name: "cargo test (IS #1850 default-root acceptance, debug)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          cargo test --locked --test issue_1850_default_root -- --test-threads=1 --nocapture 2>&1 | tee test-1850-default-root.log
+          for name in issue_1850_admission_gate_table issue_1850_default_root_acceptance; do
+            grep -qF "test ${name} ..." test-1850-default-root.log || { echo "::error::${name} never ran"; exit 1; }
+          done
+          grep -qE '^ISSUE1850_MECHANISM_OK' test-1850-default-root.log || { echo "::error::copied-binary mechanism control did not report success"; exit 1; }
+          for case in adjacent-legacy-alone home-new-alone home-new-dev-alone all-legacy-conflicting \
+                      canonical-valid-settings canonical-invalid-settings canonical-absent-with-marker canonical-absent-without-marker; do
+            grep -qE "^ISSUE1850_CASE_OK case=${case}$" test-1850-default-root.log || { echo "::error::missing case record ${case}"; exit 1; }
+          done
+          test "$(grep -oE '^ISSUE1850_CASE_OK case=[^ ]+$' test-1850-default-root.log | sort -u | wc -l)" -eq 8 || { echo "::error::expected 8 unique case records"; exit 1; }
+          grep -qE '^ISSUE1850_DEFAULT_ROOT_PROOF_OK cases=8$' test-1850-default-root.log || { echo "::error::final proof record missing"; exit 1; }
+          grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-default-root.log || { echo "::error::expected exactly two passing tests"; exit 1; }
+          grep -qE '^ISSUE1850_REFUSAL_ONLY' test-1850-default-root.log && { echo "::error::refusal-only route taken on a non-Windows leg"; exit 1; } || true
 
   rust-regression-macos:
     name: rust-regression-macos
@@ -404,8 +436,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
-            'tests::issue_1850_default_root_subprocess'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
             grep -qF "test ${name} ..." test-1850-debug.log || {
               echo "::error::${name} never ran in the focused #1850 debug run; it was renamed, moved, or gated out."
               exit 1
@@ -433,8 +464,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once' \
-            'tests::issue_1850_default_root_subprocess'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
             grep -qF "test ${name} ..." test-1850-release.log || {
               echo "::error::${name} never ran in the focused #1850 release run; it was renamed, moved, or gated out."
               exit 1
@@ -444,6 +474,28 @@ jobs:
             echo "::error::the focused #1850 release run did not report a positive passing count with zero failures."
             exit 1
           }
+
+      # IS #1850: the debug acceptance target on macOS. Same contract as the
+      # Linux step; no real-profile case and no refusal-only route here.
+      - name: "cargo test (IS #1850 default-root acceptance, debug)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          cargo test --locked --test issue_1850_default_root -- --test-threads=1 --nocapture 2>&1 | tee test-1850-default-root.log
+          for name in issue_1850_admission_gate_table issue_1850_default_root_acceptance; do
+            grep -qF "test ${name} ..." test-1850-default-root.log || { echo "::error::${name} never ran"; exit 1; }
+          done
+          grep -qE '^ISSUE1850_MECHANISM_OK' test-1850-default-root.log || { echo "::error::copied-binary mechanism control did not report success"; exit 1; }
+          for case in adjacent-legacy-alone home-new-alone home-new-dev-alone all-legacy-conflicting \
+                      canonical-valid-settings canonical-invalid-settings canonical-absent-with-marker canonical-absent-without-marker; do
+            grep -qE "^ISSUE1850_CASE_OK case=${case}$" test-1850-default-root.log || { echo "::error::missing case record ${case}"; exit 1; }
+          done
+          test "$(grep -oE '^ISSUE1850_CASE_OK case=[^ ]+$' test-1850-default-root.log | sort -u | wc -l)" -eq 8 || { echo "::error::expected 8 unique case records"; exit 1; }
+          grep -qE '^ISSUE1850_DEFAULT_ROOT_PROOF_OK cases=8$' test-1850-default-root.log || { echo "::error::final proof record missing"; exit 1; }
+          grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-default-root.log || { echo "::error::expected exactly two passing tests"; exit 1; }
+          grep -qE '^ISSUE1850_REFUSAL_ONLY' test-1850-default-root.log && { echo "::error::refusal-only route taken on a non-Windows leg"; exit 1; } || true
 
   rust-fmt:
     name: rust-fmt
@@ -555,7 +607,7 @@ jobs:
     # Skip branch-deletion push events while still requiring pull request validation.
     if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -593,6 +645,18 @@ jobs:
           env-vars: 'ImageOS'
           save-if: 'false'
 
+      - name: "IS #1850 real-profile build (${{ matrix.mode }})"
+        shell: pwsh
+        timeout-minutes: 40
+        run: |
+          $mode = '${{ matrix.mode }}'
+          $cargoArgs = @('test', '--locked', '--manifest-path', 'src-tauri/Cargo.toml')
+          if ($mode -eq 'release') { $cargoArgs += '--release' }
+          $cargoArgs += @('--test', 'issue_1850_default_root', '--no-run')
+          Write-Host "cargo $($cargoArgs -join ' ')"
+          & cargo @cargoArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: "IS #1850 real-profile eight-case proof (${{ matrix.mode }})"
         shell: pwsh
         timeout-minutes: 20
@@ -607,7 +671,7 @@ jobs:
 
           $cargoArgs = @('test', '--locked', '--manifest-path', 'src-tauri/Cargo.toml')
           if ($mode -eq 'release') { $cargoArgs += '--release' }
-          $cargoArgs += @('--lib', 'tests::issue_1850_default_root_subprocess', '--', '--exact', '--test-threads=1', '--nocapture')
+          $cargoArgs += @('--test', 'issue_1850_default_root', '--', '--test-threads=1', '--nocapture')
           Write-Host "cargo $($cargoArgs -join ' ')"
           & cargo @cargoArgs 2>&1 | Tee-Object -FilePath $log
           $cargoExit = $LASTEXITCODE
@@ -621,8 +685,10 @@ jobs:
           if ($null -eq $text) { $text = '' }
 
           if ($cargoExit -ne 0) { Fail "cargo test exited $cargoExit" }
-          if ($text -notmatch 'test tests::issue_1850_default_root_subprocess \.\.\. ') { Fail 'the parent test never ran' }
-          if ($text -notmatch '(?m)^test result: ok\. 1 passed; 0 failed') { Fail 'expected exactly one passing parent test' }
+          foreach ($name in @('issue_1850_admission_gate_table', 'issue_1850_default_root_acceptance')) {
+            if ($text -notmatch ('test ' + [regex]::Escape($name) + ' \.\.\. ')) { Fail "$name never ran" }
+          }
+          if ($text -notmatch '(?m)^ISSUE1850_MECHANISM_OK') { Fail 'the copied-binary mechanism control did not report success' }
           $cases = @(
             'adjacent-legacy-alone',
             'home-new-alone',
@@ -640,6 +706,7 @@ jobs:
           $unique = @([regex]::Matches($text, '(?m)^ISSUE1850_CASE_OK case=(\S+)\s*$') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
           if ($unique.Count -ne 8) { Fail "expected 8 unique case-success records, found $($unique.Count)" }
           if ($text -notmatch '(?m)^ISSUE1850_WINDOWS_PROFILE_PROOF_OK cases=8\s*$') { Fail 'the final profile-proof record is missing' }
+          if ($text -notmatch '(?m)^test result: ok\. 2 passed; 0 failed') { Fail 'expected exactly two passing tests' }
           if ($text -match 'ISSUE1850_REFUSAL_ONLY') { Fail 'a refusal-only record is present; the real-profile route was not taken' }
           Write-Host "IS #1850 ($mode): real-profile proof verified, 8 cases"
 
