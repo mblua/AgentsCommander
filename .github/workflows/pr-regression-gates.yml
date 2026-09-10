@@ -102,7 +102,19 @@ jobs:
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          # The four original packages are Tauri's own. The rest are the #1842
+          # xcap native chain: bindgen needs libclang; system-deps needs the
+          # pkg-config metadata for libpipewire-0.3 AND libspa-0.2 (E1 proved
+          # libspa-0.2-dev is a SEPARATE package that only arrives
+          # transitively, so listing it is what stops a future dependency
+          # change breaking the build silently); libwayshot-xcap needs
+          # gbm/drm/EGL; xcb needs libxcb + randr.
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            build-essential pkg-config clang libclang-dev \
+            libpipewire-0.3-dev libspa-0.2-dev \
+            libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
+            libgbm-dev libdrm-dev libegl1-mesa-dev libdbus-1-dev
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -205,6 +217,156 @@ jobs:
             exit 1
           }
 
+  rust-linux-release-parity:
+    name: rust-linux-release-parity
+    # #1842: the Linux PR gate runs ubuntu-latest (24.04) while the Linux
+    # RELEASE build runs ubuntu-22.04 (release.yml). A green PR gate therefore
+    # did not prove the release build. This job compiles AND LINKS src-tauri on
+    # the exact release runner so a chain that will not build there fails a PR
+    # instead of a release.
+    #
+    # `cargo build`, NOT `cargo check`: check stops at metadata and never
+    # invokes the final linker
+    # (https://doc.rust-lang.org/cargo/commands/cargo-check.html). It would
+    # prove apt resolution and build-script/pkg-config discovery and nothing
+    # about the link. The xcap chain is FFI; a missing -l flag or an unresolved
+    # symbol on 22.04 appears only at link time, which is the exact failure
+    # this job exists to catch before release.yml does.
+    #
+    # `--release`, NOT debug. "release is only optimisation" is FALSE in this
+    # repo and the difference is not cosmetic:
+    #   * build.rs:8-19 turns PROFILE=release into BUILD_PROFILE=prod, emits it
+    #     as cargo:rustc-env, and feeds it to configure_embedded_dist, so the
+    #     BUILD SCRIPT takes a different path.
+    #   * config/mod.rs:850-853 has a real cfg(debug_assertions) /
+    #     cfg(not(debug_assertions)) split in instance_location.
+    # Cargo flips debug_assertions with the profile, so a debug build exercises
+    # neither branch the release runner will take. Since this job's whole
+    # purpose is parity with release.yml's Linux producer — which builds
+    # release — it must build release too. This removes the entire release-only
+    # residual class (compile, build script AND link), not just the link.
+    #
+    # `--bins` and NOT `--all-targets`: the bin is the artifact release.yml
+    # ships, and linking it costs one link instead of 27 (1 bin + 25 integration
+    # tests in src-tauri/tests + the lib). Nothing is lost: rust-regression-linux
+    # on 24.04 already runs `cargo check --all-targets` AND
+    # `cargo clippy --all-targets -- -D warnings`, so test-target type checking
+    # keeps its owner, and no clippy or #1577 test runs here either. This job
+    # exists solely to prove the runner. `--bins` also skips the cdylib and
+    # staticlib crate-types (Cargo.toml:82-84); a missing -l breaks all three
+    # links identically, so that adds no risk.
+    #
+    # If release.yml's Linux runner ever moves, move this job's runs-on with it
+    # or delete this job; a parity job pinned to a runner nobody ships from
+    # proves nothing.
+    #
+    # Skip branch-deletion push events while still requiring pull request validation.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            build-essential pkg-config clang libclang-dev \
+            libpipewire-0.3-dev libspa-0.2-dev \
+            libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
+            libgbm-dev libdrm-dev libegl1-mesa-dev libdbus-1-dev
+
+      # The four frontend steps below are copied verbatim from
+      # rust-regression-linux. They are MANDATORY here, and for a stronger
+      # reason than in the job they were copied from: there they exist because
+      # tauri-build validates tauri.conf.json's frontendDist; in THIS job the
+      # profile is release, and build.rs:44-49 panics outright when
+      # ../dist/index.html is missing for any profile other than dev -- in
+      # debug it only emits a cargo:warning. So without `npm run build` this
+      # job does not warn, it dies. They look redundant with
+      # rust-regression-linux and someone will eventually try to delete them;
+      # do not.
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend assets for Tauri config validation
+        run: npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      # `. -> target`, NOT `src-tauri -> target`. The repo root Cargo.toml is a
+      # WORKSPACE with src-tauri as a member, and src-tauri/Cargo.toml has no
+      # [workspace] key of its own, so cargo writes to <repo>/target. There is
+      # no src-tauri/target and no src-tauri/Cargo.lock, so `src-tauri -> target`
+      # caches the registry and nothing else — survivable for a debug `check`,
+      # ruinous for a RELEASE build of ~790 packages, which would then recompile
+      # in full on every run. `bundle-validation.yml:52` and
+      # `cache-warm.yml:53,102` already use the correct form; copy those.
+      #
+      # `pr-regression-gates.yml:130` and `:239` still carry the wrong form.
+      # That is a pre-existing defect, it is NOT part of #1842, and this phase
+      # must not touch those two lines — just do not propagate the mistake here.
+      - name: Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: '. -> target'
+          key: rust-linux-release-parity
+
+      - name: cargo build --release (links the binary release.yml ships)
+        working-directory: src-tauri
+        run: cargo build --release --bins
+
+      # The linker proved the -l flags resolve at BUILD time. This proves the
+      # same libraries resolve at LOAD time on this runner, which is what
+      # release.yml's bundlers need when they walk the binary's DT_NEEDED
+      # entries. `-r` also resolves data and function symbols, not just the
+      # sonames. Free, offline, deterministic. It does NOT run any bundler --
+      # see §6, "What criteria 6 and 7 do and do not close".
+      #
+      # NO `working-directory: src-tauri` here, deliberately. The repo root
+      # Cargo.toml is a WORKSPACE listing src-tauri as a member; src-tauri has
+      # no [workspace] key; no workflow sets CARGO_TARGET_DIR and
+      # .cargo/config.toml only sets `[build] jobs`. So cargo writes to
+      # <repo>/target, and `src-tauri/target` NEVER EXISTS. A step that looked
+      # there would fail its own `test -x` on every run, before ldd, with an
+      # error blaming the binary name.
+      #
+      # THE `grep` IS THE ASSERTION, NOT THE EXIT CODE. `ldd -r` was measured
+      # exiting 0 on a binary with both `=> not found` and `undefined symbol:`
+      # present. Do NOT "simplify" this to a bare `ldd -r "$BIN"`: that turns
+      # the whole step into decoration. `set -o pipefail` is what keeps a
+      # failing ldd from being swallowed by the `tee`.
+      - name: ldd the release binary (load-time resolution on the release runner)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # src-tauri/Cargo.toml has NO [[bin]] section, so cargo names the
+          # executable after the PACKAGE: agentscommander-new. release.yml's
+          # raw_source says target/release/agentscommander because `tauri build`
+          # renames the binary to tauri.conf.json's mainBinaryName; a bare
+          # `cargo build` renames nothing. If either fact changes, this step
+          # fails loud instead of silently checking a stale file.
+          BIN=target/release/agentscommander-new
+          test -x "$BIN" || {
+            echo "::error::expected $BIN. The workspace target dir or cargo's binary name changed; fix this step."
+            ls -l target/release || true
+            exit 1
+          }
+          ldd -r "$BIN" 2>&1 | tee ldd-1842.log
+          if grep -E 'not found|undefined symbol' ldd-1842.log; then
+            echo "::error::the release binary has unresolved libraries or symbols on ubuntu-22.04. release.yml's Linux producer will fail here."
+            exit 1
+          fi
   rust-regression-macos:
     name: rust-regression-macos
     # Skip branch-deletion push events while still requiring pull request validation.
