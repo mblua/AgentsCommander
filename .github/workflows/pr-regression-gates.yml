@@ -217,6 +217,42 @@ jobs:
             exit 1
           }
 
+      # IS #1842: the full suite runs only on the Windows leg, so without this
+      # the screenshot tests would compile on Linux and never execute. The
+      # filter is a MODULE PATH, not the bare word `screenshot`, which would
+      # also match api/mod.rs's window-screenshot limiter tests — gated
+      # `any(target_os = "windows", test)`, compiled for months, never run on
+      # Linux, and lighting those up is what the comment above forbids.
+      - name: cargo test (IS #1842 screenshot module on Linux)
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILTER='screenshot::native::tests::'
+          # 19 pre-existing + overlay_window_traits_match_target + the two
+          # Linux-gated tests. LINUX count (Windows runs 20); update it in the
+          # same commit that adds or removes a test in that module.
+          EXPECTED=22
+          cargo test --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-1842.log
+
+          # Three guards, matching the #1577 step, none redundant:
+          #   1. The exit code, via `set -o pipefail` (LOAD-BEARING through the
+          #      `tee`), catches a test that ran and FAILED.
+          #   2. The sentinel grep is the POSITIVE CONTROL: a filter matching
+          #      nothing exits 0 and prints "0 passed", so green alone proves
+          #      nothing. linux_display_server_classification is Linux-gated and
+          #      cannot exist unless mod.rs really compiled `native` on Linux.
+          #   3. The anchored count is the MUTATION PROBE: gating a test out
+          #      moves the number.
+          grep -qF 'screenshot::native::tests::linux_display_server_classification' test-1842.log || {
+            echo "::error::the Linux-only sentinel test never ran. screenshot::native is not compiling on Linux, or the test was renamed, and this step was testing nothing."
+            exit 1
+          }
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-1842.log || {
+            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER}; the count changed or the filter matched something else."
+            exit 1
+          }
+
   rust-linux-release-parity:
     name: rust-linux-release-parity
     # #1842: the Linux PR gate runs ubuntu-latest (24.04) while the Linux
