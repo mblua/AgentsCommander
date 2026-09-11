@@ -351,6 +351,11 @@ fn backfill_update_commands_from_embedded_default(
 /// `ac_dir` is the project's `.ac` directory (or, for the legacy read fallback,
 /// the legacy config dir, which yields `<config_dir>/coding-agents/agents.json`
 /// through the same relative layout).
+///
+/// Bounded handoff (#1963 P1): this array-returning loader remains temporary
+/// compatibility code until the managed-catalog migration lands; P4 (#1967)
+/// removes it together with `load_catalog_for_settings`. New diagnostics go
+/// through `load_catalog_report` below.
 pub fn load_catalog(ac_dir: &Path) -> Vec<CodingAgentDefinition> {
     let path = manifest_path(ac_dir);
     let bytes = match std::fs::read(&path) {
@@ -441,12 +446,473 @@ pub(crate) fn registered_project_roots(settings: &AppSettings) -> Vec<PathBuf> {
 /// exists (read-only, never written; pre-migration installs with zero projects
 /// keep today's read behavior), self-healing to the embedded default when
 /// absent/unparseable.
+///
+/// Bounded handoff (#1963 P1): temporary compatibility code, removed in
+/// P4 (#1967); `load_catalog_report_for_settings` below is the persisted-only
+/// diagnostic resolver that P5 (#1968) extends.
 pub fn load_catalog_for_settings(settings: &AppSettings) -> Vec<CodingAgentDefinition> {
     match primary_project_root(settings) {
         Some(root) => load_catalog(&root.join(".ac")),
         None => crate::config::config_dir()
             .map(|dir| load_catalog(&dir))
             .unwrap_or_else(validated_embedded_default),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #1963 P1 - persisted-only catalog report (read-only diagnostic view).
+//
+// `get_coding_agent_catalog_report` serves this report so the frontend can show
+// persisted catalog availability and warnings BEFORE the managed-catalog
+// migration is enabled. The resolver NEVER seeds, refreshes, creates
+// directories, writes files, takes locks or backfills from the embedded default:
+// there is no embedded command donor on this path. It returns the persisted
+// definitions after the same per-entry validation, duplicate-key and built-in
+// support filters the array endpoint applies, plus visible diagnostics.
+//
+// P5 (#1968) extends this same resolver to compose the local layer; the wire
+// shape below stays fixed. The existing array endpoint and updater keep their
+// current behavior until P4 (#1967).
+// ---------------------------------------------------------------------------
+
+/// Diagnostic codes of the persisted-catalog report. The `code` field is a
+/// plain string so P5 can add its own codes without a wire change
+/// (`localInvalid`, `refreshFailed`, `migrationConflict`, `managedBaseEdited`,
+/// `publicationUntracked`).
+const REPORT_CODE_BASE_UNAVAILABLE: &str = "baseUnavailable";
+const REPORT_CODE_BASE_INVALID: &str = "baseInvalid";
+const REPORT_CODE_INVALID_DEFINITION: &str = "invalidDefinition";
+const REPORT_CODE_DUPLICATE_KEY: &str = "duplicateKey";
+const REPORT_CODE_MIGRATION_PENDING: &str = "migrationPending";
+
+/// The authored definition fields the current schema recognizes. A legacy row
+/// carrying anything else stays READABLE (serde ignores unknown fields) but its
+/// unknown data emits migrationPending: P5 must not take ownership over data it
+/// cannot safely migrate.
+const KNOWN_DEFINITION_FIELDS: &[&str] = &[
+    "key",
+    "label",
+    "description",
+    "color",
+    "command",
+    "instructionsFilename",
+    "envs",
+    "isolatedHome",
+    "configSeed",
+    "removable",
+    "updateCommands",
+    "autoUpdate",
+];
+const KNOWN_CONFIG_SEED_FIELDS: &[&str] = &["enabled", "dest"];
+const KNOWN_ENV_FIELDS: &[&str] = &["key", "value", "source", "enabled"];
+const KNOWN_ROOT_FIELDS: &[&str] = &["schemaVersion", "agents"];
+
+/// One visible report warning or unavailability record: a stable code plus the
+/// affected path and an actionable reason. Reasons never echo command text or
+/// environment values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogDiagnostic {
+    pub code: String,
+    pub path: String,
+    pub reason: String,
+}
+
+/// The persisted-only catalog report wire shape (additive IPC; P5 extends the
+/// resolver behind it, not the shape). `primaryProjectRoot` is the exact
+/// trimmed root selected by `primary_project_root` (`None` only in no-project
+/// mode); `sourcePath` is the selected agents.json path even when absent
+/// (`None` only when the config dir cannot be resolved). `unavailable` present
+/// always comes with an empty catalog; a valid empty catalog is a success.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogReport {
+    pub primary_project_root: Option<String>,
+    pub source_path: Option<String>,
+    pub catalog: Vec<CodingAgentDefinition>,
+    pub warnings: Vec<CatalogDiagnostic>,
+    pub unavailable: Option<CatalogDiagnostic>,
+}
+
+fn catalog_diagnostic(code: &str, path: &Path, reason: impl Into<String>) -> CatalogDiagnostic {
+    CatalogDiagnostic {
+        code: code.to_string(),
+        path: path.display().to_string(),
+        reason: reason.into(),
+    }
+}
+
+/// The report when no catalog location can be resolved at all (the config dir
+/// itself is unavailable): `sourcePath` is null and there is no path to
+/// report, so the diagnostic carries an empty path.
+fn report_without_source() -> CatalogReport {
+    CatalogReport {
+        primary_project_root: None,
+        source_path: None,
+        catalog: Vec::new(),
+        warnings: Vec::new(),
+        unavailable: Some(CatalogDiagnostic {
+            code: REPORT_CODE_BASE_UNAVAILABLE.to_string(),
+            path: String::new(),
+            reason: "the AgentsCommander config directory could not be resolved, so no persisted catalog location is available".to_string(),
+        }),
+    }
+}
+
+/// Raw read of the persisted catalog source. A missing file, an unreadable
+/// path, a nonregular entry and a symbolic link all yield `baseUnavailable`:
+/// none of them is a reason to substitute embedded defaults on this path.
+/// Read-only by construction (metadata + read, never a create).
+fn read_catalog_source(path: &Path) -> Result<Vec<u8>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(
+                    "the persisted catalog path is a symbolic link; a regular persisted file is required"
+                        .to_string(),
+                );
+            }
+            if !meta.file_type().is_file() {
+                return Err(
+                    "the persisted catalog path is not a regular file; a regular persisted file is required"
+                        .to_string(),
+                );
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(
+                "no persisted catalog exists at this path; no embedded defaults are substituted"
+                    .to_string(),
+            );
+        }
+        Err(e) => {
+            return Err(format!(
+                "the persisted catalog path could not be inspected ({e})"
+            ));
+        }
+    }
+    std::fs::read(path).map_err(|e| format!("the persisted catalog could not be read ({e})"))
+}
+
+/// Per-item validation of a raw `updateCommands` value BEFORE deserialization,
+/// so a non-string or unsafe item reports on that definition instead of failing
+/// the whole file as malformed JSON. Returns a reason on the first offending
+/// item; the offending text is never echoed. Accepted strings are preserved
+/// exactly by serde (spaces, quoting, shell operators and flags stay intact).
+fn raw_update_commands_problem(raw: &serde_json::Value) -> Option<String> {
+    let value = raw.get("updateCommands")?;
+    let serde_json::Value::Array(items) = value else {
+        return Some(
+            "its updateCommands value must be an array of complete command strings".to_string(),
+        );
+    };
+    for (index, item) in items.iter().enumerate() {
+        let serde_json::Value::String(command) = item else {
+            return Some(format!("its updateCommands item {index} is not a string"));
+        };
+        if command.trim().is_empty() {
+            return Some(format!("its updateCommands item {index} is blank"));
+        }
+        if command
+            .chars()
+            .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+        {
+            return Some(format!(
+                "its updateCommands item {index} contains a Unicode control character, U+2028 or U+2029"
+            ));
+        }
+    }
+    None
+}
+
+/// A sanitized reason for a definition the existing validator rejects. The
+/// validator's own message can embed the command text, which must never appear
+/// in a diagnostic; this classifier only names the failing field category.
+fn definition_problem_reason(def: &CodingAgentDefinition) -> String {
+    if validate_catalog_key(&def.key).is_err() {
+        return "its key is invalid (keys must be non-empty and match ^[a-z0-9-]+$)".to_string();
+    }
+    let context = format!("Coding agent '{}'", def.key);
+    if validate_agent_command_text(&context, &def.command).is_err() {
+        return "its command is rejected by the current coding-agent command rules".to_string();
+    }
+    if validate_env_rows(&def.envs, &context).is_err() {
+        return "its environment rows are invalid (duplicate or unsafe keys)".to_string();
+    }
+    if let Some(name) = def.instructions_filename.as_deref() {
+        if !is_safe_instructions_filename(name) {
+            return "its instructions filename is not a safe file name".to_string();
+        }
+    }
+    if let Some(cfg) = def.config_seed.as_ref() {
+        if !cfg.dest.trim().is_empty() && validate_config_seed_dest(&cfg.dest).is_err() {
+            return "its config-seed destination is not a valid folder name".to_string();
+        }
+    }
+    "it failed the current catalog definition validation rules".to_string()
+}
+
+/// The unknown field NAMES of `keys` relative to `known`, joined for a reason
+/// string; `None` when every field is known. Values are never read here.
+fn unknown_field_names<'a>(
+    keys: impl Iterator<Item = &'a String>,
+    known: &[&str],
+) -> Option<String> {
+    let names: Vec<&str> = keys
+        .map(String::as_str)
+        .filter(|name| !known.contains(name))
+        .collect();
+    if names.is_empty() {
+        None
+    } else {
+        Some(names.join(", "))
+    }
+}
+
+/// migrationPending warnings for unknown fields on an ACCEPTED row: the row
+/// itself, its `configSeed` object and its `envs` rows. Only field names are
+/// reported; field VALUES (which may be commands or environment values) never
+/// appear.
+fn push_unknown_field_warnings(
+    raw: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    path: &Path,
+    warnings: &mut Vec<CatalogDiagnostic>,
+) {
+    if let Some(names) = unknown_field_names(raw.keys(), KNOWN_DEFINITION_FIELDS) {
+        warnings.push(catalog_diagnostic(
+            REPORT_CODE_MIGRATION_PENDING,
+            path,
+            format!(
+                "coding-agent '{key}' carries unknown field(s) ({names}) that require managed-catalog migration before ownership transfer"
+            ),
+        ));
+    }
+    if let Some(serde_json::Value::Object(seed)) = raw.get("configSeed") {
+        if let Some(names) = unknown_field_names(seed.keys(), KNOWN_CONFIG_SEED_FIELDS) {
+            warnings.push(catalog_diagnostic(
+                REPORT_CODE_MIGRATION_PENDING,
+                path,
+                format!(
+                    "coding-agent '{key}' configSeed carries unknown field(s) ({names}) that require managed-catalog migration"
+                ),
+            ));
+        }
+    }
+    if let Some(serde_json::Value::Array(envs)) = raw.get("envs") {
+        for (index, entry) in envs.iter().enumerate() {
+            let serde_json::Value::Object(map) = entry else {
+                continue;
+            };
+            if let Some(names) = unknown_field_names(map.keys(), KNOWN_ENV_FIELDS) {
+                warnings.push(catalog_diagnostic(
+                    REPORT_CODE_MIGRATION_PENDING,
+                    path,
+                    format!(
+                        "coding-agent '{key}' envs[{index}] carries unknown field(s) ({names}) that require managed-catalog migration"
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// Load the persisted-only catalog report for one catalog root directory (a
+/// project's `.ac` dir, or the legacy `<config_dir>` root in no-project mode).
+/// `primaryProjectRoot` is left `None` here; the settings wrapper fills it.
+/// READ-ONLY: never seeds, creates directories, refreshes, locks or writes.
+/// `unavailable` is set (with an empty catalog) for a missing/unreadable/
+/// nonregular/link source, invalid JSON, an unsupported explicit schemaVersion
+/// or an invalid root shape; a valid empty catalog is a success. Missing
+/// `schemaVersion` means 1; missing `agents` keeps the empty-list meaning.
+/// Definitions keep persisted order after filtering; no embedded donor is ever
+/// consulted and no backfill is applied.
+pub fn load_catalog_report(ac_dir: &Path) -> CatalogReport {
+    let path = manifest_path(ac_dir);
+    let mut report = CatalogReport {
+        primary_project_root: None,
+        source_path: Some(path.display().to_string()),
+        catalog: Vec::new(),
+        warnings: Vec::new(),
+        unavailable: None,
+    };
+
+    let bytes = match read_catalog_source(&path) {
+        Ok(bytes) => bytes,
+        Err(reason) => {
+            report.unavailable = Some(catalog_diagnostic(
+                REPORT_CODE_BASE_UNAVAILABLE,
+                &path,
+                reason,
+            ));
+            return report;
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(e) => {
+            report.unavailable = Some(catalog_diagnostic(
+                REPORT_CODE_BASE_INVALID,
+                &path,
+                format!("the persisted catalog is not valid JSON ({e})"),
+            ));
+            return report;
+        }
+    };
+    let serde_json::Value::Object(root) = value else {
+        report.unavailable = Some(catalog_diagnostic(
+            REPORT_CODE_BASE_INVALID,
+            &path,
+            "the catalog root must be a JSON object",
+        ));
+        return report;
+    };
+    if let Some(version) = root.get("schemaVersion") {
+        if version.as_u64() != Some(CATALOG_SCHEMA_VERSION as u64) {
+            report.unavailable = Some(catalog_diagnostic(
+                REPORT_CODE_BASE_INVALID,
+                &path,
+                format!(
+                    "unsupported explicit schemaVersion {version}; only schemaVersion 1 is recognized"
+                ),
+            ));
+            return report;
+        }
+    }
+    let rows = match root.get("agents") {
+        None => Vec::new(),
+        Some(serde_json::Value::Array(rows)) => rows.clone(),
+        Some(_) => {
+            report.unavailable = Some(catalog_diagnostic(
+                REPORT_CODE_BASE_INVALID,
+                &path,
+                "the catalog 'agents' value must be a JSON array",
+            ));
+            return report;
+        }
+    };
+
+    if let Some(names) = unknown_field_names(root.keys(), KNOWN_ROOT_FIELDS) {
+        report.warnings.push(catalog_diagnostic(
+            REPORT_CODE_MIGRATION_PENDING,
+            &path,
+            format!(
+                "root field(s) ({names}) are not recognized by the current catalog schema and require managed-catalog migration"
+            ),
+        ));
+    }
+
+    let table = active_builtin_agent_support();
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (index, raw) in rows.iter().enumerate() {
+        let Some(raw_object) = raw.as_object() else {
+            report.warnings.push(catalog_diagnostic(
+                REPORT_CODE_INVALID_DEFINITION,
+                &path,
+                format!("entry {index} is not a JSON object and was omitted"),
+            ));
+            continue;
+        };
+        if let Some(reason) = raw_update_commands_problem(raw) {
+            report.warnings.push(catalog_diagnostic(
+                REPORT_CODE_INVALID_DEFINITION,
+                &path,
+                format!("entry {index} was omitted: {reason}"),
+            ));
+            continue;
+        }
+        let def: CodingAgentDefinition = match serde_json::from_value(raw.clone()) {
+            Ok(def) => def,
+            Err(_) => {
+                report.warnings.push(catalog_diagnostic(
+                    REPORT_CODE_INVALID_DEFINITION,
+                    &path,
+                    format!(
+                        "entry {index} does not match the coding-agent definition schema and was omitted"
+                    ),
+                ));
+                continue;
+            }
+        };
+        if validate_definition(&def).is_err() {
+            let label = if validate_catalog_key(&def.key).is_ok() {
+                format!("coding-agent '{}'", def.key)
+            } else {
+                format!("entry {index}")
+            };
+            report.warnings.push(catalog_diagnostic(
+                REPORT_CODE_INVALID_DEFINITION,
+                &path,
+                format!("{label} was omitted: {}", definition_problem_reason(&def)),
+            ));
+            continue;
+        }
+        if !seen_keys.insert(def.key.clone()) {
+            report.warnings.push(catalog_diagnostic(
+                REPORT_CODE_DUPLICATE_KEY,
+                &path,
+                format!(
+                    "coding-agent '{}' was omitted: its key duplicates an earlier entry (the first entry wins)",
+                    def.key
+                ),
+            ));
+            continue;
+        }
+        if !is_supported_builtin(&def.key, table) {
+            report.warnings.push(catalog_diagnostic(
+                REPORT_CODE_INVALID_DEFINITION,
+                &path,
+                format!(
+                    "coding-agent '{}' is not supported by this build and was omitted",
+                    def.key
+                ),
+            ));
+            continue;
+        }
+        if !raw_object.contains_key("updateCommands") {
+            report.warnings.push(catalog_diagnostic(
+                REPORT_CODE_MIGRATION_PENDING,
+                &path,
+                format!(
+                    "coding-agent '{}' has no persisted updateCommands; absent update commands are suppressed during reads and require managed-catalog migration on a supported restart",
+                    def.key
+                ),
+            ));
+        }
+        push_unknown_field_warnings(raw_object, &def.key, &path, &mut report.warnings);
+        report.catalog.push(def);
+    }
+
+    report
+}
+
+/// Settings-level resolver: the primary project root (first nonblank
+/// `project_paths` entry, else the legacy `project_path`) selects the project's
+/// `.ac` dir; with no project the INSTANCE catalog at
+/// `<config_dir>/coding-agents/agents.json` is read (read-only, never seeded).
+/// A failure in the primary project is never retried against another project.
+/// P5 (#1968) extends this resolver to compose the local layer.
+pub fn load_catalog_report_for_settings(settings: &AppSettings) -> CatalogReport {
+    load_catalog_report_for_settings_with_config_dir(settings, crate::config::config_dir())
+}
+
+/// Testable twin of [`load_catalog_report_for_settings`] with the resolved
+/// config dir injected, so the no-project and config-dir-none arms are
+/// coverable without depending on the process-global instance location.
+fn load_catalog_report_for_settings_with_config_dir(
+    settings: &AppSettings,
+    config_dir: Option<PathBuf>,
+) -> CatalogReport {
+    match primary_project_root(settings) {
+        Some(root) => {
+            let mut report = load_catalog_report(&root.join(".ac"));
+            report.primary_project_root = Some(root.to_string_lossy().to_string());
+            report
+        }
+        None => match config_dir {
+            Some(dir) => load_catalog_report(&dir),
+            None => report_without_source(),
+        },
     }
 }
 
@@ -2632,5 +3098,699 @@ mod tests {
                 assert_eq!(loaded[0].key, "claude");
             });
         }
+    }
+
+    // ---- #1963 P1: persisted-only catalog report --------------------------
+
+    fn write_report_manifest(ac_dir: &Path, contents: &str) {
+        let path = manifest_path(ac_dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+    }
+
+    fn report_for(dir: &Path) -> CatalogReport {
+        load_catalog_report(dir)
+    }
+
+    fn report_json(report: &CatalogReport) -> String {
+        serde_json::to_string(report).expect("serialize report")
+    }
+
+    #[test]
+    fn catalog_report_serializes_exact_camel_case_wire_shape() {
+        let dir = seed_dir();
+        write_report_manifest(
+            dir.path(),
+            &manifest_json(
+                r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
+            ),
+        );
+        let report = report_for(dir.path());
+        assert!(report.unavailable.is_none());
+        assert!(report.warnings.is_empty());
+        let value = serde_json::to_value(&report).expect("report value");
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "catalog",
+                "primaryProjectRoot",
+                "sourcePath",
+                "unavailable",
+                "warnings"
+            ]
+        );
+        assert_eq!(value["primaryProjectRoot"], serde_json::Value::Null);
+        assert_eq!(value["unavailable"], serde_json::Value::Null);
+        assert_eq!(
+            value["sourcePath"],
+            serde_json::json!(manifest_path(dir.path()).display().to_string())
+        );
+        assert_eq!(value["catalog"][0]["key"], "mine");
+        assert_eq!(value["catalog"][0]["updateCommands"], serde_json::json!([]));
+        let back: CatalogReport = serde_json::from_value(value).expect("round trip");
+        assert_eq!(back, report);
+    }
+
+    #[test]
+    fn catalog_report_missing_manifest_is_unavailable_without_creating_anything() {
+        let dir = seed_dir();
+        let before: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        let expected = manifest_path(dir.path()).display().to_string();
+        let report = report_for(dir.path());
+        assert!(report.catalog.is_empty());
+        assert_eq!(report.source_path.as_deref(), Some(expected.as_str()));
+        let unavailable = report.unavailable.as_ref().expect("unavailable");
+        assert_eq!(unavailable.code, "baseUnavailable");
+        assert_eq!(unavailable.path, expected);
+        // Nothing was created, not even the catalog directory.
+        assert!(!catalog_dir(dir.path()).exists());
+        let after: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn catalog_report_unreadable_path_is_unavailable() {
+        let dir = seed_dir();
+        // A regular file where the catalog DIRECTORY should be makes the
+        // manifest path unreadable rather than merely missing.
+        std::fs::write(dir.path().join("coding-agents"), b"not a directory").unwrap();
+        let report = report_for(dir.path());
+        assert!(report.catalog.is_empty());
+        let unavailable = report.unavailable.as_ref().expect("unavailable");
+        assert_eq!(unavailable.code, "baseUnavailable");
+        assert_eq!(
+            unavailable.path,
+            manifest_path(dir.path()).display().to_string()
+        );
+    }
+
+    #[test]
+    fn catalog_report_corrupt_json_is_base_invalid_and_preserves_bytes() {
+        let dir = seed_dir();
+        let path = manifest_path(dir.path());
+        let garbage = b"{ this is not valid json";
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, garbage).unwrap();
+
+        let report = report_for(dir.path());
+        assert!(report.catalog.is_empty());
+        let unavailable = report.unavailable.as_ref().expect("unavailable");
+        assert_eq!(unavailable.code, "baseInvalid");
+        assert_eq!(unavailable.path, path.display().to_string());
+        assert_eq!(std::fs::read(&path).unwrap(), garbage);
+    }
+
+    #[test]
+    fn catalog_report_directory_at_manifest_is_unavailable() {
+        let dir = seed_dir();
+        let path = manifest_path(dir.path());
+        std::fs::create_dir_all(&path).unwrap();
+        let report = report_for(dir.path());
+        assert!(report.catalog.is_empty());
+        assert_eq!(
+            report.unavailable.as_ref().expect("unavailable").code,
+            "baseUnavailable"
+        );
+    }
+
+    #[cfg(windows)]
+    fn create_manifest_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[cfg(unix)]
+    fn create_manifest_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[test]
+    fn catalog_report_symlink_manifest_is_unavailable() {
+        let dir = seed_dir();
+        let target = dir.path().join("real-catalog.json");
+        std::fs::write(
+            &target,
+            manifest_json(
+                r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
+            ),
+        )
+        .unwrap();
+        let link = manifest_path(dir.path());
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        if let Err(e) = create_manifest_symlink(&target, &link) {
+            // Explicit, never silent: the link fixture could not be created on
+            // this host (Windows symlink privilege), so the link assertion was
+            // NOT exercised and must not be counted as a pass.
+            eprintln!(
+                "[catalog-report test] symlink creation unavailable on this host ({e}); link fixture NOT exercised"
+            );
+            return;
+        }
+        let report = report_for(dir.path());
+        assert!(report.catalog.is_empty());
+        let unavailable = report.unavailable.as_ref().expect("unavailable");
+        assert_eq!(unavailable.code, "baseUnavailable");
+        assert!(
+            unavailable.reason.contains("symbolic link"),
+            "{}",
+            unavailable.reason
+        );
+    }
+
+    #[test]
+    fn catalog_report_unsupported_schema_is_base_invalid() {
+        for raw in [
+            r#"{"schemaVersion":2,"agents":[]}"#,
+            r#"{"schemaVersion":"1","agents":[]}"#,
+            r#"{"schemaVersion":null,"agents":[]}"#,
+        ] {
+            let dir = seed_dir();
+            write_report_manifest(dir.path(), raw);
+            let report = report_for(dir.path());
+            assert!(report.catalog.is_empty(), "raw={raw}");
+            let unavailable = report.unavailable.as_ref().expect("unavailable");
+            assert_eq!(unavailable.code, "baseInvalid", "raw={raw}");
+            assert!(
+                unavailable.reason.contains("schemaVersion"),
+                "raw={raw}: {}",
+                unavailable.reason
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_report_missing_schema_version_and_empty_catalog_are_success() {
+        for raw in [
+            r#"{}"#,
+            r#"{"schemaVersion":1}"#,
+            r#"{"schemaVersion":1,"agents":[]}"#,
+        ] {
+            let dir = seed_dir();
+            write_report_manifest(dir.path(), raw);
+            let report = report_for(dir.path());
+            assert!(report.unavailable.is_none(), "raw={raw}");
+            assert!(report.catalog.is_empty(), "raw={raw}");
+            assert!(report.warnings.is_empty(), "raw={raw}");
+            assert_eq!(
+                std::fs::read(manifest_path(dir.path())).unwrap(),
+                raw.as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_report_invalid_root_shape_is_base_invalid() {
+        for raw in [
+            r#"[]"#,
+            r#""text""#,
+            r#"{"schemaVersion":1,"agents":{}}"#,
+            r#"{"schemaVersion":1,"agents":"nope"}"#,
+        ] {
+            let dir = seed_dir();
+            write_report_manifest(dir.path(), raw);
+            let report = report_for(dir.path());
+            assert!(report.catalog.is_empty(), "raw={raw}");
+            assert_eq!(
+                report.unavailable.as_ref().expect("unavailable").code,
+                "baseInvalid",
+                "raw={raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_report_missing_update_commands_warns_without_donor() {
+        let dir = seed_dir();
+        write_report_manifest(
+            dir.path(),
+            &manifest_json(
+                r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true},
+                 {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true},
+                 {"key":"claude-beta","label":"Claude Beta","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true}]"##,
+            ),
+        );
+        let report = report_for(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(
+            report
+                .catalog
+                .iter()
+                .map(|d| d.key.as_str())
+                .collect::<Vec<_>>(),
+            ["claude", "mine", "claude-beta"]
+        );
+        assert!(report.catalog.iter().all(|d| d.update_commands.is_empty()));
+        assert_eq!(report.warnings.len(), 3);
+        let source = report.source_path.clone().expect("source path");
+        for (row, warning) in report.catalog.iter().zip(report.warnings.iter()) {
+            assert_eq!(warning.code, "migrationPending");
+            assert_eq!(warning.path, source);
+            assert!(warning.reason.contains(&row.key), "{}", warning.reason);
+            assert!(
+                warning.reason.contains("suppressed during reads"),
+                "{}",
+                warning.reason
+            );
+            assert!(
+                warning.reason.contains("managed-catalog migration"),
+                "{}",
+                warning.reason
+            );
+        }
+        // No embedded command may leak into a persisted-only report.
+        let text = report_json(&report);
+        for sentinel in [
+            "claude --update",
+            "pi update",
+            "codex update",
+            "hermes update --yes",
+            "opencode upgrade",
+            "agy update",
+        ] {
+            assert!(
+                !text.contains(sentinel),
+                "embedded command leaked into the report: {sentinel}"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_report_explicit_empty_has_no_missing_commands_warning() {
+        let missing = manifest_json(
+            r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"claude-beta","label":"Claude Beta","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        let explicit = manifest_json(
+            r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
+             {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
+             {"key":"claude-beta","label":"Claude Beta","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
+        );
+        let missing_dir = seed_dir();
+        write_report_manifest(missing_dir.path(), &missing);
+        let reported_missing = report_for(missing_dir.path());
+        let explicit_dir = seed_dir();
+        write_report_manifest(explicit_dir.path(), &explicit);
+        let reported_explicit = report_for(explicit_dir.path());
+
+        // Missing versus []: the resolved catalogs are identical; only the
+        // missing field emits migrationPending.
+        assert_eq!(reported_missing.catalog, reported_explicit.catalog);
+        assert_eq!(reported_missing.warnings.len(), 3);
+        assert!(reported_explicit.warnings.is_empty());
+        assert!(reported_explicit
+            .catalog
+            .iter()
+            .all(|d| d.update_commands.is_empty()));
+        assert!(report_json(&reported_explicit).contains(r#""updateCommands":[]"#));
+
+        // Custom and changed commands are preserved exactly, warn-free.
+        let custom_dir = seed_dir();
+        write_report_manifest(
+            custom_dir.path(),
+            &manifest_json(
+                r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["mytool up --channel beta"]},
+                 {"key":"claude-beta","label":"Claude Beta","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["claude update"]}]"##,
+            ),
+        );
+        let reported_custom = report_for(custom_dir.path());
+        assert!(reported_custom.warnings.is_empty());
+        assert_eq!(
+            reported_custom.catalog[0].update_commands,
+            vec!["mytool up --channel beta".to_string()]
+        );
+        assert_eq!(
+            reported_custom.catalog[1].update_commands,
+            vec!["claude update".to_string()]
+        );
+        // Serialized transport parity: the wire value round-trips unchanged.
+        let value = serde_json::to_value(&reported_custom).expect("report value");
+        let back: CatalogReport = serde_json::from_value(value).expect("round trip");
+        assert_eq!(back, reported_custom);
+    }
+
+    #[test]
+    fn catalog_report_duplicate_keys_warn_first_wins() {
+        let dir = seed_dir();
+        write_report_manifest(
+            dir.path(),
+            &manifest_json(
+                r##"[{"key":"mine","label":"First","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
+                 {"key":"mine","label":"Second","description":"d","color":"#222","command":"mytool2","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
+            ),
+        );
+        let report = report_for(dir.path());
+        assert_eq!(report.catalog.len(), 1);
+        assert_eq!(report.catalog[0].label, "First");
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(report.warnings[0].code, "duplicateKey");
+        assert!(
+            report.warnings[0].reason.contains("first entry wins"),
+            "{}",
+            report.warnings[0].reason
+        );
+    }
+
+    #[test]
+    fn catalog_report_invalid_definitions_drop_rows_without_echoing_commands() {
+        let dir = seed_dir();
+        write_report_manifest(
+            dir.path(),
+            &manifest_json(
+                r##"[{"key":"BAD KEY","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
+                 {"key":"cmd-continue","label":"x","description":"d","color":"#000","command":"claude --continue","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
+                 {"key":"nonstring","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["ok",123]},
+                 {"key":"blank","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["   "]},
+                 {"key":"ctrl","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["a\u0007b"]},
+                 {"key":"line-sep","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["a\u2028b"]},
+                 {"key":"para-sep","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["a\u2029b"]},
+                 {"key":"full","label":"Full","description":"d","color":"#333","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["mytool --flag 'a b' && echo done"]}]"##,
+            ),
+        );
+        let report = report_for(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.catalog.len(), 1);
+        assert_eq!(report.catalog[0].key, "full");
+        assert_eq!(
+            report.catalog[0].update_commands,
+            vec!["mytool --flag 'a b' && echo done".to_string()]
+        );
+        assert_eq!(report.warnings.len(), 7);
+        assert!(report
+            .warnings
+            .iter()
+            .all(|w| w.code == "invalidDefinition"));
+        let text = report_json(&report);
+        for leaked in [
+            "BAD KEY",
+            "claude --continue",
+            "a\u{7}b",
+            "a\u{2028}b",
+            "a\u{2029}b",
+        ] {
+            assert!(
+                !text.contains(leaked),
+                "offending text leaked into the report: {leaked:?}"
+            );
+        }
+        // The valid row's legal full command is present, preserved exactly.
+        assert!(text.contains("mytool --flag 'a b' && echo done"));
+    }
+
+    #[test]
+    fn catalog_report_unknown_fields_warn_separately_without_values() {
+        let dir = seed_dir();
+        write_report_manifest(
+            dir.path(),
+            r##"{"schemaVersion":1,"owner":"secret-root-value","agents":[
+                {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[{"key":"GOOD_KEY","value":"secret-env-value","enabled":true,"mystery":"secret-env-extra"}],"isolatedHome":false,"removable":true,"updateCommands":[],"customField":"secret-row-value","configSeed":{"enabled":true,"dest":".mine","extra":"secret-seed-value"}}]}"##,
+        );
+        let report = report_for(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.catalog.len(), 1);
+        assert_eq!(report.catalog[0].envs.len(), 1);
+        assert_eq!(report.catalog[0].envs[0].value, "secret-env-value");
+        let codes: Vec<&str> = report.warnings.iter().map(|w| w.code.as_str()).collect();
+        assert!(codes.iter().all(|c| *c == "migrationPending"), "{codes:?}");
+        assert_eq!(
+            codes.len(),
+            4,
+            "{:?}",
+            report
+                .warnings
+                .iter()
+                .map(|w| &w.reason)
+                .collect::<Vec<_>>()
+        );
+        let joined = report
+            .warnings
+            .iter()
+            .map(|w| w.reason.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("owner"), "{joined}");
+        assert!(joined.contains("customField"), "{joined}");
+        assert!(joined.contains("extra"), "{joined}");
+        assert!(joined.contains("mystery"), "{joined}");
+        let text = report_json(&report);
+        for secret in [
+            "secret-root-value",
+            "secret-row-value",
+            "secret-seed-value",
+            "secret-env-value",
+            "secret-env-extra",
+        ] {
+            // The env VALUE is legitimately part of the resolved catalog; it must
+            // never appear in a DIAGNOSTIC (no paths, no values in reasons).
+            assert!(
+                !joined.contains(secret),
+                "value leaked into a diagnostic: {secret}"
+            );
+        }
+        for unknown_value in [
+            "secret-root-value",
+            "secret-row-value",
+            "secret-seed-value",
+            "secret-env-extra",
+        ] {
+            assert!(
+                !text.contains(unknown_value),
+                "unknown-field value leaked into the report: {unknown_value}"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_report_two_project_isolation_and_no_fallback_after_failure() {
+        let primary = seed_dir();
+        let secondary = seed_dir();
+        write_report_manifest(
+            &primary.path().join(".ac"),
+            &manifest_json(
+                r##"[{"key":"primary","label":"Primary","description":"d","color":"#111","command":"primary","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
+            ),
+        );
+        write_report_manifest(
+            &secondary.path().join(".ac"),
+            &manifest_json(
+                r##"[{"key":"secondary","label":"Secondary","description":"d","color":"#222","command":"secondary","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
+            ),
+        );
+        let primary_str = primary.path().to_string_lossy().to_string();
+        let settings = AppSettings {
+            project_paths: vec![
+                primary_str.clone(),
+                secondary.path().to_string_lossy().to_string(),
+            ],
+            ..AppSettings::default()
+        };
+        let report = load_catalog_report_for_settings_with_config_dir(&settings, None);
+        assert_eq!(
+            report.primary_project_root.as_deref(),
+            Some(primary_str.as_str())
+        );
+        assert_eq!(
+            report.source_path.as_deref(),
+            Some(
+                manifest_path(&primary.path().join(".ac"))
+                    .display()
+                    .to_string()
+                    .as_str()
+            )
+        );
+        assert_eq!(
+            report
+                .catalog
+                .iter()
+                .map(|d| d.key.as_str())
+                .collect::<Vec<_>>(),
+            ["primary"]
+        );
+        assert!(!report_json(&report).contains("secondary"));
+
+        // A failure in the primary project is never retried against the second.
+        std::fs::remove_file(manifest_path(&primary.path().join(".ac"))).unwrap();
+        let report = load_catalog_report_for_settings_with_config_dir(&settings, None);
+        assert!(report.catalog.is_empty());
+        assert_eq!(
+            report.unavailable.as_ref().expect("unavailable").code,
+            "baseUnavailable"
+        );
+        assert!(!report_json(&report).contains("secondary"));
+    }
+
+    #[test]
+    fn catalog_report_project_path_fallback_selects_trimmed_legacy_root() {
+        let dir = seed_dir();
+        write_report_manifest(
+            &dir.path().join(".ac"),
+            &manifest_json(
+                r##"[{"key":"legacy","label":"Legacy","description":"d","color":"#111","command":"legacy","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
+            ),
+        );
+        let trimmed = dir.path().to_string_lossy().to_string();
+        let settings = AppSettings {
+            project_paths: vec!["   ".to_string()],
+            project_path: Some(format!("  {}  ", dir.path().display())),
+            ..AppSettings::default()
+        };
+        let report = load_catalog_report_for_settings_with_config_dir(&settings, None);
+        assert_eq!(
+            report.primary_project_root.as_deref(),
+            Some(trimmed.as_str())
+        );
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.catalog[0].key, "legacy");
+    }
+
+    #[test]
+    fn catalog_report_no_project_instance_read_and_absent_creates_nothing() {
+        // Existing instance catalog: allowed and read-only.
+        let instance = seed_dir();
+        write_report_manifest(
+            instance.path(),
+            &manifest_json(
+                r##"[{"key":"instance","label":"Instance","description":"d","color":"#111","command":"instance","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
+            ),
+        );
+        let expected_source = manifest_path(instance.path()).display().to_string();
+        let bytes_before = std::fs::read(manifest_path(instance.path())).unwrap();
+        let settings = AppSettings::default();
+        let report = load_catalog_report_for_settings_with_config_dir(
+            &settings,
+            Some(instance.path().to_path_buf()),
+        );
+        assert_eq!(report.primary_project_root, None);
+        assert_eq!(
+            report.source_path.as_deref(),
+            Some(expected_source.as_str())
+        );
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.catalog[0].key, "instance");
+        assert_eq!(
+            std::fs::read(manifest_path(instance.path())).unwrap(),
+            bytes_before
+        );
+
+        // Absent instance catalog: unavailable, and repeated reads create
+        // NOTHING on disk.
+        let absent = seed_dir();
+        let before: Vec<_> = std::fs::read_dir(absent.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        for _ in 0..3 {
+            let report = load_catalog_report_for_settings_with_config_dir(
+                &settings,
+                Some(absent.path().to_path_buf()),
+            );
+            assert!(report.catalog.is_empty());
+            assert_eq!(
+                report.unavailable.as_ref().expect("unavailable").code,
+                "baseUnavailable"
+            );
+        }
+        assert!(!catalog_dir(absent.path()).exists());
+        let after: Vec<_> = std::fs::read_dir(absent.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn catalog_report_config_dir_none_has_null_source_path() {
+        let report =
+            load_catalog_report_for_settings_with_config_dir(&AppSettings::default(), None);
+        assert_eq!(report.primary_project_root, None);
+        assert_eq!(report.source_path, None);
+        assert!(report.catalog.is_empty());
+        assert!(report.warnings.is_empty());
+        let unavailable = report.unavailable.as_ref().expect("unavailable");
+        assert_eq!(unavailable.code, "baseUnavailable");
+        assert!(unavailable.path.is_empty());
+        let value = serde_json::to_value(&report).expect("report value");
+        assert_eq!(value["sourcePath"], serde_json::Value::Null);
+        assert_eq!(value["primaryProjectRoot"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn catalog_report_repeated_reads_leave_bytes_and_entries_unchanged() {
+        let dir = seed_dir();
+        write_report_manifest(
+            dir.path(),
+            &manifest_json(
+                r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true},
+                 {"key":"mine2","label":"Mine2","description":"d","color":"#222","command":"mytool2","envs":[],"isolatedHome":false,"removable":true}]"##,
+            ),
+        );
+        let path = manifest_path(dir.path());
+        let bytes_before = std::fs::read(&path).unwrap();
+        let mut entries_before: Vec<_> = std::fs::read_dir(catalog_dir(dir.path()))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        entries_before.sort();
+        for _ in 0..3 {
+            let report = report_for(dir.path());
+            assert!(report.unavailable.is_none());
+            assert_eq!(report.catalog.len(), 2);
+            assert_eq!(report.warnings.len(), 2);
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), bytes_before);
+        let mut entries_after: Vec<_> = std::fs::read_dir(catalog_dir(dir.path()))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        entries_after.sort();
+        assert_eq!(entries_before, entries_after);
+    }
+
+    #[test]
+    fn catalog_report_desupported_builtin_omitted_with_diagnostic() {
+        let manifest = manifest_json(
+            r##"[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
+             {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
+        );
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            let dir = seed_dir();
+            write_report_manifest(dir.path(), &manifest);
+            let report = report_for(dir.path());
+            assert_eq!(
+                report
+                    .catalog
+                    .iter()
+                    .map(|d| d.key.as_str())
+                    .collect::<Vec<_>>(),
+                ["mine"]
+            );
+            assert_eq!(report.warnings.len(), 1);
+            assert_eq!(report.warnings[0].code, "invalidDefinition");
+            assert!(
+                report.warnings[0]
+                    .reason
+                    .contains("not supported by this build"),
+                "{}",
+                report.warnings[0].reason
+            );
+        });
     }
 }

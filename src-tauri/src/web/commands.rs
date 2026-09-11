@@ -198,6 +198,14 @@ async fn dispatch_agent_update_command(
                     .map_err(|e| format!("Failed to serialize coding agent catalog: {e}")),
             )
         }
+        "get_coding_agent_catalog_report" => {
+            let report =
+                crate::commands::config::coding_agent_catalog_report_inner(&state.settings).await;
+            Some(
+                serde_json::to_value(report)
+                    .map_err(|e| format!("Failed to serialize coding agent catalog report: {e}")),
+            )
+        }
         "list_reseedable_agent_commands" => Some(
             serde_json::to_value(crate::commands::config::list_reseedable_agent_commands())
                 .map_err(|e| format!("Failed to serialize reseedable commands: {e}")),
@@ -1957,6 +1965,82 @@ mod tests {
             serde_json::to_value(crate::commands::config::list_reseedable_agent_commands())
                 .expect("reseedable json")
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // #1963 P1 - persisted-catalog report transport parity
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_coding_agent_catalog_report_route_matches_shared_inner_for_warnings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let catalog_dir = dir.path().join(".ac").join("coding-agents");
+        std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
+        std::fs::write(
+            catalog_dir.join("agents.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schemaVersion": 1,
+                "agents": [{
+                    "key": "legacy-1963",
+                    "label": "Legacy",
+                    "description": "d",
+                    "color": "#000000",
+                    "command": "legacy-1963",
+                    "envs": [],
+                    "isolatedHome": false,
+                    "removable": true
+                }]
+            }))
+            .expect("manifest json"),
+        )
+        .expect("write catalog");
+        let settings = AppSettings {
+            project_paths: vec![dir.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let (state, _rx, _gate) = ws_state_with_agent_update(settings, false, false);
+
+        let inner =
+            crate::commands::config::coding_agent_catalog_report_inner(&state.settings).await;
+        assert_eq!(inner.warnings.len(), 1);
+        assert_eq!(inner.warnings[0].code, "migrationPending");
+        assert_eq!(inner.catalog.len(), 1);
+        let inner_json = serde_json::to_value(&inner).expect("report json");
+
+        let routed = dispatch_inner(&state, "get_coding_agent_catalog_report", &json!({}))
+            .await
+            .expect("catalog report route");
+        // Complete serialized report parity between the shared inner and WS.
+        assert_eq!(inner_json, routed);
+        assert_eq!(routed["unavailable"], Value::Null);
+        assert_eq!(
+            routed["catalog"][0]["updateCommands"],
+            json!([]),
+            "no embedded donor on the persisted-only path"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_coding_agent_catalog_report_route_matches_shared_inner_for_unavailable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = AppSettings {
+            project_paths: vec![dir.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let (state, _rx, _gate) = ws_state_with_agent_update(settings, false, false);
+
+        let inner =
+            crate::commands::config::coding_agent_catalog_report_inner(&state.settings).await;
+        assert!(inner.catalog.is_empty());
+        assert!(inner.unavailable.is_some());
+        let inner_json = serde_json::to_value(&inner).expect("report json");
+
+        let routed = dispatch_inner(&state, "get_coding_agent_catalog_report", &json!({}))
+            .await
+            .expect("catalog report route");
+        assert_eq!(inner_json, routed);
+        assert_eq!(routed["unavailable"]["code"], "baseUnavailable");
+        assert_eq!(routed["catalog"], json!([]));
     }
 
     #[tokio::test]
