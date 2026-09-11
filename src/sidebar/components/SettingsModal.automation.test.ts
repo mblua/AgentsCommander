@@ -2078,6 +2078,53 @@ describe("SettingsModal automation hooks", () => {
     expect(saved?.npmUpdateNotificationsEnabled).toBe(true);
 
     dispose();
+    root.remove();
+
+    // Proof-strength (#1947): the load-time read above cannot tell the two
+    // bindings apart because both fixture flags are true. Seed them apart and
+    // prove this checkbox reads remoteBlockingMenusEnabled, not npm.
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(
+      settings({ npmUpdateNotificationsEnabled: false }),
+    );
+    const npmOffRoot = document.createElement("div");
+    document.body.append(npmOffRoot);
+    const disposeNpmOff = render(
+      () => SettingsModal({ onClose: () => {} }),
+      npmOffRoot,
+    );
+    await settle();
+
+    expect(
+      byTestId<HTMLInputElement>("settings.general.npmUpdateNotificationsEnabled").checked,
+    ).toBe(false);
+    expect(
+      byTestId<HTMLInputElement>("settings.general.remoteBlockingMenusEnabled").checked,
+    ).toBe(true);
+
+    disposeNpmOff();
+    npmOffRoot.remove();
+
+    // Reverse seed: no constant or stale binding can satisfy both renders.
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(
+      settings({ remoteBlockingMenusEnabled: false }),
+    );
+    const remoteOffRoot = document.createElement("div");
+    document.body.append(remoteOffRoot);
+    const disposeRemoteOff = render(
+      () => SettingsModal({ onClose: () => {} }),
+      remoteOffRoot,
+    );
+    await settle();
+
+    expect(
+      byTestId<HTMLInputElement>("settings.general.remoteBlockingMenusEnabled").checked,
+    ).toBe(false);
+    expect(
+      byTestId<HTMLInputElement>("settings.general.npmUpdateNotificationsEnabled").checked,
+    ).toBe(true);
+
+    disposeRemoteOff();
+    remoteOffRoot.remove();
   });
 
   it("preserves fresh titlebar webserver changes when saving a stale modal draft", async () => {
