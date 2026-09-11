@@ -53,10 +53,9 @@ If a write fails after the file is created, AgentsCommander deletes the partial 
 
 ## Linux: X11 only
 
-Screenshot capture works in an X11 session and not in a Wayland one. Three independent reasons:
+Screenshot capture works in an X11 session and not in a Wayland one. Two independent reasons:
 
 - The global hotkey mechanism is X11-only. In a Wayland session it would register and then never fire, so AgentsCommander refuses before it registers anything.
-- The capture backend's native Wayland path is a wlroots-only protocol that GNOME and KDE do not implement, and its fallback would ask you to pick a screen on every single capture.
 - Wayland does not let an application place a window at a chosen screen position, which the per-monitor overlay needs.
 
 To check which session you are in, run:
@@ -65,13 +64,15 @@ To check which session you are in, run:
 echo $XDG_SESSION_TYPE
 ```
 
-In a graphical session it prints `x11` or `wayland`. If it prints `wayland`, log out, choose the Xorg session at the login screen (on Ubuntu, "Ubuntu on Xorg"), and start AgentsCommander again. If you are already on Xorg and AgentsCommander still refuses, a Wayland setting or socket left over from an earlier session caused it: start AgentsCommander from a fresh login shell, not from a terminal multiplexer or a service that was started under Wayland.
+The command prints what your shell inherited: usually `x11` or `wayland`, but it can be empty or hold another value, and a graphical session can run without it. Treat the output as a hint, not the decision: the value is inherited and can be stale. AgentsCommander makes its own detection from more than this variable, and its verdict decides. When it detects Wayland it refuses and shows the toast below.
+
+If the command prints `wayland`, or if AgentsCommander refuses and you are not already on X11, log out, choose the Xorg session at the login screen (on Ubuntu, "Ubuntu on Xorg"), and start AgentsCommander again. If you are already on Xorg and AgentsCommander still refuses, a Wayland setting or socket left over from an earlier session caused it: start AgentsCommander from a fresh login shell, not from a terminal multiplexer or a service that was started under Wayland.
 
 In a Wayland session the hotkey is not registered. The sticky error toast that [Check that the shortcut is active](#check-that-the-shortcut-is-active) describes names the configured hotkey and the reason, which starts `Screenshot capture needs an X11 session, and this one was detected as Wayland, so the hotkey was not registered.` Nothing fails silently.
 
 ## Linux: two behaviors that differ from Windows
 
-**The copied path does not survive closing AgentsCommander.** On X11 the clipboard is served by the running application, so once AgentsCommander exits the path is gone from the clipboard. The PNG file is unaffected. Paste the path before you quit. This is how X11 works, not a defect.
+**The copied path may not survive closing AgentsCommander.** On X11 the clipboard is usually served by the running application, so when AgentsCommander exits the path is normally gone. A clipboard manager can change that: if one is running (KDE's Klipper, for example), it can take over the clipboard before the app exits and keep the path available. Without one, expect to lose it. The PNG file is unaffected either way. Paste the path before you quit. This is how X11 works, not a defect.
 
 **Pressing the hotkey a second time cancels the capture.** On Windows a second press while a capture is in flight is ignored. On Linux it closes the overlays and cancels the capture, because a window manager may decline to give the overlay keyboard focus, which would leave `Escape` undelivered. So on Linux you always have a way out: `Escape`, or the hotkey again.
 
