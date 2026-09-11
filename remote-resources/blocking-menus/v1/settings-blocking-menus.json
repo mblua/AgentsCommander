@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "note": "Published from main to every installed AgentsCommander that downloads blocking-menu patterns. Generate it from src-tauri/resources/blocking-menus/settings-blocking-menus.json plus additions: for every stem named here, this array replaces the shipped array whole. Installed copies replace this note with their download record.",
+  "byCommand": {
+    "codex": [
+      {
+        "pattern": "^\\s*Do you trust the contents of this directory\\?",
+        "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "codex 0.x / Linux"
+      },
+      {
+        "pattern": "^[^A-Za-z0-9]*Hooks need review\\b",
+        "notification": "codex is waiting for you to answer the hooks-review menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "codex 0.153.2 / Windows"
+      }
+    ],
+    "pi": [
+      {
+        "pattern": "^\\s*Trust project folder\\?",
+        "notification": "pi is waiting for you to answer the folder-trust menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "pi 0.52 / Windows"
+      }
+    ]
+  },
+  "byAgent": {}
+}

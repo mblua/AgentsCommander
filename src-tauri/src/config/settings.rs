@@ -8,7 +8,8 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 use crate::config::instance_artifacts::{
-    BLOCKING_MENUS_LOCAL_FILE_NAME, BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
+    BLOCKING_MENUS_LOCAL_FILE_NAME, BLOCKING_MENUS_REMOTE_FILE_NAME,
+    BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
 };
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
@@ -1050,6 +1051,40 @@ const EMBEDDED_BLOCKING_MENUS_JSON: &str =
 
 pub const BLOCKING_MENUS_SCHEMA_VERSION: u32 = 1;
 
+/// #1925 (D6) - hard ceilings for the downloaded layer: 200 entries in total across
+/// every `byCommand` array, a pattern of 512 bytes and a notification of 200 bytes.
+const REMOTE_BLOCKING_MENUS_MAX_ENTRIES: usize = 200;
+const REMOTE_PATTERN_MAX_BYTES: usize = 512;
+const REMOTE_NOTIFICATION_MAX_BYTES: usize = 200;
+
+/// #1925 (D6) - compile ceiling for one downloaded pattern. The menu guard keeps one
+/// compiled copy per accepted pattern, so an accepted file adds at most
+/// 200 x 256 KiB = 50 MiB of compiled programs, plus each regex's lazy-DFA cache at
+/// the `regex` crate default. Reaching that ceiling needs repo-write access; the real
+/// published file compiles to a few KiB.
+const REMOTE_PATTERN_REGEX_SIZE_LIMIT: usize = 256 * 1024;
+
+/// #1925 (D7) - every accepted pattern must leave these rows alone. Matching is
+/// `Regex::is_match`, unanchored, the way the guard matches, so a catch-all pattern
+/// that would silently defer every injection is rejected before it reaches the guard.
+/// Menu-like rows (`1. Yes`) are deliberately absent: a legitimate trust-menu pattern
+/// may match them.
+const REMOTE_BLOCKING_MENUS_BENIGN_ROWS: &[&str] = &[
+    "",
+    "   ",
+    "$ ",
+    "> ",
+    r"PS C:\Users\dev\project> ",
+    "dev@host:~/project$ ",
+    "The quick brown fox jumps over the lazy dog.",
+    "    at main (src/index.ts:10:5)",
+    "thread 'main' panicked at src/main.rs:2:5:",
+    "Traceback (most recent call last):",
+    "error: could not compile `app` (bin \"app\") due to 1 previous error",
+    "\u{256d}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256e}",
+    "\u{2502}                \u{2502}",
+];
+
 fn default_blocking_menus_schema_version() -> u32 {
     BLOCKING_MENUS_SCHEMA_VERSION
 }
@@ -1098,6 +1133,73 @@ pub(crate) fn parse_blocking_menus_file(contents: &str) -> Result<BlockingMenusF
     Ok(file)
 }
 
+/// #1925 (D4 to D7) - the whole-file gate for the downloaded cache. The first failed
+/// check rejects the whole file, never one entry; `byAgent` is rejected because the
+/// remote layer is `byCommand`-only. Checked on arrival and again at every read.
+pub(crate) fn validate_remote_blocking_menus_file(
+    contents: &str,
+) -> Result<BlockingMenusFile, String> {
+    let file = parse_blocking_menus_file(contents)?;
+    if !file.by_agent.is_empty() {
+        return Err("byAgent must be empty".to_string());
+    }
+    let total: usize = file.by_command.values().map(Vec::len).sum();
+    if total > REMOTE_BLOCKING_MENUS_MAX_ENTRIES {
+        return Err(format!(
+            "holds {total} entries; more than {REMOTE_BLOCKING_MENUS_MAX_ENTRIES} entries are not allowed"
+        ));
+    }
+    for (stem, entries) in &file.by_command {
+        for (index, entry) in entries.iter().enumerate() {
+            let Some(config) = entry.valid() else {
+                return Err(format!(
+                    "entry {stem}[{index}]: is not a valid blocking-menu entry"
+                ));
+            };
+            if config.pattern.len() > REMOTE_PATTERN_MAX_BYTES {
+                return Err(format!(
+                    "entry {stem}[{index}]: pattern longer than {REMOTE_PATTERN_MAX_BYTES} bytes"
+                ));
+            }
+            if config.notification.len() > REMOTE_NOTIFICATION_MAX_BYTES {
+                return Err(format!(
+                    "entry {stem}[{index}]: notification longer than {REMOTE_NOTIFICATION_MAX_BYTES} bytes"
+                ));
+            }
+            if config.notification.chars().any(char::is_control) {
+                return Err(format!(
+                    "entry {stem}[{index}]: notification contains a control character"
+                ));
+            }
+            let regex = match regex::RegexBuilder::new(&config.pattern)
+                .size_limit(REMOTE_PATTERN_REGEX_SIZE_LIMIT)
+                .build()
+            {
+                Ok(regex) => regex,
+                Err(e) => {
+                    return Err(format!(
+                        "entry {stem}[{index}]: pattern does not compile: {e}"
+                    ));
+                }
+            };
+            if regex.is_match("") {
+                return Err(format!(
+                    "entry {stem}[{index}]: pattern matches the empty string"
+                ));
+            }
+            if REMOTE_BLOCKING_MENUS_BENIGN_ROWS
+                .iter()
+                .any(|row| regex.is_match(row))
+            {
+                return Err(format!(
+                    "entry {stem}[{index}]: pattern matches a benign row"
+                ));
+            }
+        }
+    }
+    Ok(file)
+}
+
 /// A parse failure is a build defect T1 catches; production logs once and serves an empty file.
 pub fn shipped_blocking_menus() -> &'static BlockingMenusFile {
     static SHIPPED: OnceLock<BlockingMenusFile> = OnceLock::new();
@@ -1128,6 +1230,10 @@ pub(crate) fn blocking_menus_shipped_path(settings_path: &Path) -> PathBuf {
 
 pub(crate) fn blocking_menus_local_path(settings_path: &Path) -> PathBuf {
     settings_path.with_file_name(BLOCKING_MENUS_LOCAL_FILE_NAME)
+}
+
+pub(crate) fn blocking_menus_remote_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(BLOCKING_MENUS_REMOTE_FILE_NAME)
 }
 
 /// Pretty JSON plus one trailing newline: the only byte shape AC writes for both files.
@@ -1181,10 +1287,36 @@ pub(crate) fn load_local_blocking_menus_file(settings_path: &Path) -> BlockingMe
     }
 }
 
+/// #1925 (D4, D5) - the downloaded layer, re-validated at every read because the cache
+/// sits in a directory the local user can edit. A rejected or unreadable cache yields an
+/// empty layer and one warning; a missing cache is silent.
+pub(crate) fn load_remote_blocking_menus_file(settings_path: &Path) -> BlockingMenusFile {
+    let path = blocking_menus_remote_path(settings_path);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return BlockingMenusFile::default(),
+        Err(e) => {
+            log::warn!("[blocking-menus] could not read {}: {e}", path.display());
+            return BlockingMenusFile::default();
+        }
+    };
+    match validate_remote_blocking_menus_file(&contents) {
+        Ok(file) => file,
+        Err(e) => {
+            log::warn!(
+                "[blocking-menus] {} {e}; ignoring the downloaded patterns",
+                path.display()
+            );
+            BlockingMenusFile::default()
+        }
+    }
+}
+
 /// #1905 (D3, D10) - what the menu guard evaluates. Built once per process; no file watcher.
 #[derive(Debug, Clone)]
 pub struct BlockingMenusStore {
     shipped: &'static BlockingMenusFile,
+    remote: BlockingMenusFile,
     local: BlockingMenusFile,
 }
 
@@ -1194,8 +1326,14 @@ impl BlockingMenusStore {
     }
 
     pub fn with_local(local: BlockingMenusFile) -> Self {
+        Self::with_layers(BlockingMenusFile::default(), local)
+    }
+
+    /// #1925 - the downloaded cache plus the user layer; the argument order matches `resolve`.
+    pub(crate) fn with_layers(remote: BlockingMenusFile, local: BlockingMenusFile) -> Self {
         Self {
             shipped: shipped_blocking_menus(),
+            remote,
             local,
         }
     }
@@ -1210,10 +1348,14 @@ impl BlockingMenusStore {
 
     pub(crate) fn load_from_settings_path(settings_path: &Path) -> Self {
         refresh_shipped_blocking_menus_file(settings_path);
-        Self::with_local(load_local_blocking_menus_file(settings_path))
+        Self::with_layers(
+            load_remote_blocking_menus_file(settings_path),
+            load_local_blocking_menus_file(settings_path),
+        )
     }
 
-    /// D3 layers 1 to 4: the two files only.
+    /// D3 layers 1 to 5: local.byAgent, local.byCommand, remote.byCommand, then the shipped
+    /// patterns. Layer 0 is the legacy agent array, handled by `resolve_for`.
     pub fn resolve(&self, agent_id: &str, command: &str) -> Vec<BlockingMenuEntry> {
         if let Some(entries) = self.local.by_agent.get(agent_id) {
             return entries.clone();
@@ -1223,6 +1365,9 @@ impl BlockingMenusStore {
             return Vec::new();
         };
         if let Some(entries) = self.local.by_command.get(&stem) {
+            return entries.clone();
+        }
+        if let Some(entries) = self.remote.by_command.get(&stem) {
             return entries.clone();
         }
         self.shipped
@@ -12196,6 +12341,361 @@ mod tests {
             keys.sort_unstable();
             assert_eq!(keys, ["dup"]);
             assert_eq!(by_agent["dup"], json!([custom_entry("^custom-1905")]));
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // #1925 - the downloaded layer: the published bytes, the whole-file validator,
+    // per-read cache validation, and precedence between the layers.
+    // ─────────────────────────────────────────────────────────────────────────
+    mod remote_blocking_menus_1925 {
+        use super::super::*;
+        use serde_json::json;
+
+        /// One remote file with a single `byCommand` stem, shaped like the published file.
+        fn remote_json(stem: &str, entries: Value) -> String {
+            let mut by_command = Map::new();
+            by_command.insert(stem.to_string(), entries);
+            json!({
+                "schemaVersion": 1,
+                "byCommand": Value::Object(by_command),
+                "byAgent": {},
+            })
+            .to_string()
+        }
+
+        /// One raw entry as a remote file carries it.
+        fn entry(pattern: &str, notification: &str) -> Value {
+            json!({
+                "pattern": pattern,
+                "notification": notification,
+                "enabled": true,
+            })
+        }
+
+        /// The parsed twin of `entry`, for equality against store results.
+        fn parsed_entry(pattern: &str, notification: &str) -> BlockingMenuEntry {
+            BlockingMenuEntry::Valid(BlockingMenuConfig {
+                pattern: pattern.to_string(),
+                notification: notification.to_string(),
+                enabled: true,
+                captured_against: None,
+            })
+        }
+
+        fn write_remote(dir: &Path, contents: &str) {
+            std::fs::write(dir.join(BLOCKING_MENUS_REMOTE_FILE_NAME), contents).unwrap();
+        }
+
+        fn layers(
+            by_command: &[(&str, Vec<BlockingMenuEntry>)],
+            by_agent: &[(&str, Vec<BlockingMenuEntry>)],
+        ) -> BlockingMenusFile {
+            BlockingMenusFile {
+                by_command: by_command
+                    .iter()
+                    .map(|(stem, entries)| ((*stem).to_string(), entries.clone()))
+                    .collect(),
+                by_agent: by_agent
+                    .iter()
+                    .map(|(id, entries)| ((*id).to_string(), entries.clone()))
+                    .collect(),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn the_published_remote_file_passes_the_validator() {
+            let raw = include_str!(
+                "../../../remote-resources/blocking-menus/v1/settings-blocking-menus.json"
+            );
+            let file = validate_remote_blocking_menus_file(raw)
+                .expect("the published remote file passes the validator");
+            assert!(
+                file.by_agent.is_empty(),
+                "the published file carries no byAgent rows"
+            );
+        }
+
+        #[test]
+        fn the_shipped_patterns_pass_the_validator() {
+            validate_remote_blocking_menus_file(EMBEDDED_BLOCKING_MENUS_JSON)
+                .expect("the shipped patterns pass the remote validator");
+        }
+
+        #[test]
+        fn every_rejection_names_its_check() {
+            let pattern_513 = "a".repeat(513);
+            let notification_201 = "n".repeat(201);
+            let pattern_e_acute_257 = "é".repeat(257);
+            let notification_e_acute_101 = "é".repeat(101);
+            let entries_201: Vec<Value> = (0..201)
+                .map(|i| entry(&format!("^pattern-{i}$"), "note"))
+                .collect();
+            let cases: Vec<(&str, String, &str)> = vec![
+                ("invalid JSON", "{".to_string(), "does not parse"),
+                ("JSON array", "[]".to_string(), "is not a JSON object"),
+                (
+                    "wrong schemaVersion",
+                    json!({"schemaVersion": 2, "byCommand": {}, "byAgent": {}}).to_string(),
+                    "schemaVersion",
+                ),
+                (
+                    "non-empty byAgent",
+                    json!({"schemaVersion": 1, "byCommand": {}, "byAgent": {"codex": []}})
+                        .to_string(),
+                    "byAgent must be empty",
+                ),
+                (
+                    "201 entries",
+                    remote_json("codex", Value::Array(entries_201)),
+                    "more than 200 entries",
+                ),
+                (
+                    "invalid entry",
+                    remote_json("codex", json!([{"pattern": 5}])),
+                    "is not a valid blocking-menu entry",
+                ),
+                (
+                    "513-byte pattern",
+                    remote_json("codex", json!([entry(&pattern_513, "note")])),
+                    "pattern longer than 512 bytes",
+                ),
+                (
+                    "201-byte notification",
+                    remote_json("codex", json!([entry("^ok$", &notification_201)])),
+                    "notification longer than 200 bytes",
+                ),
+                (
+                    "257 e-acute pattern",
+                    remote_json("codex", json!([entry(&pattern_e_acute_257, "note")])),
+                    "pattern longer than 512 bytes",
+                ),
+                (
+                    "101 e-acute notification",
+                    remote_json("codex", json!([entry("^ok$", &notification_e_acute_101)])),
+                    "notification longer than 200 bytes",
+                ),
+                (
+                    "newline notification",
+                    remote_json("codex", json!([entry("^ok$", "a\nb")])),
+                    "notification contains a control character",
+                ),
+                (
+                    "bell notification",
+                    remote_json("codex", json!([entry("^ok$", "a\u{7}b")])),
+                    "notification contains a control character",
+                ),
+                (
+                    "uncompilable pattern",
+                    remote_json("codex", json!([entry("(", "note")])),
+                    "pattern does not compile",
+                ),
+                (
+                    "pattern over the compile size limit",
+                    remote_json("codex", json!([entry(r"\w{1000}", "note")])),
+                    "size limit",
+                ),
+                (
+                    "empty-string pattern ^",
+                    remote_json("codex", json!([entry("^", "note")])),
+                    "pattern matches the empty string",
+                ),
+                (
+                    "empty-string pattern .*",
+                    remote_json("codex", json!([entry(".*", "note")])),
+                    "pattern matches the empty string",
+                ),
+                (
+                    "empty-string pattern \\s*",
+                    remote_json("codex", json!([entry(r"\s*", "note")])),
+                    "pattern matches the empty string",
+                ),
+                (
+                    "benign-row pattern .",
+                    remote_json("codex", json!([entry(".", "note")])),
+                    "pattern matches a benign row",
+                ),
+                (
+                    "benign-row pattern \\w+",
+                    remote_json("codex", json!([entry(r"\w+", "note")])),
+                    "pattern matches a benign row",
+                ),
+                (
+                    "benign-row pattern ^\\s*>",
+                    remote_json("codex", json!([entry(r"^\s*>", "note")])),
+                    "pattern matches a benign row",
+                ),
+                (
+                    "benign-row pattern Traceback",
+                    remote_json("codex", json!([entry("Traceback", "note")])),
+                    "pattern matches a benign row",
+                ),
+            ];
+            for (label, contents, expected) in cases {
+                let err = match validate_remote_blocking_menus_file(&contents) {
+                    Err(e) => e,
+                    Ok(_) => panic!("{label}: expected a rejection, got an accepted file"),
+                };
+                assert!(
+                    err.contains(expected),
+                    "{label}: expected the error to contain {expected:?}, got {err:?}"
+                );
+            }
+
+            // The exact ceilings are accepted, not rejected: a 200-byte notification,
+            // a 512-byte pattern, and the named pattern the evaluator test reuses.
+            let mut notification_200 =
+                "grok is waiting for you to answer the test menu".to_string();
+            notification_200.push_str(&" ".repeat(200 - notification_200.len()));
+            assert_eq!(notification_200.len(), 200);
+            let pattern_512 = format!("^{}", "a".repeat(511));
+            assert_eq!(pattern_512.len(), 512);
+            let accepted = remote_json(
+                "grok",
+                json!([
+                    entry(r"^\s*Grok test menu\?", &notification_200),
+                    entry(&pattern_512, "note"),
+                ]),
+            );
+            let file = validate_remote_blocking_menus_file(&accepted)
+                .expect("the exact 200-byte notification and 512-byte pattern are accepted");
+            assert_eq!(file.by_command["grok"].len(), 2);
+        }
+
+        #[test]
+        fn the_cache_is_revalidated_on_every_read() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let grok = vec![parsed_entry(r"^\s*Grok test menu\?", "grok is waiting")];
+
+            write_remote(
+                temp.path(),
+                &remote_json(
+                    "grok",
+                    json!([entry(r"^\s*Grok test menu\?", "grok is waiting")]),
+                ),
+            );
+            let store = BlockingMenusStore::load_from_settings_path(&settings_path);
+            assert_eq!(store.resolve("grok-1", "grok"), grok);
+
+            // Any rejection empties the whole layer on the next read, and the shipped
+            // layer then applies again.
+            write_remote(
+                temp.path(),
+                &json!({
+                    "schemaVersion": 1,
+                    "byCommand": {"grok": [entry(r"^\s*Grok test menu\?", "grok is waiting")]},
+                    "byAgent": {"grok-1": [entry(r"^\s*Grok test menu\?", "grok is waiting")]},
+                })
+                .to_string(),
+            );
+            let store = BlockingMenusStore::load_from_settings_path(&settings_path);
+            assert_eq!(store.resolve("grok-1", "grok"), Vec::new());
+            assert_eq!(
+                store.resolve("codex-1", "codex"),
+                shipped_blocking_menus().by_command["codex"].clone()
+            );
+
+            // A missing cache is silent and empty.
+            std::fs::remove_file(blocking_menus_remote_path(&settings_path)).unwrap();
+            let store = BlockingMenusStore::load_from_settings_path(&settings_path);
+            assert_eq!(store.resolve("grok-1", "grok"), Vec::new());
+        }
+
+        #[test]
+        fn precedence_is_local_then_remote_then_shipped() {
+            let r = parsed_entry("^remote-codex$", "remote");
+            let g = parsed_entry(r"^\s*Grok test menu\?", "remote-grok");
+            let l = parsed_entry("^local-grok$", "local");
+            let a = parsed_entry("^agent-grok$", "agent");
+            let x = parsed_entry("^legacy$", "legacy");
+            let remote_grok = |entries: Vec<BlockingMenuEntry>| layers(&[("grok", entries)], &[]);
+
+            // Remote codex replaces the shipped codex set.
+            let store = BlockingMenusStore::with_layers(
+                layers(&[("codex", vec![r.clone()])], &[]),
+                BlockingMenusFile::default(),
+            );
+            assert_eq!(store.resolve("codex-1", "codex"), vec![r.clone()]);
+
+            // Remote grok applies where shipped has nothing; the control proves the hit.
+            let store = BlockingMenusStore::with_layers(
+                remote_grok(vec![g.clone()]),
+                BlockingMenusFile::default(),
+            );
+            assert_eq!(store.resolve("grok-1", "grok"), vec![g.clone()]);
+            assert_eq!(
+                BlockingMenusStore::shipped_only().resolve("grok-1", "grok"),
+                Vec::new()
+            );
+
+            // local.byCommand beats remote.byCommand.
+            let store = BlockingMenusStore::with_layers(
+                remote_grok(vec![g.clone()]),
+                layers(&[("grok", vec![l.clone()])], &[]),
+            );
+            assert_eq!(store.resolve("grok-1", "grok"), vec![l.clone()]);
+
+            // local.byAgent beats both files.
+            let store = BlockingMenusStore::with_layers(
+                remote_grok(vec![g.clone()]),
+                layers(&[("grok", vec![l.clone()])], &[("grok-1", vec![a.clone()])]),
+            );
+            assert_eq!(store.resolve("grok-1", "grok"), vec![a.clone()]);
+
+            // A remote [] retracts the shipped patterns for that stem.
+            let store = BlockingMenusStore::with_layers(
+                layers(&[("codex", Vec::new())], &[]),
+                BlockingMenusFile::default(),
+            );
+            assert_eq!(store.resolve("codex-1", "codex"), Vec::new());
+
+            // A remote file without `pi` leaves the shipped pi entry to apply.
+            let store = BlockingMenusStore::with_layers(
+                remote_grok(vec![g.clone()]),
+                BlockingMenusFile::default(),
+            );
+            assert_eq!(
+                store.resolve("pi-1", "pi"),
+                shipped_blocking_menus().by_command["pi"].clone()
+            );
+
+            // Layer 0: a legacy array on the agent still wins over every file.
+            let store =
+                BlockingMenusStore::with_layers(remote_grok(vec![g]), BlockingMenusFile::default());
+            let agent = AgentConfig {
+                id: "grok-1".to_string(),
+                label: "grok-1".to_string(),
+                command: "grok".to_string(),
+                color: "#000000".to_string(),
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
+                config_seed: None,
+                context_regex: None,
+                blocking_menus: Some(vec![x.clone()]),
+                backend: Default::default(),
+            };
+            assert_eq!(store.resolve_for(&agent), vec![x]);
+        }
+
+        #[test]
+        fn default_blocking_menus_for_command_ignores_the_remote_cache() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            write_remote(
+                temp.path(),
+                &remote_json("codex", json!([entry("^remote-codex$", "remote")])),
+            );
+            let store = BlockingMenusStore::load_from_settings_path(&settings_path);
+            assert_eq!(store.resolve("codex-1", "codex").len(), 1);
+            let default = default_blocking_menus_for_command("codex");
+            assert_eq!(
+                default,
+                shipped_blocking_menus().by_command["codex"].clone()
+            );
+            assert_eq!(default.len(), 2);
         }
     }
 }
