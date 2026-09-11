@@ -11,7 +11,7 @@ COPY crates/session-bridge crates/session-bridge
 COPY crates/terminal-snapshot-renderer crates/terminal-snapshot-renderer
 RUN cargo build --locked --release -p session-bridge --bins
 
-FROM debian:bookworm-slim
+FROM debian:13.6-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
