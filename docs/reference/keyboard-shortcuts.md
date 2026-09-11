@@ -17,7 +17,7 @@ Both shortcuts act on **the current selection**, not on the window you are looki
 
 The screenshot capture hotkey is **the only OS-global shortcut AgentsCommander registers**. It fires whether or not an AC window has focus, which is the point: you press it while looking at the thing you want to capture.
 
-It is configurable, and it is Windows-only. See [Configure the hotkey](../features/screenshot-capture.md#configure-the-hotkey) for the accepted key combinations, how to change it, and how to check that the registration succeeded.
+It is configurable, and it is available on Windows and on Linux/X11 (not Wayland). See [Configure the hotkey](../features/screenshot-capture.md#configure-the-hotkey) for the accepted key combinations, how to change it, and how to check that the registration succeeded.
 
 ## Scope
 
