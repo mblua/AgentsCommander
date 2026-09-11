@@ -240,6 +240,29 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # IS #1938: cross-process local-config write-lock proof. pipefail catches a
+      # failing test, the identifier greps catch a filter that selected nothing
+      # or a renamed test, and the anchored result line requires a positive
+      # passing count with zero failures.
+      - name: "cargo test (IS #1938 config write locks, focused)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib issue_1937_config_lock -- --test-threads=1 --nocapture 2>&1 | tee issue-1937-config-lock.log
+          grep -qE "^test result: ok\. [1-9][0-9]* passed; 0 failed" issue-1937-config-lock.log
+
+          for name in \
+            issue_1937_config_lock_process_exclusion \
+            issue_1937_config_lock_process_release \
+            issue_1937_config_lock_timeout; do
+            grep -qF "$name" issue-1937-config-lock.log || {
+              echo "::error::${name} never ran in the focused #1938 lock run; it was renamed, moved, or gated out."
+              exit 1
+            }
+          done
+
       # IS #1577: the ONLY CI execution of the primary-case test. It copies a
       # binary into a mode-0555 directory and depends on that mode actually
       # being enforced, so it must run on a native Linux filesystem.
@@ -736,6 +759,29 @@ jobs:
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
+
+      # IS #1938: cross-process local-config write-lock proof. pipefail catches a
+      # failing test, the identifier greps catch a filter that selected nothing
+      # or a renamed test, and the anchored result line requires a positive
+      # passing count with zero failures.
+      - name: "cargo test (IS #1938 config write locks, focused)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib issue_1937_config_lock -- --test-threads=1 --nocapture 2>&1 | tee issue-1937-config-lock.log
+          grep -qE "^test result: ok\. [1-9][0-9]* passed; 0 failed" issue-1937-config-lock.log
+
+          for name in \
+            issue_1937_config_lock_process_exclusion \
+            issue_1937_config_lock_process_release \
+            issue_1937_config_lock_timeout; do
+            grep -qF "$name" issue-1937-config-lock.log || {
+              echo "::error::${name} never ran in the focused #1938 lock run; it was renamed, moved, or gated out."
+              exit 1
+            }
+          done
 
       # IS #1850: focused debug execution of every issue_1850 test. Guards
       # mirror the #1577 step: pipefail catches a failing test, the identifier
