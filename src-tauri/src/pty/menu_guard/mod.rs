@@ -734,6 +734,53 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_pattern_in_the_cache_reaches_the_evaluator_1925() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let remote = serde_json::json!({
+            "schemaVersion": 1,
+            "byCommand": {
+                "grok": [{
+                    "pattern": "^\\s*Grok test menu\\?",
+                    "notification": "grok is waiting for you to answer the test menu in this terminal",
+                    "enabled": true,
+                }],
+            },
+            "byAgent": {},
+        });
+        std::fs::write(
+            temp.path().join("settings-blocking-menus.remote.json"),
+            serde_json::to_vec_pretty(&remote).unwrap(),
+        )
+        .unwrap();
+
+        let guard = MenuGuard::with_store(BlockingMenusStore::load_from_settings_path(
+            &temp.path().join("settings.json"),
+        ));
+        let grok = agent("grok-1", "grok", None);
+        let entries = guard.entries_for(&grok);
+        assert_eq!(entries.len(), 1);
+        let row = vec![LogicalRow {
+            start: 0,
+            end: 0,
+            text: "Grok test menu?".to_string(),
+        }];
+        let eval = guard.evaluate_logical_rows(Uuid::new_v4(), &row, &entries);
+        assert!(eval.is_blocked);
+        assert_eq!(
+            eval.matched_notification.as_deref(),
+            Some("grok is waiting for you to answer the test menu in this terminal")
+        );
+
+        // Control: the shipped-only guard has nothing for grok, so a store that always
+        // returned the cache would fail the assertions above, not pass them by accident.
+        let control = MenuGuard::new();
+        let control_entries = control.entries_for(&grok);
+        assert!(control_entries.is_empty());
+        let control_eval = control.evaluate_logical_rows(Uuid::new_v4(), &row, &control_entries);
+        assert!(!control_eval.is_blocked);
+    }
+
+    #[test]
     fn a_legacy_array_on_the_agent_wins_over_both_files() {
         let temp = tempfile::TempDir::new().unwrap();
         let guard = MenuGuard::with_store(production_store(temp.path()));
