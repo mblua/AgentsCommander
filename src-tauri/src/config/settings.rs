@@ -623,6 +623,10 @@ pub struct AppSettings {
     /// a newer published version is available. Default true.
     #[serde(default = "default_true")]
     pub npm_update_notifications_enabled: bool,
+    /// #1925 When true, download the remote blocking-menu patterns on startup
+    /// (<=1x/24h); a downloaded file applies at the next start. Default true.
+    #[serde(default = "default_true")]
+    pub remote_blocking_menus_enabled: bool,
     /// #640 Global master for auto self-handoff-and-clear. Absolute kill switch:
     /// false => off for every agent. When true, the class-aware default applies
     /// (ON for coordinator/Root, OFF for specialists), subject to per-agent
@@ -1017,6 +1021,7 @@ impl Default for AppSettings {
             coordinator_auto_close_skip_telegram_assigned: false,
             coordinator_cascade_close_enabled: true,
             npm_update_notifications_enabled: true,
+            remote_blocking_menus_enabled: true,
             auto_self_clear_enabled: true,
             auto_self_clear_by_agent: std::collections::BTreeMap::new(),
             agent_auto_update_by_command: std::collections::BTreeMap::new(),
@@ -10484,6 +10489,7 @@ mod tests {
   "railCollapsedProjects": [],
   "railFavoritesCollapsed": false,
   "raiseTerminalOnClick": true,
+  "remoteBlockingMenusEnabled": true,
   "resourceBackoffPolling": true,
   "resourceKeepLastSnapshot": true,
   "resourceMonitorEnabled": true,
@@ -12739,6 +12745,38 @@ mod tests {
                 shipped_blocking_menus().by_command["codex"].clone()
             );
             assert_eq!(default.len(), 2);
+        }
+
+        #[test]
+        fn remote_flag_defaults_true_and_round_trips() {
+            assert!(AppSettings::default().remote_blocking_menus_enabled);
+
+            let mut value =
+                serde_json::to_value(AppSettings::default()).expect("serialize default to value");
+            assert_eq!(
+                value.get("remoteBlockingMenusEnabled"),
+                Some(&Value::Bool(true))
+            );
+
+            let obj = value
+                .as_object_mut()
+                .expect("settings serializes to an object");
+            obj.remove("remoteBlockingMenusEnabled");
+            let back: AppSettings =
+                serde_json::from_value(value.clone()).expect("deserialize without the new key");
+            assert!(back.remote_blocking_menus_enabled);
+
+            let mut disabled = value.clone();
+            disabled["remoteBlockingMenusEnabled"] = json!(false);
+            let off: AppSettings =
+                serde_json::from_value(disabled).expect("deserialize with the flag off");
+            assert!(!off.remote_blocking_menus_enabled);
+
+            value["npmUpdateNotificationsEnabled"] = json!(false);
+            let independent: AppSettings =
+                serde_json::from_value(value).expect("deserialize with npm notifications off");
+            assert!(!independent.npm_update_notifications_enabled);
+            assert!(independent.remote_blocking_menus_enabled);
         }
     }
 }
