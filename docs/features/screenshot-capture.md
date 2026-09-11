@@ -2,13 +2,13 @@
 
 In-app screenshot capture lets you press a global hotkey, drag a rectangle over the frozen screen, and save a PNG inside the room replica that owns the session you are working with, with the saved path already on your clipboard.
 
-Use this feature when you want to hand a coding agent a picture of what you are looking at. It is not a terminal snapshot (that reads a backend terminal viewport without touching OS pixels) and not [window capture](window-capture.md) (that captures exactly one native window from the CLI or the API). Screenshot capture is Windows-only: other targets compile a stub that reports the feature as unsupported and never registers the hotkey.
+Use this feature when you want to hand a coding agent a picture of what you are looking at. It is not a terminal snapshot (that reads a backend terminal viewport without touching OS pixels) and not [window capture](window-capture.md) (that captures exactly one native window from the CLI or the API). Screenshot capture works on Windows and on Linux under X11. A Linux Wayland session is not supported: AgentsCommander detects it and says so instead of failing silently. macOS and every other target compile a stub that reports the feature as unsupported and never registers the hotkey.
 
 ## Before you start
 
 You need:
 
-- AgentsCommander running on Windows;
+- AgentsCommander running on Windows, or on Linux in an X11 session (not Wayland); see [Linux: X11 only](#linux-x11-only) to check which one you are in;
 - a session selected in the app and displayable, because the screenshot belongs to that session; and
 - that session's working directory inside a room replica (an `__agent_*` directory), because the replica root is the destination.
 
@@ -28,14 +28,15 @@ To abandon the capture, press `Escape` or close the overlay. Nothing is written.
 Two behaviors are deliberate and are not failures:
 
 - Releasing on a selection thinner than 2 pixels in either direction discards that selection and leaves the overlay open, so you can drag again. Both the width and the height must reach 2 pixels, so a 1 by 500 pixel drag is rejected.
-- Pressing the hotkey while a capture is already in flight does nothing. The second press is ignored so you cannot photograph your own overlays or start two captures at once.
+- Pressing the hotkey while a capture is already in flight does nothing on Windows: the second press is ignored so you cannot photograph your own overlays or start two captures at once. On Linux a second press cancels the capture instead; see [Linux: two behaviors that differ from Windows](#linux-two-behaviors-that-differ-from-windows).
 
 ## Where the file goes
 
 AgentsCommander walks up from the active session's working directory to its `__agent_*` replica root and writes the file directly in that root:
 
 ```text
-<room-replica-root>\agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
+Windows:  <room-replica-root>\agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
+Linux:    <room-replica-root>/agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
 ```
 
 The timestamp is local time. The last segment is the first 8 hexadecimal characters of the session id, so two sessions capturing in the same second still get distinct names.
@@ -49,6 +50,31 @@ The app log records one line per successful capture:
 ```
 
 If a write fails after the file is created, AgentsCommander deletes the partial file, closes the overlays, and reports the failure.
+
+## Linux: X11 only
+
+Screenshot capture works in an X11 session and not in a Wayland one. Two independent reasons:
+
+- The global hotkey mechanism is X11-only. In a Wayland session it would register and then never fire, so AgentsCommander refuses before it registers anything.
+- Wayland does not let an application place a window at a chosen screen position, which the per-monitor overlay needs.
+
+To check which session you are in, run:
+
+```bash
+echo $XDG_SESSION_TYPE
+```
+
+The command prints what your shell inherited: usually `x11` or `wayland`, but it can be empty or hold another value, and a graphical session can run without it. Treat the output as a hint, not the decision: the value is inherited and can be stale. AgentsCommander makes its own detection from more than this variable, and its verdict decides. When it detects Wayland it refuses and shows the toast below.
+
+If the command prints `wayland`, or if AgentsCommander refuses and you are not already on X11, log out, choose the Xorg session at the login screen (on Ubuntu, "Ubuntu on Xorg"), and start AgentsCommander again. If you are already on Xorg and AgentsCommander still refuses, a Wayland setting or socket left over from an earlier session caused it: start AgentsCommander from a fresh login shell, not from a terminal multiplexer or a service that was started under Wayland.
+
+In a Wayland session the hotkey is not registered. The sticky error toast that [Check that the shortcut is active](#check-that-the-shortcut-is-active) describes names the configured hotkey and the reason, which starts `Screenshot capture needs an X11 session, and this one was detected as Wayland, so the hotkey was not registered.` Nothing fails silently.
+
+## Linux: two behaviors that differ from Windows
+
+**The copied path may not survive closing AgentsCommander.** On X11 the clipboard is usually served by the running application, so when AgentsCommander exits the path is normally gone. A clipboard manager can change that: if one is running (KDE's Klipper, for example), it can take over the clipboard before the app exits and keep the path available. Without one, expect to lose it. The PNG file is unaffected either way. Paste the path before you quit. This is how X11 works, not a defect.
+
+**Pressing the hotkey a second time cancels the capture.** On Windows a second press while a capture is in flight is ignored. On Linux it closes the overlays and cancels the capture, because a window manager may decline to give the overlay keyboard focus, which would leave `Escape` undelivered. So on Linux you always have a way out: `Escape`, or the hotkey again.
 
 ## Configure the hotkey
 
@@ -92,7 +118,7 @@ AgentsCommander registers the new shortcut immediately after the save. You do no
 The two ways a save can go wrong behave differently:
 
 - **The syntax is invalid.** The save is rejected before anything is written to disk, and your previous hotkey stays registered and keeps working. You rarely reach this path, because the Settings dialog refuses the value first.
-- **The syntax is valid but Windows refuses the combination**, usually because another application already owns it. The save succeeds and the new value is persisted; only the registration fails. AgentsCommander raises an error toast reading `Screenshot hotkey was saved but could not be registered: <error>`, and keeps the previously registered shortcut alive as a fallback. So the configured value is the new combination, the key that actually fires is still the old one, and the status for the configured value reports it as not registered. Pick another combination and save again.
+- **The syntax is valid but the operating system refuses the combination**, usually because another application already owns it. The save succeeds and the new value is persisted; only the registration fails. AgentsCommander raises an error toast reading `Screenshot hotkey was saved but could not be registered: <error>`, and keeps the previously registered shortcut alive as a fallback. So the configured value is the new combination, the key that actually fires is still the old one, and the status for the configured value reports it as not registered. Pick another combination and save again.
 
 ## Check that the shortcut is active
 
@@ -109,7 +135,7 @@ Registration is also written to the app log:
 
 ## Availability right after startup
 
-The shortcut is active as soon as the app finishes starting, without waiting for session restore. It is not active at process start: Windows registers a global hotkey on the main thread, so the registration completes only once the app's event loop is running. This is by design. Forcing that work to complete earlier would block the main thread, which is exactly what starves the WebView and prevents dialogs such as the update prompt from rendering.
+The shortcut is active as soon as the app finishes starting, without waiting for session restore. It is not active at process start: the global hotkey is registered on the main thread, so the registration completes only once the app's event loop is running. This is by design. Forcing that work to complete earlier would block the main thread, which is exactly what starves the WebView and prevents dialogs such as the update prompt from rendering.
 
 Presses inside that window are queued by the OS, not lost. They are serviced in a burst as soon as the event loop drains, so a press made while AgentsCommander is still restoring sessions still runs.
 
