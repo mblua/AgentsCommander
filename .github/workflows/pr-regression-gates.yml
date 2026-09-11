@@ -676,7 +676,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: . -> target
           key: rust-regression-linux
 
       - name: cargo check
@@ -1639,7 +1639,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: . -> target
           key: rust-regression-macos
 
       - name: cargo check
