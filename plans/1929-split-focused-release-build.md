@@ -1,416 +1,374 @@
-# Plan — #1929 ci: split build from run in the focused issue_1850 release steps
+# #1929 — FINAL CORRECTION: execute the compiled release harness
 
-Status: READY_FOR_IMPLEMENTATION
+Status: READY_FOR_IMPLEMENTATION (Architect authorship, round 4, 2026-09-11).
+This certifies the specification, not permission to implement. Dev and Grinch must
+review these exact bytes; coordinator dispatch follows their digest-bound consensus.
+Diagnostic completion and green diagnostic CI do not satisfy correction acceptance.
 
-Author: `ac-dev-rust-v4` (room-17-ac-dev-team-v4), round 1, 2026-09-11 UTC. Delivery band: Lite
-(1-25), Grinch approval required, no plan digest required by this round.
+## 1. Identity, outcome and evidence
 
-Issue: [mblua/AgentsCommander#1929](https://github.com/mblua/AgentsCommander/issues/1929), verified
-OPEN with `gh issue view 1929`.
+Repo: D:/0_repos/AgentsCommander_iac/.ac/room-17-ac-dev-team-v4/repo-AgentsCommander
+Issue: https://github.com/mblua/AgentsCommander/issues/1929 — OPEN verified this round.
+Branch: ci/1929-split-focused-release-build.
+Immutable planning HEAD: c95d4cbe4eb9fc8f57aa0d31fa01441af37ecbde.
+Recorded merged-main baseline: d8816883676ed2ebf9e700152944598b1de47b52.
+Entry: empty index; sole working edit was the completed diagnostic plan.
+The actual implementation base must be captured after bounded synchronization.
 
-This is a workflow-only change. It introduces no product code, no test code, no new abstraction,
-dependency, crate, schema, IPC surface, event, configuration, or migration. It inserts three
-identical 17-line build steps into `.github/workflows/pr-regression-gates.yml` and changes nothing
-else.
+Outcome on Windows/Linux/macOS: compilation finishes below 40 minutes; focused
+release assertions finish below 20 minutes with no application compilation in that
+step. Preserve all five-name, positive-count/zero-failure, exit and Windows-negative
+guards and every other regression job. Remove temporary Linux fingerprint tracing.
+This bypasses Cargo freshness assessment during assertions; it does not repair the
+underlying macro/Cargo freshness interaction.
 
-## 1. Objective and cause
+Authoritative retained evidence: room-shared/1929-implementation/diagnostic-round2/.
+Read architect-correction-proposal.md and dev-correction-feasibility.md for provenance;
+all implementer decisions are inlined below. Proposal SHA256:
+0427667B3D1E66595C0018AC167F9F5A09BC5251C705FE0E3FF2F11F0C40F35C.
+Linux causal proof: OUT_DIR input newer than dep-info by 2.748976061 seconds,
+FsStatusOutdated/StaleItem/ChangedFile; second application compile took 5m46.
+Decoded committed icon bytes match that input's BLAKE3 name. Cached bytes can remain
+unchanged; neither unconditional rewriting nor a syscall writer nor cross-OS cause
+equivalence was proved. Historical Cargo version was not printed and stays unknown.
+Diagnostic runs 34627262899/34627263172 passed all 15 observed checks/14 regression
+jobs. Prior Windows retry/deadline failure is NOT REPRODUCED at diagnostic HEAD,
+not a fixed or proven flaky test. Preserve inherited-windows-comparison.md.
 
-**Objective.** In each of the three OS regression jobs (`rust-regression`,
-`rust-regression-linux`, `rust-regression-macos`), give the focused `issue_1850` release **compile**
-its own step with room to finish, so the existing 20-minute bound applies only to **running** the
-tests it proves.
+Graph root verified: this room's repo, ready, 23242 nodes/154274 edges at planning
+HEAD. Workflow/configuration coverage was metadata_changed or excluded; inspected
+those files directly. Package agentscommander-new has lib agentscommander_lib with
+lib/cdylib/staticlib kinds. Real outputs use workspace target/release/deps.
+The three jobs already install Node 22; keep Rust stable action, npm 11.6.2,
+npm ci, lockfiles, frontend build, system packages and cache settings unchanged.
 
-**Cause, verified.** Today one step compiles a cold release profile and runs the tests under a
-single `timeout-minutes: 20`. On a cold cache the compile alone can consume the entire cap. Issue
-#1917 recorded two runs of byte-identical trees with opposite outcomes; independently re-verified
-here through the GitHub API on 2026-09-11:
+Threat model: routine trusted GitHub CI correction with a small custom artifact
+selector/launcher. Its plausible risks require protocol/failure fixtures and real
+native CI. Host binary attestation, signing, hostile PATH, transactional filesystem
+and bespoke process-tree controls are non-applicable. No release/install authority.
 
-| Run | Event | Job | Step window (UTC) | Outcome |
-|---|---|---|---|---|
-| `34448858377` | push | `rust-regression-macos` (`102779658789`) | 07:24:56 → 07:44:57 | **failure**, killed at 20m01s |
-| `34448861693` | pull_request | `rust-regression-macos` (`102779669186`) | 07:26:57 → 07:44:22 | success, **17m25s** |
+## 2. Full scope and partition
 
-The tests had already passed when the kill landed (`test result: ok. 5 passed; 0 failed`). This is a
-runner-timing race, not a product failure, and it can hit any of the three legs.
+Score: remaining correction 33/100, raw 71; Full because of the new job-local
+producer/consumer protocol and cross-platform launch behavior.
+PARTITION: 1 phase. Class: design-bearing. Owner: ac-dev-rust-v4.
+Issue/branch remain #1929 and the existing branch above, as explicitly directed.
+No child issue, new branch, shared epic branch, or independent phase PR is created.
+One owner, two tracked files, no IPC/CLI/persistence/schema contract, and no useful
+green intermediate cut between publishing and consuming the harness. Splitting
+would duplicate protocol work; the >10-file trigger is absent. No parallel phase.
 
-**Precedent already in the repository.** The dedicated `issue-1850-windows-profile` job
-(base lines 1012-1075) already splits its work this way: a `--no-run` build step with
-`timeout-minutes: 40` and an independent proof step with `timeout-minutes: 20`. #1929 applies the
-same split, with the same 40/20 bounds, to the three focused release steps.
+Complete tracked inventory:
+1. .github/workflows/pr-regression-gates.yml:
+   - Three existing build steps named "IS #1850 focused release build", in
+     rust-regression, rust-regression-linux, rust-regression-macos.
+   - Their three existing focused release consumer steps; rename each to
+     "IS #1850 focused release assertions (prebuilt harness)".
+   - Three preceding #1929 comments: explain direct artifact launch.
+   - Both Linux CARGO_LOG env mappings: remove the four diagnostic lines.
+   - Three NEW upload steps, one immediately after each consumer, specified below.
+2. plans/1929-split-focused-release-build.md: this final specification, committed
+   alongside the correction, unlike the excluded diagnostic-plan working edit.
 
-## 2. Frozen base and entry gate
+No committed helper/fixture, other workflow, product/test/module, dependency,
+lockfile, icon, build-script or cache-policy change. Inline Python/Node belongs
+only in the six listed steps; validation fixtures live in room-shared evidence.
+The coordinator's explicit repository-canonical instruction overrides the default
+shared-plan location and phase-branch rules for this single continuing correction.
+This file is the sole working plan. Unchanged historical bytes were copied to
+D:/0_repos/AgentsCommander_iac/.ac/plans/issue-1929/round2-diagnostic-historical.md,
+SHA256 516B4827551AA78E221FBD21B68DA58E0C899D1A407B84F9FF147241C6A74FAD.
+round1-historical.md remains historical. No competing shared phase set exists.
 
-Verified on 2026-09-11 in `repo-AgentsCommander`, branch `ci/1929-split-focused-release-build`:
+## 3. Build producer: exact contract
 
-- `HEAD` = `origin/main` = `fe1ab9cc8884ef878b0b5a1581db2dcc66e676d5` after `git fetch origin main`;
-  the branch has no commits on top and is not yet pushed (`git ls-remote --heads origin` empty).
-- Working index and tree clean (`git status --porcelain=v1 --untracked-files=all` empty).
-- Base workflow blob: `5d5cc3b040b6d8fab5f702338a10eb188ffbd3fe` (`git rev-parse HEAD:.github/workflows/pr-regression-gates.yml`),
-  1182 lines, raw sha256 `234fa697636415b3055ad81df12d6bf2753e0211a2c59e18399745305358eb97`.
+Keep shell bash, src-tauri cwd, set -euo pipefail, timeout-minutes: 40.
+Give each build step id: issue1850_release_build (job-local reuse is intentional).
+Use Node 22 built-ins and inline Python standard library only; no install/download.
+Python is used solely to parse Cargo configuration correctly, not to launch tests:
+invoke python on Windows and python3 elsewhere, require >=3.11 and tomllib;
+record resolved Python/Node/Cargo/rustc versions. Missing capability fails preflight.
 
-Entry gate for implementation: re-fetch `origin/main`; if it, the local branch head, or their merge
-base is no longer `fe1ab9cc…`, stop for re-plan instead of rebasing or substituting a newer base.
+First use Node fs.mkdtempSync below native process.env.RUNNER_TEMP with prefix
+issue1850-release-<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>-<GITHUB_JOB>-.
+Use native Node paths, never infer Windows paths from Bash pwd.
+Publish only diagnostics-dir=<absolute directory> immediately to GITHUB_OUTPUT.
+Pass paths between inline commands through quoted environment variables, not
+expression interpolation into shell/JavaScript source. Reject newline paths.
+Create context.json and cargo-messages.jsonl there; manifest.json must not exist
+until selection succeeds. No reuse, fixed old path, cache restore or shared manifest.
 
-## 3. Verified current state (all facts read at the frozen base)
+Native preflight runs IN CI only, before compilation. Inline Python tomllib reads
+the active config/config.toml at src-tauri and each ancestor .cargo directory plus
+resolved CARGO_HOME (platform home/.cargo when absent). If both exist, config wins.
+Deduplicate resolved filenames. Record paths and relevant settings, not full configs
+or secrets. Fail on unreadable/malformed active config. Reject any include key,
+any nonempty [env] table, any build.target, build.rustc, or any target.*.runner
+entry (including cfg tables). These are explicitly unsupported native-job settings;
+report the exact key/path and stop, never silently bypass a runner or override it.
+Reject nonempty CARGO_BUILD_TARGET, CARGO_BUILD_RUSTC, RUSTC and any
+CARGO_TARGET_*_RUNNER environment value. No extra --config, --target or aliases
+are introduced. Record RUSTUP_TOOLCHAIN, target-dir/build-dir controls and
+compiler-wrapper/flag presence without clearing them or dumping arbitrary env.
+This bounded check avoids implementing Cargo's merge/cfg/include evaluator.
+Even an inactive runner entry is rejected intentionally and reported as unsupported;
+supporting such configuration needs a revised plan, not an implementer workaround.
 
-1. The three jobs start at base lines 46 (`rust-regression`, `windows-latest`), 184
-   (`rust-regression-linux`, `ubuntu-latest`), 721 (`rust-regression-macos`, `macos-latest`).
-   **None of the three has a job-level `timeout-minutes`**, so GitHub's 360-minute default applies.
-   Only `issue-1850-windows-profile` has a job cap (75 minutes, line 974).
-2. Each leg's focused release block is 3 lines of comment plus a step, at base lines 152-182
-   (Windows, 31 lines), 406-432 (Linux, 27 lines), 814-840 (macOS, 27 lines):
-   `working-directory: src-tauri`, `shell: bash`, `timeout-minutes: 20`, and
-   `cargo test --locked --release --lib issue_1850 -- --test-threads=1 --nocapture 2>&1 | tee test-1850-release.log`
-   followed by the guards.
-3. The Linux and macOS blocks are byte-identical (sha256
-   `bf227ba7b8dbfb060e9a1204c5bf763d261ba2d5c3057a9f7d87fcfdaf4fb9cc`). The Windows block is the
-   same block plus a 4-line negative check on `ISSUE1850_WINDOWS_PROFILE_PROOF_OK` (sha256
-   `df17662be98c1f68a0026ed5cba176bf368925b347441b3c128fe1c0270a1a54`).
-4. Other step bounds in the three jobs are unchanged by this plan: debug 20m (3×), Windows
-   integration acceptance 20m, Linux/macOS default-root acceptance 30m.
-5. Shell/working-directory: every focused step in the three jobs uses `shell: bash` with
-   `working-directory: src-tauri`. The split precedent uses `shell: pwsh` with
-   `--manifest-path src-tauri/Cargo.toml` from the repository root — equivalent package selection,
-   different presentation. The new step must match **its own job's siblings** (bash + `src-tauri`)
-   so cargo selects exactly the same package and target.
-6. Flags in the run step: `--locked --release --lib issue_1850 -- --test-threads=1 --nocapture`.
-   The planned build step uses the same flags with `--no-run` instead of the harness arguments.
-7. Rust caches (base): Windows `shared-key: 'gate-debug'` with `save-if: 'false'`; Linux
-   `key: rust-regression-linux`; macOS `key: rust-regression-macos`.
-8. Measured durations on the last all-green `pr-regression-gates` run for these steps
-   (run `34582429701`, 2026-09-11): focused release Windows 11m49s (09:33:57 → 09:45:46), Linux
-   11m55s (09:16:30 → 09:28:25), macOS 9m35s (09:17:39 → 09:27:14). The dedicated split precedent's
-   build step ran 10m17s (release) with a 40-minute bound, and its proof step 7m20s.
-9. `needs:` does not appear anywhere in the workflow, no job consumes the three jobs' internals,
-   and `test-1850-release.log` is referenced only inside its own step (no artifact upload).
-10. The workflow runs on `push` (non-main branches) and `pull_request`; the #1917 failure was on a
-    **push** run, so a push to this branch is a representative acceptance run.
+From the same cwd/environment run cargo --version, rustc -vV,
+rustc --print target-libdir, and cargo metadata --locked --no-deps --format-version=1.
+Require all exits zero. Retain metadata JSON; resolve exactly one package by canonical
+manifest_path == src-tauri/Cargo.toml, then its exact package id and lib target.
+Require rustc host OS/architecture matches native Node process.platform/process.arch
+(win32/x64 -> x86_64-pc-windows-msvc; linux/x64 -> x86_64-unknown-linux-gnu;
+darwin/arm64 -> aarch64-apple-darwin; darwin/x64 -> x86_64-apple-darwin).
+Other pairs fail with observed values. Derive target_directory from metadata,
+not cache labels. Supported output is target_directory/release/deps, with no
+explicit target triple. Require a real rustc target-libdir directory.
 
-**Hidden constraints found (reported as required):**
+Then run exactly:
+cargo test --locked --release --lib issue_1850 --no-run --message-format=json-render-diagnostics
+Pipe stdout through tee to the fresh cargo-messages.jsonl; leave stderr inherited
+and visible in the CI log. Preserve Cargo AND tee failure through pipefail.
+Do not parse merged stderr as Cargo JSON. A failed build cannot publish a manifest.
+Parse stdout linewise: ignore blank/non-JSON diagnostic lines for selection while
+retaining them; malformed JSON-looking lines (trimmed prefix { or [) fail.
+Require exactly one build-finished record with success:true and Cargo exit zero.
 
-- **H1 — no job cap conflict.** The three jobs have no job-level timeout, so 40m build + 20m run
-  fits the 360-minute default. Nothing else in the workflow imposes a shared budget.
-- **H2 — Windows release artifacts are not cached between runs.** `save-if: 'false'` and
-  `shared-key: 'gate-debug'` mean the `rust-regression` job never saves a cache; the separate
-  `cache-warm` workflow maintains a *different* key (`gate-release`). The new build step therefore
-  carries the cold release compile on every Windows run. The proven precedent runs an even heavier
-  target (integration binary) under the same 40-minute bound.
-- **H3 — `--no-run` cannot catch a renamed/gated-out test.** An inert filter in `--no-run` mode
-  still exits 0 (mechanism probe in §8, probe P2). The five identifier greps must stay in the run
-  step, exactly where they are; the build step must add no assertions beyond cargo's exit code.
-- **H4 — artifacts are reused only if the commands match.** With identical profile, target and
-  package selection, the subsequent run step does not recompile (probe P1: 1.30s build, then 0.234s
-  run with no `Compiling` line). A flag mismatch would silently reintroduce the race.
-- **H5 — line endings.** The committed blob is LF; the working tree is CRLF under
-  `core.autocrlf=true`. Verification must use git-normalized content (`git hash-object --path=…`,
-  `git diff`), never raw file bytes, and must not flip line endings.
-- **H6 — the plan file is git-ignored.** Root `.gitignore` line 11 is `/plans/`; like
-  `plans/1154-*.md`, this plan is committed only with `git add -f`, and it is not part of the
-  runtime change.
-- **H7 — issue-text discrepancy, confirmed by the tech lead on 2026-09-11.** The issue says "six
-  identifier greps". The base actually has **five test identifiers** per focused release loop (the
-  loop body is one `grep -qF` line executed for five names), plus the Windows-only negative
-  `ISSUE1850_WINDOWS_PROFILE_PROOF_OK` check. No sixth test identifier exists. Nothing is added,
-  renamed, or removed to make the count six.
+Select exactly ONE compiler-artifact record satisfying all of:
+- package_id equals the metadata-selected package id;
+- canonical manifest_path and target.src_path equal this checkout's
+  src-tauri/Cargo.toml and src-tauri/src/lib.rs;
+- target.name is agentscommander_lib, target.kind includes lib
+  (not equality to a singleton array), profile.test === true;
+- executable is a nonempty string resolving to an existing regular file directly
+  in the resolved release/deps directory, with .exe on Windows.
+Fresh true or false is valid. Count records, not distinct filenames: duplicate
+matching records fail even when they identify the same file. Never glob artifacts.
+Use realpath/native path.resolve; case-fold comparisons only on Windows.
+Containment uses path.relative component checks, not a string-prefix test.
 
-## 4. The decided modification (exact YAML, three insertions)
+Loader list order is fixed: build-script-executed linked_paths in message/list order
+after stripping recognized native=, dependency=, crate=, framework= or all= prefix;
+then release/deps; then release; then rustc target-libdir. Resolve emitted native
+absolute paths; fail ambiguous relative linked paths. Exclude linked paths outside
+canonical target_directory; fail missing target-contained directories. Deduplicate
+canonical entries keeping their first position, case-insensitively only on Windows.
+Unknown KIND= syntax fails rather than accidentally treating it as a directory.
 
-For each of the three legs, insert the block below **immediately before** the existing comment line
+Write schema:1 manifest.json exclusively only after every check passes. Fields:
+runId, runAttempt, job, checkoutSha, prHeadSha, cwd, packageId, manifestPath,
+sourcePath, targetName, host, targetDirectory, executable, executableSha256,
+executableBytes, loaderDirs, versions, createdAt. checkoutSha is git rev-parse HEAD
+and must equal GITHUB_SHA; set ISSUE1850_PR_HEAD in both build/consumer step env
+to ${{ github.event.pull_request.head.sha || github.sha }}. PR checkout can be
+a merge SHA: retain both identities, with prHeadSha from ISSUE1850_PR_HEAD.
+Hashing the artifact binds producer/consumer bytes; it is not host attestation.
+After closing the file, publish manifest=<absolute path> to GITHUB_OUTPUT.
+Log selection identity, digest, byte size and timing. Never publish success early.
 
+## 4. Assertion consumer and upload
+
+Keep shell bash, src-tauri cwd, set -euo pipefail, timeout-minutes: 20.
+Set ISSUE1850_MANIFEST via env to steps.issue1850_release_build.outputs.manifest.
+Inline Node reads only that path and requires schema 1, same run/attempt/job,
+same git checkout HEAD/GITHUB_SHA and PR head env, canonical cwd/paths, native host,
+existing executable and unchanged size/SHA256. Missing/invalid/mismatched input
+fails; never discover another artifact or invoke Cargo/rustc/metadata as fallback.
+
+Preserve inherited environment. Prepend loaderDirs to the existing platform variable:
+PATH on Windows, LD_LIBRARY_PATH on Linux, DYLD_FALLBACK_LIBRARY_PATH on macOS.
+Use path.delimiter. Preserve inherited value/order, including empty elements.
+Windows: consolidate all case-insensitive PATH keys into one PATH; use the first
+lexicographically sorted existing key's value, matching Node's environment lookup,
+then remove other spellings. macOS: only when the variable is absent, append
+HOME/lib, /usr/local/lib, /usr/lib; require existing HOME for this fallback.
+An explicitly empty macOS variable is not absent. Never set HOME/USERPROFILE,
+the real-profile authorization marker, Cargo config env or other test state.
+
+Use child_process.spawn(executable,
+['issue_1850', '--test-threads=1', '--nocapture'],
+{shell:false, cwd:manifest.cwd, env, stdio:['ignore','inherit','inherit']}).
+No Cargo flags or '--' separator reach the harness. Log exact path, argv,
+identity/digest, loader variable name and launch/completion timestamps.
+Handle error event as failure; on close propagate integer nonzero exit unchanged;
+signal or null status fails with exit 1 and explicit signal/error detail.
+Do not let a subsequent close event erase an earlier error. No buffered exec,
+maxBuffer, retries or application compilation. CI timeout owns cancellation.
+
+Pipe Node stdout/stderr through existing tee test-1850-release.log with pipefail.
+Keep every byte from the existing following "for name in" through that release
+step's end unchanged, including five names, grep patterns/messages, positive count
+and Windows ISSUE1850_WINDOWS_PROFILE_PROOF_OK rejection. Keep set -euo pipefail.
+No count relaxation or deletion of debug/default-root/real-profile coverage.
+
+In each of the three jobs, immediately after this consumer add:
+- name: Upload IS #1850 release diagnostics
+- uses: actions/upload-artifact@v4 (existing workflow precedent)
+- if: always()
+- timeout-minutes: 5
+- with.name: issue1850-release-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+- with.path: two lines: ${{ steps.issue1850_release_build.outputs.diagnostics-dir || format('{0}/issue1850-release-not-started', runner.temp) }} and src-tauri/test-1850-release.log
+- with.if-no-files-found: warn
+- with.retention-days: 14
+- with.compression-level: 6
+- with.include-hidden-files: false
+
+No continue-on-error. Fresh directory includes metadata, context, Cargo stdout
+and manifest if reached; full Actions logs retain stderr. Upload never makes a failed producer successful.
+Missing files before producer start are explained warnings. Once producer started,
+missing expected diagnostics blocks evidence acceptance. Cancellation can prevent
+uploads; retain available full Actions logs and report missing evidence, never pass.
+
+## 5. Entry, local proof and recovery
+
+Dev records evidence under room-shared/1929-implementation/correction-round3/.
+Architect writes no workflow code and starts no builds/CI. Dev is the single writer.
+At initial pre-implementation entry and again before PR creation/update, run
+the common identity/drift checks below from the exact repo; apply the distinct
+state gates that follow, rather than repeating the initial working-tree condition:
+```bash
+pwd
+git rev-parse --show-toplevel
+git branch --show-current
+git rev-parse HEAD
+git status --porcelain=v1 --untracked-files=all
+git diff --cached --name-only
+gh issue view 1929 --repo mblua/AgentsCommander --json state,url
+git fetch origin main
+git diff --name-status d8816883676ed2ebf9e700152944598b1de47b52 origin/main
+git merge-base --is-ancestor d8816883676ed2ebf9e700152944598b1de47b52 HEAD
 ```
-      # IS #1850: focused release execution of every issue_1850 test. Guards
+At both gates require authorized root/branch and open issue. At initial entry,
+require an empty index and only this approved plan as a working edit; verify its
+raw SHA256 against the approved digest. Capture actual CORRECTION_BASE after
+bounded synchronization and recheck the initial state before product mutation.
+
+At the later pre-PR gate, retain that recorded CORRECTION_BASE and permit either
+the reviewed workflow+plan correction as working/staged changes, or its clean
+committed equivalent. Compare the complete correction against CORRECTION_BASE,
+including committed, staged and unstaged changes; the tracked path set must be
+exactly the two inventoried paths. No unrelated tracked, staged or ordinary
+untracked drift is allowed. A clean committed correction requires an empty index
+and clean working tree; the plan need not remain a working edit. For an uncommitted
+correction, any staged paths must be within the reviewed two-path set, and verify
+plan bytes in each applicable working/staged artifact against the approved digest.
+Before PR creation/update, commit the reviewed correction, require its clean
+committed state, and verify the committed plan digest as specified below.
+Recheck the applicable state after synchronization; unexpected drift blocks.
+Classify target drift by relevance: workflow/toolchain/lock/build-input changes
+refresh only affected proof; unrelated main movement does not reopen design.
+No reset, force rewrite, direct main push or branch replacement. Save workflow and
+plan bytes/hashes before writes; recheck HEAD/index/file hashes immediately before
+mutation. On failure restore only owned paths still equal to recorded attempt bytes;
+preserve external changes and report conflict. No broad restore/clean.
+
+Before expensive CI, dev extracts candidate YAML and inline scripts into evidence
+scratch using installed validation tools; records tool/version and exact invocation.
+Parse YAML with duplicate-key rejection, bash -n each changed shell block,
+node --check each extracted Node snippet, and Python compile() for the preflight.
+No dependency installation or product build for these local checks.
+Execute fixtures against the EXTRACTED candidate functions, not rewritten copies:
+- Selector: valid cold/warm records with multiple lib kinds; zero, duplicate,
+  wrong package/source/manifest, null executable, debug/outside-root path,
+  malformed JSON, unsuccessful/missing/duplicate build-finished must fail.
+- Config: absent config, valid jobs-only config; quoted/dotted runner, cfg runner,
+  build.target, env target, include, malformed TOML and unsupported native host fail.
+- Paths/loader: spaces, Windows mixed case/separators/PATH spellings, sibling-prefix
+  exclusion, linked KIND prefixes, deterministic order/dedup, all three delimiters,
+  absent versus empty macOS fallback and missing library directories.
+- Launch: copied native Node executable in a space-containing path as fixture child,
+  exit 0 and 7, missing file, identity/hash/run mismatch, malformed/stale manifest;
+  signal/null-status fixture must fail. Validate tee+pipefail preserves child failure.
+Use the actual harness argv in the real CI proof, not the fixture's argv.
+
+Compare all three guard suffixes byte-for-byte against planning HEAD; compare
+unchanged step definitions and top-level workflow settings against CORRECTION_BASE.
+Only the nine inventoried steps, three comments and removed Linux env lines may differ.
+Assert 40/20 bounds and original guards remain; assertion snippets contain no
+Cargo/rustc/build invocation. Prove no other workflow/test/source/cache change.
+Run git diff --check, git diff --name-status "$CORRECTION_BASE",
+git diff --cached --name-only, and git status --porcelain=v1 --untracked-files=all.
+Expected tracked set is exactly workflow + plan; no unexpected untracked/index drift.
+Hash every extracted snippet, fixture transcript and guard comparison for Grinch.
+Freeze this plan as UTF-8/LF bytes. Before commit, require the staged plan's
+git show :plans/1929-split-focused-release-build.md | sha256sum to equal the
+approved raw-file digest; EOL conversion must not silently change reviewed bytes.
+At the clean committed pre-PR gate, require:
+```bash
+git show HEAD:plans/1929-split-focused-release-build.md | sha256sum
+git diff --name-status "$CORRECTION_BASE" HEAD
+git diff --cached --name-only
+git status --porcelain=v1 --untracked-files=all
 ```
+The committed plan digest must equal the approved digest; the full base-to-HEAD
+path set must be exactly workflow+plan, and the last two outputs must be empty.
+Retain these outputs with the reviewed correction HEAD; a digest mismatch or
+unrelated drift stops delivery and requires resolution before proceeding.
 
-(base lines 152, 406, 814; the string occurs exactly three times in the file). The existing
-comment, the existing step and its guards stay byte-identical and move down by 17 lines.
+## 6. CI, review and delivery gates
 
-Insertion block, verbatim and normative (17 lines, 6-space base indent):
+Dev owns authorized correction push/PR execution and durable collection; Grinch
+independently checks full proof. On each native OS require one successful producer,
+one selected release harness with matching consumer digest/run identity, direct
+launch with all five passing tests, original guards green, build <40m/assertions
+<20m, and no compile invocation/output during assertions. Inspect complete logs
+and extracted invocation: short runtime or unchanged hash alone is insufficient.
+Real native loading is a remote-only gate, not claimed proved by local fixtures.
 
-```yaml
-      # IS #1929: the release step below used to compile and run under a single
-      # 20-minute bound, so on a cold cache the build alone could consume the
-      # whole budget and the step could die after the tests had already passed
-      # (#1917: the same tree was killed at 20m00s on a push run and went green
-      # in 17m25s on a pull request run). Split it the way the dedicated
-      # `issue-1850-windows-profile` job already splits its build and proof:
-      # the build gets room, the run keeps the tight assertion bound. The build
-      # uses the same cargo flags as the run so the run reuses these artifacts
-      # instead of rebuilding.
-      - name: "IS #1850 focused release build"
-        working-directory: src-tauri
-        shell: bash
-        timeout-minutes: 40
-        run: |
-          set -euo pipefail
-          cargo test --locked --release --lib issue_1850 --no-run
-
+Current applicability: push triggers branch validator plus all 14 regression jobs.
+Regression includes four terminal-snapshot-portable matrix legs, test-debt,
+rust-regression Windows/Linux/macOS, rust-linux-release-parity, rust-fmt,
+windows-release-cli-smoke, issue-1850-windows-profile and frontend-regression.
+PR also triggers lockfile-drift (its unchanged-input branch should pass).
+Bundle/version workflows' paths do not match these two files; cache warm/release
+are not correction triggers. Re-derive against actual full diff, not this expectation.
+Coordinator reconciles configured-required checks via branch protection/rulesets:
+```bash
+gh api repos/mblua/AgentsCommander/branches/main/protection/required_status_checks
+gh api repos/mblua/AgentsCommander/rules/branches/main
+gh pr view PR --repo mblua/AgentsCommander --json url,baseRefName,headRefName,headRefOid,closingIssuesReferences,statusCheckRollup
+gh api --paginate repos/mblua/AgentsCommander/commits/HEAD_SHA/check-runs
+gh api repos/mblua/AgentsCommander/commits/HEAD_SHA/status
+gh run view RUN --repo mblua/AgentsCommander --json headSha,event,status,conclusion,jobs,url
+gh run view RUN --repo mblua/AgentsCommander --log
+gh run download RUN --repo mblua/AgentsCommander --dir EVIDENCE_DIR
 ```
+Replace uppercase placeholders with recorded values; save stdout/stderr and exits
+to evidence outside the repo. Collect every run/attempt, complete logs/artifacts,
+step timings and checks, then SHA256SUMS. Reconcile missing/truncated output.
+403/404 from policy APIs is not proof of zero requirements; coordinator resolves
+access/policy evidence. All triggered and configured-required checks must succeed
+on exact PR head; record synthetic PR checkout SHA separately. Unexplained skips,
+cancellation, timeout, failure or missing evidence block delivery without waiver.
 
-Decisions inside the block, each closed:
+| Gate | Owner/time; executable evidence and failure behavior |
+| --- | --- |
+| CI parity | Dev local scope/guard/script proof before push; coordinator complete exact-head checks before merge; mismatch blocks. |
+| Determinism/config/cwd | Producer versions, TOML preflight, metadata/native/artifact checks each OS; unsupported input fails before launch. |
+| Git/scope/recovery | Dev entry/final commands, recorded base, two-path diff and preserved backups each write gate; conflict stops without clobber. |
+| Bounded diagnostics | Dev 40/20 steps, pipefail, uploads/full logs/hashes after success or failure; missing evidence is inconclusive. |
+| Protocol proof | Dev fixtures and written environment-risk assessment; Grinch independently reviews exact plan and implementation bytes before acceptance. |
+| Cycles/layering | Added/removed application module arcs: zero. Two-path scope excludes all module/arc-record edits. No lower layer gains UI/transport dependency. SCC measurement/arc regeneration not applicable; none claimed. |
 
-- **Step name**: `"IS #1850 focused release build"`, parallel to
-  `"IS #1850 real-profile build (${{ matrix.mode }})"` in the precedent. The existing run step
-  keeps its name `"cargo test (IS #1850 focused, release)"`, so the human-facing identity of the
-  proof is preserved.
-- **`timeout-minutes: 40`**: the precedent's proven build bound, as the issue and dispatch require.
-- **`working-directory: src-tauri` + `shell: bash`**: identical to the sibling steps in the same
-  job, so cargo resolves the same package, target and profile as the run step (constraint H4).
-- **`--no-run`** placed as a cargo flag after the filter, mirroring the precedent's argument order.
-  The `issue_1850` filter is inert in `--no-run` mode and exists only to keep the flags symmetric
-  with the run command.
-- **`set -euo pipefail`**: same failure semantics as the sibling steps; no `continue-on-error`,
-  no `|| true`, no weakening.
+No accepted test debt or failure waiver is introduced. A repeat Windows failure
+is a blocker with retained evidence, not permission to weaken tests.
+Any helper-file/dependency/config/cache/product expansion requires new inventory,
+digest and review. Do not edit this READY specification silently after peer approval.
 
-Line-number map at the base, then after the edit (17 added lines per leg, cumulative):
+One correction PR into main includes this plan and references #1929 without an
+automatic closing keyword; closingIssuesReferences must be empty. Coordinator
+verifies head/base/closing set, merge policy, tested head, merge SHA and ancestry.
+After merge coordinator records current main and validates relevant integration
+drift. ac-shipper-v4, separately from coordinator, owns the final build on that
+recorded current-main SHA and supplies command, tool versions, build-time timestamp,
+artifact path/SHA256/byte size/source-SHA receipt in room-shared/1929-delivery/.
+Coordinator owns build dispatch/output contract, final branch main tracking
+origin/main, clean tree and HEAD == fetched origin/main checks, and issue closure.
+Non-destructive synchronization only. No version bump, installation or release
+follows from this plan. Final closure requires integrated build success, not merely
+a merged PR. Author certification does not perform or claim any of these executions.
 
-| Leg | Insert before base line | Release block base | Release block after edit | New file lines |
-|---|---|---|---|---|
-| Windows | 152 | 152-182 | 169-199 | 1182 + 51 = 1233 |
-| Linux | 406 | 406-432 | 440-466 | |
-| macOS | 814 | 814-840 | 865-891 | |
-
-Nothing else changes: no renames, no timeout changes on existing steps, no flag changes, no
-reordering, no cache changes, no new job, no `needs:`.
-
-## 5. Preserved guards (unchanged, per leg)
-
-In each focused release run step, all of the following remain byte-identical:
-
-- `set -euo pipefail` and the `2>&1 | tee test-1850-release.log` pipeline (pipefail catches a
-  failing test; it is load-bearing through the `tee`).
-- The five test identifier greps, executed by the existing loop for these exact names:
-  1. `config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent`
-  2. `config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome`
-  3. `config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home`
-  4. `config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes`
-  5. `config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once`
-- The anchored result check `'^test result: ok\. [1-9][0-9]* passed; 0 failed'` on
-  `test-1850-release.log`, with its existing error message.
-- Windows only: the negative check `if grep -qF 'ISSUE1850_WINDOWS_PROFILE_PROOF_OK'
-  test-1850-release.log; then … exit 1` — the ordinary Windows run must not claim the real-profile
-  proof.
-
-Out of scope and untouched: the focused debug steps (3×), the Windows integration acceptance step,
-the Linux/macOS default-root acceptance steps, the `issue-1850-windows-profile` job, and every other
-job in the workflow.
-
-**Count discrepancy (H7), recorded for the Grinch:** the issue's "six identifier greps" is a
-wording error; the base has five test identifiers plus the Windows negative check. This plan
-preserves what exists and adds no sixth identifier.
-
-## 6. Edge and failure behavior
-
-- **Cold cache (the defect)**: the build runs under its own 40-minute bound; the run keeps its
-  20-minute assertion bound. A compile that would have killed the proof now either finishes and
-  leaves the run untouched, or fails explicitly as a **build** timeout instead of a misleading
-  "test timed out" after the tests already passed.
-- **Warm cache**: the build step is a no-op (`Finished` in seconds) and the run step behaves as
-  today.
-- **Compile error**: the job fails at the build step; the run step is skipped; nothing is masked.
-- **Test failure**: unchanged — the run step fails via pipefail and the guards keep their messages.
-- **Renamed or gated-out test**: the build step still succeeds (H3); the run step's identifier
-  greps catch it exactly as today. Guards are not moved into the build step.
-- **Windows refusal route**: the negative check remains in the run step; the build step cannot
-  weaken it.
-- **Job wall clock**: the compile phase is relocated, not duplicated. Expected job duration is
-  unchanged on a healthy run; worst-case cold adds only the difference between the old 20-minute
-  kill and the new 40-minute ceiling.
-- **No guard weakening**: no `continue-on-error`, no `|| true`, no count relaxation, no flag or
-  cache change, no test or product edit.
-
-## 7. File inventory (planned)
-
-| Action | Path | Change |
-|---|---|---|
-| MODIFIED | `.github/workflows/pr-regression-gates.yml` | +51 / −0 lines: the same 17-line build step inserted before each of the three focused release blocks. Expected git diff: exactly 3 hunks, `51 0` numstat. |
-| ADDED | `plans/1929-split-focused-release-build.md` | This plan. Git-ignored via `/plans/` (H6); commit requires `git add -f` when the branch is committed. No runtime effect. |
-
-No other file is added, removed, or modified. No `src-tauri/` file, no test file, no frontend file,
-no other workflow.
-
-## 8. Focused validation and acceptance
-
-### 8.1 Local, deterministic, before the first push
-
-- **V1 — YAML parses.** PyYAML 6.0.3 is present in this environment:
-  `python -c "import yaml; yaml.safe_load(open('.github/workflows/pr-regression-gates.yml', encoding='utf-8')); print('yaml ok')"`
-- **V2 — structural verifier** (below) exits `PASS`. It parses the YAML, asserts each leg has the
-  build step immediately before the run step with the exact name, bounds, shell,
-  working-directory and commands, re-hashes the 17-line insertion above each anchor, and re-hashes
-  each of the three release blocks against their base digests.
-- **V3 — normalized diff is exactly the intended change.**
-  `git diff --numstat -- .github/workflows/pr-regression-gates.yml` → `51  0`;
-  `git diff -U0 -- .github/workflows/pr-regression-gates.yml | grep '^@@'` → 3 hunks.
-- **V4 — exact bytes (line-ending robust).** If the insertion block is copied verbatim:
-  `git hash-object --path=.github/workflows/pr-regression-gates.yml .github/workflows/pr-regression-gates.yml`
-  must equal `a0e2afd7a1cc55301c7b8f6908087701e472c617` (expected post-edit blob), against the base
-  blob `5d5cc3b040b6d8fab5f702338a10eb188ffbd3fe`. The raw LF sha256 of the expected result is
-  `c5f125c893ea43b397130de7a2e66a9f12654ca250f8bfa00198d749cc9184a5`; the LF-normalized sha256 of
-  the insertion is `bcd0b8fef32b8154fc2404eb020869f8db08a1eca1658629df1d2c386283f529`.
-- **V5 — preserved-block digests** (also enforced by V2). Release block digests, as 27/31-line
-  slices starting at each anchor, must remain:
-  Windows `df17662be98c1f68a0026ed5cba176bf368925b347441b3c128fe1c0270a1a54`,
-  Linux/macOS `bf227ba7b8dbfb060e9a1204c5bf763d261ba2d5c3057a9f7d87fcfdaf4fb9cc`.
-
-### 8.2 Mechanism probes already run for this plan (disposable, not a repo build)
-
-- **P1** — a throwaway two-test crate in agent scratch: `cargo test --locked --release --lib probe_hit --no-run`
-  compiled in 1.30s; the immediately following
-  `cargo test --locked --release --lib probe_hit -- --test-threads=1 --nocapture` finished in 0.234s
-  with **no recompilation**. Artifact reuse across steps is real (H4).
-- **P2** — the same probe with a filter matching nothing and `--no-run` exits 0 and prints
-  `Finished`. The compile step cannot false-fail or catch a renamed test (H3).
-
-### 8.3 CI, authoritative acceptance
-
-- **V6 — push the branch** (do not open the PR until the local checks pass; the workflow runs on
-  both events, and #1917's failure was on a push). Acceptance:
-  - `rust-regression`, `rust-regression-linux`, `rust-regression-macos` all green;
-  - each leg shows `IS #1850 focused release build` as its own step with a 40-minute bound,
-    followed by the unchanged `cargo test (IS #1850 focused, release)` step with its 20-minute
-    bound and a run duration far below it;
-  - the run step's log still shows the five identifiers and the anchored
-    `test result: ok. … 0 failed` line; the Windows log does not contain
-    `ISSUE1850_WINDOWS_PROFILE_PROOF_OK`;
-  - no other job's behavior changes.
-- **V7 — Grinch evidence package** (not just the diff): the V2 `PASS` output, the V3 numstat and
-  hunk list, the V4/V5 hashes, the P1/P2 probe records in §8.2, and the CI run URL with per-step
-  timings from V6.
-
-### 8.4 Ready-to-run structural verifier (V2)
-
-Save as `1929-verify.py` anywhere outside the repo (or run via heredoc) and invoke from the
-repository root; it is line-ending agnostic.
-
-```python
-#!/usr/bin/env python3
-"""#1929 focused-release build/run split -- local structural verifier."""
-import hashlib
-import sys
-
-import yaml
-
-path = sys.argv[1] if len(sys.argv) > 1 else ".github/workflows/pr-regression-gates.yml"
-text = open(path, "rb").read().decode("utf-8").replace("\r\n", "\n")
-lines = text.split("\n")
-
-ANCHOR = "      # IS #1850: focused release execution of every issue_1850 test. Guards"
-BUILD_NAME = "IS #1850 focused release build"
-RUN_NAME = "cargo test (IS #1850 focused, release)"
-INSERT_SHA = "bcd0b8fef32b8154fc2404eb020869f8db08a1eca1658629df1d2c386283f529"
-RUN_SHA = {
-    "windows": "df17662be98c1f68a0026ed5cba176bf368925b347441b3c128fe1c0270a1a54",
-    "unix": "bf227ba7b8dbfb060e9a1204c5bf763d261ba2d5c3057a9f7d87fcfdaf4fb9cc",
-}
-IDENTIFIERS = [
-    "config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent",
-    "config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome",
-    "config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home",
-    "config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes",
-    "config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once",
-]
-
-failures = []
-
-
-def check(ok, message):
-    if not ok:
-        failures.append(message)
-
-
-def digest(block_lines):
-    return hashlib.sha256(("\n".join(block_lines) + "\n").encode()).hexdigest()
-
-
-doc = yaml.safe_load(text)
-for job_name in ("rust-regression", "rust-regression-linux", "rust-regression-macos"):
-    steps = doc["jobs"][job_name]["steps"]
-    names = [s.get("name") for s in steps]
-    check(BUILD_NAME in names, f"{job_name}: new build step missing")
-    check(RUN_NAME in names, f"{job_name}: release run step missing")
-    if BUILD_NAME in names and RUN_NAME in names:
-        i = names.index(BUILD_NAME)
-        build, run = steps[i], steps[i + 1]
-        check(run.get("name") == RUN_NAME, f"{job_name}: run step is not directly after the build step")
-        check(build.get("timeout-minutes") == 40, f"{job_name}: build timeout is {build.get('timeout-minutes')}, want 40")
-        check("--no-run" in build.get("run", ""), f"{job_name}: build step has no --no-run")
-        check("--locked --release --lib issue_1850" in build.get("run", ""), f"{job_name}: build step flags drifted")
-        check(build.get("working-directory") == "src-tauri", f"{job_name}: build working-directory drifted")
-        check(build.get("shell") == "bash", f"{job_name}: build shell drifted")
-        check(run.get("timeout-minutes") == 20, f"{job_name}: run timeout is {run.get('timeout-minutes')}, want 20")
-        check("cargo test --locked --release --lib issue_1850 -- --test-threads=1 --nocapture" in run.get("run", ""),
-              f"{job_name}: run command drifted")
-        check(run.get("working-directory") == "src-tauri", f"{job_name}: run working-directory drifted")
-        check(run.get("shell") == "bash", f"{job_name}: run shell drifted")
-
-idx = [i for i, line in enumerate(lines) if line == ANCHOR]
-check(len(idx) == 3, f"anchor count = {len(idx)}, want 3")
-for i in idx:
-    insert = digest(lines[i - 17:i])
-    check(insert == INSERT_SHA, f"inserted block above anchor at line {i + 1} differs from the plan (sha {insert[:12]})")
-    kind = "windows" if "ISSUE1850_WINDOWS_PROFILE_PROOF_OK" in "\n".join(lines[i:i + 31]) else "unix"
-    size = 31 if kind == "windows" else 27
-    block = lines[i:i + size]
-    got = digest(block)
-    check(got == RUN_SHA[kind], f"release block at line {i + 1} changed ({kind}, sha {got[:12]})")
-    check(lines[i + 4] == '      - name: "cargo test (IS #1850 focused, release)"', f"line {i + 5} is not the release step name")
-
-for ident in IDENTIFIERS:
-    check(text.count(ident) == 6, f"identifier occurrences = {text.count(ident)}, want 6: {ident}")
-check(text.count("'ISSUE1850_WINDOWS_PROFILE_PROOF_OK' test-1850-release.log") == 1,
-      "Windows release refusal-only check missing or duplicated")
-check(text.count("grep -qE '^test result: ok\\. [1-9][0-9]* passed; 0 failed' test-1850-release.log") == 3,
-      "anchored release result check count != 3")
-check(text.count("test-1850-release.log") == 10, "test-1850-release.log reference count drifted")
-
-if failures:
-    print(f"FAIL ({len(failures)} check(s))")
-    for f in failures:
-        print(" -", f)
-    sys.exit(1)
-print("PASS: #1929 build/run split verified (3 legs; run blocks byte-preserved; guards intact)")
-```
-
-Note on `test-1850-release.log == 10`: per leg the log name appears on the `tee` line, on the
-single loop `grep -qF` line and on the anchored-result line (3×3 = 9), plus the Windows negative
-check (1). The identifier loop runs five times but is one source line.
-
-### 8.5 Acceptance criteria
-
-1. The three legs each gain exactly one `IS #1850 focused release build` step with
-   `timeout-minutes: 40` and the `--no-run` release compile.
-2. The three focused release run steps — comment, name, bounds, command, and all guards — are
-   byte-identical to the base (V2/V5 digests).
-3. A cold-cache release compile can no longer kill the assertion step: the build has room, the run
-   keeps its 20-minute bound, and a build timeout is attributed to the build step.
-4. All five test identifiers, the anchored result check and the Windows negative check survive
-   unchanged; no sixth identifier is added (H7).
-5. No product, test, or other workflow file changes; `git diff --numstat` is `51 0` on one file.
-6. A real `pr-regression-gates` push run is green on the three OS legs with the new topology and
-   unchanged guard output.
-
-## 9. Environment risk and disclosed residual risk
-
-**Environment risk (stated as required).** This is a CI-only change against GitHub-hosted runners
-whose cold-cache timing cannot be reproduced or falsified locally; the authoritative proof is a
-real workflow run (V6), and the Grinch must review the verification evidence (V7), not only the
-diff. The defect itself is nondeterministic: #1917 produced opposite outcomes from byte-identical
-trees. No expensive build, GUI or interactive test is launched for this plan; the only executed
-build was a disposable two-test scratch crate (P1/P2, ~2 seconds).
-
-Residual risks, disclosed and accepted:
-
-- **R1 — 40m is a bound, not a guarantee.** A cold runner slower than 40 minutes still fails the
-  leg, now with an explicit build timeout. Accepted: it is the precedent's proven budget for a
-  heavier target, and the run bound stays tight by design.
-- **R2 — Windows pays the cold release compile every run** (H2). Accepted; it is the same work the
-  current single step already performs, only relocated.
-- **R3 — line-ending hazard** (H5). Mitigated by verifying with git-normalized hashes only.
-- **R4 — base drift.** Mitigated by the §2 entry gate.
-
-## 10. Blockers and next step
-
-No blocker to planning. Implementation is intentionally **not** started: no workflow, product or
-test edit and no commit exists yet on `ci/1929-split-focused-release-build`. Next step is the tech
-lead's explicit instruction after this plan's review, at which point §4 is copied verbatim, §8.1 is
-run, and §8.3 is executed on a push.
+Sources: [Cargo JSON](https://doc.rust-lang.org/cargo/reference/external-tools.html),
+[Cargo config](https://doc.rust-lang.org/cargo/reference/config.html),
+[Cargo loader environment](https://doc.rust-lang.org/cargo/reference/environment-variables.html#dynamic-library-paths),
+[Node child processes](https://nodejs.org/download/release/v22.22.0/docs/api/child_process.html).
