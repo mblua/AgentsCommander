@@ -683,6 +683,7 @@ export interface AppSettings {
   coordinatorAutoCloseSkipTelegramAssigned: boolean;
   coordinatorCascadeCloseEnabled: boolean;
   npmUpdateNotificationsEnabled: boolean;
+  remoteBlockingMenusEnabled: boolean;
   autoSelfClearEnabled: boolean;
   autoSelfClearByAgent: Record<string, boolean>;
   /** #1327 - per-command auto-update policy, keyed by the catalog COMMAND

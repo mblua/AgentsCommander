@@ -205,6 +205,7 @@ function settings(overrides: Partial<AppSettings> = {}): SettingsSnapshot {
     coordinatorAutoCloseSkipTelegramAssigned: false,
     coordinatorCascadeCloseEnabled: true,
     npmUpdateNotificationsEnabled: true,
+    remoteBlockingMenusEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
     agentAutoUpdateByCommand: {},
@@ -2042,6 +2043,39 @@ describe("SettingsModal automation hooks", () => {
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.npmUpdateNotificationsEnabled).toBe(false);
+
+    dispose();
+  });
+
+  it("round-trips remoteBlockingMenusEnabled through the General download checkbox (#1925)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>("settings.general.remoteBlockingMenusEnabled");
+    expect(checkbox.closest("label")?.textContent).toContain(
+      "Download blocking-menu pattern updates from GitHub",
+    );
+    // Loaded default is true (the seeded settings have it on).
+    expect(checkbox.checked).toBe(true);
+
+    // Toggle OFF and save -> the persisted draft carries the new value, proving
+    // updateField accepts the new AppSettings key end to end. The npm checkbox
+    // is the control: the new box does not drive the old flag.
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.remoteBlockingMenusEnabled).toBe(false);
+    expect(saved?.npmUpdateNotificationsEnabled).toBe(true);
 
     dispose();
   });
