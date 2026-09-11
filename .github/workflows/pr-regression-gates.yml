@@ -433,6 +433,8 @@ jobs:
         working-directory: src-tauri
         shell: bash
         timeout-minutes: 40
+        env:
+          CARGO_LOG: cargo::core::compiler::fingerprint=trace
         run: |
           set -euo pipefail
           cargo test --locked --release --lib issue_1850 --no-run
@@ -445,6 +447,8 @@ jobs:
         working-directory: src-tauri
         shell: bash
         timeout-minutes: 20
+        env:
+          CARGO_LOG: cargo::core::compiler::fingerprint=trace
         run: |
           set -euo pipefail
           cargo test --locked --release --lib issue_1850 -- --test-threads=1 --nocapture 2>&1 | tee test-1850-release.log
