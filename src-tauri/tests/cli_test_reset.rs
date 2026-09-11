@@ -34,7 +34,7 @@ impl Tmp {
 }
 
 fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
-    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
+    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(name);
     std::fs::copy(src, &dst).expect("copy binary");
     dst

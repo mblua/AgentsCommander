@@ -56,7 +56,7 @@ impl Drop for TempDirectory {
 }
 
 fn copied_binary(directory: &Path) -> PathBuf {
-    let source = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
+    let source = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let destination = directory.join(source.file_name().unwrap());
     std::fs::copy(source, &destination).unwrap();
     destination

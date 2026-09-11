@@ -3,7 +3,7 @@
 //! or adopts a legacy root.
 //!
 //! Black-box integration test. It copies the built product binary
-//! (`CARGO_BIN_EXE_agentscommander-new`) into a temp directory, runs real CLI
+//! (`CARGO_BIN_EXE_agentscommander`) into a temp directory, runs real CLI
 //! verbs against it and observes the filesystem and stdout. It deliberately
 //! imports nothing from `agentscommander_lib`, so the target also builds and
 //! runs in the release profile (where the pre-existing
@@ -869,7 +869,7 @@ fn copy_product_binary(bin_dir: &Path) -> Result<PathBuf, String> {
     } else {
         "agentscommander"
     };
-    let source = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
+    let source = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let destination = bin_dir.join(name);
     fs::copy(source, &destination).map_err(|error| {
         format!(

@@ -607,7 +607,7 @@ impl ErrorLogEntry {
 
 /// Whether a log record should be teed into the error-modal sink: ERROR level
 /// AND a target owned by one of AgentsCommander's own crates
-/// (`agentscommander_lib::…` or `agentscommander_new`). The target-prefix guard
+/// (`agentscommander_lib::…` or `agentscommander`). The target-prefix guard
 /// keeps third-party crates' ERROR logs (`hyper`, `reqwest`, …) out of the modal
 /// even if `RUST_LOG` is widened. Factored out of the format closure so the
 /// single most safety-critical predicate of #264 is directly unit-testable (M3).
@@ -769,7 +769,7 @@ mod tests {
             log::Level::Error,
             "agentscommander_lib::commands::entity_creation"
         ));
-        assert!(captures(log::Level::Error, "agentscommander_new"));
+        assert!(captures(log::Level::Error, "agentscommander"));
         // ERROR from a third-party crate → not captured (target guard).
         assert!(!captures(log::Level::Error, "hyper::client"));
         // Below ERROR, even from our own targets → not captured (level guard).

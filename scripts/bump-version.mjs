@@ -58,8 +58,8 @@ Re-running with the same X.Y.Z target re-synchronizes drifted locations.
 // nearby fields so we can never accidentally rewrite a dependency version.
 // Line-end tokens use \r?\n so files with either LF or CRLF endings are
 // preserved byte-for-byte outside the version literal.
-// The Rust crate is still named agentscommander-new for Cargo/test binary
-// compatibility. Production bundle identity comes from Tauri config.
+// The Rust package is named agentscommander, the same name tauri.conf.json's
+// mainBinaryName gives the shipped binary.
 const PATCHES = [
   {
     file: 'npm/install.js',
@@ -89,12 +89,12 @@ const PATCHES = [
   {
     file: 'src-tauri/Cargo.toml',
     label: '[package] version',
-    re: /(\r?\n\s*name\s*=\s*"agentscommander-new"\s*\r?\nversion\s*=\s*)"[^"]+"/,
+    re: /(\r?\n\s*name\s*=\s*"agentscommander"\s*\r?\nversion\s*=\s*)"[^"]+"/,
   },
   {
     file: 'Cargo.lock',
     label: 'internal Cargo crate entry',
-    re: /(\r?\n\s*name\s*=\s*"agentscommander-new"\s*\r?\nversion\s*=\s*)"[^"]+"/,
+    re: /(\r?\n\s*name\s*=\s*"agentscommander"\s*\r?\nversion\s*=\s*)"[^"]+"/,
   },
   {
     file: 'src-tauri/tauri.conf.json',
