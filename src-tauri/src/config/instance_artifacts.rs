@@ -155,6 +155,8 @@ pub(crate) const SETTINGS_LOCAL_OVERRIDE_FILE_NAME: &str = "settings.local.json"
 pub(crate) const BLOCKING_MENUS_SHIPPED_FILE_NAME: &str = "settings-blocking-menus.json";
 /// #1905 - the operator-owned blocking-menu overlay, read at load; written once by the export.
 pub(crate) const BLOCKING_MENUS_LOCAL_FILE_NAME: &str = "settings-blocking-menus.local.json";
+/// #1925 - blocking-menu patterns downloaded from GitHub; written only by the startup download.
+pub(crate) const BLOCKING_MENUS_REMOTE_FILE_NAME: &str = "settings-blocking-menus.remote.json";
 pub(crate) const SETTINGS_LOCK_FILE_NAME: &str = "settings.json.lock";
 /// Covers every settings migration backup instance. The concrete names are
 /// composed by their own migrations, so this glob is registry-owned and no
@@ -433,6 +435,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: operator-owned blocking-menu overlay; machine-local by design",
+    },
+    InstanceArtifact {
+        name: BLOCKING_MENUS_REMOTE_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: downloaded blocking-menu patterns; replaced by the next accepted download",
     },
     InstanceArtifact {
         name: "settings.json",
