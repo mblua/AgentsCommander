@@ -72,6 +72,18 @@ windows-sys = { version = "0.59", features = [
     "Wdk_System_SystemInformation",
 ] }
 
+# #1842 Linux/X11 screenshot capture. A byte-copy of the four screenshot lines
+# above, so Cargo resolves identical versions and features for both targets.
+# NOT moved into [dependencies]: that would link xcap and both plugins into the
+# macOS build, which links none today. A byte-identical macOS dependency set is
+# the cheapest "macOS did not regress" proof and keeps unsupported.rs's "NO
+# native screenshot crates" claim true. windows-sys stays Windows-only.
+[target.'cfg(target_os = "linux")'.dependencies]
+tauri-plugin-global-shortcut = "2.3.2"
+tauri-plugin-clipboard-manager = "2.3.2"
+xcap = "0.9.6"
+image = "0.25.10"
+
 [dev-dependencies]
 syn = { version = "=2.0.117", features = ["full", "visit"] }
 tempfile = "3"

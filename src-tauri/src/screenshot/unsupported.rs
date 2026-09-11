@@ -1,9 +1,10 @@
-//! #714 Non-Windows screenshot stub.
+//! #714 macOS-and-everything-else screenshot stub.
 //!
-//! Compiles with NO native screenshot crates (`xcap`, `image`, clipboard, global
-//! shortcut). It mirrors the public surface of `super::windows` so the command
-//! layer and `lib.rs` wiring are identical across targets: every capture path
-//! reports an unsupported status, and hotkey "registration" only validates syntax.
+//! Compiled on every target that is neither Windows nor Linux/X11. It uses NO
+//! native screenshot crates (`xcap`, `image`, clipboard, global shortcut). It
+//! mirrors the public surface of `super::native` so the command layer and
+//! `lib.rs` wiring are identical across targets: every capture path reports an
+//! unsupported status, and hotkey "registration" only validates syntax.
 
 use tauri::{AppHandle, Manager};
 
@@ -12,7 +13,7 @@ use super::{
     ScreenshotSelection,
 };
 
-const UNSUPPORTED: &str = "Screenshot capture is only supported on Windows in this release";
+const UNSUPPORTED: &str = "Screenshot capture is not available on this platform; it is supported on Windows and on Linux/X11";
 
 /// The non-Windows lifecycle can never leave `Idle`, but the variant must exist
 /// so the `ScreenshotCaptureState` alias and `lib.rs` (`...::Idle`) compile.
