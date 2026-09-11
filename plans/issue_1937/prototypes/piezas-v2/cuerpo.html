@@ -1,0 +1,120 @@
+<!-- Marco de demostración (español, fuera del producto) -->
+<div class="demo-topbar">
+  <div class="demo-brand"><span class="demo-tag">demo v2</span> Prototipo v2 · Aplicar + candado (Coding Agent + Profile)</div>
+  <div class="demo-viewnav" id="demoViews"></div>
+  <div class="demo-top-actions">
+    <button type="button" class="demo-action" id="btnAnnotations">Anotaciones: sí</button>
+    <button type="button" class="demo-action" id="btnReset">Reiniciar</button>
+  </div>
+</div>
+
+<div class="demo-stage">
+  <!-- Ventana que simula el sidebar real de AgentsCommander -->
+  <div class="ac-window" id="acWindow">
+    <div class="titlebar">
+      <div class="titlebar-brand">
+        <span class="titlebar-title">agents commander</span>
+        <span class="titlebar-version">v1.0.0</span>
+        <span class="titlebar-wg-badge">AgentsCommander_iac</span>
+      </div>
+      <div class="titlebar-controls"></div>
+    </div>
+
+    <div class="sidebar-body">
+      <div class="sidebar-scrollable" id="sidebarRoot" data-ac-testid="sidebar.root"></div>
+    </div>
+
+    <!-- Menú contextual real (mismas clases que la app) -->
+    <div class="session-context-menu" id="ctxMenu" hidden></div>
+
+    <!-- Anotaciones en español (número ↔ lista de la derecha) -->
+    <div class="demo-annot-layer" id="annLayer"></div>
+    <div class="demo-fake-note">datos ficticios · demo</div>
+
+    <!-- Modal real AgentPickerModal + barra de candado propuesta -->
+    <div class="modal-overlay" id="modalOverlay" hidden tabindex="0" data-component="Coding Agent profile assignment modal overlay">
+      <div class="agent-modal agent-picker-modal" role="dialog" aria-modal="true" aria-labelledby="mpTitle" data-component="Coding Agent profile assignment modal">
+        <div class="agent-modal-header agent-picker-modal-header" data-component="Coding Agent profile modal header">
+          <div>
+            <div class="agent-picker-eyebrow">Coding Agent</div>
+            <span class="agent-modal-title" id="mpTitle">Assign profile for <strong id="mpFqn"></strong></span>
+          </div>
+          <div class="agent-picker-context">
+            <strong id="mpName"></strong>
+            <span id="mpRoom"></span>
+          </div>
+        </div>
+
+        <!-- UI nueva propuesta: barra del candado junto al par -->
+        <div id="mpLockBar"></div>
+
+        <div class="agent-profile-assignment-body" data-component="Coding Agent profile modal variant C layout">
+          <aside class="agent-profile-panel agent-profile-provider-panel" data-component="Coding Agents selector panel">
+            <div class="agent-profile-panel-head">
+              <div class="agent-profile-panel-heading">
+                <div class="agent-profile-panel-title">Coding Agent</div>
+                <div class="agent-profile-panel-kicker">Choose the tool first</div>
+              </div>
+              <span class="agent-profile-step cyan" data-ac-role="status">step 1</span>
+            </div>
+            <div class="agent-profile-provider-list" id="mpProviders" aria-label="Coding agent choices" data-component="Coding agent selector"></div>
+          </aside>
+
+          <div class="agent-profile-assignment-scroll" data-component="Coding Agent profile selector independent scroll area">
+            <section class="agent-profile-panel" data-component="Coding Agent profile selector panel">
+              <div class="agent-profile-panel-head">
+                <div class="agent-profile-panel-heading">
+                  <div class="agent-profile-panel-title">Profile</div>
+                  <div class="agent-profile-panel-kicker">Choose the profile letter second</div>
+                </div>
+                <span class="agent-profile-step yellow" data-ac-role="status">step 2</span>
+              </div>
+              <div class="agent-profile-card-list" id="mpProfiles" data-component="Selected Coding Agent available profile cards"></div>
+            </section>
+
+            <section class="agent-profile-panel agent-projection-panel" data-component="Same profile comparison panel">
+              <div class="agent-projection-head">
+                <div class="agent-projection-heading">
+                  <div class="agent-profile-panel-title">Same Profile In Other Agents</div>
+                  <div class="agent-profile-panel-kicker" id="mpComparisonKicker">compared across configured Coding Agents</div>
+                </div>
+              </div>
+              <div id="mpComparison"></div>
+            </section>
+          </div>
+        </div>
+
+        <div class="agent-picker-botonera" id="mpBotonera" data-component="Coding Agent assignment scope picker"></div>
+      </div>
+    </div>
+
+    <!-- Cartel de conflictos del "+ lock" masivo (mock v2, por encima del modal real) -->
+    <div class="lock-conflict-overlay" id="lockConflict" hidden></div>
+  </div>
+
+  <!-- Guía en español de la vista actual -->
+  <aside class="demo-sidepanel">
+    <h2 id="explainTitle"></h2>
+    <p class="demo-viewsub" id="explainSub"></p>
+    <ol id="explainList"></ol>
+    <div class="demo-note">
+      Texto del producto en inglés (lenguaje de la app). Guía, anotaciones y marco en español.
+      Ninguna ruta, cifra o réplica es real: son <strong>datos ficticios de demostración</strong>.
+      El alcance y la semántica de esta opción están en <em>room-shared/candados-propuesta.md</em>;
+      la herencia a futuras réplicas y el cartel de conflictos del «+ lock» masivo están decididos en
+      <em>room-shared/candados-decision-usuario.md</em>. Esa decisión del usuario manda sobre la
+      suposición previa de omitir siempre las bloqueadas; el informe anterior no invalida este comportamiento.
+    </div>
+  </aside>
+</div>
+
+<div class="demo-bottombar">
+  <button type="button" class="demo-action" id="demoPrev">&#x25C0; Anterior</button>
+  <button type="button" class="demo-action" id="demoNext">Siguiente &#x25B6;</button>
+  <span class="demo-hint" id="demoCounter"></span>
+  <span class="demo-hint">Clic derecho sobre una réplica abre el menú real · <kbd>Esc</kbd> cierra cartel, menú o modal. Pruebe: elegir <em>Apply to + lock</em>, aplicar sobre el tipo, decidir en el cartel de conflictos y quitar candados por alcance en la barra superior.</span>
+</div>
+
+<div class="toast-host">
+  <div class="toast-item toast-item--info" id="demoToast" data-ac-role="alert" hidden><span class="toast-item__message"></span></div>
+</div>

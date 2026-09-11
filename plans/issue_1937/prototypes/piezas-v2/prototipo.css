@@ -1,0 +1,881 @@
+/* ============================================================================
+   Prototipo de candados — estilos propios de la maqueta.
+   Se suma a los estilos reales de la app que `construir.mjs` inyecta:
+     · src/sidebar/styles/variables.css   (tokens)
+     · src/sidebar/styles/sidebar.css     (toda la UI del sidebar + modal)
+     · src/shared/styles/toast.css        (toasts)
+   Dos prefijos, a propósito:
+     · .demo-*            → marco de demostración y anotaciones (español). No es
+                            producto: la app real no dibuja nada de esto.
+     · .selection-lock-*  → UI nueva propuesta del candado (inglés, lenguaje de
+                            la app). Es lo único que la propuesta agrega a las
+                            pantallas reales.
+   ========================================================================== */
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #05060a;
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  overflow: hidden;
+}
+
+/* ===== Marco de demostración (fuera del producto) ======================== */
+
+.demo-topbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 8px 14px;
+  background: #0b0d14;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.demo-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #d9d9e2;
+  white-space: nowrap;
+}
+
+.demo-brand .demo-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(240, 180, 41, 0.55);
+  background: rgba(240, 180, 41, 0.12);
+  color: #f0b429;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.demo-viewnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.demo-viewbtn {
+  padding: 4px 9px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: #9a9aa8;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.demo-viewbtn:hover {
+  color: #e6e6ee;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.demo-viewbtn.active {
+  color: #0a0a0f;
+  background: #f0b429;
+  border-color: #f0b429;
+  font-weight: 700;
+}
+
+.demo-top-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.demo-action {
+  padding: 4px 9px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  color: #b9b9c6;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.demo-action:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.demo-action.off {
+  opacity: 0.55;
+}
+
+.demo-stage {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px;
+  height: calc(100vh - 46px - 44px);
+  box-sizing: border-box;
+}
+
+/* La "ventana" simula el sidebar real de AgentsCommander. Se dibuja más ancha
+   que un sidebar típico porque el modal real es de hasta 1180px. */
+.ac-window {
+  position: relative;
+  width: 1280px;
+  min-width: 1280px;
+  height: 820px;
+  display: flex;
+  flex-direction: column;
+  background: var(--sidebar-bg);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+}
+
+.ac-window .sidebar-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ac-window .sidebar-scrollable {
+  overflow-y: auto;
+  height: 100%;
+}
+
+/* Anotaciones por encima del modal y del menú contextual, sin interceptar clics. */
+.demo-annot-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 10000;
+  pointer-events: none;
+}
+
+.demo-annot-outline {
+  position: absolute;
+  border: 1.5px dashed #f0b429;
+  border-radius: 8px;
+  box-shadow: 0 0 0 3px rgba(240, 180, 41, 0.14), 0 0 22px rgba(240, 180, 41, 0.18);
+}
+
+.demo-annot-pin {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #f0b429;
+  color: #17170f;
+  font: 700 12px/20px sans-serif;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.demo-sidepanel {
+  width: 400px;
+  min-width: 400px;
+  max-height: 820px;
+  overflow-y: auto;
+  background: #0b0d14;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-sizing: border-box;
+}
+
+.demo-sidepanel h2 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  color: #f0b429;
+}
+
+.demo-sidepanel .demo-viewsub {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: #8b8b99;
+  line-height: 1.45;
+}
+
+.demo-sidepanel ol {
+  margin: 0;
+  padding: 0 0 0 4px;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.demo-sidepanel li {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #c6c6d2;
+}
+
+.demo-sidepanel li .num {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #f0b429;
+  color: #17170f;
+  font: 700 11px/20px sans-serif;
+  text-align: center;
+}
+
+.demo-sidepanel li strong {
+  color: #fff;
+}
+
+.demo-sidepanel li em {
+  color: #f0b429;
+  font-style: normal;
+}
+
+.demo-sidepanel .demo-note {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-left: 3px solid #3d5afe;
+  background: rgba(61, 90, 254, 0.08);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #b9c0e8;
+}
+
+.demo-bottombar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  height: 44px;
+  box-sizing: border-box;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0b0d14;
+}
+
+.demo-hint {
+  font-size: 11px;
+  color: #8b8b99;
+}
+
+.demo-hint kbd {
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.05);
+  color: #d0d0d8;
+  font-family: inherit;
+  font-size: 10px;
+}
+
+/* ===== Candado de selección (UI nueva propuesta) ========================= */
+
+.selection-lock-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(227, 179, 65, 0.55);
+  background: rgba(227, 179, 65, 0.14);
+  color: #e3b341;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.selection-lock-chip svg {
+  width: 8px;
+  height: 8px;
+}
+
+/* Barra del candado: va entre el encabezado del modal y el cuerpo de 3 paneles. */
+.selection-lock-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--sidebar-border);
+  background: rgba(255, 255, 255, 0.02);
+  flex: 0 0 auto;
+}
+
+.selection-lock-bar[data-state="locked"] {
+  background: rgba(227, 179, 65, 0.07);
+  border-bottom-color: rgba(227, 179, 65, 0.35);
+}
+
+.selection-lock-icon {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  border: 1px solid var(--sidebar-border);
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-bar[data-state="locked"] .selection-lock-icon {
+  color: #e3b341;
+  border-color: rgba(227, 179, 65, 0.5);
+  background: rgba(227, 179, 65, 0.1);
+}
+
+.selection-lock-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.selection-lock-main {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.selection-lock-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-state {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--sidebar-border);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--sidebar-fg-dim);
+  text-transform: none;
+}
+
+.selection-lock-state[data-state="locked"] {
+  color: #e3b341;
+  border-color: rgba(227, 179, 65, 0.5);
+  background: rgba(227, 179, 65, 0.12);
+}
+
+.selection-lock-pair {
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.selection-lock-bar[data-state="locked"] .selection-lock-pair {
+  color: #f2d98a;
+}
+
+.selection-lock-hint {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.selection-lock-right {
+  margin-left: auto;
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.selection-lock-scope-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.selection-lock-scope-opt.active {
+  color: var(--sidebar-fg);
+  background: var(--sidebar-hover);
+  border-color: var(--sidebar-border);
+}
+
+/* (v1) La guía "Set the lock with the assignment" ya no existe: la barra
+   muestra en su lugar el control de "Remove lock" con alcance propio. */
+
+.selection-lock-remove {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--sidebar-fg);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.selection-lock-remove:hover {
+  color: #f2d98a;
+  border-color: rgba(227, 179, 65, 0.6);
+  background: rgba(227, 179, 65, 0.1);
+}
+
+/* V2 iteración: "Remove lock" con alcance propio en la barra.
+   Independiente del alcance de "Apply to"; solo cambia protección. */
+.selection-lock-remove-head {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-remove-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 3px 4px;
+}
+
+.selection-lock-scope-opt.empty {
+  opacity: 0.55;
+}
+
+.selection-lock-scope-opt.empty.active {
+  opacity: 1;
+}
+
+.selection-lock-scope-count {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-scope-opt.active .selection-lock-scope-count {
+  color: #f2d98a;
+}
+
+.selection-lock-remove-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.selection-lock-remove-note {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+  white-space: nowrap;
+}
+
+.selection-lock-remove:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.selection-lock-remove:disabled:hover {
+  color: var(--sidebar-fg);
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.selection-lock-remove-done {
+  font-size: 10px;
+  color: #35f2a6;
+}
+
+/* V2: el candado se elige en la botonera con "+ lock"; la barra solo quita. */
+
+/* Vista previa al candar "por tipo": cada réplica conserva su propio par. */
+.selection-lock-kind {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 3px;
+  padding: 6px 12px 7px 52px;
+  border-bottom: 1px solid rgba(227, 179, 65, 0.25);
+  background: rgba(227, 179, 65, 0.04);
+}
+
+.selection-lock-kind-head {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-kind-note {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+  font-style: italic;
+}
+
+.selection-lock-kind-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-kind-row .wg {
+  color: var(--sidebar-accent);
+}
+
+.selection-lock-kind-row .name {
+  color: var(--sidebar-fg);
+}
+
+.selection-lock-kind-row .pair {
+  color: var(--sidebar-fg);
+}
+
+.selection-lock-pill {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.selection-lock-pill.locked {
+  color: #e3b341;
+  border: 1px solid rgba(227, 179, 65, 0.5);
+  background: rgba(227, 179, 65, 0.12);
+}
+
+.selection-lock-pill.will-lock {
+  color: #35f2a6;
+  border: 1px solid rgba(53, 242, 166, 0.4);
+  background: rgba(53, 242, 166, 0.1);
+}
+
+/* Default confirmado por el usuario: futuras réplicas heredan el candado. */
+.selection-lock-future {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 4px;
+  padding: 7px 12px 8px 52px;
+  border-bottom: 1px solid rgba(61, 90, 254, 0.35);
+  background: rgba(61, 90, 254, 0.07);
+}
+
+.selection-lock-future-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--sidebar-fg);
+}
+
+.selection-lock-future .decision-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(53, 242, 166, 0.4);
+  background: rgba(53, 242, 166, 0.1);
+  color: #35f2a6;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.selection-lock-future-note {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--sidebar-fg-dim);
+}
+
+/* Resumen de omisiones en el preview masivo. */
+.agent-scope-lock-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
+.agent-scope-lock-summary .eligible {
+  color: #35f2a6;
+  font-weight: 700;
+}
+
+.agent-scope-lock-summary .protected {
+  color: #e3b341;
+  font-weight: 700;
+}
+
+.agent-scope-target-state {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.agent-scope-target-state.eligible {
+  color: #35f2a6;
+  border: 1px solid rgba(53, 242, 166, 0.4);
+  background: rgba(53, 242, 166, 0.1);
+}
+
+.agent-scope-target-state.protected {
+  color: #e3b341;
+  border: 1px solid rgba(227, 179, 65, 0.5);
+  background: rgba(227, 179, 65, 0.12);
+}
+
+.agent-scope-target-row.protected .agent-scope-target-name,
+.agent-scope-target-row.protected .agent-scope-target-path {
+  opacity: 0.6;
+}
+
+/* Resultado del apply (N actualizadas / M protegidas / K errores). */
+.agent-scope-result {
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid #35f2a6;
+  background: rgba(53, 242, 166, 0.08);
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--sidebar-fg);
+}
+
+.agent-scope-result .protected-note {
+  color: #e3b341;
+}
+
+.agent-scope-result .forced-note {
+  color: #f2d98a;
+}
+
+/* V2: fila de destinos con "+ lock" debajo de "Apply to". */
+.agent-scope-stack {
+  display: grid;
+  gap: 3px;
+}
+
+.agent-scope-picker--lock {
+  padding-top: 5px;
+  border-top: 1px dashed rgba(227, 179, 65, 0.35);
+}
+
+.agent-scope-lock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #e3b341;
+}
+
+.agent-scope-lock-badge svg,
+.agent-scope-opt-lock {
+  width: 10px;
+  height: 10px;
+}
+
+.agent-scope-opt.locked-choice {
+  color: #c8ab6a;
+}
+
+.agent-scope-opt.locked-choice.active {
+  color: #f2d98a;
+  background: rgba(227, 179, 65, 0.14);
+  border-color: rgba(227, 179, 65, 0.55);
+}
+
+.agent-picker-apply-lock {
+  width: 11px;
+  height: 11px;
+  margin-right: 4px;
+}
+
+.agent-scope-lock-assumption {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--sidebar-fg-dim);
+}
+
+.agent-scope-lock-assumption strong {
+  color: #e3b341;
+}
+
+/* V2: cartel de conflictos sobre el modal real (mismos tokens y botones). */
+.lock-conflict-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+}
+
+.lock-conflict-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+}
+
+.lock-conflict-card {
+  position: relative;
+  width: 620px;
+  max-width: 92%;
+  max-height: 78%;
+  overflow-y: auto;
+  padding: 14px 16px 12px;
+  border: 1px solid rgba(227, 179, 65, 0.45);
+  border-radius: 10px;
+  background: var(--sidebar-surface);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(227, 179, 65, 0.06);
+}
+
+.lock-conflict-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f2d98a;
+}
+
+.lock-conflict-sub {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--sidebar-fg-dim);
+}
+
+.lock-conflict-list {
+  margin: 10px 0;
+  display: grid;
+  gap: 4px;
+}
+
+.lock-conflict-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(227, 179, 65, 0.28);
+  background: rgba(227, 179, 65, 0.06);
+  font-size: 10px;
+  color: var(--sidebar-fg);
+}
+
+.lock-conflict-row .wg {
+  color: var(--sidebar-accent);
+}
+
+.lock-conflict-row .name {
+  font-weight: 600;
+}
+
+.lock-conflict-now {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--sidebar-fg-dim);
+}
+
+.lock-conflict-arrow {
+  color: #e3b341;
+}
+
+.lock-conflict-next {
+  color: #f2d98a;
+}
+
+.lock-conflict-effects {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.lock-conflict-effect {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 8px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--sidebar-fg-dim);
+}
+
+.lock-conflict-effect strong {
+  color: var(--sidebar-fg);
+}
+
+.lock-conflict-effect.danger strong {
+  color: var(--status-exited, #ff5d5d);
+}
+
+.lock-conflict-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.lock-conflict-actions .modal-btn.danger {
+  border: 1px solid var(--status-exited, #ff5d5d);
+  color: var(--status-exited, #ff5d5d);
+  background: rgba(255, 93, 93, 0.08);
+}
+
+/* El menú contextual y el overlay reales son position:fixed; dentro de la
+   ventana simulada se anclan al marco. */
+.ac-window .session-context-menu {
+  position: absolute;
+}
+
+.ac-window .modal-overlay {
+  position: absolute;
+}
+
+/* Nota "datos ficticios" dentro de la ventana. */
+.demo-fake-note {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  z-index: 900;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(240, 180, 41, 0.4);
+  background: rgba(10, 10, 15, 0.85);
+  color: #f0b429;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Toast informativo de la maqueta (reusa .toast-item). */
+.toast-host {
+  z-index: 12000;
+  bottom: 56px;
+}
+
+.toast-host .toast-item[hidden] {
+  display: none;
+}
+
+/* Pie del menú contextual: a qué réplica pertenece (solo maqueta). */
+.demo-ctx-target {
+  padding: 4px 12px 2px;
+  border-top: 1px solid var(--sidebar-border);
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+}
