@@ -149,6 +149,23 @@ jobs:
             exit 1
           fi
 
+      # IS #1929: the release step below used to compile and run under a single
+      # 20-minute bound, so on a cold cache the build alone could consume the
+      # whole budget and the step could die after the tests had already passed
+      # (#1917: the same tree was killed at 20m00s on a push run and went green
+      # in 17m25s on a pull request run). Split it the way the dedicated
+      # `issue-1850-windows-profile` job already splits its build and proof:
+      # the build gets room, the run keeps the tight assertion bound. The build
+      # uses the same cargo flags as the run so the run reuses these artifacts
+      # instead of rebuilding.
+      - name: "IS #1850 focused release build"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --lib issue_1850 --no-run
+
       # IS #1850: focused release execution of every issue_1850 test. Guards
       # mirror the #1577 step: pipefail catches a failing test, the identifier
       # greps catch a filter that selected nothing or something else, and the
@@ -402,6 +419,23 @@ jobs:
             echo "::error::the focused #1850 debug run did not report a positive passing count with zero failures."
             exit 1
           }
+
+      # IS #1929: the release step below used to compile and run under a single
+      # 20-minute bound, so on a cold cache the build alone could consume the
+      # whole budget and the step could die after the tests had already passed
+      # (#1917: the same tree was killed at 20m00s on a push run and went green
+      # in 17m25s on a pull request run). Split it the way the dedicated
+      # `issue-1850-windows-profile` job already splits its build and proof:
+      # the build gets room, the run keeps the tight assertion bound. The build
+      # uses the same cargo flags as the run so the run reuses these artifacts
+      # instead of rebuilding.
+      - name: "IS #1850 focused release build"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --lib issue_1850 --no-run
 
       # IS #1850: focused release execution of every issue_1850 test. Guards
       # mirror the #1577 step: pipefail catches a failing test, the identifier
@@ -810,6 +844,23 @@ jobs:
             echo "::error::the focused #1850 debug run did not report a positive passing count with zero failures."
             exit 1
           }
+
+      # IS #1929: the release step below used to compile and run under a single
+      # 20-minute bound, so on a cold cache the build alone could consume the
+      # whole budget and the step could die after the tests had already passed
+      # (#1917: the same tree was killed at 20m00s on a push run and went green
+      # in 17m25s on a pull request run). Split it the way the dedicated
+      # `issue-1850-windows-profile` job already splits its build and proof:
+      # the build gets room, the run keeps the tight assertion bound. The build
+      # uses the same cargo flags as the run so the run reuses these artifacts
+      # instead of rebuilding.
+      - name: "IS #1850 focused release build"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --lib issue_1850 --no-run
 
       # IS #1850: focused release execution of every issue_1850 test. Guards
       # mirror the #1577 step: pipefail catches a failing test, the identifier
