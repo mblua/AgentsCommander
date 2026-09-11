@@ -1,0 +1,4 @@
+# Installed AgentsCommander binaries fetch these paths from main.
+# Read remote-resources/SERVED-PATHS.md before changing anything here.
+/remote-resources/ @mblua
+/docs/home-en.md @mblua
