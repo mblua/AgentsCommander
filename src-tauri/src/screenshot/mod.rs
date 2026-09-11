@@ -8,28 +8,34 @@
 //! Module layout (see plan `_plans/714-active-agent-screenshot-capture.md`):
 //! - This file owns the serializable IPC types shared with the frontend, the
 //!   target-independent hotkey parser, and the managed-state type aliases.
-//! - `windows` owns the native runtime: `xcap` capture, `image` crop/encode,
-//!   clipboard, global shortcut, overlay windows, and the capture lifecycle.
-//! - `unsupported` is the non-Windows stub: same public surface, no native
-//!   screenshot crates, every capture path reports an unsupported status.
+//! - `native` (Windows and Linux/X11) owns the native runtime: `xcap` capture,
+//!   `image` crop/encode, clipboard, global shortcut, overlay windows, and the
+//!   capture lifecycle. Only its window-capture region stays Windows-only.
+//! - `unsupported` is the macOS-and-everything-else stub: same public surface,
+//!   no native screenshot crates, every capture path reports an unsupported
+//!   status.
 //!
 //! `pub use <cfg-module>::*` lets callers use `crate::screenshot::*` without
 //! per-call `cfg` blocks; the two cfg modules each provide
 //! `ScreenshotCaptureLifecycle`, `ScreenshotHotkeyRuntime`, and the runtime
 //! functions referenced by the type aliases and command layer below.
+//!
+//! The `any(target_os = "windows", target_os = "linux")` predicate is
+//! duplicated in `Cargo.toml` (the target dependency tables) and in `lib.rs`
+//! (the plugin cfg); the three must agree.
 
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(target_os = "windows")]
-mod windows;
-#[cfg(target_os = "windows")]
-pub use windows::*;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod native;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub use native::*;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 mod unsupported;
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub use unsupported::*;
 
 /// Short-lived capture lifecycle, guarded by an async mutex. `Starting` is

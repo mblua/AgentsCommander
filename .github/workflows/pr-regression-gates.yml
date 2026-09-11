@@ -307,6 +307,51 @@ jobs:
             exit 1
           }
 
+      # IS #1842: the full suite runs only on the Windows leg, so without this
+      # the screenshot tests would compile on Linux and never execute. The
+      # filter is a MODULE PATH, not the bare word `screenshot`, which would
+      # also match api/mod.rs's window-screenshot limiter tests — gated
+      # `any(target_os = "windows", test)`, compiled for months, never run on
+      # Linux, and lighting those up is what the comment above forbids.
+      - name: cargo test (IS #1842 screenshot module on Linux)
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILTER='screenshot::native::tests::'
+          # 19 pre-existing + overlay_window_traits_match_target + the two
+          # Linux-gated tests. LINUX count (Windows runs 20); update it in the
+          # same commit that adds or removes a test in that module.
+          EXPECTED=22
+          cargo test --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-1842.log
+
+          # Three guards, matching the #1577 step, none redundant:
+          #   1. The exit code, via `set -o pipefail` (LOAD-BEARING through the
+          #      `tee`), catches a test that ran and FAILED.
+          #   2. The sentinel grep is the POSITIVE CONTROL: a filter matching
+          #      nothing exits 0 and prints "0 passed", so green alone proves
+          #      nothing. linux_display_server_classification is Linux-gated and
+          #      cannot exist unless mod.rs really compiled `native` on Linux.
+          #      Not redundant with 3: a sentinel renamed, or moved out of the
+          #      filter, with the count left at 22 keeps guards 1 and 3 green
+          #      and only this grep red -- that is probe P1, measured. The
+          #      other way mod.rs can lose `native` on Linux, narrowing its
+          #      cfg, never reaches this line: the crate stops compiling, cargo
+          #      exits 101, and guard 1 takes it. The match is a PREFIX (-F on
+          #      the module path), so a rename that only appends a suffix stays
+          #      green -- correctly: a Linux-gated test with that prefix still
+          #      ran, which is all this control asserts.
+          #   3. The anchored count is the MUTATION PROBE: gating a test out
+          #      moves the number.
+          grep -qF 'screenshot::native::tests::linux_display_server_classification' test-1842.log || {
+            echo "::error::the Linux-only sentinel test never ran. screenshot::native is not compiling on Linux, or the test was renamed, and this step was testing nothing."
+            exit 1
+          }
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-1842.log || {
+            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER}; the count changed or the filter matched something else."
+            exit 1
+          }
+
       # IS #1850: focused debug execution of every issue_1850 test. Guards
       # mirror the #1577 step: pipefail catches a failing test, the identifier
       # greps catch a filter that selected nothing or something else, and the
@@ -458,6 +503,64 @@ jobs:
       # job does not warn, it dies. They look redundant with
       # rust-regression-linux and someone will eventually try to delete them;
       # do not.
+      # IS #1915: ubuntu-22.04's libspa-0.2-dev (0.3.48) has no `flags` field in
+      # spa/param/video/raw.h and an int64_t `modifier`; libspa 0.9.2 --
+      # reached through xcap 0.9.6 -> pipewire 0.9.2 -> libspa-sys 0.9.2's
+      # build-time bindgen -- writes both and fails to compile with 5 errors
+      # before the linker. 24.04's headers match, which is why every other leg
+      # is green.
+      #
+      # libspa-0.2-dev ships NO library: `pkg-config --libs libspa-0.2` is
+      # empty and the .deb contains zero .so files. This therefore changes the
+      # COMPILE only -- never the link, never a DT_NEEDED, never the shipped
+      # binary's minimum glibc. Do not "simplify" this into moving the runner
+      # or into bumping libpipewire-0.3-dev: the first raises the shipped
+      # minimum glibc, which is the user's decision, and the second is
+      # unnecessary (measured) and would put 1.0.5 headers in front of a
+      # 0.3.48 .so at link time.
+      - name: Use noble libspa-0.2 headers on ubuntu-22.04 (IS #1915)
+        shell: bash
+        env:
+          SPA_DEB: libspa-0.2-dev_1.0.5-1ubuntu3.3_amd64.deb
+          SPA_SHA256: 93a60e7656fb35c97a78159fd0556842c62c2d8b9aff096009f9a20c64c1f272
+          SPA_SNAPSHOT: https://snapshot.ubuntu.com/ubuntu/20260901T000000Z/pool/main/p/pipewire
+          SPA_FALLBACK: https://security.ubuntu.com/ubuntu/pool/main/p/pipewire
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/spa-noble"
+          deb="$RUNNER_TEMP/$SPA_DEB"
+          mkdir -p "$prefix"
+          curl -sSfL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$deb" "$SPA_SNAPSHOT/$SPA_DEB" \
+            || curl -sSfL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$deb" "$SPA_FALLBACK/$SPA_DEB"
+          # The digest is the trust boundary, not the hostname. Both sources are
+          # HTTPS-enforced (--proto/--proto-redir), so a redirect can never
+          # downgrade the transfer and the SonarCloud clear-text/redirect checks
+          # stay green without weakening the pinned-digest gate.
+          echo "$SPA_SHA256  $deb" | sha256sum -c -
+          dpkg-deb -x "$deb" "$prefix"
+          pc="$prefix/usr/lib/x86_64-linux-gnu/pkgconfig/libspa-0.2.pc"
+          sed -i "s|^prefix=/usr$|prefix=$prefix/usr|" "$pc"
+          pcdir="$prefix/usr/lib/x86_64-linux-gnu/pkgconfig"
+          echo "PKG_CONFIG_PATH=$pcdir:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+
+          # Two postconditions, and neither is decoration. PKG_CONFIG_PATH
+          # entries are searched BEFORE pkg-config's built-in path, so the
+          # apt-installed jammy libspa-0.2.pc is shadowed rather than removed
+          # -- and a shadow that silently fails to take reads exactly like a
+          # pass. Guard 1 proves the shadow took; guard 2 proves the shadowing
+          # headers are the ones this fix was measured against, so a future
+          # digest bump to a header set WITHOUT `flags` cannot land green.
+          resolved="$(PKG_CONFIG_PATH="$pcdir" pkg-config --cflags-only-I libspa-0.2)"
+          echo "resolved libspa-0.2 include flags: $resolved"
+          case "$resolved" in
+            *"$prefix"*) ;;
+            *) echo "::error::PKG_CONFIG_PATH did not take; libspa-0.2 still resolves to the runner's 0.3.48 headers and the build will fail in libspa."; exit 1 ;;
+          esac
+          grep -q 'uint32_t flags;' "$prefix/usr/include/spa-0.2/spa/param/video/raw.h" || {
+            echo "::error::the unpacked spa header has no uint32_t flags field; the pinned .deb is not the header set this fix was measured against."
+            exit 1
+          }
+
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
@@ -539,6 +642,59 @@ jobs:
             echo "::error::the release binary has unresolved libraries or symbols on ubuntu-22.04. release.yml's Linux producer will fail here."
             exit 1
           fi
+      # IS #1915, criterion 4. `readelf -d` prints only the DIRECT DT_NEEDED
+      # entries THIS link produced. `ldd` (the step above) prints the whole
+      # transitive closure, where WebKit's dependencies drown the signal --
+      # that is why both steps exist and neither replaces the other.
+      #
+      # libxcb.so.1 and libgbm.so.1 are the two entries only xcap can produce:
+      # `cargo tree -i xcb` and `cargo tree -i gbm` each show exactly one path
+      # to this crate (gbm via libwayshot-xcap 0.3.2), and no build script in
+      # the workspace emits a rustc-link-lib naming either, so gtk/webkit/soup
+      # pkg-config request neither. Both arrive via #[link(name = ...)] in the
+      # xcb and gbm crates.
+      #
+      # Because the toolchain links --as-needed this is a LIVENESS check, not
+      # just a link check: the entries survive only because native.rs calls
+      # Monitor::all -> xcap::platform::impl_monitor::ImplMonitor::all, which
+      # references 8 core xcb_* symbols, and libwayshot references 7 gbm_*
+      # symbols. cfg the Linux xcap block out, or stop calling it, and both
+      # entries disappear.
+      #
+      # Do NOT add libpipewire-0.3.so.0 here. -lpipewire-0.3 does reach the
+      # link, but every pw_* reference in xcap sits in its Wayland VIDEO
+      # RECORDER, which src-tauri never calls, so --as-needed drops it; the
+      # artifact has zero undefined pw_/spa_ symbols. Do NOT add
+      # libxcb-randr.so.0 either: xcb 1.7.0 builds randr requests over the core
+      # connection and emits no -lxcb-randr. Round 13 asserted both and both
+      # are measurably absent.
+      - name: Prove the xcap chain reached the release binary (IS #1915)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=target/release/agentscommander-new
+          test -x "$BIN" || {
+            echo "::error::expected $BIN; the ldd step above should already have failed. Fix both steps together."
+            exit 1
+          }
+          # Two statements, not one pipeline: under `set -o pipefail` a grep
+          # that matched nothing would kill the step here, before the loop
+          # below could say WHICH library is missing.
+          readelf -d "$BIN" > dynamic-1842.log
+          grep NEEDED dynamic-1842.log | sort > needed-1842.log || true
+          cat needed-1842.log
+          # Informational, deliberately NOT an assertion: symbol-table survival
+          # depends on the binary not being stripped, and a future
+          # [profile.release] strip key would fail it for a reason that has
+          # nothing to do with xcap. There is no such key today.
+          echo "xcap symbols present: $(nm -C "$BIN" | grep -c 'xcap::' || true)"
+          for lib in libxcb.so.1 libgbm.so.1; do
+            grep -q "\[$lib\]" needed-1842.log || {
+              echo "::error::$BIN has no direct DT_NEEDED entry for $lib. Either the Linux xcap chain did not reach the binary, or nothing calls it and --as-needed dropped it. The full list is above; report it, do not weaken this assertion."
+              exit 1
+            }
+          done
+
   rust-regression-macos:
     name: rust-regression-macos
     # Skip branch-deletion push events while still requiring pull request validation.

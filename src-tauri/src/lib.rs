@@ -2460,6 +2460,22 @@ pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
     ui_automation_enabled: bool,
 ) -> Result<(), StartupError> {
+    // #1842: FIRST STATEMENT OF run(), deliberately. GTK's Wayland backend
+    // calls wl_display_connect(), which unsetenv()s WAYLAND_SOCKET, so a
+    // session identified only by an inherited fd loses its only signal the
+    // moment GTK starts. Tao initialises GTK when it builds the event loop, in
+    // `.run(..)`; `.setup` and register_configured_hotkey (2809) both run after
+    // that and would read an erased variable and answer X11 — the silent dead
+    // hotkey this phase exists to prevent.
+    //
+    // THE REAL INVARIANT IS "before anything initialises GTK", not "before
+    // `.setup`". §8's controls check the second because it is mechanically
+    // checkable; the two coincide only because nothing in this crate touches
+    // gtk/gdk/tao before the event loop, which §8 control 5 pins. If that ever
+    // stops being true, this line must move, not the control.
+    #[cfg(target_os = "linux")]
+    let display_env = crate::screenshot::display_env_snapshot();
+
     preflight_config_startup()?;
 
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
@@ -2727,12 +2743,13 @@ pub fn run(
     let message_store_state = crate::api::message_store::MessageStoreState::initialize();
     let pty_target_gate_state = message_store_state.target_gate_state();
 
-    // #714 clipboard + global-shortcut plugins are referenced ONLY on Windows so
-    // non-Windows release builds never link them (screenshot capture is
-    // Windows-only for this issue). The rest of the builder chain is shared.
+    // #714/#1842 clipboard + global-shortcut plugins are referenced ONLY on
+    // Windows and Linux so non-Linux, non-Windows (macOS) release builds never
+    // link them. The rest of the builder chain is shared. This predicate must
+    // match `Cargo.toml` and `screenshot/mod.rs`.
     let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     let builder = builder
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
@@ -2744,6 +2761,9 @@ pub fn run(
                 })
                 .build(),
         );
+
+    #[cfg(target_os = "linux")]
+    let builder = builder.manage(display_env);
 
     builder
         .manage(master_token)

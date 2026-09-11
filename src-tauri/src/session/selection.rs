@@ -213,12 +213,18 @@ impl SessionSelection {
         self.displayable
     }
 
-    #[cfg(all(test, target_os = "windows"))]
+    // #1842: compiled on exactly the targets that compile `screenshot::native`,
+    // whose `live_capture_resolution_...` test is the only caller in the crate.
+    // Keep this predicate equal to `screenshot/mod.rs`'s `native` predicate. A
+    // plain `#[cfg(test)]` would leave these caller-less on macOS, where
+    // `native` is not compiled, and `dead_code` under `clippy -D warnings`
+    // would fail `rust-regression-macos`.
+    #[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
     pub(crate) fn live_for_test(id: Uuid) -> Self {
         Self::live(Uuid::new_v4(), 1, SelectionCause::UserSwitch, id)
     }
 
-    #[cfg(all(test, target_os = "windows"))]
+    #[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
     pub(crate) fn dormant_for_test(id: Uuid, exit_code: i32) -> Self {
         Self::dormant(
             Uuid::new_v4(),
@@ -230,7 +236,7 @@ impl SessionSelection {
         )
     }
 
-    #[cfg(all(test, target_os = "windows"))]
+    #[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
     pub(crate) fn none_for_test() -> Self {
         Self::none(Uuid::new_v4(), 1, SelectionCause::AutoClose)
     }

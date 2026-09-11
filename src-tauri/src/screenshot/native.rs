@@ -1,9 +1,11 @@
-//! #714 Windows-native screenshot runtime.
+//! #714 Native screenshot runtime (Windows / Linux-X11).
 //!
-//! Owns every native dependency for the feature: `xcap` desktop capture, `image`
-//! crop/encode, the clipboard plugin, the global-shortcut plugin, overlay window
-//! creation, and the capture lifecycle state machine. The non-Windows sibling
-//! (`super::unsupported`) mirrors this public surface without any of it.
+//! Compiled on Windows and Linux/X11. Owns every native dependency for the
+//! feature: `xcap` desktop capture, `image` crop/encode, the clipboard plugin,
+//! the global-shortcut plugin, overlay window creation, and the capture
+//! lifecycle state machine. Only the #1285 window-capture region stays
+//! Windows-only. The macOS-and-everything-else sibling (`super::unsupported`)
+//! mirrors this public surface without any native screenshot crates.
 //!
 //! Cleanup invariant: Rust owns overlay teardown. Every terminal path (confirm
 //! success/failure, explicit cancel, overlay build failure, stale overlay IPC,
@@ -98,6 +100,210 @@ pub struct ScreenshotHotkeyRuntime {
     pub registered_shortcut: Option<Shortcut>,
 }
 
+// ── Linux display-server detection (#1842) ─────────────────────────────────
+
+/// The refusal message for a Wayland session. The wording is deliberate: it
+/// says *detected as* Wayland, not *is* Wayland, because
+/// [`classify_display_server`] approximates `wl_display_connect(NULL)` and can
+/// produce a false `Wayland` (see its declared false positives). An "is" would
+/// send a user who is already on Xorg to change something that is correct; the
+/// last sentence names the actionable class instead — a stale setting or socket
+/// from an earlier session — without claiming which member fired, because the
+/// classifier cannot tell. The literal `"Xorg"` is asserted by a test.
+#[cfg(target_os = "linux")]
+pub const WAYLAND_UNSUPPORTED: &str = "Screenshot capture needs an X11 session, and this one was detected as Wayland, so the hotkey was not registered. Log out and choose the Xorg option (on Ubuntu: \"Ubuntu on Xorg\") at the login screen, then start AgentsCommander again. If you are already on Xorg, a Wayland setting or socket left over from an earlier session caused this: start AgentsCommander from a fresh login shell, not from a terminal multiplexer or service that was started under Wayland.";
+
+/// The display server the capture path believes it is running under.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxDisplayServer {
+    X11,
+    Wayland,
+}
+
+/// One read of the environment signals that decide [`classify_display_server`].
+/// Split from the classifier so the classifier stays pure and the whole table is
+/// unit-testable with no environment or filesystem setup. The field set is
+/// exactly the inputs that function reads; its docs carry what is excluded from
+/// the snapshot and why (a field written but never read fails
+/// `cargo clippy --all-targets -- -D warnings`, and a field that exists at all
+/// invites the next reader to write a rule for it).
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default, Clone)]
+pub struct DisplayEnvSnapshot {
+    pub xdg_session_type: Option<String>,
+    pub wayland_display: Option<String>,
+    pub wayland_socket: Option<String>,
+    pub default_socket_present: bool,
+}
+
+/// Take the environment/filesystem snapshot that later decides the display
+/// server. The filesystem probe (the `wayland-0` socket under
+/// `$XDG_RUNTIME_DIR`) lives HERE, in the impure snapshot function, precisely so
+/// the classifier stays pure and the whole table stays unit-testable with no
+/// environment or filesystem setup.
+///
+/// WHEN this is called is part of the design: it must be the FIRST STATEMENT of
+/// `lib.rs::run()`, before anything initialises GTK. GTK's Wayland backend calls
+/// `wl_display_connect()`, which consumes an inherited descriptor and then
+/// `unsetenv("WAYLAND_SOCKET")`; a call from `.setup` or from
+/// `register_configured_hotkey` would read an erased variable and answer `X11`
+/// for a session reached only by an inherited fd — the silent dead hotkey this
+/// whole phase exists to prevent. This function must have exactly ONE call site
+/// in the crate (`lib.rs::run`); §8's placement controls and probe P6 pin that.
+///
+/// `false` when `XDG_RUNTIME_DIR` is unset or any step errors; a `wayland-0`
+/// that exists but is a regular file or directory is not a socket.
+#[cfg(target_os = "linux")]
+pub fn display_env_snapshot() -> DisplayEnvSnapshot {
+    let default_socket_present = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .and_then(|dir| std::fs::metadata(dir.join("wayland-0")).ok())
+        .map(|meta| {
+            use std::os::unix::fs::FileTypeExt;
+            meta.file_type().is_socket()
+        })
+        .unwrap_or(false);
+    DisplayEnvSnapshot {
+        xdg_session_type: std::env::var("XDG_SESSION_TYPE").ok(),
+        wayland_display: std::env::var("WAYLAND_DISPLAY").ok(),
+        wayland_socket: std::env::var("WAYLAND_SOCKET").ok(),
+        default_socket_present,
+    }
+}
+
+/// Classify the session as X11 or Wayland from a snapshot, pure. Rules, in
+/// order (each step is the next connection path `wl_display_connect(NULL)`
+/// itself would try):
+///
+/// 1. `XDG_SESSION_TYPE`: contains `wayland` -> `Wayland`; contains `x11` ->
+///    `X11`. logind/PAM sets this, so it is the session manager's own statement
+///    of what the session is, and it outranks every socket signal: a real X11
+///    session that inherited a stale `WAYLAND_DISPLAY` must stay `X11`.
+/// 2. `WAYLAND_SOCKET` set, non-blank and parsing as a non-negative integer
+///    (`trim().parse::<u32>().is_ok()`) -> `Wayland`. This is an
+///    already-connected fd inherited from the parent; no other variable need be
+///    set at all. A non-numeric value cannot be a descriptor — libwayland
+///    treats it as an error, not a connection — and a blank value is an error
+///    there too, so both are treated as absent.
+/// 3. `WAYLAND_DISPLAY` set and non-blank -> `Wayland`.
+/// 4. `default_socket_present` -> `Wayland`. `wl_display_connect(NULL)` falls
+///    back to the literal `wayland-0` under `$XDG_RUNTIME_DIR` when
+///    `WAYLAND_DISPLAY` is unset, so a live compositor there is a Wayland
+///    session even with `XDG_SESSION_TYPE` unset (the XWayland trap).
+/// 5. Otherwise `X11`. The default is defended by construction, not by the
+///    false claim that every Wayland compositor exports `WAYLAND_DISPLAY`:
+///    reaching rule 5 means every path `wl_display_connect(NULL)` would take has
+///    been checked and none of them would connect. A compositor no Wayland
+///    client could reach is not a session this app runs under as a Wayland
+///    client, so `X11` is the only reading left — and it is the one that does
+///    not disable a working feature.
+///
+/// `DISPLAY` is NOT a signal. Under GNOME/Wayland with XWayland both it and
+/// `WAYLAND_DISPLAY` are set — precisely the case this classifier exists to
+/// catch, because the X11 grab there registers and never fires.
+///
+/// `GDK_BACKEND` is NOT a signal either, and no parse of it would be correct.
+/// It is an ordered, comma-separated list of backends to try (`x11,wayland`
+/// means "X11 first"), so a `contains("wayland")` test would disable the
+/// feature on a working X11 session. It also answers a different question: it
+/// selects the toolkit backend for GTK's own windows, and the hotkey grab does
+/// not go through GDK at all — `global-hotkey` talks raw X11, which under a
+/// Wayland session means XWayland whatever GTK chose. `GDK_BACKEND=x11` inside
+/// a Wayland session is still a Wayland session; honouring it would ship
+/// exactly the silently dead hotkey §3.6 exists to prevent, the more dangerous
+/// error because it is invisible.
+///
+/// ## Declared false positives — the rules approximate `wl_display_connect`,
+/// they do not reimplement it
+///
+/// Where libwayland would *fail to connect*, these rules may still answer
+/// `Wayland`. The bias is deliberate: a false `Wayland` is a visible refusal
+/// carrying an actionable message, while a false `X11` is the silent dead
+/// hotkey this whole phase exists to prevent. The malformed cases are closed
+/// cheaply: a blank `WAYLAND_SOCKET`/`WAYLAND_DISPLAY` is an error in
+/// libwayland, not a fallback, so blank is treated as absent; a non-numeric
+/// `WAYLAND_SOCKET` cannot be an inherited fd; and a `wayland-0` that exists
+/// but is a regular file or a directory is not a socket.
+///
+/// The whole *stale* class is accepted, not just an orphaned `wayland-0`.
+/// Every signal these rules read is a claim about a connection; none of them is
+/// the connection, and that includes rule 1: the process reads
+/// `XDG_SESSION_TYPE` from its inherited environment, not from logind at call
+/// time. So all of these classify `Wayland` with nothing listening: a stale
+/// `XDG_SESSION_TYPE=wayland` carried across a re-login by a long-lived process
+/// (`tmux`/`screen`/`systemd --user`); a numeric `WAYLAND_SOCKET` whose fd is
+/// closed or is not a Wayland connection (a leaked descriptor number); any
+/// named or absolute `WAYLAND_DISPLAY` pointing at an unreachable or dead
+/// compositor; and a `wayland-0` left by a dead compositor or reachable only
+/// through an inherited `XDG_RUNTIME_DIR` (`sudo -E`, a shared container
+/// runtime dir). Ruling the socket members out means connecting, which means
+/// linking libwayland purely for detection — disproportionate for a detector,
+/// and it would have to happen at the capture point where a blocking connect is
+/// exactly what must not run. Ruling the label member out means asking logind
+/// instead of the environment, a D-Bus round trip at the same point.
+///
+/// There is also a deliberate asymmetry: where libwayland gives up outright — a
+/// blank or non-numeric `WAYLAND_SOCKET` aborts the connection entirely — this
+/// classifier falls through to the lower signals and may still answer
+/// `Wayland` on their evidence. That is the conservative bias applied
+/// consistently, not an oversight.
+///
+/// Rule 1 does not fence the class off — it is a member of it, because the
+/// label is inherited rather than fetched. What rule 1 does is bound the three
+/// *socket* members to sessions with no label at all. The mirror of the label
+/// member is the accepted false negative: a stale `XDG_SESSION_TYPE=x11` inside
+/// a live Wayland session answers `X11` and ships the silent dead hotkey. That
+/// is the cost of trusting the label, taken deliberately; `WAYLAND_UNSUPPORTED`
+/// says *detected as* Wayland rather than asserting the session type for
+/// exactly this reason. E5b (§9.5) is what checks the whole classification
+/// against a live host.
+#[cfg(target_os = "linux")]
+pub fn classify_display_server(env: &DisplayEnvSnapshot) -> LinuxDisplayServer {
+    let lowercased = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default()
+    };
+
+    // Rule (1): the session manager's own label outranks every socket signal.
+    let xdg_session_type = lowercased(&env.xdg_session_type);
+    if xdg_session_type.contains("wayland") {
+        return LinuxDisplayServer::Wayland;
+    }
+    if xdg_session_type.contains("x11") {
+        return LinuxDisplayServer::X11;
+    }
+
+    // Rule (2): an inherited, already-connected fd. Must parse as a descriptor.
+    if let Some(socket) = env.wayland_socket.as_deref() {
+        let socket = socket.trim();
+        if !socket.is_empty() && socket.parse::<u32>().is_ok() {
+            return LinuxDisplayServer::Wayland;
+        }
+    }
+
+    // Rule (3): a named or absolute Wayland socket.
+    if env
+        .wayland_display
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return LinuxDisplayServer::Wayland;
+    }
+
+    // Rule (4): `wl_display_connect(NULL)`'s literal `wayland-0` fallback.
+    if env.default_socket_present {
+        return LinuxDisplayServer::Wayland;
+    }
+
+    // Rule (5).
+    LinuxDisplayServer::X11
+}
+
 // ── Hotkey registration ────────────────────────────────────────────────────
 
 fn parsed_to_shortcut(parsed: &ParsedHotkey) -> Result<Shortcut, String> {
@@ -134,6 +340,25 @@ fn key_char_to_code(c: char) -> Option<Code> {
 pub fn register_configured_hotkey(app: &AppHandle, configured: &str) -> Result<(), String> {
     let parsed = super::parse_screenshot_hotkey(configured)?;
     let shortcut = parsed_to_shortcut(&parsed)?;
+
+    #[cfg(target_os = "linux")]
+    if classify_display_server(&app.state::<DisplayEnvSnapshot>()) == LinuxDisplayServer::Wayland {
+        // The snapshot is READ here and TAKEN in run() during builder assembly
+        // (§3.5.1). Do not replace this with a call to display_env_snapshot():
+        // by the time this line runs, GTK has already unsetenv()'d
+        // WAYLAND_SOCKET and a fresh read would answer X11 for a Wayland
+        // session reached by an inherited fd.
+        // Must precede app.global_shortcut(): under XWayland the grab SUCCEEDS
+        // and then never fires. An honest unregistered status here is what
+        // turns a silently dead hotkey into the sticky toast that
+        // src/sidebar/listeners-screenshot.ts:47 already renders from
+        // `!registered && error`. No frontend change.
+        let state = app.state::<ScreenshotHotkeyState>();
+        let mut runtime = state.lock().unwrap();
+        runtime.registered_shortcut = None;
+        runtime.status = hotkey_status_after_attempt(configured, Err(WAYLAND_UNSUPPORTED));
+        return Err(WAYLAND_UNSUPPORTED.to_string());
+    }
 
     let gs = app.global_shortcut();
     let state = app.state::<ScreenshotHotkeyState>();
@@ -199,12 +424,34 @@ fn hotkey_status_after_attempt(
 
 /// Outcome of a `begin_capture` attempt. `Busy` is the typed no-op path for a
 /// debounced repeat press (a capture is already starting/active/finishing): the
-/// hotkey handler must NOT surface it, because bringing the app forward mid-flight
-/// would pollute the frozen screenshot and show a bogus failure. Only a genuine
-/// `Err` is surfaced.
+/// hotkey handler must NOT surface it, because bringing the app forward
+/// mid-flight would pollute the frozen screenshot and show a bogus failure.
+/// Only a genuine `Err` is surfaced.
+///
+/// The payload is the capture THIS press is entitled to cancel. It is `None`
+/// whenever the press must not cancel anything:
+///   - `Finishing` — another path already owns that capture's teardown;
+///   - "superseded before overlays opened" (the tail of `begin_capture`) — the
+///     reporting task is its own stale self, and the lifecycle now belongs to a
+///     later press it never observed.
+///
+/// Naming the capture instead of passing `None` is what stops the Linux
+/// second-press cancel from destroying an unrelated capture (#1842).
 pub enum BeginOutcome {
     Started,
-    Busy,
+    Busy(Option<Uuid>),
+}
+
+/// The capture a repeat press may cancel. Mirrors the `Starting`/`Active` arms
+/// of `clear_capture_and_destroy_overlays`, which are the only states it clears.
+/// Matched exhaustively on purpose: a new lifecycle state must be a compile
+/// error here, never a silent `None`.
+fn cancellable_capture_id(state: &ScreenshotCaptureLifecycle) -> Option<Uuid> {
+    match state {
+        ScreenshotCaptureLifecycle::Starting(s) => Some(s.id),
+        ScreenshotCaptureLifecycle::Active(c) => Some(c.id),
+        ScreenshotCaptureLifecycle::Finishing(_) | ScreenshotCaptureLifecycle::Idle => None,
+    }
 }
 
 /// Global-shortcut handler entry. Spawns the async capture and, on any genuine
@@ -215,8 +462,36 @@ pub fn begin_capture_from_hotkey(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         match begin_capture(app.clone()).await {
             Ok(BeginOutcome::Started) => {}
-            Ok(BeginOutcome::Busy) => {
-                log::debug!("[screenshot] hotkey ignored: a capture is already in progress");
+            Ok(BeginOutcome::Busy(cancellable)) => {
+                // Cancelling on a repeat press is Linux-specific: Escape reaches
+                // the overlay only if the WM granted keyboard focus, and Mutter
+                // declined `focused(true)` in 4 of 6 spike runs (E5a). A
+                // fullscreen, always-on-top, decorationless, skip-taskbar
+                // overlay across every monitor that cannot be dismissed is the
+                // worst failure available, and the global grab is ours and
+                // focus-independent. Accepted cost: an accidental double-tap
+                // cancels instead of being ignored (epic R4). Windows keeps
+                // today's silent no-op.
+                #[cfg(target_os = "linux")]
+                if let Some(id) = cancellable {
+                    let state = app.state::<ScreenshotCaptureState>();
+                    let _ = clear_capture_and_destroy_overlays(
+                        &app,
+                        state.inner(),
+                        Some(id),
+                        "second hotkey press cancelled the capture",
+                    )
+                    .await;
+                } else {
+                    log::debug!("[screenshot] hotkey ignored: nothing this press may cancel");
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    // Bind the payload so it is not `unused` under
+                    // `cargo clippy --all-targets -- -D warnings` off Linux.
+                    let _ = cancellable;
+                    log::debug!("[screenshot] hotkey ignored: a capture is already in progress");
+                }
             }
             Err(e) => surface_hotkey_failure(&app, &e),
         }
@@ -294,8 +569,10 @@ pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
         if !matches!(&*guard, ScreenshotCaptureLifecycle::Idle) {
             // A capture is already starting/active/finishing: a debounced repeat
             // press. No-op (do NOT surface a failure or raise the window, which
-            // would pollute the in-flight frozen capture).
-            return Ok(BeginOutcome::Busy);
+            // would pollute the in-flight frozen capture). Answer from the lock
+            // that observed the state: the payload is the capture this press is
+            // entitled to cancel.
+            return Ok(BeginOutcome::Busy(cancellable_capture_id(&guard)));
         }
         *guard = ScreenshotCaptureLifecycle::Starting(ScreenshotCaptureStarting {
             id: capture_id,
@@ -330,9 +607,10 @@ pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
             matches!(&*guard, ScreenshotCaptureLifecycle::Starting(s) if s.id == capture_id);
         if !still_ours {
             // Superseded/cancelled while capturing: do not open overlays. This is
-            // a no-op, not a visible failure.
+            // a no-op, not a visible failure. `None`: this task no longer owns
+            // the lifecycle, so it must not cancel whatever does.
             log::debug!("[screenshot] capture {capture_id} superseded before overlays opened");
-            return Ok(BeginOutcome::Busy);
+            return Ok(BeginOutcome::Busy(None));
         }
         *guard = ScreenshotCaptureLifecycle::Active(ActiveScreenshotCapture {
             id: capture_id,
@@ -396,7 +674,7 @@ async fn busy_pregate(state: &ScreenshotCaptureState) -> Option<BeginOutcome> {
     if matches!(&*guard, ScreenshotCaptureLifecycle::Idle) {
         None
     } else {
-        Some(BeginOutcome::Busy)
+        Some(BeginOutcome::Busy(cancellable_capture_id(&guard)))
     }
 }
 
@@ -408,6 +686,18 @@ async fn reset_starting_if_matches(app: &AppHandle, id: Uuid) {
     }
 }
 
+// #1842: the window-capture region is Windows-only. Its consumers are gated
+// separately (`cli/mod.rs:28-31`, `api/handlers/mod.rs:60-61`); ungated on
+// Linux, `pub(crate) capture_window_png` and `parse_window_id` are dead code and
+// `cargo clippy --all-targets -- -D warnings` fails. Do NOT widen these to
+// `#[cfg(any(target_os = "windows", test))]`:
+// `crate::api::WINDOW_SCREENSHOT_MAX_PNG_BYTES` (`api/mod.rs:60-61`) is
+// `#[cfg(target_os = "windows")]` with no `test` arm, unlike its siblings at
+// 51-63, so the widened form breaks the Linux test compile. The compiler is the
+// completeness check: a non-gated `impl` for a gated type is a hard error. The
+// imports stay used off Windows (`std::io::Write as _` at the save path, the
+// `image::` items in the preview encoder), so no import becomes unused.
+#[cfg(target_os = "windows")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WindowScreenshotCaptureError {
     NotFound,
@@ -415,6 +705,7 @@ pub(crate) enum WindowScreenshotCaptureError {
     Unavailable,
 }
 
+#[cfg(target_os = "windows")]
 trait TargetWindowCaptureOps {
     type Window;
     type Image;
@@ -432,8 +723,10 @@ trait TargetWindowCaptureOps {
     ) -> Result<Vec<u8>, WindowScreenshotCaptureError>;
 }
 
+#[cfg(target_os = "windows")]
 struct XcapTargetWindowCaptureOps;
 
+#[cfg(target_os = "windows")]
 impl TargetWindowCaptureOps for XcapTargetWindowCaptureOps {
     type Window = xcap::Window;
     type Image = image::RgbaImage;
@@ -477,12 +770,14 @@ impl TargetWindowCaptureOps for XcapTargetWindowCaptureOps {
     }
 }
 
+#[cfg(target_os = "windows")]
 struct BoundedPngWriter {
     bytes: Vec<u8>,
     maximum: usize,
     exceeded: bool,
 }
 
+#[cfg(target_os = "windows")]
 impl BoundedPngWriter {
     fn new(maximum: usize) -> Self {
         Self {
@@ -497,6 +792,7 @@ impl BoundedPngWriter {
     }
 }
 
+#[cfg(target_os = "windows")]
 impl std::io::Write for BoundedPngWriter {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         if buffer.len() > self.maximum.saturating_sub(self.bytes.len()) {
@@ -512,6 +808,7 @@ impl std::io::Write for BoundedPngWriter {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn encode_png_bounded(image: &image::RgbaImage) -> Result<Vec<u8>, WindowScreenshotCaptureError> {
     let width = image.width();
     let height = image.height();
@@ -536,6 +833,7 @@ fn encode_png_bounded(image: &image::RgbaImage) -> Result<Vec<u8>, WindowScreens
     Ok(writer.into_bytes())
 }
 
+#[cfg(target_os = "windows")]
 fn capture_window_worker<T: TargetWindowCaptureOps>(
     ops: &mut T,
     window_id: &str,
@@ -601,6 +899,7 @@ fn capture_window_worker<T: TargetWindowCaptureOps>(
 /// request future may be dropped (client disconnect) while the task runs; the
 /// lease still bounds capacity for the full native lifetime, and the dropped
 /// request can neither publish a response nor retain the result.
+#[cfg(target_os = "windows")]
 pub(crate) async fn capture_window_png(
     window_id: String,
     lease: crate::api::WindowScreenshotLease,
@@ -620,6 +919,7 @@ pub(crate) async fn capture_window_png(
 /// Canonical window-id validation shared by the HTTP route and the CLI verbs.
 /// Accepts only the canonical ASCII decimal rendering of an xcap window id:
 /// nonempty, at most 20 digits, no leading zeros except "0", parseable as u64.
+#[cfg(target_os = "windows")]
 pub(crate) fn parse_window_id(raw_window_id: &str) -> Option<String> {
     let bytes = raw_window_id.as_bytes();
     if bytes.is_empty()
@@ -633,7 +933,7 @@ pub(crate) fn parse_window_id(raw_window_id: &str) -> Option<String> {
     Some(raw_window_id.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 mod window_screenshot_tests {
     use super::*;
     use std::io::Write;
@@ -924,6 +1224,40 @@ fn overlay_label(capture_id: Uuid, monitor_id: u32) -> String {
     format!("screenshot-overlay-{}-{}", capture_id.simple(), monitor_id)
 }
 
+/// Per-target overlay window configuration. A genuine behavioural divergence,
+/// not an attribute — and a value rather than a `#[cfg]` inside the function,
+/// so it is unit-testable (`open_overlay_windows` needs an `AppHandle`).
+///
+/// Measured (E5a, Mutter 46.2): a `_NET_WM_WINDOW_TYPE_NORMAL` overlay is
+/// constrained into `_NET_WORKAREA`, so it landed at `+0+32`, never covering
+/// the GNOME top bar, and re-issuing `set_position` did not move it; only
+/// fullscreen escapes the struts. `resizable(false)` silently blocks fullscreen
+/// by setting `min == max` size hints while Tauri still returns `Ok(())`.
+/// `resizable(true)` + `set_fullscreen(true)` measured `2560x1440+0+0`, Δ = 0 on
+/// all four values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverlayWindowTraits {
+    resizable: bool,
+    fullscreen: bool,
+}
+
+const fn overlay_window_traits() -> OverlayWindowTraits {
+    #[cfg(target_os = "linux")]
+    {
+        OverlayWindowTraits {
+            resizable: true,
+            fullscreen: true,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        OverlayWindowTraits {
+            resizable: false,
+            fullscreen: false,
+        }
+    }
+}
+
 /// Build one transparent, always-on-top overlay per monitor. Mirrors the
 /// Resource Monitor builder (`commands::window`): logical inner size/position from
 /// the monitor scale, corrected to physical bounds post-build. On any failure the
@@ -935,6 +1269,7 @@ fn open_overlay_windows(
 ) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+    let traits = overlay_window_traits();
     for p in placements {
         let scale = if p.scale_factor > 0.0 {
             p.scale_factor
@@ -951,7 +1286,7 @@ fn open_overlay_windows(
             .transparent(true)
             .always_on_top(true)
             .skip_taskbar(true)
-            .resizable(false)
+            .resizable(traits.resizable)
             .focused(true)
             .zoom_hotkeys_enabled(false)
             .inner_size(p.width as f64 / scale, p.height as f64 / scale)
@@ -971,6 +1306,15 @@ fn open_overlay_windows(
                 y: p.y,
             }))
             .map_err(|e| format!("failed to position overlay '{}': {e}", p.label))?;
+
+        if traits.fullscreen {
+            // AFTER set_position: fullscreen targets the monitor the window
+            // is on. Tauri returns Ok(()) even when the WM declines (E5a), so
+            // this is best-effort and must not fail the capture.
+            if let Err(e) = window.set_fullscreen(true) {
+                log::warn!("[screenshot] overlay '{}' fullscreen refused: {e}", p.label);
+            }
+        }
     }
     Ok(())
 }
@@ -1379,6 +1723,10 @@ fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
     if meta.file_type().is_symlink() {
         return true;
     }
+    // Junctions and reparse points do not exist outside Windows, so the
+    // `is_symlink()` check above is the complete Linux answer. `meta` stays used
+    // on every target, so no `unused` lint fires.
+    #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
@@ -1485,14 +1833,34 @@ fn revalidate_replica_target(target: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Build an absolute, multi-component path for the current target. The old
+    /// `r"C:\proj\.ac\..."` literals are ONE path component on Linux (a
+    /// backslash is an ordinary filename character there), so `find_replica_root`
+    /// walked to `None` regardless of content: one test failed outright and three
+    /// passed vacuously, since every assertion in them is `is_none()` or `is_err()`.
+    fn abs_path(parts: &[&str]) -> PathBuf {
+        #[cfg(target_os = "windows")]
+        let mut p = PathBuf::from(r"C:\");
+        #[cfg(not(target_os = "windows"))]
+        let mut p = PathBuf::from("/");
+        for part in parts {
+            p.push(part);
+        }
+        p
+    }
+
     #[tokio::test]
     async fn live_capture_resolution_rejects_none_and_dormant_before_accepting_live() {
         let manager = crate::session::manager::SessionManager::new();
+        // A real directory: whether `SessionManager::create_session` canonicalizes
+        // its cwd on Linux is unknown from a source read, so a real path removes
+        // the question.
+        let cwd = tempfile::TempDir::new().expect("cwd fixture");
         let session = manager
             .create_session(
                 "shell".to_string(),
                 Vec::new(),
-                "C:/work".to_string(),
+                cwd.path().to_string_lossy().into_owned(),
                 None,
                 None,
                 Vec::new(),
@@ -1537,37 +1905,60 @@ mod tests {
 
     #[test]
     fn find_replica_root_accepts_replica_and_subdirs() {
-        let replica = Path::new(r"C:\proj\.ac\wg-6-team\__agent_dev_rust");
-        assert_eq!(find_replica_root(replica).as_deref(), Some(replica));
-
-        let child = Path::new(r"C:\proj\.ac\wg-6-team\__agent_dev_rust\sub\deeper");
+        let replica = abs_path(&["proj", ".ac", "wg-6-team", "__agent_dev_rust"]);
         assert_eq!(
-            find_replica_root(child).as_deref(),
-            Some(Path::new(r"C:\proj\.ac\wg-6-team\__agent_dev_rust"))
+            find_replica_root(&replica).as_deref(),
+            Some(replica.as_path())
+        );
+
+        let child = abs_path(&[
+            "proj",
+            ".ac",
+            "wg-6-team",
+            "__agent_dev_rust",
+            "sub",
+            "deeper",
+        ]);
+        assert_eq!(
+            find_replica_root(&child).as_deref(),
+            Some(replica.as_path())
         );
     }
 
     #[test]
     fn find_replica_root_rejects_non_replica_paths() {
         // Ad-hoc CWD.
-        assert!(find_replica_root(Path::new(r"C:\tmp")).is_none());
+        assert!(find_replica_root(&abs_path(&["tmp"])).is_none());
         // repo-* workgroup sibling (parent is wg-*, but name is not __agent_*).
-        assert!(
-            find_replica_root(Path::new(r"C:\proj\.ac\wg-6-team\repo-AgentsCommander")).is_none()
-        );
+        assert!(find_replica_root(&abs_path(&[
+            "proj",
+            ".ac",
+            "wg-6-team",
+            "repo-AgentsCommander"
+        ]))
+        .is_none());
         // __agent_* whose parent is NOT a wg-* folder.
-        assert!(find_replica_root(Path::new(r"C:\proj\__agent_x")).is_none());
+        assert!(find_replica_root(&abs_path(&["proj", "__agent_x"])).is_none());
         // Root-agent directory name.
-        assert!(find_replica_root(Path::new(r"C:\proj\.ac\ac-root-agent")).is_none());
+        assert!(find_replica_root(&abs_path(&["proj", ".ac", "ac-root-agent"])).is_none());
     }
 
     #[test]
     fn resolve_rejects_missing_and_non_replica() {
-        // Non-replica path: rejected before any filesystem access.
-        assert!(resolve_session_replica_root(r"C:\definitely\not\a\replica").is_err());
-        // Replica-shaped but missing on disk: symlink_metadata fails.
-        let missing = format!(r"C:\proj\.ac\wg-6-team\__agent_{}", Uuid::new_v4().simple());
-        assert!(resolve_session_replica_root(&missing).is_err());
+        // A missing path is rejected by `canonicalize`, which runs FIRST; the
+        // stale comment here used to claim rejection "before any filesystem
+        // access".
+        let missing_non_replica = abs_path(&["definitely", "not", "a", "replica"]);
+        assert!(resolve_session_replica_root(&missing_non_replica.to_string_lossy()).is_err());
+        // Replica-shaped but missing on disk: canonicalize fails.
+        let missing_name = format!("__agent_{}", Uuid::new_v4().simple());
+        let missing = abs_path(&["proj", ".ac", "wg-6-team", missing_name.as_str()]);
+        assert!(resolve_session_replica_root(&missing.to_string_lossy()).is_err());
+        // A real, existing directory that is simply not a replica: rejected by
+        // the ancestor walk, not by canonicalization. Without this, every
+        // assertion above still passes on any input that fails to canonicalize.
+        let real = tempfile::TempDir::new().unwrap();
+        assert!(resolve_session_replica_root(&real.path().to_string_lossy()).is_err());
     }
 
     #[test]
@@ -1701,28 +2092,34 @@ mod tests {
             std::sync::Arc::new(tokio::sync::Mutex::new(ScreenshotCaptureLifecycle::Idle));
         assert!(busy_pregate(&idle).await.is_none());
 
-        // Every non-Idle state returns Busy. Because busy_pregate takes ONLY the
-        // lifecycle state (no AppHandle/SessionManager) it structurally cannot run
-        // the active-session/CWD resolution begin_capture does afterwards, proving
+        // Every non-Idle state returns Busy carrying the capture this press may
+        // cancel. Because busy_pregate takes ONLY the lifecycle state (no
+        // AppHandle/SessionManager) it structurally cannot run the
+        // active-session/CWD resolution begin_capture does afterwards, proving
         // the Busy no-op happens before any fallible resolution could surface an
         // Err and raise AC mid-capture (Grinch #714 HIGH pre-gate ordering).
+        let starting_id = Uuid::new_v4();
         let starting: ScreenshotCaptureState = std::sync::Arc::new(tokio::sync::Mutex::new(
             ScreenshotCaptureLifecycle::Starting(ScreenshotCaptureStarting {
-                id: Uuid::new_v4(),
+                id: starting_id,
                 target_session_id: Uuid::new_v4(),
                 target_session_name: "s".to_string(),
                 target_directory: PathBuf::from("x"),
                 created_at: Utc::now(),
             }),
         ));
+        // The guard is what compares. A pattern-position `starting_id` would be a
+        // FRESH binding shadowing the fixture, matching any Some(_) — the
+        // assertion would pass for the wrong id and no probe would notice.
         assert!(matches!(
             busy_pregate(&starting).await,
-            Some(BeginOutcome::Busy)
+            Some(BeginOutcome::Busy(Some(id))) if id == starting_id
         ));
 
+        let active_id = Uuid::new_v4();
         let active: ScreenshotCaptureState = std::sync::Arc::new(tokio::sync::Mutex::new(
             ScreenshotCaptureLifecycle::Active(ActiveScreenshotCapture {
-                id: Uuid::new_v4(),
+                id: active_id,
                 target_session_id: Uuid::new_v4(),
                 target_session_name: "s".to_string(),
                 target_directory: PathBuf::from("x"),
@@ -1733,15 +2130,18 @@ mod tests {
         ));
         assert!(matches!(
             busy_pregate(&active).await,
-            Some(BeginOutcome::Busy)
+            Some(BeginOutcome::Busy(Some(id))) if id == active_id
         ));
 
+        let finishing_id = Uuid::new_v4();
         let finishing: ScreenshotCaptureState = std::sync::Arc::new(tokio::sync::Mutex::new(
-            ScreenshotCaptureLifecycle::Finishing(Uuid::new_v4()),
+            ScreenshotCaptureLifecycle::Finishing(finishing_id),
         ));
+        // `None` is a literal pattern with no binding, so this one is sensitive
+        // as written — it is the assertion P4 fails against.
         assert!(matches!(
             busy_pregate(&finishing).await,
-            Some(BeginOutcome::Busy)
+            Some(BeginOutcome::Busy(None))
         ));
     }
 
@@ -1845,5 +2245,178 @@ mod tests {
         assert!(name.ends_with(".png"));
         // Contains the 8-char short id.
         assert!(name.contains(&id.simple().to_string()[..8]));
+    }
+
+    #[test]
+    fn overlay_window_traits_match_target() {
+        // Guards the divergence both ways: Windows must never gain fullscreen,
+        // Linux must never lose `resizable(true)` (which silently blocks
+        // fullscreen by setting min == max size hints while Tauri returns Ok).
+        let expected = OverlayWindowTraits {
+            resizable: cfg!(target_os = "linux"),
+            fullscreen: cfg!(target_os = "linux"),
+        };
+        assert_eq!(overlay_window_traits(), expected);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_display_server_classification() {
+        struct Case {
+            n: u32,
+            xdg_session_type: Option<&'static str>,
+            wayland_socket: Option<&'static str>,
+            wayland_display: Option<&'static str>,
+            default_socket_present: bool,
+            expected: LinuxDisplayServer,
+        }
+        let cases = [
+            Case {
+                n: 1,
+                xdg_session_type: Some("x11"),
+                wayland_socket: None,
+                wayland_display: None,
+                default_socket_present: false,
+                expected: LinuxDisplayServer::X11,
+            },
+            Case {
+                n: 2,
+                xdg_session_type: Some("wayland"),
+                wayland_socket: None,
+                wayland_display: None,
+                default_socket_present: false,
+                expected: LinuxDisplayServer::Wayland,
+            },
+            Case {
+                n: 3,
+                xdg_session_type: Some("Wayland"),
+                wayland_socket: None,
+                wayland_display: None,
+                default_socket_present: false,
+                expected: LinuxDisplayServer::Wayland,
+            },
+            Case {
+                n: 4,
+                xdg_session_type: Some("x11"),
+                wayland_socket: None,
+                wayland_display: Some("wayland-0"),
+                default_socket_present: false,
+                expected: LinuxDisplayServer::X11,
+            },
+            Case {
+                n: 5,
+                xdg_session_type: Some("wayland"),
+                wayland_socket: None,
+                wayland_display: Some("wayland-0"),
+                default_socket_present: true,
+                expected: LinuxDisplayServer::Wayland,
+            },
+            Case {
+                n: 6,
+                xdg_session_type: None,
+                wayland_socket: None,
+                wayland_display: Some("wayland-0"),
+                default_socket_present: false,
+                expected: LinuxDisplayServer::Wayland,
+            },
+            Case {
+                n: 7,
+                xdg_session_type: Some(""),
+                wayland_socket: Some(""),
+                wayland_display: Some(""),
+                default_socket_present: false,
+                expected: LinuxDisplayServer::X11,
+            },
+            Case {
+                n: 8,
+                xdg_session_type: None,
+                wayland_socket: None,
+                wayland_display: None,
+                default_socket_present: false,
+                expected: LinuxDisplayServer::X11,
+            },
+            // The measured E5a host, kept as its own row so a change to the
+            // host's shape is visible, not inferred from row 1.
+            Case {
+                n: 9,
+                xdg_session_type: Some("x11"),
+                wayland_socket: None,
+                wayland_display: None,
+                default_socket_present: false,
+                expected: LinuxDisplayServer::X11,
+            },
+            // B4 row A: an inherited Wayland fd via WAYLAND_SOCKET, nothing else set.
+            Case {
+                n: 10,
+                xdg_session_type: None,
+                wayland_socket: Some("7"),
+                wayland_display: None,
+                default_socket_present: false,
+                expected: LinuxDisplayServer::Wayland,
+            },
+            // B4 row B: wl_display_connect(NULL)'s live wayland-0 fallback.
+            Case {
+                n: 11,
+                xdg_session_type: None,
+                wayland_socket: None,
+                wayland_display: None,
+                default_socket_present: true,
+                expected: LinuxDisplayServer::Wayland,
+            },
+            Case {
+                n: 12,
+                xdg_session_type: Some("x11"),
+                wayland_socket: None,
+                wayland_display: None,
+                default_socket_present: true,
+                expected: LinuxDisplayServer::X11,
+            },
+            // E row: WAYLAND_SOCKET must parse as a descriptor number.
+            Case {
+                n: 13,
+                xdg_session_type: None,
+                wayland_socket: Some("abc"),
+                wayland_display: None,
+                default_socket_present: false,
+                expected: LinuxDisplayServer::X11,
+            },
+        ];
+
+        // Accumulate and assert once: a panic on the first mismatched row hides
+        // every later row, and the §7 probes must name *all* the rows they kill.
+        let mut failures: Vec<String> = Vec::new();
+        for case in &cases {
+            let env = DisplayEnvSnapshot {
+                xdg_session_type: case.xdg_session_type.map(str::to_string),
+                wayland_display: case.wayland_display.map(str::to_string),
+                wayland_socket: case.wayland_socket.map(str::to_string),
+                default_socket_present: case.default_socket_present,
+            };
+            let got = classify_display_server(&env);
+            if got != case.expected {
+                failures.push(format!(
+                    "row {}: {env:?} -> {got:?}, expected {:?}",
+                    case.n, case.expected
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} row(s) misclassified:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_wayland_refusal_status_is_unregistered_with_reason() {
+        let status = hotkey_status_after_attempt("Ctrl+Q", Err(WAYLAND_UNSUPPORTED));
+        assert_eq!(status.configured, "Ctrl+Q");
+        assert!(!status.registered);
+        assert_eq!(status.error.as_deref(), Some(WAYLAND_UNSUPPORTED));
+        // The sidebar toasts on `!registered && error`, and the wording must
+        // stay actionable for a user who is already on Xorg.
+        assert!(WAYLAND_UNSUPPORTED.contains("Xorg"));
     }
 }

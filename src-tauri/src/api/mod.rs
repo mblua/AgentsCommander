@@ -43,11 +43,11 @@ pub struct ApiServerStart {
 }
 
 // The native window-screenshot capture path exists only on Windows
-// (`handlers::window_screenshot` and `screenshot::windows` are both gated on
-// it), so the limiter that bounds it is scoped the same way. The `test`
-// disjunct keeps `window_screenshot_limiter_tests` below and the route-level
-// queue tests in `pty/terminal_snapshot/acceptance_tests.rs`, neither of which
-// is platform-gated.
+// (`handlers::window_screenshot` and `screenshot::native`'s window-capture
+// region are both gated on it), so the limiter that bounds it is scoped the same
+// way. The `test` disjunct keeps `window_screenshot_limiter_tests` below and the
+// route-level queue tests in `pty/terminal_snapshot/acceptance_tests.rs`, neither
+// of which is platform-gated.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) const WINDOW_SCREENSHOT_MAX_ACTIVE: usize = 1;
 #[cfg(any(target_os = "windows", test))]
