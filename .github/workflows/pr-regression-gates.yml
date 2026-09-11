@@ -673,7 +673,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BIN=target/release/agentscommander-new
+          BIN=target/release/agentscommander
           test -x "$BIN" || {
             echo "::error::expected $BIN; the ldd step above should already have failed. Fix both steps together."
             exit 1
