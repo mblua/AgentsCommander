@@ -523,6 +523,28 @@ pub async fn coding_agent_catalog_inner(
     crate::config::coding_agents_catalog::load_catalog_for_settings(&settings)
 }
 
+/// #1963 (P1) - read-only persisted-catalog report for the pre-migration UI.
+/// Additive IPC: the existing array endpoint above keeps its current behavior
+/// until P4. Always `Ok`; ordinary filesystem failure is carried by the
+/// report's `unavailable` field, and `Err` is reserved for a transport fault.
+#[tauri::command]
+pub async fn get_coding_agent_catalog_report(
+    settings: State<'_, SettingsState>,
+) -> Result<crate::config::coding_agents_catalog::CatalogReport, String> {
+    Ok(coding_agent_catalog_report_inner(settings.inner()).await)
+}
+
+/// #1963 (P1) - shared by the Tauri command and the WebSocket router. Takes one
+/// settings snapshot and releases the async settings lock BEFORE any filesystem
+/// work, so the report resolver never holds the settings read guard across I/O.
+/// Read-only: never seeds, refreshes or writes.
+pub async fn coding_agent_catalog_report_inner(
+    settings: &SettingsState,
+) -> crate::config::coding_agents_catalog::CatalogReport {
+    let snapshot = settings.read().await.clone();
+    crate::config::coding_agents_catalog::load_catalog_report_for_settings(&snapshot)
+}
+
 /// #769 Phase 2 - the coding-agent command executable basenames that ship a
 /// re-seedable default config-folder master (`claude`, `codex`, `opencode`). The
 /// frontend enables the "Re-seed default configuration" button only for a catalog
