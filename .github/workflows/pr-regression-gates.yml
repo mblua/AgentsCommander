@@ -42,6 +42,10 @@ jobs:
         run: |
           npm run test:classify:self
           npm run test:report:self
+      - name: "Check served-path inventory (#1925)"
+        run: |
+          npm run check:served-paths:self
+          npm run check:served-paths
 
   rust-regression:
     name: rust-regression
