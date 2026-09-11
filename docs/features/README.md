@@ -34,7 +34,7 @@ For developers looking for the page that covers one AgentsCommander feature. Eve
 | [Activity log](activity-log.md) | Read the append-only JSONL record of when each session was working and when it went idle. |
 | [Terminal snapshots](terminal-snapshots.md) | Read one live backend terminal viewport as versioned JSON or a PNG without changing the session. |
 | [Window capture](window-capture.md) | Capture one live native window as a PNG from the CLI or the control-plane API. Windows only. |
-| [Screenshot capture](screenshot-capture.md) | Press a global hotkey, drag a rectangle, and save a PNG inside the replica that owns your session. Windows only. |
+| [Screenshot capture](screenshot-capture.md) | Press a global hotkey, drag a rectangle, and save a PNG inside the replica that owns your session. Windows and Linux/X11. |
 
 ## Remote access
 

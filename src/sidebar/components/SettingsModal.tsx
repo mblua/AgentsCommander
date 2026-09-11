@@ -1,6 +1,6 @@
 import { Component, createSignal, createEffect, createMemo, For, Index, Show, onMount, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
-import { isTauri } from "../../shared/platform";
+import { isTauri, isWindows } from "../../shared/platform";
 import type {
   AppSettings,
   AgentConfig,
@@ -128,6 +128,16 @@ export function isPlausibleCompleteExecutablePath(value: string): boolean {
   const trimmed = value.trim();
   return trimmed === "" || trimmed.includes("/") || trimmed.includes("\\");
 }
+
+/** #1951 - the invalid Default Shell warning is platform-specific. Windows
+ *  names Git Bash's bash.exe, the shell the Windows host-platform rules
+ *  require (src-tauri/src/config/session_context.rs); every other platform
+ *  names /bin/bash, the backend's non-Windows default
+ *  (src-tauri/src/config/settings.rs). Pure literals: no filesystem access. */
+const WINDOWS_DEFAULT_SHELL_HINT =
+  "Not a complete executable path. Enter the complete path to the shell executable, for example: C:\\Program Files\\Git\\bin\\bash.exe. We recommend bash.exe from Git Bash.";
+const POSIX_DEFAULT_SHELL_HINT =
+  "Not a complete executable path. Enter the complete path to the shell executable, for example: /bin/bash.";
 
 const TERMINAL_SNAPSHOT_SETTING_CONFLICT = "terminal_snapshot_setting_conflict";
 const TERMINAL_SNAPSHOT_CONFLICT_MESSAGE =
@@ -1847,8 +1857,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             class="settings-hint settings-hint-error"
             data-ac-testid="settings.general.defaultShell.warning"
           >
-            Not a complete executable path. Enter the complete path to the shell executable,
-            for example C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe.
+            {isWindows ? WINDOWS_DEFAULT_SHELL_HINT : POSIX_DEFAULT_SHELL_HINT}
           </div>
         </Show>
         <label class="settings-field">

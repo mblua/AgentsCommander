@@ -1547,6 +1547,14 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
             "# AgentsCommander: exclude team-config coordination files.",
         ),
         (
+            "**/.config.json.lock",
+            "# AgentsCommander: exclude local config write-lock sidecars.",
+        ),
+        (
+            "/.project-settings.json.lock",
+            "# AgentsCommander: exclude project-settings write-lock sidecars.",
+        ),
+        (
             "_agent_*/rtk-matrix-history*.db",
             "# AgentsCommander: exclude RTK matrix-history databases.",
         ),
@@ -5175,6 +5183,216 @@ mod tests {
         assert_eq!(
             twice_updated, once_updated,
             "a repeated ensure must leave .gitignore byte-identical"
+        );
+    }
+
+    /// #1938: the local-config and project-settings write-lock sidecars get
+    /// their own exact, narrow rules on a fresh workspace, and the config files
+    /// themselves stay trackable.
+    #[test]
+    fn ensure_ac_root_gitignore_writes_config_write_lock_blocks_on_create() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
+        let config_block =
+            "# AgentsCommander: exclude local config write-lock sidecars.\n**/.config.json.lock";
+        assert_eq!(
+            content.matches(config_block).count(),
+            1,
+            "workspace .gitignore must contain the exact config lock block once"
+        );
+        let project_settings_block =
+            "# AgentsCommander: exclude project-settings write-lock sidecars.\n/.project-settings.json.lock";
+        assert_eq!(
+            content.matches(project_settings_block).count(),
+            1,
+            "workspace .gitignore must contain the exact project-settings lock block once"
+        );
+        assert_eq!(
+            content
+                .lines()
+                .filter(|line| *line == "**/.config.json.lock")
+                .count(),
+            1,
+            "workspace .gitignore must contain the depth-insensitive config lock line once"
+        );
+        assert_eq!(
+            content
+                .lines()
+                .filter(|line| *line == "/.project-settings.json.lock")
+                .count(),
+            1,
+            "workspace .gitignore must contain the anchored project-settings lock line once"
+        );
+        assert!(
+            !content.lines().any(|line| {
+                matches!(
+                    line.trim(),
+                    "config.json"
+                        | "**/config.json"
+                        | ".config.json.lock"
+                        | ".project-settings.json.lock"
+                )
+            }),
+            "only the exact lock lines may be ignored; config files stay trackable"
+        );
+    }
+
+    /// #1938: appending to an existing user-authored .gitignore preserves the
+    /// original bytes, adds each exact lock block once, and a second ensure is
+    /// byte-identical.
+    #[test]
+    fn ensure_ac_root_gitignore_appends_config_write_lock_blocks_preserving_bytes_and_is_idempotent(
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+        let gitignore_path = ac_root.join(".gitignore");
+        let original = b"# User-authored rules\r\n!important.txt\r\n\r\n".to_vec();
+        std::fs::write(&gitignore_path, &original).expect("write .gitignore");
+
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+
+        let updated = std::fs::read(&gitignore_path).expect("read updated .gitignore");
+        assert!(
+            updated.starts_with(&original),
+            "workspace .gitignore must preserve the original bytes as an exact prefix"
+        );
+        let updated_text = std::str::from_utf8(&updated).expect("updated .gitignore is UTF-8");
+        assert_eq!(
+            updated_text
+                .lines()
+                .filter(|line| *line == "**/.config.json.lock")
+                .count(),
+            1,
+            "workspace .gitignore must contain the config lock line once"
+        );
+        assert_eq!(
+            updated_text
+                .lines()
+                .filter(|line| *line == "/.project-settings.json.lock")
+                .count(),
+            1,
+            "workspace .gitignore must contain the project-settings lock line once"
+        );
+        assert_eq!(
+            updated_text
+                .matches(
+                    "# AgentsCommander: exclude local config write-lock sidecars.\n**/.config.json.lock"
+                )
+                .count(),
+            1,
+            "workspace .gitignore must append the exact config lock block once"
+        );
+        assert_eq!(
+            updated_text
+                .matches(
+                    "# AgentsCommander: exclude project-settings write-lock sidecars.\n/.project-settings.json.lock"
+                )
+                .count(),
+            1,
+            "workspace .gitignore must append the exact project-settings lock block once"
+        );
+
+        let once_updated = updated;
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore again");
+        let twice_updated = std::fs::read(&gitignore_path).expect("read .gitignore again");
+        assert_eq!(
+            twice_updated, once_updated,
+            "a repeated ensure must leave .gitignore byte-identical"
+        );
+    }
+
+    /// #1938: the two new rules match exactly what they must - the config lock
+    /// sidecars - at every depth for `**/.config.json.lock` and only at the root
+    /// for `/.project-settings.json.lock`; `config.json` itself stays trackable.
+    #[test]
+    fn ensure_ac_root_gitignore_config_write_lock_rules_are_narrow() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("create .ac");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+
+        let init_status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .status()
+            .expect("git init must execute");
+        assert!(init_status.success(), "git init must succeed");
+
+        let empty_excludes = project.join("empty-global-excludes");
+        std::fs::write(&empty_excludes, []).expect("create empty global excludes file");
+        let excludes_override = format!(
+            "core.excludesFile={}",
+            empty_excludes.to_string_lossy().replace('\\', "/")
+        );
+
+        for relative in [
+            ".ac/.config.json.lock",
+            ".ac/_agent_a/.config.json.lock",
+            ".ac/.project-settings.json.lock",
+            ".ac/nested/.project-settings.json.lock",
+            ".ac/config.json",
+            ".ac/_agent_a/config.json",
+        ] {
+            let path = project.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create fixture dir");
+            }
+            std::fs::write(&path, []).expect("create fixture file");
+        }
+
+        let check_ignore = |relative: &str| -> Option<String> {
+            let output = std::process::Command::new("git")
+                .arg("-c")
+                .arg(&excludes_override)
+                .args(["check-ignore", "-v", "--no-index", "--", relative])
+                .current_dir(&project)
+                .output()
+                .expect("git check-ignore must execute");
+            if output.status.success() {
+                Some(String::from_utf8(output.stdout).expect("check-ignore output is UTF-8"))
+            } else {
+                None
+            }
+        };
+
+        let root_config_lock = check_ignore(".ac/.config.json.lock")
+            .expect("the root config lock sidecar must be ignored");
+        assert!(
+            root_config_lock.contains("**/.config.json.lock"),
+            "config lock rule must be the depth-insensitive one: {root_config_lock}"
+        );
+        let nested_config_lock = check_ignore(".ac/_agent_a/.config.json.lock")
+            .expect("a nested config lock sidecar must be ignored");
+        assert!(
+            nested_config_lock.contains("**/.config.json.lock"),
+            "config lock rule must reach nested directories: {nested_config_lock}"
+        );
+
+        let root_project_settings_lock = check_ignore(".ac/.project-settings.json.lock")
+            .expect("the root project-settings lock sidecar must be ignored");
+        assert!(
+            root_project_settings_lock.contains("/.project-settings.json.lock"),
+            "project-settings lock rule must be the anchored one: {root_project_settings_lock}"
+        );
+        assert!(
+            check_ignore(".ac/nested/.project-settings.json.lock").is_none(),
+            "the project-settings lock rule must stay root-anchored"
+        );
+
+        assert!(
+            check_ignore(".ac/config.json").is_none(),
+            "matrix config.json must remain trackable"
+        );
+        assert!(
+            check_ignore(".ac/_agent_a/config.json").is_none(),
+            "nested replica config.json must remain trackable"
         );
     }
 
