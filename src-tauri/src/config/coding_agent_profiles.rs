@@ -75,13 +75,14 @@ fn write_tooling_string(agent_dir: &Path, key: &str, value: Option<&str>) -> Res
     }
     let config_path = agent_dir.join("config.json");
     crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
-        let tooling = obj
+        let tooling_value = obj
             .entry("tooling".to_string())
             .or_insert_with(|| serde_json::json!({}));
-        if !tooling.is_object() {
-            *tooling = serde_json::json!({});
-        }
-        let tooling = tooling.as_object_mut().expect("tooling set to object");
+        // #1939 - a malformed `tooling` is never silently reset: the write fails
+        // with the stored bytes untouched (shape-based, like agent_config).
+        let tooling = tooling_value
+            .as_object_mut()
+            .ok_or_else(|| format!("tooling must be a JSON object at {}", config_path.display()))?;
         match value {
             Some(value) => {
                 tooling.insert(key.to_string(), Value::String(value.to_string()));
@@ -450,6 +451,689 @@ pub fn set_instance_profile_override(
     Ok(())
 }
 
+// ── #1939 replica selection lock state ─────────────────────────────────────
+//
+// Stored contract: replica top-level `tooling.selectionLocked` (optional;
+// absent means false) protects the saved pair — `tooling.currentCodingAgent`
+// plus the requested `tooling.profile` letter. It never protects the resolved
+// command/environment/model/content, which stay resolver-owned: a fallback is
+// never written back over the requested letter.
+//
+// Matrix contract: top-level `tooling.replicaSelectionDefault` is the creation
+// default {codingAgentId, requestedProfile, selectionLocked}. Absent keeps the
+// old creation behavior; a present one must be complete and valid.
+
+/// The protected replica selection pair: coding agent id plus the requested
+/// profile letter. The resolved command/environment/model/content are
+/// deliberately not part of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaSelectionPair {
+    pub coding_agent_id: String,
+    pub requested_profile: String,
+}
+
+/// A prior selection state a write must still observe (CAS). Built from
+/// [`read_replica_selection_state`] so a write can never overwrite a state it
+/// did not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaSelectionExpectation {
+    /// Canonical replica identity (`../../_agent_<name>`), as validated by the
+    /// strict read.
+    pub identity: String,
+    /// The complete saved pair, or `None` for a legacy config without one.
+    pub pair: Option<ReplicaSelectionPair>,
+    pub locked: bool,
+}
+
+/// #1939 - strict, read-only view of a replica's stored selection.
+///
+/// `Invalid` is a diagnostic, never a permissive state: invalid/duplicate JSON,
+/// a non-object `tooling`, a non-boolean `selectionLocked`, or `true` with an
+/// incomplete/invalid pair can never be read as `Unlocked`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplicaSelectionState {
+    Unlocked {
+        identity: String,
+        /// `None` when no complete pair is stored (legacy unlocked config, which
+        /// remains valid and may be deliberately assigned).
+        pair: Option<ReplicaSelectionPair>,
+        /// Present when `tooling.profile` diverges from the legacy
+        /// `instanceProfileOverride`; the modern field wins, as before.
+        warning: Option<String>,
+    },
+    Locked {
+        identity: String,
+        pair: ReplicaSelectionPair,
+        warning: Option<String>,
+    },
+    Invalid {
+        diagnostic: String,
+    },
+}
+
+impl ReplicaSelectionState {
+    pub fn identity(&self) -> Option<&str> {
+        match self {
+            Self::Unlocked { identity, .. } | Self::Locked { identity, .. } => Some(identity),
+            Self::Invalid { .. } => None,
+        }
+    }
+
+    pub fn pair(&self) -> Option<&ReplicaSelectionPair> {
+        match self {
+            Self::Unlocked { pair, .. } => pair.as_ref(),
+            Self::Locked { pair, .. } => Some(pair),
+            Self::Invalid { .. } => None,
+        }
+    }
+
+    pub fn is_locked(&self) -> bool {
+        matches!(self, Self::Locked { .. })
+    }
+
+    /// The CAS value a write must pass. An `Invalid` state has none: it can
+    /// never be force-repaired implicitly.
+    pub fn expectation(&self) -> Result<ReplicaSelectionExpectation, String> {
+        match self {
+            Self::Unlocked { identity, pair, .. } => Ok(ReplicaSelectionExpectation {
+                identity: identity.clone(),
+                pair: pair.clone(),
+                locked: false,
+            }),
+            Self::Locked { identity, pair, .. } => Ok(ReplicaSelectionExpectation {
+                identity: identity.clone(),
+                pair: Some(pair.clone()),
+                locked: true,
+            }),
+            Self::Invalid { diagnostic } => Err(format!(
+                "replica selection state is invalid: {}",
+                diagnostic
+            )),
+        }
+    }
+}
+
+/// #1939 - which policy a selection write applies. There is deliberately no
+/// free `bool`: every caller names an intent, so none can bypass the lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionWriteIntent {
+    /// Deliberate single-replica assignment; preserves the existing flag.
+    /// A locked replica is rejected.
+    Individual,
+    /// Deliberate single-replica assignment plus `selectionLocked: true`.
+    /// A locked replica is rejected.
+    IndividualAssignLock,
+    /// Bulk assignment preserving flags; a locked replica is skipped.
+    BulkOrdinary,
+    /// Bulk assign-lock for unlocked replicas only; a locked replica is skipped.
+    BulkAssignLockUnlockedOnly,
+    /// Bulk assign-lock after an explicit review; locked replicas are written
+    /// too (forced), and the flag ends true.
+    BulkForceReviewed,
+}
+
+/// #1939 - a lock flip, tracked separately from the publication itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionLockTransition {
+    UnlockedToLocked,
+    LockedToUnlocked,
+}
+
+/// #1939 - outcome of a guarded selection mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionWriteOutcome {
+    /// True when the guarded callback applied a semantic change.
+    pub changed: bool,
+    /// True when the funnel published a new config file.
+    pub published: bool,
+    /// The lock flip this write caused, when any.
+    pub lock_transition: Option<SelectionLockTransition>,
+}
+
+impl SelectionWriteOutcome {
+    /// Nothing to change and nothing published (already-unlocked / skipped).
+    const UNCHANGED: Self = Self {
+        changed: false,
+        published: false,
+        lock_transition: None,
+    };
+    const WRITTEN: Self = Self {
+        changed: true,
+        published: true,
+        lock_transition: None,
+    };
+}
+
+/// #1939 - call-local typed marker carrying a no-publish guard outcome back
+/// through the #1938 funnel's `Err` channel. The marker decides; the error text
+/// is never inspected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionGuardMarker {
+    AlreadyUnlocked,
+    SkippedLocked,
+}
+
+/// Private sentinel for the marker-only funnel exit; never displayed and never
+/// string-matched.
+const NO_PUBLISH_SENTINEL: &str = "#1939 guarded selection no-publish exit";
+
+fn selection_state_from_value(config: &Value, identity: &str) -> ReplicaSelectionState {
+    let tooling = match config.get("tooling") {
+        None => {
+            return ReplicaSelectionState::Unlocked {
+                identity: identity.to_string(),
+                pair: None,
+                warning: None,
+            }
+        }
+        Some(Value::Object(tooling)) => tooling,
+        Some(_) => {
+            return ReplicaSelectionState::Invalid {
+                diagnostic: "tooling must be a JSON object".to_string(),
+            }
+        }
+    };
+
+    let locked = match tooling.get("selectionLocked") {
+        None => false,
+        Some(Value::Bool(locked)) => *locked,
+        Some(_) => {
+            return ReplicaSelectionState::Invalid {
+                diagnostic: "tooling.selectionLocked must be a boolean".to_string(),
+            }
+        }
+    };
+
+    let profile = tooling
+        .get("profile")
+        .and_then(Value::as_str)
+        .and_then(normalize_profile_letter);
+    let legacy = tooling
+        .get("instanceProfileOverride")
+        .and_then(Value::as_str)
+        .and_then(normalize_profile_letter);
+    let warning = match (&profile, &legacy) {
+        (Some(profile), Some(legacy)) if profile != legacy => Some(format!(
+            "tooling.profile ({}) differs from legacy instanceProfileOverride ({})",
+            profile, legacy
+        )),
+        _ => None,
+    };
+    let coding_agent = tooling
+        .get("currentCodingAgent")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let pair = match (coding_agent, profile.or(legacy)) {
+        (Some(coding_agent_id), Some(requested_profile)) => Some(ReplicaSelectionPair {
+            coding_agent_id,
+            requested_profile,
+        }),
+        _ => None,
+    };
+
+    match (locked, pair) {
+        (true, None) => ReplicaSelectionState::Invalid {
+            diagnostic: "tooling.selectionLocked is true but the saved selection pair is incomplete or invalid"
+                .to_string(),
+        },
+        (true, Some(pair)) => ReplicaSelectionState::Locked {
+            identity: identity.to_string(),
+            pair,
+            warning,
+        },
+        (false, pair) => ReplicaSelectionState::Unlocked {
+            identity: identity.to_string(),
+            pair,
+            warning,
+        },
+    }
+}
+
+/// #1939 - strict read-only view of `replica_dir`'s stored selection. Uses the
+/// existing strict reader (bounded path-safe read, duplicate-free JSON, object
+/// and identity validation); every strict-read failure becomes `Invalid`.
+pub fn read_replica_selection_state(replica_dir: &Path) -> ReplicaSelectionState {
+    match crate::config::replica_identity::read_wg_replica_config_read_only(replica_dir) {
+        Ok((config, identity)) => selection_state_from_value(&config, &identity.identity),
+        Err(error) => ReplicaSelectionState::Invalid {
+            diagnostic: format!("{}: {}", replica_dir.display(), error),
+        },
+    }
+}
+
+/// #1939 - Matrix creation default: `tooling.replicaSelectionDefault`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaSelectionDefault {
+    pub coding_agent_id: String,
+    pub requested_profile: String,
+    pub selection_locked: bool,
+}
+
+impl ReplicaSelectionDefault {
+    fn normalized(self) -> Result<Self, String> {
+        let requested_profile =
+            normalize_profile_letter(&self.requested_profile).ok_or_else(|| {
+                "replicaSelectionDefault.requestedProfile must be a single letter A through Z"
+                    .to_string()
+            })?;
+        let coding_agent_id = self.coding_agent_id.trim().to_string();
+        if coding_agent_id.is_empty() {
+            return Err(
+                "replicaSelectionDefault.codingAgentId must be a non-empty string".to_string(),
+            );
+        }
+        Ok(Self {
+            coding_agent_id,
+            requested_profile,
+            selection_locked: self.selection_locked,
+        })
+    }
+}
+
+fn parse_replica_selection_default(
+    config: &Value,
+) -> Result<Option<ReplicaSelectionDefault>, String> {
+    let Some(tooling) = config.get("tooling") else {
+        return Ok(None);
+    };
+    let tooling = tooling
+        .as_object()
+        .ok_or_else(|| "tooling must be a JSON object".to_string())?;
+    let Some(default) = tooling.get("replicaSelectionDefault") else {
+        return Ok(None);
+    };
+    let default = default
+        .as_object()
+        .ok_or_else(|| "tooling.replicaSelectionDefault must be a JSON object".to_string())?;
+    let coding_agent_id = default
+        .get("codingAgentId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "tooling.replicaSelectionDefault.codingAgentId must be a non-empty string".to_string()
+        })?
+        .to_string();
+    let requested_profile = default
+        .get("requestedProfile")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "tooling.replicaSelectionDefault.requestedProfile must be a single letter A through Z"
+                .to_string()
+        })?
+        .to_string();
+    let selection_locked = default
+        .get("selectionLocked")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            "tooling.replicaSelectionDefault.selectionLocked must be a boolean".to_string()
+        })?;
+    let normalized = ReplicaSelectionDefault {
+        coding_agent_id,
+        requested_profile,
+        selection_locked,
+    }
+    .normalized()?;
+    Ok(Some(normalized))
+}
+
+/// #1939 - read the Matrix creation default from one atomic JSON snapshot.
+///
+/// A missing Matrix config, missing `tooling`, or missing
+/// `tooling.replicaSelectionDefault` all mean "old creation behavior"
+/// (`Ok(None)`). A present default must be complete and valid; an invalid one
+/// is an error, never silently ignored.
+pub fn read_replica_selection_default(
+    matrix_dir: &Path,
+) -> Result<Option<ReplicaSelectionDefault>, String> {
+    let config_path = matrix_dir.join("config.json");
+    let bytes = match std::fs::read(&config_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read Matrix config {}: {}",
+                config_path.display(),
+                error
+            ))
+        }
+    };
+    let config: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "Matrix config {} is not valid JSON: {}",
+            config_path.display(),
+            error
+        )
+    })?;
+    if !config.is_object() {
+        return Err(format!(
+            "Matrix config {} must be a JSON object",
+            config_path.display()
+        ));
+    }
+    parse_replica_selection_default(&config)
+        .map_err(|error| format!("Matrix config {}: {}", config_path.display(), error))
+}
+
+/// #1939 - validate a default and write `tooling.replicaSelectionDefault` under
+/// the #1938 sidecar. `expected_prior` is the CAS value read before the call; a
+/// mismatch is a stale error and publishes nothing.
+pub fn write_replica_selection_default(
+    matrix_dir: &Path,
+    default: &ReplicaSelectionDefault,
+    expected_prior: Option<&ReplicaSelectionDefault>,
+) -> Result<SelectionWriteOutcome, String> {
+    let normalized = default.clone().normalized()?;
+    let config_path = matrix_dir.join("config.json");
+    crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
+        let current = read_replica_selection_default(matrix_dir)?;
+        if current.as_ref() != expected_prior {
+            return Err(format!(
+                "stale replicaSelectionDefault at {}: expected {}, found {}",
+                config_path.display(),
+                describe_selection_default(expected_prior),
+                describe_selection_default(current.as_ref()),
+            ));
+        }
+        let tooling_value = obj
+            .entry("tooling".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let tooling = tooling_value
+            .as_object_mut()
+            .ok_or_else(|| format!("tooling must be a JSON object at {}", config_path.display()))?;
+        tooling.insert(
+            "replicaSelectionDefault".to_string(),
+            serde_json::json!({
+                "codingAgentId": normalized.coding_agent_id,
+                "requestedProfile": normalized.requested_profile,
+                "selectionLocked": normalized.selection_locked,
+            }),
+        );
+        Ok(())
+    })?;
+    Ok(SelectionWriteOutcome::WRITTEN)
+}
+
+/// #1939 - materialize a validated Matrix default into a first-creation replica
+/// config object. The caller owns the surrounding guarded write.
+pub(crate) fn apply_replica_selection_default(
+    config: &mut Value,
+    default: &ReplicaSelectionDefault,
+) -> Result<(), String> {
+    let root = config
+        .as_object_mut()
+        .ok_or_else(|| "Replica config must be a JSON object".to_string())?;
+    let tooling_value = root
+        .entry("tooling".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let tooling = tooling_value
+        .as_object_mut()
+        .ok_or_else(|| "Replica tooling must be a JSON object".to_string())?;
+    tooling.insert(
+        "currentCodingAgent".to_string(),
+        Value::String(default.coding_agent_id.clone()),
+    );
+    tooling.insert(
+        "profile".to_string(),
+        Value::String(default.requested_profile.clone()),
+    );
+    tooling.insert(
+        "instanceProfileOverride".to_string(),
+        Value::String(default.requested_profile.clone()),
+    );
+    tooling.insert(
+        "instanceProfileOverrideSource".to_string(),
+        Value::String("manual".to_string()),
+    );
+    tooling.insert(
+        "selectionLocked".to_string(),
+        Value::Bool(default.selection_locked),
+    );
+    Ok(())
+}
+
+fn describe_selection_default(default: Option<&ReplicaSelectionDefault>) -> String {
+    match default {
+        Some(default) => format!(
+            "agent '{}' profile {} locked={}",
+            default.coding_agent_id, default.requested_profile, default.selection_locked
+        ),
+        None => "absent".to_string(),
+    }
+}
+
+fn describe_selection_pair(pair: Option<&ReplicaSelectionPair>) -> String {
+    match pair {
+        Some(pair) => format!(
+            "agent '{}' profile {}",
+            pair.coding_agent_id, pair.requested_profile
+        ),
+        None => "absent".to_string(),
+    }
+}
+
+fn validated_replica_dir(settings: &AppSettings, replica_path: &Path) -> Result<PathBuf, String> {
+    let validated = validate_profile_selection_agent_path(settings, replica_path)?;
+    let name = validated
+        .launch_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !name.starts_with("__agent_") {
+        return Err(format!(
+            "Profile assignment target '{}' must be a Room replica",
+            validated.launch_path.display()
+        ));
+    }
+    Ok(validated.launch_path)
+}
+
+/// #1939 - strict reread plus expected-state comparison, executed INSIDE the
+/// #1938 guarded callback (read-only; it never takes the mutation guard
+/// recursively). Every mismatch is a stale error before any mutation.
+fn validate_selection_write_state(
+    replica_dir: &Path,
+    expected: &ReplicaSelectionExpectation,
+) -> Result<(Option<ReplicaSelectionPair>, bool), String> {
+    let (config, identity) = crate::config::replica_identity::read_wg_replica_config_read_only(
+        replica_dir,
+    )
+    .map_err(|error| {
+        format!(
+            "stale replica selection at {}: {}",
+            replica_dir.display(),
+            error
+        )
+    })?;
+    let (current_pair, current_locked) =
+        match selection_state_from_value(&config, &identity.identity) {
+            ReplicaSelectionState::Unlocked { pair, .. } => (pair, false),
+            ReplicaSelectionState::Locked { pair, .. } => (Some(pair), true),
+            ReplicaSelectionState::Invalid { diagnostic } => {
+                return Err(format!(
+                    "invalid replica selection at {}: {}",
+                    replica_dir.display(),
+                    diagnostic
+                ))
+            }
+        };
+    if identity.identity != expected.identity {
+        return Err(format!(
+            "stale replica selection at {}: expected identity '{}', found '{}'",
+            replica_dir.display(),
+            expected.identity,
+            identity.identity
+        ));
+    }
+    if current_pair != expected.pair {
+        return Err(format!(
+            "stale replica selection at {}: expected pair {}, found {}",
+            replica_dir.display(),
+            describe_selection_pair(expected.pair.as_ref()),
+            describe_selection_pair(current_pair.as_ref())
+        ));
+    }
+    if current_locked != expected.locked {
+        return Err(format!(
+            "stale replica selection at {}: expected selectionLocked={}, found selectionLocked={}",
+            replica_dir.display(),
+            expected.locked,
+            current_locked
+        ));
+    }
+    Ok((current_pair, current_locked))
+}
+
+/// #1939 - guarded selection write. The pair is written as one publish
+/// (`currentCodingAgent`, `profile`, legacy `instanceProfileOverride`, source
+/// `manual`); assign-lock intents add `selectionLocked: true` (a false->true
+/// flip is reported in [`SelectionWriteOutcome::lock_transition`]) while
+/// ordinary intents preserve the stored flag exactly. Unknown keys,
+/// `lastCodingAgent` and `profileContentHash` are preserved.
+pub fn write_replica_selection(
+    settings: &AppSettings,
+    replica_path: &Path,
+    pair: &ReplicaSelectionPair,
+    intent: SelectionWriteIntent,
+    expected: &ReplicaSelectionExpectation,
+) -> Result<SelectionWriteOutcome, String> {
+    let profile = normalize_profile_letter(&pair.requested_profile)
+        .ok_or_else(|| "Profile must be a single letter A through Z".to_string())?;
+    if pair.coding_agent_id.trim().is_empty() {
+        return Err("Coding agent id must not be empty".to_string());
+    }
+    let replica_dir = validated_replica_dir(settings, replica_path)?;
+    let config_path = replica_dir.join("config.json");
+
+    let marker = std::cell::Cell::new(None::<SelectionGuardMarker>);
+    let transition = std::cell::Cell::new(None::<SelectionLockTransition>);
+
+    let written =
+        crate::config::local_config_io::update_config_json_object(&config_path, false, |obj| {
+            let (_current_pair, current_locked) =
+                validate_selection_write_state(&replica_dir, expected)?;
+            if current_locked {
+                match intent {
+                    SelectionWriteIntent::Individual
+                    | SelectionWriteIntent::IndividualAssignLock => {
+                        return Err(format!(
+                            "replica selection at {} is locked; unlock it or use a reviewed force",
+                            replica_dir.display()
+                        ))
+                    }
+                    SelectionWriteIntent::BulkOrdinary
+                    | SelectionWriteIntent::BulkAssignLockUnlockedOnly => {
+                        // Skip locked replicas without publishing: the same
+                        // private marker path as the already-unlocked clear.
+                        marker.set(Some(SelectionGuardMarker::SkippedLocked));
+                        return Err(NO_PUBLISH_SENTINEL.to_string());
+                    }
+                    SelectionWriteIntent::BulkForceReviewed => {}
+                }
+            }
+            let target_locked = match intent {
+                SelectionWriteIntent::Individual | SelectionWriteIntent::BulkOrdinary => {
+                    current_locked
+                }
+                SelectionWriteIntent::IndividualAssignLock
+                | SelectionWriteIntent::BulkAssignLockUnlockedOnly
+                | SelectionWriteIntent::BulkForceReviewed => true,
+            };
+            if !current_locked && target_locked {
+                transition.set(Some(SelectionLockTransition::UnlockedToLocked));
+            }
+            let tooling_value = obj
+                .entry("tooling".to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            let tooling = tooling_value.as_object_mut().ok_or_else(|| {
+                format!(
+                    "invalid replica selection at {}: tooling must be a JSON object",
+                    replica_dir.display()
+                )
+            })?;
+            tooling.insert(
+                "currentCodingAgent".to_string(),
+                Value::String(pair.coding_agent_id.clone()),
+            );
+            tooling.insert("profile".to_string(), Value::String(profile.clone()));
+            tooling.insert(
+                "instanceProfileOverride".to_string(),
+                Value::String(profile.clone()),
+            );
+            tooling.insert(
+                "instanceProfileOverrideSource".to_string(),
+                Value::String("manual".to_string()),
+            );
+            if target_locked {
+                tooling.insert("selectionLocked".to_string(), Value::Bool(true));
+            }
+            Ok(())
+        });
+
+    match written {
+        Ok(_) => Ok(SelectionWriteOutcome {
+            changed: true,
+            published: true,
+            lock_transition: transition.get(),
+        }),
+        Err(error) => match marker.get() {
+            Some(SelectionGuardMarker::SkippedLocked) => Ok(SelectionWriteOutcome::UNCHANGED),
+            _ => Err(error),
+        },
+    }
+}
+
+/// #1939 - guarded unlock. Only the flag is written (`false`); the pair and
+/// every other field stay untouched. An already-false/absent flag exits through
+/// the private callback marker before any object mutation, so nothing is
+/// serialized and nothing is published (see [`SelectionWriteOutcome`]). Every
+/// other error — malformed state, stale expected state, lock timeout, IO —
+/// propagates unchanged and can never be reported as success.
+pub fn clear_replica_selection_lock(
+    settings: &AppSettings,
+    replica_path: &Path,
+    expected: &ReplicaSelectionExpectation,
+) -> Result<SelectionWriteOutcome, String> {
+    let replica_dir = validated_replica_dir(settings, replica_path)?;
+    let config_path = replica_dir.join("config.json");
+    let marker = std::cell::Cell::new(None::<SelectionGuardMarker>);
+
+    let written =
+        crate::config::local_config_io::update_config_json_object(&config_path, false, |obj| {
+            let (_current_pair, current_locked) =
+                validate_selection_write_state(&replica_dir, expected)?;
+            if !current_locked {
+                marker.set(Some(SelectionGuardMarker::AlreadyUnlocked));
+                return Err(NO_PUBLISH_SENTINEL.to_string());
+            }
+            let tooling = obj
+                .get_mut("tooling")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| {
+                    format!(
+                        "invalid replica selection at {}: tooling must be a JSON object",
+                        replica_dir.display()
+                    )
+                })?;
+            tooling.insert("selectionLocked".to_string(), Value::Bool(false));
+            Ok(())
+        });
+
+    match written {
+        Ok(_) => Ok(SelectionWriteOutcome {
+            changed: true,
+            published: true,
+            lock_transition: Some(SelectionLockTransition::LockedToUnlocked),
+        }),
+        Err(error) => match marker.get() {
+            Some(SelectionGuardMarker::AlreadyUnlocked) => Ok(SelectionWriteOutcome::UNCHANGED),
+            _ => Err(error),
+        },
+    }
+}
+
+/// #1939 - deliberate per-replica assignment. Preserves the stored flag through
+/// [`SelectionWriteIntent::Individual`] and cannot bypass a lock: a locked
+/// replica is rejected with the stored bytes untouched.
 pub fn set_replica_coding_agent_selection(
     settings: &AppSettings,
     replica_path: &Path,
@@ -465,57 +1149,38 @@ pub fn set_replica_coding_agent_selection(
     }
     let profile = normalize_profile_letter(profile)
         .ok_or_else(|| "Profile must be a single letter A through Z".to_string())?;
-    let validated = validate_profile_selection_agent_path(settings, replica_path)?;
-    let name = validated
-        .launch_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-    if !name.starts_with("__agent_") {
-        return Err(format!(
-            "Profile assignment target '{}' must be a Room replica",
-            validated.launch_path.display()
-        ));
-    }
-    let config_path = validated.launch_path.join("config.json");
-    crate::config::local_config_io::update_config_json_object(&config_path, false, |obj| {
-        let tooling = obj
-            .entry("tooling".to_string())
-            .or_insert_with(|| serde_json::json!({}));
-        if !tooling.is_object() {
-            *tooling = serde_json::json!({});
-        }
-        let tooling = tooling.as_object_mut().expect("tooling set to object");
-        tooling.insert(
-            "currentCodingAgent".to_string(),
-            Value::String(coding_agent_id.to_string()),
-        );
-        tooling.insert("profile".to_string(), Value::String(profile.clone()));
-        tooling.insert(
-            "instanceProfileOverride".to_string(),
-            Value::String(profile.clone()),
-        );
-        tooling.insert(
-            "instanceProfileOverrideSource".to_string(),
-            Value::String("manual".to_string()),
-        );
-        Ok(())
-    })?;
+    let replica_dir = validated_replica_dir(settings, replica_path)?;
+    let state = read_replica_selection_state(&replica_dir);
+    let expected = state.expectation()?;
+    let pair = ReplicaSelectionPair {
+        coding_agent_id: coding_agent_id.to_string(),
+        requested_profile: profile,
+    };
+    write_replica_selection(
+        settings,
+        &replica_dir,
+        &pair,
+        SelectionWriteIntent::Individual,
+        &expected,
+    )?;
     Ok(())
 }
 
 fn write_profile_to_launch_path(launch_path: &Path, profile: Option<&str>) -> Result<(), String> {
     let config_path = launch_path.join("config.json");
     crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
-        let tooling = obj
+        // #1939 - shape-based, like agent_config: absent tooling becomes an
+        // object, a present non-object is an error, never silently reset.
+        let tooling_value = obj
             .entry("tooling".to_string())
             .or_insert_with(|| serde_json::json!({}));
-        if !tooling.is_object() {
-            *tooling = serde_json::json!({});
-        }
-        let tooling = tooling.as_object_mut().expect("tooling set to object");
+        let tooling = tooling_value
+            .as_object_mut()
+            .ok_or_else(|| format!("tooling must be a JSON object at {}", config_path.display()))?;
         match profile {
             Some(profile) => {
+                // A new valid requested letter is permitted; the Coding Agent
+                // and the lock flag are preserved exactly as stored.
                 tooling.insert("profile".to_string(), Value::String(profile.to_string()));
                 tooling.insert(
                     "instanceProfileOverride".to_string(),
@@ -527,6 +1192,12 @@ fn write_profile_to_launch_path(launch_path: &Path, profile: Option<&str>) -> Re
                 );
             }
             None => {
+                if protected_selection_pair_present(tooling) {
+                    return Err(format!(
+                        "Cannot clear the profile at {} while a protected replica selection pair exists",
+                        launch_path.display()
+                    ));
+                }
                 tooling.remove("profile");
                 tooling.remove("instanceProfileOverride");
                 tooling.remove("instanceProfileOverrideSource");
@@ -535,6 +1206,26 @@ fn write_profile_to_launch_path(launch_path: &Path, profile: Option<&str>) -> Re
         Ok(())
     })?;
     Ok(())
+}
+
+/// #1939 - a complete saved pair (`currentCodingAgent` plus a valid profile
+/// letter) is the protected unit; a null clear must not erase half of it.
+fn protected_selection_pair_present(tooling: &serde_json::Map<String, Value>) -> bool {
+    let coding_agent = tooling
+        .get("currentCodingAgent")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty());
+    let profile = tooling
+        .get("profile")
+        .and_then(Value::as_str)
+        .and_then(normalize_profile_letter)
+        .or_else(|| {
+            tooling
+                .get("instanceProfileOverride")
+                .and_then(Value::as_str)
+                .and_then(normalize_profile_letter)
+        });
+    coding_agent && profile.is_some()
 }
 
 pub fn resolve_profile_selection(
@@ -724,9 +1415,7 @@ mod tests {
     use super::*;
     use crate::config::settings::{AgentConfig, ProfileCellConfig, ProfileSlotConfig};
     use std::collections::BTreeMap;
-    use std::path::Path;
-    #[cfg(windows)]
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn settings_with_cells(cells: &[(&str, Vec<&str>)]) -> AppSettings {
         let mut settings = AppSettings::default();
@@ -1130,5 +1819,897 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(root_agent.join("config.json")).unwrap())
                 .unwrap();
         assert_eq!(saved["tooling"]["profileContentHash"], "cafef00dcafef00d");
+    }
+
+    // ------------------------------------------------------------------
+    // #1939 replica selection state, intents, defaults and guarded writes.
+    // ------------------------------------------------------------------
+
+    const REPLICA_IDENTITY: &str = "../../_agent_dev-rust";
+
+    struct SelectionFixture {
+        _temp: tempfile::TempDir,
+        matrix: PathBuf,
+        replica: PathBuf,
+        settings: AppSettings,
+    }
+
+    /// A minimal valid replica/matrix pair (`_agent_dev-rust` plus
+    /// `wg-7-dev-team/__agent_dev-rust`) so the strict read and the settings
+    /// path validation both accept the replica.
+    fn selection_fixture() -> SelectionFixture {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let ac_root = project.join(".ac");
+        let matrix = ac_root.join("_agent_dev-rust");
+        let replica = ac_root.join("wg-7-dev-team").join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix).unwrap();
+        std::fs::create_dir_all(&replica).unwrap();
+        std::fs::write(matrix.join("Role.md"), "# Role\n").unwrap();
+        let settings = settings_with_project(&project);
+        SelectionFixture {
+            _temp: temp,
+            matrix,
+            replica,
+            settings,
+        }
+    }
+
+    fn seed_selection_config(tooling_json: &str) -> String {
+        format!(r#"{{"identity":"{REPLICA_IDENTITY}","tooling":{tooling_json}}}"#)
+    }
+
+    fn write_config(replica: &Path, bytes: &str) {
+        std::fs::write(replica.join("config.json"), bytes).unwrap();
+    }
+
+    fn config_bytes(replica: &Path) -> String {
+        std::fs::read_to_string(replica.join("config.json")).unwrap()
+    }
+
+    fn config_value(replica: &Path) -> Value {
+        serde_json::from_str(&config_bytes(replica)).unwrap()
+    }
+
+    fn pair(coding_agent_id: &str, profile: &str) -> ReplicaSelectionPair {
+        ReplicaSelectionPair {
+            coding_agent_id: coding_agent_id.to_string(),
+            requested_profile: profile.to_string(),
+        }
+    }
+
+    #[test]
+    fn issue_1937_selection_state_read_absent_invalid_and_duplicate_json() {
+        let fixture = selection_fixture();
+
+        // Absent config.json is Invalid, never Unlocked.
+        assert!(matches!(
+            read_replica_selection_state(&fixture.replica),
+            ReplicaSelectionState::Invalid { .. }
+        ));
+
+        // Invalid JSON.
+        write_config(&fixture.replica, "{ not json");
+        assert!(matches!(
+            read_replica_selection_state(&fixture.replica),
+            ReplicaSelectionState::Invalid { .. }
+        ));
+
+        // Duplicate keys are rejected by the strict duplicate-free parse.
+        write_config(
+            &fixture.replica,
+            r#"{"identity":"../../_agent_dev-rust","identity":"../../_agent_dev-rust"}"#,
+        );
+        let duplicate = read_replica_selection_state(&fixture.replica);
+        assert!(
+            matches!(duplicate, ReplicaSelectionState::Invalid { .. }),
+            "{duplicate:?}"
+        );
+    }
+
+    #[test]
+    fn issue_1937_selection_state_read_malformed_shapes_are_never_unlocked() {
+        let fixture = selection_fixture();
+
+        for tooling in [
+            "5",
+            r#"{"selectionLocked":"yes"}"#,
+            r#"{"selectionLocked":true}"#,
+            r#"{"selectionLocked":true,"currentCodingAgent":"codex"}"#,
+            r#"{"selectionLocked":true,"profile":"B","currentCodingAgent":""}"#,
+        ] {
+            write_config(&fixture.replica, &seed_selection_config(tooling));
+            let state = read_replica_selection_state(&fixture.replica);
+            assert!(
+                matches!(state, ReplicaSelectionState::Invalid { .. }),
+                "tooling {tooling} must be Invalid, got {state:?}"
+            );
+            assert!(!state.is_locked());
+        }
+    }
+
+    #[test]
+    fn issue_1937_selection_state_read_missing_pair_on_legacy_unlocked_is_valid_and_assignable() {
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(r#"{"lastCodingAgent":"claude"}"#),
+        );
+
+        let state = read_replica_selection_state(&fixture.replica);
+        match &state {
+            ReplicaSelectionState::Unlocked { pair, warning, .. } => {
+                assert!(pair.is_none());
+                assert!(warning.is_none());
+            }
+            other => panic!("expected Unlocked with no pair, got {other:?}"),
+        }
+
+        // A missing pair on a legacy unlocked config may be deliberately
+        // assigned.
+        let expected = state.expectation().unwrap();
+        let outcome = write_replica_selection(
+            &fixture.settings,
+            &fixture.replica,
+            &pair("codex", "B"),
+            SelectionWriteIntent::Individual,
+            &expected,
+        )
+        .unwrap();
+        assert!(outcome.changed && outcome.published);
+        assert_eq!(outcome.lock_transition, None);
+        let saved = config_value(&fixture.replica);
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(saved["tooling"]["profile"], "B");
+        assert_eq!(saved["tooling"]["instanceProfileOverride"], "B");
+        assert_eq!(saved["tooling"]["instanceProfileOverrideSource"], "manual");
+        assert!(saved["tooling"].get("selectionLocked").is_none());
+        assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+    }
+
+    #[test]
+    fn issue_1937_selection_state_read_coherent_and_divergent_duals() {
+        let fixture = selection_fixture();
+
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"codex","profile":"B","instanceProfileOverride":"B"}"#,
+            ),
+        );
+        match read_replica_selection_state(&fixture.replica) {
+            ReplicaSelectionState::Unlocked { pair, warning, .. } => {
+                assert_eq!(pair, Some(self::pair("codex", "B")));
+                assert!(warning.is_none());
+            }
+            other => panic!("expected Unlocked pair, got {other:?}"),
+        }
+
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"codex","profile":"B","instanceProfileOverride":"C"}"#,
+            ),
+        );
+        match read_replica_selection_state(&fixture.replica) {
+            ReplicaSelectionState::Unlocked { pair, warning, .. } => {
+                assert_eq!(pair, Some(self::pair("codex", "B")), "profile wins");
+                let warning = warning.expect("divergent dual fields warn");
+                assert!(warning.contains("differs"), "{warning}");
+            }
+            other => panic!("expected Unlocked pair, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn issue_1937_selection_state_write_preserves_unknown_history_and_hash() {
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"claude","profile":"A","instanceProfileOverride":"A","lastCodingAgent":"claude","profileContentHash":"deadbeef","codingAgents":{"claude":{"app":"Claude Code","lastUsed":"2026-09-02T01:00:00+00:00"}}}"#,
+            ),
+        );
+        let mut seeded: Value = serde_json::from_str(&config_bytes(&fixture.replica)).unwrap();
+        seeded["customTopLevel"] = serde_json::json!({"keep": true});
+        write_config(&fixture.replica, &seeded.to_string());
+
+        let state = read_replica_selection_state(&fixture.replica);
+        let expected = state.expectation().unwrap();
+        let outcome = write_replica_selection(
+            &fixture.settings,
+            &fixture.replica,
+            &pair("codex", "C"),
+            SelectionWriteIntent::Individual,
+            &expected,
+        )
+        .unwrap();
+        assert!(outcome.changed && outcome.published);
+
+        let saved = config_value(&fixture.replica);
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(saved["tooling"]["profile"], "C");
+        assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+        assert_eq!(saved["tooling"]["profileContentHash"], "deadbeef");
+        assert_eq!(
+            saved["tooling"]["codingAgents"]["claude"]["app"],
+            "Claude Code"
+        );
+        assert_eq!(saved["customTopLevel"]["keep"], true);
+    }
+
+    #[test]
+    fn issue_1937_selection_state_expected_state_cas_is_stale_without_overwrite() {
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(r#"{"currentCodingAgent":"codex","profile":"B"}"#),
+        );
+        let stale_expected = read_replica_selection_state(&fixture.replica)
+            .expectation()
+            .unwrap();
+
+        // A concurrent writer moves the pair; the stale expectation must not
+        // overwrite it.
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(r#"{"currentCodingAgent":"claude","profile":"A"}"#),
+        );
+        let before = config_bytes(&fixture.replica);
+        let error = write_replica_selection(
+            &fixture.settings,
+            &fixture.replica,
+            &pair("codex", "C"),
+            SelectionWriteIntent::Individual,
+            &stale_expected,
+        )
+        .unwrap_err();
+        assert!(error.contains("stale"), "{error}");
+        assert_eq!(config_bytes(&fixture.replica), before);
+
+        let current = read_replica_selection_state(&fixture.replica);
+        let mut wrong_identity = current.expectation().unwrap();
+        wrong_identity.identity = "../../_agent_other".to_string();
+        let error = write_replica_selection(
+            &fixture.settings,
+            &fixture.replica,
+            &pair("codex", "C"),
+            SelectionWriteIntent::Individual,
+            &wrong_identity,
+        )
+        .unwrap_err();
+        assert!(error.contains("stale"), "{error}");
+
+        let mut wrong_flag = current.expectation().unwrap();
+        wrong_flag.locked = true;
+        let error = write_replica_selection(
+            &fixture.settings,
+            &fixture.replica,
+            &pair("codex", "C"),
+            SelectionWriteIntent::Individual,
+            &wrong_flag,
+        )
+        .unwrap_err();
+        assert!(error.contains("stale"), "{error}");
+        assert_eq!(config_bytes(&fixture.replica), before);
+    }
+
+    #[test]
+    fn issue_1937_selection_state_intent_table() {
+        let cases = [
+            (SelectionWriteIntent::Individual, true, false, None),
+            (
+                SelectionWriteIntent::IndividualAssignLock,
+                true,
+                true,
+                Some(SelectionLockTransition::UnlockedToLocked),
+            ),
+            (SelectionWriteIntent::BulkOrdinary, true, false, None),
+            (
+                SelectionWriteIntent::BulkAssignLockUnlockedOnly,
+                true,
+                true,
+                Some(SelectionLockTransition::UnlockedToLocked),
+            ),
+            (
+                SelectionWriteIntent::BulkForceReviewed,
+                true,
+                true,
+                Some(SelectionLockTransition::UnlockedToLocked),
+            ),
+        ];
+        for (intent, expect_change, expect_flag_true, transition) in cases {
+            let fixture = selection_fixture();
+            write_config(
+                &fixture.replica,
+                &seed_selection_config(r#"{"currentCodingAgent":"claude","profile":"A"}"#),
+            );
+            let expected = read_replica_selection_state(&fixture.replica)
+                .expectation()
+                .unwrap();
+            let outcome = write_replica_selection(
+                &fixture.settings,
+                &fixture.replica,
+                &pair("codex", "B"),
+                intent,
+                &expected,
+            )
+            .unwrap();
+            assert_eq!(outcome.changed, expect_change, "{intent:?}");
+            assert_eq!(outcome.published, expect_change, "{intent:?}");
+            assert_eq!(outcome.lock_transition, transition, "{intent:?}");
+            let saved = config_value(&fixture.replica);
+            assert_eq!(
+                saved["tooling"]["currentCodingAgent"], "codex",
+                "{intent:?}"
+            );
+            assert_eq!(saved["tooling"]["profile"], "B", "{intent:?}");
+            let stored_flag = saved["tooling"]
+                .get("selectionLocked")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            assert_eq!(stored_flag, expect_flag_true, "{intent:?}");
+        }
+
+        // Locked replicas: individual intents are rejected (bytes untouched);
+        // bulk intents skip without publishing; force applies and keeps locked.
+        for intent in [
+            SelectionWriteIntent::Individual,
+            SelectionWriteIntent::IndividualAssignLock,
+        ] {
+            let fixture = selection_fixture();
+            write_config(
+                &fixture.replica,
+                &seed_selection_config(
+                    r#"{"currentCodingAgent":"claude","profile":"A","selectionLocked":true}"#,
+                ),
+            );
+            let before = config_bytes(&fixture.replica);
+            let expected = read_replica_selection_state(&fixture.replica)
+                .expectation()
+                .unwrap();
+            let error = write_replica_selection(
+                &fixture.settings,
+                &fixture.replica,
+                &pair("codex", "B"),
+                intent,
+                &expected,
+            )
+            .unwrap_err();
+            assert!(error.contains("locked"), "{intent:?}: {error}");
+            assert_eq!(config_bytes(&fixture.replica), before, "{intent:?}");
+        }
+        for intent in [
+            SelectionWriteIntent::BulkOrdinary,
+            SelectionWriteIntent::BulkAssignLockUnlockedOnly,
+        ] {
+            let fixture = selection_fixture();
+            write_config(
+                &fixture.replica,
+                &seed_selection_config(
+                    r#"{"currentCodingAgent":"claude","profile":"A","selectionLocked":true}"#,
+                ),
+            );
+            let before = config_bytes(&fixture.replica);
+            let expected = read_replica_selection_state(&fixture.replica)
+                .expectation()
+                .unwrap();
+            let outcome = write_replica_selection(
+                &fixture.settings,
+                &fixture.replica,
+                &pair("codex", "B"),
+                intent,
+                &expected,
+            )
+            .unwrap();
+            assert_eq!(outcome, SelectionWriteOutcome::UNCHANGED, "{intent:?}");
+            assert_eq!(config_bytes(&fixture.replica), before, "{intent:?}");
+        }
+
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"claude","profile":"A","selectionLocked":true}"#,
+            ),
+        );
+        let before = config_bytes(&fixture.replica);
+        let expected = read_replica_selection_state(&fixture.replica)
+            .expectation()
+            .unwrap();
+        let outcome = write_replica_selection(
+            &fixture.settings,
+            &fixture.replica,
+            &pair("codex", "B"),
+            SelectionWriteIntent::BulkForceReviewed,
+            &expected,
+        )
+        .unwrap();
+        assert!(outcome.changed && outcome.published);
+        assert_eq!(outcome.lock_transition, None, "already locked");
+        assert_ne!(config_bytes(&fixture.replica), before);
+        let saved = config_value(&fixture.replica);
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(saved["tooling"]["selectionLocked"], true);
+    }
+
+    #[test]
+    fn issue_1937_selection_state_malformed_is_never_force_repaired() {
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"codex","profile":"B","selectionLocked":"yes"}"#,
+            ),
+        );
+        let before = config_bytes(&fixture.replica);
+        let invalid = read_replica_selection_state(&fixture.replica);
+        assert!(matches!(invalid, ReplicaSelectionState::Invalid { .. }));
+        assert!(invalid.expectation().is_err());
+
+        let error = write_replica_selection(
+            &fixture.settings,
+            &fixture.replica,
+            &pair("codex", "B"),
+            SelectionWriteIntent::BulkForceReviewed,
+            &ReplicaSelectionExpectation {
+                identity: REPLICA_IDENTITY.to_string(),
+                pair: Some(pair("codex", "B")),
+                locked: false,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("invalid"), "{error}");
+        assert_eq!(config_bytes(&fixture.replica), before);
+
+        let error = clear_replica_selection_lock(
+            &fixture.settings,
+            &fixture.replica,
+            &ReplicaSelectionExpectation {
+                identity: REPLICA_IDENTITY.to_string(),
+                pair: Some(pair("codex", "B")),
+                locked: true,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("invalid"), "{error}");
+        assert_eq!(config_bytes(&fixture.replica), before);
+    }
+
+    #[test]
+    fn issue_1937_selection_state_requested_letter_survives_resolution_and_content_changes() {
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(r#"{"currentCodingAgent":"codex"}"#),
+        );
+        let expected = read_replica_selection_state(&fixture.replica)
+            .expectation()
+            .unwrap();
+        // Settings only enable A..C, so resolving the stored D falls back; the
+        // stored requested letter must stay D.
+        write_replica_selection(
+            &fixture.settings,
+            &fixture.replica,
+            &pair("codex", "D"),
+            SelectionWriteIntent::Individual,
+            &expected,
+        )
+        .unwrap();
+        let resolution = resolve_profile(
+            &fixture.settings,
+            ProfileResolutionRequest {
+                coding_agent_id: "codex",
+                launch_path: Some(&fixture.replica),
+                agent_matrix_name: None,
+                requested_profile: None,
+                requested_profile_authoritative: false,
+            },
+        );
+        assert_eq!(resolution.requested_profile, "D");
+        assert_eq!(resolution.effective_profile, "C");
+
+        // Content/config changes do not rewrite the stored requested letter.
+        let changed_settings = settings_with_cells(&[("codex", vec![])]);
+        let resolution = resolve_profile(
+            &changed_settings,
+            ProfileResolutionRequest {
+                coding_agent_id: "codex",
+                launch_path: Some(&fixture.replica),
+                agent_matrix_name: None,
+                requested_profile: None,
+                requested_profile_authoritative: false,
+            },
+        );
+        assert_eq!(resolution.requested_profile, "D");
+        assert_eq!(resolution.effective_profile, "A");
+        assert_eq!(
+            read_replica_selection_state(&fixture.replica).pair(),
+            Some(&pair("codex", "D"))
+        );
+    }
+
+    #[test]
+    fn issue_1937_selection_state_clear_locked_to_unlocked_publishes() {
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"codex","profile":"B","selectionLocked":true}"#,
+            ),
+        );
+        let expected = read_replica_selection_state(&fixture.replica)
+            .expectation()
+            .unwrap();
+        let outcome =
+            clear_replica_selection_lock(&fixture.settings, &fixture.replica, &expected).unwrap();
+        assert_eq!(
+            outcome,
+            SelectionWriteOutcome {
+                changed: true,
+                published: true,
+                lock_transition: Some(SelectionLockTransition::LockedToUnlocked),
+            }
+        );
+        let saved = config_value(&fixture.replica);
+        assert_eq!(saved["tooling"]["selectionLocked"], false);
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(saved["tooling"]["profile"], "B");
+        match read_replica_selection_state(&fixture.replica) {
+            ReplicaSelectionState::Unlocked { pair, .. } => {
+                assert_eq!(pair, Some(self::pair("codex", "B")));
+            }
+            other => panic!("expected Unlocked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn issue_1937_selection_state_already_unlocked_no_publish() {
+        let fixture = selection_fixture();
+
+        // Absent flag: exact deliberately non-pretty bytes retained.
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(r#"{"currentCodingAgent":"codex","profile":"B"}"#),
+        );
+        let before = config_bytes(&fixture.replica);
+        let expected = read_replica_selection_state(&fixture.replica)
+            .expectation()
+            .unwrap();
+        assert_eq!(
+            clear_replica_selection_lock(&fixture.settings, &fixture.replica, &expected).unwrap(),
+            SelectionWriteOutcome::UNCHANGED
+        );
+        assert_eq!(config_bytes(&fixture.replica), before);
+
+        // Explicit false: same no-publish path.
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"codex","profile":"B","selectionLocked":false}"#,
+            ),
+        );
+        let before = config_bytes(&fixture.replica);
+        let expected = read_replica_selection_state(&fixture.replica)
+            .expectation()
+            .unwrap();
+        assert_eq!(
+            clear_replica_selection_lock(&fixture.settings, &fixture.replica, &expected).unwrap(),
+            SelectionWriteOutcome::UNCHANGED
+        );
+        assert_eq!(config_bytes(&fixture.replica), before);
+
+        // A directory at the known temp-config path proves the already-unlocked
+        // path never even attempts a temp file.
+        let temp_obstruction = fixture
+            .replica
+            .join(format!(".config.json.{}.tmp", std::process::id()));
+        std::fs::create_dir(&temp_obstruction).unwrap();
+        assert_eq!(
+            clear_replica_selection_lock(&fixture.settings, &fixture.replica, &expected).unwrap(),
+            SelectionWriteOutcome::UNCHANGED
+        );
+        assert!(temp_obstruction.is_dir());
+        assert_eq!(config_bytes(&fixture.replica), before);
+
+        // Positive control: a true flag DOES publish, reaches that obstruction
+        // and fails temp creation — the error is never masked as success.
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"codex","profile":"B","selectionLocked":true}"#,
+            ),
+        );
+        let locked_before = config_bytes(&fixture.replica);
+        let locked_expected = read_replica_selection_state(&fixture.replica)
+            .expectation()
+            .unwrap();
+        let error =
+            clear_replica_selection_lock(&fixture.settings, &fixture.replica, &locked_expected)
+                .unwrap_err();
+        assert!(error.contains("temp config"), "{error}");
+        assert!(temp_obstruction.is_dir());
+        assert_eq!(config_bytes(&fixture.replica), locked_before);
+    }
+
+    #[test]
+    fn issue_1937_selection_state_clear_stale_race_is_not_already_unlocked() {
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(r#"{"currentCodingAgent":"codex","profile":"B"}"#),
+        );
+        let unlocked_expectation = read_replica_selection_state(&fixture.replica)
+            .expectation()
+            .unwrap();
+
+        // The flag races to true after the read.
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"codex","profile":"B","selectionLocked":true}"#,
+            ),
+        );
+        let before = config_bytes(&fixture.replica);
+        let error = clear_replica_selection_lock(
+            &fixture.settings,
+            &fixture.replica,
+            &unlocked_expectation,
+        )
+        .unwrap_err();
+        assert!(error.contains("stale"), "{error}");
+        assert_eq!(config_bytes(&fixture.replica), before);
+    }
+
+    #[test]
+    fn issue_1937_selection_state_lock_timeout_is_not_success() {
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(r#"{"currentCodingAgent":"codex","profile":"B"}"#),
+        );
+        let expected = read_replica_selection_state(&fixture.replica)
+            .expectation()
+            .unwrap();
+
+        // Hold the #1938 sidecar: the guarded call must time out and propagate,
+        // never translate into AlreadyUnlocked success.
+        let sidecar = std::fs::canonicalize(&fixture.replica)
+            .unwrap()
+            .join(".config.json.lock");
+        let holder = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&sidecar)
+            .unwrap();
+        holder.lock().unwrap();
+
+        let before = config_bytes(&fixture.replica);
+        let error = clear_replica_selection_lock(&fixture.settings, &fixture.replica, &expected)
+            .unwrap_err();
+        assert!(error.contains("configLockTimeout"), "{error}");
+        assert_eq!(config_bytes(&fixture.replica), before);
+        drop(holder);
+    }
+
+    #[test]
+    fn issue_1937_selection_state_default_read_shapes() {
+        let fixture = selection_fixture();
+
+        assert_eq!(
+            read_replica_selection_default(&fixture.matrix).unwrap(),
+            None
+        );
+
+        std::fs::write(
+            fixture.matrix.join("config.json"),
+            r#"{"context":["Role.md"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_replica_selection_default(&fixture.matrix).unwrap(),
+            None
+        );
+        std::fs::write(
+            fixture.matrix.join("config.json"),
+            r#"{"tooling":{"defaultProfile":"B"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_replica_selection_default(&fixture.matrix).unwrap(),
+            None
+        );
+
+        std::fs::write(
+            fixture.matrix.join("config.json"),
+            r#"{"tooling":{"replicaSelectionDefault":{"codingAgentId":"codex","requestedProfile":"b","selectionLocked":true}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_replica_selection_default(&fixture.matrix).unwrap(),
+            Some(ReplicaSelectionDefault {
+                coding_agent_id: "codex".to_string(),
+                requested_profile: "B".to_string(),
+                selection_locked: true,
+            })
+        );
+
+        for tooling in [
+            r#"{"replicaSelectionDefault":5}"#,
+            r#"{"replicaSelectionDefault":{"requestedProfile":"B","selectionLocked":false}}"#,
+            r#"{"replicaSelectionDefault":{"codingAgentId":"","requestedProfile":"B","selectionLocked":false}}"#,
+            r#"{"replicaSelectionDefault":{"codingAgentId":"codex","requestedProfile":"AB","selectionLocked":false}}"#,
+            r#"{"replicaSelectionDefault":{"codingAgentId":"codex","requestedProfile":"B"}}"#,
+            r#"{"replicaSelectionDefault":{"codingAgentId":"codex","requestedProfile":"B","selectionLocked":"yes"}}"#,
+        ] {
+            std::fs::write(
+                fixture.matrix.join("config.json"),
+                format!(r#"{{"tooling":{tooling}}}"#),
+            )
+            .unwrap();
+            let error = read_replica_selection_default(&fixture.matrix).unwrap_err();
+            assert!(
+                error.contains("replicaSelectionDefault"),
+                "{tooling}: {error}"
+            );
+        }
+
+        std::fs::write(fixture.matrix.join("config.json"), r#"{"tooling":5}"#).unwrap();
+        assert!(read_replica_selection_default(&fixture.matrix).is_err());
+        std::fs::write(fixture.matrix.join("config.json"), "{ not json").unwrap();
+        assert!(read_replica_selection_default(&fixture.matrix).is_err());
+    }
+
+    #[test]
+    fn issue_1937_selection_state_default_write_cas_and_preservation() {
+        let fixture = selection_fixture();
+        let default = ReplicaSelectionDefault {
+            coding_agent_id: "codex".to_string(),
+            requested_profile: "b".to_string(),
+            selection_locked: false,
+        };
+
+        let outcome = write_replica_selection_default(&fixture.matrix, &default, None).unwrap();
+        assert!(outcome.changed && outcome.published);
+        assert_eq!(outcome.lock_transition, None);
+        let saved = config_value(&fixture.matrix);
+        assert_eq!(
+            saved["tooling"]["replicaSelectionDefault"]["requestedProfile"],
+            "B"
+        );
+
+        // An expected-prior of None is now stale.
+        let stale = write_replica_selection_default(&fixture.matrix, &default, None).unwrap_err();
+        assert!(stale.contains("stale"), "{stale}");
+
+        // Update with the exact prior: other tooling and unknown keys survive.
+        let mut matrix = config_value(&fixture.matrix);
+        matrix["tooling"]["defaultProfile"] = serde_json::json!("A");
+        matrix["customProjectKey"] = serde_json::json!(["keep"]);
+        std::fs::write(
+            fixture.matrix.join("config.json"),
+            serde_json::to_string(&matrix).unwrap(),
+        )
+        .unwrap();
+        let prior = read_replica_selection_default(&fixture.matrix).unwrap();
+        let next = ReplicaSelectionDefault {
+            coding_agent_id: "claude".to_string(),
+            requested_profile: "C".to_string(),
+            selection_locked: true,
+        };
+        write_replica_selection_default(&fixture.matrix, &next, prior.as_ref()).unwrap();
+        let saved = config_value(&fixture.matrix);
+        assert_eq!(
+            saved["tooling"]["replicaSelectionDefault"]["codingAgentId"],
+            "claude"
+        );
+        assert_eq!(
+            saved["tooling"]["replicaSelectionDefault"]["selectionLocked"],
+            true
+        );
+        assert_eq!(saved["tooling"]["defaultProfile"], "A");
+        assert_eq!(saved["customProjectKey"][0], "keep");
+
+        // A wrong prior is stale and publishes nothing.
+        let before = config_bytes(&fixture.matrix);
+        let wrong = write_replica_selection_default(&fixture.matrix, &default, None).unwrap_err();
+        assert!(wrong.contains("stale"), "{wrong}");
+        assert_eq!(config_bytes(&fixture.matrix), before);
+    }
+
+    #[test]
+    fn issue_1937_selection_state_null_clear_rejected_for_protected_pair() {
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"codex","profile":"B","selectionLocked":true}"#,
+            ),
+        );
+        let before = config_bytes(&fixture.replica);
+        let error =
+            set_instance_profile_override(&fixture.settings, &fixture.replica, None).unwrap_err();
+        assert!(error.contains("protected"), "{error}");
+        assert_eq!(config_bytes(&fixture.replica), before);
+
+        // A new valid requested letter is permitted and preserves Coding Agent
+        // and the lock flag.
+        set_instance_profile_override(&fixture.settings, &fixture.replica, Some("d")).unwrap();
+        let saved = config_value(&fixture.replica);
+        assert_eq!(saved["tooling"]["profile"], "D");
+        assert_eq!(saved["tooling"]["instanceProfileOverride"], "D");
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(saved["tooling"]["selectionLocked"], true);
+
+        // A legacy unlocked config without a pair may still be cleared.
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(r#"{"instanceProfileOverride":"C"}"#),
+        );
+        set_instance_profile_override(&fixture.settings, &fixture.replica, None).unwrap();
+        let saved = config_value(&fixture.replica);
+        assert!(saved["tooling"].get("profile").is_none());
+        assert!(saved["tooling"].get("instanceProfileOverride").is_none());
+    }
+
+    #[test]
+    fn issue_1937_selection_state_wrapper_preserves_flag_and_rejects_locked() {
+        let fixture = selection_fixture();
+
+        // Unlocked: the pair is written, the absent flag stays absent.
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(r#"{"lastCodingAgent":"claude"}"#),
+        );
+        set_replica_coding_agent_selection(&fixture.settings, &fixture.replica, "codex", "b")
+            .unwrap();
+        let saved = config_value(&fixture.replica);
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(saved["tooling"]["profile"], "B");
+        assert!(saved["tooling"].get("selectionLocked").is_none());
+        assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+
+        // Locked: rejected, stored bytes untouched.
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"codex","profile":"A","selectionLocked":true}"#,
+            ),
+        );
+        let before = config_bytes(&fixture.replica);
+        let error =
+            set_replica_coding_agent_selection(&fixture.settings, &fixture.replica, "codex", "B")
+                .unwrap_err();
+        assert!(error.contains("locked"), "{error}");
+        assert_eq!(config_bytes(&fixture.replica), before);
+    }
+
+    #[test]
+    fn issue_1937_selection_state_content_hash_write_does_not_reset_malformed_tooling() {
+        let fixture = selection_fixture();
+
+        write_config(
+            &fixture.replica,
+            r#"{"identity":"../../_agent_dev-rust","tooling":5}"#,
+        );
+        let before = config_bytes(&fixture.replica);
+        let error = set_replica_profile_content_hash(&fixture.replica, "deadbeef").unwrap_err();
+        assert!(error.contains("tooling must be a JSON object"), "{error}");
+        assert_eq!(config_bytes(&fixture.replica), before);
+
+        // A malformed selectionLocked inside a valid tooling object stays exactly
+        // as stored while the hash is updated.
+        write_config(
+            &fixture.replica,
+            r#"{"identity":"../../_agent_dev-rust","tooling":{"selectionLocked":"yes","currentCodingAgent":"codex"}}"#,
+        );
+        set_replica_profile_content_hash(&fixture.replica, "deadbeef").unwrap();
+        let saved = config_value(&fixture.replica);
+        assert_eq!(saved["tooling"]["selectionLocked"], "yes");
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(saved["tooling"]["profileContentHash"], "deadbeef");
     }
 }

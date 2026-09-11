@@ -1075,6 +1075,158 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
     );
 }
 
+/// #1939 - write through the same #1938 guarded funnel production uses.
+fn guarded_update(
+    config_path: &Path,
+    mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<(), String>,
+) {
+    agentscommander_lib::config::local_config_io::update_config_json_object(
+        config_path,
+        false,
+        mutate,
+    )
+    .expect("guarded config update");
+}
+
+/// #1939 - a repeated `team add-member` must merge into the existing replica
+/// config instead of replacing it: the protected pair, its flag, tooling
+/// history, custom context and unknown keys survive, including a config write
+/// that runs through the same guarded writer while the repeat is in flight.
+#[test]
+fn issue_1937_repeat_member_preserves_config() {
+    let tmp = Tmp::new("cli-issue-1937-repeat-member");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
+
+    let _team = run_json(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+        ],
+    );
+    let _wg = run_json(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+        ],
+    );
+    let first = run_json(
+        &bin,
+        &[
+            "team",
+            "add-member",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "room-1-dev-team",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+    assert_eq!(first["added"], true);
+
+    let replica_dir = project
+        .join(".ac")
+        .join("room-1-dev-team")
+        .join("__agent_dev-rust");
+    let config_path = replica_dir.join("config.json");
+
+    guarded_update(&config_path, |obj| {
+        obj.insert(
+            "tooling".to_string(),
+            serde_json::json!({
+                "currentCodingAgent": "codex",
+                "profile": "B",
+                "instanceProfileOverride": "B",
+                "instanceProfileOverrideSource": "manual",
+                "selectionLocked": true,
+                "lastCodingAgent": "claude"
+            }),
+        );
+        obj.insert("customToolingKey".to_string(), serde_json::json!("keep-me"));
+        obj.insert(
+            "context".to_string(),
+            serde_json::json!(["$AGENTSCOMMANDER_CONTEXT", "custom-notes.md"]),
+        );
+        Ok(())
+    });
+
+    // Repeat the member add while this test process performs guarded writes
+    // concurrently: the cross-process sidecar lock serializes them, and the
+    // creator's merge must not drop either writer's data.
+    let child = command_for_binary(&bin)
+        .args([
+            "team",
+            "add-member",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "room-1-dev-team",
+            "--agent",
+            "dev-rust",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn repeat add-member");
+    for index in 0..5 {
+        guarded_update(&config_path, |obj| {
+            obj.insert(
+                "concurrentGuardMarker".to_string(),
+                serde_json::json!(index),
+            );
+            Ok(())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let output = child.wait_with_output().expect("wait repeat add-member");
+    assert!(
+        output.status.success(),
+        "repeat add-member failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).expect("read replica config"))
+            .expect("parse replica config");
+    assert_eq!(saved["identity"], "../../_agent_dev-rust");
+    assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+    assert_eq!(saved["tooling"]["profile"], "B");
+    assert_eq!(saved["tooling"]["instanceProfileOverride"], "B");
+    assert_eq!(saved["tooling"]["selectionLocked"], true);
+    assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+    assert_eq!(saved["customToolingKey"], "keep-me");
+    assert_eq!(saved["concurrentGuardMarker"], 4);
+    let context: Vec<&str> = saved["context"]
+        .as_array()
+        .expect("context array")
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect();
+    assert!(context.contains(&"custom-notes.md"), "{context:?}");
+    assert!(
+        context.iter().any(|entry| entry.ends_with("/Role.md")),
+        "{context:?}"
+    );
+}
+
 // #1088: a live session whose name+cwd match a WG peer surfaces its context-usage
 // percent as `contextPercent` in both `list-peers` and `list-peers-lean` (read from
 // sessions.json on disk, no daemon), and peers without a matching reading omit it.
