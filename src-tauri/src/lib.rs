@@ -3661,6 +3661,7 @@ pub fn run(
                 commands::pty::preview_watcher_reach,
                 commands::config::get_settings,
                 commands::config::get_coding_agent_catalog,
+                commands::config::get_coding_agent_catalog_report,
                 commands::config::list_reseedable_agent_commands,
                 commands::config::reseed_coding_agent_default,
                 commands::config::update_settings,
