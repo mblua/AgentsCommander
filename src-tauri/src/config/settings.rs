@@ -12373,6 +12373,15 @@ mod tests {
             })
         }
 
+        /// One raw entry with `enabled` false, for D6's disabled-entry clauses.
+        fn disabled_entry(pattern: &str, notification: &str) -> Value {
+            json!({
+                "pattern": pattern,
+                "notification": notification,
+                "enabled": false,
+            })
+        }
+
         /// The parsed twin of `entry`, for equality against store results.
         fn parsed_entry(pattern: &str, notification: &str) -> BlockingMenuEntry {
             BlockingMenuEntry::Valid(BlockingMenuConfig {
@@ -12432,6 +12441,11 @@ mod tests {
             let entries_201: Vec<Value> = (0..201)
                 .map(|i| entry(&format!("^pattern-{i}$"), "note"))
                 .collect();
+            let entries_200_enabled: Vec<Value> = (0..200)
+                .map(|i| entry(&format!("^pattern-{i}$"), "note"))
+                .collect();
+            let mut entries_200_plus_disabled = entries_200_enabled.clone();
+            entries_200_plus_disabled.push(disabled_entry("^disabled-pattern$", "note"));
             let cases: Vec<(&str, String, &str)> = vec![
                 ("invalid JSON", "{".to_string(), "does not parse"),
                 ("JSON array", "[]".to_string(), "is not a JSON object"),
@@ -12450,6 +12464,26 @@ mod tests {
                     "201 entries",
                     remote_json("codex", Value::Array(entries_201)),
                     "more than 200 entries",
+                ),
+                (
+                    "200 enabled + 1 disabled entry",
+                    remote_json("codex", Value::Array(entries_200_plus_disabled)),
+                    "more than 200 entries",
+                ),
+                (
+                    "disabled invalid entry",
+                    remote_json("codex", json!([{"pattern": 5, "enabled": false}])),
+                    "is not a valid blocking-menu entry",
+                ),
+                (
+                    "disabled uncompilable pattern",
+                    remote_json("codex", json!([disabled_entry("(", "note")])),
+                    "pattern does not compile",
+                ),
+                (
+                    "disabled empty-string pattern",
+                    remote_json("codex", json!([disabled_entry(".*", "note")])),
+                    "pattern matches the empty string",
                 ),
                 (
                     "invalid entry",
@@ -12561,6 +12595,15 @@ mod tests {
             let file = validate_remote_blocking_menus_file(&accepted)
                 .expect("the exact 200-byte notification and 512-byte pattern are accepted");
             assert_eq!(file.by_command["grok"].len(), 2);
+
+            // Exactly 200 entries are accepted: the ceiling counts disabled entries too,
+            // and the comparison is `> 200`, never an enabled-only count or `>=`.
+            let file = validate_remote_blocking_menus_file(&remote_json(
+                "codex",
+                Value::Array(entries_200_enabled),
+            ))
+            .expect("exactly 200 entries are accepted");
+            assert_eq!(file.by_command["codex"].len(), 200);
         }
 
         #[test]
