@@ -594,7 +594,7 @@ fn issue_1867_isolation_source_contract() {
         (
             "cli_workgroup_team.rs",
             include_str!("cli_workgroup_team.rs"),
-            9,
+            10,
             &[
                 ("run_json", 1),
                 ("run_json_machine", 1),
@@ -602,6 +602,7 @@ fn issue_1867_isolation_source_contract() {
                 ("run_fail_output", 1),
                 ("run_stdout", 1),
                 ("team_add_member_creates_replica_and_peer_is_reachable", 1),
+                ("issue_1937_repeat_member_preserves_config", 1),
                 (
                     "list_peers_surfaces_context_percent_for_matching_live_session",
                     1,
