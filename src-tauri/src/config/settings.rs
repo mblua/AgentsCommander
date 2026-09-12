@@ -8,8 +8,8 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 use crate::config::instance_artifacts::{
-    BLOCKING_MENUS_LOCAL_FILE_NAME, BLOCKING_MENUS_REMOTE_FILE_NAME,
-    BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
+    BLOCKING_MENUS_LOCAL_FILE_NAME, BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME,
+    BLOCKING_MENUS_REMOTE_FILE_NAME, BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
 };
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
@@ -1056,6 +1056,15 @@ const EMBEDDED_BLOCKING_MENUS_JSON: &str =
 
 pub const BLOCKING_MENUS_SCHEMA_VERSION: u32 = 1;
 
+/// #1925 (D2) - the published file: one pinned literal with the source ref `main` and a
+/// `v1` segment that must equal `BLOCKING_MENUS_SCHEMA_VERSION`; a test pins both.
+pub(crate) const REMOTE_BLOCKING_MENUS_URL: &str =
+    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/blocking-menus/v1/settings-blocking-menus.json";
+/// #1925 (D2) - the ref the URL pins; the cached note names it.
+pub(crate) const REMOTE_BLOCKING_MENUS_SOURCE_REF: &str = "main";
+/// #1925 (D5) - hard cap on the downloaded body, checked while reading and on acceptance.
+pub(crate) const REMOTE_BLOCKING_MENUS_MAX_BYTES: usize = 64 * 1024;
+
 /// #1925 (D6) - hard ceilings for the downloaded layer: 200 entries in total across
 /// every `byCommand` array, a pattern of 512 bytes and a notification of 200 bytes.
 const REMOTE_BLOCKING_MENUS_MAX_ENTRIES: usize = 200;
@@ -1205,6 +1214,24 @@ pub(crate) fn validate_remote_blocking_menus_file(
     Ok(file)
 }
 
+/// #1925 (D5) - accept a response only when the status, the byte size and the encoding
+/// are all right; the body then goes through the same whole-file validator as the cache.
+pub(crate) fn accept_remote_blocking_menus_response(
+    status: u16,
+    body: &[u8],
+) -> Result<BlockingMenusFile, String> {
+    if status != 200 {
+        return Err(format!("HTTP status {status}"));
+    }
+    if body.len() > REMOTE_BLOCKING_MENUS_MAX_BYTES {
+        return Err(format!(
+            "body larger than {REMOTE_BLOCKING_MENUS_MAX_BYTES} bytes"
+        ));
+    }
+    let text = std::str::from_utf8(body).map_err(|_| "body is not UTF-8".to_string())?;
+    validate_remote_blocking_menus_file(text)
+}
+
 /// A parse failure is a build defect T1 catches; production logs once and serves an empty file.
 pub fn shipped_blocking_menus() -> &'static BlockingMenusFile {
     static SHIPPED: OnceLock<BlockingMenusFile> = OnceLock::new();
@@ -1315,6 +1342,62 @@ pub(crate) fn load_remote_blocking_menus_file(settings_path: &Path) -> BlockingM
             BlockingMenusFile::default()
         }
     }
+}
+
+/// #1925 (D7, D8) - replace the downloaded cache only after validation passed. The note
+/// records where and when the bytes came from; the next accepted download replaces it and a
+/// file that fails validation at the next start is ignored.
+pub(crate) fn write_remote_blocking_menus_cache(
+    settings_path: &Path,
+    mut file: BlockingMenusFile,
+    source_url: &str,
+    fetched_at: chrono::DateTime<chrono::Utc>,
+) -> Result<(), String> {
+    file.note = Some(format!(
+        "Downloaded by AgentsCommander from {source_url} (source ref {REMOTE_BLOCKING_MENUS_SOURCE_REF}) at {}. Replaced by the next accepted download and ignored at start if it fails validation; put your own patterns in settings-blocking-menus.local.json.",
+        fetched_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    ));
+    let bytes = pretty_json_bytes(&file).map_err(|e| e.to_string())?;
+    crate::config::local_config_io::write_file_atomic(
+        &blocking_menus_remote_path(settings_path),
+        &bytes,
+    )
+}
+
+/// #1925 (D4) - the throttle stamp lives next to `settings.json`.
+pub(crate) fn blocking_menus_remote_check_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteBlockingMenusCheckStamp {
+    last_checked_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// #1925 (D4) - missing, unreadable and malformed stamps all mean "no throttle": the
+/// caller treats `None` as due.
+pub(crate) fn read_remote_blocking_menus_check_stamp(
+    settings_path: &Path,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let bytes = std::fs::read(blocking_menus_remote_check_path(settings_path)).ok()?;
+    let stamp: RemoteBlockingMenusCheckStamp = serde_json::from_slice(&bytes).ok()?;
+    Some(stamp.last_checked_at)
+}
+
+/// #1925 (D4) - written after every attempt that passed the due check, accepted or not.
+pub(crate) fn write_remote_blocking_menus_check_stamp(
+    settings_path: &Path,
+    at: chrono::DateTime<chrono::Utc>,
+) -> Result<(), String> {
+    let stamp = RemoteBlockingMenusCheckStamp {
+        last_checked_at: at,
+    };
+    let bytes = pretty_json_bytes(&stamp).map_err(|e| e.to_string())?;
+    crate::config::local_config_io::write_file_atomic(
+        &blocking_menus_remote_check_path(settings_path),
+        &bytes,
+    )
 }
 
 /// #1905 (D3, D10) - what the menu guard evaluates. Built once per process; no file watcher.
@@ -2540,7 +2623,7 @@ pub fn validate_resource_settings(settings: &AppSettings) -> Result<(), String> 
     Ok(())
 }
 
-fn settings_path() -> Option<PathBuf> {
+pub(crate) fn settings_path() -> Option<PathBuf> {
     super::config_dir().map(|d| d.join("settings.json"))
 }
 
@@ -12417,6 +12500,115 @@ mod tests {
                     .collect(),
                 ..Default::default()
             }
+        }
+
+        #[test]
+        fn remote_url_pins_the_schema_version_and_source_ref() {
+            let segments: Vec<&str> = REMOTE_BLOCKING_MENUS_URL.split('/').collect();
+            assert_eq!(segments.len(), 10);
+            assert_eq!(
+                segments[..5],
+                [
+                    "https:",
+                    "",
+                    "raw.githubusercontent.com",
+                    "mblua",
+                    "AgentsCommander"
+                ]
+            );
+            assert_eq!(segments[5], REMOTE_BLOCKING_MENUS_SOURCE_REF);
+            assert_eq!(REMOTE_BLOCKING_MENUS_SOURCE_REF, "main");
+            assert_eq!(segments[6..8], ["remote-resources", "blocking-menus"]);
+            assert_eq!(segments[8], format!("v{BLOCKING_MENUS_SCHEMA_VERSION}"));
+            assert_eq!(segments[9], "settings-blocking-menus.json");
+        }
+
+        #[test]
+        fn accept_response_checks_status_size_and_encoding() {
+            assert_eq!(
+                accept_remote_blocking_menus_response(404, &[]),
+                Err("HTTP status 404".to_string())
+            );
+            assert_eq!(
+                accept_remote_blocking_menus_response(500, &[]),
+                Err("HTTP status 500".to_string())
+            );
+
+            let oversized = vec![b' '; REMOTE_BLOCKING_MENUS_MAX_BYTES + 1];
+            let error = accept_remote_blocking_menus_response(200, &oversized)
+                .expect_err("an oversized body is rejected");
+            assert!(error.contains("larger than"), "got {error:?}");
+
+            let error = accept_remote_blocking_menus_response(200, &[0xff, 0xfe])
+                .expect_err("a non-UTF-8 body is rejected");
+            assert!(error.contains("not UTF-8"), "got {error:?}");
+
+            let published = include_str!(
+                "../../../remote-resources/blocking-menus/v1/settings-blocking-menus.json"
+            );
+            assert!(accept_remote_blocking_menus_response(200, published.as_bytes()).is_ok());
+
+            let mut padded = published.as_bytes().to_vec();
+            padded.resize(REMOTE_BLOCKING_MENUS_MAX_BYTES, b' ');
+            assert_eq!(padded.len(), REMOTE_BLOCKING_MENUS_MAX_BYTES);
+            assert!(accept_remote_blocking_menus_response(200, &padded).is_ok());
+        }
+
+        #[test]
+        fn cache_writer_records_source_time_and_ref() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let fetched_at = "2026-09-12T12:00:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap();
+            let file = validate_remote_blocking_menus_file(&remote_json(
+                "grok",
+                json!([entry(r"^\s*Grok test menu\?", "grok is waiting")]),
+            ))
+            .expect("the fixture passes the validator");
+
+            write_remote_blocking_menus_cache(
+                &settings_path,
+                file,
+                REMOTE_BLOCKING_MENUS_URL,
+                fetched_at,
+            )
+            .expect("the cache write succeeds");
+
+            let loaded = load_remote_blocking_menus_file(&settings_path);
+            assert_eq!(
+                loaded.by_command["grok"],
+                vec![parsed_entry(r"^\s*Grok test menu\?", "grok is waiting")]
+            );
+
+            let text = std::fs::read_to_string(blocking_menus_remote_path(&settings_path)).unwrap();
+            let note = serde_json::from_str::<Value>(&text).unwrap()["note"]
+                .as_str()
+                .expect("the written note is a string")
+                .to_string();
+            assert!(note.contains(REMOTE_BLOCKING_MENUS_URL), "note: {note}");
+            assert!(note.contains("(source ref main)"), "note: {note}");
+            assert!(note.contains("2026-09-12T12:00:00Z"), "note: {note}");
+        }
+
+        #[test]
+        fn check_stamp_round_trips_and_ignores_garbage() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let at = "2026-09-12T12:00:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap();
+
+            assert_eq!(read_remote_blocking_menus_check_stamp(&settings_path), None);
+
+            write_remote_blocking_menus_check_stamp(&settings_path, at).expect("the stamp writes");
+            assert_eq!(
+                read_remote_blocking_menus_check_stamp(&settings_path),
+                Some(at)
+            );
+
+            std::fs::write(blocking_menus_remote_check_path(&settings_path), b"{").unwrap();
+            assert_eq!(read_remote_blocking_menus_check_stamp(&settings_path), None);
         }
 
         #[test]

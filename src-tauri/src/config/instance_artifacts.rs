@@ -157,6 +157,8 @@ pub(crate) const BLOCKING_MENUS_SHIPPED_FILE_NAME: &str = "settings-blocking-men
 pub(crate) const BLOCKING_MENUS_LOCAL_FILE_NAME: &str = "settings-blocking-menus.local.json";
 /// #1925 - blocking-menu patterns downloaded from GitHub; written only by the startup download.
 pub(crate) const BLOCKING_MENUS_REMOTE_FILE_NAME: &str = "settings-blocking-menus.remote.json";
+/// #1925 - time of the last remote blocking-menu download attempt; throttles it to once per 24 h.
+pub(crate) const BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME: &str = "blocking-menus-remote-check.json";
 pub(crate) const SETTINGS_LOCK_FILE_NAME: &str = "settings.json.lock";
 /// Covers every settings migration backup instance. The concrete names are
 /// composed by their own migrations, so this glob is registry-owned and no
@@ -291,6 +293,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: rotated generations of the application log; the same runtime artifact under a numeric suffix",
+    },
+    InstanceArtifact {
+        name: BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: remote blocking-menu download throttle stamp",
     },
     InstanceArtifact {
         name: CODEX_HOME_DIR_NAME,

@@ -1,5 +1,5 @@
 [package]
-name = "agentscommander-new"
+name = "agentscommander"
 version = "0.31.0"
 edition = "2021"
 authors = ["AgentsCommander Contributors"]

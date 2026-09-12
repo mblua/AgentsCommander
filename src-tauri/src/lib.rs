@@ -3091,6 +3091,17 @@ pub fn run(
                 });
             }
 
+            // #1925 - detached remote blocking-menu patterns download. Fail-silent; applies at the next start.
+            {
+                let app_handle_for_remote_menus = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::update_check::run_remote_blocking_menus_startup(
+                        app_handle_for_remote_menus,
+                    )
+                    .await;
+                });
+            }
+
             if let Err(e) = crate::config::root_agent::ensure_root_agent_dir() {
                 log::error!("[root-agent] Failed to provision root agent directory: {}", e);
             }

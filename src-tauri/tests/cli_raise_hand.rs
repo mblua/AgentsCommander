@@ -46,7 +46,7 @@ impl Tmp {
 }
 
 fn copy_binary_into(tmp: &Path) -> PathBuf {
-    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
+    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
     std::fs::copy(src, &dst).expect("copy binary");
     dst

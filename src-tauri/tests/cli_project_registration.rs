@@ -37,7 +37,7 @@ impl Tmp {
 }
 
 fn copy_binary_into(tmp: &Path) -> PathBuf {
-    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
+    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
     std::fs::copy(src, &dst).expect("copy binary");
     dst
@@ -128,7 +128,10 @@ fn run_success(bin: &Path, args: &[&str]) {
     );
 }
 
-fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
+/// Success capture that also exposes stderr: #1967 asserts the CLI diagnostics
+/// (stdout JSON plus stderr warnings) while keeping this file's frozen route
+/// set (the issue_1867 isolation contract counts `command_for_binary` routes).
+fn run_json(bin: &Path, args: &[&str]) -> (serde_json::Value, String) {
     let out = command_for_binary(bin).args(args).output().expect("spawn");
     assert!(
         out.status.success(),
@@ -137,10 +140,15 @@ fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    serde_json::from_slice(&out.stdout).expect("stdout json")
+    (
+        serde_json::from_slice(&out.stdout).expect("stdout json"),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
 }
 
-fn run_failure(bin: &Path, args: &[&str]) {
+/// Failure capture returning the raw output so the caller can assert the exact
+/// exit status, stdout and stderr (the #1967 unavailable diagnostic).
+fn run_failure(bin: &Path, args: &[&str]) -> std::process::Output {
     let out = command_for_binary(bin).args(args).output().expect("spawn");
     assert!(
         !out.status.success(),
@@ -148,6 +156,7 @@ fn run_failure(bin: &Path, args: &[&str]) {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    out
 }
 
 fn assert_no_ac_side_effect_dirs(root: &Path) {
@@ -732,55 +741,165 @@ fn new_project_seeds_catalog_into_ac() {
     );
 }
 
-// #1318 CLI read contract: `coding-agent catalog` with no registered project
-// serves the legacy `<config_dir>/coding-agents/agents.json` when one exists
-// (read-only fallback; pre-migration installs keep today's read behavior), else
-// the 6 embedded built-ins. Never an Err for file reasons.
+// #1318/#1967 CLI read contract: `coding-agent catalog` with no registered
+// project serves the legacy `<config_dir>/coding-agents/agents.json` when one
+// exists (read-only; pre-migration installs keep today's read behavior). With
+// no legacy catalog the persisted-only read is UNAVAILABLE: nonzero exit, the
+// baseUnavailable diagnostic (code + selected path + reason) on stderr, no
+// catalog on stdout, no embedded fallback and no read-time directory creation.
 #[test]
-fn cli_catalog_serves_legacy_fallback_then_embedded_without_projects() {
+fn cli_catalog_serves_legacy_then_unavailable_without_projects() {
     let tmp = Tmp::new("cli-catalog-legacy");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     write_settings(&config_dir, &[]);
 
-    // Legacy catalog present -> served verbatim (custom entry observable).
+    // Legacy catalog present -> served verbatim (custom entry observable) as a
+    // JSON array on stdout, with the migrationPending warning on stderr.
     let legacy_dir = config_dir.join("coding-agents");
     std::fs::create_dir_all(&legacy_dir).unwrap();
     let legacy = r##"{"schemaVersion":1,"agents":[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]}"##;
     std::fs::write(legacy_dir.join("agents.json"), legacy).unwrap();
-    let out = run_json(&bin, &["coding-agent", "catalog"]);
+    let (served, stderr) = run_json(&bin, &["coding-agent", "catalog"]);
     assert_eq!(
-        out.as_array().map(Vec::len),
+        served.as_array().map(Vec::len),
         Some(1),
-        "the legacy catalog is served when no project is registered: {out}"
+        "the legacy catalog is served when no project is registered: {served}"
     );
-    assert_eq!(out[0]["key"], "mine");
+    assert_eq!(served[0]["key"], "mine");
+    assert_eq!(served[0]["updateCommands"], serde_json::json!([]));
+    assert!(stderr.contains("migrationPending"), "stderr: {stderr}");
     assert_eq!(
         std::fs::read_to_string(legacy_dir.join("agents.json")).unwrap(),
-        legacy
+        legacy,
+        "the read leaves the legacy bytes untouched"
     );
 
-    // No legacy -> 8 embedded built-ins.
+    // No legacy -> unavailable. Direct output capture (run_failure now returns
+    // the raw Output): nonzero, the selected agents.json path plus reason on
+    // stderr, no success catalog on stdout, and repeated calls never recreate
+    // the legacy directory.
     std::fs::remove_dir_all(&legacy_dir).unwrap();
-    let out = run_json(&bin, &["coding-agent", "catalog"]);
-    assert_eq!(
-        out.as_array().map(Vec::len),
-        Some(8),
-        "without a legacy catalog the embedded default is served: {out}"
+    let selected = legacy_dir.join("agents.json");
+    for _ in 0..2 {
+        let out = run_failure(&bin, &["coding-agent", "catalog"]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.trim().is_empty(),
+            "no catalog may be printed for an unavailable base: {stdout}"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("baseUnavailable"), "stderr: {stderr}");
+        assert!(
+            stderr.contains(&selected.display().to_string()),
+            "stderr must name the selected agents.json path: {stderr}"
+        );
+        assert!(
+            stderr.contains("no persisted catalog"),
+            "stderr must carry the reason: {stderr}"
+        );
+    }
+    assert!(
+        !legacy_dir.exists(),
+        "catalog reads must not create the legacy catalog directory"
+    );
+}
+
+// #1967 P4 CLI contract: `add --from-catalog` resolves the PERSISTED catalog
+// only. An unknown key keeps the existing not-found error and must leave
+// settings byte-identical; a successful add seeds from the persisted sentinel
+// and leaves the unrelated pre-existing registration unchanged.
+#[test]
+fn cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents() {
+    let tmp = Tmp::new("cli-catalog-add");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let project = tmp.path().join("ProjectAlpha");
+    std::fs::create_dir_all(&project).expect("create project");
+    write_settings(&config_dir, &[&project]);
+
+    // One unrelated, pre-existing registration.
+    let settings_path = config_dir.join("settings.json");
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).expect("read settings"))
+            .expect("settings json");
+    settings["agents"] = serde_json::json!([{
+        "id": "existing-1967",
+        "label": "Existing",
+        "command": "existing-1967-command",
+        "color": "#123456",
+        "envs": [],
+        "isolatedHome": false
+    }]);
+    std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).expect("settings json"),
+    )
+    .expect("write settings");
+    let before = std::fs::read(&settings_path).expect("read settings bytes");
+
+    // Persisted catalog with one sentinel entry.
+    let catalog_dir = project.join(".ac").join("coding-agents");
+    std::fs::create_dir_all(&catalog_dir).expect("create catalog dir");
+    std::fs::write(
+        catalog_dir.join("agents.json"),
+        r##"{"schemaVersion":1,"agents":[{"key":"sentinel-1967","label":"Sentinel","description":"d","color":"#654321","command":"sentinel-1967-command","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["sentinel update"]}]}"##,
+    )
+    .expect("write catalog");
+
+    // Unknown key: existing not-found error, settings byte-identical.
+    let out = run_failure(
+        &bin,
+        &["coding-agent", "add", "--from-catalog", "missing-key"],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("catalog key 'missing-key' not found"),
+        "stderr: {stderr}"
     );
     assert_eq!(
-        out.as_array().unwrap().last().unwrap(),
-        &serde_json::json!({
-            "key": "muse",
-            "label": "Muse Code",
-            "description": "Meta terminal coding agent (beta; macOS/Linux host only)",
-            "color": "#0668E1",
-            "command": "muse",
-            "envs": [],
-            "isolatedHome": false,
-            "removable": true,
-            "updateCommands": [],
-            "autoUpdate": false
-        })
+        std::fs::read(&settings_path).expect("settings bytes"),
+        before,
+        "a failed add must not mutate settings"
+    );
+
+    // Successful add: seeded from the persisted sentinel; the pre-existing
+    // registration keeps every field.
+    run_success(
+        &bin,
+        &[
+            "coding-agent",
+            "add",
+            "--from-catalog",
+            "sentinel-1967",
+            "--id",
+            "added-1967",
+        ],
+    );
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).expect("read settings"))
+            .expect("settings json");
+    let agents = after["agents"].as_array().expect("agents array");
+    assert_eq!(agents.len(), 2, "exactly one agent was added: {after}");
+    let existing = agents
+        .iter()
+        .find(|agent| agent["id"] == "existing-1967")
+        .expect("existing agent");
+    assert_eq!(existing["label"], "Existing");
+    assert_eq!(existing["command"], "existing-1967-command");
+    assert_eq!(existing["color"], "#123456");
+    assert_eq!(existing["envs"], serde_json::json!([]));
+    assert_eq!(existing["isolatedHome"], serde_json::json!(false));
+    let added = agents
+        .iter()
+        .find(|agent| agent["id"] == "added-1967")
+        .expect("added agent");
+    assert_eq!(added["label"], "Sentinel");
+    assert_eq!(added["command"], "sentinel-1967-command");
+    assert_eq!(added["color"], "#654321");
+    assert_eq!(
+        std::fs::read_to_string(catalog_dir.join("agents.json")).expect("catalog persists"),
+        r##"{"schemaVersion":1,"agents":[{"key":"sentinel-1967","label":"Sentinel","description":"d","color":"#654321","command":"sentinel-1967-command","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["sentinel update"]}]}"##,
+        "add --from-catalog never writes the persisted catalog"
     );
 }

@@ -724,11 +724,15 @@ mod tests {
         use clap::CommandFactory;
         let mut root = Cli::command();
         root.build();
-        // The root command name is the package name, `agentscommander-new`,
+        // The root command name is the package name, `agentscommander`,
         // because `Cli` sets no `#[command(name = ...)]`. Take it before the
         // walk consumes `root`, and derive every lookup key from it rather than
         // hard-coding it.
         let root_name = root.get_name().to_string();
+        assert_eq!(
+            root_name, "agentscommander",
+            "clap's root command name is the Cargo package name"
+        );
         // Carry the invocation path, so an assertion can name a leaf
         // unambiguously ("create" alone is a name three different parents use).
         let mut stack = vec![(String::new(), root)];
@@ -816,7 +820,7 @@ mod tests {
             ("purge-room", "--wg"),
         ] {
             let cli = Cli::try_parse_from([
-                "agentscommander-new",
+                "agentscommander",
                 sub,
                 "--token",
                 "00000000-0000-0000-0000-000000000487",
@@ -843,7 +847,7 @@ mod tests {
         use clap::Parser;
         for (sub, flag) in [("room", "--room"), ("workgroup", "--workgroup")] {
             let cli = Cli::try_parse_from([
-                "agentscommander-new",
+                "agentscommander",
                 sub,
                 "remove",
                 "--project",

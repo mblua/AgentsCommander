@@ -59,12 +59,12 @@ const checks = [
   extract(
     'src-tauri/Cargo.toml:[package].version',
     'src-tauri/Cargo.toml',
-    /(?:\r?\n)\s*name\s*=\s*"agentscommander-new"\s*(?:\r?\n)version\s*=\s*"([^"]+)"/,
+    /(?:\r?\n)\s*name\s*=\s*"agentscommander"\s*(?:\r?\n)version\s*=\s*"([^"]+)"/,
   ),
   extract(
     'Cargo.lock:internal-crate.version',
     'Cargo.lock',
-    /(?:\r?\n)\s*name\s*=\s*"agentscommander-new"\s*(?:\r?\n)version\s*=\s*"([^"]+)"/,
+    /(?:\r?\n)\s*name\s*=\s*"agentscommander"\s*(?:\r?\n)version\s*=\s*"([^"]+)"/,
   ),
   extract(
     'src-tauri/tauri.conf.json:version',

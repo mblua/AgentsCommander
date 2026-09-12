@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const BIN: &str = env!("CARGO_BIN_EXE_agentscommander-new");
+const BIN: &str = env!("CARGO_BIN_EXE_agentscommander");
 
 struct TempConfigRoot {
     path: PathBuf,

@@ -191,11 +191,15 @@ async fn dispatch_agent_update_command(
             },
         ),
         "get_coding_agent_catalog" => {
-            let catalog =
-                crate::commands::config::coding_agent_catalog_inner(&state.settings).await;
+            // #1967 P4 - the shared inner returns the persisted catalog or the
+            // typed unavailability. Propagate that error as a transport error
+            // (never serialize a Rust `Result` as the JSON payload).
             Some(
-                serde_json::to_value(catalog)
-                    .map_err(|e| format!("Failed to serialize coding agent catalog: {e}")),
+                match crate::commands::config::coding_agent_catalog_inner(&state.settings).await {
+                    Ok(catalog) => serde_json::to_value(catalog)
+                        .map_err(|e| format!("Failed to serialize coding agent catalog: {e}")),
+                    Err(unavailable) => Err(unavailable),
+                },
             )
         }
         "get_coding_agent_catalog_report" => {
@@ -1863,7 +1867,15 @@ mod tests {
 
     #[tokio::test]
     async fn agent_update_routes_bypass_restore_guard() {
-        let (state, _rx, _gate) = ws_state_with_agent_update(AppSettings::default(), true, false);
+        // A project with no persisted catalog keeps the catalog route's result
+        // deterministic; the point is that the route is REACHABLE while restore
+        // is parked (not the restore guard's `selectionCoordinatorBusy`).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = AppSettings {
+            project_paths: vec![dir.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let (state, _rx, _gate) = ws_state_with_agent_update(settings, true, false);
 
         let busy = dispatch_inner(&state, "list_sessions", &json!({})).await;
         assert_eq!(busy, Err("selectionCoordinatorBusy".to_string()));
@@ -1877,10 +1889,11 @@ mod tests {
         assert_eq!(status["answered"], json!({}));
         assert_eq!(status["nodes"], json!([]));
 
-        let catalog = dispatch_inner(&state, "get_coding_agent_catalog", &json!({}))
+        let catalog_error = dispatch_inner(&state, "get_coding_agent_catalog", &json!({}))
             .await
-            .expect("catalog route");
-        assert!(catalog.as_array().is_some_and(|rows| !rows.is_empty()));
+            .expect_err("no persisted catalog in the test project");
+        assert!(catalog_error.contains("baseUnavailable"), "{catalog_error}");
+        assert_ne!(catalog_error, "selectionCoordinatorBusy");
     }
 
     #[tokio::test]
@@ -1928,34 +1941,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_coding_agent_catalog_route_returns_backfilled_catalog() {
+    async fn get_coding_agent_catalog_route_serves_the_persisted_catalog_without_a_donor() {
         let dir = tempfile::tempdir().expect("tempdir");
+        let catalog_dir = dir.path().join(".ac").join("coding-agents");
+        std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
+        std::fs::write(
+            catalog_dir.join("agents.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schemaVersion": 1,
+                "agents": [
+                    {
+                        "key": "legacy-1967",
+                        "label": "Legacy",
+                        "description": "d",
+                        "color": "#000000",
+                        "command": "legacy-1967",
+                        "envs": [],
+                        "isolatedHome": false,
+                        "removable": true
+                    },
+                    {
+                        "key": "fresh-1967",
+                        "label": "Fresh",
+                        "description": "d",
+                        "color": "#111111",
+                        "command": "fresh-1967",
+                        "envs": [],
+                        "isolatedHome": false,
+                        "removable": true,
+                        "updateCommands": ["fresh update"]
+                    }
+                ]
+            }))
+            .expect("manifest json"),
+        )
+        .expect("write catalog");
         let settings = AppSettings {
             project_paths: vec![dir.path().to_string_lossy().to_string()],
             ..AppSettings::default()
         };
         let (state, _rx, _gate) = ws_state_with_agent_update(settings, false, false);
 
-        let catalog = dispatch_inner(&state, "get_coding_agent_catalog", &json!({}))
+        let inner = crate::commands::config::coding_agent_catalog_inner(&state.settings)
+            .await
+            .expect("shared inner");
+        assert_eq!(
+            inner.iter().map(|def| def.key.as_str()).collect::<Vec<_>>(),
+            vec!["legacy-1967", "fresh-1967"]
+        );
+
+        // The array selection is IDENTICAL to the report's catalog: no in-memory
+        // backfill, and the legacy entry keeps its empty sequence. Its warning is
+        // carried structurally by the report route.
+        let report =
+            crate::commands::config::coding_agent_catalog_report_inner(&state.settings).await;
+        assert_eq!(report.catalog, inner);
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(report.warnings[0].code, "migrationPending");
+
+        let routed = dispatch_inner(&state, "get_coding_agent_catalog", &json!({}))
             .await
             .expect("catalog route");
-        let rows = catalog.as_array().expect("catalog array");
-        assert_eq!(rows.len(), 8);
-        assert_eq!(rows.last().unwrap()["key"], "muse");
-        assert_eq!(
-            rows.iter()
-                .filter(|row| !row["updateCommands"]
-                    .as_array()
-                    .expect("updateCommands")
-                    .is_empty())
-                .count(),
-            6
-        );
-        let cursor = rows
-            .iter()
-            .find(|row| row["command"] == "agent")
-            .expect("cursor row");
-        assert_eq!(cursor["updateCommands"], json!([]));
+        assert_eq!(routed, serde_json::to_value(&inner).expect("catalog json"));
+        let rows = routed.as_array().expect("catalog array");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["key"], "legacy-1967");
+        assert_eq!(rows[0]["updateCommands"], json!([]));
+        assert_eq!(rows[1]["updateCommands"], json!(["fresh update"]));
 
         let reseedable = dispatch_inner(&state, "list_reseedable_agent_commands", &json!({}))
             .await
@@ -1965,6 +2018,28 @@ mod tests {
             serde_json::to_value(crate::commands::config::list_reseedable_agent_commands())
                 .expect("reseedable json")
         );
+    }
+
+    #[tokio::test]
+    async fn get_coding_agent_catalog_route_reports_unavailability_with_code_path_and_reason() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = AppSettings {
+            project_paths: vec![dir.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let (state, _rx, _gate) = ws_state_with_agent_update(settings, false, false);
+
+        let report =
+            crate::commands::config::coding_agent_catalog_report_inner(&state.settings).await;
+        let unavailable = report.unavailable.as_ref().expect("unavailable");
+        assert!(report.catalog.is_empty());
+
+        let routed = dispatch_inner(&state, "get_coding_agent_catalog", &json!({}))
+            .await
+            .expect_err("unavailable catalog route");
+        assert!(routed.contains(&unavailable.code), "{routed}");
+        assert!(routed.contains(&unavailable.path), "{routed}");
+        assert!(routed.contains(&unavailable.reason), "{routed}");
     }
 
     // ---------------------------------------------------------------------
@@ -2121,6 +2196,21 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
         assert_eq!(install_frame["payload"]["command"], "bob-1551-missing");
+    }
+
+    #[tokio::test]
+    async fn get_agent_update_overview_route_reports_unavailable_catalog_as_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = AppSettings {
+            project_paths: vec![dir.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let (state, _rx, _gate) = ws_state_with_agent_update(settings, false, true);
+
+        let error = dispatch_inner(&state, "get_agent_update_overview", &json!({}))
+            .await
+            .expect_err("unavailable catalog must not hide behind Ok([])");
+        assert!(error.contains("baseUnavailable"), "{error}");
     }
 
     #[tokio::test]
