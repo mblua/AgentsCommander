@@ -11,18 +11,29 @@ import { codingAgentsStore } from "./coding-agents";
 const REPORT_CMD = "get_coding_agent_catalog_report";
 const LIST_CMD = "list_reseedable_agent_commands";
 
+// #1965 — scalar defaults live in one typed object; envs/updateCommands stay
+// fresh per call so fixture instances never share mutable arrays.
+type DefinitionScalarDefaults = Pick<
+  CodingAgentDefinition,
+  "color" | "isolatedHome" | "removable" | "autoUpdate"
+>;
+
+const DEFINITION_SCALAR_DEFAULTS: DefinitionScalarDefaults = {
+  color: "#123456",
+  isolatedHome: false,
+  removable: true,
+  autoUpdate: false,
+};
+
 function def(key: string, command = key): CodingAgentDefinition {
   return {
     key,
     label: key,
     description: `by ${key}`,
-    color: "#123456",
     command,
+    ...DEFINITION_SCALAR_DEFAULTS,
     envs: [],
-    isolatedHome: false,
-    removable: true,
     updateCommands: [],
-    autoUpdate: false,
   };
 }
 
@@ -243,7 +254,7 @@ describe("codingAgentsStore (#1965 catalog report)", () => {
       codingAgentsStore.ensureLoaded(),
     ]);
 
-    expect(fake.callsFor(REPORT_CMD).length).toBe(1);
+    expect(fake.callsFor(REPORT_CMD)).toHaveLength(1);
     expect(codingAgentsStore.catalog()).toEqual([def("claude")]);
   });
 
@@ -251,7 +262,7 @@ describe("codingAgentsStore (#1965 catalog report)", () => {
     fake.resolve(REPORT_CMD, report({ primaryProjectRoot: null, catalog: [def("claude")] }));
     await codingAgentsStore.ensureLoaded();
     await codingAgentsStore.ensureLoaded();
-    expect(fake.callsFor(REPORT_CMD).length).toBe(1);
+    expect(fake.callsFor(REPORT_CMD)).toHaveLength(1);
   });
 
   it("switching primary: a slow A report cannot overwrite the newer B report", async () => {
@@ -339,7 +350,7 @@ describe("codingAgentsStore (#1965 catalog report)", () => {
     await tick();
     // It joined the owning generation's single request instead of starting a
     // second one (the in-flight slot survived the superseded finalizer).
-    expect(fake.callsFor(REPORT_CMD).length).toBe(callsBefore);
+    expect(fake.callsFor(REPORT_CMD)).toHaveLength(callsBefore);
 
     reports[1].resolve(report({ primaryProjectRoot: null, catalog: [def("bravo")] }));
     await Promise.all([owning, follower]);
@@ -366,7 +377,7 @@ describe("codingAgentsStore (#1965 catalog report)", () => {
     await tick();
 
     expect(codingAgentsStore.generation()).toBe(startGeneration + 3);
-    expect(fake.callsFor(REPORT_CMD).length).toBe(3);
+    expect(fake.callsFor(REPORT_CMD)).toHaveLength(3);
 
     reports[2].resolve(report({ primaryProjectRoot: null, catalog: [def("charlie")] }));
     await third;
@@ -478,34 +489,43 @@ describe("codingAgentsStore (#1965 catalog report)", () => {
 
     await codingAgentsStore.setPrimaryProject("c:/REPO/a/");
 
-    expect(fake.callsFor(REPORT_CMD).length).toBe(calls);
+    expect(fake.callsFor(REPORT_CMD)).toHaveLength(calls);
     expect(codingAgentsStore.generation()).toBe(gen);
   });
 
-  it("matches equivalent Windows aliases: slash, case, trailing and verbatim forms", async () => {
-    fake.resolve(REPORT_CMD, report({ primaryProjectRoot: "c:/repo/app/", catalog: [def("alpha")] }));
-    await codingAgentsStore.setPrimaryProject("C:\\Repo\\App");
-    expect(codingAgentsStore.catalog()).toEqual([def("alpha")]);
-    expect(codingAgentsStore.error()).toBeNull();
+  it.each([
+    {
+      name: "drive root slash/case folding with a trailing separator",
+      requestedRoot: "C:\\Repo\\App",
+      reportRoot: "c:/repo/app/",
+      catalogKey: "alpha",
+    },
+    {
+      name: "ordinary verbatim drive prefix",
+      requestedRoot: "C:/Repo/App",
+      reportRoot: "\\\\?\\C:\\Repo\\App",
+      catalogKey: "bravo",
+    },
+    {
+      name: "verbatim UNC prefix",
+      requestedRoot: "\\\\?\\UNC\\server\\share\\Proj\\",
+      reportRoot: "\\\\server\\share\\Proj",
+      catalogKey: "charlie",
+    },
+  ])(
+    "matches equivalent Windows aliases: $name",
+    async ({ requestedRoot, reportRoot, catalogKey }) => {
+      fake.resolve(
+        REPORT_CMD,
+        report({ primaryProjectRoot: reportRoot, catalog: [def(catalogKey)] }),
+      );
 
-    codingAgentsStore.resetForTests();
-    fake.resolve(
-      REPORT_CMD,
-      report({ primaryProjectRoot: "\\\\?\\C:\\Repo\\App", catalog: [def("bravo")] }),
-    );
-    await codingAgentsStore.setPrimaryProject("C:/Repo/App");
-    expect(codingAgentsStore.catalog()).toEqual([def("bravo")]);
-    expect(codingAgentsStore.error()).toBeNull();
+      await codingAgentsStore.setPrimaryProject(requestedRoot);
 
-    codingAgentsStore.resetForTests();
-    fake.resolve(
-      REPORT_CMD,
-      report({ primaryProjectRoot: "\\\\server\\share\\Proj", catalog: [def("charlie")] }),
-    );
-    await codingAgentsStore.setPrimaryProject("\\\\?\\UNC\\server\\share\\Proj\\");
-    expect(codingAgentsStore.catalog()).toEqual([def("charlie")]);
-    expect(codingAgentsStore.error()).toBeNull();
-  });
+      expect(codingAgentsStore.catalog()).toEqual([def(catalogKey)]);
+      expect(codingAgentsStore.error()).toBeNull();
+    },
+  );
 
   it("keeps device markers distinct from the plain drive shape", async () => {
     fake.resolve(REPORT_CMD, report({ primaryProjectRoot: "C:/Repo/App", catalog: [def("alpha")] }));

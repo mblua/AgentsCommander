@@ -27,6 +27,23 @@ export interface CodingAgentQuickConfigurationProps {
   ariaLabel?: string;
 }
 
+/** #1965 — private detail renderer shared by the catalog error and warning
+ *  blocks: the path renders only when present, the reason always. It keeps the
+ *  exact elements, order and test ids of the inline markup it replaces and adds
+ *  no wrapper element. Props are read reactively, never destructured. */
+const DiagnosticDetails: Component<{
+  path: string;
+  reason: string;
+  testIdPrefix: string;
+}> = (props) => (
+  <>
+    <Show when={props.path}>
+      <div data-ac-testid={`${props.testIdPrefix}.path`}>{props.path}</div>
+    </Show>
+    <div data-ac-testid={`${props.testIdPrefix}.reason`}>{props.reason}</div>
+  </>
+);
+
 const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProps> = (props) => {
   const [selectedPreset, setSelectedPreset] = createSignal<string | null>(null);
   const [selectionGeneration, setSelectionGeneration] = createSignal<number | null>(null);
@@ -243,14 +260,11 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                       ? "Catalog source changed"
                       : "Catalog unavailable"}
                   </div>
-                  <Show when={diagnostic().path}>
-                    <div data-ac-testid="onboarding.catalog.error.path">
-                      {diagnostic().path}
-                    </div>
-                  </Show>
-                  <div data-ac-testid="onboarding.catalog.error.reason">
-                    {diagnostic().reason}
-                  </div>
+                  <DiagnosticDetails
+                    path={diagnostic().path}
+                    reason={diagnostic().reason}
+                    testIdPrefix="onboarding.catalog.error"
+                  />
                 </div>
               )}
             </Show>
@@ -261,14 +275,11 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                   data-ac-testid={`onboarding.catalog.warning.${index()}`}
                   data-ac-role="status"
                 >
-                  <Show when={warning.path}>
-                    <div data-ac-testid={`onboarding.catalog.warning.${index()}.path`}>
-                      {warning.path}
-                    </div>
-                  </Show>
-                  <div data-ac-testid={`onboarding.catalog.warning.${index()}.reason`}>
-                    {warning.reason}
-                  </div>
+                  <DiagnosticDetails
+                    path={warning.path}
+                    reason={warning.reason}
+                    testIdPrefix={`onboarding.catalog.warning.${index()}`}
+                  />
                 </div>
               )}
             </For>

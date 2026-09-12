@@ -84,6 +84,94 @@ type LoadMode =
   // source-changed state and its data is discarded.
   | "match";
 
+type ReportResult = PromiseSettledResult<CatalogReport>;
+type ReseedResult = PromiseSettledResult<string[]>;
+
+/** A master-list failure is a diagnostic only: it never discards a good catalog. */
+function reseedFailureDiagnostic(reseedResult: ReseedResult): CatalogDiagnostic | null {
+  return reseedResult.status === "rejected"
+    ? diagnostic("reseedable-unavailable", "", reseedResult.reason)
+    : null;
+}
+
+function warningsWithReseed(
+  warnings: CatalogDiagnostic[],
+  reseedDiagnostic: CatalogDiagnostic | null
+): CatalogDiagnostic[] {
+  return reseedDiagnostic ? [...warnings, reseedDiagnostic] : [...warnings];
+}
+
+/**
+ * The identity gate for the requested primary project. Returns false after
+ * publishing the source-changed state when a match-mode report belongs to a
+ * different project; adopts the report's identity otherwise. No data from a
+ * mismatched report is ever published.
+ */
+function acceptReportIdentity(mode: LoadMode, report: CatalogReport): boolean {
+  if (mode === "match" && !samePrimaryIdentity(primary.root, report.primaryProjectRoot)) {
+    clearSelectableState();
+    setLoaded(false);
+    clearDiagnostics();
+    setError(
+      diagnostic(
+        "primary-project-changed",
+        report.primaryProjectRoot ?? "",
+        `Catalog report is for ${describeRoot(report.primaryProjectRoot)}, expected ` +
+          `${describeRoot(primary.root)}. Reload catalog to retry.`,
+      ),
+    );
+    return false;
+  }
+
+  if (mode === "adopt") {
+    primary = { initialized: true, root: report.primaryProjectRoot };
+  }
+  return true;
+}
+
+/**
+ * Synchronous publication of one settled load. It never awaits and never
+ * starts a request; only the owning generation reaches it because the runner
+ * guards before calling it.
+ */
+function publishLoadResults(
+  mode: LoadMode,
+  reportResult: ReportResult,
+  reseedResult: ReseedResult
+): void {
+  const reseedDiagnostic = reseedFailureDiagnostic(reseedResult);
+
+  if (reportResult.status === "rejected") {
+    clearSelectableState();
+    setLoaded(false);
+    setSourcePath(null);
+    setWarnings(reseedDiagnostic ? [reseedDiagnostic] : []);
+    setError(diagnostic("transport-error", "", reportResult.reason));
+    return;
+  }
+
+  const report = reportResult.value;
+  if (!acceptReportIdentity(mode, report)) return;
+
+  setSourcePath(report.sourcePath ?? null);
+  setWarnings(warningsWithReseed(report.warnings ?? [], reseedDiagnostic));
+
+  if (report.unavailable) {
+    // Backend unavailable disables catalog registrations; the report itself
+    // stays the diagnostic source.
+    clearSelectableState();
+    setLoaded(false);
+    setError(report.unavailable);
+    return;
+  }
+
+  setCatalog(Array.isArray(report.catalog) ? report.catalog : []);
+  setReseedableCommands(reseedResult.status === "fulfilled" ? reseedResult.value : []);
+  setError(null);
+  // A valid empty catalog is a successful load: loaded=true, no fallback.
+  setLoaded(true);
+}
+
 /**
  * The single caught runner behind `ensureLoaded`, `refresh` and
  * `setPrimaryProject`. It never rejects: synchronous invocation throws and
@@ -108,64 +196,8 @@ function startLoad(mode: LoadMode): Promise<void> {
       // not overwrite the current state.
       if (gen !== generation()) return;
 
-      // A master-list failure is a diagnostic only: a successful catalog still
-      // publishes, while an empty command set disables the master re-seed
-      // controls.
-      const reseedDiagnostic =
-        reseedRes.status === "rejected"
-          ? diagnostic("reseedable-unavailable", "", reseedRes.reason)
-          : null;
-      const warningsForLoad = (report: CatalogDiagnostic[]): CatalogDiagnostic[] =>
-        reseedDiagnostic ? [...report, reseedDiagnostic] : [...report];
-
-      if (reportRes.status === "rejected") {
-        clearSelectableState();
-        setLoaded(false);
-        setSourcePath(null);
-        setWarnings(reseedDiagnostic ? [reseedDiagnostic] : []);
-        setError(diagnostic("transport-error", "", reportRes.reason));
-        return;
-      }
-
-      const report = reportRes.value;
-
-      if (mode === "match" && !samePrimaryIdentity(primary.root, report.primaryProjectRoot)) {
-        clearSelectableState();
-        setLoaded(false);
-        clearDiagnostics();
-        setError(
-          diagnostic(
-            "primary-project-changed",
-            report.primaryProjectRoot ?? "",
-            `Catalog report is for ${describeRoot(report.primaryProjectRoot)}, expected ` +
-              `${describeRoot(primary.root)}. Reload catalog to retry.`,
-          ),
-        );
-        return;
-      }
-
-      if (mode === "adopt") {
-        primary = { initialized: true, root: report.primaryProjectRoot };
-      }
-
-      setSourcePath(report.sourcePath ?? null);
-      setWarnings(warningsForLoad(report.warnings ?? []));
-
-      if (report.unavailable) {
-        // Backend unavailable disables catalog registrations; the report itself
-        // stays the diagnostic source.
-        clearSelectableState();
-        setLoaded(false);
-        setError(report.unavailable);
-        return;
-      }
-
-      setCatalog(Array.isArray(report.catalog) ? report.catalog : []);
-      setReseedableCommands(reseedRes.status === "fulfilled" ? reseedRes.value : []);
-      setError(null);
-      // A valid empty catalog is a successful load: loaded=true, no fallback.
-      setLoaded(true);
-    } catch (caught) {
+      publishLoadResults(mode, reportRes, reseedRes);
+    } catch (error_) {
       // Last-resort guard for anything the two allSettled branches above did
       // not absorb, so the returned promise always resolves.
       if (gen !== generation()) return;
@@ -173,7 +205,7 @@ function startLoad(mode: LoadMode): Promise<void> {
       setLoaded(false);
       setSourcePath(null);
       setWarnings([]);
-      setError(diagnostic("transport-error", "", caught));
+      setError(diagnostic("transport-error", "", error_));
     } finally {
       // Only the owning generation may clear the loading state or in-flight slot.
       if (gen === generation()) {

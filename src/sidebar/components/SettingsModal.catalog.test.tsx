@@ -82,6 +82,34 @@ function tick(): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+/** Successful-Alpha setup shared by the two stale/guard cases: same handlers,
+ *  the same mounted SettingsModal and the same readiness wait. Each caller
+ *  keeps its own try/finally cleanup and its distinct actions/assertions. */
+async function mountAlphaCatalog(): Promise<{
+  fake: FakeTransport;
+  rendered: ReturnType<typeof renderWithFakeTransport>;
+  button: HTMLButtonElement;
+}> {
+  const fake = new FakeTransport();
+  fake.resolve("get_settings", baseSettings());
+  fake.resolve("get_web_server_status", false);
+  fake.resolve(
+    REPORT_CMD,
+    report({ primaryProjectRoot: null, catalog: [def("alpha", "Alpha", "alpha")] }),
+  );
+  const rendered = renderWithFakeTransport(
+    () => <SettingsModal section="agents" onClose={() => {}} />,
+    fake,
+  );
+  try {
+    await waitFor(() => expect(presetBtn(rendered.root, "alpha")).toBeTruthy());
+  } catch (error) {
+    rendered.cleanup();
+    throw error;
+  }
+  return { fake, rendered, button: presetBtn(rendered.root, "alpha")! };
+}
+
 describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () => {
   let cleanupDom: (() => void) | null = null;
 
@@ -315,22 +343,8 @@ describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () =
   });
 
   it("a reload detaches the old preset row set before it can register", async () => {
-    const fake = new FakeTransport();
-    fake.resolve("get_settings", baseSettings());
-    fake.resolve("get_web_server_status", false);
-    fake.resolve(
-      REPORT_CMD,
-      report({ primaryProjectRoot: null, catalog: [def("alpha", "Alpha", "alpha")] }),
-    );
-
-    const rendered = renderWithFakeTransport(
-      () => <SettingsModal section="agents" onClose={() => {}} />,
-      fake,
-    );
+    const { fake, rendered, button: staleButton } = await mountAlphaCatalog();
     try {
-      await waitFor(() => expect(presetBtn(rendered.root, "alpha")).toBeTruthy());
-      const staleButton = presetBtn(rendered.root, "alpha")!;
-
       // Same key and command, but a new catalog generation: Solid replaces the
       // row synchronously, so the old node is detached before it can be clicked.
       fake.resolve(
@@ -352,22 +366,8 @@ describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () =
   });
 
   it("the add handler revalidates generation and definition availability (defense-in-depth)", async () => {
-    const fake = new FakeTransport();
-    fake.resolve("get_settings", baseSettings());
-    fake.resolve("get_web_server_status", false);
-    fake.resolve(
-      REPORT_CMD,
-      report({ primaryProjectRoot: null, catalog: [def("alpha", "Alpha", "alpha")] }),
-    );
-
-    const rendered = renderWithFakeTransport(
-      () => <SettingsModal section="agents" onClose={() => {}} />,
-      fake,
-    );
+    const { rendered, button } = await mountAlphaCatalog();
     try {
-      await waitFor(() => expect(presetBtn(rendered.root, "alpha")).toBeTruthy());
-      const button = presetBtn(rendered.root, "alpha")!;
-
       // A row captured in an older generation must not write. Ordinary clicks
       // cannot reach this (the reload detaches the row first), so the store
       // reads are pinned to exercise the guard directly.
