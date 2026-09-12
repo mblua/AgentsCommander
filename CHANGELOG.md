@@ -6,6 +6,29 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- **Linux/X11 screenshot capture is available**, with documented capture commands and native build dependencies. ([#1915](https://github.com/mblua/AgentsCommander/issues/1915), [#1916](https://github.com/mblua/AgentsCommander/issues/1916))
+- **Muse sessions can resume the latest workspace session automatically** on supported local macOS/Linux launches. Explicit fresh starts and configured arguments retain their own behavior. ([#1873](https://github.com/mblua/AgentsCommander/issues/1873))
+- **Blocking-menu patterns now have shipped, local and remote files.** Existing settings arrays are exported once into the local overlay without overwriting operator entries. An enabled-by-default Settings checkbox controls the background startup download, throttled to once per 24 hours. Downloaded files are validated before replacing the cache; failures retain the prior copy, and new patterns apply on the next start. Local overrides take precedence. ([#1905](https://github.com/mblua/AgentsCommander/issues/1905), [#1925](https://github.com/mblua/AgentsCommander/issues/1925))
+- **Coding-agent catalog availability and diagnostics are visible in Settings and Quick Configuration**, with a Reload catalog action and guards against stale selections when the primary project changes. Catalog consumers and the startup updater use persisted catalog data without a bundled fallback. ([#1963](https://github.com/mblua/AgentsCommander/issues/1963), [#1964](https://github.com/mblua/AgentsCommander/issues/1964), [#1965](https://github.com/mblua/AgentsCommander/issues/1965), [#1966](https://github.com/mblua/AgentsCommander/issues/1966), [#1967](https://github.com/mblua/AgentsCommander/issues/1967))
+
+### Changed
+
+- **Normal executables now store configuration in the user's home directory, under `.agentscommander`.** An explicit `AGENTSCOMMANDER_CONFIG_DIR` still wins. Unsuffixed executables no longer select an adjacent portable directory, and no old configuration is discovered, copied or migrated automatically. Preserve the active configuration before updating and select its location explicitly when needed. Suffixed instances retain their existing location rules. ([#1868](https://github.com/mblua/AgentsCommander/issues/1868))
+- **The Root Agent banner uses its right-click menu for actions**, removing the five hover buttons while retaining the Telegram indicator. ([#1896](https://github.com/mblua/AgentsCommander/issues/1896))
+- **Documentation now covers native Linux package installation, platform-specific shell guidance, the Orchestrator alias, and outbound network calls.** The obsolete codebase-memory cache-directory recommendation was removed. ([#1840](https://github.com/mblua/AgentsCommander/issues/1840), [#1951](https://github.com/mblua/AgentsCommander/issues/1951), [#1900](https://github.com/mblua/AgentsCommander/issues/1900), [#1924](https://github.com/mblua/AgentsCommander/issues/1924), [#1897](https://github.com/mblua/AgentsCommander/issues/1897))
+- **The Cargo package is named `agentscommander`.** Native regression CI separates focused release builds from test execution, aligns cache targets, and checks the served-path inventory. ([#1934](https://github.com/mblua/AgentsCommander/issues/1934), [#1929](https://github.com/mblua/AgentsCommander/issues/1929), [#1974](https://github.com/mblua/AgentsCommander/issues/1974), [#1946](https://github.com/mblua/AgentsCommander/issues/1946))
+
+### Fixed
+
+- **Concurrent local configuration writes are serialized across processes** to protect persisted settings. ([#1938](https://github.com/mblua/AgentsCommander/issues/1938))
+- **Integration tests isolate unsuffixed binaries from the user's configuration.** The built-in coding-agent support table consistently controls catalog filtering and seeding. ([#1867](https://github.com/mblua/AgentsCommander/issues/1867), [#1912](https://github.com/mblua/AgentsCommander/issues/1912))
+
+### Security
+
+- Updated the container base images to Node `22.23.2-trixie-slim` and Debian `13.6-slim`. ([#1931](https://github.com/mblua/AgentsCommander/pull/1931), [#1933](https://github.com/mblua/AgentsCommander/pull/1933))
+
 ## 0.31.0
 
 ### Added
