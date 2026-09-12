@@ -45,7 +45,7 @@ use crate::config::agent_command::{
     is_bare_program_token, normalize_legacy_agent_command, resolve_program,
 };
 use crate::config::coding_agents_catalog::{
-    load_catalog_for_settings, primary_project_root, CodingAgentDefinition,
+    load_catalog_for_settings, primary_project_root, CatalogUnavailable, CodingAgentDefinition,
 };
 use crate::config::settings::SettingsState;
 use crate::web::broadcast::WsBroadcaster;
@@ -1460,13 +1460,14 @@ pub struct AgentUpdateOverviewRow {
 ///    `settings.agents[]`, i.e. agents the user actually registered) are
 ///    considered: a catalog-only command is never prompted nor updated.
 ///    Zero registered commands -> empty plan.
-/// 1. Distinct commands in catalog order (first occurrence wins). `label` and
-///    `commands` come from the FIRST catalog entry (in order) whose
-///    `update_commands` is non-empty. A command with NO non-empty sequence is
-///    skipped entirely: never prompted, never updated.
-/// 2. `answers[command]` absent -> prompt (default No on timeout).
-/// 3. `Some(true)` -> update now.
-/// 4. `Some(false)` -> nothing.
+/// 1. The FIRST catalog entry for a command is the effective entry (#1967):
+///    distinct commands keep catalog order, and `label`/`commands` come from
+///    that first entry. A later duplicate never contributes anything.
+/// 2. An empty effective sequence means no prompt and no update: the command is
+///    skipped entirely. Nothing is borrowed from a later duplicate, so a
+///    non-empty duplicate can never re-enable an empty winner.
+/// 3. `answers[command]` absent -> prompt (default No on timeout);
+///    `Some(true)` -> update now; `Some(false)` -> nothing.
 ///
 /// Prompts and updates are disjoint by construction.
 pub fn build_update_plan(
@@ -1483,20 +1484,18 @@ pub fn build_update_plan(
         if !registered_commands.contains(&entry.command) {
             continue; // catalog-only command: never prompted, never updated
         }
+        // First occurrence wins - including an empty sequence, which suppresses
+        // the command for this pass (a later duplicate cannot re-enable it).
         if !seen.insert(entry.command.as_str()) {
-            continue; // first occurrence wins
+            continue;
         }
-        let Some(sequence) = catalog
-            .iter()
-            .find(|e| e.command == entry.command && !e.update_commands.is_empty())
-            .map(|e| e.update_commands.clone())
-        else {
-            continue; // no entry for this command carries an update sequence
-        };
+        if entry.update_commands.is_empty() {
+            continue; // effective sequence empty: no prompt, no update
+        }
         let target = UpdateTarget {
             command: entry.command.clone(),
             label: entry.label.clone(),
-            commands: sequence,
+            commands: entry.update_commands.clone(),
             cwd: default_cwd.clone(),
         };
         match answers.get(&entry.command) {
@@ -1509,17 +1508,25 @@ pub fn build_update_plan(
     AgentUpdatePlan { prompts, updates }
 }
 
-/// #1551 - one row per catalog entry with a non-empty (backfilled) update sequence, in
-/// catalog order, NO dedup (duplicate-command entries show identical command-keyed
-/// install state). Cursor drops out because it ships no update command. Commands
-/// without an install entry are `checking` (seq 0).
+/// #1551/#1967 - one row per DISTINCT effective command with a non-empty
+/// sequence, in catalog order. The first entry of a command wins: its
+/// key/label/color and its exact sequence are used, a later duplicate adds no
+/// row, and an empty first sequence suppresses the command for good (a later
+/// non-empty duplicate cannot bring it back). Commands without an install entry
+/// are `checking` (seq 0).
 pub fn build_update_overview_rows(
     catalog: &[CodingAgentDefinition],
     install_by_command: &HashMap<String, InstallState>,
 ) -> Vec<AgentUpdateOverviewRow> {
+    let mut seen: HashSet<&str> = HashSet::new();
     catalog
         .iter()
-        .filter(|entry| !entry.update_commands.is_empty())
+        .filter(|entry| {
+            if !seen.insert(entry.command.as_str()) {
+                return false; // first effective entry wins
+            }
+            !entry.update_commands.is_empty()
+        })
         .map(|entry| AgentUpdateOverviewRow {
             key: entry.key.clone(),
             label: entry.label.clone(),
@@ -1644,12 +1651,14 @@ pub fn production_probe() -> ProbeFn {
 /// an await. Probes are scheduled ONLY once the startup pass is finished, so a version probe
 /// can never overlap an update of the same CLI, and ONLY through the single-lock
 /// `lookup_or_begin`, so two overlapping calls can never open two tickets.
+/// #1967 P4 - `Err` when the persisted catalog is unavailable; nothing is probed or
+/// scheduled in that case.
 pub async fn update_overview(
     app: &AppHandle,
     settings: &SettingsState,
     gate: &AgentUpdateGate,
     cache: &Arc<AgentInstallCache>,
-) -> Vec<AgentUpdateOverviewRow> {
+) -> Result<Vec<AgentUpdateOverviewRow>, CatalogUnavailable> {
     update_overview_with(app, settings, gate, cache, production_probe()).await
 }
 
@@ -1660,9 +1669,9 @@ pub async fn update_overview_with(
     gate: &AgentUpdateGate,
     cache: &Arc<AgentInstallCache>,
     probe: ProbeFn,
-) -> Vec<AgentUpdateOverviewRow> {
+) -> Result<Vec<AgentUpdateOverviewRow>, CatalogUnavailable> {
     let settings = settings.read().await.clone();
-    let catalog = load_catalog_for_settings(&settings);
+    let catalog = load_catalog_for_settings(&settings)?;
     // Read the gate ONCE, before any cache operation: that order is what makes
     // "finished implies the post-pass generation" hold (plan 5.4 step 8).
     let pass_finished = gate.is_finished();
@@ -1671,10 +1680,12 @@ pub async fn update_overview_with(
     let mut seen: HashSet<&str> = HashSet::new();
 
     for entry in &catalog {
-        if entry.update_commands.is_empty() {
+        // First effective entry wins: an empty winner is skipped (no row, no
+        // probe) and a later duplicate is ignored entirely.
+        if !seen.insert(entry.command.as_str()) {
             continue;
         }
-        if !seen.insert(entry.command.as_str()) {
+        if entry.update_commands.is_empty() {
             continue;
         }
         match cache.lookup_or_begin(&entry.command, now, INSTALL_CACHE_TTL, pass_finished) {
@@ -1690,7 +1701,7 @@ pub async fn update_overview_with(
         }
     }
 
-    build_update_overview_rows(&catalog, &install_by_command)
+    Ok(build_update_overview_rows(&catalog, &install_by_command))
 }
 
 /// #1551 - the ONE spawn site for probe tasks: the Settings-triggered scheduling of
@@ -3127,9 +3138,12 @@ fn settle_joined_update(
     }
 }
 
-/// #1551 - the agents of this boot's pass in catalog order: every target of `plan.updates`
-/// (decided `true`) and `plan.prompts` (to be asked), one node per command (first catalog
-/// occurrence, like `build_update_plan`). Pure; the order is the timeline order on every surface.
+/// #1551/#1967 - the agents of this boot's pass in catalog order: every target of
+/// `plan.updates` (decided `true`) and `plan.prompts` (to be asked), one node per
+/// command (first catalog occurrence, like `build_update_plan`). A command whose
+/// first effective entry has an empty sequence gets no node at all: empty
+/// winners produce no prompt, update, row or probe (#1967). Pure; the order is
+/// the timeline order on every surface.
 pub fn pass_nodes(
     catalog: &[CodingAgentDefinition],
     plan: &AgentUpdatePlan,
@@ -3138,6 +3152,9 @@ pub fn pass_nodes(
     let mut nodes = Vec::new();
     for entry in catalog {
         if !seen.insert(entry.command.as_str()) {
+            continue;
+        }
+        if entry.update_commands.is_empty() {
             continue;
         }
         if let Some(target) = plan
@@ -3222,7 +3239,17 @@ impl PassSupervisor {
 
     async fn run_body(&self, runtime: &mut PassRuntime) {
         let settings = self.app.state::<SettingsState>().read().await.clone();
-        let catalog = load_catalog_for_settings(&settings);
+        let catalog = match load_catalog_for_settings(&settings) {
+            Ok(catalog) => catalog,
+            Err(unavailable) => {
+                // #1967 P4 - never substitute embedded commands and never run a
+                // vendor command or install probe for an unavailable catalog.
+                // Return through the normal supervisor completion/cleanup path;
+                // `finalize` still releases the gate and invalidates the cache.
+                log::warn!("[agent-update] startup pass skipped: {unavailable}");
+                return;
+            }
+        };
         let default_cwd = primary_project_root(&settings)
             .or_else(crate::config::config_dir)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
@@ -3482,7 +3509,10 @@ mod tests {
     }
 
     #[test]
-    fn build_plan_first_nonempty_sequence_wins() {
+    fn build_plan_empty_winner_blocks_later_nonempty_duplicates() {
+        // #1967: the FIRST entry of a command is effective even when its
+        // sequence is empty - the command is suppressed for the whole pass and
+        // a later non-empty duplicate can never re-enable it.
         let catalog = vec![
             entry("claude", "Claude A", vec![]),
             entry("claude", "Claude B", vec!["claude --update"]),
@@ -3491,10 +3521,82 @@ mod tests {
         let registered = HashSet::from(["claude".to_string()]);
         let plan = build_update_plan(&catalog, &registered, &answers, cwd());
         assert!(plan.prompts.is_empty());
+        assert!(plan.updates.is_empty());
+    }
+
+    #[test]
+    fn build_plan_conflicting_duplicates_never_mix_entries() {
+        // Empty winner -> nothing at all; a repeated call is not affected by the
+        // consent answer and never borrows the later custom sequence.
+        let catalog = vec![
+            entry("pi", "Pi", vec![]),
+            entry("pi-max", "Pi Max", vec!["pi --custom"]),
+        ];
+        let registered = HashSet::from(["pi".to_string()]);
+        for answers in [
+            BTreeMap::new(),
+            BTreeMap::from([("pi".to_string(), true)]),
+            BTreeMap::from([("pi".to_string(), false)]),
+        ] {
+            let plan = build_update_plan(&catalog, &registered, &answers, cwd());
+            assert!(plan.prompts.is_empty());
+            assert!(plan.updates.is_empty());
+        }
+    }
+
+    #[test]
+    fn build_plan_preserves_the_effective_entry_sequence_order() {
+        let catalog = vec![CodingAgentDefinition {
+            key: "ordered".to_string(),
+            ..entry(
+                "ordered",
+                "Ordered",
+                vec!["ordered fetch", "ordered build", "ordered install"],
+            )
+        }];
+        let registered = HashSet::from(["ordered".to_string()]);
+        let answers = BTreeMap::from([("ordered".to_string(), true)]);
+        let plan = build_update_plan(&catalog, &registered, &answers, cwd());
         assert_eq!(plan.updates.len(), 1);
-        let claude = &plan.updates[0];
-        assert_eq!(claude.label, "Claude A");
-        assert_eq!(claude.commands, vec!["claude --update"]);
+        assert_eq!(
+            plan.updates[0].commands,
+            vec!["ordered fetch", "ordered build", "ordered install"]
+        );
+    }
+
+    #[test]
+    fn build_plan_consent_is_keyed_by_exact_command_and_auto_update_is_inert() {
+        // `settings.agent_auto_update_by_command` is the ONLY consent authority,
+        // keyed by the EXACT command: catalog `autoUpdate: true` never
+        // self-consents, and a changed command cannot inherit another command's
+        // opt-in.
+        let catalog = vec![
+            CodingAgentDefinition {
+                key: "renamed-claude".to_string(),
+                auto_update: true,
+                ..entry("claude --update", "Renamed Claude", vec!["claude --update"])
+            },
+            entry("claude", "Plain Claude", vec!["claude update"]),
+        ];
+        let registered = HashSet::from(["claude".to_string(), "claude --update".to_string()]);
+
+        // Consent recorded for a DIFFERENT command: neither inherits it.
+        let answers = BTreeMap::from([("codex".to_string(), true)]);
+        let plan = build_update_plan(&catalog, &registered, &answers, cwd());
+        let prompt_commands: Vec<&str> = plan.prompts.iter().map(|t| t.command.as_str()).collect();
+        assert_eq!(prompt_commands, vec!["claude --update", "claude"]);
+        assert!(
+            plan.updates.is_empty(),
+            "catalog autoUpdate: true must not self-consent"
+        );
+
+        // Consent for the exact command updates it; the other stays a prompt.
+        let answers = BTreeMap::from([("claude --update".to_string(), true)]);
+        let plan = build_update_plan(&catalog, &registered, &answers, cwd());
+        assert_eq!(plan.updates.len(), 1);
+        assert_eq!(plan.updates[0].command, "claude --update");
+        assert_eq!(plan.prompts.len(), 1);
+        assert_eq!(plan.prompts[0].command, "claude");
     }
 
     #[test]
@@ -3571,8 +3673,12 @@ mod tests {
     #[test]
     fn build_plan_registered_filter_preserves_first_entry_semantics() {
         let catalog = vec![
-            entry("claude", "Claude (primary)", vec![]),
-            entry("claude", "Claude (secondary)", vec!["claude --update"]),
+            entry("claude", "Claude (primary)", vec!["claude --update"]),
+            entry(
+                "claude",
+                "Claude (secondary)",
+                vec!["claude --update --beta"],
+            ),
             entry("codex", "Codex", vec!["codex update"]),
         ];
         let registered = HashSet::from(["claude".to_string()]);
@@ -3581,8 +3687,8 @@ mod tests {
         assert!(plan.prompts.is_empty());
         assert_eq!(plan.updates.len(), 1);
         let claude = &plan.updates[0];
-        assert_eq!(claude.label, "Claude (primary)"); // first-entry label wins
-        assert_eq!(claude.commands, vec!["claude --update"]); // first non-empty sequence wins
+        assert_eq!(claude.label, "Claude (primary)"); // first entry's label wins
+        assert_eq!(claude.commands, vec!["claude --update"]); // ...and its exact sequence
     }
 
     #[tokio::test]
@@ -4021,6 +4127,18 @@ mod tests {
         })
     }
 
+    /// #1967 - a probe that must never run: it records the invocation and then
+    /// panics, so a scheduling regression is both visible (the counter) and loud.
+    fn forbidden_probe(calls: Arc<AtomicUsize>) -> ProbeFn {
+        Arc::new(move |command: String| {
+            let calls = Arc::clone(&calls);
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                panic!("install probe must not run for this case ({command})");
+            })
+        })
+    }
+
     /// `bob` (a bare token that resolves nowhere, with an update sequence) and
     /// `nob` (no sequence), so no embedded vendor CLI is ever probed.
     fn bob_catalog_dir(root: &Path) {
@@ -4290,6 +4408,29 @@ mod tests {
                 node("opencode", "OpenCode", vec!["opencode upgrade"]),
             ]
         );
+    }
+
+    #[test]
+    fn pass_nodes_skip_an_empty_effective_winner() {
+        // Even a manually built plan cannot surface a node for a command whose
+        // first effective catalog entry carries no sequence (#1967).
+        let catalog = vec![
+            entry("pi", "Pi (empty)", vec![]),
+            CodingAgentDefinition {
+                key: "pi-alt".to_string(),
+                ..entry("pi", "Pi (alt)", vec!["pi --custom"])
+            },
+        ];
+        let plan = AgentUpdatePlan {
+            prompts: Vec::new(),
+            updates: vec![UpdateTarget {
+                command: "pi".to_string(),
+                label: "Pi (empty)".to_string(),
+                commands: vec!["pi --custom".to_string()],
+                cwd: cwd(),
+            }],
+        };
+        assert!(pass_nodes(&catalog, &plan).is_empty());
     }
 
     // ---------------------------------------------------------------------
@@ -4919,7 +5060,7 @@ mod tests {
     // ---------------------------------------------------------------------
 
     #[test]
-    fn overview_rows_only_update_capable_entries_in_catalog_order_no_dedup() {
+    fn overview_rows_use_the_first_effective_entry_and_skip_empty_winners() {
         let catalog = vec![
             entry("claude", "Claude", vec!["claude --update"]),
             entry("codex", "Codex", vec!["codex update"]),
@@ -4930,7 +5071,7 @@ mod tests {
             entry("agy", "Antigravity", vec!["agy update"]),
             CodingAgentDefinition {
                 key: "pi-alt".to_string(),
-                ..entry("pi", "Pi (alt)", vec!["pi update"])
+                ..entry("pi", "Pi (alt)", vec!["pi --custom"])
             },
         ];
         let mut installed = InstallState::installed("1.0".to_string(), Path::new("/bin/pi"));
@@ -4939,17 +5080,30 @@ mod tests {
         let rows = build_update_overview_rows(&catalog, &install_by_command);
         assert_eq!(
             rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(),
-            vec!["claude", "codex", "hermes", "pi", "opencode", "agy", "pi-alt"]
+            vec!["claude", "codex", "hermes", "pi", "opencode", "agy"]
         );
         assert!(
             !rows.iter().any(|row| row.command == "agent"),
             "cursor ships no update command"
         );
-        for row in rows.iter().filter(|row| row.command == "pi") {
-            assert_eq!(row.install, installed);
-        }
+        let pi = rows.iter().find(|row| row.command == "pi").expect("pi row");
+        assert_eq!(pi.key, "pi");
+        assert_eq!(pi.label, "Pi");
+        assert_eq!(pi.update_commands, vec!["pi update"]);
+        assert_eq!(pi.install, installed);
         assert_eq!(rows[0].install, InstallState::checking());
         assert_eq!(rows[0].install.seq, 0);
+
+        // An empty FIRST entry suppresses the command entirely: no row at all,
+        // even when a later duplicate carries a sequence.
+        let suppressed = vec![
+            entry("pi", "Pi (empty)", vec![]),
+            CodingAgentDefinition {
+                key: "pi-alt".to_string(),
+                ..entry("pi", "Pi (alt)", vec!["pi --custom"])
+            },
+        ];
+        assert!(build_update_overview_rows(&suppressed, &HashMap::new()).is_empty());
     }
 
     #[tokio::test]
@@ -5015,8 +5169,9 @@ mod tests {
         let gate = AgentUpdateGate::new();
         gate.mark_finished(vec![]);
 
-        let rows =
-            update_overview_with(&handle, &settings, &gate, &cache, production_probe()).await;
+        let rows = update_overview_with(&handle, &settings, &gate, &cache, production_probe())
+            .await
+            .expect("persisted bob catalog is available");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].command, "bob-1551-missing");
         assert_eq!(rows[0].install.status, InstallStatus::Checking);
@@ -5024,8 +5179,9 @@ mod tests {
 
         let started = Instant::now();
         let committed = loop {
-            let rows =
-                update_overview_with(&handle, &settings, &gate, &cache, production_probe()).await;
+            let rows = update_overview_with(&handle, &settings, &gate, &cache, production_probe())
+                .await
+                .expect("persisted bob catalog is available");
             if rows[0].install.status == InstallStatus::Missing {
                 break rows[0].install.clone();
             }
@@ -5056,23 +5212,27 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let probe = counting_probe(Arc::clone(&calls), None);
 
-        let rows =
-            update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe)).await;
+        let rows = update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe))
+            .await
+            .expect("persisted bob catalog is available");
         assert_eq!(rows[0].install.status, InstallStatus::Checking);
         assert_no_frame(&mut frames_rx).await;
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(cache.in_flight_len(), 0);
 
         gate.mark_started();
-        let rows =
-            update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe)).await;
+        let rows = update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe))
+            .await
+            .expect("persisted bob catalog is available");
         assert_eq!(rows[0].install.status, InstallStatus::Checking);
         assert_no_frame(&mut frames_rx).await;
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(cache.in_flight_len(), 0);
 
         gate.mark_finished(vec![]);
-        update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe)).await;
+        update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe))
+            .await
+            .expect("persisted bob catalog is available");
         let started = Instant::now();
         while calls.load(Ordering::SeqCst) == 0 {
             assert!(started.elapsed() < POLL_CAP, "the probe never ran");
@@ -5109,7 +5269,8 @@ mod tests {
             &cache,
             counting_probe(Arc::clone(&calls), None),
         )
-        .await;
+        .await
+        .expect("persisted bob catalog is available");
         assert_eq!(rows[0].install.status, InstallStatus::Installed);
         assert_eq!(rows[0].install.version.as_deref(), Some("1.0"));
         assert_eq!(rows[0].install.seq, 1);
@@ -5135,6 +5296,8 @@ mod tests {
             update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe)),
             update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe)),
         );
+        let rows_a = rows_a.expect("persisted bob catalog is available");
+        let rows_b = rows_b.expect("persisted bob catalog is available");
         assert_eq!(rows_a[0].install.status, InstallStatus::Checking);
         assert_eq!(rows_b[0].install.status, InstallStatus::Checking);
 
@@ -5163,8 +5326,9 @@ mod tests {
             assert!(started.elapsed() < POLL_CAP, "the probe never committed");
             tokio::time::sleep(POLL_STEP).await;
         }
-        let rows =
-            update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe)).await;
+        let rows = update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe))
+            .await
+            .expect("persisted bob catalog is available");
         assert_eq!(rows[0].install.seq, 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         let frame = next_frame(&mut frames_rx).await;
@@ -5185,8 +5349,9 @@ mod tests {
         let park = Arc::new(tokio::sync::Notify::new());
         let probe = counting_probe(Arc::clone(&calls), Some(Arc::clone(&park)));
 
-        let rows =
-            update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe)).await;
+        let rows = update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe))
+            .await
+            .expect("persisted bob catalog is available");
         assert_eq!(rows[0].install.status, InstallStatus::Checking);
         let started = Instant::now();
         while calls.load(Ordering::SeqCst) == 0 {
@@ -5204,8 +5369,9 @@ mod tests {
             tokio::time::sleep(POLL_STEP).await;
         }
 
-        let rows =
-            update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe)).await;
+        let rows = update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe))
+            .await
+            .expect("persisted bob catalog is available");
         assert_eq!(rows[0].install.seq, 1);
         assert_eq!(rows[0].install.status, InstallStatus::Missing);
         assert_eq!(
@@ -5238,16 +5404,18 @@ mod tests {
         gate.mark_started();
 
         // (a) gate read before mark_finished, cache read before invalidate_all.
-        let rows =
-            update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe)).await;
+        let rows = update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe))
+            .await
+            .expect("persisted bob catalog is available");
         assert_eq!(rows[0].install.status, InstallStatus::Installed);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
         cache.invalidate_all();
 
         // (b) gate read before mark_finished, cache read after invalidate_all.
-        let rows =
-            update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe)).await;
+        let rows = update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe))
+            .await
+            .expect("persisted bob catalog is available");
         assert_eq!(rows[0].install.status, InstallStatus::Checking);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(cache.in_flight_len(), 0, "Deferred opens no ticket");
@@ -5255,8 +5423,9 @@ mod tests {
         gate.mark_finished(vec![]);
 
         // (c) gate read after mark_finished: any ticket carries the new generation.
-        let rows =
-            update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe)).await;
+        let rows = update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe))
+            .await
+            .expect("persisted bob catalog is available");
         assert_eq!(rows[0].install.status, InstallStatus::Checking);
         let started = Instant::now();
         while calls.load(Ordering::SeqCst) == 0 {
@@ -5271,6 +5440,175 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
         assert_eq!(cache.generation(), 1);
+    }
+
+    #[tokio::test]
+    async fn update_overview_without_a_persisted_catalog_is_err_and_schedules_nothing() {
+        let (app, cache, mut frames_rx) = app_with_cache();
+        let handle = app.handle().clone();
+        let dir = tempfile::tempdir().expect("tempdir");
+        // NO catalog file is written: the persisted-only read is unavailable.
+        let settings = bob_settings(dir.path());
+        let gate = AgentUpdateGate::new();
+        gate.mark_finished(vec![]);
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let unavailable = update_overview_with(
+            &handle,
+            &settings,
+            &gate,
+            &cache,
+            forbidden_probe(Arc::clone(&calls)),
+        )
+        .await
+        .expect_err("absent persisted catalog is unavailable");
+        assert_eq!(unavailable.code, "baseUnavailable");
+        assert_eq!(
+            unavailable.path,
+            dir.path()
+                .join(".ac")
+                .join("coding-agents")
+                .join("agents.json")
+                .display()
+                .to_string()
+        );
+        tokio::time::sleep(QUIET_WINDOW).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "no probe may be scheduled for an unavailable base"
+        );
+        assert_eq!(cache.in_flight_len(), 0);
+        assert_no_frame(&mut frames_rx).await;
+    }
+
+    #[tokio::test]
+    async fn update_overview_schedules_one_probe_for_duplicate_commands() {
+        let (app, cache, mut frames_rx) = app_with_cache();
+        let handle = app.handle().clone();
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Two entries share the `dup-1967-missing` command: only the first
+        // effective entry may be scheduled, and only once.
+        let catalog_dir = dir.path().join(".ac").join("coding-agents");
+        std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
+        std::fs::write(
+            catalog_dir.join("agents.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schemaVersion": 1,
+                "agents": [
+                    {
+                        "key": "pi",
+                        "label": "Pi",
+                        "description": "",
+                        "color": "#000000",
+                        "command": "dup-1967-missing",
+                        "updateCommands": ["dup up"]
+                    },
+                    {
+                        "key": "pi-alt",
+                        "label": "Pi (alt)",
+                        "description": "",
+                        "color": "#000000",
+                        "command": "dup-1967-missing",
+                        "updateCommands": ["dup --custom"]
+                    }
+                ]
+            }))
+            .expect("manifest json"),
+        )
+        .expect("write catalog");
+        let settings = bob_settings(dir.path());
+        let gate = AgentUpdateGate::new();
+        gate.mark_finished(vec![]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let probe = counting_probe(Arc::clone(&calls), None);
+
+        let rows = update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe))
+            .await
+            .expect("persisted catalog");
+        assert_eq!(rows.len(), 1, "one row for one distinct command");
+        assert_eq!(rows[0].key, "pi");
+        assert_eq!(rows[0].label, "Pi");
+        assert_eq!(rows[0].update_commands, vec!["dup up"]);
+
+        let started = Instant::now();
+        while calls.load(Ordering::SeqCst) == 0 {
+            assert!(started.elapsed() < POLL_CAP, "the probe never ran");
+            tokio::time::sleep(POLL_STEP).await;
+        }
+        tokio::time::sleep(QUIET_WINDOW).await;
+
+        // Repeating the overview must not open a second, hidden probe.
+        let rows = update_overview_with(&handle, &settings, &gate, &cache, Arc::clone(&probe))
+            .await
+            .expect("persisted catalog");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "dedup schedules each distinct command once"
+        );
+        assert_eq!(cache.in_flight_len(), 0);
+        let frame = next_frame(&mut frames_rx).await;
+        assert_eq!(frame["payload"]["command"], "dup-1967-missing");
+        assert_eq!(frame["payload"]["install"]["seq"], 1);
+        assert_no_frame(&mut frames_rx).await;
+    }
+
+    #[tokio::test]
+    async fn update_overview_skips_empty_winners_without_probing() {
+        let (app, cache, mut frames_rx) = app_with_cache();
+        let handle = app.handle().clone();
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The first effective entry has an empty sequence and a later duplicate
+        // is non-empty: no row, no probe, no install frame.
+        let catalog_dir = dir.path().join(".ac").join("coding-agents");
+        std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
+        std::fs::write(
+            catalog_dir.join("agents.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schemaVersion": 1,
+                "agents": [
+                    {
+                        "key": "nob",
+                        "label": "Nob",
+                        "description": "",
+                        "color": "#000000",
+                        "command": "nob-1967-missing",
+                        "updateCommands": []
+                    },
+                    {
+                        "key": "nob-alt",
+                        "label": "Nob (alt)",
+                        "description": "",
+                        "color": "#000000",
+                        "command": "nob-1967-missing",
+                        "updateCommands": ["nob up"]
+                    }
+                ]
+            }))
+            .expect("manifest json"),
+        )
+        .expect("write catalog");
+        let settings = bob_settings(dir.path());
+        let gate = AgentUpdateGate::new();
+        gate.mark_finished(vec![]);
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let rows = update_overview_with(
+            &handle,
+            &settings,
+            &gate,
+            &cache,
+            forbidden_probe(Arc::clone(&calls)),
+        )
+        .await
+        .expect("persisted catalog");
+        assert!(rows.is_empty(), "an empty winner produces no overview row");
+        tokio::time::sleep(QUIET_WINDOW).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(cache.in_flight_len(), 0);
+        assert_no_frame(&mut frames_rx).await;
     }
 
     #[tokio::test]
@@ -5314,7 +5652,8 @@ mod tests {
             &cache,
             counting_probe(Arc::clone(&calls), Some(Arc::clone(&park))),
         )
-        .await;
+        .await
+        .expect("persisted bob catalog is available");
         let started = Instant::now();
         while calls.load(Ordering::SeqCst) == 0 {
             assert!(started.elapsed() < POLL_CAP, "the probe never ran");
@@ -5700,6 +6039,63 @@ mod tests {
             CacheLookup::Fresh(state) => assert_eq!(state.seq, 1),
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn run_startup_updates_unavailable_catalog_spawns_nothing_and_finishes_the_gate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // NO catalog is written: the persisted-only read is unavailable, so the
+        // pass must not start, prompt, execute a vendor command or probe.
+        let settings = AppSettings {
+            project_paths: vec![dir.path().to_string_lossy().to_string()],
+            agents: vec![AgentConfig {
+                id: "agent-0".to_string(),
+                label: "Bob".to_string(),
+                command: "bob-1551-missing".to_string(),
+                color: "#000000".to_string(),
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
+                config_seed: None,
+                context_regex: None,
+                blocking_menus: None,
+                backend: Default::default(),
+            }],
+            agent_auto_update_by_command: BTreeMap::from([("bob-1551-missing".to_string(), true)]),
+            ..AppSettings::default()
+        };
+        let settings_state: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
+        let broadcaster = WsBroadcaster::new();
+        let mut frames_rx = broadcaster.subscribe();
+        let cache = Arc::new(AgentInstallCache::new());
+        let app = build_mock_app(
+            crate::test_support::test_builder()
+                .manage(settings_state)
+                .manage(broadcaster)
+                .manage(Arc::clone(&cache)),
+        );
+        let handle = app.handle().clone();
+        let gate = Arc::new(AgentUpdateGate::new());
+
+        run_startup_updates(handle, Arc::clone(&gate)).await;
+
+        // No `agent_updates_started`, no command events, no install probes.
+        assert_no_frame(&mut frames_rx).await;
+        assert!(
+            gate.is_finished(),
+            "the supervisor still completes the gate"
+        );
+        let snapshot = gate.snapshot();
+        assert!(!snapshot.in_progress);
+        assert!(snapshot.running.is_empty());
+        assert!(snapshot.results.is_empty());
+        assert!(snapshot.nodes.is_empty());
+        assert_eq!(
+            cache.generation(),
+            1,
+            "finalize still invalidates the cache"
+        );
+        assert_eq!(cache.in_flight_len(), 0);
     }
 
     // ---------------------------------------------------------------------
