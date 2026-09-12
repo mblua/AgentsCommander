@@ -56,6 +56,7 @@ import { applyWindowLayout } from "../shared/window-layout";
 import { sessionsStore } from "./stores/sessions";
 import { bridgesStore } from "./stores/bridges";
 import { projectStore } from "./stores/project";
+import { codingAgentsStore } from "./stores/coding-agents";
 import { workgroupGroupsStore } from "./stores/workgroup-groups";
 import { normalizeProjectPathForCompare } from "./stores/project-refresh";
 import { startTeamIdleWatcher } from "./stores/team-idle-watcher";
@@ -313,6 +314,28 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     seenContextTemplateUpdates.add(contextTemplateUpdateKey(next));
     setContextTemplateUpdateError(null);
     setActiveContextTemplateUpdate(next);
+  });
+
+  // #1966 — the backend serves ONE catalog, derived from the FIRST persisted
+  // project, so the selectable presets must follow the authoritative head:
+  // remove, archive, unarchive, an order change or a project-refresh event all
+  // reach this effect through the reactive projects getter. It stays gated until
+  // App's own initFromSettings returns, because a transient empty list during
+  // startup must not claim the no-project identity and reject a report that
+  // Settings/Onboarding already adopted. The store owns the identity comparison,
+  // so a metadata-only update re-runs this effect into a no-op, not a reload.
+  const [projectsInitialized, setProjectsInitialized] = createSignal(false);
+
+  createEffect(() => {
+    if (!projectsInitialized()) return;
+    // `?.` guards the pre-load window; a blank head is the backend's own
+    // no-project identity (`primary_project_root` skips empty trimmed paths).
+    const head = projectStore.projects[0]?.path.trim();
+    // untrack: this effect observes the project head, not the catalog store's
+    // own generation, which setPrimaryProject both reads and writes.
+    untrack(() => {
+      void codingAgentsStore.setPrimaryProject(head ? head : null);
+    });
   });
 
   // #1857: per-INSTANCE, deliberately not a module-level `Set` and deliberately
@@ -826,6 +849,9 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       appSettings.projectPathResolution,
     );
     if (disposed) return;
+    // #1966: the project list is now the authoritative head; the observer above
+    // reconciles (or adopts) the catalog identity from here on.
+    setProjectsInitialized(true);
 
     try {
       const allRepos = await ReposAPI.search("");
