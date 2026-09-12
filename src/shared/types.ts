@@ -412,6 +412,15 @@ export interface CodingAgentDefinition {
   autoUpdate: boolean;
 }
 
+export type CatalogDiagnostic = { code: string; path: string; reason: string };
+export type CatalogReport = {
+  primaryProjectRoot: string | null;
+  sourcePath: string | null;
+  catalog: CodingAgentDefinition[];
+  warnings: CatalogDiagnostic[];
+  unavailable: CatalogDiagnostic | null;
+};
+
 export interface ReseedResult {
   dest: string;
   backupPath: string;
