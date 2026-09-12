@@ -1,11 +1,20 @@
 # #1939 — preserve replica selections and materialize creation defaults
 
-Status: architect candidate for review. Child #1939. Parent #1937. Class design-bearing. Owner ac-dev-rust-v4. Depends on landed #1938. Contract persistence only. Five modified files, zero added/deleted:
+Status: amendment candidate for Grinch review — bounded test/inventory delta over already-implemented HEAD 1b1c96d3aedd11628d6f2f01c0590ebe6752c879; no product behavior change, no approval implied. Child #1939. Parent #1937. Class design-bearing. Owner ac-dev-rust-v4. Depends on landed #1938. Contract persistence only. Six modified files, zero added/deleted:
 - src-tauri/src/config/coding_agent_profiles.rs
 - src-tauri/src/config/agent_config.rs
 - src-tauri/src/commands/entity_creation.rs
 - src-tauri/tests/cli_workgroup_team.rs
+- src-tauri/tests/cli_powershell_capture.rs
 - src-tauri/module-arcs.txt
+
+## Amendment 2026-09-11 — Windows isolation inventory (bounded delta)
+
+Cause: both Windows jobs of PR #1959 fail at HEAD 1b1c96d3 (jobs 103193473432 and 103193453207): `issue_1867_isolation_source_contract` (src-tauri/tests/cli_powershell_capture.rs, Windows-only file) expected 10 and found 11 occurrences of `command_for_binary(`. The per-file inventory entry for cli_workgroup_team.rs (:594-619) still carries count 9, and the routes assert (:726-730) requires count+1=10; the #1939 fixture adds a tenth call site at :1173 inside issue_1937_repeat_member_preserves_config, so 11 exist (10 call sites plus the definition at :9). The contract file was outside the five-path inventory. Ruled by architect verdict messaging/20260911-083228-room12-ac-architect-v4-to-room12-ac-tech-lead-v4-1939-ci-scope-verdict.md, accepted20260911-083448.
+
+Ruled minimum correction (sixth path, test-only): in src-tauri/tests/cli_powershell_capture.rs, in the `"cli_workgroup_team.rs"` inventory entry, change the count `9` to `10` AND add binding `("issue_1937_repeat_member_preserves_config", 1)`. The routes assert then equals 11. Keep byte-identical the isolated constructor contract, the config_dir_for_bin helper, the exclusions, the concurrent guarded-write fixture and the oracle strength. Do not hide calls from the counter, serialize the fixture, reformulate tests, add files, arcs or wire/DTO changes, or touch any other route.
+
+Preserved evidence vs new proof: HEAD 1b1c96d3 product bytes keep their prior review (Grinch phase2 PASS 20260911-080553); no product file, behavior, contract, module arc, fixture or creation default changes. Previous phase checks (selection_state/creation/cli_workgroup_team; check/clippy/fmt; layering; graph SCC/arc record) stay valid for unchanged product bytes and are re-run on the amended candidate. The new proof covers the previously omitted Windows oracle: the amended inventory pins the new per-function route and restores the aggregate count invariant. Exact-head CI must be green on all 13 required contexts, including the Windows rust-regression job that executes this oracle.
 
 ## Stored contract
 
@@ -36,7 +45,7 @@ Add issue_1937_selection_state tests in coding_agent_profiles for absent/invalid
 
 Add issue_1937_selection_state_already_unlocked_no_publish: false and absent flags retain exact deliberately non-pretty JSON bytes, changed=false/published=false, and a pre-existing directory at the known temp-config path remains untouched (positive true->false control reaches that obstruction and fails temp creation). A false expected state racing to true must return stale, not AlreadyUnlocked; malformed state, lock timeout and IO errors cannot become success. Add issue_1937_selection_state_tooling_shape tests in agent_config for BOTH target paths: missing/object succeed, null/string/array/number/bool fail with exact bytes preserved, nested malformed codingAgents still repairs, malformed selectionLocked inside valid tooling remains untouched, and valid plain-repo metadata remains compatible. These tests run under the existing issue_1937_selection_state filter.
 
-From src-tauri: `cargo test --locked --lib issue_1937_selection_state`; `cargo test --locked --lib issue_1937_creation`; `cargo test --locked --test cli_workgroup_team issue_1937_repeat_member_preserves_config`; `cargo check --locked --all-targets`; `cargo clippy --locked --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`. Named new tests must have positive count. No app input capture.
+From src-tauri: `cargo test --locked --lib issue_1937_selection_state`; `cargo test --locked --lib issue_1937_creation`; `cargo test --locked --test cli_workgroup_team issue_1937_repeat_member_preserves_config -- --exact`; `cargo test --locked --test cli_powershell_capture issue_1867_isolation_source_contract -- --exact` (Windows; amended sixth path); `cargo check --locked --all-targets`; `cargo clippy --locked --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`. Both focused commands select exactly one test and must PASS. Named new tests must have positive count. No app input capture.
 
 Only new project arc: commands::entity_creation -> config::coding_agent_profiles at create_or_update_replica_on_disk/GUI shared initializer (base anchors1223/2923). Both in baseline SCC40d22fc71179d71f (86 members). All other calls reuse existing arcs; do not add clean-boundary arcs. Regenerate module-arcs.txt from clean candidate graph and commit its single new arc; require generated bytes equal record, cyclicSccs=1 and exact same members. Run loops_layering, instance_gitignore_layering, project_settings_layering integration tests. No persistence layer gains transport/AppHandle dependency.
 
