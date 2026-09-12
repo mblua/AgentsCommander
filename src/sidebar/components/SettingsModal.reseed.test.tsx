@@ -13,6 +13,7 @@ import { toastStore } from "../../shared/stores/toasts";
 import type { AgentConfig, CodingAgentDefinition } from "../../shared/types";
 
 const RESEED_CMD = "reseed_coding_agent_default";
+const REPORT_CMD = "get_coding_agent_catalog_report";
 const LIST_CMD = "list_reseedable_agent_commands";
 
 function def(key: string, label: string, command: string, dest?: string): CodingAgentDefinition {
@@ -60,7 +61,14 @@ function renderAgents(agents: AgentConfig[], opts: Opts = {}) {
   const fake = new FakeTransport();
   fake.resolve("get_settings", baseSettings({ agents }));
   fake.resolve("get_web_server_status", false);
-  fake.resolve("get_coding_agent_catalog", opts.catalog ?? CATALOG);
+  // #1965 — the report shape: all five fields, with the catalog under test.
+  fake.resolve(REPORT_CMD, {
+    primaryProjectRoot: null,
+    sourcePath: null,
+    catalog: opts.catalog ?? CATALOG,
+    warnings: [],
+    unavailable: null,
+  });
   if (opts.reseedableReject) fake.reject(LIST_CMD, "boom");
   else fake.resolve(LIST_CMD, opts.reseedable ?? RESEEDABLE);
   if (opts.reseedReject !== undefined) fake.reject(RESEED_CMD, opts.reseedReject);

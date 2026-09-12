@@ -10,24 +10,32 @@ vi.mock("../../shared/ipc", () => ({
     get: vi.fn(() => Promise.resolve(settings())),
     update: vi.fn(() => Promise.resolve()),
   },
-  // #769 — OnboardingModal now drives its cards from codingAgentsStore, which
-  // fetches this. Resolve a catalog that includes Codex (the preset this suite
-  // selects); the store's synchronous fallback also carries Codex regardless.
+  // #769/#1965 — OnboardingModal now drives its cards from codingAgentsStore,
+  // which fetches the catalog report. Resolve a report that includes Codex (the
+  // preset this suite selects); the store no longer falls back to bundled data.
   CodingAgentsAPI: {
-    getCatalog: vi.fn(() =>
-      Promise.resolve([
-        {
-          key: "codex",
-          label: "Codex",
-          description: "Coding Agent by OpenAI",
-          color: "#10b981",
-          command: "codex",
-          instructionsFilename: "AGENTS.md",
-          envs: [],
-          isolatedHome: false,
-          removable: true,
-        },
-      ]),
+    getCatalogReport: vi.fn(() =>
+      Promise.resolve({
+        primaryProjectRoot: null,
+        sourcePath: null,
+        catalog: [
+          {
+            key: "codex",
+            label: "Codex",
+            description: "Coding Agent by OpenAI",
+            color: "#10b981",
+            command: "codex",
+            instructionsFilename: "AGENTS.md",
+            envs: [],
+            isolatedHome: false,
+            removable: true,
+            updateCommands: [],
+            autoUpdate: false,
+          },
+        ],
+        warnings: [],
+        unavailable: null,
+      }),
     ),
     // #769 Phase 2 — the store also fetches this; onboarding does not use it.
     listReseedableCommands: vi.fn(() => Promise.resolve([])),
