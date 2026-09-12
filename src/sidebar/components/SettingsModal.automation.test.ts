@@ -83,7 +83,15 @@ vi.mock("../../shared/ipc", async () => {
       search: vi.fn(() => Promise.resolve([])),
     },
     CodingAgentsAPI: {
-      getCatalog: vi.fn(() => Promise.resolve(FALLBACK_CODING_AGENTS)),
+      getCatalogReport: vi.fn(() =>
+        Promise.resolve({
+          primaryProjectRoot: null,
+          sourcePath: null,
+          catalog: FALLBACK_CODING_AGENTS,
+          warnings: [],
+          unavailable: null,
+        }),
+      ),
       listReseedableCommands: vi.fn(() => Promise.resolve([])),
       reseedDefault: vi.fn(() => Promise.resolve({ dest: "", backupPath: "" })),
     },

@@ -1497,6 +1497,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setActiveAgentId(agent.id);
   };
 
+  /** #1965 — a preset captured from an older catalog generation must not be
+   *  registered after a project switch or reload: revalidate identity and the
+   *  current generation immediately before writing. */
+  const addCatalogPreset = (def: CodingAgentDefinition, presetGeneration: number) => {
+    if (presetGeneration !== codingAgentsStore.generation()) return;
+    const current = codingAgentsStore
+      .catalog()
+      .find((candidate) => candidate.key === def.key && candidate.command === def.command);
+    if (!current) return;
+    addAgent(definitionToSeed(current));
+  };
+
   const removeAgent = (index: number) => {
     if (!settings.data) return;
     setDraftDirty(true);
@@ -3143,20 +3155,108 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const renderAgentPresets = () => (
     <div class="settings-agent-actions">
-      <For each={codingAgentsStore.catalog()}>
-        {(def) => (
-          <button
-            class="settings-preset-btn"
-            onClick={() => addAgent(definitionToSeed(def))}
-            disabled={hasAgentByCommand(def.command)}
-            data-ac-testid={`settings.agentPreset.${def.key}`}
-            data-ac-role="button"
-            data-ac-state={hasAgentByCommand(def.command) ? "disabled" : "available"}
+      {/* #1965 — catalog status. Failures and warnings render path/reason as
+          text and are never replaced by selectable embedded defaults. */}
+      <Show when={codingAgentsStore.loading()}>
+        <div
+          class="settings-label-hint"
+          data-ac-testid="settings.catalog.loading"
+          data-ac-role="status"
+        >
+          Loading catalog…
+        </div>
+      </Show>
+      <Show when={codingAgentsStore.error()}>
+        {(diagnostic) => (
+          <div
+            class="settings-hint settings-hint-warning"
+            data-ac-testid="settings.catalog.error"
+            data-ac-role="status"
+            data-ac-state={
+              diagnostic().code === "primary-project-changed"
+                ? "source-changed"
+                : "unavailable"
+            }
           >
-            <span class="settings-color-dot" style={{ background: def.color }} />
-            + {def.label}
-          </button>
+            <div>
+              {diagnostic().code === "primary-project-changed"
+                ? "Catalog source changed"
+                : "Catalog unavailable"}
+            </div>
+            <Show when={diagnostic().path}>
+              <div data-ac-testid="settings.catalog.error.path">{diagnostic().path}</div>
+            </Show>
+            <div data-ac-testid="settings.catalog.error.reason">{diagnostic().reason}</div>
+          </div>
         )}
+      </Show>
+      <For each={codingAgentsStore.warnings()}>
+        {(warning, index) => (
+          <div
+            class="settings-hint settings-hint-warning"
+            data-ac-testid={`settings.catalog.warning.${index()}`}
+            data-ac-role="status"
+          >
+            <Show when={warning.path}>
+              <div data-ac-testid={`settings.catalog.warning.${index()}.path`}>
+                {warning.path}
+              </div>
+            </Show>
+            <div data-ac-testid={`settings.catalog.warning.${index()}.reason`}>
+              {warning.reason}
+            </div>
+          </div>
+        )}
+      </For>
+      <Show
+        when={
+          codingAgentsStore.error() ||
+          codingAgentsStore.warnings().length > 0 ||
+          (codingAgentsStore.loaded() && codingAgentsStore.catalog().length === 0)
+        }
+      >
+        <button
+          class="settings-row-btn"
+          onClick={() => void codingAgentsStore.refresh()}
+          data-ac-testid="settings.catalog.reload"
+          data-ac-role="button"
+        >
+          Reload catalog
+        </button>
+      </Show>
+      <Show
+        when={
+          codingAgentsStore.loaded() &&
+          !codingAgentsStore.error() &&
+          codingAgentsStore.catalog().length === 0
+        }
+      >
+        <div
+          class="settings-label-hint"
+          data-ac-testid="settings.catalog.empty"
+          data-ac-role="status"
+        >
+          No catalog agents available
+        </div>
+      </Show>
+      <For each={codingAgentsStore.catalog()}>
+        {(def) => {
+          // Captured per row render: the generation that offered this preset.
+          const presetGeneration = codingAgentsStore.generation();
+          return (
+            <button
+              class="settings-preset-btn"
+              onClick={() => addCatalogPreset(def, presetGeneration)}
+              disabled={hasAgentByCommand(def.command)}
+              data-ac-testid={`settings.agentPreset.${def.key}`}
+              data-ac-role="button"
+              data-ac-state={hasAgentByCommand(def.command) ? "disabled" : "available"}
+            >
+              <span class="settings-color-dot" style={{ background: def.color }} />
+              + {def.label}
+            </button>
+          );
+        }}
       </For>
       <button
         class="settings-add-btn"

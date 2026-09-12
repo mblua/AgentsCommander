@@ -9,10 +9,15 @@ import {
   resetUiStoresForTests,
   waitFor,
 } from "../../shared/testing/ui-harness";
-import { FALLBACK_CODING_AGENTS } from "../../shared/agent-presets";
-import type { AgentConfig, CodingAgentDefinition } from "../../shared/types";
+import { codingAgentsStore } from "../stores/coding-agents";
+import type {
+  AgentConfig,
+  CatalogDiagnostic,
+  CatalogReport,
+  CodingAgentDefinition,
+} from "../../shared/types";
 
-const CATALOG_CMD = "get_coding_agent_catalog";
+const REPORT_CMD = "get_coding_agent_catalog_report";
 
 function def(key: string, label: string, command: string): CodingAgentDefinition {
   return {
@@ -29,6 +34,22 @@ function def(key: string, label: string, command: string): CodingAgentDefinition
   };
 }
 
+function warning(code: string, path: string, reason: string): CatalogDiagnostic {
+  return { code, path, reason };
+}
+
+/** A success report carries all five fields; overrides exercise the rest. */
+function report(overrides: Partial<CatalogReport> = {}): CatalogReport {
+  return {
+    primaryProjectRoot: null,
+    sourcePath: null,
+    catalog: [],
+    warnings: [],
+    unavailable: null,
+    ...overrides,
+  };
+}
+
 function existingAgent(command: string): AgentConfig {
   return {
     id: "agent_existing",
@@ -40,11 +61,28 @@ function existingAgent(command: string): AgentConfig {
   };
 }
 
+function byTestId<T extends HTMLElement = HTMLElement>(
+  root: HTMLElement,
+  testId: string,
+): T | null {
+  return root.querySelector<T>(`[data-ac-testid="${testId}"]`);
+}
+
 function presetBtn(root: HTMLElement, key: string): HTMLButtonElement | null {
   return root.querySelector<HTMLButtonElement>(`[data-ac-testid="settings.agentPreset.${key}"]`);
 }
 
-describe("SettingsModal coding-agent quick-add row (#769)", () => {
+function presetButtons(root: HTMLElement): HTMLButtonElement[] {
+  return Array.from(
+    root.querySelectorAll<HTMLButtonElement>('[data-ac-testid^="settings.agentPreset."]'),
+  );
+}
+
+function tick(): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -65,11 +103,17 @@ describe("SettingsModal coding-agent quick-add row (#769)", () => {
     // must be disabled by hasAgentByCommand; codex/pi stay available.
     fake.resolve("get_settings", baseSettings({ agents: [existingAgent("claude")] }));
     fake.resolve("get_web_server_status", false);
-    fake.resolve(CATALOG_CMD, [
-      def("claude", "Claude Code", "claude"),
-      def("codex", "Codex", "codex"),
-      def("pi", "Pi", "pi"),
-    ]);
+    fake.resolve(
+      REPORT_CMD,
+      report({
+        primaryProjectRoot: null,
+        catalog: [
+          def("claude", "Claude Code", "claude"),
+          def("codex", "Codex", "codex"),
+          def("pi", "Pi", "pi"),
+        ],
+      }),
+    );
 
     const rendered = renderWithFakeTransport(
       () => <SettingsModal section="agents" onClose={() => {}} />,
@@ -79,9 +123,7 @@ describe("SettingsModal coding-agent quick-add row (#769)", () => {
       await waitFor(() => expect(presetBtn(rendered.root, "codex")).toBeTruthy());
 
       // Exactly the three fetched keys, in file order (custom stays separate).
-      const keys = Array.from(
-        rendered.root.querySelectorAll<HTMLElement>('[data-ac-testid^="settings.agentPreset."]'),
-      ).map((el) => el.getAttribute("data-ac-testid"));
+      const keys = presetButtons(rendered.root).map((el) => el.getAttribute("data-ac-testid"));
       expect(keys).toEqual([
         "settings.agentPreset.claude",
         "settings.agentPreset.codex",
@@ -92,40 +134,194 @@ describe("SettingsModal coding-agent quick-add row (#769)", () => {
       expect(presetBtn(rendered.root, "codex")!.disabled).toBe(false);
       expect(presetBtn(rendered.root, "pi")!.disabled).toBe(false);
       // The hardcoded Custom Agent button is still present, last.
-      expect(
-        rendered.root.querySelector('[data-ac-testid="settings.agent.addCustom"]'),
-      ).toBeTruthy();
+      expect(byTestId(rendered.root, "settings.agent.addCustom")).toBeTruthy();
     } finally {
       rendered.cleanup();
     }
   });
 
-  it("falls back to the built-in list (never blank) when the catalog fetch fails", async () => {
+  it("shows an unavailable report's path/reason, no fallback presets, and a usable Custom Agent", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_settings", baseSettings());
     fake.resolve("get_web_server_status", false);
-    fake.reject(CATALOG_CMD, "config-dir failure");
+    fake.resolve(
+      REPORT_CMD,
+      report({
+        primaryProjectRoot: "C:/repo/app",
+        sourcePath: "C:/repo/app/.ac/coding-agents/agents.json",
+        unavailable: warning(
+          "baseUnavailable",
+          "C:/repo/app/.ac/coding-agents/agents.json",
+          "catalog bytes are corrupt",
+        ),
+      }),
+    );
 
     const rendered = renderWithFakeTransport(
       () => <SettingsModal section="agents" onClose={() => {}} />,
       fake,
     );
     try {
-      // All six built-ins from the synchronous fallback render despite the reject.
-      await waitFor(() => expect(presetBtn(rendered.root, "opencode")).toBeTruthy());
-      for (const d of FALLBACK_CODING_AGENTS) {
-        expect(presetBtn(rendered.root, d.key)).toBeTruthy();
-      }
+      await waitFor(() => expect(byTestId(rendered.root, "settings.catalog.error")).toBeTruthy());
+      const errorArea = byTestId(rendered.root, "settings.catalog.error")!;
+      expect(errorArea.textContent).toContain("Catalog unavailable");
+      expect(byTestId(rendered.root, "settings.catalog.error.path")!.textContent).toContain(
+        "C:/repo/app/.ac/coding-agents/agents.json",
+      );
+      expect(byTestId(rendered.root, "settings.catalog.error.reason")!.textContent).toContain(
+        "catalog bytes are corrupt",
+      );
+
+      // Never a silent built-in fallback, and no re-seed controls without a catalog.
+      expect(presetButtons(rendered.root)).toEqual([]);
+      expect(byTestId(rendered.root, "settings.agent.reseedDefault.claude")).toBeNull();
+
+      // Manual creation stays available.
+      const custom = byTestId<HTMLButtonElement>(rendered.root, "settings.agent.addCustom")!;
+      custom.click();
+      await waitFor(() => expect(byTestId(rendered.root, "settings.agentRow.0")).toBeTruthy());
     } finally {
       rendered.cleanup();
     }
   });
 
-  it("shows the Auto-update error note when the overview is rejected while the presets still fall back (#1551)", async () => {
+  it("renders a warning's path/reason while the base rows stay selectable", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_settings", baseSettings());
     fake.resolve("get_web_server_status", false);
-    fake.reject(CATALOG_CMD, "config-dir failure");
+    fake.resolve(
+      REPORT_CMD,
+      report({
+        primaryProjectRoot: "C:/repo/app",
+        sourcePath: "C:/repo/app/.ac/coding-agents/agents.json",
+        catalog: [def("claude", "Claude Code", "claude")],
+        warnings: [
+          warning(
+            "local-overlay-invalid",
+            "C:/repo/app/.ac/coding-agents/agents.local.json",
+            "unknown field",
+          ),
+        ],
+      }),
+    );
+
+    const rendered = renderWithFakeTransport(
+      () => <SettingsModal section="agents" onClose={() => {}} />,
+      fake,
+    );
+    try {
+      await waitFor(() => expect(byTestId(rendered.root, "settings.catalog.warning.0")).toBeTruthy());
+      expect(byTestId(rendered.root, "settings.catalog.warning.0.path")!.textContent).toContain(
+        "agents.local.json",
+      );
+      expect(byTestId(rendered.root, "settings.catalog.warning.0.reason")!.textContent).toContain(
+        "unknown field",
+      );
+
+      // The readable base row is still offered and usable.
+      const button = presetBtn(rendered.root, "claude")!;
+      expect(button.disabled).toBe(false);
+      button.click();
+      await waitFor(() => expect(byTestId(rendered.root, "settings.agentRow.0")).toBeTruthy());
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("recovers through Reload after a transport failure", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    fake.resolve("get_web_server_status", false);
+    fake.reject(REPORT_CMD, "config-dir failure");
+
+    const rendered = renderWithFakeTransport(
+      () => <SettingsModal section="agents" onClose={() => {}} />,
+      fake,
+    );
+    try {
+      await waitFor(() => expect(byTestId(rendered.root, "settings.catalog.error")).toBeTruthy());
+      expect(byTestId(rendered.root, "settings.catalog.error.reason")!.textContent).toContain(
+        "config-dir failure",
+      );
+      expect(presetButtons(rendered.root)).toEqual([]);
+
+      fake.resolve(
+        REPORT_CMD,
+        report({ primaryProjectRoot: null, catalog: [def("codex", "Codex", "codex")] }),
+      );
+      byTestId<HTMLButtonElement>(rendered.root, "settings.catalog.reload")!.click();
+
+      await waitFor(() => expect(presetBtn(rendered.root, "codex")).toBeTruthy());
+      expect(byTestId(rendered.root, "settings.catalog.error")).toBeNull();
+      expect(presetBtn(rendered.root, "codex")!.disabled).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("says so for a valid empty catalog and keeps Custom Agent usable", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    fake.resolve("get_web_server_status", false);
+    fake.resolve(REPORT_CMD, report({ primaryProjectRoot: null, catalog: [] }));
+
+    const rendered = renderWithFakeTransport(
+      () => <SettingsModal section="agents" onClose={() => {}} />,
+      fake,
+    );
+    try {
+      await waitFor(() => expect(byTestId(rendered.root, "settings.catalog.empty")).toBeTruthy());
+      expect(byTestId(rendered.root, "settings.catalog.empty")!.textContent).toContain(
+        "No catalog agents available",
+      );
+      expect(presetButtons(rendered.root)).toEqual([]);
+      expect(byTestId(rendered.root, "settings.agent.addCustom")).toBeTruthy();
+      expect(byTestId(rendered.root, "settings.catalog.error")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("a preset row from an older generation cannot register after a reload", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    fake.resolve("get_web_server_status", false);
+    fake.resolve(
+      REPORT_CMD,
+      report({ primaryProjectRoot: null, catalog: [def("alpha", "Alpha", "alpha")] }),
+    );
+
+    const rendered = renderWithFakeTransport(
+      () => <SettingsModal section="agents" onClose={() => {}} />,
+      fake,
+    );
+    try {
+      await waitFor(() => expect(presetBtn(rendered.root, "alpha")).toBeTruthy());
+      const staleButton = presetBtn(rendered.root, "alpha")!;
+
+      // Same key and command, but a new catalog generation.
+      fake.resolve(
+        REPORT_CMD,
+        report({ primaryProjectRoot: null, catalog: [def("alpha", "Alpha", "alpha")] }),
+      );
+      await codingAgentsStore.refresh();
+
+      staleButton.click();
+      await tick();
+
+      expect(byTestId(rendered.root, "settings.agentRow.0")).toBeNull();
+      // The fresh generation's own row remains selectable.
+      expect(presetBtn(rendered.root, "alpha")!.disabled).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("shows the Auto-update error note while the catalog is unavailable (#1551)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    fake.resolve("get_web_server_status", false);
+    fake.reject(REPORT_CMD, "config-dir failure");
     fake.reject("get_agent_update_overview", "overview failure");
 
     const rendered = renderWithFakeTransport(
@@ -133,19 +329,17 @@ describe("SettingsModal coding-agent quick-add row (#769)", () => {
       fake,
     );
     try {
-      const errorNote = () =>
-        rendered.root.querySelector<HTMLElement>('[data-ac-testid="settings.autoUpdate.error"]');
+      const errorNote = () => byTestId(rendered.root, "settings.autoUpdate.error");
       await waitFor(() => expect(errorNote()).toBeTruthy());
       expect(errorNote()!.textContent).toContain("Auto-update status unavailable: ");
       expect(errorNote()!.textContent).toContain("overview failure");
       // never an empty table, never the loading note
-      expect(rendered.root.querySelector('[data-ac-testid="settings.autoUpdate.list"]')).toBeNull();
-      expect(rendered.root.querySelector('[data-ac-testid="settings.autoUpdate.loading"]')).toBeNull();
-      // the two surfaces are independent: the preset row still falls back to the built-ins
-      await waitFor(() => expect(presetBtn(rendered.root, "opencode")).toBeTruthy());
-      for (const d of FALLBACK_CODING_AGENTS) {
-        expect(presetBtn(rendered.root, d.key)).toBeTruthy();
-      }
+      expect(byTestId(rendered.root, "settings.autoUpdate.list")).toBeNull();
+      expect(byTestId(rendered.root, "settings.autoUpdate.loading")).toBeNull();
+      // the two surfaces are independent: the preset row still reports the
+      // catalog failure instead of silently falling back to built-ins.
+      await waitFor(() => expect(byTestId(rendered.root, "settings.catalog.error")).toBeTruthy());
+      expect(presetButtons(rendered.root)).toEqual([]);
       expect(fake.listensFor("agent_install_state_changed")).toHaveLength(1);
       expect(fake.listensFor("agent_updates_finished")).toHaveLength(1);
     } finally {
