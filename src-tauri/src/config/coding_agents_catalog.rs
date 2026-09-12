@@ -7131,6 +7131,47 @@ mod tests {
     }
 
     #[test]
+    fn managed_catalog_interrupt_after_journal_recomputes_the_extraction() {
+        let dir = seed_dir();
+        let legacy = manifest_json(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        write_legacy_base(dir.path(), &legacy);
+        let _ = with_failure_at("after_journal", || ensure_seeded(dir.path(), None));
+
+        let catalog = catalog_dir(dir.path());
+        assert!(catalog.join(MIGRATION_BACKUP_FILENAME).exists());
+        assert!(migration_journal_path(dir.path()).exists());
+        assert!(
+            !local_catalog_path(dir.path()).exists(),
+            "the local layer was not published"
+        );
+        assert_eq!(
+            read_text(&manifest_path(dir.path())),
+            legacy,
+            "base untouched"
+        );
+        let backup = std::fs::read(catalog.join(MIGRATION_BACKUP_FILENAME)).unwrap();
+        assert_eq!(backup, legacy.as_bytes());
+
+        // Restart: no local exists, so recovery RECOMPUTES the extraction from
+        // the backup against the journal's saved managed base and verifies it
+        // against the recorded local hash before publishing anything.
+        assert!(ensure_seeded(dir.path(), None).is_some());
+        assert!(local_catalog_path(dir.path()).exists());
+        assert_eq!(keys_of(&load_catalog(dir.path()).unwrap()), ["mine"]);
+        assert_eq!(
+            base_json(dir.path())["managed"]["revision"],
+            managed_content_sha256(&supported_shipped_definitions())
+        );
+        assert_eq!(
+            std::fs::read(catalog.join(MIGRATION_BACKUP_FILENAME)).unwrap(),
+            backup,
+            "the backup is retained for audit"
+        );
+    }
+
+    #[test]
     fn managed_catalog_interrupt_before_base_resumes_from_the_journal() {
         let dir = seed_dir();
         let legacy = manifest_json(
