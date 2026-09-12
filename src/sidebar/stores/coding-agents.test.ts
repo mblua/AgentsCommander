@@ -318,6 +318,37 @@ describe("codingAgentsStore (#1965 catalog report)", () => {
     expect(codingAgentsStore.loading()).toBe(false);
   });
 
+  it("a superseded completion cannot finalize the owning generation's loading or in-flight slot", async () => {
+    const reports = [deferred<CatalogReport>(), deferred<CatalogReport>()];
+    fake.onInvoke(REPORT_CMD, deferredHandler(reports));
+
+    const superseded = codingAgentsStore.ensureLoaded(); // generation N
+    await tick();
+    const owning = codingAgentsStore.refresh(); // generation N+1
+    await tick();
+    expect(codingAgentsStore.loading()).toBe(true);
+
+    // The abandoned first-generation request settles while its successor is
+    // still in flight: it must not touch loading or the in-flight slot.
+    reports[0].reject("superseded transport failure");
+    await superseded;
+    expect(codingAgentsStore.loading()).toBe(true);
+
+    const callsBefore = fake.callsFor(REPORT_CMD).length;
+    const follower = codingAgentsStore.ensureLoaded();
+    await tick();
+    // It joined the owning generation's single request instead of starting a
+    // second one (the in-flight slot survived the superseded finalizer).
+    expect(fake.callsFor(REPORT_CMD).length).toBe(callsBefore);
+
+    reports[1].resolve(report({ primaryProjectRoot: null, catalog: [def("bravo")] }));
+    await Promise.all([owning, follower]);
+
+    expect(codingAgentsStore.loading()).toBe(false);
+    expect(codingAgentsStore.catalog()).toEqual([def("bravo")]);
+    expect(codingAgentsStore.error()).toBeNull();
+  });
+
   it("repeated refresh starts a new generation each time and only the last publishes", async () => {
     const reports = [
       deferred<CatalogReport>(),

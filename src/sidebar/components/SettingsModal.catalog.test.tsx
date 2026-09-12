@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsModal from "./SettingsModal";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
@@ -282,7 +282,39 @@ describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () =
     }
   });
 
-  it("a preset row from an older generation cannot register after a reload", async () => {
+  it("shows the loading state until the report settles", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    fake.resolve("get_web_server_status", false);
+    fake.resolve("list_reseedable_agent_commands", []);
+    let resolveReport!: (value: CatalogReport) => void;
+    const pendingReport = new Promise<CatalogReport>((resolve) => {
+      resolveReport = resolve;
+    });
+    fake.onInvoke(REPORT_CMD, () => pendingReport);
+
+    const rendered = renderWithFakeTransport(
+      () => <SettingsModal section="agents" onClose={() => {}} />,
+      fake,
+    );
+    try {
+      await waitFor(() => expect(byTestId(rendered.root, "settings.catalog.loading")).toBeTruthy());
+      expect(byTestId(rendered.root, "settings.catalog.loading")!.textContent).toContain(
+        "Loading catalog",
+      );
+      expect(presetButtons(rendered.root)).toEqual([]);
+
+      resolveReport(
+        report({ primaryProjectRoot: null, catalog: [def("codex", "Codex", "codex")] }),
+      );
+      await waitFor(() => expect(presetBtn(rendered.root, "codex")).toBeTruthy());
+      expect(byTestId(rendered.root, "settings.catalog.loading")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("a reload detaches the old preset row set before it can register", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_settings", baseSettings());
     fake.resolve("get_web_server_status", false);
@@ -299,19 +331,66 @@ describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () =
       await waitFor(() => expect(presetBtn(rendered.root, "alpha")).toBeTruthy());
       const staleButton = presetBtn(rendered.root, "alpha")!;
 
-      // Same key and command, but a new catalog generation.
+      // Same key and command, but a new catalog generation: Solid replaces the
+      // row synchronously, so the old node is detached before it can be clicked.
       fake.resolve(
         REPORT_CMD,
         report({ primaryProjectRoot: null, catalog: [def("alpha", "Alpha", "alpha")] }),
       );
       await codingAgentsStore.refresh();
 
+      expect(staleButton.isConnected).toBe(false);
       staleButton.click();
       await tick();
 
       expect(byTestId(rendered.root, "settings.agentRow.0")).toBeNull();
       // The fresh generation's own row remains selectable.
       expect(presetBtn(rendered.root, "alpha")!.disabled).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("the add handler revalidates generation and definition availability (defense-in-depth)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    fake.resolve("get_web_server_status", false);
+    fake.resolve(
+      REPORT_CMD,
+      report({ primaryProjectRoot: null, catalog: [def("alpha", "Alpha", "alpha")] }),
+    );
+
+    const rendered = renderWithFakeTransport(
+      () => <SettingsModal section="agents" onClose={() => {}} />,
+      fake,
+    );
+    try {
+      await waitFor(() => expect(presetBtn(rendered.root, "alpha")).toBeTruthy());
+      const button = presetBtn(rendered.root, "alpha")!;
+
+      // A row captured in an older generation must not write. Ordinary clicks
+      // cannot reach this (the reload detaches the row first), so the store
+      // reads are pinned to exercise the guard directly.
+      const generation = codingAgentsStore.generation();
+      const generationSpy = vi
+        .spyOn(codingAgentsStore, "generation")
+        .mockReturnValue(generation + 1);
+      button.click();
+      await tick();
+      generationSpy.mockRestore();
+      expect(byTestId(rendered.root, "settings.agentRow.0")).toBeNull();
+
+      // Same generation, but the definition is no longer in the catalog.
+      const catalogSpy = vi.spyOn(codingAgentsStore, "catalog").mockReturnValue([]);
+      button.click();
+      await tick();
+      catalogSpy.mockRestore();
+      expect(byTestId(rendered.root, "settings.agentRow.0")).toBeNull();
+
+      // Control: with the real store reads the same click registers, so the
+      // blocks above came from the guard and not from a dead button.
+      button.click();
+      await waitFor(() => expect(byTestId(rendered.root, "settings.agentRow.0")).toBeTruthy());
     } finally {
       rendered.cleanup();
     }

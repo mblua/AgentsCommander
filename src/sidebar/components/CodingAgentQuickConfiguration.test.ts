@@ -272,6 +272,27 @@ describe("CodingAgentQuickConfiguration", () => {
     dispose();
   });
 
+  it("shows the loading state until the report settles", async () => {
+    let resolveReport!: (value: CatalogReport) => void;
+    const pendingReport = new Promise<CatalogReport>((resolve) => {
+      resolveReport = resolve;
+    });
+    vi.mocked(CodingAgentsAPI.getCatalogReport).mockReturnValueOnce(pendingReport);
+
+    const dispose = renderModal();
+    await settle();
+
+    expect(byTestId("onboarding.catalog.loading")?.textContent).toContain("Loading catalog");
+
+    resolveReport(
+      report({ primaryProjectRoot: null, catalog: [catalogDef("codex", "Codex", "codex")] }),
+    );
+    await vi.waitFor(() => expect(byTestId("onboarding.agentPreset.codex")).toBeTruthy());
+    expect(byTestId("onboarding.catalog.loading")).toBeNull();
+
+    dispose();
+  });
+
   it("renders no Cancel button when no cancel callback is supplied", async () => {
     const dispose = renderModal();
     await settle();
