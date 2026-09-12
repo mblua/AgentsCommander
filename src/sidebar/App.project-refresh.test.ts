@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { createComponent } from "solid-js";
 import type {
   AcProjectRefreshReason,
@@ -106,33 +106,6 @@ function catalogReport(primary: string | null, keys: string[]): CatalogReport {
   };
 }
 
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (reason?: unknown) => void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-/** Per-call deferreds: request N resolves through handles[N]. */
-function deferredHandler<T>(handles: Deferred<T>[]) {
-  let index = 0;
-  return () => {
-    const handle = handles[index];
-    index += 1;
-    if (!handle) throw new Error("unexpected extra request");
-    return handle.promise;
-  };
-}
-
 function tick(): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
@@ -170,10 +143,20 @@ function resolveSidebarTransport(fake: FakeTransport, projectPaths: string[]): v
 
 describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
   let cleanupDom: (() => void) | null = null;
+  let fake!: FakeTransport;
+  let setPrimary!: MockInstance<typeof codingAgentsStore.setPrimaryProject>;
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
+    // Per-case suite fixtures: the observer is transport-driven, so every case
+    // gets a fresh fake and spy. Cases that need another head or ordering
+    // override handlers BEFORE mounting; this hook never mounts an App.
+    fake = new FakeTransport();
+    resolveSidebarTransport(fake, [PROJECT_A, PROJECT_B]);
+    fake.resolve(LIST_CMD, []);
+    fake.onInvoke(REPORT_CMD, () => catalogReport(PROJECT_A, ["alpha"]));
+    setPrimary = vi.spyOn(codingAgentsStore, "setPrimaryProject");
   });
 
   afterEach(() => {
@@ -201,10 +184,8 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
   }
 
   it("follows the authoritative head through remove, unarchive and an archive event", async () => {
-    const fake = new FakeTransport();
     let served: string | null = PROJECT_A;
-    resolveSidebarTransport(fake, [PROJECT_A, PROJECT_B]);
-    fake.resolve(LIST_CMD, []);
+    // Case-specific override: the report follows the head the test moves.
     fake.onInvoke(REPORT_CMD, () =>
       served === PROJECT_A
         ? catalogReport(PROJECT_A, ["alpha"])
@@ -212,7 +193,6 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
           ? catalogReport(PROJECT_B, ["bravo"])
           : catalogReport(null, []),
     );
-    const setPrimary = vi.spyOn(codingAgentsStore, "setPrimaryProject");
 
     const rendered = renderSidebar(fake);
     try {
@@ -260,8 +240,8 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
   });
 
   it("does not invalidate an early adopted report while startup is still loading projects", async () => {
-    const fake = new FakeTransport();
     let served = PROJECT_B;
+    // Case-specific: only A is registered and the report/list follow `served`.
     resolveSidebarTransport(fake, [PROJECT_A]);
     fake.onInvoke(LIST_CMD, () =>
       served === PROJECT_A ? ["alpha"] : ["bravo"],
@@ -280,7 +260,6 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
       await openProjectGate;
       return { path: args.path as string, registered: true, created: false };
     });
-    const setPrimary = vi.spyOn(codingAgentsStore, "setPrimaryProject");
 
     const rendered = renderSidebar(fake);
     try {
@@ -315,12 +294,10 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
   });
 
   it("claims the no-project identity when the last project is removed", async () => {
-    const fake = new FakeTransport();
     let head: string | null = PROJECT_A;
+    // Case-specific: one registered project whose report follows `head`.
     resolveSidebarTransport(fake, [PROJECT_A]);
-    fake.resolve(LIST_CMD, []);
     fake.onInvoke(REPORT_CMD, () => catalogReport(head, head ? ["alpha"] : []));
-    const setPrimary = vi.spyOn(codingAgentsStore, "setPrimaryProject");
 
     const rendered = renderSidebar(fake);
     try {
@@ -342,12 +319,7 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
   });
 
   it("re-observes an unchanged head without reloading on an unrelated project edit", async () => {
-    const fake = new FakeTransport();
-    resolveSidebarTransport(fake, [PROJECT_A, PROJECT_B]);
-    fake.resolve(LIST_CMD, []);
-    fake.onInvoke(REPORT_CMD, () => catalogReport(PROJECT_A, ["alpha"]));
-    const setPrimary = vi.spyOn(codingAgentsStore, "setPrimaryProject");
-
+    // Suite defaults: two projects, A serves alpha and never changes.
     const rendered = renderSidebar(fake);
     try {
       await waitFor(() => expect(catalogKeys()).toEqual(["alpha"]));
@@ -381,21 +353,20 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
   });
 
   it("uses the newest authoritative head when two rapid switches settle out of order", async () => {
-    const fake = new FakeTransport();
-    resolveSidebarTransport(fake, [PROJECT_A, PROJECT_B]);
-    fake.resolve(LIST_CMD, []);
-    const reports = [
-      deferred<CatalogReport>(),
-      deferred<CatalogReport>(),
-      deferred<CatalogReport>(),
-      deferred<CatalogReport>(),
-    ];
-    fake.onInvoke(REPORT_CMD, deferredHandler(reports));
-    const setPrimary = vi.spyOn(codingAgentsStore, "setPrimaryProject");
+    // Case-specific: each report request registers its own resolver, so the test
+    // settles them in any order and a fifth request fails the tripwire.
+    const resolvers: ((report: CatalogReport) => void)[] = [];
+    fake.onInvoke(REPORT_CMD, () =>
+      new Promise<CatalogReport>((resolve) => {
+        if (resolvers.length >= 4) throw new Error("unexpected extra request");
+        resolvers.push(resolve);
+      }),
+    );
 
     const rendered = renderSidebar(fake);
     try {
-      reports[0].resolve(catalogReport(PROJECT_A, ["alpha"]));
+      await waitFor(() => expect(resolvers).toHaveLength(1));
+      resolvers[0](catalogReport(PROJECT_A, ["alpha"]));
       await waitFor(() => expect(catalogKeys()).toEqual(["alpha"]));
 
       // Head A -> B -> (briefly no project) -> A again, each one its own request.
@@ -403,6 +374,7 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
       await projectStore.removeProject(PROJECT_B);
       await projectStore.loadProject(PROJECT_A);
       await waitFor(() => expect(fake.callsFor(REPORT_CMD)).toHaveLength(4));
+      expect(resolvers).toHaveLength(4);
       expect(setPrimary.mock.calls.map(([root]) => root)).toEqual([
         PROJECT_A,
         PROJECT_B,
@@ -412,10 +384,10 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
 
       // The newest request settles first; the two superseded ones settle after
       // it and must not republish their stale catalogs.
-      reports[3].resolve(catalogReport(PROJECT_A, ["alpha"]));
+      resolvers[3](catalogReport(PROJECT_A, ["alpha"]));
       await waitFor(() => expect(catalogKeys()).toEqual(["alpha"]));
-      reports[1].resolve(catalogReport(PROJECT_B, ["bravo"]));
-      reports[2].resolve(catalogReport(null, []));
+      resolvers[1](catalogReport(PROJECT_B, ["bravo"]));
+      resolvers[2](catalogReport(null, []));
       await tick();
       await tick();
 
@@ -428,11 +400,7 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
   });
 
   it("surfaces a rejected switch as a diagnostic and recovers through Reload", async () => {
-    const fake = new FakeTransport();
-    resolveSidebarTransport(fake, [PROJECT_A, PROJECT_B]);
-    fake.resolve(LIST_CMD, []);
-    fake.onInvoke(REPORT_CMD, () => catalogReport(PROJECT_A, ["alpha"]));
-
+    // Suite defaults until the transport is switched off below.
     const rendered = renderSidebar(fake);
     try {
       await waitFor(() => expect(catalogKeys()).toEqual(["alpha"]));
@@ -458,12 +426,10 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
   });
 
   it("registers the first project from a project-refresh event and follows it", async () => {
-    const fake = new FakeTransport();
     let head: string | null = null;
+    // Case-specific: no projects yet; the report follows the nullable head.
     resolveSidebarTransport(fake, []);
-    fake.resolve(LIST_CMD, []);
     fake.onInvoke(REPORT_CMD, () => catalogReport(head, head ? ["alpha"] : []));
-    const setPrimary = vi.spyOn(codingAgentsStore, "setPrimaryProject");
 
     const rendered = renderSidebar(fake);
     try {
@@ -490,12 +456,7 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
   });
 
   it("disposes the observer and its listeners with App", async () => {
-    const fake = new FakeTransport();
-    resolveSidebarTransport(fake, [PROJECT_A, PROJECT_B]);
-    fake.resolve(LIST_CMD, []);
-    fake.onInvoke(REPORT_CMD, () => catalogReport(PROJECT_A, ["alpha"]));
-    const setPrimary = vi.spyOn(codingAgentsStore, "setPrimaryProject");
-
+    // Suite defaults: this case only needs a mounted, settled App.
     const rendered = renderSidebar(fake);
     try {
       await waitFor(() => expect(catalogKeys()).toEqual(["alpha"]));

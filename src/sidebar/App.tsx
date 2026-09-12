@@ -334,7 +334,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // untrack: this effect observes the project head, not the catalog store's
     // own generation, which setPrimaryProject both reads and writes.
     untrack(() => {
-      void codingAgentsStore.setPrimaryProject(head ? head : null);
+      void codingAgentsStore.setPrimaryProject(head || null);
     });
   });
 
