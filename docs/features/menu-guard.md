@@ -36,6 +36,8 @@ Three patterns ship, across exactly two stems:
 
 Those patterns live in `settings-blocking-menus.json`, under `byCommand`.
 
+At startup AC can also download the published pattern file from the Agents Commander repository. A downloaded file can update the patterns for a stem it names between app releases; a validated copy applies at the next start.
+
 **Every other stem ships nothing.** That includes Claude Code, Antigravity, and anything you added yourself. A legacy array still on the agent, or an entry in `settings-blocking-menus.local.json`, can still apply; the walkthrough below shows how.
 
 AC owns `settings-blocking-menus.json` and rewrites it at start whenever its content differs from the running version's embedded content, so edits there are lost.
@@ -126,30 +128,32 @@ Create `settings-blocking-menus.local.json` next to `settings.json` and add the 
 
 Start AgentsCommander, launch the agent, and trigger the dialog again. Within about a quarter of a second you get the toast and the row chip. If nothing happens, see [Troubleshooting](#troubleshooting).
 
-## The two files and their precedence
+## The three files and their precedence
 
-The patterns live in two files next to `settings.json`:
+The patterns live in three files next to `settings.json`:
 
 | File | Who writes it | When |
 |---|---|---|
 | `settings-blocking-menus.json` | AC | Rewritten at start whenever its content differs from the running version's embedded content, so edits there are lost. |
 | `settings-blocking-menus.local.json` | You | Read at start. AC writes it only when the upgrade migration runs, and that write adds `byAgent` rows without overwriting an existing one. |
+| `settings-blocking-menus.remote.json` | AC's startup download | Written only after the whole file passes validation; read and validated again at every start. |
 
-Both files share one shape: `schemaVersion` (must be `1`), an optional `note`, `byCommand` (keys are the lowercase executable stem, exact match) and `byAgent` (keys are agent ids). A `.local` file that is not an object, carries another `schemaVersion`, or gives the wrong type for `note`, `byCommand` or `byAgent` is ignored whole, with one error line in the log. The shipped file is never parsed at runtime: AC rewrites it from the binary's embedded copy at start and evaluates that embedded copy. An entry inside an array that AC cannot read is kept verbatim and skipped, as before.
+All three files share one shape: `schemaVersion` (must be `1`), an optional `note`, `byCommand` (keys are the lowercase executable stem, exact match) and `byAgent` (keys are agent ids); the remote file must also keep `byAgent` empty. A `.local` file that is not an object, carries another `schemaVersion`, or gives the wrong type for `note`, `byCommand` or `byAgent` is ignored whole, with one error line in the log. The remote file is validated whole on arrival and again at every start, including its entry, text and regex limits; any failed check rejects the file whole, never one entry, and the layers below it apply. The shipped file is never parsed at runtime: AC rewrites it from the binary's embedded copy at start and evaluates that embedded copy. An entry inside an array that AC cannot read is kept verbatim and skipped, as before.
 
 The guard picks one array per agent. The first layer that supplies one wins, replacing the layers below it whole:
 
 1. an array still on the agent: a legacy `blockingMenus` in `settings.json` that the migration could not move, or one inside an `agents` array owned by `settings.local.json`
 2. `byAgent[id]` in `.local`
 3. `byCommand[stem]` in `.local`
-4. `byCommand[stem]` in the shipped file
-5. otherwise nothing: the agent detects nothing
+4. `byCommand[stem]` in `settings-blocking-menus.remote.json`
+5. `byCommand[stem]` in the shipped file
+6. otherwise nothing: the agent detects nothing
 
-Use `byCommand` when the pattern should follow the command and reach every agent that runs it; use `byAgent` when it should follow one agent id. A `byAgent` row always beats a `byCommand` row.
+Use `byCommand` when the pattern should follow the command and reach every agent that runs it; use `byAgent` when it should follow one agent id. A `byAgent` row always beats a `byCommand` row. To override one downloaded pattern for a stem, own that stem in `.local` `byCommand`, because that array replaces the remote one whole.
 
-**Replace-whole has a cost.** A `byAgent.<id>` row in `.local` - written by hand or by the migration - freezes that agent against every future shipped pattern for its stem, because the row replaces the shipped array instead of adding to it. To keep shipped updates plus one extra pattern, keep the shipped entries in that row and revisit it after upgrades.
+**Replace-whole has a cost.** A `byAgent.<id>` row in `.local` - written by hand or by the migration - freezes that agent against every future shipped pattern for its stem, because the row replaces the shipped array instead of adding to it. A remote array replaces the shipped array the same way. To keep shipped updates plus one extra pattern, keep the shipped entries in that row and revisit it after upgrades.
 
-`menuGuardEnabled` is not part of either file. It stays a key in `settings.json`, and `settings.local.json` can still override it.
+`menuGuardEnabled` is not part of any of those files. It stays a key in `settings.json`, and `settings.local.json` can still override it.
 
 ## Turning the guard off
 
@@ -160,9 +164,10 @@ The scopes, smallest first:
 | Stop one pattern, keep the rest | `"enabled": false` on that entry, inside a `.local` array |
 | Stop every pattern for one agent | `"byAgent": {"<id>": []}` in `settings-blocking-menus.local.json` |
 | Stop every pattern for one command | `"byCommand": {"<stem>": []}` in `settings-blocking-menus.local.json` |
+| Override a downloaded pattern for one command | Write that stem in `.local` `byCommand`, with the entries you want to keep |
 | Stop the feature everywhere | `"menuGuardEnabled": false` at the root, or in the `settings.local.json` overlay |
 
-The first three forms live in `.local` and each is effective only when no higher layer supplies an array for that agent: a legacy array still on the agent wins over `.local`. To switch off one shipped entry with `"enabled": false`, copy that stem's shipped entries into your `.local` array first, because the `.local` array replaces the shipped array whole.
+The first four forms live in `.local` and each is effective only when no higher layer supplies an array for that agent: a legacy array still on the agent wins over `.local`. To switch off one shipped entry with `"enabled": false`, copy that stem's shipped entries into your `.local` array first, because the `.local` array replaces the shipped array whole. The download has its own switch: clear **Download blocking-menu pattern updates from GitHub** to stop future downloads. It stops downloads only, and a file already downloaded keeps applying until you delete `settings-blocking-menus.remote.json`.
 
 For a stem that ships nothing (Claude Code, Antigravity, ...), the durable off form is now `"byAgent": {"<id>": []}` in `.local`. A `[]` left in `settings.json` for such a stem is AC's own materialized default and is dropped by the migration.
 
@@ -200,15 +205,16 @@ AC retries on every settings load: every GUI start, every settings reload the ru
 | Key | What it controls |
 |---|---|
 | `menuGuardEnabled` | Root switch for the whole feature. `true` by default. With `false`, each tick clears any session the guard was holding and evaluates nothing. |
+| `remoteBlockingMenusEnabled` | Download the published blocking-menu patterns at startup, at most once per 24 h; they apply at the next start. `true` by default. Off stops the download only. |
 | `blockingMenus` | Legacy. Moved to `settings-blocking-menus.local.json` on the first start after upgrade; while still present it applies as before. |
 
-Two files next to `settings.json`, not keys in it, also control this feature: `settings-blocking-menus.json` (AC-owned, rewritten at start when it differs from the running version) and `settings-blocking-menus.local.json` (yours, read at start); see [Settings reference](../reference/settings.md#menu-guard) for their shape and precedence.
+Three files next to `settings.json`, not keys in it, also control this feature: `settings-blocking-menus.json` (AC-owned, rewritten at start when it differs from the running version), `settings-blocking-menus.local.json` (yours, read at start) and `settings-blocking-menus.remote.json` (downloaded, read and validated at start); see [Settings reference](../reference/settings.md#menu-guard) for their shape and precedence.
 
 See [Settings reference](../reference/settings.md#menu-guard) for the full `BlockingMenuConfig` shape, field by field.
 
 ## Troubleshooting
 
-**"My agent stalls on a dialog and AC says nothing."** Check whether your agent has any patterns at all. Only the `pi` and `codex` stems ship patterns; every other agent, Claude Code included, ships nothing. Add one, as in [Adding a pattern by hand](#adding-a-pattern-by-hand).
+**"My agent stalls on a dialog and AC says nothing."** Check whether your agent has any patterns at all. Only the `pi` and `codex` stems ship patterns; every other agent, Claude Code included, ships nothing, though a downloaded file may add patterns for more stems after a restart. Add one, as in [Adding a pattern by hand](#adding-a-pattern-by-hand).
 
 **"I added a pattern and it does nothing."** Five usual causes, in the order worth checking:
 

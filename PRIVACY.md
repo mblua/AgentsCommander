@@ -63,6 +63,18 @@ Agents Commander never captures an OS window, monitor, desktop, WebView, or unre
 - **Data disclosed**: Your IP address, the request time, and a `User-Agent` header of `agentscommander/<version>`. No account, no identifier, and no session content.
 - **Turn it off**: There is no setting for this request.
 
+### Remote Blocking-Menu Patterns
+
+**Automatic.** On startup, in a detached background task, Agents Commander downloads the published blocking-menu pattern file from the Agents Commander repository. The task never blocks or delays startup, and it is fail-silent: a rejected or failed download shows nothing — no toast, no notice — and a previously downloaded copy stays in place and keeps applying. A validated copy takes effect at the next start; the running app never reloads patterns.
+
+- **Endpoint**: `https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/blocking-menus/v1/settings-blocking-menus.json`
+- **When**: On startup. AC downloads at most once per 24 hours. The time of the last attempt is stored in `blocking-menus-remote-check.json` in your config directory, and every attempt counts, a failed or offline one included, so the next try is 24 hours later.
+- **Limits**: 10-second timeout covering the request and the response body, and the response body is capped at 64 KB.
+- **Validation**: The whole file is rejected, never one entry, when any check fails: an HTTP status other than 200, a body over 64 KB, invalid JSON, a `schemaVersion` other than 1, a non-empty `byAgent`, more than 200 entries, a pattern over 512 bytes, a notification over 200 bytes or containing a control character, a pattern that does not compile within its size limit, or a pattern matching an empty line or a built-in sample of ordinary terminal lines.
+- **Data disclosed**: Your IP address, the request time, and a `User-Agent` header of `agentscommander/<version>`. No account, no identifier, and no session content.
+- **Stored**: A file that passes every check is written to `settings-blocking-menus.remote.json` in your config directory, and only by the download. Its `note` records the source URL, the download time, and the source ref `main`. AC validates the stored copy again at every start; when it fails, AC ignores it (one warning line in the log) and the patterns shipped in the app apply.
+- **Turn it off**: Clear **Download blocking-menu pattern updates from GitHub** in **Settings > General**, or set `remoteBlockingMenusEnabled` to `false` in `settings.json` in your config directory. The setting is on by default. Turning it off stops the download only: a file already downloaded keeps applying until you delete `settings-blocking-menus.remote.json`.
+
 ### Coding-Agent Auto-Update
 
 **Automatic, opt-in.** When you allow auto-update for a registered coding agent, Agents Commander runs that agent's update command at every app startup. AC runs the command from your catalog; in the shipped catalog that command is the vendor's own CLI, and the CLI contacts its vendor. AC does not contact those vendors itself.
@@ -106,7 +118,7 @@ Agents Commander never captures an OS window, monitor, desktop, WebView, or unre
 - No crash reports
 - No fingerprinting or device identification
 - No data to Agents Commander developers or to any third party beyond the destinations described above
-- No session content, prompts, or terminal output in the npm update check, the Home panel request, the coding-agent update commands, the Agency template download, the Room repository clone, or the container image pull
+- No session content, prompts, or terminal output in the npm update check, the Home panel request, the blocking-menu pattern download, the coding-agent update commands, the Agency template download, the Room repository clone, or the container image pull
 - No terminal snapshot content to a third-party snapshot or rendering service
 
 ## Credential Storage

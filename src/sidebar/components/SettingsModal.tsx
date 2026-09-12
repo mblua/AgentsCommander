@@ -2136,6 +2136,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <input
             type="checkbox"
             class="settings-checkbox"
+            checked={settings.data!.remoteBlockingMenusEnabled}
+            onChange={(e) =>
+              updateField("remoteBlockingMenusEnabled", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.general.remoteBlockingMenusEnabled"
+          />
+          <span>Download blocking-menu pattern updates from GitHub</span>
+        </label>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
             checked={settings.data!.autoSelfClearEnabled}
             onChange={(e) =>
               updateField("autoSelfClearEnabled", e.currentTarget.checked)
