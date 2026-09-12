@@ -997,6 +997,7 @@ mod tests {
             // narrowness control, because it is a live rotated generation.
             "app.log.1",
             "app.log.5",
+            "blocking-menus-remote-check.json",
             "codex-home/agent-1/config.toml",
             // The nested sample proves the Dir row covers the `results/` subtree
             // in one rule.
