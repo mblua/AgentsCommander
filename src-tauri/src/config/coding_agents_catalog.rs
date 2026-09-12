@@ -23,18 +23,18 @@
 //! Seed model is **whole-file seed-once** (§14.1): write the embedded default iff
 //! `agents.json` is absent, then never touch it. A user who hand-removes a
 //! built-in has a *present* file, so the removal sticks (no re-seed path). A
-//! present-but-corrupt file is **never overwritten**; the command serves the
-//! embedded default in memory for that session (self-heal is a return value, not
-//! a disk write).
+//! present-but-corrupt file is **never overwritten**; since #1967 P4 the read
+//! path reports it as `baseInvalid` instead of serving the embedded default in
+//! memory.
 //!
 //! #1912 - code-level support switch for the built-in coding agents:
 //! `BUILTIN_AGENT_SUPPORT` below is the ONLY place a built-in is turned on or
-//! off. A `false` row is enforced by the READ GATE in `validate_and_filter` (the
-//! key disappears from every read path: embedded default, project and legacy
-//! manifests, backfill source) and by the SEED GATE on the embedded manifest
-//! bytes `ensure_seeded` writes and on the config-folder masters. Already-seeded
-//! user-owned files are NEVER rewritten or trimmed by a `false` row; the read
-//! gate covers them.
+//! off. A `false` row is enforced by the persisted READ GATE in the report
+//! resolver (the key disappears from every persisted read path: the project and
+//! legacy manifests; the embedded table is seed material only) and by the SEED GATE on
+//! the embedded manifest bytes `ensure_seeded` writes and on the config-folder
+//! masters. Already-seeded user-owned files are NEVER rewritten or trimmed by a
+//! `false` row; the read gate covers them.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,19 +61,20 @@ const CATALOG_SCHEMA_VERSION: u32 = 1;
 
 /// The embedded default catalog, authored byte-equal to the post-#766/#768
 /// frontend presets. This is the single source of truth AC ships; it is written
-/// to disk once (seed) and also served in memory when the on-disk file is missing
-/// or unparseable.
+/// to disk once (seed) and, since #1967 P4, is NEVER a runtime command donor:
+/// every read resolves the persisted file through the report resolver below and
+/// cannot fall back to these bytes.
 const EMBEDDED_DEFAULT_CATALOG_JSON: &str =
     include_str!("../../resources/coding-agents/agents.default.json");
 
 /// #1912 - the ONLY place a built-in coding agent is turned on or off. One row
 /// per key in `agents.default.json`, same order (a test pins both). `false` =
-/// de-supported: dropped by `validate_and_filter` on EVERY read path (embedded
-/// default, project manifest, legacy manifest, backfill source), omitted from
-/// the embedded bytes `ensure_seeded` writes, and its config-folder master is
-/// neither seeded nor re-seedable. Already-seeded files are never rewritten or
-/// trimmed; the read gate covers them. A key absent from this table (a
-/// user-authored entry) is always kept.
+/// de-supported: dropped by the persisted read gate on EVERY read path (the
+/// project and legacy persisted manifests; the embedded table is seed material
+/// only), omitted from the embedded bytes `ensure_seeded` writes, and its
+/// config-folder master is neither seeded nor re-seedable. Already-seeded files
+/// are never rewritten or trimmed; the read gate covers them. A key absent from
+/// this table (a user-authored entry) is always kept.
 pub(crate) const BUILTIN_AGENT_SUPPORT: &[(&str, bool)] = &[
     ("claude", true),
     ("codex", true),
@@ -170,8 +171,9 @@ fn manifest_path(ac_dir: &Path) -> PathBuf {
 /// Parse the compiled-in default catalog. The content is authored valid and a
 /// unit test guards it, so the error branch is unreachable in practice; it logs
 /// and returns an empty catalog rather than panicking (this runs on the boot and
-/// IPC paths). RAW and UNGATED by design: the seed and the tests read it; every
-/// consumer-facing read goes through `validate_and_filter`.
+/// IPC paths). RAW and UNGATED by design: seed material and test expectations
+/// only; every consumer-facing read goes through the persisted-only report
+/// resolver.
 pub(crate) fn embedded_default_catalog() -> CodingAgentCatalog {
     serde_json::from_str(EMBEDDED_DEFAULT_CATALOG_JSON).unwrap_or_else(|e| {
         log::error!("[coding-agents] embedded default catalog failed to parse: {e}");
@@ -261,142 +263,25 @@ pub(crate) fn with_builtin_agent_support_for_test<R>(
     f()
 }
 
-/// Validate entries per-entry (G7): a bad entry is logged and skipped, the valid
-/// rest are kept. Duplicate keys are dropped (first wins). `source` labels the
-/// origin in log lines (the manifest path, or the embedded default). #1912 read
-/// gate: a key with a `false` row in `BUILTIN_AGENT_SUPPORT` (the table in
-/// force) is dropped here too, whatever the file carries.
-fn validate_and_filter(
-    agents: Vec<CodingAgentDefinition>,
-    source: &str,
-) -> Vec<CodingAgentDefinition> {
-    let mut out: Vec<CodingAgentDefinition> = Vec::with_capacity(agents.len());
-    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let table = active_builtin_agent_support();
-    for def in agents {
-        if let Err(e) = validate_definition(&def) {
-            log::warn!("[coding-agents] skipping invalid entry in {source}: {e}");
-            continue;
-        }
-        if !seen_keys.insert(def.key.clone()) {
-            log::warn!(
-                "[coding-agents] skipping duplicate key '{}' in {source}",
-                def.key
-            );
-            continue;
-        }
-        if !is_supported_builtin(&def.key, table) {
-            log::info!(
-                "[coding-agents] skipping de-supported built-in '{}' in {source}",
-                def.key
-            );
-            continue;
-        }
-        out.push(def);
-    }
-    out
-}
-
-/// The embedded default, validated (defensive; also dedups). Used as the
-/// in-memory fallback when the on-disk manifest is missing or unparseable.
-/// #1912: a `false` row in `BUILTIN_AGENT_SUPPORT` is dropped here.
-fn validated_embedded_default() -> Vec<CodingAgentDefinition> {
-    validate_and_filter(
-        embedded_default_catalog().agents,
-        "embedded default catalog",
-    )
-}
-
-/// #1546 - in-memory backfill: for every entry whose `update_commands` is
-/// EMPTY, copy the sequence from the FIRST embedded-default entry with the
-/// same `command` and a non-empty sequence. Matching by `command` (not key),
-/// mirroring `build_update_plan`'s command-keyed binding rule. User-authored
-/// non-empty sequences ALWAYS win (never overwritten). Entries with no
-/// embedded match (custom commands, cursor's `agent`) stay empty. Never
-/// writes to disk: the catalog is user-owned after the first seed (G3).
-/// #1912: a de-supported built-in no longer donates its sequence.
-fn backfill_update_commands_from_embedded_default(
-    agents: Vec<CodingAgentDefinition>,
-) -> Vec<CodingAgentDefinition> {
-    let defaults = validated_embedded_default();
-    agents
-        .into_iter()
-        .map(|mut def| {
-            if !def.update_commands.is_empty() {
-                return def;
-            }
-            if let Some(src) = defaults
-                .iter()
-                .find(|d| d.command == def.command && !d.update_commands.is_empty())
-            {
-                def.update_commands = src.update_commands.clone();
-            }
-            def
-        })
-        .collect()
-}
-
-/// Load the catalog for the `get_coding_agent_catalog` command.
-///
-/// Contract (§14.2): NEVER errors. Returns the validated on-disk agents when the
-/// manifest parses; a valid empty list is honored verbatim (the user removed all
-/// built-ins). On the parsed path, entries with empty `updateCommands` are
-/// backfilled IN MEMORY from the embedded default (first entry with the same
-/// `command` and a non-empty sequence); user-authored sequences always win;
-/// nothing is written to disk. A **missing** or **unparseable** manifest
-/// self-heals to the embedded default IN MEMORY only, never writing to disk
-/// (G3 corrupt-preserve). #1912: a `false` row in `BUILTIN_AGENT_SUPPORT` is
-/// dropped on every read path here - embedded default, parsed manifest, and
-/// legacy read alike.
-/// `ac_dir` is the project's `.ac` directory (or, for the legacy read fallback,
-/// the legacy config dir, which yields `<config_dir>/coding-agents/agents.json`
-/// through the same relative layout).
-///
-/// Bounded handoff (#1963 P1): this array-returning loader remains temporary
-/// compatibility code until the managed-catalog migration lands; P4 (#1967)
-/// removes it together with `load_catalog_for_settings`. New diagnostics go
-/// through `load_catalog_report` below.
-pub fn load_catalog(ac_dir: &Path) -> Vec<CodingAgentDefinition> {
-    let path = manifest_path(ac_dir);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            log::info!(
-                "[coding-agents] {} absent; serving embedded default catalog",
-                path.display()
-            );
-            return validated_embedded_default();
-        }
-        Err(e) => {
-            log::warn!(
-                "[coding-agents] failed to read {} ({e}); serving embedded default catalog",
-                path.display()
-            );
-            return validated_embedded_default();
-        }
-    };
-    match serde_json::from_slice::<CodingAgentCatalog>(&bytes) {
-        Ok(catalog) => backfill_update_commands_from_embedded_default(validate_and_filter(
-            catalog.agents,
-            &path.display().to_string(),
-        )),
-        Err(e) => {
-            // G3: never overwrite a present-but-corrupt file. Preserve it as-is
-            // and serve the built-in defaults for this session only.
-            log::warn!(
-                "[coding-agents] {} is not valid catalog JSON ({e}); preserving the file untouched and using built-in defaults for this session",
-                path.display()
-            );
-            validated_embedded_default()
-        }
-    }
+/// #1967 P4 - the array-returning read adapter over the persisted-only report.
+/// `Ok` carries the validated persisted definitions exactly as the report
+/// selected them (a valid empty list is honored verbatim: the user removed all
+/// built-ins); `Err` carries the report's unavailability diagnostic (code +
+/// path + reason). The embedded default is NEVER substituted on this path and
+/// nothing is written, seeded or created. Every report warning is logged so
+/// array consumers get the same diagnostics the report IPC carries
+/// structurally. `ac_dir` is the project's `.ac` directory (or, in
+/// no-project mode, the legacy config dir, which yields
+/// `<config_dir>/coding-agents/agents.json` through the same relative layout).
+pub fn load_catalog(ac_dir: &Path) -> Result<Vec<CodingAgentDefinition>, CatalogUnavailable> {
+    load_catalog_report(ac_dir).into_result()
 }
 
 /// The first non-empty trimmed entry of `project_paths`, else the legacy
 /// `project_path` (non-empty trimmed), else `None`. Single deterministic head
 /// rule, mirroring the canonical `selected_head: project_paths.first()`
-/// semantics (`settings.rs`). No canonicalization: a stale raw path simply
-/// self-heals at read time (absent file -> embedded default, absent dir ->
+/// semantics (`settings.rs`). No canonicalization: a stale raw path is reported
+/// as `baseUnavailable` at read time (absent file -> unavailable, absent dir ->
 /// fail-soft seed skip). Archived projects are never the primary.
 pub(crate) fn primary_project_root(settings: &AppSettings) -> Option<PathBuf> {
     for entry in &settings.project_paths {
@@ -440,23 +325,30 @@ pub(crate) fn registered_project_roots(settings: &AppSettings) -> Vec<PathBuf> {
 
 /// The catalog read root for the UI/CLI read commands. With a primary project
 /// root the primary project's `.ac/coding-agents` catalog is served and the
-/// legacy location is NEVER consulted (a user who deletes the primary file to
-/// reset gets the embedded default, not the legacy copy). With NO registered
-/// project the LEGACY `<config_dir>/coding-agents` catalog is served when one
-/// exists (read-only, never written; pre-migration installs with zero projects
-/// keep today's read behavior), self-healing to the embedded default when
-/// absent/unparseable.
+/// legacy location is NEVER consulted (a user who deletes the primary file gets
+/// `baseUnavailable`, never the legacy copy or the embedded default). With NO
+/// registered project the LEGACY `<config_dir>/coding-agents` catalog is served
+/// when one exists (read-only, never written; pre-migration installs with zero
+/// projects keep today's read behavior); an absent instance catalog is
+/// `baseUnavailable`, never the embedded default.
 ///
-/// Bounded handoff (#1963 P1): temporary compatibility code, removed in
-/// P4 (#1967); `load_catalog_report_for_settings` below is the persisted-only
-/// diagnostic resolver that P5 (#1968) extends.
-pub fn load_catalog_for_settings(settings: &AppSettings) -> Vec<CodingAgentDefinition> {
-    match primary_project_root(settings) {
-        Some(root) => load_catalog(&root.join(".ac")),
-        None => crate::config::config_dir()
-            .map(|dir| load_catalog(&dir))
-            .unwrap_or_else(validated_embedded_default),
-    }
+/// #1967 P4 - Result adapter over `load_catalog_report_for_settings`: one
+/// settings snapshot selects the root and the untouched report drives both the
+/// selection and the diagnostics. P5 (#1968) extends the resolver behind this
+/// same adapter.
+pub fn load_catalog_for_settings(
+    settings: &AppSettings,
+) -> Result<Vec<CodingAgentDefinition>, CatalogUnavailable> {
+    load_catalog_for_settings_with_config_dir(settings, crate::config::config_dir())
+}
+
+/// Testable twin of [`load_catalog_for_settings`] with the resolved config dir
+/// injected, mirroring `load_catalog_report_for_settings_with_config_dir`.
+fn load_catalog_for_settings_with_config_dir(
+    settings: &AppSettings,
+    config_dir: Option<PathBuf>,
+) -> Result<Vec<CodingAgentDefinition>, CatalogUnavailable> {
+    load_catalog_report_for_settings_with_config_dir(settings, config_dir).into_result()
 }
 
 // ---------------------------------------------------------------------------
@@ -471,8 +363,9 @@ pub fn load_catalog_for_settings(settings: &AppSettings) -> Vec<CodingAgentDefin
 // support filters the array endpoint applies, plus visible diagnostics.
 //
 // P5 (#1968) extends this same resolver to compose the local layer; the wire
-// shape below stays fixed. The existing array endpoint and updater keep their
-// current behavior until P4 (#1967).
+// shape below stays fixed. Since P4 (#1967) the array endpoints and the updater
+// resolve through the SAME resolver via `CatalogReport::into_result`, so they
+// can never disagree with the report about availability.
 // ---------------------------------------------------------------------------
 
 /// Diagnostic codes of the persisted-catalog report. The `code` field is a
@@ -532,6 +425,65 @@ pub struct CatalogReport {
     pub catalog: Vec<CodingAgentDefinition>,
     pub warnings: Vec<CatalogDiagnostic>,
     pub unavailable: Option<CatalogDiagnostic>,
+}
+
+impl CatalogReport {
+    /// #1967 P4 - the array-shaped view of this report, shared by every array
+    /// consumer (CLI, Tauri command, WebSocket, updater). Every warning is
+    /// logged (the report IPC carries the same records structurally), a readable
+    /// catalog - including a valid empty one - becomes `Ok`, and `unavailable`
+    /// becomes the typed error instead of an empty success.
+    pub fn into_result(self) -> Result<Vec<CodingAgentDefinition>, CatalogUnavailable> {
+        for warning in &self.warnings {
+            log::warn!(
+                "[coding-agents] {} at {}: {}",
+                warning.code,
+                warning.path,
+                warning.reason
+            );
+        }
+        match self.unavailable {
+            Some(unavailable) => Err(unavailable.into()),
+            None => Ok(self.catalog),
+        }
+    }
+}
+
+/// #1967 P4 - the typed unavailability of an array-shaped catalog read: the
+/// report's diagnostic (stable code, affected path, sanitized reason) as an
+/// error. `Display` renders `catalog unavailable (code) at path: reason`; the
+/// CLI and IPC boundaries stringify it, so code/path/reason survive intact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogUnavailable {
+    pub code: String,
+    pub path: String,
+    pub reason: String,
+}
+
+impl std::fmt::Display for CatalogUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.path.is_empty() {
+            write!(f, "catalog unavailable ({}): {}", self.code, self.reason)
+        } else {
+            write!(
+                f,
+                "catalog unavailable ({}) at {}: {}",
+                self.code, self.path, self.reason
+            )
+        }
+    }
+}
+
+impl std::error::Error for CatalogUnavailable {}
+
+impl From<CatalogDiagnostic> for CatalogUnavailable {
+    fn from(diagnostic: CatalogDiagnostic) -> Self {
+        Self {
+            code: diagnostic.code,
+            path: diagnostic.path,
+            reason: diagnostic.reason,
+        }
+    }
 }
 
 fn catalog_diagnostic(code: &str, path: &Path, reason: impl Into<String>) -> CatalogDiagnostic {
@@ -952,8 +904,8 @@ fn embedded_seed_bytes() -> Vec<u8> {
 /// the legacy `<config_dir>/coding-agents` directory (the migration source). On
 /// a first seed with the project file ABSENT and a legacy REGULAR-file catalog
 /// present, the legacy bytes are copied VERBATIM (a present-but-corrupt legacy
-/// file is copied too: corrupt content is user data, the read path self-heals;
-/// the legacy original is never touched). Any other legacy shape (absent,
+/// file is copied too: corrupt content is user data and the copy keeps it byte
+/// for byte; the legacy original is never touched). Any other legacy shape (absent,
 /// dir/symlink) seeds the embedded default, whose bytes are the ENABLED rows of
 /// `BUILTIN_AGENT_SUPPORT` only (`embedded_seed_bytes`; byte-identical to the
 /// raw resource while every row is `true`). #1912: a `false` row never rewrites
@@ -1853,29 +1805,34 @@ mod tests {
     }
 
     #[test]
-    fn load_missing_manifest_returns_embedded_default() {
+    fn load_missing_manifest_is_unavailable_without_seeding() {
+        // #1967 P4: a missing persisted catalog is unavailable; the embedded
+        // default is NOT substituted and nothing is created on disk.
         let dir = seed_dir();
-        let agents = load_catalog(dir.path());
-        assert_eq!(agents.len(), 8);
-        assert_eq!(agents.last().unwrap().key, "muse");
-        assert_eq!(agents[0].key, "claude");
+        let unavailable = load_catalog(dir.path()).expect_err("absent catalog is unavailable");
+        assert_eq!(unavailable.code, "baseUnavailable");
+        assert_eq!(
+            unavailable.path,
+            manifest_path(dir.path()).display().to_string()
+        );
+        assert!(unavailable.reason.contains("no persisted catalog"));
+        assert!(
+            !catalog_dir(dir.path()).exists(),
+            "a catalog read must never create the catalog directory"
+        );
     }
 
     #[test]
-    fn load_corrupt_manifest_returns_embedded_and_preserves_file() {
+    fn load_corrupt_manifest_is_base_invalid_and_preserves_file() {
         let dir = seed_dir();
         let path = manifest_path(dir.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let garbage = b"{ this is not valid json";
         std::fs::write(&path, garbage).unwrap();
 
-        let agents = load_catalog(dir.path());
-        assert_eq!(
-            agents.len(),
-            8,
-            "corrupt file self-heals to embedded default"
-        );
-        assert_eq!(agents.last().unwrap().key, "muse");
+        let unavailable = load_catalog(dir.path()).expect_err("corrupt catalog is unavailable");
+        assert_eq!(unavailable.code, "baseInvalid");
+        assert_eq!(unavailable.path, path.display().to_string());
         // G3: the corrupt file is preserved byte-for-byte, never overwritten.
         assert_eq!(std::fs::read(&path).unwrap(), garbage);
     }
@@ -1894,7 +1851,7 @@ mod tests {
         ]"##;
         std::fs::write(&path, manifest_json(agents)).unwrap();
 
-        let loaded = load_catalog(dir.path());
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
         let keys: Vec<&str> = loaded.iter().map(|a| a.key.as_str()).collect();
         assert_eq!(keys, ["claude", "mine"]);
     }
@@ -1910,7 +1867,7 @@ mod tests {
         ]"##;
         std::fs::write(&path, manifest_json(agents)).unwrap();
 
-        let loaded = load_catalog(dir.path());
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].label, "First");
     }
@@ -1924,7 +1881,9 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, manifest_json("[]")).unwrap();
 
-        assert!(load_catalog(dir.path()).is_empty());
+        assert!(load_catalog(dir.path())
+            .expect("persisted catalog")
+            .is_empty());
     }
 
     #[test]
@@ -1935,7 +1894,7 @@ mod tests {
 
         ensure_seeded(dir.path(), None);
         assert!(path.exists(), "seed writes the manifest when absent");
-        assert_eq!(load_catalog(dir.path()).len(), 8);
+        assert_eq!(load_catalog(dir.path()).expect("seeded catalog").len(), 8);
 
         // Idempotent + never clobbers a user edit: hand-edit to a single custom
         // agent, re-seed, and confirm the edit is preserved.
@@ -1945,7 +1904,7 @@ mod tests {
         std::fs::write(&path, &custom).unwrap();
         ensure_seeded(dir.path(), None);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), custom);
-        let loaded = load_catalog(dir.path());
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].key, "mine");
     }
@@ -2168,18 +2127,18 @@ mod tests {
         let project = seed_dir();
         let legacy = legacy_dir();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 8);
+        assert_eq!(load_catalog(project.path()).expect("seeded").len(), 8);
 
         // Legacy agents.json is a DIRECTORY -> not a regular file -> embedded.
         let project = seed_dir();
         std::fs::create_dir_all(legacy.path().join("agents.json")).unwrap();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 8);
+        assert_eq!(load_catalog(project.path()).expect("seeded").len(), 8);
 
         // No legacy at all -> embedded default.
         let project = seed_dir();
         ensure_seeded(project.path(), None);
-        assert_eq!(load_catalog(project.path()).len(), 8);
+        assert_eq!(load_catalog(project.path()).expect("seeded").len(), 8);
     }
 
     #[test]
@@ -2303,7 +2262,7 @@ mod tests {
     }
 
     #[test]
-    fn load_catalog_for_settings_primary_wins_and_self_heals() {
+    fn load_catalog_for_settings_primary_wins_and_never_falls_back() {
         let primary = seed_dir();
         let ac_dir = primary.path().join(".ac");
         let settings = AppSettings {
@@ -2311,8 +2270,16 @@ mod tests {
             ..AppSettings::default()
         };
 
-        // Primary file absent -> embedded default (self-heal).
-        assert_eq!(load_catalog_for_settings(&settings).len(), 8);
+        // Primary file absent -> unavailable: never an embedded default, never
+        // the legacy instance copy.
+        let unavailable = load_catalog_for_settings(&settings)
+            .expect_err("absent primary is unavailable, never a self-heal");
+        assert_eq!(unavailable.code, "baseUnavailable");
+        assert_eq!(
+            unavailable.path,
+            manifest_path(&ac_dir).display().to_string()
+        );
+        assert!(!catalog_dir(&ac_dir).exists());
 
         // Hand-edited primary file is observable (primary wins over everything).
         let custom = manifest_json(
@@ -2320,13 +2287,172 @@ mod tests {
         );
         std::fs::create_dir_all(manifest_path(&ac_dir).parent().unwrap()).unwrap();
         std::fs::write(manifest_path(&ac_dir), &custom).unwrap();
-        let loaded = load_catalog_for_settings(&settings);
+        let loaded = load_catalog_for_settings(&settings).expect("persisted primary catalog");
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].key, "custom");
 
-        // Primary file DELETED -> embedded default, never a legacy copy.
+        // Primary file DELETED -> unavailable again, never a legacy copy.
         std::fs::remove_file(manifest_path(&ac_dir)).unwrap();
-        assert_eq!(load_catalog_for_settings(&settings).len(), 8);
+        let unavailable =
+            load_catalog_for_settings(&settings).expect_err("deleted primary is unavailable");
+        assert_eq!(unavailable.code, "baseUnavailable");
+    }
+
+    #[test]
+    fn load_catalog_unavailable_display_carries_code_path_and_reason() {
+        let dir = seed_dir();
+        let unavailable = load_catalog(dir.path()).expect_err("absent catalog");
+        let rendered = unavailable.to_string();
+        assert!(rendered.contains("baseUnavailable"), "{rendered}");
+        assert!(
+            rendered.contains(&manifest_path(dir.path()).display().to_string()),
+            "{rendered}"
+        );
+        assert!(rendered.contains("no persisted catalog"), "{rendered}");
+        assert_eq!(
+            rendered,
+            format!(
+                "catalog unavailable (baseUnavailable) at {}: {}",
+                unavailable.path, unavailable.reason
+            )
+        );
+    }
+
+    #[test]
+    fn load_catalog_for_settings_two_projects_switch_order_and_isolation() {
+        let alpha = seed_dir();
+        let beta = seed_dir();
+        write_report_manifest(
+            &alpha.path().join(".ac"),
+            &manifest_json(
+                r##"[{"key":"alpha-sentinel","label":"Alpha","description":"d","color":"#111","command":"alpha-sentinel","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["alpha update"]}]"##,
+            ),
+        );
+        write_report_manifest(
+            &beta.path().join(".ac"),
+            &manifest_json(
+                r##"[{"key":"beta-sentinel","label":"Beta","description":"d","color":"#222","command":"beta-sentinel","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["beta update"]}]"##,
+            ),
+        );
+        let alpha_path = alpha.path().to_string_lossy().to_string();
+        let beta_path = beta.path().to_string_lossy().to_string();
+
+        let settings = AppSettings {
+            project_paths: vec![alpha_path.clone(), beta_path.clone()],
+            ..AppSettings::default()
+        };
+        let loaded =
+            load_catalog_for_settings_with_config_dir(&settings, None).expect("alpha catalog");
+        assert_eq!(keys_of(&loaded), ["alpha-sentinel"]);
+
+        // Switch order: the first entry is primary and nothing is merged in.
+        let switched = AppSettings {
+            project_paths: vec![beta_path.clone(), alpha_path.clone()],
+            ..AppSettings::default()
+        };
+        let loaded =
+            load_catalog_for_settings_with_config_dir(&switched, None).expect("beta catalog");
+        assert_eq!(keys_of(&loaded), ["beta-sentinel"]);
+
+        // A failing primary never falls back to the second project.
+        let missing = seed_dir();
+        let failed = AppSettings {
+            project_paths: vec![
+                missing.path().to_string_lossy().to_string(),
+                alpha_path.clone(),
+            ],
+            ..AppSettings::default()
+        };
+        let unavailable = load_catalog_for_settings_with_config_dir(&failed, None)
+            .expect_err("failing primary is unavailable");
+        assert_eq!(unavailable.code, "baseUnavailable");
+        assert_eq!(
+            unavailable.path,
+            manifest_path(&missing.path().join(".ac"))
+                .display()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn load_catalog_for_settings_project_path_fallback_and_no_project_instance() {
+        let project = seed_dir();
+        write_report_manifest(
+            &project.path().join(".ac"),
+            &manifest_json(
+                r##"[{"key":"legacy-root","label":"Legacy root","description":"d","color":"#111","command":"legacy-root","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["legacy-root update"]}]"##,
+            ),
+        );
+        let settings = AppSettings {
+            project_paths: vec!["   ".to_string()],
+            project_path: Some(format!("  {}  ", project.path().display())),
+            ..AppSettings::default()
+        };
+        let loaded = load_catalog_for_settings_with_config_dir(&settings, None)
+            .expect("trimmed legacy project_path catalog");
+        assert_eq!(keys_of(&loaded), ["legacy-root"]);
+
+        // No-project mode reads the existing instance catalog read-only.
+        let instance = seed_dir();
+        write_report_manifest(
+            instance.path(),
+            &manifest_json(
+                r##"[{"key":"instance","label":"Instance","description":"d","color":"#111","command":"instance","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["instance update"]}]"##,
+            ),
+        );
+        let before = std::fs::read(manifest_path(instance.path())).unwrap();
+        let loaded = load_catalog_for_settings_with_config_dir(
+            &AppSettings::default(),
+            Some(instance.path().to_path_buf()),
+        )
+        .expect("instance catalog");
+        assert_eq!(keys_of(&loaded), ["instance"]);
+        assert_eq!(
+            std::fs::read(manifest_path(instance.path())).unwrap(),
+            before
+        );
+
+        // Absent instance catalog: unavailable, never another project, and
+        // repeated reads create nothing.
+        let absent = seed_dir();
+        for _ in 0..2 {
+            let unavailable = load_catalog_for_settings_with_config_dir(
+                &AppSettings::default(),
+                Some(absent.path().to_path_buf()),
+            )
+            .expect_err("absent instance catalog");
+            assert_eq!(unavailable.code, "baseUnavailable");
+        }
+        assert!(!catalog_dir(absent.path()).exists());
+
+        // Unresolvable config dir: unavailable with an empty path.
+        let unavailable = load_catalog_for_settings_with_config_dir(&AppSettings::default(), None)
+            .expect_err("unresolvable config dir");
+        assert_eq!(unavailable.code, "baseUnavailable");
+        assert!(unavailable.path.is_empty());
+    }
+
+    #[test]
+    fn load_catalog_keeps_valid_entry_while_warning_about_a_legacy_one() {
+        // A migrationPending warning never blocks usable persisted commands.
+        let dir = seed_dir();
+        write_report_manifest(
+            dir.path(),
+            &manifest_json(
+                r##"[{"key":"legacy","label":"Legacy","description":"d","color":"#111","command":"legacy","envs":[],"isolatedHome":false,"removable":true},
+                 {"key":"fresh","label":"Fresh","description":"d","color":"#222","command":"fresh","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["fresh update"]}]"##,
+            ),
+        );
+
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
+        assert_eq!(keys_of(&loaded), ["legacy", "fresh"]);
+        assert!(loaded[0].update_commands.is_empty());
+        assert_eq!(loaded[1].update_commands, vec!["fresh update".to_string()]);
+
+        let report = report_for(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(report.warnings[0].code, "migrationPending");
     }
 
     #[test]
@@ -2372,7 +2498,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_catalog_corrupt_is_copied_verbatim_and_reads_self_heal() {
+    fn legacy_catalog_corrupt_is_copied_verbatim_and_reads_as_base_invalid() {
         let project = seed_dir();
         let legacy = legacy_dir();
         let garbage = b"{ this is not valid json".to_vec();
@@ -2385,12 +2511,23 @@ mod tests {
             garbage,
             "corrupt legacy content is user data and is copied verbatim"
         );
-        // The read path self-heals to the embedded default in memory.
-        assert_eq!(load_catalog(project.path()).len(), 8);
-        // Recovery: deleting the project file re-seeds the embedded default.
+        // #1967 P4: the corrupt persisted file is reported, it does NOT self-heal
+        // to the embedded default, and its bytes are preserved.
+        let unavailable = load_catalog(project.path()).expect_err("corrupt catalog");
+        assert_eq!(unavailable.code, "baseInvalid");
+        assert_eq!(std::fs::read(&project_file).unwrap(), garbage);
+
+        // Recovery: with the corrupt legacy source removed, deleting the project
+        // file re-seeds the embedded default, which reads normally.
+        std::fs::remove_file(legacy.path().join("agents.json")).unwrap();
         std::fs::remove_file(&project_file).unwrap();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 8);
+        assert_eq!(
+            load_catalog(project.path())
+                .expect("re-seeded catalog")
+                .len(),
+            8
+        );
     }
 
     #[test]
@@ -2475,7 +2612,7 @@ mod tests {
         let dir = seed_dir();
         std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
         std::fs::write(manifest_path(dir.path()), json).unwrap();
-        let loaded = load_catalog(dir.path());
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
         assert_eq!(loaded[0].update_commands.len(), 0);
         assert!(!loaded[0].auto_update);
 
@@ -2491,57 +2628,41 @@ mod tests {
     }
 
     #[test]
-    fn load_catalog_backfills_empty_update_commands_from_embedded_default() {
+    fn load_catalog_never_invents_update_commands_for_legacy_entries() {
         // A catalog seeded before the update-command era (#1325) carries no
-        // updateCommands; load_catalog backfills them IN MEMORY from the
-        // embedded default, matching by command, and never writes the file.
+        // updateCommands. #1967 P4: nothing is backfilled in memory - the
+        // commands stay empty until the P5 migration persists defaults - the
+        // persisted bytes are untouched, and the report explains the pending
+        // migration per entry.
         let json = manifest_json(
             r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true},
-             {"key":"pi","label":"Pi","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true},
-             {"key":"codex","label":"Codex","description":"d","color":"#10b981","command":"codex","envs":[],"isolatedHome":false,"removable":true},
-             {"key":"hermes","label":"Hermes","description":"d","color":"#8b5cf6","command":"hermes","envs":[],"isolatedHome":false,"removable":true},
-             {"key":"opencode","label":"OpenCode","description":"d","color":"#64748b","command":"opencode","envs":[],"isolatedHome":false,"removable":true},
-             {"key":"antigravity","label":"Antigravity","description":"d","color":"#4285F4","command":"agy","envs":[],"isolatedHome":false,"removable":true}]"##,
+             {"key":"pi","label":"Pi","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true}]"##,
         );
         let dir = seed_dir();
         std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
         std::fs::write(manifest_path(dir.path()), &json).unwrap();
 
-        let loaded = load_catalog(dir.path());
-        assert_eq!(loaded.len(), 6);
-        let by_key = |key: &str| loaded.iter().find(|d| d.key == key).unwrap();
-        assert_eq!(
-            by_key("claude").update_commands,
-            vec!["claude --update".to_string()]
-        );
-        assert_eq!(by_key("pi").update_commands, vec!["pi update".to_string()]);
-        assert_eq!(
-            by_key("codex").update_commands,
-            vec!["codex update".to_string()]
-        );
-        assert_eq!(
-            by_key("hermes").update_commands,
-            vec!["hermes update --yes".to_string()]
-        );
-        assert_eq!(
-            by_key("opencode").update_commands,
-            vec!["opencode upgrade".to_string()]
-        );
-        assert_eq!(
-            by_key("antigravity").update_commands,
-            vec!["agy update".to_string()]
-        );
-
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded.iter().all(|def| def.update_commands.is_empty()));
         // No-write proof: the manifest bytes are identical before/after the load.
         assert_eq!(
             std::fs::read(manifest_path(dir.path())).unwrap(),
             json.as_bytes()
         );
+
+        let report = report_for(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.warnings.len(), 2);
+        assert!(report
+            .warnings
+            .iter()
+            .all(|warning| warning.code == "migrationPending"));
     }
 
     #[test]
-    fn load_catalog_never_overwrites_user_update_commands() {
-        // User-authored non-empty sequences ALWAYS win, even a one-element one.
+    fn load_catalog_preserves_persisted_update_commands() {
+        // User-authored sequences are data: they are served exactly as written.
         let json = manifest_json(
             r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["claude --custom"]}]"##,
         );
@@ -2549,17 +2670,21 @@ mod tests {
         std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
         std::fs::write(manifest_path(dir.path()), &json).unwrap();
 
-        let loaded = load_catalog(dir.path());
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
         assert_eq!(
             loaded[0].update_commands,
             vec!["claude --custom".to_string()]
         );
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            json.as_bytes()
+        );
     }
 
     #[test]
-    fn load_catalog_backfill_no_embedded_match_leaves_entry_intact() {
-        // Custom command `bob` has no embedded match -> stays empty (never
-        // prompted nor updated), unchanged behavior.
+    fn load_catalog_custom_command_without_sequence_stays_empty() {
+        // Custom command `bob` has no persisted sequence -> stays empty (never
+        // prompted nor updated). No embedded table is consulted.
         let json = manifest_json(
             r##"[{"key":"bob","label":"Bob","description":"d","color":"#333","command":"bob","envs":[],"isolatedHome":false,"removable":true}]"##,
         );
@@ -2567,16 +2692,16 @@ mod tests {
         std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
         std::fs::write(manifest_path(dir.path()), &json).unwrap();
 
-        let loaded = load_catalog(dir.path());
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
         assert_eq!(loaded.len(), 1);
         assert!(loaded[0].update_commands.is_empty());
     }
 
     #[test]
-    fn load_catalog_backfill_matches_by_command_for_duplicate_commands() {
-        // Two profiles share the `pi` command under different keys; both are
-        // backfilled per-entry, consistent with build_update_plan's
-        // command-keyed binding rule.
+    fn load_catalog_duplicate_commands_keep_their_own_entries() {
+        // Two profiles share the `pi` command under different keys; the persisted
+        // data is served per entry. The effective (first) entry rule lives in
+        // `agent_update`, which never borrows the second entry's sequence.
         let json = manifest_json(
             r##"[{"key":"pi","label":"Pi","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true},
              {"key":"pi-max","label":"Pi Max","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true}]"##,
@@ -2585,21 +2710,17 @@ mod tests {
         std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
         std::fs::write(manifest_path(dir.path()), &json).unwrap();
 
-        let loaded = load_catalog(dir.path());
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].update_commands, vec!["pi update".to_string()]);
-        assert_eq!(loaded[1].update_commands, vec!["pi update".to_string()]);
+        assert!(loaded.iter().all(|def| def.update_commands.is_empty()));
     }
 
     #[test]
-    fn load_catalog_backfill_mixed_duplicates_first_empty_second_custom() {
-        // Mixed duplicate commands: the FIRST `pi` entry is empty -> backfilled;
-        // the SECOND keeps its custom sequence UNTOUCHED (data-level never
-        // overwritten). build_update_plan's first-non-empty `find` then selects
-        // the FIRST entry's sequence for command `pi` - the backfilled
-        // ["pi update"] wins over the custom one (pre-existing command-keyed
-        // first-wins rule; before the backfill the find skipped the empty first
-        // entry and used the custom sequence).
+    fn load_catalog_mixed_duplicate_sequences_keep_persisted_values() {
+        // Data-level preservation: the FIRST `pi` entry stays empty and the
+        // SECOND keeps its custom sequence untouched. The read never rewrites
+        // one entry from another (the effective first-entry rule is applied by
+        // the updater, not by the read).
         let json = manifest_json(
             r##"[{"key":"pi","label":"Pi","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true},
              {"key":"pi-max","label":"Pi Max","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["pi --custom"]}]"##,
@@ -2608,9 +2729,9 @@ mod tests {
         std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
         std::fs::write(manifest_path(dir.path()), &json).unwrap();
 
-        let loaded = load_catalog(dir.path());
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].update_commands, vec!["pi update".to_string()]);
+        assert!(loaded[0].update_commands.is_empty());
         assert_eq!(loaded[1].update_commands, vec!["pi --custom".to_string()]);
     }
 
@@ -2679,28 +2800,31 @@ mod tests {
     fn support_override_scopes_to_closure_and_restores_shipped_table() {
         // R3: the override reaches load_catalog and restores the shipped table.
         let dir = seed_dir();
-        let before = load_catalog(dir.path());
+        ensure_seeded(dir.path(), None);
+        let before = load_catalog(dir.path()).expect("seeded catalog");
         assert_eq!(before.len(), 8);
         assert!(before.iter().any(|a| a.key == "muse"));
 
         with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
-            let inside = load_catalog(dir.path());
+            let inside = load_catalog(dir.path()).expect("seeded catalog");
             assert_eq!(inside.len(), 7);
             assert_no_key(&inside, "muse");
         });
 
-        let after = load_catalog(dir.path());
+        let after = load_catalog(dir.path()).expect("seeded catalog");
         assert_eq!(after.len(), 8);
         assert!(after.iter().any(|a| a.key == "muse"));
     }
 
     #[test]
-    fn desupported_row_dropped_from_embedded_self_heal_paths() {
-        // R4: missing and corrupt manifests self-heal to the embedded default
-        // with the de-supported row dropped; the corrupt file is preserved.
+    fn desupported_row_dropped_from_seeded_manifest_and_corrupt_is_unavailable() {
+        // R4 + #1967 P4: the read gate drops a de-supported row from a seeded
+        // manifest; a corrupt persisted file is `baseInvalid` (no self-heal) and
+        // its bytes are preserved.
         with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
             let dir = seed_dir();
-            let agents = load_catalog(dir.path());
+            ensure_seeded(dir.path(), None);
+            let agents = load_catalog(dir.path()).expect("seeded catalog");
             assert_eq!(agents.len(), 7);
             assert_no_key(&agents, "muse");
             assert_eq!(agents[0].key, "claude");
@@ -2710,9 +2834,8 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             let garbage = b"{ this is not valid json";
             std::fs::write(&path, garbage).unwrap();
-            let agents = load_catalog(dir.path());
-            assert_eq!(agents.len(), 7);
-            assert_no_key(&agents, "muse");
+            let unavailable = load_catalog(dir.path()).expect_err("corrupt catalog is unavailable");
+            assert_eq!(unavailable.code, "baseInvalid");
             assert_eq!(std::fs::read(&path).unwrap(), garbage);
         });
     }
@@ -2731,7 +2854,7 @@ mod tests {
         let dir = seed_dir();
         std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
         std::fs::write(manifest_path(dir.path()), manifest_json(agents)).unwrap();
-        let loaded = load_catalog(dir.path());
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
         assert_eq!(keys_of(&loaded), ["muse", "mine"]);
         assert_eq!(loaded[0].label, "First");
 
@@ -2739,7 +2862,7 @@ mod tests {
             let dir = seed_dir();
             std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
             std::fs::write(manifest_path(dir.path()), manifest_json(agents)).unwrap();
-            let loaded = load_catalog(dir.path());
+            let loaded = load_catalog(dir.path()).expect("persisted catalog");
             assert_eq!(keys_of(&loaded), ["mine"]);
             assert_eq!(loaded[0].command, "muse");
         });
@@ -2748,7 +2871,7 @@ mod tests {
     #[test]
     fn desupported_row_dropped_from_load_catalog_for_settings_primary() {
         // R6: the settings read root (primary project) honors the read gate on
-        // both the self-heal path and the parsed user file path.
+        // the persisted file path, and an absent primary is unavailable.
         with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
             let primary = seed_dir();
             let ac_dir = primary.path().join(".ac");
@@ -2757,9 +2880,9 @@ mod tests {
                 ..AppSettings::default()
             };
 
-            let loaded = load_catalog_for_settings(&settings);
-            assert_eq!(loaded.len(), 7);
-            assert_no_key(&loaded, "muse");
+            let unavailable =
+                load_catalog_for_settings(&settings).expect_err("absent primary is unavailable");
+            assert_eq!(unavailable.code, "baseUnavailable");
 
             let user_file = manifest_json(
                 r##"[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true},
@@ -2767,34 +2890,36 @@ mod tests {
             );
             std::fs::create_dir_all(manifest_path(&ac_dir).parent().unwrap()).unwrap();
             std::fs::write(manifest_path(&ac_dir), &user_file).unwrap();
-            let loaded = load_catalog_for_settings(&settings);
+            let loaded = load_catalog_for_settings(&settings).expect("persisted primary");
             assert_eq!(keys_of(&loaded), ["custom"]);
         });
     }
 
     #[test]
-    fn desupported_builtin_no_longer_donates_update_commands_in_backfill() {
-        // R7: the in-memory backfill source is gated, so a de-supported built-in
-        // no longer donates its update sequence to a same-command entry.
+    fn no_embedded_donor_backfills_a_custom_key_bound_to_a_builtin_command() {
+        // #1967 P4: the embedded default is no longer a runtime command donor.
+        // A custom key bound to the builtin `claude` command, in a manifest with
+        // no updateCommands, reads as empty and the persisted bytes are kept;
+        // the de-supported table changes nothing about that.
         let manifest = manifest_json(
             r##"[{"key":"my-claude","label":"My Claude","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true}]"##,
         );
 
-        // Control: without the override the embedded claude donates its sequence.
         let dir = seed_dir();
         std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
         std::fs::write(manifest_path(dir.path()), &manifest).unwrap();
-        let loaded = load_catalog(dir.path());
+        let loaded = load_catalog(dir.path()).expect("persisted catalog");
+        assert!(loaded[0].update_commands.is_empty());
         assert_eq!(
-            loaded[0].update_commands,
-            vec!["claude --update".to_string()]
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            manifest.as_bytes()
         );
 
         with_builtin_agent_support_for_test(TABLE_CLAUDE_OFF, || {
             let dir = seed_dir();
             std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
             std::fs::write(manifest_path(dir.path()), &manifest).unwrap();
-            let loaded = load_catalog(dir.path());
+            let loaded = load_catalog(dir.path()).expect("persisted catalog");
             assert!(loaded[0].update_commands.is_empty());
         });
     }
@@ -2827,7 +2952,7 @@ mod tests {
                 serde_json::from_slice(&bytes).expect("seeded manifest parses");
             assert_eq!(catalog.schema_version, CATALOG_SCHEMA_VERSION);
             assert_eq!(catalog.agents.len(), 7);
-            let loaded = load_catalog(dir.path());
+            let loaded = load_catalog(dir.path()).expect("seeded catalog");
             assert_eq!(loaded.len(), 7);
             assert_no_key(&loaded, "muse");
         });
@@ -2854,7 +2979,7 @@ mod tests {
                 legacy_bytes,
                 "legacy bytes are user data: copied verbatim even with a de-supported key"
             );
-            let loaded = load_catalog(project.path());
+            let loaded = load_catalog(project.path()).expect("persisted catalog");
             assert_eq!(keys_of(&loaded), ["custom"]);
         });
     }
@@ -2877,7 +3002,7 @@ mod tests {
                 seeded,
                 "bytes must be untouched"
             );
-            let loaded = load_catalog(dir.path());
+            let loaded = load_catalog(dir.path()).expect("seeded catalog");
             assert_eq!(loaded.len(), 7);
             assert_no_key(&loaded, "muse");
         });
@@ -3092,7 +3217,7 @@ mod tests {
                     serde_json::from_slice(&bytes).expect("seeded manifest parses");
                 assert_eq!(catalog.schema_version, CATALOG_SCHEMA_VERSION);
                 assert_eq!(catalog.agents.len(), 7, "{shape}: 7 agents seeded");
-                let loaded = load_catalog(project.path());
+                let loaded = load_catalog(project.path()).expect("persisted catalog");
                 assert_eq!(loaded.len(), 7);
                 assert_no_key(&loaded, "muse");
                 assert_eq!(loaded[0].key, "claude");

@@ -29,11 +29,13 @@ use crate::config::coding_agent_mutations::{
     self as ops, AgentPatch, CodingAgentOp, CodingAgentOpOutcome, CodingAgentRequest,
     CodingAgentResult, DEFAULT_CUSTOM_COLOR,
 };
-use crate::config::coding_agents_catalog::{load_catalog_for_settings, CodingAgentDefinition};
+use crate::config::coding_agents_catalog::{
+    load_catalog_report_for_settings, CodingAgentDefinition,
+};
 use crate::config::settings::{
     load_settings_for_cli, load_settings_for_cli_strict, normalize_container_image_input,
-    save_settings, validate_user_env_key, AgentConfig, CodingAgentEnv, CodingAgentEnvSource,
-    ConfigSeedConfig,
+    save_settings, validate_user_env_key, AgentConfig, AppSettings, CodingAgentEnv,
+    CodingAgentEnvSource, ConfigSeedConfig,
 };
 use crate::pty::backend::SessionBackendKind;
 
@@ -238,13 +240,31 @@ fn cmd_show(a: ShowArgs) -> Result<(), String> {
     print_json(agent)
 }
 
+/// #1967 P4 - resolve the persisted catalog for a CLI verb. The shared logger
+/// suppresses stderr while `AC_MACHINE_OUTPUT` is set (main.rs sets it for every
+/// `coding-agent` invocation), so warnings are echoed to stderr explicitly here,
+/// mirroring the report IPC payload; stdout stays the JSON document. An
+/// unavailable persisted catalog is a normal CLI error carrying the report's
+/// code/path/reason - the embedded default is never substituted.
+fn resolve_catalog_for_cli(settings: &AppSettings) -> Result<Vec<CodingAgentDefinition>, String> {
+    let report = load_catalog_report_for_settings(settings);
+    for warning in &report.warnings {
+        eprintln!(
+            "warning [{}] {}: {}",
+            warning.code, warning.path, warning.reason
+        );
+    }
+    report
+        .into_result()
+        .map_err(|unavailable| unavailable.to_string())
+}
+
 fn cmd_catalog() -> Result<(), String> {
-    // #1318 - the catalog resolves against the primary registered project's
-    // `.ac/coding-agents`; with no registered project it falls back to the legacy
-    // `<config_dir>/coding-agents` catalog when one exists, else the embedded
-    // default (never an Err for file reasons).
+    // #1967 P4 - the persisted catalog is the only source: with no readable
+    // persisted file the verb exits nonzero instead of serving the embedded
+    // default.
     let settings = load_settings_for_cli();
-    let catalog = load_catalog_for_settings(&settings);
+    let catalog = resolve_catalog_for_cli(&settings)?;
     print_json(&catalog)
 }
 
@@ -264,10 +284,11 @@ fn cmd_add(a: AddArgs, gui_running: bool) -> Result<(), String> {
 
     // Seed from the catalog (Rust port of definitionToSeed) or start blank.
     let mut agent = if let Some(key) = &a.from_catalog {
-        // #1318 - resolve the catalog like `cmd_catalog` (primary project first,
-        // legacy config-dir fallback, embedded default last).
+        // #1967 P4 - resolve the persisted catalog like `cmd_catalog`. An
+        // unavailable catalog aborts here, before any settings mutation; an
+        // unknown key keeps the existing not-found error.
         let settings = load_settings_for_cli();
-        let catalog = load_catalog_for_settings(&settings);
+        let catalog = resolve_catalog_for_cli(&settings)?;
         let def = catalog.iter().find(|d| &d.key == key).ok_or_else(|| {
             let keys: Vec<&str> = catalog.iter().map(|d| d.key.as_str()).collect();
             format!(
@@ -819,6 +840,63 @@ mod tests {
         // and settings.json was NEVER written by the daemon path.
         assert!(dir.path().join(ops::CODING_AGENT_REQUESTS_DIR).is_dir());
         assert!(!dir.path().join("settings.json").exists());
+    }
+
+    // ---- #1967 P4: persisted-only catalog resolution -----------------------
+
+    fn write_cli_catalog(project: &Path, agents_json: &str) {
+        let dir = project.join(".ac").join("coding-agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("agents.json"),
+            format!("{{\"schemaVersion\":1,\"agents\":{agents_json}}}"),
+        )
+        .unwrap();
+    }
+
+    fn settings_for(project: &Path) -> AppSettings {
+        AppSettings {
+            project_paths: vec![project.to_string_lossy().to_string()],
+            ..AppSettings::default()
+        }
+    }
+
+    #[test]
+    fn resolve_catalog_for_cli_serves_persisted_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        write_cli_catalog(
+            dir.path(),
+            r##"[{"key":"sentinel","label":"Sentinel","description":"d","color":"#111","command":"sentinel","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["sentinel update"]}]"##,
+        );
+        let catalog =
+            resolve_catalog_for_cli(&settings_for(dir.path())).expect("persisted catalog");
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].key, "sentinel");
+        assert_eq!(
+            catalog[0].update_commands,
+            vec!["sentinel update".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_catalog_for_cli_unavailable_is_an_error_with_code_path_and_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = resolve_catalog_for_cli(&settings_for(dir.path())).expect_err("absent catalog");
+        assert!(error.contains("baseUnavailable"), "{error}");
+        assert!(error.contains("agents.json"), "{error}");
+        assert!(error.contains("no persisted catalog"), "{error}");
+    }
+
+    #[test]
+    fn resolve_catalog_for_cli_never_invents_update_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        write_cli_catalog(
+            dir.path(),
+            r##"[{"key":"legacy","label":"Legacy","description":"d","color":"#111","command":"legacy","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        let catalog =
+            resolve_catalog_for_cli(&settings_for(dir.path())).expect("persisted catalog");
+        assert!(catalog[0].update_commands.is_empty());
     }
 
     // ---- help text ---------------------------------------------------------

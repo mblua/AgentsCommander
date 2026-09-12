@@ -497,36 +497,42 @@ pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<Settings
 /// and Settings pick lists. Resolves against the PRIMARY registered project's
 /// `.ac/coding-agents` catalog; with no registered project it falls back to the
 /// legacy `<config_dir>/coding-agents` catalog when one exists (pre-migration
-/// installs keep today's read behavior), else the embedded default in memory.
-/// Contract (§14.2, dev-rust E5): resolves `Ok(Vec)` in the normal AND self-heal
-/// cases (a missing or unparseable `agents.json` yields the embedded default IN
-/// MEMORY, never a disk write); `Ok([])` is honored verbatim when the user
-/// removed every built-in; `Err` only when the config directory cannot be
-/// resolved (a genuine environment failure the compiled fallback cannot
-/// satisfy). The frontend's never-empty fallback fires only on this
-/// `Err`/transport path, so keeping the self-heal on the `Ok` side is load-
-/// bearing for that contract. #1912: a `false` row in `BUILTIN_AGENT_SUPPORT`
-/// (`src-tauri/src/config/coding_agents_catalog.rs`) already dropped that key
-/// here via the `validate_and_filter` read gate.
+/// installs keep today's read behavior).
+/// #1967 P4 contract: this is a persisted-only read. `Ok(vec![])` is honored
+/// verbatim when the user removed every built-in, and `Err` (code/path/reason)
+/// is returned when no readable persisted catalog exists - a missing or
+/// unparseable `agents.json` is NEVER replaced with the embedded default, which
+/// is seed material only. Warnings are logged here and carried structurally by
+/// `get_coding_agent_catalog_report`. #1912: a `false` row in
+/// `BUILTIN_AGENT_SUPPORT` (`src-tauri/src/config/coding_agents_catalog.rs`) is
+/// already dropped via the persisted read gate.
 #[tauri::command]
 pub async fn get_coding_agent_catalog(
     settings: State<'_, SettingsState>,
 ) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentDefinition>, String> {
-    Ok(coding_agent_catalog_inner(settings.inner()).await)
+    coding_agent_catalog_inner(settings.inner()).await
 }
 
-/// #1551 - shared by the Tauri command and the WebSocket router.
+/// #1551 - shared by the Tauri command and the WebSocket router. #1967 P4 -
+/// resolves through the persisted-only report: a readable catalog is `Ok(Vec)`
+/// (a valid empty list included) and an unavailable persisted source is `Err`
+/// carrying the diagnostic's code/path/reason. The embedded default is NEVER
+/// substituted on this path. Takes one settings snapshot and releases the async
+/// settings lock BEFORE any filesystem work (mirrors
+/// `coding_agent_catalog_report_inner`).
 pub async fn coding_agent_catalog_inner(
     settings: &SettingsState,
-) -> Vec<crate::config::coding_agents_catalog::CodingAgentDefinition> {
-    let settings = settings.read().await;
-    crate::config::coding_agents_catalog::load_catalog_for_settings(&settings)
+) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentDefinition>, String> {
+    let snapshot = settings.read().await.clone();
+    crate::config::coding_agents_catalog::load_catalog_for_settings(&snapshot)
+        .map_err(|unavailable| unavailable.to_string())
 }
 
 /// #1963 (P1) - read-only persisted-catalog report for the pre-migration UI.
-/// Additive IPC: the existing array endpoint above keeps its current behavior
-/// until P4. Always `Ok`; ordinary filesystem failure is carried by the
-/// report's `unavailable` field, and `Err` is reserved for a transport fault.
+/// Additive IPC: since P4 the array endpoint above resolves through the SAME
+/// resolver, so both agree about availability and the persisted selection.
+/// Always `Ok`; ordinary filesystem failure is carried by the report's
+/// `unavailable` field, and `Err` is reserved for a transport fault.
 #[tauri::command]
 pub async fn get_coding_agent_catalog_report(
     settings: State<'_, SettingsState>,
@@ -2657,6 +2663,7 @@ pub async fn agent_updates_cancel_all_inner(
 
 /// #1551 - instant read of the Settings "Auto-update" table. Never awaits a probe;
 /// probes are scheduled in the background only once the startup pass is finished.
+/// #1967 P4 - `Err` when the persisted catalog is unavailable (nothing is probed).
 pub async fn agent_update_overview_inner(
     app: &AppHandle,
     settings: &SettingsState,
@@ -2664,7 +2671,9 @@ pub async fn agent_update_overview_inner(
     let gate = managed_agent_update_gate(app)?;
     let cache = tauri::Manager::try_state::<Arc<crate::agent_version::AgentInstallCache>>(app)
         .ok_or_else(|| "agent install cache is not managed".to_string())?;
-    Ok(crate::agent_update::update_overview(app, settings, &gate, &cache).await)
+    crate::agent_update::update_overview(app, settings, &gate, &cache)
+        .await
+        .map_err(|unavailable| unavailable.to_string())
 }
 
 /// #1551 - one row per update-capable catalog entry with its configured policy,
