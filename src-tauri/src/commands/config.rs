@@ -4,7 +4,6 @@ use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
@@ -981,11 +980,22 @@ pub async fn set_instance_profile_override(
     agent_path: String,
     profile: Option<String>,
 ) -> Result<(), String> {
-    let payload =
-        set_instance_profile_override_inner(settings.inner(), &agent_path, profile.as_deref())
-            .await?;
-    let _ = app.emit("coding_agent_profile_selection_updated", payload);
-    Ok(())
+    // #1940 - settings snapshot, guarded profile write and event publication are
+    // one owned selection operation, so this override cannot interleave with a
+    // broad apply or a self-switch persist/restart.
+    let app_handle = app.clone();
+    let settings = settings.inner().clone();
+    crate::session::selection::run_owned_selection_operation(move || {
+        let app = app_handle.clone();
+        async move {
+            let payload =
+                set_instance_profile_override_inner(&settings, &agent_path, profile.as_deref())
+                    .await?;
+            let _ = app.emit("coding_agent_profile_selection_updated", payload);
+            Ok(())
+        }
+    })
+    .await
 }
 
 /// Persist a replica's instance-level profile override (or clear it when
@@ -1197,16 +1207,30 @@ pub async fn apply_coding_agent_profile_selection(
     settings: State<'_, SettingsState>,
     request: ApplyCodingAgentProfileSelectionRequest,
 ) -> Result<ApplyCodingAgentProfileSelectionResult, String> {
-    let (result, payload) = apply_coding_agent_profile_selection_inner(
-        &app,
-        session_mgr.inner(),
-        pty_mgr.inner(),
-        settings.inner(),
-        request,
-    )
-    .await?;
-    let _ = app.emit("coding_agent_profile_selection_updated", payload);
-    Ok(result)
+    // #1940 - the entire apply (enumeration, per-replica publication, every
+    // restart submission, its settlement and classification) is one owned
+    // selection operation. Dropping this caller detaches the owned task instead
+    // of releasing the turn while an accepted restart still settles.
+    let app_handle = app.clone();
+    let session_mgr = Arc::clone(session_mgr.inner());
+    let pty_mgr = Arc::clone(pty_mgr.inner());
+    let settings = settings.inner().clone();
+    crate::session::selection::run_owned_selection_operation(move || {
+        let app = app_handle.clone();
+        async move {
+            let (result, payload) = apply_coding_agent_profile_selection_inner(
+                &app,
+                &session_mgr,
+                &pty_mgr,
+                &settings,
+                request,
+            )
+            .await?;
+            let _ = app.emit("coding_agent_profile_selection_updated", payload);
+            Ok(result)
+        }
+    })
+    .await
 }
 
 /// Apply a coding-agent profile assignment across the enumerated replicas
@@ -1221,7 +1245,9 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
     settings: &SettingsState,
     request: ApplyCodingAgentProfileSelectionRequest,
 ) -> Result<(ApplyCodingAgentProfileSelectionResult, serde_json::Value), String> {
-    let apply_lock = broad_profile_apply_lock().lock().await;
+    // #1940 - the caller owns the selection operation turn; this inner function
+    // neither reacquires it nor spawns another turn, and it does not release it
+    // before the last restart reply, classification and publication.
     let settings_snapshot = settings.read().await.clone();
     validate_profile_assignment_request(
         &settings_snapshot,
@@ -1256,16 +1282,44 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
     let mut updated_replica_paths = Vec::new();
     let mut write_succeeded_keys = BTreeSet::new();
     let mut errors = Vec::new();
+    let mut warnings = enumeration.warnings;
     for target in &enumeration.targets {
-        match crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
+        // #1940 - ordinary bulk assignment names the #1939 BulkOrdinary intent,
+        // which never forces a lock: a valid locked replica is skipped (no write,
+        // no restart) and reported as a warning, so even a hand-authored lock is
+        // safe before the #1941 UI/API exposes the flag.
+        let state = crate::config::coding_agent_profiles::read_replica_selection_state(Path::new(
+            &target.replica_path,
+        ));
+        let expected = match state.expectation() {
+            Ok(expected) => expected,
+            Err(e) => {
+                errors.push(ProfileAssignmentError {
+                    code: "configWriteFailed".to_string(),
+                    message: e,
+                    session_ids: target.live_session_ids.clone(),
+                    replica_paths: vec![target.replica_path.clone()],
+                });
+                continue;
+            }
+        };
+        let pair = crate::config::coding_agent_profiles::ReplicaSelectionPair {
+            coding_agent_id: request.coding_agent_id.clone(),
+            requested_profile: normalized_profile.clone(),
+        };
+        match crate::config::coding_agent_profiles::write_replica_selection(
             &settings_snapshot,
             Path::new(&target.replica_path),
-            &request.coding_agent_id,
-            &normalized_profile,
+            &pair,
+            crate::config::coding_agent_profiles::SelectionWriteIntent::BulkOrdinary,
+            &expected,
         ) {
-            Ok(()) => {
+            Ok(outcome) if outcome.changed => {
                 updated_replica_paths.push(target.replica_path.clone());
                 write_succeeded_keys.insert(canonical_compare_key(Path::new(&target.replica_path)));
+            }
+            Ok(_skipped_locked) => {
+                warnings.push(format!("Skipping locked replica '{}'", target.replica_path))
             }
             Err(e) => errors.push(ProfileAssignmentError {
                 code: "configWriteFailed".to_string(),
@@ -1275,7 +1329,6 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
             }),
         }
     }
-    drop(apply_lock);
 
     let mut restarted_session_ids = Vec::new();
     let mut destroyed_but_not_recreated_session_ids = Vec::new();
@@ -1333,7 +1386,7 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
         restarted_session_ids,
         destroyed_but_not_recreated_session_ids,
         target_fingerprint,
-        warnings: enumeration.warnings,
+        warnings,
         errors,
     };
     let payload = serde_json::json!({
@@ -1352,11 +1405,6 @@ struct ProfileTargetEnumeration {
     targets: Vec<ProfileAssignmentTarget>,
     canonical_target_paths: Vec<String>,
     warnings: Vec<String>,
-}
-
-fn broad_profile_apply_lock() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 fn validate_profile_assignment_request(
