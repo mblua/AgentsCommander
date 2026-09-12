@@ -459,18 +459,20 @@ See [Watchers](../features/watchers.md).
 
 ### Menu guard
 
-Proactive detection of terminal blocking menus, such as a folder-trust prompt an agent will not move past. One root switch, plus two blocking-menus files next to `settings.json`. There is no Settings UI and no CLI verb: hand-edit `settings-blocking-menus.local.json`, which is read at the next start.
+Proactive detection of terminal blocking menus, such as a folder-trust prompt an agent will not move past. One root switch, plus three blocking-menus files next to `settings.json`. The startup download has a Settings checkbox, **Download blocking-menu pattern updates from GitHub**; there is no CLI verb, and hand-editing `settings-blocking-menus.local.json` is still the only way to add your own patterns. That file is read at the next start.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `menuGuardEnabled` | bool | `true` | Root switch for the whole feature. With `false`, each 250 ms tick clears any session the guard was holding and evaluates nothing. |
+| `remoteBlockingMenusEnabled` | bool | `true` | Download the published blocking-menu patterns at startup, at most once per 24 h. They apply at the next start. `false` stops the download only; a file already downloaded keeps applying. |
 
 | File | Who writes it | When |
 |---|---|---|
 | `settings-blocking-menus.json` | AC | Rewritten at start whenever its content differs from the running version's embedded content; edits there are lost. |
 | `settings-blocking-menus.local.json` | You | Read at start. AC writes it only when the #1905 migration succeeds, and that write inserts `byAgent` rows without overwriting an existing one. |
+| `settings-blocking-menus.remote.json` | AC | Written only by the startup download, and only after the whole file passes validation. Read and validated again at every start. |
 
-`BlockingMenusFile` (both files share this shape):
+`BlockingMenusFile` (all three files share this shape; the remote file must also have an empty `byAgent`):
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -479,7 +481,7 @@ Proactive detection of terminal blocking menus, such as a folder-trust prompt an
 | `byCommand` | object | `{}` | Keys are the lowercase executable stem, exact match; values are entry arrays. |
 | `byAgent` | object | `{}` | Keys are agent ids; values are entry arrays. The migration writes the exported legacy array here. |
 
-Precedence, first present wins and replaces the layers below it whole: an array still on the agent (a legacy `blockingMenus` array the migration could not move, or one inside an `agents` array owned by `settings.local.json`), then `byAgent[id]` in `.local`, then `byCommand[stem]` in `.local`, then `byCommand[stem]` in the shipped file, then nothing.
+Precedence, first present wins and replaces the layers below it whole: (1) an array still on the agent (a legacy `blockingMenus` array the migration could not move, or one inside an `agents` array owned by `settings.local.json`); (2) `byAgent[id]` in `.local`; (3) `byCommand[stem]` in `.local`; (4) `byCommand[stem]` in `settings-blocking-menus.remote.json`; (5) `byCommand[stem]` in the shipped file; (6) nothing. A remote array for a stem replaces the shipped array for that stem whole and can be `[]`; to override a remote entry, put that stem in `.local` `byCommand`. `byAgent` is never read from the remote file.
 
 Use `byCommand` when the pattern should follow the command, `byAgent` when it should follow one agent id; a `byAgent` row always wins.
 
@@ -495,6 +497,8 @@ Use `byCommand` when the pattern should follow the command, `byAgent` when it sh
 The first settings load after an upgrade moves every legacy `blockingMenus` array from `settings.json` into `.local` under `byAgent.<id>`, dropping only arrays equal to the shipped set (a `[]` on a stem that ships nothing counts as equal); an id already present in `.local` is kept and the legacy copy in `settings.json` is discarded, not merged, and the `.local` file is written before `settings.json` is touched. Before the compare, a non-empty codex array missing the hooks-review pattern gets it back-filled once. If the migration cannot run, the arrays stay in place and apply as before: a `.local` that cannot be read, a `.local` that does not parse or has the wrong shape, a `.local` that cannot be written, two agents sharing an id with different arrays or commands, or an `agents` array owned by `settings.local.json`. Each settings load retries and logs one line per attempt while the cause stands; for an overlay-owned `agents` array, move the entries into `.local` by hand and delete those agents' legacy arrays from the overlay.
 
 An entry AC cannot read as a `BlockingMenuConfig` is kept verbatim, skipped at evaluation, and left in place; it never invalidates the file. A `.local` file with the wrong shape — not an object, another `schemaVersion`, or the wrong type for `note`, `byCommand` or `byAgent` — is ignored whole, with one error line in the log, and the layers below it still apply. The shipped file is never parsed at runtime: AC rewrites it from the binary's embedded copy at start and evaluates that embedded copy.
+
+The remote file is validated whole at every start and ignored whole, with one warning line in the log, when any check fails; the shipped patterns then apply.
 
 See [Menu guard](../features/menu-guard.md).
 
@@ -545,5 +549,5 @@ Use any JSON validator. AC will refuse to start if the file is not valid JSON an
 - [Portable instances](../features/portable-instances.md) — per-instance config rules
 - [CLI reference](cli.md) — verbs that read/write this file
 - [Terminal snapshots](../features/terminal-snapshots.md) - the default-off screen-content read capability
-- [Menu guard](../features/menu-guard.md) - `menuGuardEnabled` and the two `settings-blocking-menus` files in use
+- [Menu guard](../features/menu-guard.md) - `menuGuardEnabled` and the three `settings-blocking-menus` files in use
 - [`PRIVACY.md`](../../PRIVACY.md) — what credentials live here and how they are transmitted
