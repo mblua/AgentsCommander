@@ -6,8 +6,12 @@
 //! compares, and on a newer version caches an `UpdateInfo` + emits
 //! `npm_update_available`. Everything is fail-silent: any error logs at debug
 //! and produces no notification. The task is detached, so startup never blocks.
+//!
+//! #1925 - the same detached, fail-silent startup shape also downloads the remote
+//! blocking-menu patterns (run_remote_blocking_menus_startup); that download never
+//! notifies and applies at the next start.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -82,10 +86,16 @@ fn write_cache(cache: &UpdateCache) {
 /// True when we should hit the network now: no cache, stale cache (older than
 /// the interval), or a cache timestamp in the future (clock moved backwards).
 fn should_check(cache: &Option<UpdateCache>, now: DateTime<Utc>) -> bool {
-    match cache {
+    interval_elapsed(cache.as_ref().map(|c| c.last_checked_at), now)
+}
+
+/// True when `last` is missing, at least the interval old, or in the future (clock moved
+/// backwards). Shared by the npm update check and the remote blocking-menu download.
+fn interval_elapsed(last: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    match last {
         None => true,
-        Some(c) => {
-            let age = now.signed_duration_since(c.last_checked_at);
+        Some(last_checked_at) => {
+            let age = now.signed_duration_since(last_checked_at);
             age >= chrono::Duration::hours(CHECK_INTERVAL_HOURS) || age.num_seconds() < 0
         }
     }
@@ -352,6 +362,154 @@ pub fn read_cached_notice() -> Option<String> {
     cli_notice(&cache, current, enabled)
 }
 
+// ---- Remote blocking-menu download (#1925) --------------------------------
+
+/// What the remote blocking-menu download did, for the caller's log line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RemoteMenusCheck {
+    Disabled,
+    NotDue,
+    Accepted,
+    Rejected(String),
+    Unreachable(String),
+    WriteFailed(String),
+}
+
+/// One GET under the 10 s timeout. `Err` is a transport error or the timeout text; a
+/// non-200 response keeps the status and an empty body. The body read stops as soon as it
+/// passes the cap, so an oversized response is never fully buffered.
+async fn fetch_remote_blocking_menus(
+    network: &crate::network::OutboundNetwork,
+    url: &str,
+) -> Result<(u16, Vec<u8>), String> {
+    let attempt = tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), async {
+        let mut response = network
+            .general()
+            .get(url)
+            .header(
+                reqwest::header::USER_AGENT,
+                concat!("agentscommander/", env!("CARGO_PKG_VERSION")),
+            )
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        let status = response.status().as_u16();
+        let mut body = Vec::new();
+        if status == 200 {
+            while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+                body.extend_from_slice(&chunk);
+                if body.len() > crate::config::settings::REMOTE_BLOCKING_MENUS_MAX_BYTES {
+                    break;
+                }
+            }
+        }
+        Ok((status, body))
+    })
+    .await;
+    match attempt {
+        Err(_) => Err("timed out".to_string()),
+        Ok(result) => result,
+    }
+}
+
+/// #1925 (D3 to D5) - the download itself. The flag is checked first so a disabled run
+/// touches no disk and no network; `NotDue` likewise. Every attempt that passes the due
+/// check stamps `now` afterwards, accepted, rejected or unreachable, so the 24 h throttle
+/// stays literal and a retry storm is impossible.
+pub(crate) async fn run_remote_blocking_menus_check(
+    network: &crate::network::OutboundNetwork,
+    settings_path: &Path,
+    enabled: bool,
+    url: &str,
+    now: DateTime<Utc>,
+) -> RemoteMenusCheck {
+    if !enabled {
+        return RemoteMenusCheck::Disabled;
+    }
+    if !interval_elapsed(
+        crate::config::settings::read_remote_blocking_menus_check_stamp(settings_path),
+        now,
+    ) {
+        return RemoteMenusCheck::NotDue;
+    }
+
+    let outcome = match network.acquire("update_check.remote_blocking_menus").await {
+        Err(error) => RemoteMenusCheck::Unreachable(error),
+        Ok(_permit) => match fetch_remote_blocking_menus(network, url).await {
+            Err(error) => RemoteMenusCheck::Unreachable(error),
+            Ok((_, body))
+                if body.len() > crate::config::settings::REMOTE_BLOCKING_MENUS_MAX_BYTES =>
+            {
+                RemoteMenusCheck::Rejected(format!(
+                    "body larger than {} bytes",
+                    crate::config::settings::REMOTE_BLOCKING_MENUS_MAX_BYTES
+                ))
+            }
+            Ok((status, body)) => {
+                match crate::config::settings::accept_remote_blocking_menus_response(status, &body)
+                {
+                    Err(reason) => RemoteMenusCheck::Rejected(reason),
+                    Ok(file) => match crate::config::settings::write_remote_blocking_menus_cache(
+                        settings_path,
+                        file,
+                        url,
+                        now,
+                    ) {
+                        Ok(()) => RemoteMenusCheck::Accepted,
+                        Err(error) => RemoteMenusCheck::WriteFailed(error),
+                    },
+                }
+            }
+        },
+    };
+
+    if let Err(error) =
+        crate::config::settings::write_remote_blocking_menus_check_stamp(settings_path, now)
+    {
+        log::debug!("[remote-menus] could not write the throttle stamp: {error}");
+    }
+    outcome
+}
+
+/// #1925 (D3) - read the remote flag once, exactly as `run_startup_check` reads its own
+/// flag, then hand the rest to `run_remote_blocking_menus_check`.
+pub(crate) async fn run_remote_blocking_menus_for_app<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    settings_path: &Path,
+    url: &str,
+    now: DateTime<Utc>,
+) -> RemoteMenusCheck {
+    let enabled = {
+        let settings_state = app.state::<crate::config::settings::SettingsState>();
+        let settings = settings_state.read().await;
+        settings.remote_blocking_menus_enabled
+    };
+    let network = app.state::<crate::network::OutboundNetwork>();
+    run_remote_blocking_menus_check(&network, settings_path, enabled, url, now).await
+}
+
+/// #1925 - the detached startup wrapper. Fail-silent: an accepted download logs one info
+/// line, every other outcome logs at debug, and this never returns an error to the caller.
+pub async fn run_remote_blocking_menus_startup(app: AppHandle) {
+    let Some(settings_path) = crate::config::settings::settings_path() else {
+        log::debug!("[remote-menus] no settings path; skipping the remote download");
+        return;
+    };
+    let outcome = run_remote_blocking_menus_for_app(
+        &app,
+        &settings_path,
+        crate::config::settings::REMOTE_BLOCKING_MENUS_URL,
+        Utc::now(),
+    )
+    .await;
+    match outcome {
+        RemoteMenusCheck::Accepted => log::info!(
+            "[remote-menus] downloaded blocking-menu patterns; they apply at the next start"
+        ),
+        outcome => log::debug!("[remote-menus] {outcome:?}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,5 +644,418 @@ mod tests {
     fn resolve_latest_fetch_fail_no_cache() {
         // Fetch fail with no cache -> nothing known, no write (no false toast).
         assert_eq!(resolve_latest(CheckPlan::Fetch, None, &None), (None, false));
+    }
+
+    // ---- #1925: the remote blocking-menu download ---------------------------
+
+    mod remote_blocking_menus_1925 {
+        use super::super::*;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        fn remote_menus_fixture() -> Vec<u8> {
+            serde_json::json!({
+                "schemaVersion": 1,
+                "byCommand": {
+                    "grok": [{
+                        "pattern": r"^\s*Grok test menu\?",
+                        "notification": "grok is waiting for you to answer the test menu",
+                        "enabled": true
+                    }]
+                },
+                "byAgent": {}
+            })
+            .to_string()
+            .into_bytes()
+        }
+
+        fn remote_menus_seed() -> Vec<u8> {
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schemaVersion": 1,
+                "byCommand": {
+                    "grok": [{
+                        "pattern": r"^\s*Grok test menu\?",
+                        "notification": "seed G1",
+                        "enabled": true
+                    }]
+                },
+                "byAgent": {}
+            }))
+            .expect("the seed serializes")
+        }
+
+        fn seeded_grok() -> crate::config::settings::BlockingMenuEntry {
+            crate::config::settings::BlockingMenuEntry::Valid(
+                crate::config::settings::BlockingMenuConfig {
+                    pattern: r"^\s*Grok test menu\?".to_string(),
+                    notification: "seed G1".to_string(),
+                    enabled: true,
+                    captured_against: None,
+                },
+            )
+        }
+
+        fn test_app(
+            settings: crate::config::settings::AppSettings,
+        ) -> tauri::App<tauri::test::MockRuntime> {
+            let state: crate::config::settings::SettingsState =
+                Arc::new(tokio::sync::RwLock::new(settings));
+            tauri::test::mock_builder()
+                .manage(state)
+                .manage(crate::network::OutboundNetwork::new_for_tests(4))
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .expect("build a remote blocking-menus test app")
+        }
+
+        /// One HTTP/1.1 response, then close. Every accept/read/write/shutdown error is
+        /// ignored and the task never panics, so a client that stops reading at the cap
+        /// (and resets the socket) cannot fail or flake the test.
+        async fn serve_once(status: u16, body: Vec<u8>) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind a loopback listener");
+            let port = listener.local_addr().expect("listener address").port();
+            tokio::spawn(async move {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                loop {
+                    let Ok(read) = stream.read(&mut buffer).await else {
+                        return;
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let head = format!(
+                    "HTTP/1.1 {status} Status\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(&body).await;
+                let _ = stream.shutdown().await;
+            });
+            format!(
+                "http://127.0.0.1:{port}/remote-resources/blocking-menus/v1/settings-blocking-menus.json"
+            )
+        }
+
+        async fn offline_url() -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind a loopback listener");
+            let port = listener.local_addr().expect("listener address").port();
+            drop(listener);
+            format!(
+                "http://127.0.0.1:{port}/remote-resources/blocking-menus/v1/settings-blocking-menus.json"
+            )
+        }
+
+        #[tokio::test]
+        async fn disabled_makes_no_request_and_writes_nothing() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let network = crate::network::OutboundNetwork::new_for_tests(4);
+            let now = "2026-09-12T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+            let outcome = run_remote_blocking_menus_check(
+                &network,
+                &settings_path,
+                false,
+                crate::config::settings::REMOTE_BLOCKING_MENUS_URL,
+                now,
+            )
+            .await;
+
+            assert_eq!(outcome, RemoteMenusCheck::Disabled);
+            assert!(network.acquired_labels_for_tests().is_empty());
+            assert!(
+                !crate::config::settings::blocking_menus_remote_check_path(&settings_path).exists()
+            );
+            assert!(!crate::config::settings::blocking_menus_remote_path(&settings_path).exists());
+        }
+
+        #[tokio::test]
+        async fn a_recent_stamp_makes_no_request() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let network = crate::network::OutboundNetwork::new_for_tests(4);
+            let now = "2026-09-12T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+            crate::config::settings::write_remote_blocking_menus_check_stamp(
+                &settings_path,
+                now - chrono::Duration::hours(1),
+            )
+            .unwrap();
+            let outcome = run_remote_blocking_menus_check(
+                &network,
+                &settings_path,
+                true,
+                crate::config::settings::REMOTE_BLOCKING_MENUS_URL,
+                now,
+            )
+            .await;
+            assert_eq!(outcome, RemoteMenusCheck::NotDue);
+            assert!(network.acquired_labels_for_tests().is_empty());
+
+            // A stamp in the future (clock moved backwards) is due again.
+            crate::config::settings::write_remote_blocking_menus_check_stamp(
+                &settings_path,
+                now + chrono::Duration::hours(1),
+            )
+            .unwrap();
+            let url = offline_url().await;
+            let outcome =
+                run_remote_blocking_menus_check(&network, &settings_path, true, &url, now).await;
+            assert!(
+                matches!(outcome, RemoteMenusCheck::Unreachable(_)),
+                "got {outcome:?}"
+            );
+            assert_eq!(
+                network.acquired_labels_for_tests(),
+                vec!["update_check.remote_blocking_menus"]
+            );
+            assert_eq!(
+                crate::config::settings::read_remote_blocking_menus_check_stamp(&settings_path),
+                Some(now)
+            );
+        }
+
+        #[tokio::test]
+        async fn an_accepted_download_is_cached_and_applies_at_the_next_start() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let network = crate::network::OutboundNetwork::new_for_tests(4);
+            let now = "2026-09-12T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+            let store_before = crate::config::settings::BlockingMenusStore::load_from_settings_path(
+                &settings_path,
+            );
+
+            let url = serve_once(200, remote_menus_fixture()).await;
+            let outcome =
+                run_remote_blocking_menus_check(&network, &settings_path, true, &url, now).await;
+
+            assert_eq!(outcome, RemoteMenusCheck::Accepted);
+            assert_eq!(
+                network.acquired_labels_for_tests(),
+                vec!["update_check.remote_blocking_menus"]
+            );
+
+            let cache_bytes = std::fs::read(crate::config::settings::blocking_menus_remote_path(
+                &settings_path,
+            ))
+            .expect("the accepted download writes the cache");
+            let note = serde_json::from_slice::<serde_json::Value>(&cache_bytes).unwrap()["note"]
+                .as_str()
+                .expect("the written note is a string")
+                .to_string();
+            assert!(
+                note.contains(&url),
+                "note should carry the runtime URL: {note}"
+            );
+            assert!(
+                note.contains("(source ref main)"),
+                "note should carry the source ref: {note}"
+            );
+            assert!(
+                note.contains("2026-09-12T12:00:00Z"),
+                "note should carry the fetched time: {note}"
+            );
+            assert_eq!(
+                crate::config::settings::read_remote_blocking_menus_check_stamp(&settings_path),
+                Some(now)
+            );
+
+            // The store built before the download never sees the new file...
+            assert_eq!(store_before.resolve("grok-1", "grok"), Vec::new());
+            // ...and a store built afterwards does, at the next start.
+            let store_after = crate::config::settings::BlockingMenusStore::load_from_settings_path(
+                &settings_path,
+            );
+            let expected = crate::config::settings::BlockingMenuEntry::Valid(
+                crate::config::settings::BlockingMenuConfig {
+                    pattern: r"^\s*Grok test menu\?".to_string(),
+                    notification: "grok is waiting for you to answer the test menu".to_string(),
+                    enabled: true,
+                    captured_against: None,
+                },
+            );
+            assert_eq!(store_after.resolve("grok-1", "grok"), vec![expected]);
+        }
+
+        enum RemoteMenusReply {
+            Offline,
+            Http(u16, Vec<u8>),
+        }
+
+        #[tokio::test]
+        async fn every_failure_keeps_the_previous_cache() {
+            let now = "2026-09-12T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+            let invalid_pattern = serde_json::json!({
+                "schemaVersion": 1,
+                "byCommand": {"grok": [{
+                    "pattern": ".*",
+                    "notification": "any",
+                    "enabled": true
+                }]},
+                "byAgent": {}
+            })
+            .to_string()
+            .into_bytes();
+            let non_empty_by_agent = serde_json::json!({
+                "schemaVersion": 1,
+                "byCommand": {},
+                "byAgent": {"grok-1": []}
+            })
+            .to_string()
+            .into_bytes();
+            let wrong_schema = serde_json::json!({
+                "schemaVersion": 2,
+                "byCommand": {},
+                "byAgent": {}
+            })
+            .to_string()
+            .into_bytes();
+
+            let cases: Vec<(&str, RemoteMenusReply, &str)> = vec![
+                ("offline", RemoteMenusReply::Offline, "unreachable"),
+                (
+                    "404",
+                    RemoteMenusReply::Http(404, b"nope".to_vec()),
+                    "HTTP status 404",
+                ),
+                (
+                    "malformed JSON",
+                    RemoteMenusReply::Http(200, b"{".to_vec()),
+                    "does not parse",
+                ),
+                (
+                    "oversized body",
+                    RemoteMenusReply::Http(
+                        200,
+                        vec![b' '; crate::config::settings::REMOTE_BLOCKING_MENUS_MAX_BYTES + 1],
+                    ),
+                    "larger than",
+                ),
+                (
+                    "empty-string pattern",
+                    RemoteMenusReply::Http(200, invalid_pattern),
+                    "matches the empty string",
+                ),
+                (
+                    "non-empty byAgent",
+                    RemoteMenusReply::Http(200, non_empty_by_agent),
+                    "byAgent must be empty",
+                ),
+                (
+                    "schemaVersion 2",
+                    RemoteMenusReply::Http(200, wrong_schema),
+                    "schemaVersion",
+                ),
+            ];
+
+            for (label, reply, expected) in cases {
+                let temp = tempfile::TempDir::new().unwrap();
+                let settings_path = temp.path().join("settings.json");
+                let network = crate::network::OutboundNetwork::new_for_tests(4);
+                let seed = remote_menus_seed();
+                std::fs::write(
+                    crate::config::settings::blocking_menus_remote_path(&settings_path),
+                    &seed,
+                )
+                .unwrap();
+
+                let url = match reply {
+                    RemoteMenusReply::Offline => offline_url().await,
+                    RemoteMenusReply::Http(status, body) => serve_once(status, body).await,
+                };
+                let outcome =
+                    run_remote_blocking_menus_check(&network, &settings_path, true, &url, now)
+                        .await;
+
+                match (label, outcome) {
+                    ("offline", RemoteMenusCheck::Unreachable(_)) => {}
+                    (_, RemoteMenusCheck::Rejected(reason)) => {
+                        assert!(
+                            reason.contains(expected),
+                            "{label}: expected {expected:?} in {reason:?}"
+                        );
+                    }
+                    (_, other) => panic!("{label}: expected a failure, got {other:?}"),
+                }
+
+                assert_eq!(
+                    std::fs::read(crate::config::settings::blocking_menus_remote_path(
+                        &settings_path
+                    ))
+                    .unwrap(),
+                    seed,
+                    "{label}: the previous cache must stay byte-equal"
+                );
+                let store = crate::config::settings::BlockingMenusStore::load_from_settings_path(
+                    &settings_path,
+                );
+                assert_eq!(
+                    store.resolve("grok-1", "grok"),
+                    vec![seeded_grok()],
+                    "{label}: the previous cache still resolves"
+                );
+                assert_eq!(
+                    crate::config::settings::read_remote_blocking_menus_check_stamp(&settings_path),
+                    Some(now),
+                    "{label}: the failed attempt still stamps now"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn the_startup_path_reads_the_remote_flag_not_the_npm_flag() {
+            let now = "2026-09-12T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+            // Case A: the remote flag is off even though the npm flag is on.
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let app = test_app(crate::config::settings::AppSettings {
+                remote_blocking_menus_enabled: false,
+                npm_update_notifications_enabled: true,
+                ..Default::default()
+            });
+            let url = offline_url().await;
+            let outcome =
+                run_remote_blocking_menus_for_app(app.handle(), &settings_path, &url, now).await;
+            assert_eq!(outcome, RemoteMenusCheck::Disabled);
+            assert!(app
+                .state::<crate::network::OutboundNetwork>()
+                .acquired_labels_for_tests()
+                .is_empty());
+            assert!(
+                !crate::config::settings::blocking_menus_remote_check_path(&settings_path).exists()
+            );
+            assert!(!crate::config::settings::blocking_menus_remote_path(&settings_path).exists());
+
+            // Case B, the control: the remote flag is on even though the npm flag is off.
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let app = test_app(crate::config::settings::AppSettings {
+                remote_blocking_menus_enabled: true,
+                npm_update_notifications_enabled: false,
+                ..Default::default()
+            });
+            let url = serve_once(200, remote_menus_fixture()).await;
+            let outcome =
+                run_remote_blocking_menus_for_app(app.handle(), &settings_path, &url, now).await;
+            assert_eq!(outcome, RemoteMenusCheck::Accepted);
+            assert_eq!(
+                app.state::<crate::network::OutboundNetwork>()
+                    .acquired_labels_for_tests(),
+                vec!["update_check.remote_blocking_menus"]
+            );
+        }
     }
 }
