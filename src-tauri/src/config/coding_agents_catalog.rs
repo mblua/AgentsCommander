@@ -36,20 +36,28 @@
 //! masters. Already-seeded user-owned files are NEVER rewritten or trimmed by a
 //! `false` row; the read gate covers them.
 
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::fs::File;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use serde::de::{self, Visitor};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::config::agent_command::is_safe_instructions_filename;
 use crate::config::seed_manifest::{
-    acquire_project_gate_soft, ManifestActivationToken, ManifestPathIdentity,
-    ProjectSeedManifestGuard, PublishedManifestRow, SoftProjectGate,
+    acquire_project_gate_soft, has_catalog_publication, ManifestActivationToken,
+    ManifestPathIdentity, ProjectSeedManifestGuard, PublishedManifestRow, SoftProjectGate,
+    SEED_MANIFEST_FILENAME,
 };
 use crate::config::settings::{
     validate_agent_command_text, validate_config_seed_dest, validate_env_rows, AppSettings,
-    CodingAgentEnv, ConfigSeedConfig,
+    CodingAgentEnv, CodingAgentEnvSource, ConfigSeedConfig,
 };
 
 /// Subdirectory of the config dir holding the catalog artifacts.
@@ -398,7 +406,7 @@ const KNOWN_DEFINITION_FIELDS: &[&str] = &[
 ];
 const KNOWN_CONFIG_SEED_FIELDS: &[&str] = &["enabled", "dest"];
 const KNOWN_ENV_FIELDS: &[&str] = &["key", "value", "source", "enabled"];
-const KNOWN_ROOT_FIELDS: &[&str] = &["schemaVersion", "agents"];
+const KNOWN_ROOT_FIELDS: &[&str] = &["schemaVersion", "agents", "managed"];
 
 /// One visible report warning or unavailability record: a stable code plus the
 /// affected path and an actionable reason. Reasons never echo command text or
@@ -511,41 +519,1404 @@ fn report_without_source() -> CatalogReport {
     }
 }
 
-/// Raw read of the persisted catalog source. A missing file, an unreadable
-/// path, a nonregular entry and a symbolic link all yield `baseUnavailable`:
-/// none of them is a reason to substitute embedded defaults on this path.
-/// Read-only by construction (metadata + read, never a create).
-fn read_catalog_source(path: &Path) -> Result<Vec<u8>, String> {
+/// Read one optional catalog artifact. `Ok(None)` means the path does not
+/// exist; a link, a reparse point, a nonregular entry, an unreadable path or an
+/// inspect failure is an error, never a silent absence. Read-only by
+/// construction.
+fn read_optional_regular_file(path: &Path, what: &str) -> Result<Option<Vec<u8>>, String> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) => {
-            if meta.file_type().is_symlink() {
-                return Err(
-                    "the persisted catalog path is a symbolic link; a regular persisted file is required"
-                        .to_string(),
-                );
+            if meta.file_type().is_symlink() || is_reparse_point(&meta) {
+                return Err(format!(
+                    "the {what} at {} is a symbolic link or reparse point; a regular file is required",
+                    path.display()
+                ));
             }
             if !meta.file_type().is_file() {
-                return Err(
-                    "the persisted catalog path is not a regular file; a regular persisted file is required"
-                        .to_string(),
-                );
+                return Err(format!(
+                    "the {what} at {} is not a regular file; a regular file is required",
+                    path.display()
+                ));
+            }
+            std::fs::read(path)
+                .map(Some)
+                .map_err(|e| format!("the {what} at {} could not be read ({e})", path.display()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!(
+            "the {what} at {} could not be inspected ({e})",
+            path.display()
+        )),
+    }
+}
+
+/// The instance legacy source is a REGULAR file or nothing at all: a directory,
+/// a link or a missing path means "no instance catalog" and the fresh managed
+/// default applies, exactly like the pre-#1968 seed rule. A regular file that
+/// cannot be read is an error, never a silent reset.
+fn read_instance_legacy_source(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink()
+                || is_reparse_point(&meta)
+                || !meta.file_type().is_file()
+            {
+                return Ok(None);
+            }
+            std::fs::read(path).map(Some).map_err(|e| {
+                format!(
+                    "the instance catalog at {} could not be read ({e})",
+                    path.display()
+                )
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "the instance catalog at {} could not be inspected ({error})",
+            path.display()
+        )),
+    }
+}
+
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #1968 P5 - managed base, local overrides and recoverable migration.
+//
+// `agents.json` becomes an AC-managed snapshot (root `managed` marker) of the
+// supported shipped defaults; `<catalog>/agents.local.json` is the user-owned
+// overrides layer. Ordinary reads compose the two and NEVER write. A one-shot
+// migration extracts a legacy user-owned catalog into the local layer before
+// publishing the managed base, through an immutable byte-exact backup plus a
+// journal, so an interrupted migration is always resumable without inventing,
+// overwriting or deleting user data.
+// ---------------------------------------------------------------------------
+
+/// Diagnostic codes this phase adds.
+const REPORT_CODE_LOCAL_INVALID: &str = "localInvalid";
+const REPORT_CODE_REFRESH_FAILED: &str = "refreshFailed";
+const REPORT_CODE_MIGRATION_CONFLICT: &str = "migrationConflict";
+const REPORT_CODE_MANAGED_BASE_EDITED: &str = "managedBaseEdited";
+const REPORT_CODE_PUBLICATION_UNTRACKED: &str = "publicationUntracked";
+
+/// The only managed owner/version this build recognizes. Anything else never
+/// grants ownership: it is readable, but neither refreshed nor migrated.
+const MANAGED_OWNER: &str = "agentscommander";
+const MANAGED_VERSION: u32 = 1;
+const MANAGED_MARKER_FIELDS: &[&str] = &["owner", "version", "revision", "contentSha256"];
+
+/// The local override file name and the two migration sidecars, aliased from
+/// the leaf registry that also renders their git-ignore rows.
+const LOCAL_CATALOG_FILENAME: &str =
+    crate::config::instance_artifacts::CODING_AGENTS_LOCAL_FILENAME;
+const MIGRATION_BACKUP_FILENAME: &str =
+    crate::config::instance_artifacts::CODING_AGENTS_MIGRATION_BACKUP_FILENAME;
+const MIGRATION_JOURNAL_FILENAME: &str =
+    crate::config::instance_artifacts::CODING_AGENTS_MIGRATION_JOURNAL_FILENAME;
+const CATALOG_LOCK_FILENAME: &str = crate::config::instance_artifacts::CODING_AGENTS_LOCK_FILENAME;
+
+/// The create-once local stub: valid, empty, and user-owned after creation.
+const LOCAL_STUB_BYTES: &[u8] = b"{\"schemaVersion\":1,\"agents\":[]}\n";
+
+const MIGRATION_JOURNAL_VERSION: u32 = 1;
+
+/// The catalog write lock's polling interval and whole acquire deadline,
+/// mirroring `local_config_io`'s existing sidecar-lock behavior.
+const CATALOG_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const CATALOG_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn local_catalog_path(ac_dir: &Path) -> PathBuf {
+    catalog_dir(ac_dir).join(LOCAL_CATALOG_FILENAME)
+}
+
+fn migration_journal_path(ac_dir: &Path) -> PathBuf {
+    catalog_dir(ac_dir).join(MIGRATION_JOURNAL_FILENAME)
+}
+
+/// The four publication temporaries share one formula,
+/// `.{destination}.{pid}.{counter}.tmp`, published into the destination's own
+/// directory and named from its own file name. The formula itself lives in the
+/// leaf registry (which also renders the ignore rows); this alias keeps the
+/// writer and the policy on the same single source.
+fn publication_temp_name_for_destination(
+    destination_file_name: &str,
+    pid: u32,
+    counter: u64,
+) -> String {
+    crate::config::instance_artifacts::publication_temp_name_for_destination(
+        destination_file_name,
+        pid,
+        counter,
+    )
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+/// The revision/content identity of a supported shipped definition array: the
+/// SHA-256 of its DETERMINISTIC COMPACT UTF-8 serialization. The struct's own
+/// field order is the serialization order, every authored field is emitted, and
+/// `updateCommands` is always explicit (including `[]`), so formatting-free
+/// round trips reproduce the hash and a whitespace-only edit does not count as
+/// a data edit. `serde_json::Value` map iteration and raw bytes are never
+/// consulted.
+fn managed_content_sha256(definitions: &[CodingAgentDefinition]) -> String {
+    match serde_json::to_vec(definitions) {
+        Ok(bytes) => sha256_hex(&bytes),
+        Err(error) => {
+            log::error!(
+                "[coding-agents] failed to serialize catalog definitions for the managed revision hash ({error})"
+            );
+            String::new()
+        }
+    }
+}
+
+/// The shipped definitions the support table in force allows, in shipped order.
+fn supported_shipped_definitions() -> Vec<CodingAgentDefinition> {
+    let table = active_builtin_agent_support();
+    embedded_default_catalog()
+        .agents
+        .into_iter()
+        .filter(|definition| is_supported_builtin(&definition.key, table))
+        .collect()
+}
+
+/// The complete managed base bytes for `definitions`: pretty JSON, one trailing
+/// LF, schemaVersion 1, the definitions, and the ownership marker whose
+/// `revision` and `contentSha256` are the same content identity. No timestamp
+/// is part of the content identity.
+fn build_managed_base_bytes(definitions: &[CodingAgentDefinition]) -> Vec<u8> {
+    let revision = managed_content_sha256(definitions);
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ManagedBaseWire<'a> {
+        schema_version: u32,
+        agents: &'a [CodingAgentDefinition],
+        managed: ManagedCatalogMarker,
+    }
+    let root = ManagedBaseWire {
+        schema_version: CATALOG_SCHEMA_VERSION,
+        agents: definitions,
+        managed: ManagedCatalogMarker {
+            owner: MANAGED_OWNER.to_string(),
+            version: MANAGED_VERSION,
+            revision: revision.clone(),
+            content_sha256: revision,
+        },
+    };
+    let mut bytes = match serde_json::to_vec_pretty(&root) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            log::error!("[coding-agents] failed to serialize the managed catalog base ({error})");
+            Vec::new()
+        }
+    };
+    bytes.push(b'\n');
+    bytes
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ManagedCatalogMarker {
+    owner: String,
+    version: u32,
+    revision: String,
+    content_sha256: String,
+}
+
+// ---------------------------------------------------------------------------
+// Strict JSON: duplicate object members are rejected at every depth.
+// ---------------------------------------------------------------------------
+
+struct StrictValue(serde_json::Value);
+
+impl<'de> Deserialize<'de> for StrictValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(StrictValueVisitor)
+    }
+}
+
+struct StrictValueVisitor;
+
+impl<'de> Visitor<'de> for StrictValueVisitor {
+    type Value = StrictValue;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value whose objects have no duplicate members")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(StrictValue(serde_json::Value::Bool(value)))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(StrictValue(serde_json::Value::Number(value.into())))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(StrictValue(serde_json::Value::Number(value.into())))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
+        Ok(StrictValue(
+            serde_json::Number::from_f64(value)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+        ))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(StrictValue(serde_json::Value::String(value.to_string())))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(StrictValue(serde_json::Value::String(value)))
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(StrictValue(serde_json::Value::Null))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(StrictValue(serde_json::Value::Null))
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        StrictValue::deserialize(deserializer)
+    }
+
+    fn visit_seq<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut items = Vec::new();
+        while let Some(item) = access.next_element::<StrictValue>()? {
+            items.push(item.0);
+        }
+        Ok(StrictValue(serde_json::Value::Array(items)))
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut members = serde_json::Map::new();
+        while let Some(key) = access.next_key::<String>()? {
+            if members.contains_key(&key) {
+                return Err(de::Error::custom(format!(
+                    "duplicate JSON object member '{key}'"
+                )));
+            }
+            let value = access.next_value::<StrictValue>()?;
+            members.insert(key, value.0);
+        }
+        Ok(StrictValue(serde_json::Value::Object(members)))
+    }
+}
+
+/// Parse JSON while rejecting duplicate object members at every depth. A raw
+/// `Value` parse cannot detect those, and a duplicate member makes the document
+/// ambiguous, which is exactly the case a destructive migration must refuse.
+fn parse_strict_json(bytes: &[u8]) -> Result<serde_json::Value, String> {
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let value = StrictValue::deserialize(&mut deserializer).map_err(|error| error.to_string())?;
+    deserializer
+        .end()
+        .map_err(|error| format!("trailing data after the JSON document ({error})"))?;
+    Ok(value.0)
+}
+
+fn expect_json_object<'a>(
+    value: &'a serde_json::Value,
+    context: &str,
+) -> Result<&'a serde_json::Map<String, serde_json::Value>, String> {
+    value
+        .as_object()
+        .ok_or_else(|| format!("{context} must be a JSON object"))
+}
+
+fn expect_json_string<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    context: &str,
+) -> Result<&'a str, String> {
+    match object.get(field) {
+        Some(serde_json::Value::String(value)) => Ok(value),
+        Some(_) => Err(format!("{context}: '{field}' must be a string")),
+        None => Err(format!("{context}: '{field}' is required")),
+    }
+}
+
+fn reject_unknown_json_fields(
+    object: &serde_json::Map<String, serde_json::Value>,
+    allowed: &[&str],
+    context: &str,
+) -> Result<(), String> {
+    if let Some(names) = unknown_field_names(object.keys(), allowed) {
+        return Err(format!("{context}: unknown field(s) ({names})"));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The strict local layer schema and its composition.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+struct LocalFieldPatch {
+    label: Option<String>,
+    description: Option<String>,
+    color: Option<String>,
+    command: Option<String>,
+    /// `None` = absent; `Some(None)` = explicit `null`.
+    instructions_filename: Option<Option<String>>,
+    envs: Option<Vec<CodingAgentEnv>>,
+    isolated_home: Option<bool>,
+    /// `None` = absent; `Some(None)` = explicit `null`; `Some(Some(_))` = object.
+    config_seed: Option<Option<ConfigSeedPatch>>,
+    removable: Option<bool>,
+    update_commands: Option<Vec<String>>,
+    auto_update: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ConfigSeedPatch {
+    enabled: Option<bool>,
+    dest: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalRow {
+    key: String,
+    remove: bool,
+    fields: LocalFieldPatch,
+}
+
+#[derive(Debug, Clone)]
+struct LocalLayer {
+    rows: Vec<LocalRow>,
+    order: Option<Vec<String>>,
+}
+
+const LOCAL_ROOT_FIELDS: &[&str] = &["schemaVersion", "agents", "order"];
+const LOCAL_ROW_FIELDS: &[&str] = &[
+    "key",
+    "label",
+    "description",
+    "color",
+    "command",
+    "instructionsFilename",
+    "envs",
+    "isolatedHome",
+    "configSeed",
+    "removable",
+    "updateCommands",
+    "autoUpdate",
+];
+const LOCAL_ENV_FIELDS: &[&str] = &["key", "value", "source", "enabled"];
+const LOCAL_CONFIG_SEED_FIELDS: &[&str] = &["enabled", "dest"];
+
+fn validate_update_command_string(
+    command: &str,
+    context: &str,
+    index: usize,
+) -> Result<(), String> {
+    if command.trim().is_empty() {
+        return Err(format!("{context}: updateCommands item {index} is blank"));
+    }
+    if command
+        .chars()
+        .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+    {
+        return Err(format!(
+            "{context}: updateCommands item {index} contains a Unicode control character, U+2028 or U+2029"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_update_commands_value(
+    value: &serde_json::Value,
+    context: &str,
+) -> Result<Vec<String>, String> {
+    let serde_json::Value::Array(items) = value else {
+        return Err(format!(
+            "{context}: updateCommands must be an array of complete command strings"
+        ));
+    };
+    let mut commands = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let serde_json::Value::String(command) = item else {
+            return Err(format!(
+                "{context}: updateCommands item {index} must be a string"
+            ));
+        };
+        validate_update_command_string(command, context, index)?;
+        commands.push(command.clone());
+    }
+    Ok(commands)
+}
+
+fn parse_local_envs(
+    value: &serde_json::Value,
+    context: &str,
+) -> Result<Vec<CodingAgentEnv>, String> {
+    let serde_json::Value::Array(items) = value else {
+        return Err(format!("{context}: envs must be an array"));
+    };
+    let mut envs = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let row_context = format!("{context} envs[{index}]");
+        let object = expect_json_object(item, &row_context)?;
+        reject_unknown_json_fields(object, LOCAL_ENV_FIELDS, &row_context)?;
+        let key = expect_json_string(object, "key", &row_context)?.to_string();
+        let value = expect_json_string(object, "value", &row_context)?.to_string();
+        let source = match object.get("source") {
+            None => CodingAgentEnvSource::User,
+            Some(serde_json::Value::String(source)) => match source.as_str() {
+                "user" => CodingAgentEnvSource::User,
+                "system" | "agentsCommander" => CodingAgentEnvSource::System,
+                _ => {
+                    return Err(format!(
+                        "{row_context}: 'source' is not a recognized env source value"
+                    ))
+                }
+            },
+            Some(_) => return Err(format!("{row_context}: 'source' must be a string")),
+        };
+        let enabled = match object.get("enabled") {
+            None => true,
+            Some(serde_json::Value::Bool(enabled)) => *enabled,
+            Some(_) => return Err(format!("{row_context}: 'enabled' must be a boolean")),
+        };
+        envs.push(CodingAgentEnv {
+            key,
+            value,
+            source,
+            enabled,
+        });
+    }
+    Ok(envs)
+}
+
+fn parse_config_seed_patch(
+    value: &serde_json::Value,
+    context: &str,
+) -> Result<ConfigSeedPatch, String> {
+    let seed_context = format!("{context} configSeed");
+    let object = expect_json_object(value, &seed_context)?;
+    reject_unknown_json_fields(object, LOCAL_CONFIG_SEED_FIELDS, &seed_context)?;
+    let mut patch = ConfigSeedPatch::default();
+    if let Some(enabled) = object.get("enabled") {
+        let serde_json::Value::Bool(enabled) = enabled else {
+            return Err(format!("{seed_context}: 'enabled' must be a boolean"));
+        };
+        patch.enabled = Some(*enabled);
+    }
+    if let Some(dest) = object.get("dest") {
+        let serde_json::Value::String(dest) = dest else {
+            return Err(format!("{seed_context}: 'dest' must be a string"));
+        };
+        patch.dest = Some(dest.clone());
+    }
+    Ok(patch)
+}
+
+fn parse_local_fields(
+    object: &serde_json::Map<String, serde_json::Value>,
+    context: &str,
+) -> Result<LocalFieldPatch, String> {
+    reject_unknown_json_fields(object, LOCAL_ROW_FIELDS, context)?;
+    let mut fields = LocalFieldPatch::default();
+    if let Some(value) = object.get("label") {
+        let serde_json::Value::String(value) = value else {
+            return Err(format!("{context}: 'label' must be a string"));
+        };
+        fields.label = Some(value.clone());
+    }
+    if let Some(value) = object.get("description") {
+        let serde_json::Value::String(value) = value else {
+            return Err(format!("{context}: 'description' must be a string"));
+        };
+        fields.description = Some(value.clone());
+    }
+    if let Some(value) = object.get("color") {
+        let serde_json::Value::String(value) = value else {
+            return Err(format!("{context}: 'color' must be a string"));
+        };
+        fields.color = Some(value.clone());
+    }
+    if let Some(value) = object.get("command") {
+        let serde_json::Value::String(value) = value else {
+            return Err(format!("{context}: 'command' must be a string"));
+        };
+        fields.command = Some(value.clone());
+    }
+    if let Some(value) = object.get("instructionsFilename") {
+        fields.instructions_filename = Some(match value {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(value) => Some(value.clone()),
+            _ => {
+                return Err(format!(
+                    "{context}: 'instructionsFilename' must be a string or null"
+                ))
+            }
+        });
+    }
+    if let Some(value) = object.get("envs") {
+        fields.envs = Some(parse_local_envs(value, context)?);
+    }
+    if let Some(value) = object.get("isolatedHome") {
+        let serde_json::Value::Bool(value) = value else {
+            return Err(format!("{context}: 'isolatedHome' must be a boolean"));
+        };
+        fields.isolated_home = Some(*value);
+    }
+    if let Some(value) = object.get("configSeed") {
+        fields.config_seed = Some(match value {
+            serde_json::Value::Null => None,
+            serde_json::Value::Object(_) => Some(parse_config_seed_patch(value, context)?),
+            _ => return Err(format!("{context}: 'configSeed' must be an object or null")),
+        });
+    }
+    if let Some(value) = object.get("removable") {
+        let serde_json::Value::Bool(value) = value else {
+            return Err(format!("{context}: 'removable' must be a boolean"));
+        };
+        fields.removable = Some(*value);
+    }
+    if let Some(value) = object.get("updateCommands") {
+        fields.update_commands = Some(parse_update_commands_value(value, context)?);
+    }
+    if let Some(value) = object.get("autoUpdate") {
+        let serde_json::Value::Bool(value) = value else {
+            return Err(format!("{context}: 'autoUpdate' must be a boolean"));
+        };
+        fields.auto_update = Some(*value);
+    }
+    Ok(fields)
+}
+
+/// Parse the local layer STRICTLY: unknown fields, duplicate JSON members,
+/// duplicate local identities, duplicate order keys and unsupported schemas are
+/// all whole-layer errors, so a partially applied layer is impossible.
+fn parse_local_layer(bytes: &[u8]) -> Result<LocalLayer, String> {
+    let value = parse_strict_json(bytes)
+        .map_err(|reason| format!("the local catalog is not valid JSON ({reason})"))?;
+    let root = expect_json_object(&value, "the local catalog root")?;
+    reject_unknown_json_fields(root, LOCAL_ROOT_FIELDS, "the local catalog root")?;
+    match root.get("schemaVersion") {
+        Some(serde_json::Value::Number(version))
+            if version.as_u64() == Some(CATALOG_SCHEMA_VERSION as u64) => {}
+        Some(version) => {
+            return Err(format!(
+                "unsupported schemaVersion {version}; only schemaVersion 1 is recognized"
+            ))
+        }
+        None => return Err("the local catalog root must declare schemaVersion 1".to_string()),
+    }
+    let agents = match root.get("agents") {
+        Some(serde_json::Value::Array(agents)) => agents,
+        Some(_) => return Err("the local catalog 'agents' value must be a JSON array".to_string()),
+        None => return Err("the local catalog root must declare an 'agents' array".to_string()),
+    };
+    let order = match root.get("order") {
+        None => None,
+        Some(serde_json::Value::Array(items)) => {
+            let mut seen = HashSet::new();
+            let mut keys = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let serde_json::Value::String(key) = item else {
+                    return Err(format!("local order item {index} must be a string"));
+                };
+                if validate_catalog_key(key).is_err() {
+                    return Err(format!(
+                        "local order item {index} is not a valid catalog key"
+                    ));
+                }
+                if !seen.insert(key.clone()) {
+                    return Err(format!("duplicate local order key '{key}'"));
+                }
+                keys.push(key.clone());
+            }
+            Some(keys)
+        }
+        Some(_) => return Err("the local catalog 'order' value must be a JSON array".to_string()),
+    };
+
+    let mut seen_keys = HashSet::new();
+    let mut rows = Vec::with_capacity(agents.len());
+    for (index, raw) in agents.iter().enumerate() {
+        let context = format!("local agents[{index}]");
+        let object = expect_json_object(raw, &context)?;
+        let key = expect_json_string(object, "key", &context)?.to_string();
+        validate_catalog_key(&key).map_err(|reason| format!("{context}: {reason}"))?;
+        if !seen_keys.insert(key.clone()) {
+            return Err(format!("duplicate local coding-agent key '{key}'"));
+        }
+        let remove = match object.get("remove") {
+            None => false,
+            Some(serde_json::Value::Bool(true)) => true,
+            Some(serde_json::Value::Bool(false)) => {
+                return Err(format!(
+                    "{context}: remove:false is rejected; omit remove for ordinary patches"
+                ))
+            }
+            Some(_) => return Err(format!("{context}: 'remove' must be true")),
+        };
+        if remove {
+            reject_unknown_json_fields(object, &["key", "remove"], &context)?;
+            rows.push(LocalRow {
+                key,
+                remove: true,
+                fields: LocalFieldPatch::default(),
+            });
+        } else {
+            let fields = parse_local_fields(object, &context)?;
+            rows.push(LocalRow {
+                key,
+                remove: false,
+                fields,
+            });
+        }
+    }
+    Ok(LocalLayer { rows, order })
+}
+
+fn merge_config_seed(
+    current: Option<ConfigSeedConfig>,
+    patch: &ConfigSeedPatch,
+) -> ConfigSeedConfig {
+    let mut merged = current.unwrap_or(ConfigSeedConfig {
+        enabled: true,
+        dest: String::new(),
+    });
+    if let Some(enabled) = patch.enabled {
+        merged.enabled = enabled;
+    }
+    if let Some(dest) = &patch.dest {
+        merged.dest = dest.clone();
+    }
+    merged
+}
+
+fn apply_local_fields(
+    mut definition: CodingAgentDefinition,
+    fields: &LocalFieldPatch,
+) -> CodingAgentDefinition {
+    if let Some(value) = &fields.label {
+        definition.label = value.clone();
+    }
+    if let Some(value) = &fields.description {
+        definition.description = value.clone();
+    }
+    if let Some(value) = &fields.color {
+        definition.color = value.clone();
+    }
+    if let Some(value) = &fields.command {
+        definition.command = value.clone();
+    }
+    if let Some(value) = &fields.instructions_filename {
+        definition.instructions_filename = value.clone();
+    }
+    if let Some(value) = &fields.envs {
+        definition.envs = value.clone();
+    }
+    if let Some(value) = fields.isolated_home {
+        definition.isolated_home = value;
+    }
+    if let Some(patch) = &fields.config_seed {
+        definition.config_seed = match patch {
+            None => None,
+            Some(patch) => Some(merge_config_seed(definition.config_seed.clone(), patch)),
+        };
+    }
+    if let Some(value) = fields.removable {
+        definition.removable = value;
+    }
+    if let Some(value) = &fields.update_commands {
+        definition.update_commands = value.clone();
+    }
+    if let Some(value) = fields.auto_update {
+        definition.auto_update = value;
+    }
+    definition
+}
+
+/// A NEW key requires every authored field explicitly; `instructionsFilename`
+/// and `configSeed` stay optional (absent or `null`).
+fn build_new_definition(
+    key: &str,
+    fields: &LocalFieldPatch,
+) -> Result<CodingAgentDefinition, String> {
+    let mut missing = Vec::new();
+    if fields.label.is_none() {
+        missing.push("label");
+    }
+    if fields.description.is_none() {
+        missing.push("description");
+    }
+    if fields.color.is_none() {
+        missing.push("color");
+    }
+    if fields.command.is_none() {
+        missing.push("command");
+    }
+    if fields.envs.is_none() {
+        missing.push("envs");
+    }
+    if fields.isolated_home.is_none() {
+        missing.push("isolatedHome");
+    }
+    if fields.removable.is_none() {
+        missing.push("removable");
+    }
+    if fields.update_commands.is_none() {
+        missing.push("updateCommands");
+    }
+    if fields.auto_update.is_none() {
+        missing.push("autoUpdate");
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "new local coding-agent '{key}' is missing required field(s): {}",
+            missing.join(", ")
+        ));
+    }
+    let config_seed = match &fields.config_seed {
+        None | Some(None) => None,
+        Some(Some(patch)) => Some(merge_config_seed(None, patch)),
+    };
+    Ok(CodingAgentDefinition {
+        key: key.to_string(),
+        label: fields.label.clone().unwrap_or_default(),
+        description: fields.description.clone().unwrap_or_default(),
+        color: fields.color.clone().unwrap_or_default(),
+        command: fields.command.clone().unwrap_or_default(),
+        instructions_filename: fields.instructions_filename.clone().unwrap_or(None),
+        envs: fields.envs.clone().unwrap_or_default(),
+        isolated_home: fields.isolated_home.unwrap_or(false),
+        config_seed,
+        removable: fields.removable.unwrap_or(true),
+        update_commands: fields.update_commands.clone().unwrap_or_default(),
+        auto_update: fields.auto_update.unwrap_or(false),
+    })
+}
+
+/// Compose the local layer onto the base definitions. Rows merge by stable key
+/// (omission inherits, present values replace); local additions append in local
+/// order; the optional root `order` moves listed survivors first while every
+/// unlisted survivor keeps base-then-local-add order. The whole candidate is
+/// validated before anything is returned, and one bad definition discards the
+/// ENTIRE local layer. The built-in support gate is applied by the caller so
+/// the unedited-content check can still see the full base.
+fn compose_local_layer(
+    base: &[CodingAgentDefinition],
+    local: &LocalLayer,
+) -> Result<Vec<CodingAgentDefinition>, String> {
+    let mut working: Vec<CodingAgentDefinition> = base.to_vec();
+    let mut index: HashMap<String, usize> = HashMap::with_capacity(working.len());
+    for (position, definition) in working.iter().enumerate() {
+        index.insert(definition.key.clone(), position);
+    }
+    let mut removed = vec![false; working.len()];
+    let mut local_added: Vec<CodingAgentDefinition> = Vec::new();
+
+    for row in &local.rows {
+        match index.get(&row.key).copied() {
+            Some(position) => {
+                if row.remove {
+                    if !working[position].removable {
+                        return Err(format!(
+                            "local remove row targets nonremovable coding agent '{}'",
+                            row.key
+                        ));
+                    }
+                    removed[position] = true;
+                } else {
+                    working[position] = apply_local_fields(working[position].clone(), &row.fields);
+                }
+            }
+            None => {
+                // An unknown tombstone is valid and retained for a future
+                // shipped key; only a new ordinary row needs a complete def.
+                if row.remove {
+                    continue;
+                }
+                local_added.push(build_new_definition(&row.key, &row.fields)?);
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(
-                "no persisted catalog exists at this path; no embedded defaults are substituted"
-                    .to_string(),
-            );
+    }
+
+    let mut effective: Vec<CodingAgentDefinition> =
+        Vec::with_capacity(working.len() + local_added.len());
+    for (position, definition) in working.into_iter().enumerate() {
+        if !removed[position] {
+            effective.push(definition);
         }
-        Err(e) => {
+    }
+    effective.extend(local_added);
+
+    for definition in &effective {
+        if validate_definition(definition).is_err() {
             return Err(format!(
-                "the persisted catalog path could not be inspected ({e})"
+                "coding agent '{}' failed validation after composition: {}",
+                definition.key,
+                definition_problem_reason(definition)
+            ));
+        }
+        for (index, command) in definition.update_commands.iter().enumerate() {
+            validate_update_command_string(command, "local composition", index).map_err(
+                |reason| {
+                    format!(
+                        "coding agent '{}' failed validation after composition: {reason}",
+                        definition.key
+                    )
+                },
+            )?;
+        }
+    }
+
+    if let Some(order) = &local.order {
+        let position: HashMap<&str, usize> = effective
+            .iter()
+            .enumerate()
+            .map(|(index, definition)| (definition.key.as_str(), index))
+            .collect();
+        let mut taken = vec![false; effective.len()];
+        let mut ordered = Vec::with_capacity(effective.len());
+        for key in order {
+            if let Some(&position) = position.get(key.as_str()) {
+                if !taken[position] {
+                    taken[position] = true;
+                    ordered.push(effective[position].clone());
+                }
+            }
+        }
+        for (index, definition) in effective.into_iter().enumerate() {
+            if !taken[index] {
+                ordered.push(definition);
+            }
+        }
+        effective = ordered;
+    }
+
+    Ok(effective)
+}
+
+/// Apply the shipped support gate to a resolved catalog, warning once per
+/// suppressed built-in key.
+fn apply_support_gate(
+    definitions: Vec<CodingAgentDefinition>,
+    path: &Path,
+    warnings: &mut Vec<CatalogDiagnostic>,
+) -> Vec<CodingAgentDefinition> {
+    let table = active_builtin_agent_support();
+    let mut suppressed: Vec<String> = Vec::new();
+    let mut kept = Vec::with_capacity(definitions.len());
+    for definition in definitions {
+        if is_supported_builtin(&definition.key, table) {
+            kept.push(definition);
+        } else if !suppressed.contains(&definition.key) {
+            suppressed.push(definition.key.clone());
+            warnings.push(catalog_diagnostic(
+                REPORT_CODE_INVALID_DEFINITION,
+                path,
+                format!(
+                    "coding-agent '{}' is not supported by this build and was omitted",
+                    definition.key
+                ),
             ));
         }
     }
-    std::fs::read(path).map_err(|e| format!("the persisted catalog could not be read ({e})"))
+    kept
 }
 
+// ---------------------------------------------------------------------------
+// Base analysis: ownership, content identity and readability.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CatalogBaseKind {
+    /// The managed marker carries this build's owner and version.
+    Managed,
+    /// A `managed` marker exists but is not ours (or is malformed): readable,
+    /// but neither refreshed nor migrated.
+    ForeignManaged,
+    /// No marker at all: legacy user-owned territory.
+    Legacy,
+}
+
+struct BaseAnalysis {
+    kind: CatalogBaseKind,
+    marker: Option<ManagedCatalogMarker>,
+    entries: Vec<CodingAgentDefinition>,
+    edited: bool,
+    refresh_blocked: bool,
+    warnings: Vec<CatalogDiagnostic>,
+}
+
+fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, CatalogDiagnostic> {
+    let value = parse_strict_json(bytes).map_err(|reason| {
+        catalog_diagnostic(
+            REPORT_CODE_BASE_INVALID,
+            base_path,
+            format!("the persisted catalog is not valid JSON ({reason})"),
+        )
+    })?;
+    let Some(root) = value.as_object() else {
+        return Err(catalog_diagnostic(
+            REPORT_CODE_BASE_INVALID,
+            base_path,
+            "the catalog root must be a JSON object",
+        ));
+    };
+    if let Some(version) = root.get("schemaVersion") {
+        if version.as_u64() != Some(CATALOG_SCHEMA_VERSION as u64) {
+            return Err(catalog_diagnostic(
+                REPORT_CODE_BASE_INVALID,
+                base_path,
+                format!(
+                    "unsupported explicit schemaVersion {version}; only schemaVersion 1 is recognized"
+                ),
+            ));
+        }
+    }
+    let empty_rows = Vec::new();
+    let rows = match root.get("agents") {
+        None => &empty_rows,
+        Some(serde_json::Value::Array(rows)) => rows,
+        Some(_) => {
+            return Err(catalog_diagnostic(
+                REPORT_CODE_BASE_INVALID,
+                base_path,
+                "the catalog 'agents' value must be a JSON array",
+            ))
+        }
+    };
+
+    let mut warnings = Vec::new();
+    let mut refresh_blocked = false;
+    if let Some(names) = unknown_field_names(root.keys(), KNOWN_ROOT_FIELDS) {
+        warnings.push(catalog_diagnostic(
+            REPORT_CODE_MIGRATION_PENDING,
+            base_path,
+            format!(
+                "root field(s) ({names}) are not recognized by the current catalog schema and require managed-catalog migration"
+            ),
+        ));
+        refresh_blocked = true;
+    }
+
+    let (kind, marker) = match root.get("managed") {
+        None => (CatalogBaseKind::Legacy, None),
+        Some(serde_json::Value::Object(object)) => {
+            if unknown_field_names(object.keys(), MANAGED_MARKER_FIELDS).is_some() {
+                refresh_blocked = true;
+            }
+            let owner = object.get("owner").and_then(serde_json::Value::as_str);
+            let version = object.get("version").and_then(serde_json::Value::as_u64);
+            if owner == Some(MANAGED_OWNER) && version == Some(MANAGED_VERSION as u64) {
+                match (
+                    object.get("revision").and_then(serde_json::Value::as_str),
+                    object
+                        .get("contentSha256")
+                        .and_then(serde_json::Value::as_str),
+                ) {
+                    (Some(revision), Some(content_sha256)) => (
+                        CatalogBaseKind::Managed,
+                        Some(ManagedCatalogMarker {
+                            owner: MANAGED_OWNER.to_string(),
+                            version: MANAGED_VERSION,
+                            revision: revision.to_string(),
+                            content_sha256: content_sha256.to_string(),
+                        }),
+                    ),
+                    _ => (CatalogBaseKind::ForeignManaged, None),
+                }
+            } else {
+                (CatalogBaseKind::ForeignManaged, None)
+            }
+        }
+        Some(_) => (CatalogBaseKind::ForeignManaged, None),
+    };
+
+    let mut entries: Vec<CodingAgentDefinition> = Vec::new();
+    let mut seen_keys: HashSet<String> = HashSet::new();
+    for (index, raw) in rows.iter().enumerate() {
+        let Some(raw_object) = raw.as_object() else {
+            warnings.push(catalog_diagnostic(
+                REPORT_CODE_INVALID_DEFINITION,
+                base_path,
+                format!("entry {index} is not a JSON object and was omitted"),
+            ));
+            continue;
+        };
+        if let Some(reason) = raw_update_commands_problem(raw) {
+            warnings.push(catalog_diagnostic(
+                REPORT_CODE_INVALID_DEFINITION,
+                base_path,
+                format!("entry {index} was omitted: {reason}"),
+            ));
+            continue;
+        }
+        let definition: CodingAgentDefinition = match serde_json::from_value(raw.clone()) {
+            Ok(definition) => definition,
+            Err(_) => {
+                warnings.push(catalog_diagnostic(
+                    REPORT_CODE_INVALID_DEFINITION,
+                    base_path,
+                    format!(
+                        "entry {index} does not match the coding-agent definition schema and was omitted"
+                    ),
+                ));
+                continue;
+            }
+        };
+        if validate_definition(&definition).is_err() {
+            let label = if validate_catalog_key(&definition.key).is_ok() {
+                format!("coding-agent '{}'", definition.key)
+            } else {
+                format!("entry {index}")
+            };
+            warnings.push(catalog_diagnostic(
+                REPORT_CODE_INVALID_DEFINITION,
+                base_path,
+                format!(
+                    "{label} was omitted: {}",
+                    definition_problem_reason(&definition)
+                ),
+            ));
+            continue;
+        }
+        if !seen_keys.insert(definition.key.clone()) {
+            warnings.push(catalog_diagnostic(
+                REPORT_CODE_DUPLICATE_KEY,
+                base_path,
+                format!(
+                    "coding-agent '{}' was omitted: its key duplicates an earlier entry (the first entry wins)",
+                    definition.key
+                ),
+            ));
+            continue;
+        }
+        if !raw_object.contains_key("updateCommands") {
+            warnings.push(catalog_diagnostic(
+                REPORT_CODE_MIGRATION_PENDING,
+                base_path,
+                format!(
+                    "coding-agent '{}' has no persisted updateCommands; absent update commands are suppressed during reads and require managed-catalog migration on a supported restart",
+                    definition.key
+                ),
+            ));
+        }
+        if push_unknown_field_warnings(raw_object, &definition.key, base_path, &mut warnings) {
+            refresh_blocked = true;
+        }
+        entries.push(definition);
+    }
+
+    let mut edited = false;
+    if let Some(marker) = &marker {
+        if managed_content_sha256(&entries) != marker.content_sha256 {
+            edited = true;
+            warnings.push(catalog_diagnostic(
+                REPORT_CODE_MANAGED_BASE_EDITED,
+                base_path,
+                "the managed catalog content does not match its recorded contentSha256; it stays readable but is never auto-refreshed or auto-migrated",
+            ));
+        }
+    }
+
+    Ok(BaseAnalysis {
+        kind,
+        marker,
+        entries,
+        edited,
+        refresh_blocked,
+        warnings,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Read snapshots and resolution.
+// ---------------------------------------------------------------------------
+
+struct CatalogSnapshot {
+    /// `Err` carries a present-but-unreadable entry (link, reparse point or
+    /// nonregular path); the resolver degrades that artifact instead of failing
+    /// the whole read.
+    base: Result<Option<Vec<u8>>, String>,
+    local: Result<Option<Vec<u8>>, String>,
+    journal: Result<Option<Vec<u8>>, String>,
+}
+
+/// Snapshot the source, local layer and journal. The three files move together
+/// only while a migration publishes, so a snapshot whose reads straddle a
+/// publication is retried; two consecutive equal snapshots prove a boundary
+/// view. After three attempts the read reports unavailability with retry
+/// guidance instead of composing a torn state.
+fn read_catalog_snapshot(ac_dir: &Path) -> Result<CatalogSnapshot, String> {
+    let base_path = manifest_path(ac_dir);
+    let local_path = local_catalog_path(ac_dir);
+    let journal_path = migration_journal_path(ac_dir);
+    type Fingerprint = (
+        Result<Option<Vec<u8>>, String>,
+        Result<Option<Vec<u8>>, String>,
+        Result<Option<Vec<u8>>, String>,
+    );
+    let mut previous: Option<Fingerprint> = None;
+    for _attempt in 0..3 {
+        let snapshot = CatalogSnapshot {
+            base: read_optional_regular_file(&base_path, "persisted catalog"),
+            local: read_optional_regular_file(&local_path, "local coding-agent catalog"),
+            journal: read_optional_regular_file(&journal_path, "coding-agent migration journal"),
+        };
+        let fingerprint = (
+            snapshot.base.clone(),
+            snapshot.local.clone(),
+            snapshot.journal.clone(),
+        );
+        if previous.as_ref() == Some(&fingerprint) {
+            return Ok(snapshot);
+        }
+        previous = Some(fingerprint);
+    }
+    Err(
+        "the catalog source, local overrides and migration journal kept changing while reading; retry the read"
+            .to_string(),
+    )
+}
+
+struct ResolvedCatalog {
+    catalog: Vec<CodingAgentDefinition>,
+    warnings: Vec<CatalogDiagnostic>,
+    unavailable: Option<CatalogDiagnostic>,
+    base_verified_managed: bool,
+}
+
+/// A local file that has NOT reached a managed base does not silently become
+/// effective: it is diagnosed, and a legacy read stays legacy.
+fn describe_local_presence(
+    local: &Result<Option<Vec<u8>>, String>,
+    local_path: &Path,
+    warnings: &mut Vec<CatalogDiagnostic>,
+) {
+    match local {
+        Ok(None) => return,
+        Ok(Some(local_bytes)) => {
+            if let Err(reason) = parse_local_layer(local_bytes) {
+                warnings.push(catalog_diagnostic(
+                    REPORT_CODE_LOCAL_INVALID,
+                    local_path,
+                    reason,
+                ));
+            }
+        }
+        Err(reason) => warnings.push(catalog_diagnostic(
+            REPORT_CODE_LOCAL_INVALID,
+            local_path,
+            reason.clone(),
+        )),
+    }
+    warnings.push(catalog_diagnostic(
+        REPORT_CODE_MIGRATION_PENDING,
+        local_path,
+        "a local overrides file exists while the base is not AC-managed; ownership transfer is blocked until the managed migration completes and the local layer is not applied on top of a non-managed base",
+    ));
+}
+
+/// Serve the verified legacy instance source recorded by an interrupted
+/// instance import, when no managed base has been published yet.
+fn journal_legacy_source(
+    journal_bytes: &[u8],
+) -> Result<Option<Vec<CodingAgentDefinition>>, String> {
+    let journal = parse_migration_journal(journal_bytes)?;
+    if journal.source_kind != MIGRATION_SOURCE_INSTANCE {
+        return Ok(None);
+    }
+    let source_path = PathBuf::from(&journal.source_path);
+    let Some(source_bytes) = read_instance_legacy_source(&source_path)? else {
+        return Ok(None);
+    };
+    if sha256_hex(&source_bytes) != journal.source_sha256 {
+        return Err(
+            "the recorded migration source no longer matches the journal hash; recovery is blocked"
+                .to_string(),
+        );
+    }
+    let analysis = analyze_base_bytes(&source_path, &source_bytes).map_err(|diagnostic| {
+        format!(
+            "the recorded migration source is not readable: {}",
+            diagnostic.code
+        )
+    })?;
+    if analysis.kind != CatalogBaseKind::Legacy {
+        return Ok(None);
+    }
+    Ok(Some(analysis.entries))
+}
+
+fn resolve_catalog_snapshot(ac_dir: &Path, snapshot: CatalogSnapshot) -> ResolvedCatalog {
+    let base_path = manifest_path(ac_dir);
+    let local_path = local_catalog_path(ac_dir);
+    let journal_path = migration_journal_path(ac_dir);
+    let mut resolved = ResolvedCatalog {
+        catalog: Vec::new(),
+        warnings: Vec::new(),
+        unavailable: None,
+        base_verified_managed: false,
+    };
+
+    let base_bytes = match &snapshot.base {
+        Ok(Some(bytes)) => Some(bytes.clone()),
+        Ok(None) => None,
+        Err(reason) => {
+            resolved.unavailable = Some(catalog_diagnostic(
+                REPORT_CODE_BASE_UNAVAILABLE,
+                &base_path,
+                reason.clone(),
+            ));
+            return resolved;
+        }
+    };
+    let journal_present = matches!(&snapshot.journal, Ok(Some(_)));
+
+    let Some(base_bytes) = base_bytes else {
+        if snapshot.journal.is_err() {
+            let reason = snapshot.journal.as_ref().err().cloned().unwrap_or_default();
+            resolved.warnings.push(catalog_diagnostic(
+                REPORT_CODE_MIGRATION_CONFLICT,
+                &journal_path,
+                reason,
+            ));
+        }
+        if journal_present {
+            resolved.warnings.push(catalog_diagnostic(
+                REPORT_CODE_MIGRATION_PENDING,
+                &journal_path,
+                "an interrupted managed-catalog migration is pending; it resumes on the next initialization",
+            ));
+            let journal_bytes = snapshot
+                .journal
+                .as_ref()
+                .ok()
+                .and_then(|value| value.as_deref());
+            if let Some(journal_bytes) = journal_bytes {
+                match journal_legacy_source(journal_bytes) {
+                    Ok(Some(entries)) => {
+                        resolved.catalog =
+                            apply_support_gate(entries, &base_path, &mut resolved.warnings);
+                        return resolved;
+                    }
+                    Ok(None) => {}
+                    Err(reason) => resolved.warnings.push(catalog_diagnostic(
+                        REPORT_CODE_MIGRATION_CONFLICT,
+                        &journal_path,
+                        reason,
+                    )),
+                }
+            }
+        }
+        match &snapshot.local {
+            Ok(None) => {}
+            Ok(Some(_)) => resolved.warnings.push(catalog_diagnostic(
+                REPORT_CODE_MIGRATION_PENDING,
+                &local_path,
+                "a local overrides file exists but no managed base has been published yet; the managed base is created on the next initialization",
+            )),
+            Err(reason) => resolved.warnings.push(catalog_diagnostic(
+                REPORT_CODE_LOCAL_INVALID,
+                &local_path,
+                reason.clone(),
+            )),
+        }
+        resolved.unavailable = Some(catalog_diagnostic(
+            REPORT_CODE_BASE_UNAVAILABLE,
+            &base_path,
+            "no persisted catalog exists at this path; no embedded defaults are substituted",
+        ));
+        return resolved;
+    };
+
+    let analysis = match analyze_base_bytes(&base_path, &base_bytes) {
+        Ok(analysis) => analysis,
+        Err(diagnostic) => {
+            resolved.unavailable = Some(diagnostic);
+            return resolved;
+        }
+    };
+    resolved.warnings.extend(analysis.warnings.iter().cloned());
+    resolved.base_verified_managed = analysis.kind == CatalogBaseKind::Managed && !analysis.edited;
+
+    match analysis.kind {
+        CatalogBaseKind::Managed => {
+            let mut effective = analysis.entries;
+            match &snapshot.local {
+                Ok(Some(local_bytes)) => match parse_local_layer(local_bytes) {
+                    Ok(layer) => match compose_local_layer(&effective, &layer) {
+                        Ok(composed) => effective = composed,
+                        Err(reason) => resolved.warnings.push(catalog_diagnostic(
+                            REPORT_CODE_LOCAL_INVALID,
+                            &local_path,
+                            reason,
+                        )),
+                    },
+                    Err(reason) => resolved.warnings.push(catalog_diagnostic(
+                        REPORT_CODE_LOCAL_INVALID,
+                        &local_path,
+                        reason,
+                    )),
+                },
+                Ok(None) => {}
+                Err(reason) => resolved.warnings.push(catalog_diagnostic(
+                    REPORT_CODE_LOCAL_INVALID,
+                    &local_path,
+                    reason.clone(),
+                )),
+            }
+            resolved.catalog = apply_support_gate(effective, &base_path, &mut resolved.warnings);
+        }
+        CatalogBaseKind::ForeignManaged => {
+            resolved.warnings.push(catalog_diagnostic(
+                REPORT_CODE_MIGRATION_CONFLICT,
+                &base_path,
+                "the persisted catalog carries an unrecognized managed ownership marker; this build neither refreshes nor migrates it",
+            ));
+            describe_local_presence(&snapshot.local, &local_path, &mut resolved.warnings);
+            resolved.catalog =
+                apply_support_gate(analysis.entries, &base_path, &mut resolved.warnings);
+        }
+        CatalogBaseKind::Legacy => {
+            describe_local_presence(&snapshot.local, &local_path, &mut resolved.warnings);
+            resolved.catalog =
+                apply_support_gate(analysis.entries, &base_path, &mut resolved.warnings);
+        }
+    }
+
+    resolved
+}
 /// Per-item validation of a raw `updateCommands` value BEFORE deserialization,
 /// so a non-string or unsafe item reports on that definition instead of failing
 /// the whole file as malformed JSON. Returns a reason on the first offending
@@ -630,8 +2001,10 @@ fn push_unknown_field_warnings(
     key: &str,
     path: &Path,
     warnings: &mut Vec<CatalogDiagnostic>,
-) {
+) -> bool {
+    let mut found = false;
     if let Some(names) = unknown_field_names(raw.keys(), KNOWN_DEFINITION_FIELDS) {
+        found = true;
         warnings.push(catalog_diagnostic(
             REPORT_CODE_MIGRATION_PENDING,
             path,
@@ -642,6 +2015,7 @@ fn push_unknown_field_warnings(
     }
     if let Some(serde_json::Value::Object(seed)) = raw.get("configSeed") {
         if let Some(names) = unknown_field_names(seed.keys(), KNOWN_CONFIG_SEED_FIELDS) {
+            found = true;
             warnings.push(catalog_diagnostic(
                 REPORT_CODE_MIGRATION_PENDING,
                 path,
@@ -657,6 +2031,7 @@ fn push_unknown_field_warnings(
                 continue;
             };
             if let Some(names) = unknown_field_names(map.keys(), KNOWN_ENV_FIELDS) {
+                found = true;
                 warnings.push(catalog_diagnostic(
                     REPORT_CODE_MIGRATION_PENDING,
                     path,
@@ -667,6 +2042,7 @@ fn push_unknown_field_warnings(
             }
         }
     }
+    found
 }
 
 /// Load the persisted-only catalog report for one catalog root directory (a
@@ -675,11 +2051,15 @@ fn push_unknown_field_warnings(
 /// READ-ONLY: never seeds, creates directories, refreshes, locks or writes.
 /// `unavailable` is set (with an empty catalog) for a missing/unreadable/
 /// nonregular/link source, invalid JSON, an unsupported explicit schemaVersion
-/// or an invalid root shape; a valid empty catalog is a success. Missing
-/// `schemaVersion` means 1; missing `agents` keeps the empty-list meaning.
-/// Definitions keep persisted order after filtering; no embedded donor is ever
-/// consulted and no backfill is applied.
+/// or an invalid root shape; a valid empty catalog is a success. A managed base
+/// composes its local layer behind the same resolver; a legacy base stays
+/// readable and reports the pending migration. Definitions keep persisted order
+/// after filtering; no embedded donor is ever consulted.
 pub fn load_catalog_report(ac_dir: &Path) -> CatalogReport {
+    load_catalog_report_inner(ac_dir).0
+}
+
+fn load_catalog_report_inner(ac_dir: &Path) -> (CatalogReport, bool) {
     let path = manifest_path(ac_dir);
     let mut report = CatalogReport {
         primary_project_root: None,
@@ -688,154 +2068,22 @@ pub fn load_catalog_report(ac_dir: &Path) -> CatalogReport {
         warnings: Vec::new(),
         unavailable: None,
     };
-
-    let bytes = match read_catalog_source(&path) {
-        Ok(bytes) => bytes,
+    let snapshot = match read_catalog_snapshot(ac_dir) {
+        Ok(snapshot) => snapshot,
         Err(reason) => {
             report.unavailable = Some(catalog_diagnostic(
                 REPORT_CODE_BASE_UNAVAILABLE,
                 &path,
                 reason,
             ));
-            return report;
+            return (report, false);
         }
     };
-    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
-        Ok(value) => value,
-        Err(e) => {
-            report.unavailable = Some(catalog_diagnostic(
-                REPORT_CODE_BASE_INVALID,
-                &path,
-                format!("the persisted catalog is not valid JSON ({e})"),
-            ));
-            return report;
-        }
-    };
-    let serde_json::Value::Object(root) = value else {
-        report.unavailable = Some(catalog_diagnostic(
-            REPORT_CODE_BASE_INVALID,
-            &path,
-            "the catalog root must be a JSON object",
-        ));
-        return report;
-    };
-    if let Some(version) = root.get("schemaVersion") {
-        if version.as_u64() != Some(CATALOG_SCHEMA_VERSION as u64) {
-            report.unavailable = Some(catalog_diagnostic(
-                REPORT_CODE_BASE_INVALID,
-                &path,
-                format!(
-                    "unsupported explicit schemaVersion {version}; only schemaVersion 1 is recognized"
-                ),
-            ));
-            return report;
-        }
-    }
-    let rows = match root.get("agents") {
-        None => Vec::new(),
-        Some(serde_json::Value::Array(rows)) => rows.clone(),
-        Some(_) => {
-            report.unavailable = Some(catalog_diagnostic(
-                REPORT_CODE_BASE_INVALID,
-                &path,
-                "the catalog 'agents' value must be a JSON array",
-            ));
-            return report;
-        }
-    };
-
-    if let Some(names) = unknown_field_names(root.keys(), KNOWN_ROOT_FIELDS) {
-        report.warnings.push(catalog_diagnostic(
-            REPORT_CODE_MIGRATION_PENDING,
-            &path,
-            format!(
-                "root field(s) ({names}) are not recognized by the current catalog schema and require managed-catalog migration"
-            ),
-        ));
-    }
-
-    let table = active_builtin_agent_support();
-    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for (index, raw) in rows.iter().enumerate() {
-        let Some(raw_object) = raw.as_object() else {
-            report.warnings.push(catalog_diagnostic(
-                REPORT_CODE_INVALID_DEFINITION,
-                &path,
-                format!("entry {index} is not a JSON object and was omitted"),
-            ));
-            continue;
-        };
-        if let Some(reason) = raw_update_commands_problem(raw) {
-            report.warnings.push(catalog_diagnostic(
-                REPORT_CODE_INVALID_DEFINITION,
-                &path,
-                format!("entry {index} was omitted: {reason}"),
-            ));
-            continue;
-        }
-        let def: CodingAgentDefinition = match serde_json::from_value(raw.clone()) {
-            Ok(def) => def,
-            Err(_) => {
-                report.warnings.push(catalog_diagnostic(
-                    REPORT_CODE_INVALID_DEFINITION,
-                    &path,
-                    format!(
-                        "entry {index} does not match the coding-agent definition schema and was omitted"
-                    ),
-                ));
-                continue;
-            }
-        };
-        if validate_definition(&def).is_err() {
-            let label = if validate_catalog_key(&def.key).is_ok() {
-                format!("coding-agent '{}'", def.key)
-            } else {
-                format!("entry {index}")
-            };
-            report.warnings.push(catalog_diagnostic(
-                REPORT_CODE_INVALID_DEFINITION,
-                &path,
-                format!("{label} was omitted: {}", definition_problem_reason(&def)),
-            ));
-            continue;
-        }
-        if !seen_keys.insert(def.key.clone()) {
-            report.warnings.push(catalog_diagnostic(
-                REPORT_CODE_DUPLICATE_KEY,
-                &path,
-                format!(
-                    "coding-agent '{}' was omitted: its key duplicates an earlier entry (the first entry wins)",
-                    def.key
-                ),
-            ));
-            continue;
-        }
-        if !is_supported_builtin(&def.key, table) {
-            report.warnings.push(catalog_diagnostic(
-                REPORT_CODE_INVALID_DEFINITION,
-                &path,
-                format!(
-                    "coding-agent '{}' is not supported by this build and was omitted",
-                    def.key
-                ),
-            ));
-            continue;
-        }
-        if !raw_object.contains_key("updateCommands") {
-            report.warnings.push(catalog_diagnostic(
-                REPORT_CODE_MIGRATION_PENDING,
-                &path,
-                format!(
-                    "coding-agent '{}' has no persisted updateCommands; absent update commands are suppressed during reads and require managed-catalog migration on a supported restart",
-                    def.key
-                ),
-            ));
-        }
-        push_unknown_field_warnings(raw_object, &def.key, &path, &mut report.warnings);
-        report.catalog.push(def);
-    }
-
-    report
+    let resolved = resolve_catalog_snapshot(ac_dir, snapshot);
+    report.catalog = resolved.catalog;
+    report.warnings = resolved.warnings;
+    report.unavailable = resolved.unavailable;
+    (report, resolved.base_verified_managed)
 }
 
 /// Settings-level resolver: the primary project root (first nonblank
@@ -850,15 +2098,40 @@ pub fn load_catalog_report_for_settings(settings: &AppSettings) -> CatalogReport
 
 /// Testable twin of [`load_catalog_report_for_settings`] with the resolved
 /// config dir injected, so the no-project and config-dir-none arms are
-/// coverable without depending on the process-global instance location.
+/// coverable without depending on the process-global instance location. A
+/// verified managed PROJECT base additionally asks the seed manifest whether
+/// the base publication is recorded; when it is not, the report carries
+/// `publicationUntracked` while the verified base and local layer stay usable.
 fn load_catalog_report_for_settings_with_config_dir(
     settings: &AppSettings,
     config_dir: Option<PathBuf>,
 ) -> CatalogReport {
     match primary_project_root(settings) {
         Some(root) => {
-            let mut report = load_catalog_report(&root.join(".ac"));
+            let ac_dir = root.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
+            let (mut report, verified_managed_base) = load_catalog_report_inner(&ac_dir);
             report.primary_project_root = Some(root.to_string_lossy().to_string());
+            if verified_managed_base {
+                let untracked = match has_catalog_publication(&root) {
+                    Ok(true) => false,
+                    Ok(false) => true,
+                    Err(error) => {
+                        log::debug!(
+                            "[coding-agents] seed-manifest bookkeeping query failed for {} ({error})",
+                            root.display()
+                        );
+                        true
+                    }
+                };
+                if untracked {
+                    let manifest_path = ac_dir.join(SEED_MANIFEST_FILENAME);
+                    report.warnings.push(catalog_diagnostic(
+                        REPORT_CODE_PUBLICATION_UNTRACKED,
+                        &manifest_path,
+                        "the seed manifest does not record this managed catalog publication yet; reads remain usable from the verified base and local overrides and the next initialization records it",
+                    ));
+                }
+            }
             report
         }
         None => match config_dir {
@@ -868,180 +2141,1158 @@ fn load_catalog_report_for_settings_with_config_dir(
     }
 }
 
-/// #1912 - the bytes `ensure_seeded` writes when seeding from the embedded
-/// default. Every row enabled (the shipped state): the raw resource, byte-
-/// identical to today. Otherwise the enabled rows, re-serialized (pretty, one
-/// trailing newline). The unreachable serialization error (the struct round-
-/// trips in `embedded_default_matches_current_presets_exactly`) logs `error`
-/// and falls back to the raw bytes: a seeded-but-hidden key is recoverable
-/// through the read gate, an unseeded project is not better.
-fn embedded_seed_bytes() -> Vec<u8> {
-    let table = active_builtin_agent_support();
-    if table.iter().all(|(_, on)| *on) {
-        return EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes().to_vec();
-    }
-    let mut catalog = embedded_default_catalog();
-    catalog
-        .agents
-        .retain(|def| is_supported_builtin(&def.key, table));
-    match serde_json::to_vec_pretty(&catalog) {
-        Ok(mut bytes) => {
-            bytes.push(b'\n');
-            bytes
-        }
-        Err(e) => {
-            log::error!("[coding-agents] failed to serialize the filtered embedded catalog ({e}); seeding the raw resource");
-            EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes().to_vec()
+// ---------------------------------------------------------------------------
+// #1968 write machinery: directory/lock discipline, exclusive publication,
+// migration, recovery, refresh and initialization.
+// ---------------------------------------------------------------------------
+
+/// The catalog publication targets and the lock, resolved once.
+struct CatalogPaths {
+    base: PathBuf,
+    local: PathBuf,
+    backup: PathBuf,
+    journal: PathBuf,
+    lock: PathBuf,
+}
+
+impl CatalogPaths {
+    fn new(dir: &Path) -> Self {
+        Self {
+            base: dir.join(CATALOG_MANIFEST_FILENAME),
+            local: dir.join(LOCAL_CATALOG_FILENAME),
+            backup: dir.join(MIGRATION_BACKUP_FILENAME),
+            journal: dir.join(MIGRATION_JOURNAL_FILENAME),
+            lock: dir.join(CATALOG_LOCK_FILENAME),
         }
     }
 }
 
-/// Seed the manifest ONCE at boot: write the embedded default iff `agents.json`
-/// is absent, then never touch it (§14.1 whole-file seed-once). Fail-soft: logs
-/// and returns `None` on any error; it must never panic or abort boot.
-///
-/// #1318 - `ac_dir` is the project's `.ac` directory; `legacy_catalog_dir` is
-/// the legacy `<config_dir>/coding-agents` directory (the migration source). On
-/// a first seed with the project file ABSENT and a legacy REGULAR-file catalog
-/// present, the legacy bytes are copied VERBATIM (a present-but-corrupt legacy
-/// file is copied too: corrupt content is user data and the copy keeps it byte
-/// for byte; the legacy original is never touched). Any other legacy shape (absent,
-/// dir/symlink) seeds the embedded default, whose bytes are the ENABLED rows of
-/// `BUILTIN_AGENT_SUPPORT` only (`embedded_seed_bytes`; byte-identical to the
-/// raw resource while every row is `true`). #1912: a `false` row never rewrites
-/// or trims an already-seeded user-owned file, and the legacy copy stays
-/// verbatim. Returns the `Utc::now()` publication
-/// time sampled at the commit point of the atomic write, or `None` when nothing
-/// was written.
-pub fn ensure_seeded(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) -> Option<DateTime<Utc>> {
+/// Create or validate the catalog directory and return its CANONICAL form, so
+/// every cooperating writer locks one place even through raw, dot-segment or
+/// case aliases. Creation may only happen under an existing real project `.ac`
+/// directory; an existing catalog directory that is a symlink/reparse point or
+/// a non-directory fails visibly.
+fn ensure_catalog_dir(ac_dir: &Path) -> Result<PathBuf, String> {
+    if !ac_dir.is_absolute() {
+        return Err(format!(
+            "the catalog root {} is not absolute; refusing to create it relative to the process CWD",
+            ac_dir.display()
+        ));
+    }
     let dir = catalog_dir(ac_dir);
-    let path = manifest_path(ac_dir);
-
-    // Seed-once: any existing entry (file, dir, or link) means the catalog is
-    // user-owned; leave it strictly alone.
-    match std::fs::symlink_metadata(&path) {
-        Ok(_) => return None,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            log::warn!(
-                "[coding-agents] cannot stat {} ({e}); skipping catalog seed",
-                path.display()
-            );
-            return None;
-        }
-    }
-
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        log::warn!(
-            "[coding-agents] failed to create {} ({e}); skipping catalog seed",
-            dir.display()
-        );
-        return None;
-    }
-
-    // #1318 migration: absent project file + legacy REGULAR-file catalog ->
-    // verbatim copy; anything else -> embedded default.
-    let mut legacy_source: Option<PathBuf> = None;
-    let bytes: Vec<u8> = match legacy_catalog_dir {
-        Some(legacy) => {
-            let legacy_path = legacy.join(CATALOG_MANIFEST_FILENAME);
-            match std::fs::symlink_metadata(&legacy_path) {
-                Ok(meta) if meta.is_file() => match std::fs::read(&legacy_path) {
-                    Ok(bytes) => {
-                        legacy_source = Some(legacy_path);
-                        bytes
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "[coding-agents] failed to read legacy catalog {} ({e}); seeding embedded default",
-                            legacy_path.display()
-                        );
-                        embedded_seed_bytes()
-                    }
-                },
-                // Absent, a directory, or a symlink: not a regular file -> the
-                // embedded default wins.
-                _ => embedded_seed_bytes(),
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || is_reparse_point(&meta) {
+                return Err(format!(
+                    "the catalog directory {} is a symbolic link or reparse point",
+                    dir.display()
+                ));
+            }
+            if !meta.is_dir() {
+                return Err(format!(
+                    "the catalog path {} exists and is not a directory",
+                    dir.display()
+                ));
             }
         }
-        None => embedded_seed_bytes(),
-    };
-
-    // A verbatim legacy copy is log-checked, never a decision: corrupt content
-    // is user data and was copied deliberately; the read path self-heals and
-    // deleting the project file re-seeds the embedded default at the next boot.
-    if let Some(ref legacy_path) = legacy_source {
-        if serde_json::from_slice::<CodingAgentCatalog>(&bytes).is_err() {
-            log::warn!(
-                "[coding-agents] migrated a legacy catalog that does not parse: {} -> {}; project reads serve the embedded default until the file is fixed or deleted",
-                legacy_path.display(),
-                path.display()
-            );
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // `.ac` itself may be absent (a direct caller owns the path); an
+            // EXISTING `.ac` must be a real directory, never a link, and the
+            // catalog directory is created inside it.
+            if let Ok(parent) = std::fs::symlink_metadata(ac_dir) {
+                if parent.file_type().is_symlink() || is_reparse_point(&parent) || !parent.is_dir()
+                {
+                    return Err(format!(
+                        "the project .ac directory {} is not a real directory; refusing to create the catalog",
+                        ac_dir.display()
+                    ));
+                }
+            }
+            std::fs::create_dir_all(&dir).map_err(|e| {
+                format!(
+                    "failed to create the catalog directory {} ({e})",
+                    dir.display()
+                )
+            })?;
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect the catalog directory {} ({error})",
+                dir.display()
+            ))
         }
     }
+    std::fs::canonicalize(&dir).map_err(|e| {
+        format!(
+            "failed to canonicalize the catalog directory {} ({e})",
+            dir.display()
+        )
+    })
+}
 
-    match write_manifest_atomic(&path, &bytes) {
-        Ok(()) => {
-            log::info!(
-                "[coding-agents] seeded {} catalog at {}",
-                if legacy_source.is_some() {
-                    "migrated legacy"
-                } else {
-                    "default"
-                },
-                path.display()
-            );
-            Some(Utc::now())
+fn sync_parent_directory(path: &Path) {
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        if let Ok(directory) = File::open(parent) {
+            let _ = directory.sync_all();
         }
-        Err(e) => {
-            log::warn!("[coding-agents] failed to seed {} ({e})", path.display());
-            None
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+fn write_synced_temp(temp: &Path, bytes: &[u8]) -> Result<(), String> {
+    let result = (|| -> Result<(), String> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(temp)
+            .map_err(|e| format!("create temp {} ({e})", temp.display()))?;
+        file.write_all(bytes)
+            .map_err(|e| format!("write temp {} ({e})", temp.display()))?;
+        file.flush()
+            .map_err(|e| format!("flush temp {} ({e})", temp.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("sync temp {} ({e})", temp.display()))?;
+        drop(file);
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp);
+    }
+    result
+}
+
+fn publication_temp_path(parent: &Path, destination_file_name: &str) -> PathBuf {
+    let counter = SEED_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    parent.join(publication_temp_name_for_destination(
+        destination_file_name,
+        std::process::id(),
+        counter,
+    ))
+}
+
+/// Publish `bytes` at a destination that must NOT exist, without ever exposing
+/// partial bytes: a same-directory create-new temp is written, flushed and
+/// fsynced, then hard-linked into place, and only this run's temp is unlinked.
+/// A filesystem without hard links fails visibly; there is deliberately no
+/// copy-to-destination fallback that could expose a partially written file.
+fn publish_exclusive(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("publication path {} has no parent", path.display()))?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("publication path {} has no file name", path.display()))?;
+    let temp = publication_temp_path(parent, name);
+    write_synced_temp(&temp, bytes)?;
+    inject_catalog_failure("publication_temp_synced")?;
+    let result = std::fs::hard_link(&temp, path);
+    let _ = std::fs::remove_file(&temp);
+    match result {
+        Ok(()) => {
+            sync_parent_directory(path);
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "exclusive publication of {} failed via a hard link ({error}); the destination was left untouched and no partial bytes were written",
+            path.display()
+        )),
+    }
+}
+
+/// Replace an existing destination atomically through the vetted
+/// `root_agent::atomic_replace_existing` primitive (plain rename when absent,
+/// `ReplaceFileW` when present), after a same-directory create-new temp is
+/// written, flushed and fsynced. The temp is removed on every failure path.
+fn publish_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("publication path {} has no parent", path.display()))?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("publication path {} has no file name", path.display()))?;
+    let temp = publication_temp_path(parent, name);
+    write_synced_temp(&temp, bytes)?;
+    inject_catalog_failure("publication_temp_synced")?;
+    if let Err(error) = crate::config::root_agent::atomic_replace_existing(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    sync_parent_directory(path);
+    Ok(())
+}
+
+/// A held catalog lock. The `File` IS the lock: dropping the guard closes the
+/// handle and releases the OS lock, including on panic or process death. The
+/// sidecar file itself is deliberately never deleted.
+#[derive(Debug)]
+struct CatalogLockGuard {
+    _file: File,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CATALOG_LOCK_TIMEOUT_OVERRIDE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn catalog_lock_timeout() -> Duration {
+    #[cfg(test)]
+    if let Some(timeout) = CATALOG_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.get()) {
+        return timeout;
+    }
+    CATALOG_LOCK_TIMEOUT
+}
+
+/// Acquire the catalog sidecar lock: nontruncating create-once, 50 ms polling
+/// against a 5 s deadline, with a distinct `catalogLockTimeout` failure. An OS
+/// error that is not ordinary contention stops immediately with a visible
+/// message: a filesystem without lock support must not silently degrade to
+/// process-only exclusion.
+fn acquire_catalog_lock(paths: &CatalogPaths) -> Result<CatalogLockGuard, String> {
+    match std::fs::symlink_metadata(&paths.lock) {
+        Ok(meta) if meta.file_type().is_symlink() || is_reparse_point(&meta) || !meta.is_file() => {
+            return Err(format!(
+                "the coding-agent catalog lock {} must be a regular non-symlink file",
+                paths.lock.display()
+            ))
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect the coding-agent catalog lock {} ({error})",
+                paths.lock.display()
+            ))
+        }
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&paths.lock)
+        .map_err(|e| {
+            format!(
+                "failed to open the coding-agent catalog lock {} ({e})",
+                paths.lock.display()
+            )
+        })?;
+    if !file.metadata().map(|meta| meta.is_file()).unwrap_or(false) {
+        return Err(format!(
+            "the coding-agent catalog lock {} must be a regular file",
+            paths.lock.display()
+        ));
+    }
+    let timeout = catalog_lock_timeout();
+    let started = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(CatalogLockGuard { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) if started.elapsed() >= timeout => {
+                return Err(format!(
+                    "catalogLockTimeout: timed out after {} ms waiting for the coding-agent catalog lock '{}'",
+                    timeout.as_millis(),
+                    paths.lock.display()
+                ))
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let remaining = timeout.saturating_sub(started.elapsed());
+                std::thread::sleep(CATALOG_LOCK_POLL_INTERVAL.min(remaining));
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(format!(
+                    "the coding-agent catalog lock {} could not be acquired ({error}); this filesystem does not support the lock and no process-only fallback is used",
+                    paths.lock.display()
+                ))
+            }
         }
     }
 }
 
-/// Atomic temp+rename write, mirroring `seeded_context_templates::persist_state`:
-/// create-new a unique sibling temp, write+flush+fsync, then publish via the
-/// vetted `atomic_replace_existing` primitive (plain rename when the dest is
-/// absent, `ReplaceFileW` when it exists). Cleans up the temp on any failure.
-fn write_manifest_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write as _;
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("manifest path {} has no parent", path.display()))?;
-    let counter = SEED_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(
-        ".{CATALOG_MANIFEST_FILENAME}.{}.{counter}.tmp",
-        std::process::id()
-    ));
+// Failure injection is catalog-local test plumbing, not a production runner
+// framework: the hooks are `#[cfg(test)]`-only and compile to no-ops elsewhere.
+#[cfg(test)]
+thread_local! {
+    static CATALOG_FAILURE_POINT: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|e| format!("create temp {}: {e}", temp.display()))?;
-    if let Err(e) = file.write_all(bytes) {
-        drop(file);
-        let _ = std::fs::remove_file(&temp);
-        return Err(format!("write temp {}: {e}", temp.display()));
-    }
-    if let Err(e) = file.flush() {
-        drop(file);
-        let _ = std::fs::remove_file(&temp);
-        return Err(format!("flush temp {}: {e}", temp.display()));
-    }
-    if let Err(e) = file.sync_all() {
-        drop(file);
-        let _ = std::fs::remove_file(&temp);
-        return Err(format!("sync temp {}: {e}", temp.display()));
-    }
-    drop(file);
-
-    if let Err(e) = crate::config::root_agent::atomic_replace_existing(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(e);
+#[cfg(test)]
+fn inject_catalog_failure(point: &str) -> Result<(), String> {
+    if CATALOG_FAILURE_POINT.with(|cell| cell.get()) == Some(point) {
+        CATALOG_FAILURE_POINT.with(|cell| cell.set(None));
+        return Err(format!("injected catalog failure at {point}"));
     }
     Ok(())
+}
+
+#[cfg(not(test))]
+fn inject_catalog_failure(_point: &str) -> Result<(), String> {
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Legacy extraction, migration, recovery and refresh.
+// ---------------------------------------------------------------------------
+
+const MIGRATION_SOURCE_PROJECT: &str = "project";
+const MIGRATION_SOURCE_INSTANCE: &str = "instance";
+
+/// The immutable migration sidecar. It records the source identity, the local
+/// layer identity and the COMPLETE intended managed base (with its own
+/// revision/content digest), so an interrupted transaction can be recomputed
+/// deterministically without consulting current embedded defaults. It is not a
+/// secret store: diagnostics never print its body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationJournalWire {
+    version: u32,
+    source_kind: String,
+    source_path: String,
+    source_sha256: String,
+    local_sha256: String,
+    local_byte_length: u64,
+    managed_revision: String,
+    managed_content_sha256: String,
+    managed_base: serde_json::Value,
+}
+
+fn parse_migration_journal(bytes: &[u8]) -> Result<MigrationJournalWire, String> {
+    let value = parse_strict_json(bytes)
+        .map_err(|reason| format!("the migration journal is not valid JSON ({reason})"))?;
+    let journal: MigrationJournalWire = serde_json::from_value(value)
+        .map_err(|error| format!("the migration journal does not match the v1 shape ({error})"))?;
+    if journal.version != MIGRATION_JOURNAL_VERSION {
+        return Err(format!(
+            "unsupported migration journal version {}; only version 1 is recognized",
+            journal.version
+        ));
+    }
+    if journal.source_kind != MIGRATION_SOURCE_PROJECT
+        && journal.source_kind != MIGRATION_SOURCE_INSTANCE
+    {
+        return Err("the migration journal carries an unrecognized sourceKind".to_string());
+    }
+    Ok(journal)
+}
+
+/// The serialized local layer. Only authored fields are emitted, so an
+/// extracted pin carries exactly the legacy presence it represents.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct LocalRowWire {
+    key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remove: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions_filename: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    envs: Option<Vec<CodingAgentEnv>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    isolated_home: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_seed: Option<Option<ConfigSeedWire>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    removable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    update_commands: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_update: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ConfigSeedWire {
+    enabled: bool,
+    dest: String,
+}
+
+impl From<&ConfigSeedConfig> for ConfigSeedWire {
+    fn from(config: &ConfigSeedConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            dest: config.dest.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalLayerWire {
+    schema_version: u32,
+    agents: Vec<LocalRowWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    order: Option<Vec<String>>,
+}
+
+fn local_layer_bytes(rows: Vec<LocalRowWire>, order: Option<Vec<String>>) -> Vec<u8> {
+    let layer = LocalLayerWire {
+        schema_version: CATALOG_SCHEMA_VERSION,
+        agents: rows,
+        order,
+    };
+    let mut bytes = match serde_json::to_vec_pretty(&layer) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            log::error!("[coding-agents] failed to serialize the local catalog layer ({error})");
+            Vec::new()
+        }
+    };
+    bytes.push(b'\n');
+    bytes
+}
+
+/// Pin exactly the fields the legacy row states EXPLICITLY: presence, never
+/// value equality with a current default, is the intent signal. An absent
+/// `updateCommands` therefore inherits the newly persisted shipped default,
+/// while an explicit `[]` stays empty.
+fn pin_explicit_legacy_fields(
+    definition: &CodingAgentDefinition,
+    raw: &serde_json::Map<String, serde_json::Value>,
+) -> LocalRowWire {
+    LocalRowWire {
+        key: definition.key.clone(),
+        remove: None,
+        label: raw.contains_key("label").then(|| definition.label.clone()),
+        description: raw
+            .contains_key("description")
+            .then(|| definition.description.clone()),
+        color: raw.contains_key("color").then(|| definition.color.clone()),
+        command: raw
+            .contains_key("command")
+            .then(|| definition.command.clone()),
+        instructions_filename: raw
+            .contains_key("instructionsFilename")
+            .then(|| definition.instructions_filename.clone()),
+        envs: raw.contains_key("envs").then(|| definition.envs.clone()),
+        isolated_home: raw
+            .contains_key("isolatedHome")
+            .then_some(definition.isolated_home),
+        config_seed: raw
+            .contains_key("configSeed")
+            .then(|| definition.config_seed.as_ref().map(ConfigSeedWire::from)),
+        removable: raw
+            .contains_key("removable")
+            .then_some(definition.removable),
+        update_commands: raw
+            .contains_key("updateCommands")
+            .then(|| definition.update_commands.clone()),
+        auto_update: raw
+            .contains_key("autoUpdate")
+            .then_some(definition.auto_update),
+    }
+}
+
+/// Materialize a COMPLETE local definition for a custom key or a changed
+/// command, using the values the legacy read produced (explicit or default) and
+/// forcing an absent `updateCommands` to `[]` so the new shipped sequence never
+/// leaks into a command the user owns.
+fn materialize_complete_legacy_fields(
+    definition: &CodingAgentDefinition,
+    raw: &serde_json::Map<String, serde_json::Value>,
+) -> LocalRowWire {
+    LocalRowWire {
+        key: definition.key.clone(),
+        remove: None,
+        label: Some(definition.label.clone()),
+        description: Some(definition.description.clone()),
+        color: Some(definition.color.clone()),
+        command: Some(definition.command.clone()),
+        instructions_filename: raw
+            .contains_key("instructionsFilename")
+            .then(|| definition.instructions_filename.clone()),
+        envs: Some(definition.envs.clone()),
+        isolated_home: Some(definition.isolated_home),
+        config_seed: raw
+            .contains_key("configSeed")
+            .then(|| definition.config_seed.as_ref().map(ConfigSeedWire::from)),
+        removable: Some(definition.removable),
+        update_commands: Some(if raw.contains_key("updateCommands") {
+            definition.update_commands.clone()
+        } else {
+            Vec::new()
+        }),
+        auto_update: Some(definition.auto_update),
+    }
+}
+
+/// Compute the extracted local layer for a readable legacy catalog against the
+/// intended (shipped) managed base. Every ambiguity refuses the transfer: a
+/// duplicate member (already rejected by the strict parser), an unknown
+/// field, an invalid definition, a duplicate key or a non-removable missing
+/// shipped key. Nothing is written here.
+fn extract_legacy_local(
+    source_bytes: &[u8],
+    shipped: &[CodingAgentDefinition],
+) -> Result<Vec<u8>, String> {
+    let value = parse_strict_json(source_bytes)
+        .map_err(|reason| format!("the legacy catalog is not valid JSON ({reason})"))?;
+    let root = expect_json_object(&value, "the legacy catalog root")?;
+    reject_unknown_json_fields(
+        root,
+        &["schemaVersion", "agents"],
+        "the legacy catalog root",
+    )?;
+    if let Some(version) = root.get("schemaVersion") {
+        if version.as_u64() != Some(CATALOG_SCHEMA_VERSION as u64) {
+            return Err(format!(
+                "unsupported legacy schemaVersion {version}; migration is refused"
+            ));
+        }
+    }
+    let empty_rows = Vec::new();
+    let rows = match root.get("agents") {
+        None => &empty_rows,
+        Some(serde_json::Value::Array(rows)) => rows,
+        Some(_) => return Err("the legacy 'agents' value must be a JSON array".to_string()),
+    };
+
+    let shipped_by_key: HashMap<&str, &CodingAgentDefinition> = shipped
+        .iter()
+        .map(|definition| (definition.key.as_str(), definition))
+        .collect();
+
+    let mut seen_keys = HashSet::new();
+    let mut legacy: Vec<(
+        &CodingAgentDefinition,
+        &serde_json::Map<String, serde_json::Value>,
+    )> = Vec::with_capacity(rows.len());
+    let mut parsed: Vec<CodingAgentDefinition> = Vec::with_capacity(rows.len());
+    for (index, raw) in rows.iter().enumerate() {
+        let context = format!("legacy entry {index}");
+        let object = expect_json_object(raw, &context)?;
+        reject_unknown_json_fields(object, KNOWN_DEFINITION_FIELDS, &context)?;
+        if let Some(problem) = raw_update_commands_problem(raw) {
+            return Err(format!("{context} is ambiguous: {problem}"));
+        }
+        let definition: CodingAgentDefinition = serde_json::from_value(raw.clone())
+            .map_err(|_| format!("{context} does not match the coding-agent definition schema"))?;
+        if validate_definition(&definition).is_err() {
+            return Err(format!(
+                "{context} fails validation: {}",
+                definition_problem_reason(&definition)
+            ));
+        }
+        let mut nested = Vec::new();
+        if push_unknown_field_warnings(object, &definition.key, Path::new("legacy"), &mut nested) {
+            return Err(format!(
+                "{context} carries unknown nested field(s) that cannot be migrated safely"
+            ));
+        }
+        if !seen_keys.insert(definition.key.clone()) {
+            return Err(format!(
+                "duplicate legacy coding-agent key '{}'",
+                definition.key
+            ));
+        }
+        parsed.push(definition);
+    }
+    for (index, raw) in rows.iter().enumerate() {
+        let object = raw
+            .as_object()
+            .expect("validated as an object in the first pass");
+        legacy.push((&parsed[index], object));
+    }
+
+    let mut local_rows: Vec<LocalRowWire> = Vec::with_capacity(parsed.len() + shipped.len());
+    let mut order: Vec<String> = Vec::with_capacity(parsed.len());
+    for (definition, object) in &legacy {
+        order.push(definition.key.clone());
+        match shipped_by_key.get(definition.key.as_str()) {
+            Some(shipped_definition) if shipped_definition.command == definition.command => {
+                local_rows.push(pin_explicit_legacy_fields(definition, object));
+            }
+            _ => local_rows.push(materialize_complete_legacy_fields(definition, object)),
+        }
+    }
+    for shipped_definition in shipped {
+        if !seen_keys.contains(&shipped_definition.key) {
+            if !shipped_definition.removable {
+                return Err(format!(
+                    "reconciliation is blocked: shipped key '{}' is absent from the legacy catalog and is not removable, so no tombstone can be recorded",
+                    shipped_definition.key
+                ));
+            }
+            local_rows.push(LocalRowWire {
+                key: shipped_definition.key.clone(),
+                remove: Some(true),
+                ..LocalRowWire::default()
+            });
+        }
+    }
+    Ok(local_layer_bytes(local_rows, Some(order)))
+}
+
+/// Execute one migration transaction under the held catalog lock. Order:
+/// durable exclusive backup, durable journal, exclusive local layer (verified),
+/// source/target re-check, then the base. Every failure leaves the earlier
+/// artifacts in place for recovery and never publishes partial bytes.
+fn migrate_legacy(
+    paths: &CatalogPaths,
+    source_kind: &'static str,
+    source_path: &Path,
+    source_bytes: &[u8],
+) -> Result<Option<DateTime<Utc>>, String> {
+    if read_optional_regular_file(&paths.local, "local coding-agent catalog")?.is_some() {
+        return Err(
+            "an existing local overrides file blocks the legacy ownership transfer; it was left untouched"
+                .to_string(),
+        );
+    }
+    if read_optional_regular_file(&paths.backup, "coding-agent migration backup")?.is_some()
+        || read_optional_regular_file(&paths.journal, "coding-agent migration journal")?.is_some()
+    {
+        return Err(
+            "an existing migration sidecar blocks a new migration; recover or reconcile it first"
+                .to_string(),
+        );
+    }
+
+    let shipped = supported_shipped_definitions();
+    let managed_bytes = build_managed_base_bytes(&shipped);
+    let local_bytes = extract_legacy_local(source_bytes, &shipped)?;
+    // All extraction is computed and strictly validated before ANY write.
+    let layer = parse_local_layer(&local_bytes)?;
+    compose_local_layer(&shipped, &layer)?;
+    let managed_base_value: serde_json::Value = serde_json::from_slice(&managed_bytes)
+        .map_err(|e| format!("the intended managed base did not serialize to JSON ({e})"))?;
+    let revision = managed_content_sha256(&shipped);
+    let journal = MigrationJournalWire {
+        version: MIGRATION_JOURNAL_VERSION,
+        source_kind: source_kind.to_string(),
+        source_path: source_path.display().to_string(),
+        source_sha256: sha256_hex(source_bytes),
+        local_sha256: sha256_hex(&local_bytes),
+        local_byte_length: local_bytes.len() as u64,
+        managed_revision: revision.clone(),
+        managed_content_sha256: revision,
+        managed_base: managed_base_value,
+    };
+    let mut journal_bytes = serde_json::to_vec_pretty(&journal)
+        .map_err(|e| format!("the migration journal did not serialize ({e})"))?;
+    journal_bytes.push(b'\n');
+
+    publish_exclusive(&paths.backup, source_bytes)?;
+    inject_catalog_failure("after_backup")?;
+    publish_exclusive(&paths.journal, &journal_bytes)?;
+    inject_catalog_failure("after_journal")?;
+    publish_exclusive(&paths.local, &local_bytes)?;
+    let written = std::fs::read(&paths.local)
+        .map_err(|e| format!("the published local layer could not be re-read ({e})"))?;
+    if written.len() as u64 != journal.local_byte_length
+        || sha256_hex(&written) != journal.local_sha256
+    {
+        return Err(
+            "the published local layer did not verify byte-for-byte; the base was not published"
+                .to_string(),
+        );
+    }
+    inject_catalog_failure("after_local")?;
+
+    if source_kind == MIGRATION_SOURCE_INSTANCE {
+        if read_optional_regular_file(&paths.base, "persisted catalog")?.is_some() {
+            return Err(
+                "a managed base appeared during the migration; the base was not published"
+                    .to_string(),
+            );
+        }
+        let current = std::fs::read(source_path)
+            .map_err(|e| format!("the instance source could not be re-read ({e})"))?;
+        if current != source_bytes {
+            return Err(
+                "the instance source changed during the migration; the base was not published"
+                    .to_string(),
+            );
+        }
+    } else {
+        let current = std::fs::read(&paths.base)
+            .map_err(|e| format!("the project base could not be re-read ({e})"))?;
+        if current != source_bytes {
+            return Err(
+                "the project base changed during the migration; it was left untouched".to_string(),
+            );
+        }
+    }
+    inject_catalog_failure("before_base")?;
+    let published_at = Utc::now();
+    if source_kind == MIGRATION_SOURCE_PROJECT {
+        publish_replace(&paths.base, &managed_bytes)?;
+    } else {
+        publish_exclusive(&paths.base, &managed_bytes)?;
+    }
+    inject_catalog_failure("after_base")?;
+    log::info!(
+        "[coding-agents] migrated the {source_kind} catalog {} into the managed base with an extracted local layer",
+        source_path.display()
+    );
+    Ok(Some(published_at))
+}
+
+/// Resume an interrupted transaction recorded by a journal: complete when the
+/// published base already matches the journal identity, otherwise recompute and
+/// verify the local layer before finishing. Any mismatch preserves every byte
+/// and blocks with a reconciliation reason.
+fn recover_interrupted_migration(paths: &CatalogPaths) -> Result<Option<DateTime<Utc>>, String> {
+    let journal_bytes = std::fs::read(&paths.journal)
+        .map_err(|e| format!("the migration journal could not be read ({e})"))?;
+    let journal = parse_migration_journal(&journal_bytes)?;
+    let backup = std::fs::read(&paths.backup).map_err(|e| {
+        format!(
+            "the migration backup is missing or unreadable ({e}); recovery is blocked and every byte is preserved"
+        )
+    })?;
+    if sha256_hex(&backup) != journal.source_sha256 {
+        return Err(
+            "the migration backup does not match the journal source hash; recovery is blocked and every byte is preserved"
+                .to_string(),
+        );
+    }
+    let managed_base_value = journal.managed_base.clone();
+    let saved_agents = managed_base_value
+        .get("agents")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let managed_definitions: Vec<CodingAgentDefinition> = serde_json::from_value(saved_agents)
+        .map_err(|_| {
+            "the journal saved managed base is not a coding-agent definition array".to_string()
+        })?;
+    let saved_revision = managed_base_value
+        .get("managed")
+        .and_then(|marker| marker.get("revision"))
+        .and_then(|value| value.as_str());
+    let saved_content = managed_base_value
+        .get("managed")
+        .and_then(|marker| marker.get("contentSha256"))
+        .and_then(|value| value.as_str());
+    if saved_revision != Some(journal.managed_revision.as_str())
+        || saved_content != Some(journal.managed_content_sha256.as_str())
+    {
+        return Err(
+            "the journal saved managed base does not match its recorded revision; recovery is blocked"
+                .to_string(),
+        );
+    }
+    let mut managed_bytes = serde_json::to_vec_pretty(&managed_base_value)
+        .map_err(|e| format!("the journal saved managed base did not serialize ({e})"))?;
+    managed_bytes.push(b'\n');
+
+    if let Some(base_bytes) = read_optional_regular_file(&paths.base, "persisted catalog")? {
+        if let Ok(analysis) = analyze_base_bytes(&paths.base, &base_bytes) {
+            if let Some(marker) = analysis.marker.as_ref() {
+                if marker.revision == journal.managed_revision
+                    && marker.content_sha256 == journal.managed_content_sha256
+                {
+                    // Completed: never re-extract or overwrite the local layer.
+                    return Ok(None);
+                }
+            }
+        }
+        if journal.source_kind == MIGRATION_SOURCE_INSTANCE || base_bytes != backup {
+            return Err(
+                "the existing catalog base does not match the interrupted migration; recovery is blocked and every byte is preserved"
+                    .to_string(),
+            );
+        }
+        // Project migration: the base still holds the exact source bytes, so
+        // the base was never replaced; continue below and finish the sequence.
+    }
+
+    let published_at = match read_optional_regular_file(&paths.local, "local coding-agent catalog")?
+    {
+        Some(local_bytes) => {
+            if sha256_hex(&local_bytes) != journal.local_sha256
+                || local_bytes.len() as u64 != journal.local_byte_length
+            {
+                return Err(
+                        "the local overrides file does not match the interrupted migration; recovery is blocked and every byte is preserved"
+                            .to_string(),
+                    );
+            }
+            if journal.source_kind == MIGRATION_SOURCE_INSTANCE {
+                let source_path = PathBuf::from(&journal.source_path);
+                if let Some(source_bytes) =
+                    read_optional_regular_file(&source_path, "recorded migration source")?
+                {
+                    if sha256_hex(&source_bytes) != journal.source_sha256 {
+                        return Err(
+                                "the instance source changed during the interrupted migration; recovery is blocked"
+                                    .to_string(),
+                            );
+                    }
+                }
+            }
+            publish_base(&paths.base, &managed_bytes, journal.source_kind.as_str())?;
+            Utc::now()
+        }
+        None => {
+            let recomputed = extract_legacy_local(&backup, &managed_definitions)?;
+            if sha256_hex(&recomputed) != journal.local_sha256
+                || recomputed.len() as u64 != journal.local_byte_length
+            {
+                return Err(
+                        "the recomputed extraction does not match the journal local hash; recovery is blocked and every byte is preserved"
+                            .to_string(),
+                    );
+            }
+            publish_exclusive(&paths.local, &recomputed)?;
+            inject_catalog_failure("after_local")?;
+            publish_base(&paths.base, &managed_bytes, journal.source_kind.as_str())?;
+            Utc::now()
+        }
+    };
+    inject_catalog_failure("after_base")?;
+    log::info!("[coding-agents] resumed and completed an interrupted managed-catalog migration");
+    Ok(Some(published_at))
+}
+
+/// Finish a journal recovery's base publication: a project migration replaces
+/// the source file in place, while an instance import publishes into a
+/// destination that must still be absent.
+fn publish_base(path: &Path, bytes: &[u8], source_kind: &str) -> Result<(), String> {
+    if source_kind == MIGRATION_SOURCE_PROJECT {
+        publish_replace(path, bytes)
+    } else {
+        publish_exclusive(path, bytes)
+    }
+}
+
+/// Backup-only recovery: no journal, so the only admissible continuation is the
+/// case where the backup is byte-equal to the CURRENT original source and no
+/// local file exists. The extraction is recomputed against the shipped defaults
+/// because no saved base exists to recompute against.
+fn resume_backup_only_migration(
+    paths: &CatalogPaths,
+    legacy_catalog_dir: Option<&Path>,
+) -> Result<Option<DateTime<Utc>>, String> {
+    let backup = std::fs::read(&paths.backup)
+        .map_err(|e| format!("the migration backup could not be read ({e})"))?;
+    if read_optional_regular_file(&paths.local, "local coding-agent catalog")?.is_some() {
+        return Err(
+            "a local overrides file exists without a journal; the interrupted migration cannot be resumed safely"
+                .to_string(),
+        );
+    }
+    let shipped = supported_shipped_definitions();
+    let base_bytes = read_optional_regular_file(&paths.base, "persisted catalog")?;
+    let instance_path = legacy_catalog_dir.map(|dir| dir.join(CATALOG_MANIFEST_FILENAME));
+    let instance_bytes = match instance_path.as_ref() {
+        Some(path) => read_instance_legacy_source(path)?,
+        None => None,
+    };
+    let source_kind = match (&base_bytes, &instance_bytes) {
+        (Some(base), _) if *base == backup => MIGRATION_SOURCE_PROJECT,
+        (None, Some(instance)) if *instance == backup => MIGRATION_SOURCE_INSTANCE,
+        _ => {
+            return Err(
+                "the backup does not match the current project base or instance catalog; recovery is blocked and every byte is preserved"
+                    .to_string(),
+            )
+        }
+    };
+    let managed_bytes = build_managed_base_bytes(&shipped);
+    let local_bytes = extract_legacy_local(&backup, &shipped)?;
+    let layer = parse_local_layer(&local_bytes)?;
+    compose_local_layer(&shipped, &layer)?;
+    publish_exclusive(&paths.local, &local_bytes)?;
+    let published_at = Utc::now();
+    if source_kind == MIGRATION_SOURCE_PROJECT {
+        publish_replace(&paths.base, &managed_bytes)?;
+    } else {
+        publish_exclusive(&paths.base, &managed_bytes)?;
+    }
+    log::info!("[coding-agents] resumed a backup-only interrupted migration");
+    Ok(Some(published_at))
+}
+
+/// Refresh a verified, unedited managed base when the current shipped revision
+/// differs from the base's recorded revision (a support-gate change is part of
+/// that revision). A base whose content hash does not match its marker is NEVER
+/// refreshed, and neither is one carrying unknown fields: refresh replaces only
+/// a verified managed base.
+fn refresh_managed_base(
+    paths: &CatalogPaths,
+    analysis: &BaseAnalysis,
+) -> Result<Option<DateTime<Utc>>, String> {
+    let Some(marker) = analysis.marker.as_ref() else {
+        return Ok(None);
+    };
+    let shipped = supported_shipped_definitions();
+    let shipped_revision = managed_content_sha256(&shipped);
+    if marker.revision == shipped_revision {
+        return Ok(None);
+    }
+    let managed_bytes = build_managed_base_bytes(&shipped);
+    publish_replace(&paths.base, &managed_bytes)?;
+    log::info!(
+        "[coding-agents] refreshed the managed catalog base revision at {}",
+        paths.base.display()
+    );
+    Ok(Some(Utc::now()))
+}
+
+/// Fresh initialization: exclusive managed defaults plus the create-once local
+/// stub. The base is written first; a stub failure leaves the valid base with a
+/// logged warning and a later initialization retries only while the stub is
+/// still absent.
+fn fresh_initialize_catalog(paths: &CatalogPaths) -> Result<Option<DateTime<Utc>>, String> {
+    let shipped = supported_shipped_definitions();
+    let managed_bytes = build_managed_base_bytes(&shipped);
+    let published_at = if read_optional_regular_file(&paths.base, "persisted catalog")?.is_none() {
+        publish_exclusive(&paths.base, &managed_bytes)?;
+        Some(Utc::now())
+    } else {
+        None
+    };
+    match std::fs::symlink_metadata(&paths.local) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(stub_error) = publish_exclusive(&paths.local, LOCAL_STUB_BYTES) {
+                log::warn!(
+                    "[coding-agents] the managed base published but the local stub {} could not be created ({stub_error}); a later initialization retries only while it stays absent",
+                    paths.local.display()
+                );
+            }
+        }
+        Err(error) => log::warn!(
+            "[coding-agents] cannot inspect the local catalog path {} ({error}); the stub was not created",
+            paths.local.display()
+        ),
+    }
+    Ok(published_at)
+}
+
+#[derive(Default)]
+struct CatalogInitOutcome {
+    published_at: Option<DateTime<Utc>>,
+    base_verified_managed: bool,
+    warnings: Vec<CatalogDiagnostic>,
+}
+
+/// One initialization pass UNDER THE HELD CATALOG LOCK: recover an interrupted
+/// transaction, then refresh, migrate or fresh-seed exactly one base. Order is
+/// fixed by the plan: recovery first, then the base state machine.
+fn initialize_catalog_under_lock(
+    paths: &CatalogPaths,
+    legacy_catalog_dir: Option<&Path>,
+) -> CatalogInitOutcome {
+    let mut outcome = CatalogInitOutcome::default();
+
+    let journal_exists = match std::fs::symlink_metadata(&paths.journal) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            outcome.warnings.push(catalog_diagnostic(
+                REPORT_CODE_REFRESH_FAILED,
+                &paths.journal,
+                format!("the migration journal could not be inspected ({error})"),
+            ));
+            return outcome;
+        }
+    };
+    let backup_exists = match std::fs::symlink_metadata(&paths.backup) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            outcome.warnings.push(catalog_diagnostic(
+                REPORT_CODE_REFRESH_FAILED,
+                &paths.backup,
+                format!("the migration backup could not be inspected ({error})"),
+            ));
+            return outcome;
+        }
+    };
+
+    if journal_exists {
+        match recover_interrupted_migration(paths) {
+            Ok(published_at) => outcome.published_at = published_at,
+            Err(reason) => {
+                outcome.warnings.push(catalog_diagnostic(
+                    REPORT_CODE_MIGRATION_CONFLICT,
+                    &paths.journal,
+                    reason,
+                ));
+                return outcome;
+            }
+        }
+    } else if backup_exists {
+        match resume_backup_only_migration(paths, legacy_catalog_dir) {
+            Ok(published_at) => outcome.published_at = published_at,
+            Err(reason) => {
+                outcome.warnings.push(catalog_diagnostic(
+                    REPORT_CODE_MIGRATION_CONFLICT,
+                    &paths.backup,
+                    reason,
+                ));
+                return outcome;
+            }
+        }
+    }
+
+    let base_bytes = match read_optional_regular_file(&paths.base, "persisted catalog") {
+        Ok(bytes) => bytes,
+        Err(reason) => {
+            outcome.warnings.push(catalog_diagnostic(
+                REPORT_CODE_REFRESH_FAILED,
+                &paths.base,
+                reason,
+            ));
+            return outcome;
+        }
+    };
+
+    match base_bytes {
+        Some(bytes) => {
+            let analysis = match analyze_base_bytes(&paths.base, &bytes) {
+                Ok(analysis) => analysis,
+                Err(diagnostic) => {
+                    // Corrupt bytes are preserved and unavailable; nothing is
+                    // rewritten, refreshed or migrated.
+                    outcome.warnings.push(diagnostic);
+                    return outcome;
+                }
+            };
+            outcome.base_verified_managed =
+                analysis.kind == CatalogBaseKind::Managed && !analysis.edited;
+            outcome.warnings.extend(analysis.warnings.iter().cloned());
+            match analysis.kind {
+                CatalogBaseKind::Managed => {
+                    if !analysis.edited && !analysis.refresh_blocked {
+                        match refresh_managed_base(paths, &analysis) {
+                            Ok(Some(published_at)) => outcome.published_at = Some(published_at),
+                            Ok(None) => {}
+                            Err(reason) => {
+                                outcome.warnings.push(catalog_diagnostic(
+                                    REPORT_CODE_REFRESH_FAILED,
+                                    &paths.base,
+                                    reason,
+                                ));
+                            }
+                        }
+                    }
+                }
+                CatalogBaseKind::ForeignManaged => {}
+                CatalogBaseKind::Legacy => {
+                    match migrate_legacy(paths, MIGRATION_SOURCE_PROJECT, &paths.base, &bytes) {
+                        Ok(published_at) => {
+                            outcome.published_at = published_at.or(outcome.published_at)
+                        }
+                        Err(reason) => outcome.warnings.push(catalog_diagnostic(
+                            REPORT_CODE_MIGRATION_CONFLICT,
+                            &paths.base,
+                            reason,
+                        )),
+                    }
+                }
+            }
+        }
+        None => {
+            // An absent project base may import ONLY the instance agents.json.
+            let instance_path = legacy_catalog_dir.map(|dir| dir.join(CATALOG_MANIFEST_FILENAME));
+            let instance_bytes = match instance_path.as_ref() {
+                Some(path) => match read_instance_legacy_source(path) {
+                    Ok(bytes) => bytes,
+                    Err(reason) => {
+                        outcome.warnings.push(catalog_diagnostic(
+                            REPORT_CODE_MIGRATION_CONFLICT,
+                            path,
+                            reason,
+                        ));
+                        return outcome;
+                    }
+                },
+                None => None,
+            };
+            match (instance_bytes, instance_path) {
+                (Some(bytes), Some(path)) => {
+                    match migrate_legacy(paths, MIGRATION_SOURCE_INSTANCE, &path, &bytes) {
+                        Ok(published_at) => outcome.published_at = published_at,
+                        Err(reason) => outcome.warnings.push(catalog_diagnostic(
+                            REPORT_CODE_MIGRATION_CONFLICT,
+                            &path,
+                            reason,
+                        )),
+                    }
+                }
+                _ => match fresh_initialize_catalog(paths) {
+                    Ok(published_at) => outcome.published_at = published_at,
+                    Err(reason) => outcome.warnings.push(catalog_diagnostic(
+                        REPORT_CODE_REFRESH_FAILED,
+                        &paths.base,
+                        reason,
+                    )),
+                },
+            }
+        }
+    }
+
+    outcome
+}
+
+fn run_catalog_initialization(
+    ac_dir: &Path,
+    legacy_catalog_dir: Option<&Path>,
+) -> CatalogInitOutcome {
+    let dir = match ensure_catalog_dir(ac_dir) {
+        Ok(dir) => dir,
+        Err(reason) => {
+            return CatalogInitOutcome {
+                published_at: None,
+                base_verified_managed: false,
+                warnings: vec![catalog_diagnostic(
+                    REPORT_CODE_REFRESH_FAILED,
+                    ac_dir,
+                    reason,
+                )],
+            }
+        }
+    };
+    let paths = CatalogPaths::new(&dir);
+    let _lock = match acquire_catalog_lock(&paths) {
+        Ok(lock) => lock,
+        Err(reason) => {
+            return CatalogInitOutcome {
+                published_at: None,
+                base_verified_managed: false,
+                warnings: vec![catalog_diagnostic(
+                    REPORT_CODE_REFRESH_FAILED,
+                    &paths.lock,
+                    reason,
+                )],
+            }
+        }
+    };
+    let outcome = initialize_catalog_under_lock(&paths, legacy_catalog_dir);
+    for warning in &outcome.warnings {
+        log::warn!(
+            "[coding-agents] {} at {}: {}",
+            warning.code,
+            warning.path,
+            warning.reason
+        );
+    }
+    outcome
+}
+
+/// Initialize the catalog for `ac_dir` under the catalog lock: recover or
+/// refresh a managed base, migrate a legacy catalog, or fresh-seed the managed
+/// defaults plus the create-once local stub. Returns the `Utc::now()`
+/// publication time sampled at the commit point when the managed base was
+/// actually written or replaced; `None` means no base publication. Fail-soft:
+/// every failure is logged and surfaced as a warning, never a panic.
+pub fn ensure_seeded(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) -> Option<DateTime<Utc>> {
+    run_catalog_initialization(ac_dir, legacy_catalog_dir).published_at
 }
 
 // ---------------------------------------------------------------------------
@@ -1215,6 +3466,9 @@ fn write_embedded_files_into(dir: &Path, master: &EmbeddedSeedMaster) -> Result<
 /// wins). #1912: a de-supported master (a `false` row) is skipped ENTIRELY from
 /// every source - embedded staging and legacy `_seed/<dest>` tree copy alike.
 pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
+    if all_masters_present(ac_dir) {
+        return;
+    }
     for master in supported_embedded_masters() {
         let dir = master_dir_for_dest(ac_dir, master.dest);
         match std::fs::symlink_metadata(&dir) {
@@ -1292,13 +3546,14 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
     }
 }
 
-/// #1912 - existence-only steady-state check: the catalog manifest and every
-/// SUPPORTED master dir exist. A de-supported master is never required, or
-/// every boot would take the project gate for nothing.
-fn all_seeds_present(ac_dir: &Path) -> bool {
-    std::fs::symlink_metadata(manifest_path(ac_dir)).is_ok()
-        && supported_embedded_masters()
-            .all(|m| std::fs::symlink_metadata(master_dir_for_dest(ac_dir, m.dest)).is_ok())
+/// #1912 - existence-only steady-state check for the MASTER dirs only. A
+/// de-supported master is never required. The catalog itself deliberately has
+/// no existence shortcut: every startup/registration must validate ownership
+/// and revision and recover or refresh, so only master staging keeps this
+/// optimization.
+fn all_masters_present(ac_dir: &Path) -> bool {
+    supported_embedded_masters()
+        .all(|m| std::fs::symlink_metadata(master_dir_for_dest(ac_dir, m.dest)).is_ok())
 }
 
 /// Seed the catalog + masters for one registered project root, then record the
@@ -1308,12 +3563,10 @@ fn all_seeds_present(ac_dir: &Path) -> bool {
 /// a non-absolute root (a hand-edited relative settings entry must never seed
 /// relative to the process CWD) or a missing root (a deleted/stale registered
 /// root must never be resurrected by the seed's `create_dir_all`) is logged and
-/// skipped. Steady-state pre-check BEFORE gate acquisition: when the catalog
-/// manifest AND every SUPPORTED built-in master dir exist (#1912: a de-supported
-/// master is never required), return immediately (no lock,
-/// no canonicalize, no manifest read, no write), keeping boot cheap and free of
-/// gate contention for the common already-seeded case; masters self-heal is
-/// preserved (the pre-check covers masters too).
+/// skipped. The CATALOG has no existence shortcut: every startup/registration
+/// takes the catalog lock (and, in production, the soft project gate) to
+/// validate ownership/revision and to recover, refresh or migrate. Only the
+/// MASTER staging keeps its existence optimization.
 pub(crate) fn ensure_seeded_for_project(project_root: &Path) {
     #[cfg(not(test))]
     let activation = Some(ManifestActivationToken::production());
@@ -1324,12 +3577,14 @@ pub(crate) fn ensure_seeded_for_project(project_root: &Path) {
 
 /// Token-injectable twin of [`ensure_seeded_for_project`], mirroring
 /// `perform_config_seed_recorded` (`config_seed.rs`): a `None` activation runs
-/// the plain ungated seeds; under the soft project gate the Held arm runs BOTH
-/// seeds FIRST and records the catalog row only when `ensure_seeded` actually
-/// published (the permit auto-downgrades a held-but-degraded guard to
-/// `PublishedUnrecorded`, so no false rows over guaranteed completeness).
-/// `DegradedUntracked` runs both seeds ungated (published, unrecorded);
-/// `Unavailable` logs and skips (never race a cooperating writer).
+/// the plain ungated initialization under the catalog lock; under the soft
+/// project gate the Held arm runs the catalog initialization and the masters,
+/// then records the catalog row when a base was published - or records the
+/// VERIFIED CURRENT base when the manifest has no catalog row yet (the retry
+/// that repairs a failed recording without republishing anything).
+/// `DegradedUntracked` still takes the catalog lock but records nothing;
+/// `Unavailable` logs and skips every catalog mutation (never race a
+/// cooperating writer).
 pub(crate) fn ensure_seeded_for_project_with_token(
     project_root: &Path,
     activation: Option<&ManifestActivationToken>,
@@ -1349,31 +3604,42 @@ pub(crate) fn ensure_seeded_for_project_with_token(
         return;
     }
     let ac_dir = project_root.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
-
-    // Steady-state pre-check: everything already seeded -> nothing to publish;
-    // no lock file, no canonicalize, no bounded manifest read, no write.
-    if all_seeds_present(&ac_dir) {
-        return;
-    }
-
     let legacy = crate::config::config_dir().map(|dir| dir.join(CATALOG_DIR_NAME));
+
     let Some(token) = activation else {
-        ensure_seeded(&ac_dir, legacy.as_deref());
+        run_catalog_initialization(&ac_dir, legacy.as_deref());
         ensure_seeded_masters(&ac_dir, legacy.as_deref());
         return;
     };
 
     match acquire_project_gate_soft(project_root) {
         SoftProjectGate::Held(mut guard) => {
-            let published_at = ensure_seeded(&ac_dir, legacy.as_deref());
+            let outcome = run_catalog_initialization(&ac_dir, legacy.as_deref());
             ensure_seeded_masters(&ac_dir, legacy.as_deref());
-            if let Some(published_at) = published_at {
-                record_catalog_publication(&mut guard, token, published_at);
+            let recorded_at = match outcome.published_at {
+                Some(published_at) => Some(published_at),
+                None if outcome.base_verified_managed => {
+                    match has_catalog_publication(project_root) {
+                        Ok(true) => None,
+                        Ok(false) => Some(Utc::now()),
+                        Err(error) => {
+                            log::debug!(
+                                "[coding-agents] seed-manifest bookkeeping query failed for {} ({error}); recording is retried on the next initialization",
+                                project_root.display()
+                            );
+                            Some(Utc::now())
+                        }
+                    }
+                }
+                None => None,
+            };
+            if let Some(recorded_at) = recorded_at {
+                record_catalog_publication(&mut guard, token, recorded_at);
             }
             guard.release();
         }
         SoftProjectGate::DegradedUntracked => {
-            ensure_seeded(&ac_dir, legacy.as_deref());
+            run_catalog_initialization(&ac_dir, legacy.as_deref());
             ensure_seeded_masters(&ac_dir, legacy.as_deref());
         }
         SoftProjectGate::Unavailable(error) => {
@@ -2096,29 +4362,76 @@ mod tests {
     }
 
     #[test]
-    fn legacy_catalog_is_copied_verbatim_when_project_file_absent() {
+    fn managed_catalog_migrates_instance_legacy_into_absent_project_base() {
+        // #1968: an absent project base imports ONLY the instance agents.json.
+        // The ownership transfer keeps the source bytes exactly in the
+        // project-local backup, and the instance source itself is never written.
         let project = seed_dir();
         let legacy = legacy_dir();
         let legacy_bytes = legacy_catalog_json();
         std::fs::write(legacy.path().join("agents.json"), &legacy_bytes).unwrap();
 
         let published = ensure_seeded(project.path(), Some(legacy.path()));
-        assert!(published.is_some(), "a first seed publishes");
-        let project_file = manifest_path(project.path());
+        assert!(published.is_some(), "a first migration publishes the base");
+
+        let catalog = catalog_dir(project.path());
         assert_eq!(
-            std::fs::read(&project_file).unwrap(),
+            std::fs::read(catalog.join(MIGRATION_BACKUP_FILENAME)).unwrap(),
             legacy_bytes,
-            "legacy catalog must be copied byte-for-byte"
+            "the backup keeps the source bytes exactly"
         );
-        // The legacy original is untouched.
+        let base: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest_path(project.path())).unwrap()).unwrap();
+        assert_eq!(base["managed"]["owner"], "agentscommander");
+        assert_eq!(base["managed"]["version"], 1);
+        assert_eq!(base["agents"].as_array().unwrap().len(), 8);
+
+        let journal: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(catalog.join(MIGRATION_JOURNAL_FILENAME)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(journal["sourceKind"], "instance");
+        assert_eq!(
+            journal["sourcePath"],
+            legacy.path().join("agents.json").display().to_string()
+        );
+        assert_eq!(
+            journal["managedBase"]["managed"]["revision"],
+            base["managed"]["revision"]
+        );
+
+        // Extracted local layer: the custom entry is complete, the eight shipped
+        // keys are tombstoned, and the legacy order is pinned.
+        let local: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(local_catalog_path(project.path())).unwrap())
+                .unwrap();
+        assert_eq!(local["order"], serde_json::json!(["mine"]));
+        let rows = local["agents"].as_array().unwrap();
+        assert!(rows
+            .iter()
+            .any(|row| row["key"] == "mine" && row["command"] == "mytool"));
+        assert_eq!(rows.iter().filter(|row| row["remove"] == true).count(), 8);
+
+        let loaded = load_catalog(project.path()).expect("migrated catalog");
+        assert_eq!(keys_of(&loaded), ["mine"]);
+
+        // Completed migration is idempotent: no re-extraction, no rewrite.
+        let base_before = std::fs::read(manifest_path(project.path())).unwrap();
+        let local_before = std::fs::read(local_catalog_path(project.path())).unwrap();
+        assert!(ensure_seeded(project.path(), Some(legacy.path())).is_none());
+        assert_eq!(
+            std::fs::read(manifest_path(project.path())).unwrap(),
+            base_before
+        );
+        assert_eq!(
+            std::fs::read(local_catalog_path(project.path())).unwrap(),
+            local_before
+        );
         assert_eq!(
             std::fs::read(legacy.path().join("agents.json")).unwrap(),
-            legacy_bytes
+            legacy_bytes,
+            "the instance source stays read-only"
         );
-        // Second seed run is a no-op (seed-once), even if the legacy differs.
-        std::fs::write(legacy.path().join("agents.json"), b"CHANGED LATER").unwrap();
-        assert!(ensure_seeded(project.path(), Some(legacy.path())).is_none());
-        assert_eq!(std::fs::read(&project_file).unwrap(), legacy_bytes);
     }
 
     #[test]
@@ -2498,33 +4811,36 @@ mod tests {
     }
 
     #[test]
-    fn legacy_catalog_corrupt_is_copied_verbatim_and_reads_as_base_invalid() {
+    fn managed_catalog_corrupt_instance_legacy_blocks_transfer_without_writes() {
+        // An unreadable legacy source must not be "migrated" or trashed: the
+        // transfer is refused, no base is published, and every byte stays put.
         let project = seed_dir();
         let legacy = legacy_dir();
         let garbage = b"{ this is not valid json".to_vec();
         std::fs::write(legacy.path().join("agents.json"), &garbage).unwrap();
 
-        ensure_seeded(project.path(), Some(legacy.path()));
-        let project_file = manifest_path(project.path());
-        assert_eq!(
-            std::fs::read(&project_file).unwrap(),
-            garbage,
-            "corrupt legacy content is user data and is copied verbatim"
+        assert!(ensure_seeded(project.path(), Some(legacy.path())).is_none());
+        let catalog = catalog_dir(project.path());
+        assert!(
+            !manifest_path(project.path()).exists(),
+            "no base is published"
         );
-        // #1967 P4: the corrupt persisted file is reported, it does NOT self-heal
-        // to the embedded default, and its bytes are preserved.
-        let unavailable = load_catalog(project.path()).expect_err("corrupt catalog");
-        assert_eq!(unavailable.code, "baseInvalid");
-        assert_eq!(std::fs::read(&project_file).unwrap(), garbage);
+        assert!(!catalog.join(MIGRATION_BACKUP_FILENAME).exists());
+        assert!(!catalog.join(MIGRATION_JOURNAL_FILENAME).exists());
+        assert!(!local_catalog_path(project.path()).exists());
+        assert_eq!(
+            std::fs::read(legacy.path().join("agents.json")).unwrap(),
+            garbage
+        );
+        let unavailable = load_catalog(project.path()).expect_err("no project base");
+        assert_eq!(unavailable.code, "baseUnavailable");
 
-        // Recovery: with the corrupt legacy source removed, deleting the project
-        // file re-seeds the embedded default, which reads normally.
+        // Recovery: remove the corrupt source; the next initialization seeds.
         std::fs::remove_file(legacy.path().join("agents.json")).unwrap();
-        std::fs::remove_file(&project_file).unwrap();
-        ensure_seeded(project.path(), Some(legacy.path()));
+        assert!(ensure_seeded(project.path(), Some(legacy.path())).is_some());
         assert_eq!(
             load_catalog(project.path())
-                .expect("re-seeded catalog")
+                .expect("fresh managed base")
                 .len(),
             8
         );
@@ -2925,23 +5241,23 @@ mod tests {
     }
 
     #[test]
-    fn desupported_row_absent_from_seeded_manifest_bytes() {
-        // R8: `ensure_seeded` with no legacy dir (arm `:434`) writes only the
-        // enabled rows under a false row; the all-enabled control keeps seeding
-        // the raw resource byte-for-byte.
+    fn managed_catalog_fresh_base_bytes_carry_only_enabled_rows() {
+        // The fresh managed base carries the enabled shipped rows plus the
+        // ownership marker; an all-enabled control seeds all 8 and a false row
+        // seeds 7 while the read gate hides the key.
         let dir = seed_dir();
-        let published = ensure_seeded(dir.path(), None);
-        assert!(published.is_some());
-        assert_eq!(
-            std::fs::read(manifest_path(dir.path())).unwrap(),
-            EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes(),
-            "all rows enabled: seeded bytes must equal the raw resource"
-        );
+        assert!(ensure_seeded(dir.path(), None).is_some());
+        let bytes = std::fs::read(manifest_path(dir.path())).unwrap();
+        let base: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(base["agents"].as_array().unwrap().len(), 8);
+        assert_eq!(base["managed"]["owner"], "agentscommander");
 
         with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
             let dir = seed_dir();
-            let published = ensure_seeded(dir.path(), None);
-            assert!(published.is_some(), "a first seed publishes");
+            assert!(
+                ensure_seeded(dir.path(), None).is_some(),
+                "a first seed publishes"
+            );
             let bytes = std::fs::read(manifest_path(dir.path())).unwrap();
             let text = String::from_utf8_lossy(&bytes);
             assert!(
@@ -2959,9 +5275,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_catalog_copied_verbatim_even_when_it_carries_a_desupported_key() {
-        // R9: the legacy REGULAR-file copy stays verbatim: user bytes are never
-        // filtered; the read gate hides the de-supported key from consumers.
+    fn managed_catalog_migration_backup_keeps_a_desupported_key_verbatim() {
+        // Under a false support row a migrated legacy source is preserved
+        // byte-for-byte in the backup; the read gate hides the de-supported key
+        // from the effective catalog while the custom key survives.
         let legacy_bytes = manifest_json(
             r##"[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true},
             {"key":"custom","label":"Custom","description":"d","color":"#333","command":"custom","envs":[],"isolatedHome":false,"removable":true}]"##,
@@ -2972,40 +5289,48 @@ mod tests {
             let project = seed_dir();
             let legacy = legacy_dir();
             std::fs::write(legacy.path().join("agents.json"), &legacy_bytes).unwrap();
-            let published = ensure_seeded(project.path(), Some(legacy.path()));
-            assert!(published.is_some());
+            assert!(ensure_seeded(project.path(), Some(legacy.path())).is_some());
             assert_eq!(
-                std::fs::read(manifest_path(project.path())).unwrap(),
+                std::fs::read(catalog_dir(project.path()).join(MIGRATION_BACKUP_FILENAME)).unwrap(),
                 legacy_bytes,
-                "legacy bytes are user data: copied verbatim even with a de-supported key"
+                "the backup is user data: byte-for-byte even with a de-supported key"
             );
-            let loaded = load_catalog(project.path()).expect("persisted catalog");
+            let loaded = load_catalog(project.path()).expect("migrated catalog");
             assert_eq!(keys_of(&loaded), ["custom"]);
         });
     }
 
     #[test]
-    fn already_seeded_manifest_never_trimmed_by_a_false_row() {
-        // R10: seed-once is absolute: a false row never rewrites or trims an
-        // already-seeded user-owned file; the read gate hides the key only.
+    fn managed_catalog_false_row_is_part_of_the_revision_and_refreshes_only_the_base() {
+        // #1968: the support table is part of the managed revision, so a false
+        // row refreshes the BASE to the enabled shipped set; the user-owned
+        // local layer is never touched and the key stays hidden either way.
         let dir = seed_dir();
         ensure_seeded(dir.path(), None);
         let seeded = std::fs::read(manifest_path(dir.path())).unwrap();
+        assert_eq!(base_json(dir.path())["agents"].as_array().unwrap().len(), 8);
+        let local_before = std::fs::read(local_catalog_path(dir.path())).unwrap();
 
         with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
             assert!(
-                ensure_seeded(dir.path(), None).is_none(),
-                "present manifest: no rewrite at all"
+                ensure_seeded(dir.path(), None).is_some(),
+                "a support-gate change is part of the managed revision"
             );
+            assert_ne!(std::fs::read(manifest_path(dir.path())).unwrap(), seeded);
+            assert_eq!(base_json(dir.path())["agents"].as_array().unwrap().len(), 7);
             assert_eq!(
-                std::fs::read(manifest_path(dir.path())).unwrap(),
-                seeded,
-                "bytes must be untouched"
+                std::fs::read(local_catalog_path(dir.path())).unwrap(),
+                local_before,
+                "the user-owned local layer is never touched by a refresh"
             );
             let loaded = load_catalog(dir.path()).expect("seeded catalog");
             assert_eq!(loaded.len(), 7);
             assert_no_key(&loaded, "muse");
         });
+
+        // Back under the shipped table the base returns byte-for-byte.
+        assert!(ensure_seeded(dir.path(), None).is_some());
+        assert_eq!(std::fs::read(manifest_path(dir.path())).unwrap(), seeded);
     }
 
     #[test]
@@ -3086,12 +5411,12 @@ mod tests {
     }
 
     #[test]
-    fn all_seeds_present_ignores_desupported_master() {
-        // R13: the steady-state pre-check requires only SUPPORTED masters, so a
-        // claude-off install is steady without `.claude`; the gate-wiring probe
-        // shows the tokenized entry returns BEFORE `acquire_project_gate_soft`
-        // when steady (no lock file), and falls through (lock created) when a
-        // supported master is missing.
+    fn managed_catalog_all_masters_present_ignores_desupported_master() {
+        // R13 (#1968): only the MASTER existence optimization remains, and it
+        // requires only SUPPORTED masters, so a claude-off install is steady
+        // without `.claude`. The catalog itself always validates under the
+        // gate/lock; no existence-only shortcut may skip that (proven by the
+        // steady-state test below).
         let project = seed_dir();
         let root = project.path().join("project");
         std::fs::create_dir_all(&root).unwrap();
@@ -3109,7 +5434,7 @@ mod tests {
                 &master_dir_for_dest(&ac_dir, ".opencode")
             ));
             assert!(
-                all_seeds_present(&ac_dir),
+                all_masters_present(&ac_dir),
                 "steady inside the override: `.claude` must not be required"
             );
 
@@ -3117,42 +5442,60 @@ mod tests {
             // re-seeded by the plain project entry point; `.claude` stays absent.
             let codex_dir = master_dir_for_dest(&ac_dir, ".codex");
             std::fs::remove_dir_all(&codex_dir).unwrap();
-            assert!(!all_seeds_present(&ac_dir));
+            assert!(!all_masters_present(&ac_dir));
             ensure_seeded_for_project(&root);
             assert!(crate::config::config_seed::is_nonempty_seed_dir(&codex_dir));
             assert!(!master_dir_for_dest(&ac_dir, ".claude").exists());
-            assert!(all_seeds_present(&ac_dir));
-
-            // Gate-wiring probe: steady again -> the tokenized entry returns at
-            // the pre-check, BEFORE acquire_project_gate_soft: no lock file.
-            let lock_path = ac_dir.join(crate::config::seed_manifest::SEED_MANIFEST_LOCK_FILENAME);
-            assert!(!lock_path.exists(), "no lock from the ungated seeds above");
-            let token = ManifestActivationToken::for_test();
-            ensure_seeded_for_project_with_token(&root, Some(&token));
-            assert!(
-                !lock_path.exists(),
-                "steady pre-check must return before the gate: no lock file created"
-            );
-
-            // Contrast: a missing supported master falls through the pre-check,
-            // acquires the gate (lock file created and persistent), re-seeds
-            // `.codex`, still never `.claude`, manifest bytes untouched.
-            let manifest_bytes = std::fs::read(manifest_path(&ac_dir)).unwrap();
-            std::fs::remove_dir_all(&codex_dir).unwrap();
-            ensure_seeded_for_project_with_token(&root, Some(&token));
-            assert!(lock_path.is_file(), "the gate must have been acquired");
-            assert!(crate::config::config_seed::is_nonempty_seed_dir(&codex_dir));
-            assert!(!master_dir_for_dest(&ac_dir, ".claude").exists());
-            assert_eq!(
-                std::fs::read(manifest_path(&ac_dir)).unwrap(),
-                manifest_bytes,
-                "manifest bytes unchanged by the fall-through re-seed"
-            );
+            assert!(all_masters_present(&ac_dir));
         });
 
-        // Outside the override the same tree is NOT steady: `.claude` is
-        // required by the shipped table and absent.
-        assert!(!all_seeds_present(&ac_dir));
+        // Outside the override the same tree has no `.claude`: the shipped
+        // table requires it and the predicate is false.
+        assert!(!all_masters_present(&ac_dir));
+    }
+
+    #[test]
+    fn managed_catalog_steady_state_takes_the_gate_and_keeps_bytes() {
+        // #1968: the existence-only catalog shortcut is gone. A second
+        // tokenized initialization takes the project gate (lock file appears)
+        // and the catalog lock, yet an unedited base at the shipped revision is
+        // NOT rewritten: byte identity is preserved.
+        let project = seed_dir();
+        let root = project.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let ac_dir = root.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
+        ensure_seeded(&ac_dir, None);
+        ensure_seeded_masters(&ac_dir, None);
+
+        let base_bytes = std::fs::read(manifest_path(&ac_dir)).unwrap();
+        let local_bytes = std::fs::read(local_catalog_path(&ac_dir)).unwrap();
+        let gate_lock = ac_dir.join(crate::config::seed_manifest::SEED_MANIFEST_LOCK_FILENAME);
+        assert!(!gate_lock.exists(), "no gate lock from the ungated seed");
+
+        let token = ManifestActivationToken::for_test();
+        ensure_seeded_for_project_with_token(&root, Some(&token));
+        assert!(
+            gate_lock.is_file(),
+            "the catalog has no existence shortcut: the gate must have been taken"
+        );
+        assert_eq!(
+            std::fs::read(manifest_path(&ac_dir)).unwrap(),
+            base_bytes,
+            "an unedited base at the shipped revision is never rewritten"
+        );
+        assert_eq!(
+            std::fs::read(local_catalog_path(&ac_dir)).unwrap(),
+            local_bytes,
+            "the user-owned local layer is never rewritten"
+        );
+
+        // Second tokenized run: still byte-identical.
+        ensure_seeded_for_project_with_token(&root, Some(&token));
+        assert_eq!(std::fs::read(manifest_path(&ac_dir)).unwrap(), base_bytes);
+        assert_eq!(
+            std::fs::read(local_catalog_path(&ac_dir)).unwrap(),
+            local_bytes
+        );
     }
 
     #[test]
@@ -3178,26 +5521,24 @@ mod tests {
     }
 
     #[test]
-    fn desupported_row_absent_from_seeded_manifest_bytes_in_legacy_dir_arms() {
-        // R15: the legacy-dir arms (`:431` non-regular-file branches) seed the
-        // enabled rows only under a false row. Shape (a): legacy dir present but
-        // `agents.json` absent. Shape (b): `legacy/agents.json` is a DIRECTORY.
+    fn managed_catalog_fresh_base_bytes_carry_only_enabled_rows_with_nonregular_legacy() {
+        // A non-regular instance source is NOT a source: fresh initialization
+        // runs, and under a false support row only the enabled rows land in the
+        // managed base.
         for shape in ["absent", "directory"] {
-            // Control (both shapes, no override): the raw resource is seeded
-            // byte-for-byte - arm `:431` keeps writing the raw bytes while every
-            // row is enabled.
             let project = seed_dir();
             let legacy = legacy_dir();
             if shape == "directory" {
                 std::fs::create_dir_all(legacy.path().join("agents.json")).unwrap();
             }
-            let published = ensure_seeded(project.path(), Some(legacy.path()));
-            assert!(published.is_some(), "{shape}: a first seed publishes");
-            assert_eq!(
-                std::fs::read(manifest_path(project.path())).unwrap(),
-                EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes(),
-                "{shape}: all rows enabled -> raw resource bytes"
+            assert!(
+                ensure_seeded(project.path(), Some(legacy.path())).is_some(),
+                "{shape}: a first seed publishes"
             );
+            let bytes = std::fs::read(manifest_path(project.path())).unwrap();
+            let catalog: CodingAgentCatalog =
+                serde_json::from_slice(&bytes).expect("seeded manifest parses");
+            assert_eq!(catalog.agents.len(), 8, "{shape}: 8 agents seeded");
 
             with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
                 let project = seed_dir();
@@ -3205,8 +5546,10 @@ mod tests {
                 if shape == "directory" {
                     std::fs::create_dir_all(legacy.path().join("agents.json")).unwrap();
                 }
-                let published = ensure_seeded(project.path(), Some(legacy.path()));
-                assert!(published.is_some(), "{shape}: a first seed publishes");
+                assert!(
+                    ensure_seeded(project.path(), Some(legacy.path())).is_some(),
+                    "{shape}: a first seed publishes"
+                );
                 let bytes = std::fs::read(manifest_path(project.path())).unwrap();
                 let text = String::from_utf8_lossy(&bytes);
                 assert!(
@@ -3399,9 +5742,9 @@ mod tests {
     #[test]
     fn catalog_report_unsupported_schema_is_base_invalid() {
         for raw in [
-            r#"{"schemaVersion":2,"agents":[]}"#,
-            r#"{"schemaVersion":"1","agents":[]}"#,
-            r#"{"schemaVersion":null,"agents":[]}"#,
+            r##"{"schemaVersion":2,"agents":[]}"##,
+            r##"{"schemaVersion":"1","agents":[]}"##,
+            r##"{"schemaVersion":null,"agents":[]}"##,
         ] {
             let dir = seed_dir();
             write_report_manifest(dir.path(), raw);
@@ -3420,9 +5763,9 @@ mod tests {
     #[test]
     fn catalog_report_missing_schema_version_and_empty_catalog_are_success() {
         for raw in [
-            r#"{}"#,
-            r#"{"schemaVersion":1}"#,
-            r#"{"schemaVersion":1,"agents":[]}"#,
+            r##"{}"##,
+            r##"{"schemaVersion":1}"##,
+            r##"{"schemaVersion":1,"agents":[]}"##,
         ] {
             let dir = seed_dir();
             write_report_manifest(dir.path(), raw);
@@ -3440,10 +5783,10 @@ mod tests {
     #[test]
     fn catalog_report_invalid_root_shape_is_base_invalid() {
         for raw in [
-            r#"[]"#,
-            r#""text""#,
-            r#"{"schemaVersion":1,"agents":{}}"#,
-            r#"{"schemaVersion":1,"agents":"nope"}"#,
+            r##"[]"##,
+            r##""text""##,
+            r##"{"schemaVersion":1,"agents":{}}"##,
+            r##"{"schemaVersion":1,"agents":"nope"}"##,
         ] {
             let dir = seed_dir();
             write_report_manifest(dir.path(), raw);
@@ -3541,7 +5884,7 @@ mod tests {
             .catalog
             .iter()
             .all(|d| d.update_commands.is_empty()));
-        assert!(report_json(&reported_explicit).contains(r#""updateCommands":[]"#));
+        assert!(report_json(&reported_explicit).contains(r##""updateCommands":[]"##));
 
         // Custom and changed commands are preserved exactly, warn-free.
         let custom_dir = seed_dir();
@@ -3917,5 +6260,1328 @@ mod tests {
                 report.warnings[0].reason
             );
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // #1968 P5 - managed base, local overrides, migration, recovery, locks.
+    // -----------------------------------------------------------------------
+
+    fn ac_dir_for(project: &Path) -> PathBuf {
+        project.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR)
+    }
+
+    fn read_json(path: &Path) -> serde_json::Value {
+        serde_json::from_slice(
+            &std::fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
+        )
+        .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()))
+    }
+
+    fn read_text(path: &Path) -> String {
+        String::from_utf8(
+            std::fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
+        )
+        .expect("utf-8 fixture")
+    }
+
+    fn local_json(ac_dir: &Path) -> serde_json::Value {
+        read_json(&local_catalog_path(ac_dir))
+    }
+
+    fn base_json(ac_dir: &Path) -> serde_json::Value {
+        read_json(&manifest_path(ac_dir))
+    }
+
+    fn write_local(ac_dir: &Path, contents: &str) {
+        let path = local_catalog_path(ac_dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+    }
+
+    fn write_legacy_base(ac_dir: &Path, contents: &str) {
+        let path = manifest_path(ac_dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+    }
+
+    /// The shipped definitions for `keys`, as plain JSON values.
+    fn shipped_def_json(keys: &[&str]) -> Vec<serde_json::Value> {
+        let shipped = supported_shipped_definitions();
+        keys.iter()
+            .map(|key| {
+                let definition = shipped
+                    .iter()
+                    .find(|definition| definition.key == *key)
+                    .unwrap_or_else(|| panic!("no shipped key {key}"));
+                serde_json::to_value(definition).unwrap()
+            })
+            .collect()
+    }
+
+    /// A managed base whose marker claims `revision`; the content hash is the
+    /// real hash of `agents` unless the caller mangles it.
+    fn write_managed_base(
+        ac_dir: &Path,
+        agents: &[serde_json::Value],
+        revision: &str,
+        correct_content_hash: bool,
+    ) -> Vec<u8> {
+        let definitions: Vec<CodingAgentDefinition> = agents
+            .iter()
+            .cloned()
+            .map(|value| serde_json::from_value(value).unwrap())
+            .collect();
+        let content = if correct_content_hash {
+            managed_content_sha256(&definitions)
+        } else {
+            "0".repeat(64)
+        };
+        let root = serde_json::json!({
+            "schemaVersion": 1,
+            "agents": definitions,
+            "managed": {
+                "owner": "agentscommander",
+                "version": 1,
+                "revision": revision,
+                "contentSha256": content,
+            },
+        });
+        let mut bytes = serde_json::to_vec_pretty(&root).unwrap();
+        bytes.push(b'\n');
+        let path = manifest_path(ac_dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        bytes
+    }
+
+    fn with_failure_at<R>(point: &'static str, f: impl FnOnce() -> R) -> R {
+        CATALOG_FAILURE_POINT.with(|cell| cell.set(Some(point)));
+        let result = f();
+        CATALOG_FAILURE_POINT.with(|cell| cell.set(None));
+        result
+    }
+
+    fn dir_entries(dir: &Path) -> Vec<std::ffi::OsString> {
+        let mut names: Vec<std::ffi::OsString> = std::fs::read_dir(dir)
+            .map(|entries| entries.flatten().map(|entry| entry.file_name()).collect())
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn managed_catalog_fresh_init_seeds_verified_base_and_exact_stub() {
+        let dir = seed_dir();
+        assert!(ensure_seeded(dir.path(), None).is_some());
+        let base = base_json(dir.path());
+        let expected_revision = managed_content_sha256(&supported_shipped_definitions());
+        assert_eq!(base["managed"]["owner"], "agentscommander");
+        assert_eq!(base["managed"]["version"], 1);
+        assert_eq!(base["managed"]["revision"], expected_revision);
+        assert_eq!(base["managed"]["contentSha256"], expected_revision);
+        assert_eq!(base["agents"].as_array().unwrap().len(), 8);
+        assert_eq!(
+            std::fs::read(local_catalog_path(dir.path())).unwrap(),
+            LOCAL_STUB_BYTES,
+            "the local stub is exactly the documented bytes plus LF"
+        );
+
+        let base_bytes = std::fs::read(manifest_path(dir.path())).unwrap();
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert_eq!(report.catalog.len(), 8);
+        assert!(
+            ensure_seeded(dir.path(), None).is_none(),
+            "a verified base at the shipped revision is never rewritten"
+        );
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            base_bytes
+        );
+        let residue: Vec<std::ffi::OsString> = std::fs::read_dir(catalog_dir(dir.path()))
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(residue.is_empty(), "no publication temporaries survive");
+    }
+
+    #[test]
+    fn managed_catalog_refresh_reaches_unpinned_values_and_keeps_pinned_local() {
+        let dir = seed_dir();
+        let mut claude = shipped_def_json(&["claude"]).remove(0);
+        claude["label"] = serde_json::json!("OLD LABEL");
+        write_managed_base(dir.path(), &[claude], "stale-revision", true);
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"MINE"}]}"##,
+        );
+        let local_before = std::fs::read(local_catalog_path(dir.path())).unwrap();
+
+        assert!(
+            ensure_seeded(dir.path(), None).is_some(),
+            "a base at a stale revision refreshes"
+        );
+        let base = base_json(dir.path());
+        assert_eq!(
+            base["managed"]["revision"],
+            managed_content_sha256(&supported_shipped_definitions())
+        );
+        assert_eq!(
+            base["agents"].as_array().unwrap().len(),
+            8,
+            "refresh publishes the whole shipped set"
+        );
+        assert_eq!(
+            std::fs::read(local_catalog_path(dir.path())).unwrap(),
+            local_before,
+            "refresh never touches the local layer or the composed view"
+        );
+
+        let loaded = load_catalog(dir.path()).unwrap();
+        let claude = loaded.iter().find(|d| d.key == "claude").unwrap();
+        assert_eq!(claude.label, "MINE", "the pinned local value wins");
+        assert_eq!(
+            claude.description, "Coding Agent by Anthropic",
+            "an unpinned value reaches the refreshed shipped default"
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+
+    #[test]
+    fn managed_catalog_support_gate_change_refreshes_the_base_both_ways() {
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        let full_bytes = std::fs::read(manifest_path(dir.path())).unwrap();
+        assert_eq!(base_json(dir.path())["agents"].as_array().unwrap().len(), 8);
+
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            assert!(
+                ensure_seeded(dir.path(), None).is_some(),
+                "a support-gate change is part of the managed revision"
+            );
+            let base = base_json(dir.path());
+            assert_eq!(base["agents"].as_array().unwrap().len(), 7);
+            assert_eq!(
+                base["managed"]["revision"],
+                managed_content_sha256(&supported_shipped_definitions())
+            );
+            assert_eq!(load_catalog(dir.path()).unwrap().len(), 7);
+        });
+
+        // Back under the shipped table the revision changes again and the base
+        // byte-for-byte returns to its original state.
+        assert!(ensure_seeded(dir.path(), None).is_some());
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            full_bytes
+        );
+        assert_eq!(load_catalog(dir.path()).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn managed_catalog_edited_base_is_readable_and_never_refreshed() {
+        let dir = seed_dir();
+        let mut claude = shipped_def_json(&["claude"]).remove(0);
+        claude["label"] = serde_json::json!("HAND EDITED");
+        let bytes = write_managed_base(dir.path(), &[claude], "stale-revision", false);
+
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.catalog[0].label, "HAND EDITED");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "managedBaseEdited"),
+            "{:?}",
+            report.warnings
+        );
+        assert!(
+            ensure_seeded(dir.path(), None).is_none(),
+            "an edited managed base is never auto-refreshed"
+        );
+        assert_eq!(std::fs::read(manifest_path(dir.path())).unwrap(), bytes);
+    }
+
+    #[test]
+    fn managed_catalog_unknown_managed_fields_block_refresh_without_deletion() {
+        let dir = seed_dir();
+        let agents = shipped_def_json(&["claude"]);
+        let definitions: Vec<CodingAgentDefinition> = agents
+            .iter()
+            .cloned()
+            .map(|value| serde_json::from_value(value).unwrap())
+            .collect();
+        let content = managed_content_sha256(&definitions);
+        let root = serde_json::json!({
+            "schemaVersion": 1,
+            "agents": definitions,
+            "futureRootField": {"keep": "me"},
+            "managed": {
+                "owner": "agentscommander",
+                "version": 1,
+                "revision": "stale-revision",
+                "contentSha256": content,
+            },
+        });
+        let mut bytes = serde_json::to_vec_pretty(&root).unwrap();
+        bytes.push(b'\n');
+        let path = manifest_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.catalog.len(), 1);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "migrationPending"));
+        assert!(
+            ensure_seeded(dir.path(), None).is_none(),
+            "unknown data blocks refresh rather than being deleted"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn managed_catalog_foreign_managed_marker_blocks_ownership() {
+        let dir = seed_dir();
+        let root = serde_json::json!({
+            "schemaVersion": 1,
+            "agents": shipped_def_json(&["claude"]),
+            "managed": {
+                "owner": "somebody-else",
+                "version": 1,
+                "revision": "x",
+                "contentSha256": "y",
+            },
+        });
+        let mut bytes = serde_json::to_vec_pretty(&root).unwrap();
+        bytes.push(b'\n');
+        let path = manifest_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.catalog.len(), 1, "a foreign base stays readable");
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "migrationConflict"));
+        assert!(
+            ensure_seeded(dir.path(), None).is_none(),
+            "a foreign marker neither refreshes nor migrates"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn managed_catalog_existing_local_entries_are_never_clobbered() {
+        // A directory at the local path is preserved and disables the layer.
+        let dir = seed_dir();
+        let local = local_catalog_path(dir.path());
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("keep.txt"), b"keep").unwrap();
+        assert!(ensure_seeded(dir.path(), None).is_some());
+        assert!(local.is_dir());
+        assert_eq!(std::fs::read(local.join("keep.txt")).unwrap(), b"keep");
+        let report = load_catalog_report(dir.path());
+        assert_eq!(report.catalog.len(), 8, "the valid base stays usable");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "localInvalid"),
+            "{:?}",
+            report.warnings
+        );
+
+        // A user-authored regular local file is preserved byte-for-byte and
+        // composes onto the fresh managed base.
+        let dir = seed_dir();
+        let user = r##"{"schemaVersion":1,"agents":[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false}]}"##;
+        write_local(dir.path(), user);
+        assert!(ensure_seeded(dir.path(), None).is_some());
+        assert_eq!(read_text(&local_catalog_path(dir.path())), user);
+        let loaded = load_catalog(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 9);
+        assert_eq!(loaded.last().unwrap().key, "mine");
+    }
+
+    #[test]
+    fn managed_catalog_local_composes_every_field_and_explicit_false_empty() {
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[
+                {"key":"claude","label":"My Claude","description":"D","color":"#010203","command":"claude","instructionsFilename":null,"envs":[{"key":"ZZ","value":"1"},{"key":"AA","value":"2","source":"system","enabled":false}],"isolatedHome":true,"configSeed":{"enabled":false},"removable":false,"updateCommands":[],"autoUpdate":true}
+            ]}"##,
+        );
+        let loaded = load_catalog(dir.path()).unwrap();
+        let claude = loaded.iter().find(|d| d.key == "claude").unwrap();
+        assert_eq!(claude.label, "My Claude");
+        assert_eq!(claude.description, "D");
+        assert_eq!(claude.color, "#010203");
+        assert_eq!(claude.instructions_filename, None, "explicit null clears");
+        assert_eq!(claude.envs.len(), 2, "envs replace whole arrays in order");
+        assert_eq!(claude.envs[0].key, "ZZ");
+        assert_eq!(claude.envs[1].key, "AA");
+        assert!(!claude.envs[1].enabled, "explicit false stays explicit");
+        assert_eq!(claude.envs[1].source, CodingAgentEnvSource::System);
+        assert!(claude.isolated_home);
+        let seed = claude.config_seed.as_ref().expect("merged configSeed");
+        assert!(!seed.enabled);
+        assert_eq!(seed.dest, ".claude", "nested configSeed merges by presence");
+        assert!(!claude.removable);
+        assert!(claude.update_commands.is_empty(), "explicit [] stays empty");
+        assert!(claude.auto_update);
+        assert_eq!(loaded.len(), 8, "no other row changed");
+    }
+
+    #[test]
+    fn managed_catalog_local_new_row_order_and_tombstone() {
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[
+                {"key":"zeta","label":"Zeta","description":"d","color":"#111","command":"zeta","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false},
+                {"key":"muse","remove":true}
+            ],"order":["zeta","claude"]}"##,
+        );
+        let loaded = load_catalog(dir.path()).unwrap();
+        let keys = keys_of(&loaded);
+        assert_eq!(keys[0], "zeta", "listed survivors come first in order");
+        assert_eq!(keys[1], "claude");
+        assert!(!keys.contains(&"muse"), "the tombstone removes the key");
+        assert_eq!(keys.len(), 8, "8 shipped - 1 removed + 1 added");
+    }
+
+    #[test]
+    fn managed_catalog_local_invalid_layer_falls_back_as_a_whole() {
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        let bad = r##"{"schemaVersion":1,"agents":[
+            {"key":"claude","label":"Would Apply"},
+            {"key":"broken","label":"Broken"}
+        ]}"##;
+        write_local(dir.path(), bad);
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.catalog.len(), 8);
+        assert_eq!(
+            report.catalog[0].label, "Claude Code",
+            "the valid row must not be partially applied"
+        );
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "localInvalid"));
+        assert_eq!(
+            read_text(&local_catalog_path(dir.path())),
+            bad,
+            "the offending file is never rewritten"
+        );
+    }
+
+    #[test]
+    fn managed_catalog_local_schema_rejections_are_whole_layer() {
+        let cases = [
+            (
+                "duplicate member",
+                r##"{"schemaVersion":1,"agents":[{"key":"claude","key":"pi"}]}"##,
+            ),
+            (
+                "unknown field",
+                r##"{"schemaVersion":1,"agents":[{"key":"claude","mystery":1}]}"##,
+            ),
+            (
+                "unsupported schema",
+                r##"{"schemaVersion":2,"agents":[]}"##,
+            ),
+            (
+                "remove false",
+                r##"{"schemaVersion":1,"agents":[{"key":"claude","remove":false}]}"##,
+            ),
+            (
+                "tombstone extra field",
+                r##"{"schemaVersion":1,"agents":[{"key":"claude","remove":true,"label":"x"}]}"##,
+            ),
+            (
+                "duplicate local key",
+                r##"{"schemaVersion":1,"agents":[{"key":"claude"},{"key":"claude"}]}"##,
+            ),
+            (
+                "duplicate order key",
+                r##"{"schemaVersion":1,"agents":[],"order":["claude","claude"]}"##,
+            ),
+            (
+                "control character in update command",
+                "{\"schemaVersion\":1,\"agents\":[{\"key\":\"claude\",\"updateCommands\":[\"a\\u0007b\"]}]}",
+            ),
+        ];
+        for (label, contents) in cases {
+            let dir = seed_dir();
+            ensure_seeded(dir.path(), None);
+            write_local(dir.path(), contents);
+            let report = load_catalog_report(dir.path());
+            assert!(report.unavailable.is_none(), "{label}");
+            assert_eq!(report.catalog.len(), 8, "{label}: base rows intact");
+            assert_eq!(report.catalog[0].label, "Claude Code", "{label}");
+            assert!(
+                report
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.code == "localInvalid"),
+                "{label}: {:?}",
+                report.warnings
+            );
+            assert_eq!(
+                read_text(&local_catalog_path(dir.path())),
+                contents,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_catalog_local_removability_is_evaluated_against_the_base() {
+        let dir = seed_dir();
+        let mut muse = shipped_def_json(&["muse"]).remove(0);
+        muse["removable"] = serde_json::json!(false);
+        write_managed_base(dir.path(), &[muse], "stale", true);
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"muse","remove":true}]}"##,
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "localInvalid"));
+        assert!(report.catalog.iter().any(|d| d.key == "muse"));
+    }
+
+    #[test]
+    fn managed_catalog_local_support_gate_attempts_stay_suppressed() {
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            let dir = seed_dir();
+            ensure_seeded(dir.path(), None);
+            write_local(
+                dir.path(),
+                r##"{"schemaVersion":1,"agents":[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false}]}"##,
+            );
+            let report = load_catalog_report(dir.path());
+            assert!(!report.catalog.iter().any(|d| d.key == "muse"));
+            assert!(report.warnings.iter().any(|warning| {
+                warning.code == "invalidDefinition" && warning.reason.contains("not supported")
+            }));
+        });
+    }
+
+    #[test]
+    fn managed_catalog_local_unknown_tombstone_and_order_keys_are_ignored() {
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"future-key","remove":true}],"order":["ghost","claude"]}"##,
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert_eq!(report.catalog.len(), 8);
+        assert_eq!(
+            report.catalog[0].key, "claude",
+            "unknown order keys are ignored"
+        );
+        assert!(
+            read_text(&local_catalog_path(dir.path())).contains("future-key"),
+            "an unknown tombstone is retained for a future shipped key"
+        );
+    }
+
+    // ---- #1968 migration, recovery, locks and read-only proof ----------------
+
+    fn migration_journal_json(ac_dir: &Path) -> serde_json::Value {
+        read_json(&migration_journal_path(ac_dir))
+    }
+
+    fn assert_reads_leave_state_unchanged(ac_dir: &Path) {
+        let catalog = catalog_dir(ac_dir);
+        let before_entries = dir_entries(&catalog);
+        let before_base = std::fs::read(manifest_path(ac_dir)).ok();
+        let before_local = std::fs::read(local_catalog_path(ac_dir)).ok();
+        let before_journal = std::fs::read(migration_journal_path(ac_dir)).ok();
+        for _ in 0..3 {
+            let _ = load_catalog_report(ac_dir);
+        }
+        assert_eq!(dir_entries(&catalog), before_entries);
+        assert_eq!(std::fs::read(manifest_path(ac_dir)).ok(), before_base);
+        assert_eq!(std::fs::read(local_catalog_path(ac_dir)).ok(), before_local);
+        assert_eq!(
+            std::fs::read(migration_journal_path(ac_dir)).ok(),
+            before_journal
+        );
+    }
+
+    #[test]
+    fn managed_catalog_migrates_project_legacy_with_pins_changes_and_tombstones() {
+        let dir = seed_dir();
+        let legacy = manifest_json(
+            r##"[{"key":"claude","label":"My Claude","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
+             {"key":"pi","label":"Pi Custom","description":"d","color":"#ec4899","command":"pi-custom","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        write_legacy_base(dir.path(), &legacy);
+        assert!(ensure_seeded(dir.path(), None).is_some());
+
+        let journal = migration_journal_json(dir.path());
+        assert_eq!(journal["version"], 1);
+        assert_eq!(journal["sourceKind"], "project");
+        assert_eq!(
+            journal["sourcePath"],
+            std::fs::canonicalize(manifest_path(dir.path()))
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            std::fs::read(catalog_dir(dir.path()).join(MIGRATION_BACKUP_FILENAME)).unwrap(),
+            legacy.as_bytes(),
+            "the backup is the byte-exact source"
+        );
+
+        let local = local_json(dir.path());
+        assert_eq!(local["order"], serde_json::json!(["claude", "pi", "mine"]));
+        let rows = local["agents"].as_array().unwrap();
+        let claude = rows.iter().find(|row| row["key"] == "claude").unwrap();
+        assert_eq!(claude["label"], "My Claude", "explicit values are pinned");
+        assert_eq!(claude["updateCommands"], serde_json::json!([]));
+        assert!(
+            claude.get("instructionsFilename").is_none() && claude.get("configSeed").is_none(),
+            "absent fields inherit the shipped default instead of being pinned"
+        );
+        let pi = rows.iter().find(|row| row["key"] == "pi").unwrap();
+        assert_eq!(pi["command"], "pi-custom");
+        assert_eq!(pi["updateCommands"], serde_json::json!([]));
+        assert!(rows.iter().any(|row| row["key"] == "mine"));
+        assert_eq!(
+            rows.iter().filter(|row| row["remove"] == true).count(),
+            6,
+            "the six shipped keys absent from the legacy catalog are tombstoned"
+        );
+
+        let loaded = load_catalog(dir.path()).unwrap();
+        assert_eq!(keys_of(&loaded), ["claude", "pi", "mine"]);
+        assert_eq!(loaded[0].label, "My Claude");
+        assert!(loaded[0].update_commands.is_empty(), "explicit [] clears");
+        assert_eq!(loaded[1].command, "pi-custom");
+        assert!(
+            loaded[1].update_commands.is_empty(),
+            "a changed command never inherits the shipped sequence"
+        );
+
+        // Completed migration: restart is a no-op and preserves every byte.
+        let base_before = std::fs::read(manifest_path(dir.path())).unwrap();
+        let local_before = std::fs::read(local_catalog_path(dir.path())).unwrap();
+        assert!(ensure_seeded(dir.path(), None).is_none());
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            base_before
+        );
+        assert_eq!(
+            std::fs::read(local_catalog_path(dir.path())).unwrap(),
+            local_before
+        );
+    }
+
+    #[test]
+    fn managed_catalog_migration_refuses_an_existing_local() {
+        let dir = seed_dir();
+        let legacy = manifest_json(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        write_legacy_base(dir.path(), &legacy);
+        let user_local = r##"{"schemaVersion":1,"agents":[]}"##;
+        write_local(dir.path(), user_local);
+
+        assert!(ensure_seeded(dir.path(), None).is_none());
+        assert_eq!(read_text(&manifest_path(dir.path())), legacy);
+        assert_eq!(read_text(&local_catalog_path(dir.path())), user_local);
+        assert!(!catalog_dir(dir.path())
+            .join(MIGRATION_BACKUP_FILENAME)
+            .exists());
+        assert!(!catalog_dir(dir.path())
+            .join(MIGRATION_JOURNAL_FILENAME)
+            .exists());
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "migrationPending"));
+    }
+
+    #[test]
+    fn managed_catalog_migration_refuses_ambiguous_legacy_sources() {
+        let cases = [
+            (
+                "unknown root field",
+                r##"{"schemaVersion":1,"agents":[],"future":1}"##,
+            ),
+            (
+                "unknown row field",
+                r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"x","description":"d","color":"#111","command":"claude","mystery":1}]}"##,
+            ),
+            (
+                "invalid definition",
+                r##"{"schemaVersion":1,"agents":[{"key":"BAD KEY","label":"x","description":"d","color":"#111","command":"x"}]}"##,
+            ),
+            (
+                "duplicate keys",
+                r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"a","description":"d","color":"#111","command":"claude"},{"key":"claude","label":"b","description":"d","color":"#111","command":"claude"}]}"##,
+            ),
+            ("unsupported schema", r##"{"schemaVersion":2,"agents":[]}"##),
+        ];
+        for (label, legacy) in cases {
+            let dir = seed_dir();
+            write_legacy_base(dir.path(), legacy);
+            assert!(ensure_seeded(dir.path(), None).is_none(), "{label}");
+            assert_eq!(
+                read_text(&manifest_path(dir.path())),
+                legacy,
+                "{label}: bytes preserved"
+            );
+            assert!(
+                !catalog_dir(dir.path())
+                    .join(MIGRATION_BACKUP_FILENAME)
+                    .exists(),
+                "{label}: no backup is written"
+            );
+            // The legacy base stays readable through the legacy resolver.
+            let report = load_catalog_report(dir.path());
+            assert!(
+                report.unavailable.is_none()
+                    || report.unavailable.as_ref().unwrap().code == "baseInvalid",
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_catalog_migration_of_an_empty_catalog_tombstones_every_shipped_key() {
+        let dir = seed_dir();
+        write_legacy_base(dir.path(), r##"{"schemaVersion":1,"agents":[]}"##);
+        assert!(ensure_seeded(dir.path(), None).is_some());
+        let local = local_json(dir.path());
+        let rows = local["agents"].as_array().unwrap();
+        assert_eq!(rows.len(), 8);
+        assert!(rows.iter().all(|row| row["remove"] == true));
+        assert_eq!(local["order"], serde_json::json!([]));
+        assert!(load_catalog(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn managed_catalog_migration_pins_explicit_values_even_equal_to_defaults() {
+        let dir = seed_dir();
+        let claude = shipped_def_json(&["claude"]).remove(0);
+        let legacy = serde_json::json!({"schemaVersion": 1, "agents": [claude]}).to_string();
+        write_legacy_base(dir.path(), &legacy);
+        assert!(ensure_seeded(dir.path(), None).is_some());
+
+        let local = local_json(dir.path());
+        let row = local["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["key"] == "claude")
+            .unwrap();
+        assert_eq!(row["label"], "Claude Code");
+        assert_eq!(
+            row["updateCommands"],
+            serde_json::json!(["claude --update"])
+        );
+        assert_eq!(row["configSeed"]["dest"], ".claude");
+        assert_eq!(row["instructionsFilename"], "CLAUDE.md");
+        let loaded = load_catalog(dir.path()).unwrap();
+        assert_eq!(
+            loaded
+                .iter()
+                .find(|d| d.key == "claude")
+                .unwrap()
+                .update_commands,
+            vec!["claude --update".to_string()]
+        );
+    }
+
+    #[test]
+    fn managed_catalog_migration_never_imports_the_instance_local_layer() {
+        let project = seed_dir();
+        let legacy = legacy_dir();
+        std::fs::write(legacy.path().join("agents.json"), legacy_catalog_json()).unwrap();
+        let instance_local = r##"{"schemaVersion":1,"agents":[{"key":"secret","label":"Secret","description":"d","color":"#111","command":"secret","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]}"##;
+        std::fs::write(legacy.path().join("agents.local.json"), instance_local).unwrap();
+
+        assert!(ensure_seeded(project.path(), Some(legacy.path())).is_some());
+        let local = read_text(&local_catalog_path(project.path()));
+        assert!(
+            !local.contains("secret"),
+            "the instance local layer is never imported: {local}"
+        );
+        assert!(load_catalog(project.path())
+            .unwrap()
+            .iter()
+            .all(|definition| definition.key != "secret"));
+        assert_eq!(
+            read_text(&legacy.path().join("agents.local.json")),
+            instance_local,
+            "the instance local file is read-only"
+        );
+    }
+
+    #[test]
+    fn managed_catalog_interrupt_after_backup_resumes_backup_only() {
+        let dir = seed_dir();
+        let legacy = manifest_json(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        write_legacy_base(dir.path(), &legacy);
+        let _ = with_failure_at("after_backup", || ensure_seeded(dir.path(), None));
+
+        let catalog = catalog_dir(dir.path());
+        assert_eq!(
+            std::fs::read(catalog.join(MIGRATION_BACKUP_FILENAME)).unwrap(),
+            legacy.as_bytes()
+        );
+        assert!(!catalog.join(MIGRATION_JOURNAL_FILENAME).exists());
+        assert!(!local_catalog_path(dir.path()).exists());
+        assert_eq!(
+            read_text(&manifest_path(dir.path())),
+            legacy,
+            "base untouched"
+        );
+        assert!(
+            load_catalog(dir.path()).is_ok(),
+            "the readable legacy source stays usable while recovery is pending"
+        );
+
+        // Restart: the backup equals the current project source, so the
+        // backup-only continuation completes deterministically.
+        assert!(ensure_seeded(dir.path(), None).is_some());
+        assert_eq!(keys_of(&load_catalog(dir.path()).unwrap()), ["mine"]);
+        assert!(
+            !migration_journal_path(dir.path()).exists(),
+            "a backup-only resume never invents a journal"
+        );
+        assert_eq!(
+            std::fs::read(catalog.join(MIGRATION_BACKUP_FILENAME)).unwrap(),
+            legacy.as_bytes(),
+            "the backup is retained for audit"
+        );
+    }
+
+    #[test]
+    fn managed_catalog_interrupt_after_local_resumes_from_the_journal() {
+        let dir = seed_dir();
+        let legacy = manifest_json(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        write_legacy_base(dir.path(), &legacy);
+        let _ = with_failure_at("after_local", || ensure_seeded(dir.path(), None));
+
+        assert!(migration_journal_path(dir.path()).exists());
+        assert!(local_catalog_path(dir.path()).exists());
+        assert_eq!(
+            read_text(&manifest_path(dir.path())),
+            legacy,
+            "the base was not published yet"
+        );
+        let local_before = std::fs::read(local_catalog_path(dir.path())).unwrap();
+
+        assert!(
+            ensure_seeded(dir.path(), None).is_some(),
+            "the restart completes from the journal"
+        );
+        assert_eq!(
+            std::fs::read(local_catalog_path(dir.path())).unwrap(),
+            local_before,
+            "no re-extraction: the verified local bytes are kept"
+        );
+        assert_eq!(
+            base_json(dir.path())["managed"]["revision"],
+            managed_content_sha256(&supported_shipped_definitions())
+        );
+        assert_eq!(keys_of(&load_catalog(dir.path()).unwrap()), ["mine"]);
+
+        // Third run: completed, idempotent.
+        let base_before = std::fs::read(manifest_path(dir.path())).unwrap();
+        assert!(ensure_seeded(dir.path(), None).is_none());
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            base_before
+        );
+    }
+
+    #[test]
+    fn managed_catalog_interrupt_before_base_resumes_from_the_journal() {
+        let dir = seed_dir();
+        let legacy = manifest_json(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        write_legacy_base(dir.path(), &legacy);
+        let _ = with_failure_at("before_base", || ensure_seeded(dir.path(), None));
+        assert!(migration_journal_path(dir.path()).exists());
+        assert_eq!(read_text(&manifest_path(dir.path())), legacy);
+
+        assert!(ensure_seeded(dir.path(), None).is_some());
+        assert_eq!(keys_of(&load_catalog(dir.path()).unwrap()), ["mine"]);
+        assert_eq!(
+            base_json(dir.path())["managed"]["revision"],
+            managed_content_sha256(&supported_shipped_definitions())
+        );
+    }
+
+    #[test]
+    fn managed_catalog_interrupt_after_base_completes_without_re_extraction() {
+        let dir = seed_dir();
+        let legacy = manifest_json(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        write_legacy_base(dir.path(), &legacy);
+        let _ = with_failure_at("after_base", || ensure_seeded(dir.path(), None));
+        assert!(migration_journal_path(dir.path()).exists());
+        let local_before = std::fs::read(local_catalog_path(dir.path())).unwrap();
+        let base_before = std::fs::read(manifest_path(dir.path())).unwrap();
+
+        assert!(
+            ensure_seeded(dir.path(), None).is_none(),
+            "a base matching the journal is already completed"
+        );
+        assert_eq!(
+            std::fs::read(local_catalog_path(dir.path())).unwrap(),
+            local_before
+        );
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            base_before
+        );
+        assert_eq!(keys_of(&load_catalog(dir.path()).unwrap()), ["mine"]);
+    }
+
+    #[test]
+    fn managed_catalog_interrupt_across_a_revision_change_completes_then_refreshes() {
+        let dir = seed_dir();
+        let legacy = manifest_json(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        write_legacy_base(dir.path(), &legacy);
+        let _ = with_failure_at("before_base", || ensure_seeded(dir.path(), None));
+        assert_eq!(
+            migration_journal_json(dir.path())["managedBase"]["agents"]
+                .as_array()
+                .unwrap()
+                .len(),
+            8,
+            "the journal saved the full-table base"
+        );
+
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            assert!(
+                ensure_seeded(dir.path(), None).is_some(),
+                "the journal saved base is completed first"
+            );
+            let base = base_json(dir.path());
+            assert_eq!(
+                base["agents"].as_array().unwrap().len(),
+                7,
+                "then the normal verified refresh runs under the same lock"
+            );
+            assert_eq!(
+                base["managed"]["revision"],
+                managed_content_sha256(&supported_shipped_definitions())
+            );
+        });
+    }
+
+    #[test]
+    fn managed_catalog_interrupt_with_a_local_edit_blocks_recovery() {
+        let dir = seed_dir();
+        let legacy = manifest_json(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        write_legacy_base(dir.path(), &legacy);
+        let _ = with_failure_at("after_local", || ensure_seeded(dir.path(), None));
+        let edited =
+            r##"{"schemaVersion":1,"agents":[{"key":"mine","label":"EDITED BETWEEN RUNS"}]}"##;
+        write_local(dir.path(), edited);
+        let entries_before = dir_entries(&catalog_dir(dir.path()));
+
+        assert!(ensure_seeded(dir.path(), None).is_none());
+        assert_eq!(read_text(&local_catalog_path(dir.path())), edited);
+        assert_eq!(read_text(&manifest_path(dir.path())), legacy);
+        assert_eq!(
+            dir_entries(&catalog_dir(dir.path())),
+            entries_before,
+            "a conflicting recovery deletes nothing"
+        );
+        // The read stays readable on the legacy source and reports the pending
+        // migration; the conflict itself blocks only continuation.
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "migrationPending"));
+    }
+
+    #[test]
+    fn managed_catalog_sidecar_collisions_block_without_cleanup() {
+        let dir = seed_dir();
+        let legacy = manifest_json(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        write_legacy_base(dir.path(), &legacy);
+        let catalog = catalog_dir(dir.path());
+        std::fs::create_dir_all(&catalog).unwrap();
+        std::fs::write(catalog.join(MIGRATION_BACKUP_FILENAME), b"foreign backup").unwrap();
+        assert!(ensure_seeded(dir.path(), None).is_none());
+        let entries_before = dir_entries(&catalog);
+        assert!(ensure_seeded(dir.path(), None).is_none());
+        assert_eq!(read_text(&manifest_path(dir.path())), legacy);
+        assert_eq!(dir_entries(&catalog), entries_before);
+        assert!(load_catalog(dir.path()).is_ok());
+
+        // An invalid journal is also a conflict, and nothing is deleted.
+        std::fs::remove_file(catalog.join(MIGRATION_BACKUP_FILENAME)).unwrap();
+        std::fs::write(catalog.join(MIGRATION_JOURNAL_FILENAME), b"not json").unwrap();
+        let entries_before = dir_entries(&catalog);
+        assert!(ensure_seeded(dir.path(), None).is_none());
+        assert_eq!(read_text(&manifest_path(dir.path())), legacy);
+        assert_eq!(dir_entries(&catalog), entries_before);
+    }
+
+    #[test]
+    fn managed_catalog_reads_never_write_in_any_state() {
+        // Managed base with local overrides.
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"Mine"}]}"##,
+        );
+        assert_reads_leave_state_unchanged(dir.path());
+
+        // Legacy base.
+        let dir = seed_dir();
+        write_legacy_base(
+            dir.path(),
+            &manifest_json(
+                r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+            ),
+        );
+        assert_reads_leave_state_unchanged(dir.path());
+
+        // Absent base and no directory at all.
+        let dir = seed_dir();
+        assert_reads_leave_state_unchanged(dir.path());
+
+        // Interrupted migration boundary (journal + local, base still legacy).
+        let dir = seed_dir();
+        write_legacy_base(
+            dir.path(),
+            &manifest_json(
+                r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+            ),
+        );
+        let _ = with_failure_at("after_local", || ensure_seeded(dir.path(), None));
+        assert_reads_leave_state_unchanged(dir.path());
+        let report = load_catalog_report(dir.path());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "migrationPending"));
+    }
+
+    #[test]
+    fn managed_catalog_no_embedded_commands_escape_a_failed_publication() {
+        let project = seed_dir();
+        let legacy = legacy_dir();
+        std::fs::write(legacy.path().join("agents.json"), legacy_catalog_json()).unwrap();
+        let _ = with_failure_at("publication_temp_synced", || {
+            ensure_seeded(project.path(), Some(legacy.path()))
+        });
+        assert!(
+            !manifest_path(project.path()).exists(),
+            "no base was published"
+        );
+        assert!(!catalog_dir(project.path())
+            .join(MIGRATION_JOURNAL_FILENAME)
+            .exists());
+        let report = load_catalog_report(project.path());
+        assert!(report.unavailable.is_some());
+        let text = report_json(&report);
+        for sentinel in [
+            "claude --update",
+            "pi update",
+            "codex update",
+            "hermes update --yes",
+            "opencode upgrade",
+            "agy update",
+        ] {
+            assert!(
+                !text.contains(sentinel),
+                "embedded command leaked: {sentinel}"
+            );
+        }
+        assert!(load_catalog(project.path()).is_err());
+    }
+
+    #[test]
+    fn managed_catalog_duplicate_command_identities_and_base_order_stay_intact() {
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"pi-max","label":"Pi Max","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["pi --custom"],"autoUpdate":false}]}"##,
+        );
+        let loaded = load_catalog(dir.path()).unwrap();
+        let keys = keys_of(&loaded);
+        assert_eq!(keys[0], "claude");
+        assert_eq!(keys[4], "pi");
+        assert_eq!(keys[5], "opencode");
+        assert_eq!(keys[8], "pi-max", "local additions append after the base");
+        let pi = loaded.iter().find(|d| d.key == "pi").unwrap();
+        let pi_max = loaded.iter().find(|d| d.key == "pi-max").unwrap();
+        assert_eq!(pi.update_commands, vec!["pi update".to_string()]);
+        assert_eq!(pi_max.update_commands, vec!["pi --custom".to_string()]);
+    }
+
+    #[test]
+    fn managed_catalog_untracked_publication_is_retried_without_republishing() {
+        let project = seed_dir();
+        let root = project.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let ac_dir = ac_dir_for(&root);
+        ensure_seeded(&ac_dir, None);
+        let base_before = std::fs::read(manifest_path(&ac_dir)).unwrap();
+        assert!(
+            !crate::config::seed_manifest::has_catalog_publication(&root).unwrap(),
+            "the ungated seed recorded nothing"
+        );
+
+        let token = ManifestActivationToken::for_test();
+        ensure_seeded_for_project_with_token(&root, Some(&token));
+        assert!(
+            crate::config::seed_manifest::has_catalog_publication(&root).unwrap(),
+            "the verified current base is recorded on the next initialization"
+        );
+        assert_eq!(
+            std::fs::read(manifest_path(&ac_dir)).unwrap(),
+            base_before,
+            "bookkeeping never republishes or rewrites the base"
+        );
+    }
+
+    #[test]
+    fn managed_catalog_report_flags_an_untracked_verified_base() {
+        let tracked = seed_dir();
+        let root = tracked.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        ensure_seeded(&ac_dir_for(&root), None);
+        let settings = AppSettings {
+            project_paths: vec![root.to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let report = report_json(&load_catalog_report_for_settings(&settings));
+        assert!(report.contains("publicationUntracked"), "{report}");
+
+        // A legacy base skips the bookkeeping query entirely.
+        let legacy = seed_dir();
+        write_legacy_base(
+            &ac_dir_for(legacy.path()),
+            &manifest_json(
+                r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+            ),
+        );
+        let settings = AppSettings {
+            project_paths: vec![legacy.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let report = report_json(&load_catalog_report_for_settings(&settings));
+        assert!(!report.contains("publicationUntracked"), "{report}");
+    }
+
+    #[test]
+    fn managed_catalog_lock_timeout_is_bounded_and_named() {
+        assert_eq!(CATALOG_LOCK_TIMEOUT, Duration::from_secs(5));
+        let dir = seed_dir();
+        let catalog = catalog_dir(dir.path());
+        std::fs::create_dir_all(&catalog).unwrap();
+        let canonical = std::fs::canonicalize(&catalog).unwrap();
+        let paths = CatalogPaths::new(&canonical);
+        let held = acquire_catalog_lock(&paths).unwrap();
+
+        CATALOG_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.set(Some(Duration::from_millis(150))));
+        let started = Instant::now();
+        let error = acquire_catalog_lock(&paths).unwrap_err();
+        let elapsed = started.elapsed();
+        CATALOG_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.set(None));
+
+        assert!(error.contains("catalogLockTimeout"), "{error}");
+        assert!(error.contains(CATALOG_LOCK_FILENAME), "{error}");
+        assert!(error.contains("150 ms"), "{error}");
+        assert!(
+            elapsed >= Duration::from_millis(150) && elapsed < Duration::from_secs(2),
+            "bounded wait, elapsed {elapsed:?}"
+        );
+        drop(held);
+        let reacquired = acquire_catalog_lock(&paths).unwrap();
+        drop(reacquired);
+        assert!(paths.lock.is_file(), "the lock file is never removed");
+    }
+
+    const LOCK_CHILD_ACTION_ENV: &str = "AC_1968_CATALOG_LOCK_CHILD_ACTION";
+    const LOCK_CHILD_DIR_ENV: &str = "AC_1968_CATALOG_LOCK_CHILD_DIR";
+    const LOCK_CHILD_TEST_FQN: &str =
+        "config::coding_agents_catalog::tests::managed_catalog_lock_child";
+
+    fn wait_for_path(path: &Path, timeout: Duration, label: &str) {
+        let started = Instant::now();
+        while !path.exists() {
+            assert!(
+                started.elapsed() < timeout,
+                "{label}: timed out waiting for {}",
+                path.display()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn spawn_catalog_lock_child(dir: &Path) -> (PathBuf, std::process::Child) {
+        let canonical = std::fs::canonicalize(dir).expect("canonical catalog dir");
+        let exe = std::env::current_exe().expect("current test exe");
+        let mut command = std::process::Command::new(exe);
+        command
+            .args([
+                "--exact",
+                LOCK_CHILD_TEST_FQN,
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(LOCK_CHILD_ACTION_ENV, "hold")
+            .env(LOCK_CHILD_DIR_ENV, &canonical)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let child = command.spawn().expect("spawn catalog lock child");
+        wait_for_path(
+            &canonical.join("child-ready"),
+            Duration::from_secs(30),
+            "catalog lock child",
+        );
+        (canonical, child)
+    }
+
+    #[test]
+    fn managed_catalog_lock_child() {
+        let Some(action) = std::env::var_os(LOCK_CHILD_ACTION_ENV) else {
+            return;
+        };
+        let action = action.to_string_lossy().into_owned();
+        let dir = PathBuf::from(std::env::var_os(LOCK_CHILD_DIR_ENV).expect("child dir env"));
+        let paths = CatalogPaths::new(&dir);
+        match action.as_str() {
+            "hold" => {
+                let _lock = acquire_catalog_lock(&paths).expect("child must acquire the lock");
+                std::fs::write(dir.join("child-ready"), b"ready").expect("child announces ready");
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while !dir.join("child-release").exists() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "child hold exceeded its 60s bound"
+                    );
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            other => panic!("unknown child action {other}"),
+        }
+        println!("AC_1968_CATALOG_LOCK_CHILD_DONE action={action}");
+    }
+
+    #[test]
+    fn managed_catalog_process_lock_contention_times_out_and_recovers() {
+        let dir = seed_dir();
+        let catalog = catalog_dir(dir.path());
+        std::fs::create_dir_all(&catalog).unwrap();
+        let canonical = std::fs::canonicalize(&catalog).unwrap();
+        let (held_dir, mut child) = spawn_catalog_lock_child(&canonical);
+        let paths = CatalogPaths::new(&held_dir);
+
+        CATALOG_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.set(Some(Duration::from_millis(250))));
+        let error = acquire_catalog_lock(&paths).unwrap_err();
+        CATALOG_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.set(None));
+        assert!(error.contains("catalogLockTimeout"), "{error}");
+
+        std::fs::write(held_dir.join("child-release"), b"release").unwrap();
+        let started = Instant::now();
+        loop {
+            match acquire_catalog_lock(&paths) {
+                Ok(_) => break,
+                Err(error) => {
+                    assert!(
+                        started.elapsed() < Duration::from_secs(30),
+                        "the released child lock must become acquirable: {error}"
+                    );
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        let status = child.wait().expect("reap the lock child");
+        assert!(status.success(), "the lock child must exit cleanly");
+    }
+
+    #[test]
+    fn managed_catalog_process_lock_holder_death_releases_the_lock() {
+        let dir = seed_dir();
+        let catalog = catalog_dir(dir.path());
+        std::fs::create_dir_all(&catalog).unwrap();
+        let canonical = std::fs::canonicalize(&catalog).unwrap();
+        let exe = std::env::current_exe().expect("current test exe");
+        let mut child = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                LOCK_CHILD_TEST_FQN,
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(LOCK_CHILD_ACTION_ENV, "hold")
+            .env(LOCK_CHILD_DIR_ENV, &canonical)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn catalog lock child");
+        wait_for_path(
+            &canonical.join("child-ready"),
+            Duration::from_secs(30),
+            "catalog lock child",
+        );
+        child.kill().expect("kill the lock holder");
+        let _ = child.wait();
+
+        let paths = CatalogPaths::new(&canonical);
+        CATALOG_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.set(Some(Duration::from_secs(3))));
+        let acquired = acquire_catalog_lock(&paths);
+        CATALOG_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.set(None));
+        assert!(
+            acquired.is_ok(),
+            "a crashed holder releases the OS lock: {acquired:?}"
+        );
     }
 }

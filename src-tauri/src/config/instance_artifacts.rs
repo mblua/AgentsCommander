@@ -71,6 +71,12 @@ pub(crate) enum ArtifactKind {
     /// the instance directory. Exceptional by design; a registry test pins the
     /// number of such rows.
     GlobAnyDepth,
+    /// #1968 - renders as `/{name}` where `name` is a full path RELATIVE to the
+    /// instance root (`coding-agents/agents.local.json`). The only kind whose
+    /// name carries a forward slash: the pattern is still anchored by the one
+    /// leading slash the renderer adds, and a registry test pins the exact
+    /// `coding-agents/` child allowlist rather than allowing arbitrary paths.
+    RootRelativeGlob,
 }
 
 /// One artifact of the instance config directory.
@@ -177,6 +183,75 @@ pub(crate) const GLOBAL_CONTEXT_RETIRED_BACKUP_GLOB: &str =
 pub(crate) const AGENCY_TEMPLATES_DIR: &str = "agency-agents_templates";
 pub(crate) const AGENT_TEMPLATES_DIR_NAME: &str = "agent-templates";
 pub(crate) const CODING_AGENTS_CATALOG_DIR_NAME: &str = "coding-agents";
+
+/// #1968 - declares one machine-local coding-agent catalog child: the FILE name
+/// constant the catalog module aliases for its path composition, plus the
+/// root-relative table name derived from the single directory prefix, so the two
+/// can never drift apart.
+macro_rules! coding_agents_child {
+    ($file_const:ident, $artifact_const:ident, $filename:literal) => {
+        pub(crate) const $file_const: &str = $filename;
+        pub(crate) const $artifact_const: &str = concat!("coding-agents/", $filename);
+    };
+}
+
+// The user-owned overrides layer, the two immutable migration sidecars and the
+// catalog write lock. The catalog module aliases these FILE names for its path
+// composition, while the table rows use the derived root-relative names.
+coding_agents_child!(
+    CODING_AGENTS_LOCAL_FILENAME,
+    CODING_AGENTS_LOCAL_ARTIFACT,
+    "agents.local.json"
+);
+coding_agents_child!(
+    CODING_AGENTS_MIGRATION_BACKUP_FILENAME,
+    CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
+    "agents.migration-v1.backup.json"
+);
+coding_agents_child!(
+    CODING_AGENTS_MIGRATION_JOURNAL_FILENAME,
+    CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
+    ".agents.migration-v1.json"
+);
+coding_agents_child!(
+    CODING_AGENTS_LOCK_FILENAME,
+    CODING_AGENTS_LOCK_ARTIFACT,
+    ".agents.json.lock"
+);
+
+// #1968 - the four publication temporaries. The catalog writer composes each
+// name at runtime from its destination (`managed_catalog_temp_name_for_destination`),
+// so no production code imports these file-name constants; they exist so the
+// registry can prove the table's policy patterns are the writer's real shapes.
+#[allow(dead_code)] // used by the registry's derivation test only
+pub(crate) const CODING_AGENTS_BASE_TMP_GLOB: &str = ".agents.json.*.tmp";
+#[allow(dead_code)] // used by the registry's derivation test only
+pub(crate) const CODING_AGENTS_LOCAL_TMP_GLOB: &str = ".agents.local.json.*.tmp";
+#[allow(dead_code)] // used by the registry's derivation test only
+pub(crate) const CODING_AGENTS_MIGRATION_BACKUP_TMP_GLOB: &str =
+    ".agents.migration-v1.backup.json.*.tmp";
+#[allow(dead_code)] // used by the registry's derivation test only
+pub(crate) const CODING_AGENTS_MIGRATION_JOURNAL_TMP_GLOB: &str =
+    "..agents.migration-v1.json.*.tmp";
+
+pub(crate) const CODING_AGENTS_BASE_TMP_ARTIFACT: &str = "coding-agents/.agents.json.*.tmp";
+pub(crate) const CODING_AGENTS_LOCAL_TMP_ARTIFACT: &str = "coding-agents/.agents.local.json.*.tmp";
+pub(crate) const CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT: &str =
+    "coding-agents/.agents.migration-v1.backup.json.*.tmp";
+pub(crate) const CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT: &str =
+    "coding-agents/..agents.migration-v1.json.*.tmp";
+
+/// #1968 - the single publication temporary-name formula,
+/// `.{destination}.{pid}.{counter}.tmp`. The catalog writer aliases it and the
+/// generated-policy test derives the journal temporary from it, so the writer
+/// and the ignore rule cannot drift apart. Leaf on purpose: `format!` only.
+pub(crate) fn publication_temp_name_for_destination(
+    destination_file_name: &str,
+    pid: u32,
+    counter: u64,
+) -> String {
+    format!(".{destination_file_name}.{pid}.{counter}.tmp")
+}
 
 // ---------------------------------------------------------------------------
 // The table
@@ -303,6 +378,54 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::Dir,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: CLI-to-app coding-agent mutation request queue, including its results/ subdirectory",
+    },
+    InstanceArtifact {
+        name: CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: transient coding-agent migration journal temporaries (.{destination}.{pid}.{counter}.tmp; the journal name starts with a dot)",
+    },
+    InstanceArtifact {
+        name: CODING_AGENTS_BASE_TMP_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: transient managed coding-agent base publication temporaries",
+    },
+    InstanceArtifact {
+        name: CODING_AGENTS_LOCK_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: persistent coding-agent catalog write-lock sidecar; transient coordination state",
+    },
+    InstanceArtifact {
+        name: CODING_AGENTS_LOCAL_TMP_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: transient coding-agent local override publication temporaries",
+    },
+    InstanceArtifact {
+        name: CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: transient coding-agent migration backup publication temporaries",
+    },
+    InstanceArtifact {
+        name: CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: coding-agent migration journal; immutable AC recovery state, never user content",
+    },
+    InstanceArtifact {
+        name: CODING_AGENTS_LOCAL_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: machine-local coding-agent overrides; user-owned and never overwritten after creation",
+    },
+    InstanceArtifact {
+        name: CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: immutable byte-exact backup of the pre-migration coding-agent source",
     },
     InstanceArtifact {
         name: CONTEXT_CACHE_DIR_NAME,
@@ -540,6 +663,21 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
     },
 ];
 
+/// #1968 - the exact `coding-agents/` child allowlist `RootRelativeGlob` rows
+/// may carry. A registry test pins the table to this set, so widening the kind
+/// to another directory is a policy change rather than a table tweak.
+#[cfg(test)]
+pub(crate) const ROOT_RELATIVE_GLOB_ALLOWLIST: [&str; 8] = [
+    CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
+    CODING_AGENTS_BASE_TMP_ARTIFACT,
+    CODING_AGENTS_LOCK_ARTIFACT,
+    CODING_AGENTS_LOCAL_TMP_ARTIFACT,
+    CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
+    CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
+    CODING_AGENTS_LOCAL_ARTIFACT,
+    CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
+];
+
 /// Whether `file_name` is matched by `ATOMIC_WRITE_TMP_GLOB`.
 ///
 /// The predicate lives next to the pattern so the writer-side tie test in
@@ -623,12 +761,97 @@ mod tests {
                  is the only place a leading slash is added, and a generated `!` rule \
                  is impossible by construction"
             );
-            for forbidden in ['/', '\\', '\n', '\r'] {
+            assert!(
+                !name.contains('!'),
+                "name {name:?} must not contain a negation marker"
+            );
+
+            // A slash is legal for exactly one kind, and only inside the pinned
+            // `coding-agents/` child allowlist with real single-segment children.
+            if artifact.kind == ArtifactKind::RootRelativeGlob {
                 assert!(
-                    !name.contains(forbidden),
-                    "name {name:?} must not contain {forbidden:?}"
+                    ROOT_RELATIVE_GLOB_ALLOWLIST.contains(&name),
+                    "RootRelativeGlob {name:?} is outside the pinned coding-agents allowlist"
                 );
+                let mut segments = name.split('/');
+                assert_eq!(
+                    segments.next(),
+                    Some(CODING_AGENTS_CATALOG_DIR_NAME),
+                    "RootRelativeGlob {name:?} must be rooted at {CODING_AGENTS_CATALOG_DIR_NAME:?}"
+                );
+                let children: Vec<&str> = segments.collect();
+                assert_eq!(
+                    children.len(),
+                    1,
+                    "RootRelativeGlob {name:?} must name exactly one child of the catalog directory"
+                );
+                let child = children[0];
+                assert!(
+                    !child.is_empty() && child != "." && child != "..",
+                    "RootRelativeGlob {name:?} has an empty, dot or dotdot child segment"
+                );
+                for forbidden in ['\\', '\n', '\r'] {
+                    assert!(
+                        !name.contains(forbidden),
+                        "name {name:?} must not contain {forbidden:?}"
+                    );
+                }
+            } else {
+                for forbidden in ['/', '\\', '\n', '\r'] {
+                    assert!(
+                        !name.contains(forbidden),
+                        "name {name:?} must not contain {forbidden:?}"
+                    );
+                }
             }
+        }
+    }
+
+    #[test]
+    fn root_relative_glob_rows_are_exactly_the_pinned_allowlist() {
+        let rows: Vec<&str> = INSTANCE_ARTIFACTS
+            .iter()
+            .filter(|artifact| artifact.kind == ArtifactKind::RootRelativeGlob)
+            .map(|artifact| artifact.name)
+            .collect();
+        assert_eq!(
+            rows, ROOT_RELATIVE_GLOB_ALLOWLIST,
+            "the kind's rows must equal the pinned allowlist in table order"
+        );
+    }
+
+    #[test]
+    fn root_relative_glob_artifact_names_derive_from_their_filenames() {
+        for (artifact, file_name) in [
+            (CODING_AGENTS_LOCAL_ARTIFACT, CODING_AGENTS_LOCAL_FILENAME),
+            (
+                CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
+                CODING_AGENTS_MIGRATION_BACKUP_FILENAME,
+            ),
+            (
+                CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
+                CODING_AGENTS_MIGRATION_JOURNAL_FILENAME,
+            ),
+            (CODING_AGENTS_LOCK_ARTIFACT, CODING_AGENTS_LOCK_FILENAME),
+            (CODING_AGENTS_BASE_TMP_ARTIFACT, CODING_AGENTS_BASE_TMP_GLOB),
+            (
+                CODING_AGENTS_LOCAL_TMP_ARTIFACT,
+                CODING_AGENTS_LOCAL_TMP_GLOB,
+            ),
+            (
+                CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
+                CODING_AGENTS_MIGRATION_BACKUP_TMP_GLOB,
+            ),
+            (
+                CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
+                CODING_AGENTS_MIGRATION_JOURNAL_TMP_GLOB,
+            ),
+        ] {
+            assert_eq!(
+                artifact,
+                format!("{CODING_AGENTS_CATALOG_DIR_NAME}/{file_name}"),
+                "the table name must be the catalog directory plus the file-name constant"
+            );
         }
     }
 

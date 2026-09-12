@@ -125,6 +125,7 @@ fn render(artifact: &InstanceArtifact) -> RenderedRule {
     let pattern = match artifact.kind {
         ArtifactKind::File | ArtifactKind::Glob => format!("/{}", artifact.name),
         ArtifactKind::Dir => format!("/{}/", artifact.name),
+        ArtifactKind::RootRelativeGlob => format!("/{}", artifact.name),
         ArtifactKind::GlobAnyDepth => artifact.name.to_string(),
     };
     RenderedRule {
@@ -944,6 +945,48 @@ mod tests {
     }
 
     #[test]
+    fn managed_catalog_journal_temp_name_exact() {
+        // #1968: the journal publication temporary for the dot-prefixed journal
+        // name has TWO leading dots. The rule is derived through the real
+        // publication helper, and the SINGLE-dot near miss must not match THAT
+        // rule. The near miss is still covered by the pre-existing any-depth
+        // atomic-write glob, so this test isolates the derived rule in its own
+        // one-rule .gitignore instead of asking the whole policy.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path();
+        assert_git_success(repo, &["init", "--quiet"]);
+
+        let temp_name = super::super::instance_artifacts::publication_temp_name_for_destination(
+            ".agents.migration-v1.json",
+            123,
+            7,
+        );
+        assert_eq!(temp_name, "..agents.migration-v1.json.123.7.tmp");
+
+        let row = ignore_rows()
+            .into_iter()
+            .find(|artifact| {
+                artifact.name
+                    == super::super::instance_artifacts::CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT
+            })
+            .expect("journal temporary registry row");
+        let pattern = render(row).pattern;
+        std::fs::write(repo.join(".gitignore"), format!("{pattern}\n"))
+            .expect("seed one-rule gitignore");
+
+        let exact = format!("coding-agents/{temp_name}");
+        let near_miss = "coding-agents/.agents.migration-v1.json.123.7.tmp";
+        for relative in [exact.as_str(), near_miss] {
+            let path = repo.join(relative);
+            std::fs::create_dir_all(path.parent().expect("fixture parent"))
+                .expect("create fixture parent");
+            std::fs::write(path, b"fixture").expect("write fixture");
+        }
+        assert_git_ignore_status(repo, &exact, 0);
+        assert_git_ignore_status(repo, near_miss, 1);
+    }
+
+    #[test]
     fn git_fixture_ignores_exactly_required_paths_without_untracking() {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = temp.path();
@@ -1002,6 +1045,15 @@ mod tests {
             // in one rule.
             "coding-agent-requests/req-1.json",
             "coding-agent-requests/results/res-1.json",
+            // #1968: the machine-local catalog children and every publication
+            // temporary shape, including the doubled-dot journal temporary.
+            "coding-agents/agents.local.json",
+            "coding-agents/agents.migration-v1.backup.json",
+            "coding-agents/.agents.migration-v1.json",
+            "coding-agents/.agents.json.lock",
+            "coding-agents/.agents.local.json.4242.0.tmp",
+            "coding-agents/.agents.migration-v1.backup.json.4242.0.tmp",
+            "coding-agents/..agents.migration-v1.json.4242.0.tmp",
             "context-cache/ac-context-1.md",
             "coordinator_clocks.json",
             "coordinator_clocks.json.4242.7.tmp",
@@ -1098,6 +1150,8 @@ mod tests {
             // Load-bearing: this is what proves the `coding-agent-requests/` row
             // does not reach its byte-order neighbour.
             "coding-agents/agents.json",
+            // #1968: the tracked base and the tracked masters stay visible.
+            "coding-agents/_seed/.claude/settings.json",
             // #1737: these two also prove the `*.local.md` glob does not reach the
             // tracked base templates whose overrides it covers.
             "Context.root-agent.md",

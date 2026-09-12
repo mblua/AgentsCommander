@@ -1627,6 +1627,64 @@ fn read_bounded_file(
     Ok(raw)
 }
 
+/// #1968 - narrow READ-ONLY query: does this project's seed manifest carry a
+/// canonical coding-agent catalog publication row for
+/// `.ac/coding-agents/agents.json`?
+///
+/// Deliberately not a guard: it takes no lock, creates no directory, upgrades no
+/// schema and writes nothing, so a caller may use it to decide whether
+/// bookkeeping is missing. It reuses the canonical reader stack
+/// ([`open_regular_no_follow`] + [`OpenedRegularFile`] + [`read_bounded_file`] +
+/// [`parse_manifest_bytes`]), revalidates the opened identity across the read,
+/// and compares the PARSED [`ManifestPathIdentity`] (never raw path text) plus
+/// the canonical row kind, the catalog scope and the `Builtin` source.
+///
+/// * `Ok(true)` - at least one parsed canonical row matches.
+/// * `Ok(false)` - the manifest is absent (exact NotFound) or carries no such
+///   row. Absence of proof is not proof, so the caller reports an untracked
+///   publication rather than assuming the row was ever written.
+/// * `Err` - malformed, future, oversized, nonregular, link or unreadable
+///   manifests.
+pub(crate) fn has_catalog_publication(project_root: &Path) -> Result<bool, SeedManifestError> {
+    let canonical_path = project_root
+        .join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR)
+        .join(SEED_MANIFEST_FILENAME);
+    let mut canonical = match open_regular_no_follow(&canonical_path, false, false) {
+        Ok(file) => OpenedRegularFile::from_file(&canonical_path, file)?,
+        Err(error) if is_exact_not_found(&error) => return Ok(false),
+        Err(error) => {
+            return Err(classify_open_error(
+                &canonical_path,
+                error,
+                "open canonical manifest",
+                false,
+            ))
+        }
+    };
+    let raw = read_bounded_file(
+        &mut canonical.file,
+        canonical.length,
+        MAX_MANIFEST_BYTES,
+        &canonical_path,
+    )?;
+    let reopened = OpenedRegularFile::open_existing(&canonical_path, false)?;
+    if reopened.identity != canonical.identity {
+        return Err(SeedManifestError::UnsafePath {
+            path: canonical_path,
+            reason: "canonical identity changed during its bounded read".to_string(),
+        });
+    }
+    let state = parse_manifest_bytes(&raw)?;
+    let identity =
+        ManifestPathIdentity::from_relative_path(Path::new(".ac/coding-agents/agents.json"))?;
+    Ok(state.rows.values().any(|row| {
+        row.path == identity
+            && row.kind == ManifestFileKind::CodingAgentCatalog
+            && row.scope == "catalog:coding-agents"
+            && row.source == ManifestSource::Builtin
+    }))
+}
+
 #[derive(Debug)]
 struct HandleFacts {
     identity: FileIdentity,
@@ -4630,6 +4688,129 @@ mod tests {
                 observed_at_least: 5
             }
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // #1968 - the narrow read-only catalog-publication query.
+    // -----------------------------------------------------------------------
+
+    fn catalog_publication_row() -> Result<PublishedManifestRow, SeedManifestError> {
+        PublishedManifestRow::coding_agent_catalog(
+            ManifestPathIdentity::parse(
+                ManifestPathEncoding::Utf8,
+                ".ac/coding-agents/agents.json".to_string(),
+            )?,
+            timestamp("2026-09-12T13:30:00.000Z"),
+        )
+    }
+
+    fn ac_dir_entries(project: &Path) -> Vec<std::ffi::OsString> {
+        let mut names: Vec<std::ffi::OsString> = std::fs::read_dir(project.join(".ac"))
+            .expect("read .ac")
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn managed_catalog_has_catalog_publication_missing_manifest_is_false_and_creates_nothing() {
+        let (_temp, project) = setup_project();
+        let entries_before = ac_dir_entries(&project);
+        assert!(!has_catalog_publication(&project).expect("query missing manifest"));
+        assert!(
+            !canonical_path(&project).exists(),
+            "the query never creates"
+        );
+        assert_eq!(entries_before, ac_dir_entries(&project));
+    }
+
+    #[test]
+    fn managed_catalog_has_catalog_publication_matches_only_the_exact_canonical_row() {
+        let (_temp, project) = setup_project();
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        guard.publication_permit().record_file(
+            &ManifestActivationToken::for_test(),
+            context_row(
+                "Context.AgentsCommander.md",
+                "context:agentscommander",
+                "2026-07-16T19:40:07.123Z",
+            )
+            .unwrap(),
+        );
+        guard.release();
+        assert!(
+            !has_catalog_publication(&project).expect("context-only manifest"),
+            "a context row is not a catalog publication"
+        );
+
+        let bytes_before = std::fs::read(canonical_path(&project)).unwrap();
+        let entries_before = ac_dir_entries(&project);
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        assert_eq!(
+            guard.publication_permit().record_file(
+                &ManifestActivationToken::for_test(),
+                catalog_publication_row().unwrap(),
+            ),
+            ManifestRecordOutcome::Recorded
+        );
+        guard.release();
+        assert!(has_catalog_publication(&project).expect("catalog row"));
+
+        // Repeated reads change neither bytes nor the directory entry set.
+        let bytes_after = std::fs::read(canonical_path(&project)).unwrap();
+        let entries_after = ac_dir_entries(&project);
+        for _ in 0..3 {
+            assert!(has_catalog_publication(&project).expect("repeat query"));
+        }
+        assert_ne!(bytes_before, bytes_after, "the row was recorded");
+        assert_eq!(
+            std::fs::read(canonical_path(&project)).unwrap(),
+            bytes_after
+        );
+        assert_eq!(entries_before, entries_after);
+    }
+
+    #[test]
+    fn managed_catalog_has_catalog_publication_malformed_future_and_directory_are_err() {
+        let (_temp, project) = setup_project();
+        std::fs::write(canonical_path(&project), b"not = [valid toml").unwrap();
+        assert!(has_catalog_publication(&project).is_err());
+
+        let (_temp, project) = setup_project();
+        std::fs::write(
+            canonical_path(&project),
+            "schema_version = 99\ncoverage_version = 99\ncoverage = []\nfiles = []\n",
+        )
+        .unwrap();
+        assert!(has_catalog_publication(&project).is_err());
+
+        let (_temp, project) = setup_project();
+        std::fs::create_dir(canonical_path(&project)).unwrap();
+        assert!(has_catalog_publication(&project).is_err());
+    }
+
+    #[test]
+    fn managed_catalog_has_catalog_publication_reads_under_a_held_writer_lock() {
+        let (_temp, project) = setup_project();
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        guard.publication_permit().record_file(
+            &ManifestActivationToken::for_test(),
+            catalog_publication_row().unwrap(),
+        );
+        // The writer still holds the sidecar lock; the query takes NO lock, so
+        // it must see the committed bytes and never block once the guard drops.
+        let started = Instant::now();
+        assert!(has_catalog_publication(&project).expect("read under held writer"));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the read must not wait on the writer lock"
+        );
+        let bytes = std::fs::read(canonical_path(&project)).unwrap();
+        guard.release();
+        assert_eq!(std::fs::read(canonical_path(&project)).unwrap(), bytes);
+        assert!(has_catalog_publication(&project).expect("read after restart"));
     }
 
     #[test]
