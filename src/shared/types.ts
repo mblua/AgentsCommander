@@ -412,6 +412,15 @@ export interface CodingAgentDefinition {
   autoUpdate: boolean;
 }
 
+export type CatalogDiagnostic = { code: string; path: string; reason: string };
+export type CatalogReport = {
+  primaryProjectRoot: string | null;
+  sourcePath: string | null;
+  catalog: CodingAgentDefinition[];
+  warnings: CatalogDiagnostic[];
+  unavailable: CatalogDiagnostic | null;
+};
+
 export interface ReseedResult {
   dest: string;
   backupPath: string;
@@ -683,6 +692,7 @@ export interface AppSettings {
   coordinatorAutoCloseSkipTelegramAssigned: boolean;
   coordinatorCascadeCloseEnabled: boolean;
   npmUpdateNotificationsEnabled: boolean;
+  remoteBlockingMenusEnabled: boolean;
   autoSelfClearEnabled: boolean;
   autoSelfClearByAgent: Record<string, boolean>;
   /** #1327 - per-command auto-update policy, keyed by the catalog COMMAND

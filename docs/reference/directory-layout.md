@@ -81,6 +81,8 @@ This deployment's selected machine-local application state. Never commit or shar
 | `settings.pre-384-v1.json` | Pre-v384 settings backup taken during the settings migration | `config/settings.rs` |
 | `settings-blocking-menus.json` | Blocking-menu patterns AC ships; rewritten at start when the content differs from the binary's | `config/settings.rs` |
 | `settings-blocking-menus.local.json` | User-owned blocking-menu patterns; read at start, written by AC only when the #1905 migration succeeds (once on a normal upgrade, or when a later retry succeeds after an earlier failure; never overwriting an existing entry) | `config/settings.rs` |
+| `settings-blocking-menus.remote.json` | Blocking-menu patterns downloaded from GitHub; written only by the startup download after the whole file passes validation, and validated again at every start | `config/settings.rs`, `update_check.rs` |
+| `blocking-menus-remote-check.json` | Time of the last remote blocking-menu download attempt; limits the download to once per 24 hours | `config/settings.rs`, `update_check.rs` |
 | `sessions.json` | Session registry | `config/sessions_persistence.rs` |
 | `activity.jsonl` | Activity log, see [Activity log](../features/activity-log.md) | `config/activity_log.rs` |
 | `coordinator_clocks.json` | Orchestrator clock state | `config/coordinator_clocks.rs` |

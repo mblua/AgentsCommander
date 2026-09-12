@@ -84,6 +84,7 @@ function settings(overrides: Partial<AppSettings>): AppSettings {
     coordinatorAutoCloseSkipTelegramAssigned: false,
     coordinatorCascadeCloseEnabled: true,
     npmUpdateNotificationsEnabled: true,
+    remoteBlockingMenusEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
     agentAutoUpdateByCommand: {},

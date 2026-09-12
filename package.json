@@ -27,6 +27,8 @@
     "check:skills:self": "node scripts/01-skills-checker.mjs --self-test",
     "record:arcs": "node scripts/02-module-arc-record.mjs",
     "record:arcs:self": "node scripts/02-module-arc-record.mjs --self-test",
+    "check:served-paths": "node scripts/check-served-paths.mjs",
+    "check:served-paths:self": "node scripts/check-served-paths.mjs --self-test",
     "test:watch": "vitest",
     "smoke:cli-release-windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/smoke-cli-release-windows.ps1",
     "smoke:profile-matrix": "node scripts/smoke-profile-matrix-preview.mjs",
