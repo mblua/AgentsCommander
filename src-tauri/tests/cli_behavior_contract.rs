@@ -36,14 +36,14 @@ impl Tmp {
 }
 
 fn copy_binary_into(tmp: &Path) -> PathBuf {
-    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
+    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
     std::fs::copy(src, &dst).expect("copy binary");
     dst
 }
 
 fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
-    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
+    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(name);
     std::fs::copy(src, &dst).expect("copy binary");
     dst
@@ -165,7 +165,7 @@ fn create_send_fixture(tmp: &Path, bin: &Path, config_dir: &Path) -> (PathBuf, P
 
 #[test]
 fn root_help_lists_public_subcommands() {
-    let bin = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
+    let bin = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let (code, stdout, stderr) = run(bin, &["--help"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(
@@ -213,7 +213,7 @@ fn root_help_lists_public_subcommands() {
 
 #[test]
 fn unknown_root_subcommand_exits_one_with_usage() {
-    let bin = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
+    let bin = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let (code, stdout, stderr) = run(bin, &["definitely-not-a-command"]);
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
     assert_no_stdout_on_error(&stdout);
@@ -222,7 +222,7 @@ fn unknown_root_subcommand_exits_one_with_usage() {
 
 #[test]
 fn public_subcommand_help_contracts() {
-    let bin = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
+    let bin = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let cases: &[(&[&str], &[&str])] = &[
         (
             &["send", "--help"],
@@ -721,6 +721,13 @@ fn simple_bad_path_contracts() {
     let send_tmp = Tmp::new("cli-send-bad-path");
     let send_bin = copy_binary_into(send_tmp.path());
     let send_config = config_dir_for_bin(&send_bin);
+    let send_local_dir = format!(
+        ".{}",
+        send_bin
+            .file_stem()
+            .expect("send bin stem")
+            .to_string_lossy()
+    );
     let (project, sender) = create_send_fixture(send_tmp.path(), &send_bin, &send_config);
     let sender_s = sender.to_string_lossy().to_string();
     let peer = "ProjectAlpha:room-1-dev-team/dev-rust";
@@ -745,7 +752,7 @@ fn simple_bad_path_contracts() {
         "stderr: {stderr}"
     );
     assert!(
-        !sender.join(".agentscommander-new").join("outbox").exists(),
+        !sender.join(&send_local_dir).join("outbox").exists(),
         "send filename refusal must not create sender outbox"
     );
     assert!(
@@ -757,7 +764,7 @@ fn simple_bad_path_contracts() {
             .join(".ac")
             .join("room-1-dev-team")
             .join("__agent_dev-rust")
-            .join(".agentscommander-new")
+            .join(&send_local_dir)
             .join("outbox")
             .exists(),
         "send filename refusal must not create peer outbox"

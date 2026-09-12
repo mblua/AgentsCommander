@@ -61,7 +61,7 @@ impl Tmp {
 /// Copy the bin under test into `tmp` so its `config_dir()` lands in
 /// `<tmp>/.<stem>/`, isolated from every other consumer of the dev tree.
 fn copy_binary_into(tmp: &Path) -> PathBuf {
-    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
+    let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let file_name = src.file_name().expect("binary has a file name");
     let dst = tmp.join(file_name);
     std::fs::copy(src, &dst).expect("copy binary under test into tmp dir");

@@ -1539,12 +1539,13 @@ jobs:
         run: |
           set -euo pipefail
           # src-tauri/Cargo.toml has NO [[bin]] section, so cargo names the
-          # executable after the PACKAGE: agentscommander-new. release.yml's
-          # raw_source says target/release/agentscommander because `tauri build`
-          # renames the binary to tauri.conf.json's mainBinaryName; a bare
-          # `cargo build` renames nothing. If either fact changes, this step
-          # fails loud instead of silently checking a stale file.
-          BIN=target/release/agentscommander-new
+          # executable after the PACKAGE: agentscommander. That is also
+          # tauri.conf.json's mainBinaryName, so release.yml's raw_source
+          # target/release/agentscommander names the same file: `tauri build`
+          # renames the binary onto its own name and a bare `cargo build`
+          # renames nothing. If either fact changes, this step fails loud
+          # instead of silently checking a stale file.
+          BIN=target/release/agentscommander
           test -x "$BIN" || {
             echo "::error::expected $BIN. The workspace target dir or cargo's binary name changed; fix this step."
             ls -l target/release || true
@@ -1585,7 +1586,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BIN=target/release/agentscommander-new
+          BIN=target/release/agentscommander
           test -x "$BIN" || {
             echo "::error::expected $BIN; the ldd step above should already have failed. Fix both steps together."
             exit 1
