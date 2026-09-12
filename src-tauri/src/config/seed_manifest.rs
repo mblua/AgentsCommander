@@ -4813,6 +4813,203 @@ mod tests {
         assert!(has_catalog_publication(&project).expect("read after restart"));
     }
 
+    /// Raw coverage-v2 manifest text carrying exactly one `[[files]]` row, used
+    /// to feed the real parser combinations the row constructors reject.
+    fn raw_manifest_with_row(
+        path: &str,
+        encoding: &str,
+        kind: &str,
+        scope: &str,
+        source: &str,
+    ) -> String {
+        format!(
+            concat!(
+                "schema_version = 1\n",
+                "coverage_version = 2\n",
+                "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
+                "\n",
+                "[[files]]\n",
+                "path = \"{path}\"\n",
+                "path_encoding = \"{encoding}\"\n",
+                "kind = \"{kind}\"\n",
+                "scope = \"{scope}\"\n",
+                "source = \"{source}\"\n",
+                "last_seeded_at = \"2026-09-12T13:30:00.000Z\"\n",
+            ),
+            path = path,
+            encoding = encoding,
+            kind = kind,
+            scope = scope,
+            source = source,
+        )
+    }
+
+    #[cfg(windows)]
+    fn symlink_file_at(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[cfg(unix)]
+    fn symlink_file_at(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[test]
+    fn managed_catalog_has_catalog_publication_wrong_rows_are_err_or_false_without_writes() {
+        let cases: [(&str, &str, &str, &str, &str, bool); 5] = [
+            // Correct control: exact path, utf8, catalog kind, canonical scope, builtin.
+            (
+                ".ac/coding-agents/agents.json",
+                "utf8",
+                "coding_agent_catalog",
+                "catalog:coding-agents",
+                "builtin",
+                true,
+            ),
+            // Wrong path.
+            (
+                ".ac/coding-agents/agents-list.json",
+                "utf8",
+                "coding_agent_catalog",
+                "catalog:coding-agents",
+                "builtin",
+                false,
+            ),
+            // Wrong scope.
+            (
+                ".ac/coding-agents/agents.json",
+                "utf8",
+                "coding_agent_catalog",
+                "catalog:other",
+                "builtin",
+                false,
+            ),
+            // Wrong source.
+            (
+                ".ac/coding-agents/agents.json",
+                "utf8",
+                "coding_agent_catalog",
+                "catalog:coding-agents",
+                "user",
+                false,
+            ),
+            // Wrong encoding.
+            (
+                ".ac/coding-agents/agents.json",
+                "unix_bytes_hex",
+                "coding_agent_catalog",
+                "catalog:coding-agents",
+                "builtin",
+                false,
+            ),
+        ];
+        for (path, encoding, kind, scope, source, expect_true) in cases {
+            let (_temp, project) = setup_project();
+            std::fs::write(
+                canonical_path(&project),
+                raw_manifest_with_row(path, encoding, kind, scope, source),
+            )
+            .unwrap();
+            let bytes_before = std::fs::read(canonical_path(&project)).unwrap();
+            let entries_before = ac_dir_entries(&project);
+            let result = has_catalog_publication(&project);
+            if expect_true {
+                assert!(
+                    result.expect("the correct control parses"),
+                    "{path} {scope} {source}"
+                );
+            } else {
+                assert!(
+                    result.is_err(),
+                    "expected Err for {path} {scope} {source}: {result:?}"
+                );
+            }
+            assert_eq!(
+                std::fs::read(canonical_path(&project)).unwrap(),
+                bytes_before
+            );
+            assert_eq!(ac_dir_entries(&project), entries_before);
+        }
+
+        // Wrong kind: a well-formed context row parses, but it never matches
+        // the catalog identity, so the honest answer is `false` (no proof).
+        let (_temp, project) = setup_project();
+        std::fs::write(
+            canonical_path(&project),
+            raw_manifest_with_row(
+                ".ac/Context.AgentsCommander.md",
+                "utf8",
+                "project_context_template",
+                "context:agentscommander",
+                "builtin",
+            ),
+        )
+        .unwrap();
+        let bytes_before = std::fs::read(canonical_path(&project)).unwrap();
+        let entries_before = ac_dir_entries(&project);
+        assert!(!has_catalog_publication(&project).expect("the context row parses"));
+        assert_eq!(
+            std::fs::read(canonical_path(&project)).unwrap(),
+            bytes_before
+        );
+        assert_eq!(ac_dir_entries(&project), entries_before);
+    }
+
+    #[test]
+    fn managed_catalog_has_catalog_publication_link_is_err_without_writes() {
+        let (_temp, project) = setup_project();
+        let target = project.join(".ac").join("real-manifest-target.toml");
+        std::fs::write(&target, b"# fixture target\n").unwrap();
+        symlink_file_at(&target, &canonical_path(&project))
+            .expect("real manifest symlink fixture (not a silent skip)");
+        let entries_before = ac_dir_entries(&project);
+        let target_before = std::fs::read(&target).unwrap();
+        assert!(has_catalog_publication(&project).is_err());
+        assert!(std::fs::symlink_metadata(canonical_path(&project))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(ac_dir_entries(&project), entries_before);
+        assert_eq!(std::fs::read(&target).unwrap(), target_before);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_catalog_has_catalog_publication_share_denied_read_is_err_without_writes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_WRITE};
+
+        let (_temp, project) = setup_project();
+        std::fs::write(
+            canonical_path(&project),
+            raw_manifest_with_row(
+                ".ac/coding-agents/agents.json",
+                "utf8",
+                "coding_agent_catalog",
+                "catalog:coding-agents",
+                "builtin",
+            ),
+        )
+        .unwrap();
+        let bytes_before = std::fs::read(canonical_path(&project)).unwrap();
+        let entries_before = ac_dir_entries(&project);
+        // A real handle that denies READ sharing: the query's own read open
+        // fails with a real sharing violation (an OS error, not an injection).
+        let blocker = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(canonical_path(&project))
+            .unwrap();
+        let result = has_catalog_publication(&project);
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(ac_dir_entries(&project), entries_before);
+        drop(blocker);
+        assert_eq!(
+            std::fs::read(canonical_path(&project)).unwrap(),
+            bytes_before
+        );
+    }
+
     #[test]
     fn fixed_buffer_stream_comparison_detects_content_and_length_changes() {
         let temp = tempfile::NamedTempFile::new().unwrap();

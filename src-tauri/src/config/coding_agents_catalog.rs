@@ -1778,7 +1778,28 @@ fn journal_legacy_source(
     Ok(Some(analysis.entries))
 }
 
-fn resolve_catalog_snapshot(ac_dir: &Path, snapshot: CatalogSnapshot) -> ResolvedCatalog {
+/// The single eligibility predicate for "this managed base is behind (or ahead
+/// of) the current shipped revision": recognized ownership, a verified content
+/// hash (not edited), no unknown fields blocking refresh, and a recorded
+/// revision that differs from this build's shipped revision. The read-path
+/// `refreshFailed` warning and `refresh_managed_base` both derive from this
+/// predicate, so a warning can never promise a refresh the initializer would
+/// refuse to perform.
+fn managed_base_is_stale(analysis: &BaseAnalysis, shipped_revision: &str) -> bool {
+    matches!(analysis.kind, CatalogBaseKind::Managed)
+        && !analysis.edited
+        && !analysis.refresh_blocked
+        && analysis
+            .marker
+            .as_ref()
+            .is_some_and(|marker| marker.revision != shipped_revision)
+}
+
+fn resolve_catalog_snapshot(
+    ac_dir: &Path,
+    snapshot: CatalogSnapshot,
+    context: CatalogSourceContext,
+) -> ResolvedCatalog {
     let base_path = manifest_path(ac_dir);
     let local_path = local_catalog_path(ac_dir);
     let journal_path = migration_journal_path(ac_dir);
@@ -1869,6 +1890,21 @@ fn resolve_catalog_snapshot(ac_dir: &Path, snapshot: CatalogSnapshot) -> Resolve
     };
     resolved.warnings.extend(analysis.warnings.iter().cloned());
     resolved.base_verified_managed = analysis.kind == CatalogBaseKind::Managed && !analysis.edited;
+    // Read-path counterpart of the initialization refresh: a verified base at a
+    // different shipped revision keeps serving its persisted entries (and the
+    // local layer) while the restart guidance names the surface that can
+    // actually act on it. A failed refresh needs no persistent marker - the
+    // revision comparison itself recomputes this warning on every read.
+    if managed_base_is_stale(
+        &analysis,
+        &managed_content_sha256(&supported_shipped_definitions()),
+    ) {
+        resolved.warnings.push(catalog_diagnostic(
+            REPORT_CODE_REFRESH_FAILED,
+            &base_path,
+            context.stale_revision_reason(),
+        ));
+    }
 
     match analysis.kind {
         CatalogBaseKind::Managed => {
@@ -2045,9 +2081,42 @@ fn push_unknown_field_warnings(
     found
 }
 
+/// Which surface asked for a catalog report. The wire shape never changes;
+/// only the restart guidance attached to a stale managed revision differs:
+/// project catalogs refresh during every startup/registration, instance
+/// catalogs are read-only and never initialize or seed, and direct callers
+/// receive the neutral wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CatalogSourceContext {
+    Project,
+    Instance,
+    Direct,
+}
+
+impl CatalogSourceContext {
+    /// Exact `refreshFailed` reason for this surface (reviewed wording; the
+    /// tests assert all three strings verbatim).
+    fn stale_revision_reason(self) -> &'static str {
+        match self {
+            Self::Project => {
+                "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Restart retries project catalog refresh."
+            }
+            Self::Instance => {
+                "The persisted instance catalog revision differs from this build. Current persisted entries remain usable. Instance catalogs are read-only; select a project to initialize or refresh its catalog."
+            }
+            Self::Direct => {
+                "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Project catalog refresh runs during initialization; instance catalogs remain read-only."
+            }
+        }
+    }
+}
+
 /// Load the persisted-only catalog report for one catalog root directory (a
 /// project's `.ac` dir, or the legacy `<config_dir>` root in no-project mode).
 /// `primaryProjectRoot` is left `None` here; the settings wrapper fills it.
+/// This public entry point speaks for DIRECT callers (the array adapter and
+/// context-free CLI/IPC reads), so it always uses the neutral wording; the
+/// settings wrapper threads its own project/instance context privately.
 /// READ-ONLY: never seeds, creates directories, refreshes, locks or writes.
 /// `unavailable` is set (with an empty catalog) for a missing/unreadable/
 /// nonregular/link source, invalid JSON, an unsupported explicit schemaVersion
@@ -2056,10 +2125,13 @@ fn push_unknown_field_warnings(
 /// readable and reports the pending migration. Definitions keep persisted order
 /// after filtering; no embedded donor is ever consulted.
 pub fn load_catalog_report(ac_dir: &Path) -> CatalogReport {
-    load_catalog_report_inner(ac_dir).0
+    load_catalog_report_with_context(ac_dir, CatalogSourceContext::Direct).0
 }
 
-fn load_catalog_report_inner(ac_dir: &Path) -> (CatalogReport, bool) {
+fn load_catalog_report_with_context(
+    ac_dir: &Path,
+    context: CatalogSourceContext,
+) -> (CatalogReport, bool) {
     let path = manifest_path(ac_dir);
     let mut report = CatalogReport {
         primary_project_root: None,
@@ -2079,7 +2151,7 @@ fn load_catalog_report_inner(ac_dir: &Path) -> (CatalogReport, bool) {
             return (report, false);
         }
     };
-    let resolved = resolve_catalog_snapshot(ac_dir, snapshot);
+    let resolved = resolve_catalog_snapshot(ac_dir, snapshot, context);
     report.catalog = resolved.catalog;
     report.warnings = resolved.warnings;
     report.unavailable = resolved.unavailable;
@@ -2109,7 +2181,8 @@ fn load_catalog_report_for_settings_with_config_dir(
     match primary_project_root(settings) {
         Some(root) => {
             let ac_dir = root.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
-            let (mut report, verified_managed_base) = load_catalog_report_inner(&ac_dir);
+            let (mut report, verified_managed_base) =
+                load_catalog_report_with_context(&ac_dir, CatalogSourceContext::Project);
             report.primary_project_root = Some(root.to_string_lossy().to_string());
             if verified_managed_base {
                 let untracked = match has_catalog_publication(&root) {
@@ -2135,7 +2208,10 @@ fn load_catalog_report_for_settings_with_config_dir(
             report
         }
         None => match config_dir {
-            Some(dir) => load_catalog_report(&dir),
+            // Deliberately the private context-aware builder, NOT the public
+            // Direct wrapper: the no-project surface never seeds or migrates
+            // the instance, so its restart guidance must say so.
+            Some(dir) => load_catalog_report_with_context(&dir, CatalogSourceContext::Instance).0,
             None => report_without_source(),
         },
     }
@@ -2263,6 +2339,20 @@ fn write_synced_temp(temp: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 
+/// The hard-link publication boundary. Production compiles to exactly
+/// `std::fs::hard_link(source, destination)`; the `#[cfg(test)]` arm lets a
+/// destination-aware fixture drive the production cleanup/error-return code
+/// with a filesystem-style `ErrorKind::Unsupported` result. That is arm-level
+/// behavioral evidence, never a claim of measured unsupported-filesystem
+/// support.
+fn publish_hard_link(source: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(kind) = take_catalog_path_fault("hard_link", destination) {
+        return Err(std::io::Error::new(kind, "injected hard-link failure"));
+    }
+    std::fs::hard_link(source, destination)
+}
+
 fn publication_temp_path(parent: &Path, destination_file_name: &str) -> PathBuf {
     let counter = SEED_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     parent.join(publication_temp_name_for_destination(
@@ -2288,7 +2378,7 @@ fn publish_exclusive(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let temp = publication_temp_path(parent, name);
     write_synced_temp(&temp, bytes)?;
     inject_catalog_failure("publication_temp_synced")?;
-    let result = std::fs::hard_link(&temp, path);
+    let result = publish_hard_link(&temp, path);
     let _ = std::fs::remove_file(&temp);
     match result {
         Ok(()) => {
@@ -2433,6 +2523,75 @@ fn inject_catalog_failure(point: &str) -> Result<(), String> {
 #[cfg(not(test))]
 fn inject_catalog_failure(_point: &str) -> Result<(), String> {
     Ok(())
+}
+
+// Destination-aware failure injection: one-shot, TEST-THREAD-scoped, and
+// matched by point name plus destination path, so a fault armed for one
+// destination can never divert another publication (base vs local stub, base
+// vs backup/journal). Same catalog-local plumbing contract as the point hooks
+// above: no global state, no production cost.
+#[cfg(test)]
+#[derive(Debug)]
+struct CatalogPathFault {
+    point: &'static str,
+    path: PathBuf,
+    kind: std::io::ErrorKind,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CATALOG_PATH_FAULTS: std::cell::RefCell<Vec<CatalogPathFault>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn arm_catalog_path_fault(point: &'static str, path: &Path, kind: std::io::ErrorKind) {
+    CATALOG_PATH_FAULTS.with(|faults| {
+        faults.borrow_mut().push(CatalogPathFault {
+            point,
+            path: path.to_path_buf(),
+            kind,
+        })
+    });
+}
+
+#[cfg(test)]
+fn clear_catalog_path_faults() {
+    CATALOG_PATH_FAULTS.with(|faults| faults.borrow_mut().clear());
+}
+
+#[cfg(test)]
+fn take_catalog_path_fault(point: &str, path: &Path) -> Option<std::io::ErrorKind> {
+    CATALOG_PATH_FAULTS.with(|faults| {
+        let mut faults = faults.borrow_mut();
+        let index = faults.iter().position(|fault| {
+            fault.point == point && catalog_fault_paths_match(&fault.path, path)
+        })?;
+        Some(faults.remove(index).kind)
+    })
+}
+
+/// Compare the armed destination with the publishing destination even when the
+/// catalog directory was canonicalized by `ensure_catalog_dir` (the armed path
+/// may still carry the temp-dir spelling). Both parents exist by publication
+/// time.
+#[cfg(test)]
+fn catalog_fault_paths_match(armed: &Path, publishing: &Path) -> bool {
+    if armed == publishing {
+        return true;
+    }
+    let armed_parent = armed
+        .parent()
+        .and_then(|parent| std::fs::canonicalize(parent).ok());
+    let publishing_parent = publishing
+        .parent()
+        .and_then(|parent| std::fs::canonicalize(parent).ok());
+    match (armed_parent, publishing_parent) {
+        (Some(armed_parent), Some(publishing_parent)) => {
+            armed_parent == publishing_parent && armed.file_name() == publishing.file_name()
+        }
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3025,12 +3184,9 @@ fn refresh_managed_base(
     paths: &CatalogPaths,
     analysis: &BaseAnalysis,
 ) -> Result<Option<DateTime<Utc>>, String> {
-    let Some(marker) = analysis.marker.as_ref() else {
-        return Ok(None);
-    };
     let shipped = supported_shipped_definitions();
     let shipped_revision = managed_content_sha256(&shipped);
-    if marker.revision == shipped_revision {
+    if !managed_base_is_stale(analysis, &shipped_revision) {
         return Ok(None);
     }
     let managed_bytes = build_managed_base_bytes(&shipped);
@@ -3043,10 +3199,14 @@ fn refresh_managed_base(
 }
 
 /// Fresh initialization: exclusive managed defaults plus the create-once local
-/// stub. The base is written first; a stub failure leaves the valid base with a
-/// logged warning and a later initialization retries only while the stub is
-/// still absent.
-fn fresh_initialize_catalog(paths: &CatalogPaths) -> Result<Option<DateTime<Utc>>, String> {
+/// stub. The base is written first; a stub failure leaves the valid base
+/// published and usable, and NO automatic stub retry is scheduled - an absent
+/// local file is valid, so an intentional deletion stays deleted. The failure
+/// is returned alongside the successful publication so the caller's existing
+/// initialization logging carries it; nothing durable records it.
+fn fresh_initialize_catalog(
+    paths: &CatalogPaths,
+) -> Result<(Option<DateTime<Utc>>, Option<CatalogDiagnostic>), String> {
     let shipped = supported_shipped_definitions();
     let managed_bytes = build_managed_base_bytes(&shipped);
     let published_at = if read_optional_regular_file(&paths.base, "persisted catalog")?.is_none() {
@@ -3055,22 +3215,26 @@ fn fresh_initialize_catalog(paths: &CatalogPaths) -> Result<Option<DateTime<Utc>
     } else {
         None
     };
-    match std::fs::symlink_metadata(&paths.local) {
-        Ok(_) => {}
+    let stub_warning = |detail: String| {
+        Some(catalog_diagnostic(
+            REPORT_CODE_REFRESH_FAILED,
+            &paths.local,
+            format!(
+                "The managed catalog base is usable, but its local overrides stub could not be created: {detail}. An absent local file is valid; no automatic stub retry is scheduled."
+            ),
+        ))
+    };
+    let stub_warning = match std::fs::symlink_metadata(&paths.local) {
+        Ok(_) => None,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if let Err(stub_error) = publish_exclusive(&paths.local, LOCAL_STUB_BYTES) {
-                log::warn!(
-                    "[coding-agents] the managed base published but the local stub {} could not be created ({stub_error}); a later initialization retries only while it stays absent",
-                    paths.local.display()
-                );
+            match publish_exclusive(&paths.local, LOCAL_STUB_BYTES) {
+                Ok(()) => None,
+                Err(stub_error) => stub_warning(stub_error),
             }
         }
-        Err(error) => log::warn!(
-            "[coding-agents] cannot inspect the local catalog path {} ({error}); the stub was not created",
-            paths.local.display()
-        ),
-    }
-    Ok(published_at)
+        Err(error) => stub_warning(error.to_string()),
+    };
+    Ok((published_at, stub_warning))
 }
 
 #[derive(Default)]
@@ -3226,7 +3390,10 @@ fn initialize_catalog_under_lock(
                     }
                 }
                 _ => match fresh_initialize_catalog(paths) {
-                    Ok(published_at) => outcome.published_at = published_at,
+                    Ok((published_at, stub_warning)) => {
+                        outcome.published_at = published_at;
+                        outcome.warnings.extend(stub_warning);
+                    }
                     Err(reason) => outcome.warnings.push(catalog_diagnostic(
                         REPORT_CODE_REFRESH_FAILED,
                         &paths.base,
@@ -6819,13 +6986,21 @@ mod tests {
         let before_entries = dir_entries(&catalog);
         let before_base = std::fs::read(manifest_path(ac_dir)).ok();
         let before_local = std::fs::read(local_catalog_path(ac_dir)).ok();
+        let before_backup = std::fs::read(catalog.join(MIGRATION_BACKUP_FILENAME)).ok();
         let before_journal = std::fs::read(migration_journal_path(ac_dir)).ok();
+        // Repeated reads are identical INCLUDING warnings: a read derives its
+        // warnings from the same snapshot it serves, so nothing may drift.
+        let first = report_json(&load_catalog_report(ac_dir));
         for _ in 0..3 {
-            let _ = load_catalog_report(ac_dir);
+            assert_eq!(report_json(&load_catalog_report(ac_dir)), first);
         }
         assert_eq!(dir_entries(&catalog), before_entries);
         assert_eq!(std::fs::read(manifest_path(ac_dir)).ok(), before_base);
         assert_eq!(std::fs::read(local_catalog_path(ac_dir)).ok(), before_local);
+        assert_eq!(
+            std::fs::read(catalog.join(MIGRATION_BACKUP_FILENAME)).ok(),
+            before_backup
+        );
         assert_eq!(
             std::fs::read(migration_journal_path(ac_dir)).ok(),
             before_journal
@@ -7458,6 +7633,713 @@ mod tests {
         };
         let report = report_json(&load_catalog_report_for_settings(&settings));
         assert!(!report.contains("publicationUntracked"), "{report}");
+    }
+
+    // -----------------------------------------------------------------------
+    // R2 correction fixtures (F1 read warning, F3 OS failures, F5 stub)
+    // -----------------------------------------------------------------------
+
+    /// The canonical empty coverage-v2 manifest (the serializer's own bytes),
+    /// used as the repaired-manifest fixture.
+    const REPAIRED_EMPTY_MANIFEST: &[u8] = concat!(
+        "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
+        "schema_version = 1\n",
+        "coverage_version = 2\n",
+        "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
+        "files = []\n",
+    )
+    .as_bytes();
+
+    /// Publication temporaries still present in the catalog directory.
+    fn temp_residue(ac_dir: &Path) -> Vec<String> {
+        std::fs::read_dir(catalog_dir(ac_dir))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.contains(".tmp"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    // ---- F1: read-path refresh warning with exact per-surface wording ------
+
+    #[test]
+    fn managed_catalog_stale_revision_warning_uses_the_exact_context_reason() {
+        let agents = shipped_def_json(&["claude", "muse"]);
+
+        // Direct: the public report wrapper keeps the neutral wording.
+        let direct = seed_dir();
+        write_managed_base(direct.path(), &agents, "stale-revision", true);
+        let report = load_catalog_report(direct.path());
+        let warning = report
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "refreshFailed")
+            .expect("direct refreshFailed");
+        assert_eq!(
+            warning.reason,
+            "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Project catalog refresh runs during initialization; instance catalogs remain read-only."
+        );
+        assert_eq!(
+            warning.path,
+            manifest_path(direct.path()).display().to_string()
+        );
+
+        // Project: the settings project branch supplies the project wording.
+        let project = seed_dir();
+        write_managed_base(&ac_dir_for(project.path()), &agents, "stale-revision", true);
+        let settings = AppSettings {
+            project_paths: vec![project.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let report = load_catalog_report_for_settings_with_config_dir(&settings, None);
+        let warning = report
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "refreshFailed")
+            .expect("project refreshFailed");
+        assert_eq!(
+            warning.reason,
+            "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Restart retries project catalog refresh."
+        );
+        assert_eq!(
+            warning.path,
+            manifest_path(&ac_dir_for(project.path()))
+                .display()
+                .to_string()
+        );
+
+        // Instance: the no-project branch supplies the read-only wording
+        // (deliberately NOT the public Direct wrapper).
+        let instance = seed_dir();
+        write_managed_base(instance.path(), &agents, "stale-revision", true);
+        let report = load_catalog_report_for_settings_with_config_dir(
+            &AppSettings::default(),
+            Some(instance.path().to_path_buf()),
+        );
+        let warning = report
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "refreshFailed")
+            .expect("instance refreshFailed");
+        assert_eq!(
+            warning.reason,
+            "The persisted instance catalog revision differs from this build. Current persisted entries remain usable. Instance catalogs are read-only; select a project to initialize or refresh its catalog."
+        );
+        assert_eq!(
+            warning.path,
+            manifest_path(instance.path()).display().to_string()
+        );
+    }
+
+    #[test]
+    fn managed_catalog_stale_revision_with_a_valid_pin_survives_repeated_reads() {
+        let dir = seed_dir();
+        write_managed_base(
+            dir.path(),
+            &shipped_def_json(&["claude"]),
+            "stale-revision",
+            true,
+        );
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"PINNED"}]}"##,
+        );
+        let base_before = std::fs::read(manifest_path(dir.path())).unwrap();
+        let local_before = std::fs::read(local_catalog_path(dir.path())).unwrap();
+
+        for _ in 0..3 {
+            let report = load_catalog_report(dir.path());
+            assert!(report.unavailable.is_none());
+            assert_eq!(report.catalog.len(), 1);
+            assert_eq!(report.catalog[0].label, "PINNED");
+            assert!(report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "refreshFailed"));
+        }
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            base_before
+        );
+        assert_eq!(
+            std::fs::read(local_catalog_path(dir.path())).unwrap(),
+            local_before
+        );
+    }
+
+    #[test]
+    fn managed_catalog_stale_revision_warning_clears_after_a_successful_restart() {
+        let dir = seed_dir();
+        write_managed_base(
+            dir.path(),
+            &shipped_def_json(&["claude"]),
+            "stale-revision",
+            true,
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "refreshFailed"));
+
+        assert!(
+            ensure_seeded(dir.path(), None).is_some(),
+            "the stale base refreshes on initialization"
+        );
+        let refreshed = load_catalog_report(dir.path());
+        assert!(refreshed.unavailable.is_none());
+        assert!(refreshed.warnings.is_empty(), "{:?}", refreshed.warnings);
+        assert_eq!(
+            base_json(dir.path())["managed"]["revision"],
+            managed_content_sha256(&supported_shipped_definitions())
+        );
+    }
+
+    #[test]
+    fn managed_catalog_stale_revision_with_an_invalid_local_reports_both() {
+        let dir = seed_dir();
+        write_managed_base(
+            dir.path(),
+            &shipped_def_json(&["claude"]),
+            "stale-revision",
+            true,
+        );
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"broken"}]}"##,
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.catalog.len(), 1, "the verified base stays served");
+        for code in ["refreshFailed", "localInvalid"] {
+            assert!(
+                report.warnings.iter().any(|warning| warning.code == code),
+                "missing {code}: {:?}",
+                report.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn managed_catalog_non_stale_and_unverified_bases_never_promise_a_restart() {
+        // A current verified base is silent and usable.
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(!report_json(&report).contains("refreshFailed"));
+
+        // Edited content keeps managedBaseEdited and adds no restart promise.
+        let dir = seed_dir();
+        let mut claude = shipped_def_json(&["claude"]).remove(0);
+        claude["label"] = serde_json::json!("HAND EDITED");
+        let bytes = write_managed_base(dir.path(), &[claude], "stale-revision", false);
+        let report = load_catalog_report(dir.path());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "managedBaseEdited"));
+        assert!(report
+            .warnings
+            .iter()
+            .all(|warning| warning.code != "refreshFailed"));
+        assert_eq!(std::fs::read(manifest_path(dir.path())).unwrap(), bytes);
+
+        // A foreign marker keeps migrationConflict and adds no restart promise.
+        let dir = seed_dir();
+        let root = serde_json::json!({
+            "schemaVersion": 1,
+            "agents": shipped_def_json(&["claude"]),
+            "managed": {
+                "owner": "somebody-else",
+                "version": 1,
+                "revision": "stale-revision",
+                "contentSha256": "y",
+            },
+        });
+        let mut bytes = serde_json::to_vec_pretty(&root).unwrap();
+        bytes.push(b'\n');
+        let path = manifest_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let report = load_catalog_report(dir.path());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "migrationConflict"));
+        assert!(report
+            .warnings
+            .iter()
+            .all(|warning| warning.code != "refreshFailed"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        // Unknown root fields block refresh and are preserved untouched.
+        let dir = seed_dir();
+        let definitions: Vec<CodingAgentDefinition> = shipped_def_json(&["claude"])
+            .iter()
+            .cloned()
+            .map(|value| serde_json::from_value(value).unwrap())
+            .collect();
+        let content = managed_content_sha256(&definitions);
+        let root = serde_json::json!({
+            "schemaVersion": 1,
+            "agents": definitions,
+            "futureRootField": { "keep": "me" },
+            "managed": {
+                "owner": "agentscommander",
+                "version": 1,
+                "revision": "stale-revision",
+                "contentSha256": content,
+            },
+        });
+        let mut bytes = serde_json::to_vec_pretty(&root).unwrap();
+        bytes.push(b'\n');
+        let path = manifest_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let report = load_catalog_report(dir.path());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "migrationPending"));
+        assert!(report
+            .warnings
+            .iter()
+            .all(|warning| warning.code != "refreshFailed"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        // Corrupt bytes stay unavailable with no restart promise.
+        let dir = seed_dir();
+        std::fs::create_dir_all(catalog_dir(dir.path())).unwrap();
+        std::fs::write(manifest_path(dir.path()), b"not a catalog at all").unwrap();
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_some());
+        assert!(!report_json(&report).contains("refreshFailed"));
+    }
+
+    // ---- F3: real OS failures and injected arm-level boundaries ------------
+
+    #[test]
+    fn managed_catalog_local_symlink_and_dangling_link_are_preserved_as_invalid() {
+        // A real file symlink at the local path: the layer is disabled, the
+        // link identity/target and the target bytes survive every read.
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        let target = dir.path().join("user-local-target.json");
+        let target_bytes = br##"{"schemaVersion":1,"agents":[{"key":"claude","label":"LINKED"}]}"##;
+        std::fs::write(&target, target_bytes).unwrap();
+        let local = local_catalog_path(dir.path());
+        std::fs::remove_file(&local).unwrap();
+        create_manifest_symlink(&target, &local)
+            .expect("real local symlink fixture (not a silent skip)");
+        assert!(std::fs::symlink_metadata(&local)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_link(&local).unwrap(), target);
+
+        let base_before = std::fs::read(manifest_path(dir.path())).unwrap();
+        for _ in 0..2 {
+            let report = load_catalog_report(dir.path());
+            assert!(report.unavailable.is_none());
+            assert_eq!(report.catalog.len(), 8, "the managed base stays usable");
+            assert!(report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "localInvalid"));
+            assert!(!report.catalog.iter().any(|def| def.label == "LINKED"));
+        }
+        assert!(
+            std::fs::symlink_metadata(&local)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link is never replaced by a stub"
+        );
+        assert_eq!(std::fs::read_link(&local).unwrap(), target);
+        assert_eq!(std::fs::read(&target).unwrap(), target_bytes);
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            base_before
+        );
+
+        // A dangling link: same degradation, link and absence preserved even
+        // across a later initialization.
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        let local = local_catalog_path(dir.path());
+        std::fs::remove_file(&local).unwrap();
+        let missing = dir.path().join("no-such-local-target.json");
+        create_manifest_symlink(&missing, &local).expect("real dangling local link fixture");
+        let report = load_catalog_report(dir.path());
+        assert_eq!(report.catalog.len(), 8);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "localInvalid"));
+        assert!(std::fs::symlink_metadata(&local)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_link(&local).unwrap(), missing);
+        assert!(!missing.exists());
+        assert!(
+            ensure_seeded(dir.path(), None).is_none(),
+            "the verified base needs no rewrite"
+        );
+        assert!(std::fs::symlink_metadata(&local)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn managed_catalog_hard_link_unsupported_leaves_prior_artifacts_and_resumes() {
+        let project = seed_dir();
+        let legacy = legacy_dir();
+        let legacy_bytes = legacy_catalog_json();
+        std::fs::write(legacy.path().join("agents.json"), &legacy_bytes).unwrap();
+        let base = manifest_path(project.path());
+        let local = local_catalog_path(project.path());
+        let backup = catalog_dir(project.path()).join(MIGRATION_BACKUP_FILENAME);
+        let journal = migration_journal_path(project.path());
+
+        // SIMULATED error result at the link boundary (arm-level proof); real
+        // unsupported-filesystem execution is unmeasured. The fault is armed
+        // for the BASE destination only, so the earlier backup, journal and
+        // local publications run for real.
+        arm_catalog_path_fault("hard_link", &base, std::io::ErrorKind::Unsupported);
+        let outcome = run_catalog_initialization(project.path(), Some(legacy.path()));
+        clear_catalog_path_faults();
+
+        assert!(outcome.published_at.is_none(), "no base was published");
+        let conflict = outcome
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "migrationConflict")
+            .expect("the link failure surfaces");
+        assert!(conflict.reason.contains("hard link"), "{}", conflict.reason);
+        assert!(!base.exists(), "the destination stays absent");
+        assert_eq!(
+            std::fs::read(&backup).unwrap(),
+            legacy_bytes,
+            "the backup keeps the source bytes exactly"
+        );
+        assert!(journal.is_file(), "the journal survives");
+        let local_bytes = std::fs::read(&local).expect("the extracted local survives");
+        assert_eq!(
+            std::fs::read(legacy.path().join("agents.json")).unwrap(),
+            legacy_bytes,
+            "the source is never modified"
+        );
+        assert!(
+            temp_residue(project.path()).is_empty(),
+            "only this run's temp is removed: {:?}",
+            temp_residue(project.path())
+        );
+
+        // Fault cleared: the interrupted transaction resumes and completes,
+        // then a second initialization is idempotent.
+        assert!(ensure_seeded(project.path(), Some(legacy.path())).is_some());
+        let completed_base = std::fs::read(&base).unwrap();
+        assert_eq!(
+            std::fs::read(&local).unwrap(),
+            local_bytes,
+            "recovery never re-extracts or rewrites the local layer"
+        );
+        assert_eq!(
+            std::fs::read(legacy.path().join("agents.json")).unwrap(),
+            legacy_bytes
+        );
+        assert!(ensure_seeded(project.path(), Some(legacy.path())).is_none());
+        assert_eq!(std::fs::read(&base).unwrap(), completed_base);
+        let base_value: serde_json::Value = serde_json::from_slice(&completed_base).unwrap();
+        assert_eq!(base_value["managed"]["owner"], "agentscommander");
+    }
+
+    #[test]
+    fn managed_catalog_exclusive_publication_collision_preserves_the_destination() {
+        let scratch = seed_dir();
+        let destination = scratch.path().join("agents.local.json");
+        let sentinel = b"USER SENTINEL BYTES\n";
+        std::fs::write(&destination, sentinel).unwrap();
+        let source = scratch.path().join("source-bytes.json");
+        std::fs::write(&source, b"REPLACEMENT CONTENT\n").unwrap();
+
+        // The REAL (uninjected) hard link reports AlreadyExists on this pair;
+        // the injected Unsupported arm covers the absent destination instead.
+        let real = std::fs::hard_link(&source, &destination).unwrap_err();
+        assert_eq!(real.kind(), std::io::ErrorKind::AlreadyExists);
+
+        let error = publish_exclusive(&destination, b"new content").unwrap_err();
+        assert!(error.contains("exclusive publication"), "{error}");
+        assert_eq!(std::fs::read(&destination).unwrap(), sentinel);
+        assert!(
+            dir_entries(scratch.path())
+                .iter()
+                .all(|name| !name.to_string_lossy().contains(".tmp")),
+            "no publication temp survives"
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), b"REPLACEMENT CONTENT\n");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_catalog_replace_share_denial_keeps_bytes_and_recovers() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let dir = seed_dir();
+        write_managed_base(
+            dir.path(),
+            &shipped_def_json(&["claude"]),
+            "stale-revision",
+            true,
+        );
+        let base = manifest_path(dir.path());
+        let base_before = std::fs::read(&base).unwrap();
+        // A real destination handle that denies replacement: ReplaceFileW
+        // fails through the production error path.
+        let blocker = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&base)
+            .unwrap();
+
+        let outcome = run_catalog_initialization(dir.path(), None);
+        assert!(outcome.published_at.is_none(), "ReplaceFileW must fail");
+        assert!(
+            outcome.warnings.iter().any(|warning| {
+                warning.code == "refreshFailed" && warning.reason.contains("Failed to replace")
+            }),
+            "{:?}",
+            outcome.warnings
+        );
+        assert_eq!(
+            std::fs::read(&base).unwrap(),
+            base_before,
+            "the original bytes are unchanged"
+        );
+        assert!(
+            temp_residue(dir.path()).is_empty(),
+            "the failed publication removes its own temp: {:?}",
+            temp_residue(dir.path())
+        );
+
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(
+            report.catalog.len(),
+            1,
+            "the stale verified base stays usable"
+        );
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "refreshFailed"));
+
+        // Release the denial: two restarts refresh once and then stay idempotent.
+        drop(blocker);
+        let refreshed = run_catalog_initialization(dir.path(), None);
+        assert!(refreshed.published_at.is_some(), "release then refresh");
+        let base_after = std::fs::read(&base).unwrap();
+        let second = run_catalog_initialization(dir.path(), None);
+        assert!(second.published_at.is_none(), "the refresh is idempotent");
+        assert_eq!(std::fs::read(&base).unwrap(), base_after);
+        assert_eq!(
+            base_json(dir.path())["managed"]["revision"],
+            managed_content_sha256(&supported_shipped_definitions())
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+
+    #[test]
+    fn managed_catalog_degraded_manifest_record_failure_repairs_without_republishing() {
+        let temp = seed_dir();
+        let root = temp.path().join("project");
+        std::fs::create_dir_all(root.join(".ac")).unwrap();
+        let ac_dir = ac_dir_for(&root);
+        let seed_manifest = root.join(".ac").join(SEED_MANIFEST_FILENAME);
+
+        // A malformed canonical manifest is preserved read-only: the base still
+        // publishes, but the row cannot be recorded (PublishedUnrecorded).
+        std::fs::write(&seed_manifest, b"not = [valid toml").unwrap();
+        ensure_seeded_for_project_with_token(&root, Some(&ManifestActivationToken::for_test()));
+        assert!(
+            manifest_path(&ac_dir).is_file(),
+            "the base published anyway"
+        );
+        assert!(
+            crate::config::seed_manifest::has_catalog_publication(&root).is_err(),
+            "a malformed manifest is unreadable"
+        );
+        {
+            let mut guard = ProjectSeedManifestGuard::acquire(&root)
+                .expect("a malformed manifest is held read-only, not rejected");
+            let row = PublishedManifestRow::coding_agent_catalog(
+                ManifestPathIdentity::from_relative_path(Path::new(
+                    ".ac/coding-agents/agents.json",
+                ))
+                .unwrap(),
+                Utc::now(),
+            )
+            .unwrap();
+            let outcome = guard
+                .publication_permit()
+                .record_file(&ManifestActivationToken::for_test(), row);
+            assert!(
+                matches!(
+                    outcome,
+                    crate::config::seed_manifest::ManifestRecordOutcome::PublishedUnrecorded(_)
+                ),
+                "expected PublishedUnrecorded, got {outcome:?}"
+            );
+            guard.release();
+        }
+
+        let settings = AppSettings {
+            project_paths: vec![root.to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let report = load_catalog_report_for_settings_with_config_dir(&settings, None);
+        assert!(report.unavailable.is_none());
+        assert!(!report.catalog.is_empty(), "the catalog stays usable");
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "publicationUntracked"));
+        let base_before = std::fs::read(manifest_path(&ac_dir)).unwrap();
+        let local_before = std::fs::read(local_catalog_path(&ac_dir)).unwrap();
+
+        // Repair only the manifest: two initializations restore the row without
+        // republishing the base or rewriting the local layer.
+        std::fs::write(&seed_manifest, REPAIRED_EMPTY_MANIFEST).unwrap();
+        ensure_seeded_for_project_with_token(&root, Some(&ManifestActivationToken::for_test()));
+        assert!(crate::config::seed_manifest::has_catalog_publication(&root).unwrap());
+        let manifest_after_repair = std::fs::read(&seed_manifest).unwrap();
+        ensure_seeded_for_project_with_token(&root, Some(&ManifestActivationToken::for_test()));
+        assert_eq!(
+            std::fs::read(&seed_manifest).unwrap(),
+            manifest_after_repair,
+            "the second initialization neither re-records nor republishes"
+        );
+        assert_eq!(std::fs::read(manifest_path(&ac_dir)).unwrap(), base_before);
+        assert_eq!(
+            std::fs::read(local_catalog_path(&ac_dir)).unwrap(),
+            local_before
+        );
+        let report = load_catalog_report_for_settings_with_config_dir(&settings, None);
+        assert!(!report_json(&report).contains("publicationUntracked"));
+    }
+
+    #[test]
+    fn managed_catalog_reads_never_touch_an_interrupted_instance_source() {
+        let project = seed_dir();
+        let legacy = legacy_dir();
+        let legacy_bytes = legacy_catalog_json();
+        std::fs::write(legacy.path().join("agents.json"), &legacy_bytes).unwrap();
+
+        // Stop the migration after the local layer: base absent, backup +
+        // journal + local present, and the instance source still the only
+        // donor the read may consult.
+        let _ = with_failure_at("after_local", || {
+            ensure_seeded(project.path(), Some(legacy.path()))
+        });
+        let catalog = catalog_dir(project.path());
+        assert!(catalog.join(MIGRATION_BACKUP_FILENAME).is_file());
+        assert!(migration_journal_path(project.path()).is_file());
+        assert!(local_catalog_path(project.path()).is_file());
+        assert!(!manifest_path(project.path()).exists());
+
+        assert_reads_leave_state_unchanged(project.path());
+        let report = load_catalog_report(project.path());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "migrationPending"));
+        assert_eq!(
+            std::fs::read(legacy.path().join("agents.json")).unwrap(),
+            legacy_bytes,
+            "the instance source is never written by reads"
+        );
+    }
+
+    // ---- F5: transient stub failure, no persistent state -------------------
+
+    #[test]
+    fn managed_catalog_stub_failure_is_nonfatal_and_never_retried() {
+        let temp = seed_dir();
+        let root = temp.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let ac_dir = ac_dir_for(&root);
+        let local = local_catalog_path(&ac_dir);
+
+        // Destination-aware fault at the STUB publication only: the base link
+        // runs for real because it targets a different path.
+        arm_catalog_path_fault("hard_link", &local, std::io::ErrorKind::Unsupported);
+        let outcome = run_catalog_initialization(&ac_dir, None);
+        clear_catalog_path_faults();
+
+        assert!(
+            outcome.published_at.is_some(),
+            "the base publication succeeds"
+        );
+        let canonical_local = std::fs::canonicalize(catalog_dir(&ac_dir))
+            .unwrap()
+            .join(LOCAL_CATALOG_FILENAME);
+        let warning = outcome
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "refreshFailed")
+            .expect("the transient stub warning");
+        assert_eq!(warning.path, canonical_local.display().to_string());
+        assert!(
+            warning.reason.starts_with(
+                "The managed catalog base is usable, but its local overrides stub could not be created: "
+            ),
+            "{}",
+            warning.reason
+        );
+        assert!(
+            warning
+                .reason
+                .ends_with("An absent local file is valid; no automatic stub retry is scheduled."),
+            "{}",
+            warning.reason
+        );
+        assert!(!local.exists(), "the stub stays absent");
+        assert_eq!(
+            load_catalog(&ac_dir).unwrap().len(),
+            8,
+            "the base stays usable"
+        );
+        assert!(
+            temp_residue(&ac_dir).is_empty(),
+            "{:?}",
+            temp_residue(&ac_dir)
+        );
+
+        // No persistent report warning: the base is already at this revision.
+        let report = load_catalog_report(&ac_dir);
+        assert!(report.unavailable.is_none());
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+
+        // Bookkeeping still records the verified current base without
+        // republishing it, and a later initialization leaves the absent local
+        // absent (no creation-on-every-start).
+        let base_before = std::fs::read(manifest_path(&ac_dir)).unwrap();
+        ensure_seeded_for_project_with_token(&root, Some(&ManifestActivationToken::for_test()));
+        assert!(crate::config::seed_manifest::has_catalog_publication(&root).unwrap());
+        assert_eq!(std::fs::read(manifest_path(&ac_dir)).unwrap(), base_before);
+        assert!(!local.exists());
+        let _ = run_catalog_initialization(&ac_dir, None);
+        assert!(!local.exists());
     }
 
     #[test]

@@ -3691,6 +3691,176 @@ mod tests {
         assert_eq!(claude.commands, vec!["claude --update"]); // ...and its exact sequence
     }
 
+    // ---------------------------------------------------------------------
+    // #1968 R2 - P4 parity on real migrated / local-composed on-disk catalogs.
+    // The production reader feeds the real (pure) build_update_plan; nothing
+    // here launches a vendor process.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn build_plan_from_a_migrated_on_disk_catalog_keeps_first_entry_precedence() {
+        use crate::config::coding_agents_catalog::ensure_seeded;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        let ac_dir = project.join(".ac");
+        let catalog_dir = ac_dir.join("coding-agents");
+        std::fs::create_dir_all(&catalog_dir).unwrap();
+        // A legacy user-owned catalog with: a custom command appearing twice
+        // (its FIRST row leaves updateCommands absent -> materialized as []),
+        // an ordered custom sequence, and an authored claude sequence.
+        let legacy = serde_json::json!({
+            "schemaVersion": 1,
+            "agents": [
+                {"key": "mytool-first", "label": "My Tool First", "description": "d", "color": "#111", "command": "mytool", "envs": [], "isolatedHome": false, "removable": true},
+                {"key": "mytool-second", "label": "My Tool Second", "description": "d", "color": "#111", "command": "mytool", "envs": [], "isolatedHome": false, "removable": true, "updateCommands": ["mytool up"]},
+                {"key": "ordered", "label": "Ordered", "description": "d", "color": "#222", "command": "ordered", "envs": [], "isolatedHome": false, "removable": true, "updateCommands": ["ordered fetch", "ordered build"]},
+                {"key": "claude", "label": "My Claude", "description": "d", "color": "#d97706", "command": "claude", "envs": [], "isolatedHome": false, "removable": true, "updateCommands": ["claude --legacy"]}
+            ]
+        });
+        let mut bytes = serde_json::to_vec_pretty(&legacy).unwrap();
+        bytes.push(b'\n');
+        std::fs::write(catalog_dir.join("agents.json"), &bytes).unwrap();
+        assert!(
+            ensure_seeded(&ac_dir, None).is_some(),
+            "the legacy catalog migrates"
+        );
+
+        let settings = AppSettings {
+            project_paths: vec![project.to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let catalog = load_catalog_for_settings(&settings)
+            .expect("the production reader serves the migrated catalog");
+
+        let registered = HashSet::from(["claude".to_string(), "mytool".to_string()]);
+        let pending = build_update_plan(&catalog, &registered, &BTreeMap::new(), cwd());
+        let claude = pending
+            .prompts
+            .iter()
+            .find(|target| target.command == "claude")
+            .expect("claude awaits its own SI/NO");
+        assert_eq!(claude.label, "My Claude", "first-entry values survive");
+        assert_eq!(claude.commands, vec!["claude --legacy"]);
+        assert!(
+            pending
+                .prompts
+                .iter()
+                .all(|target| target.command != "ordered"),
+            "catalog-only commands are never prompted"
+        );
+        assert!(
+            pending
+                .prompts
+                .iter()
+                .all(|target| target.command != "mytool"),
+            "the first row's empty sequence suppresses the later duplicate"
+        );
+
+        let accepted = build_update_plan(
+            &catalog,
+            &registered,
+            &BTreeMap::from([("claude".to_string(), true)]),
+            cwd(),
+        );
+        assert!(accepted.prompts.is_empty());
+        assert_eq!(accepted.updates.len(), 1);
+        assert_eq!(accepted.updates[0].commands, vec!["claude --legacy"]);
+
+        let declined = build_update_plan(
+            &catalog,
+            &registered,
+            &BTreeMap::from([("claude".to_string(), false)]),
+            cwd(),
+        );
+        assert!(declined.prompts.is_empty());
+        assert!(declined.updates.is_empty());
+    }
+
+    #[test]
+    fn build_plan_from_a_local_composed_on_disk_catalog_honors_exact_command_consent() {
+        use crate::config::coding_agents_catalog::ensure_seeded;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        let ac_dir = project.join(".ac");
+        let catalog_dir = ac_dir.join("coding-agents");
+        std::fs::create_dir_all(&catalog_dir).unwrap();
+        assert!(ensure_seeded(&ac_dir, None).is_some(), "fresh managed base");
+        let local = serde_json::json!({
+            "schemaVersion": 1,
+            "agents": [
+                {"key": "claude", "updateCommands": ["claude --custom", "claude --second"]},
+                {"key": "mytool-first", "label": "My Tool First", "description": "d", "color": "#111", "command": "mytool", "envs": [], "isolatedHome": false, "removable": true, "updateCommands": [], "autoUpdate": false},
+                {"key": "mytool-second", "label": "My Tool Second", "description": "d", "color": "#111", "command": "mytool", "envs": [], "isolatedHome": false, "removable": true, "updateCommands": ["mytool up"], "autoUpdate": false}
+            ]
+        });
+        let mut bytes = serde_json::to_vec_pretty(&local).unwrap();
+        bytes.push(b'\n');
+        std::fs::write(catalog_dir.join("agents.local.json"), &bytes).unwrap();
+
+        let settings = AppSettings {
+            project_paths: vec![project.to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let catalog = load_catalog_for_settings(&settings)
+            .expect("the production reader composes the local layer");
+        let registered = HashSet::from(["claude".to_string(), "mytool".to_string()]);
+
+        // No consent yet: claude waits, with the exact ordered local sequence.
+        let pending = build_update_plan(&catalog, &registered, &BTreeMap::new(), cwd());
+        let claude = pending
+            .prompts
+            .iter()
+            .find(|target| target.command == "claude")
+            .expect("claude prompt");
+        assert_eq!(claude.commands, vec!["claude --custom", "claude --second"]);
+        assert!(
+            pending
+                .prompts
+                .iter()
+                .all(|target| target.command != "mytool"),
+            "an empty first row suppresses the duplicate"
+        );
+
+        // Consent keyed by the EXACT command opts only that command in.
+        let accepted = build_update_plan(
+            &catalog,
+            &registered,
+            &BTreeMap::from([("claude".to_string(), true)]),
+            cwd(),
+        );
+        assert!(accepted.prompts.is_empty());
+        assert_eq!(accepted.updates.len(), 1);
+        assert_eq!(accepted.updates[0].command, "claude");
+        assert_eq!(
+            accepted.updates[0].commands,
+            vec!["claude --custom", "claude --second"]
+        );
+
+        // Explicit refusal runs nothing.
+        let declined = build_update_plan(
+            &catalog,
+            &registered,
+            &BTreeMap::from([("claude".to_string(), false)]),
+            cwd(),
+        );
+        assert!(declined.prompts.is_empty());
+        assert!(declined.updates.is_empty());
+
+        // A consent for a different (suppressed) command neither runs it nor
+        // answers for claude: claude still owes its own answer.
+        let other = build_update_plan(
+            &catalog,
+            &registered,
+            &BTreeMap::from([("mytool".to_string(), true)]),
+            cwd(),
+        );
+        assert!(other.updates.is_empty());
+        assert_eq!(other.prompts.len(), 1);
+        assert_eq!(other.prompts[0].command, "claude");
+    }
+
     #[tokio::test]
     async fn gate_wait_returns_after_finish_and_releases_all_waiters() {
         let gate = Arc::new(AgentUpdateGate::new());
