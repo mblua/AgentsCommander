@@ -638,13 +638,22 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         "preview_coding_agent_profile_selection" => {
             let request: crate::commands::config::PreviewCodingAgentProfileSelectionRequest =
                 require_json(args, "request")?;
-            let result = crate::commands::config::preview_coding_agent_profile_selection_inner(
-                &state.session_mgr,
-                &state.settings,
-                request,
-            )
-            .await?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
+            // #1941 - the preview takes the owned selection turn for a consistent
+            // operation boundary, exactly like its sibling selection arms: a read
+            // queued behind a mutation waits (and may time out at the transport
+            // without canceling the mutation) instead of observing half-settled
+            // state.
+            let state = state.clone();
+            crate::session::selection::run_owned_selection_operation(move || async move {
+                let result = crate::commands::config::preview_coding_agent_profile_selection_inner(
+                    &state.session_mgr,
+                    &state.settings,
+                    request,
+                )
+                .await?;
+                serde_json::to_value(result).map_err(|e| e.to_string())
+            })
+            .await
         }
 
         "apply_coding_agent_profile_selection" => {
@@ -659,6 +668,85 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                         &state.app_handle,
                         &state.session_mgr,
                         &state.pty_mgr,
+                        &state.settings,
+                        request,
+                    )
+                    .await?;
+                broadcast_all(
+                    &state.app_handle,
+                    &state.broadcaster,
+                    "coding_agent_profile_selection_updated",
+                    &payload,
+                );
+                serde_json::to_value(result).map_err(|e| e.to_string())
+            })
+            .await
+        }
+
+        // #1941 - the scoped selection-lock API shares the desktop inner
+        // implementation and the same owned selection-operation boundary: reads
+        // acquire the turn for a consistent snapshot, mutations broadcast their
+        // event payload before releasing it.
+        "preview_selection_lock_removal" => {
+            let request: crate::commands::config::PreviewSelectionLockRemovalRequest =
+                require_json(args, "request")?;
+            let state = state.clone();
+            crate::session::selection::run_owned_selection_operation(move || async move {
+                let result = crate::commands::config::preview_selection_lock_removal_inner(
+                    &state.session_mgr,
+                    &state.settings,
+                    request,
+                )
+                .await?;
+                serde_json::to_value(result).map_err(|e| e.to_string())
+            })
+            .await
+        }
+
+        "apply_selection_lock_removal" => {
+            let request: crate::commands::config::ApplySelectionLockRemovalRequest =
+                require_json(args, "request")?;
+            let state = state.clone();
+            crate::session::selection::run_owned_selection_operation(move || async move {
+                let (result, payload) =
+                    crate::commands::config::apply_selection_lock_removal_inner(
+                        &state.settings,
+                        request,
+                    )
+                    .await?;
+                broadcast_all(
+                    &state.app_handle,
+                    &state.broadcaster,
+                    "coding_agent_profile_selection_updated",
+                    &payload,
+                );
+                serde_json::to_value(result).map_err(|e| e.to_string())
+            })
+            .await
+        }
+
+        "get_replica_selection_default" => {
+            let request: crate::commands::config::GetReplicaSelectionDefaultRequest =
+                require_json(args, "request")?;
+            let state = state.clone();
+            crate::session::selection::run_owned_selection_operation(move || async move {
+                let result = crate::commands::config::get_replica_selection_default_inner(
+                    &state.settings,
+                    request,
+                )
+                .await?;
+                serde_json::to_value(result).map_err(|e| e.to_string())
+            })
+            .await
+        }
+
+        "set_replica_selection_default" => {
+            let request: crate::commands::config::SetReplicaSelectionDefaultRequest =
+                require_json(args, "request")?;
+            let state = state.clone();
+            crate::session::selection::run_owned_selection_operation(move || async move {
+                let (result, payload) =
+                    crate::commands::config::set_replica_selection_default_inner(
                         &state.settings,
                         request,
                     )
@@ -1458,6 +1546,10 @@ mod tests {
             "apply_coding_agent_profile_selection",
             "set_agent_default_profile",
             "set_instance_profile_override",
+            "preview_selection_lock_removal",
+            "apply_selection_lock_removal",
+            "get_replica_selection_default",
+            "set_replica_selection_default",
         ] {
             let response = dispatch(&state, 1, cmd, &json!({})).await;
             let error = response
@@ -1564,6 +1656,556 @@ mod tests {
         assert_eq!(event["payload"]["codingAgentId"], json!("codex"));
         assert_eq!(event["payload"]["profile"], json!("B"));
         assert_eq!(event["payload"]["updatedCount"], json!(1));
+    }
+
+    // ── #1941 scoped selection-lock transport parity ────────────────────
+
+    fn selection_lock_web_fixture(
+        locked: bool,
+    ) -> (tempfile::TempDir, std::path::PathBuf, AppSettings) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        let ac_root = project.join(".ac");
+        let matrix = ac_root.join("_agent_codex");
+        let replica = ac_root.join("room-1-team").join("__agent_codex");
+        std::fs::create_dir_all(&matrix).expect("create matrix");
+        std::fs::create_dir_all(&replica).expect("create replica");
+        std::fs::write(matrix.join("Role.md"), "# Codex\n").expect("write Role.md");
+        std::fs::write(
+            replica.join("config.json"),
+            serde_json::to_vec(&json!({
+                "identity": "../../_agent_codex",
+                "tooling": {
+                    "profile": "A",
+                    "currentCodingAgent": "codex",
+                    "selectionLocked": locked,
+                },
+            }))
+            .expect("serialize replica config"),
+        )
+        .expect("write replica config");
+        let settings = AppSettings {
+            agents: vec![test_agent("codex")],
+            project_paths: vec![project.to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        (temp, replica, settings)
+    }
+
+    #[tokio::test]
+    async fn issue_1937_transport_parity_removal_commands_match_inner_and_broadcast() {
+        let (_temp, replica, settings) = selection_lock_web_fixture(false);
+        let replica_text = replica.to_string_lossy().to_string();
+        let (state, mut rx) = ws_state_for(settings);
+
+        let preview_response = dispatch(
+            &state,
+            21,
+            "preview_selection_lock_removal",
+            &json!({ "request": { "targetReplicaPath": replica_text, "scope": "replica" } }),
+        )
+        .await;
+        assert!(
+            preview_response.get("error").is_none(),
+            "{preview_response:?}"
+        );
+        let inner_preview = crate::commands::config::preview_selection_lock_removal_inner(
+            &state.session_mgr,
+            &state.settings,
+            crate::commands::config::PreviewSelectionLockRemovalRequest {
+                target_replica_path: replica_text.clone(),
+                scope: crate::commands::config::ProfileAssignmentScope::Replica,
+            },
+        )
+        .await
+        .expect("inner preview");
+        assert_eq!(
+            preview_response["result"],
+            serde_json::to_value(&inner_preview).expect("serialize preview"),
+            "the transport must delegate the exact request"
+        );
+        assert!(rx.try_recv().is_err(), "a read broadcasts no event");
+
+        let fingerprint = inner_preview.target_fingerprint.clone();
+        let inner_apply = crate::commands::config::apply_selection_lock_removal_inner(
+            &state.settings,
+            crate::commands::config::ApplySelectionLockRemovalRequest {
+                target_replica_path: replica_text.clone(),
+                scope: crate::commands::config::ProfileAssignmentScope::Replica,
+                confirmed_target_fingerprint: fingerprint.clone(),
+            },
+        )
+        .await
+        .expect("inner apply");
+        // An already-unlocked removal is a no-op that leaves the fingerprint
+        // unchanged, so both transports can run the exact same operation.
+        let apply_response = dispatch(
+            &state,
+            22,
+            "apply_selection_lock_removal",
+            &json!({ "request": {
+                "targetReplicaPath": replica_text,
+                "scope": "replica",
+                "confirmedTargetFingerprint": fingerprint,
+            } }),
+        )
+        .await;
+        assert!(apply_response.get("error").is_none(), "{apply_response:?}");
+        assert_eq!(
+            apply_response["result"],
+            serde_json::to_value(&inner_apply.0).expect("serialize apply"),
+            "both transports return the same result"
+        );
+        let event = match rx.try_recv().expect("broadcast event") {
+            WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
+            other => panic!("expected text event, got {other:?}"),
+        };
+        assert_eq!(
+            event["event"],
+            json!("coding_agent_profile_selection_updated")
+        );
+        assert_eq!(event["payload"]["operation"], json!("unlock"));
+        assert_eq!(event["payload"]["removedCount"], json!(0));
+        assert_eq!(
+            event["payload"], inner_apply.1,
+            "the broadcast payload must equal the inner payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_transport_parity_default_commands_match_inner_and_broadcast() {
+        let (_temp, replica, settings) = selection_lock_web_fixture(false);
+        let replica_text = replica.to_string_lossy().to_string();
+        let matrix = replica
+            .parent()
+            .and_then(|dir| dir.parent())
+            .expect("matrix parent")
+            .join("_agent_codex");
+        let (state, mut rx) = ws_state_for(settings);
+
+        let get_response = dispatch(
+            &state,
+            23,
+            "get_replica_selection_default",
+            &json!({ "request": { "targetReplicaPath": replica_text } }),
+        )
+        .await;
+        assert!(get_response.get("error").is_none(), "{get_response:?}");
+        let inner_get = crate::commands::config::get_replica_selection_default_inner(
+            &state.settings,
+            crate::commands::config::GetReplicaSelectionDefaultRequest {
+                target_replica_path: replica_text.clone(),
+            },
+        )
+        .await
+        .expect("inner get");
+        assert_eq!(
+            get_response["result"],
+            serde_json::to_value(&inner_get).expect("serialize default")
+        );
+        let fingerprint = inner_get.default_fingerprint.clone();
+
+        let set_request = crate::commands::config::SetReplicaSelectionDefaultRequest {
+            target_replica_path: replica_text.clone(),
+            coding_agent_id: "codex".to_string(),
+            requested_profile: "B".to_string(),
+            selection_locked: true,
+            confirmed_default_fingerprint: fingerprint.clone(),
+        };
+        let inner_set = crate::commands::config::set_replica_selection_default_inner(
+            &state.settings,
+            set_request,
+        )
+        .await
+        .expect("inner set");
+        // Re-create the pre-write state (default absent) so the transport can
+        // execute the exact same CAS with the original fingerprint.
+        let mut value: Value =
+            serde_json::from_slice(&std::fs::read(matrix.join("config.json")).expect("read"))
+                .expect("parse matrix config");
+        value["tooling"]
+            .as_object_mut()
+            .expect("tooling object")
+            .remove("replicaSelectionDefault");
+        std::fs::write(
+            matrix.join("config.json"),
+            serde_json::to_vec(&value).expect("serialize"),
+        )
+        .expect("reset matrix default");
+
+        let set_response = dispatch(
+            &state,
+            24,
+            "set_replica_selection_default",
+            &json!({ "request": {
+                "targetReplicaPath": replica_text,
+                "codingAgentId": "codex",
+                "requestedProfile": "B",
+                "selectionLocked": true,
+                "confirmedDefaultFingerprint": fingerprint,
+            } }),
+        )
+        .await;
+        assert!(set_response.get("error").is_none(), "{set_response:?}");
+        assert_eq!(
+            set_response["result"],
+            serde_json::to_value(&inner_set.0).expect("serialize set result")
+        );
+        let event = match rx.try_recv().expect("broadcast event") {
+            WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
+            other => panic!("expected text event, got {other:?}"),
+        };
+        assert_eq!(
+            event["event"],
+            json!("coding_agent_profile_selection_updated")
+        );
+        assert_eq!(event["payload"], inner_set.1);
+        assert_eq!(event["payload"]["scope"], json!("default"));
+        assert_eq!(event["payload"]["operation"], json!("default"));
+        assert_eq!(
+            event["payload"]["agentPath"],
+            json!(inner_get.matrix_path.clone())
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_transport_parity_new_commands_reject_unknown_fields() {
+        let (_temp, replica, settings) = selection_lock_web_fixture(false);
+        let replica_text = replica.to_string_lossy().to_string();
+        let replica_bytes = std::fs::read(replica.join("config.json")).expect("read config");
+        let matrix = replica
+            .parent()
+            .and_then(|dir| dir.parent())
+            .expect("matrix parent")
+            .join("_agent_codex");
+        let (state, mut rx) = ws_state_for(settings);
+
+        let cases = [
+            (
+                "preview_selection_lock_removal",
+                json!({ "targetReplicaPath": replica_text, "scope": "replica", "extra": 1 }),
+            ),
+            (
+                "apply_selection_lock_removal",
+                json!({
+                    "targetReplicaPath": replica_text,
+                    "scope": "replica",
+                    "confirmedTargetFingerprint": "whatever",
+                    "extra": 1,
+                }),
+            ),
+            (
+                "get_replica_selection_default",
+                json!({ "targetReplicaPath": replica_text, "extra": 1 }),
+            ),
+            (
+                "set_replica_selection_default",
+                json!({
+                    "targetReplicaPath": replica_text,
+                    "codingAgentId": "codex",
+                    "requestedProfile": "B",
+                    "selectionLocked": true,
+                    "confirmedDefaultFingerprint": "whatever",
+                    "extra": 1,
+                }),
+            ),
+        ];
+        for (cmd, request) in cases {
+            let response = dispatch(&state, 31, cmd, &json!({ "request": request })).await;
+            let error = response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            assert!(error.contains("unknown field"), "{cmd}: {error}");
+            assert!(!error.contains("Unknown command"), "{cmd}: {error}");
+        }
+
+        assert_eq!(
+            std::fs::read(replica.join("config.json")).expect("read config"),
+            replica_bytes,
+            "rejected requests have no effects"
+        );
+        assert!(
+            !matrix.join("config.json").exists(),
+            "rejected requests must not publish a Matrix default"
+        );
+        assert!(rx.try_recv().is_err(), "rejections broadcast nothing");
+    }
+
+    #[tokio::test]
+    async fn issue_1937_transport_parity_tauri_registration_presence() {
+        let (_temp, replica, settings) = selection_lock_web_fixture(true);
+        let replica_text = replica.to_string_lossy().to_string();
+        let settings_state: crate::config::settings::SettingsState =
+            Arc::new(tokio::sync::RwLock::new(settings));
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![
+                crate::commands::config::preview_selection_lock_removal,
+                crate::commands::config::apply_selection_lock_removal,
+                crate::commands::config::get_replica_selection_default,
+                crate::commands::config::set_replica_selection_default,
+            ])
+            .manage(settings_state)
+            .manage(Arc::clone(&session_mgr))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build registration app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("build webview");
+        let call = |cmd: &str, request: Value| {
+            tauri::test::get_ipc_response(
+                &webview,
+                tauri::webview::InvokeRequest {
+                    cmd: cmd.to_string(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: "http://tauri.localhost".parse().unwrap(),
+                    body: tauri::ipc::InvokeBody::Json(json!({ "request": request })),
+                    headers: Default::default(),
+                    invoke_key: tauri::test::INVOKE_KEY.to_string(),
+                },
+            )
+        };
+
+        let preview: Value = call(
+            "preview_selection_lock_removal",
+            json!({ "targetReplicaPath": replica_text, "scope": "replica" }),
+        )
+        .expect("preview command is registered")
+        .deserialize()
+        .expect("deserialize preview");
+        assert_eq!(preview["protectedCount"], json!(1));
+        let fingerprint = preview["targetFingerprint"]
+            .as_str()
+            .expect("fingerprint")
+            .to_string();
+
+        let apply: Value = call(
+            "apply_selection_lock_removal",
+            json!({
+                "targetReplicaPath": replica_text,
+                "scope": "replica",
+                "confirmedTargetFingerprint": fingerprint,
+            }),
+        )
+        .expect("apply command is registered")
+        .deserialize()
+        .expect("deserialize apply");
+        assert_eq!(apply["removedCount"], json!(1));
+
+        let get: Value = call(
+            "get_replica_selection_default",
+            json!({ "targetReplicaPath": replica_text }),
+        )
+        .expect("default read command is registered")
+        .deserialize()
+        .expect("deserialize default read");
+        assert_eq!(get["default"], Value::Null);
+        let default_fingerprint = get["defaultFingerprint"]
+            .as_str()
+            .expect("default fingerprint")
+            .to_string();
+
+        let set: Value = call(
+            "set_replica_selection_default",
+            json!({
+                "targetReplicaPath": replica_text,
+                "codingAgentId": "codex",
+                "requestedProfile": "B",
+                "selectionLocked": true,
+                "confirmedDefaultFingerprint": default_fingerprint,
+            }),
+        )
+        .expect("default write command is registered")
+        .deserialize()
+        .expect("deserialize default write");
+        assert_eq!(set["default"]["requestedProfile"], json!("B"));
+        assert_eq!(set["default"]["selectionLocked"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn issue_1937_transport_parity_event_refreshes_another_subscriber_after_waiter_drop() {
+        let (_temp, replica, settings) = selection_lock_web_fixture(false);
+        let replica_text = replica.to_string_lossy().to_string();
+        let matrix = replica
+            .parent()
+            .and_then(|dir| dir.parent())
+            .expect("matrix parent")
+            .join("_agent_codex");
+        let (state, _rx) = ws_state_for(settings);
+        let mut other_subscriber = state.broadcaster.subscribe();
+
+        let initial = crate::commands::config::get_replica_selection_default_inner(
+            &state.settings,
+            crate::commands::config::GetReplicaSelectionDefaultRequest {
+                target_replica_path: replica_text.clone(),
+            },
+        )
+        .await
+        .expect("initial default read")
+        .default_fingerprint;
+
+        // Hold the owned operation turn so the dispatch is still queued when its
+        // caller (the WebSocket waiter) is dropped.
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let holder = tokio::spawn(crate::session::selection::run_owned_selection_operation(
+            move || async move {
+                entered_tx.send(()).expect("signal entered");
+                release_rx.await.expect("release holder");
+                Ok::<(), String>(())
+            },
+        ));
+        entered_rx.await.expect("holder entered");
+
+        let state_for_dispatch = state.clone();
+        let dispatch_task = tokio::spawn(async move {
+            dispatch(
+                &state_for_dispatch,
+                41,
+                "set_replica_selection_default",
+                &json!({ "request": {
+                    "targetReplicaPath": replica_text,
+                    "codingAgentId": "codex",
+                    "requestedProfile": "B",
+                    "selectionLocked": true,
+                    "confirmedDefaultFingerprint": initial,
+                } }),
+            )
+            .await
+        });
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !dispatch_task.is_finished(),
+            "the dispatch must wait for the owned turn"
+        );
+
+        // The WebSocket waiter goes away; the owned task keeps the operation.
+        dispatch_task.abort();
+        let _ = dispatch_task.await;
+        release_tx.send(()).expect("release holder");
+        holder
+            .await
+            .expect("holder join")
+            .expect("holder operation");
+
+        // Another subscriber must still receive the completion event.
+        let event =
+            tokio::time::timeout(std::time::Duration::from_secs(10), other_subscriber.recv())
+                .await
+                .expect("event arrives")
+                .expect("subscriber channel open");
+        let event = match event {
+            WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
+            other => panic!("expected text event, got {other:?}"),
+        };
+        assert_eq!(
+            event["event"],
+            json!("coding_agent_profile_selection_updated")
+        );
+        assert_eq!(event["payload"]["operation"], json!("default"));
+        assert_eq!(event["payload"]["scope"], json!("default"));
+        let disk: Value =
+            serde_json::from_slice(&std::fs::read(matrix.join("config.json")).expect("read"))
+                .expect("parse matrix config");
+        assert_eq!(
+            disk["tooling"]["replicaSelectionDefault"]["requestedProfile"],
+            json!("B"),
+            "the detached owned task still completed the write"
+        );
+    }
+
+    /// #1941 rework ronda 1 - the real WebSocket dispatch route for the
+    /// assignment preview must queue behind the owned selection turn. On the
+    /// pre-fix arm (no `run_owned_selection_operation`) the dispatch completes
+    /// while the turn is held and reads the half-settled pre-publication state.
+    #[tokio::test]
+    async fn issue_1937_transport_parity_assignment_preview_queues_behind_the_turn() {
+        let (_temp, replica, settings) = selection_lock_web_fixture(false);
+        let replica_text = replica.to_string_lossy().to_string();
+        let (state, _rx) = ws_state_for(settings);
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let settings_for_holder = state.settings.clone();
+        let replica_for_holder = replica.clone();
+        // The holder owns the turn while a mutation is still in flight; the
+        // publication happens after the barrier, so a racing preview would
+        // observe the unlocked pre-publication state.
+        let holder = tokio::spawn(crate::session::selection::run_owned_selection_operation(
+            move || {
+                let settings = settings_for_holder;
+                let replica = replica_for_holder;
+                async move {
+                    entered_tx.send(()).expect("signal entered");
+                    release_rx.await.expect("release holder");
+                    let snapshot = settings.read().await.clone();
+                    let expected =
+                        crate::config::coding_agent_profiles::read_replica_selection_state(
+                            &replica,
+                        )
+                        .expectation()
+                        .expect("fresh expectation");
+                    crate::config::coding_agent_profiles::write_replica_selection(
+                        &snapshot,
+                        &replica,
+                        &crate::config::coding_agent_profiles::ReplicaSelectionPair {
+                            coding_agent_id: "codex".to_string(),
+                            requested_profile: "B".to_string(),
+                        },
+                        crate::config::coding_agent_profiles::SelectionWriteIntent::IndividualAssignLock,
+                        &expected,
+                    )
+                    .expect("publish the lock");
+                    Ok::<(), String>(())
+                }
+            },
+        ));
+        entered_rx.await.expect("holder entered");
+
+        let state_for_dispatch = state.clone();
+        let dispatch_task = tokio::spawn(async move {
+            dispatch(
+                &state_for_dispatch,
+                51,
+                "preview_coding_agent_profile_selection",
+                &json!({ "request": {
+                    "targetReplicaPath": replica_text,
+                    "codingAgentId": "codex",
+                    "profile": "B",
+                    "scope": "replica",
+                    "restartSessions": false,
+                } }),
+            )
+            .await
+        });
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !dispatch_task.is_finished(),
+            "the transport preview must queue behind the owned selection turn"
+        );
+
+        release_tx.send(()).expect("release holder");
+        holder
+            .await
+            .expect("holder join")
+            .expect("holder operation");
+        let response = dispatch_task.await.expect("dispatch join");
+        assert!(response.get("error").is_none(), "{response:?}");
+        assert_eq!(
+            response["result"]["targets"][0]["selectionState"],
+            json!("locked")
+        );
+        assert_eq!(
+            response["result"]["targets"][0]["savedPair"]["requestedProfile"],
+            json!("B"),
+            "the queued preview must see the settled publication"
+        );
     }
 
     /// #1271 - full create-path harness for the web dispatcher. `ws_state_for`

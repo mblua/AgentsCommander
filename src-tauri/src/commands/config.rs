@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1073,6 +1073,46 @@ pub enum ProfileAssignmentScope {
     Workgroup,
 }
 
+/// #1941 - requested publication policy. `Ordinary` preserves the stored lock
+/// flag exactly; `AssignAndLock` publishes the pair and sets the flag, and is
+/// the only mode that offers a reviewed force for protected replicas.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AssignmentMode {
+    #[default]
+    Ordinary,
+    AssignAndLock,
+}
+
+/// #1941 - explicit review decision for a bulk assign-and-lock that found
+/// protected replicas. There is deliberately no default: a conflict needs a
+/// choice, so the backend can never force a lock silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConflictDecision {
+    UnlockedOnly,
+    ForceReviewed,
+}
+
+/// #1941 - strict protection state of a replica, as read by #1939. `Invalid`
+/// is a diagnostic, never a permissive default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SelectionState {
+    Unlocked,
+    Locked,
+    Invalid,
+}
+
+/// #1941 - the protected pair as exposed on the wire. Both fields are `null`
+/// when no complete pair is stored.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedPair {
+    pub coding_agent_id: Option<String>,
+    pub requested_profile: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileAssignmentTarget {
@@ -1083,6 +1123,12 @@ pub struct ProfileAssignmentTarget {
     pub identity_path: String,
     pub origin_project: Option<String>,
     pub live_session_ids: Vec<String>,
+    /// #1941 - the complete stored pair, or `null` when absent/invalid.
+    pub saved_pair: Option<SavedPair>,
+    /// #1941 - strict protection state; never a synthesized `false`.
+    pub selection_state: SelectionState,
+    /// #1941 - the strict-read diagnostic when `selection_state` is invalid.
+    pub selection_error: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1094,6 +1140,30 @@ pub struct PreviewCodingAgentProfileSelectionRequest {
     pub scope: ProfileAssignmentScope,
     #[serde(default)]
     pub restart_sessions: bool,
+    /// #1941 - absent keeps the legacy ordinary semantics.
+    #[serde(default)]
+    pub assignment_mode: AssignmentMode,
+}
+
+/// #1941 - one explicit conflict outcome as offered by a preview.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionDecisionProjection {
+    pub fingerprint: String,
+    pub eligible_paths: Vec<String>,
+    pub eligible_count: usize,
+    pub skipped_locked_count: usize,
+    pub live_session_count: usize,
+}
+
+/// #1941 - both reviewable outcomes; present only when a bulk
+/// assign-and-lock preview actually found protected candidates. Each carries
+/// its own fingerprint, so the client echoes exactly the reviewed decision.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionDecisions {
+    pub unlocked_only: SelectionDecisionProjection,
+    pub force_reviewed: SelectionDecisionProjection,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1106,6 +1176,16 @@ pub struct PreviewCodingAgentProfileSelectionResult {
     pub requires_explicit_confirmation: bool,
     pub targets: Vec<ProfileAssignmentTarget>,
     pub warnings: Vec<String>,
+    /// #1941 - false when scoped membership could not be established from the
+    /// directory walk (unreadable entries / unprovable identities).
+    pub counts_complete: bool,
+    pub candidate_count: usize,
+    pub protected_count: usize,
+    pub invalid_count: usize,
+    /// #1941 - valid protected candidates for a bulk assign-and-lock; zero for
+    /// every other mode.
+    pub conflict_count: usize,
+    pub decisions: Option<SelectionDecisions>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1118,6 +1198,13 @@ pub struct ApplyCodingAgentProfileSelectionRequest {
     pub restart_sessions: bool,
     pub confirmed_target_fingerprint: Option<String>,
     pub typed_confirmation: Option<String>,
+    /// #1941 - absent keeps the legacy ordinary semantics.
+    #[serde(default)]
+    pub assignment_mode: AssignmentMode,
+    /// #1941 - required only for a bulk assign-and-lock that found protected
+    /// candidates. Rejected in every other mode/scope combination.
+    #[serde(default)]
+    pub conflict_decision: Option<ConflictDecision>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1141,6 +1228,103 @@ pub struct ApplyCodingAgentProfileSelectionResult {
     pub target_fingerprint: String,
     pub warnings: Vec<String>,
     pub errors: Vec<ProfileAssignmentError>,
+    /// #1941 - false-to-true lock flips only.
+    pub newly_protected_paths: Vec<String>,
+    /// #1941 - valid protected replicas deliberately skipped by the policy.
+    pub skipped_locked_paths: Vec<String>,
+    /// #1941 - candidates whose strict protection state is invalid.
+    pub invalid_paths: Vec<String>,
+    /// #1941 - protected replicas left after the operation; `null` when the
+    /// refresh cannot establish the total.
+    pub locked_after_apply_count: Option<usize>,
+    /// #1941 - true only when a reviewed force actually overwrote a protected
+    /// target, never merely because a decision was selected.
+    pub force_applied: bool,
+}
+
+// ── #1941 selection-lock removal and Matrix default wire contract ──────────
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreviewSelectionLockRemovalRequest {
+    pub target_replica_path: String,
+    pub scope: ProfileAssignmentScope,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApplySelectionLockRemovalRequest {
+    pub target_replica_path: String,
+    pub scope: ProfileAssignmentScope,
+    pub confirmed_target_fingerprint: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetReplicaSelectionDefaultRequest {
+    pub target_replica_path: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetReplicaSelectionDefaultRequest {
+    pub target_replica_path: String,
+    pub coding_agent_id: String,
+    pub requested_profile: String,
+    pub selection_locked: bool,
+    pub confirmed_default_fingerprint: String,
+}
+
+/// #1941 - Matrix creation default (`tooling.replicaSelectionDefault`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionDefault {
+    pub coding_agent_id: String,
+    pub requested_profile: String,
+    pub selection_locked: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewSelectionLockRemovalResult {
+    pub scope: ProfileAssignmentScope,
+    pub target_fingerprint: String,
+    pub candidate_count: usize,
+    pub counts_complete: bool,
+    pub protected_count: usize,
+    pub already_unlocked_count: usize,
+    pub invalid_count: usize,
+    pub targets: Vec<ProfileAssignmentTarget>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplySelectionLockRemovalResult {
+    pub scope: ProfileAssignmentScope,
+    pub target_fingerprint: String,
+    pub removed_count: usize,
+    pub removed_replica_paths: Vec<String>,
+    pub already_unlocked_paths: Vec<String>,
+    pub failed_replica_paths: Vec<String>,
+    pub remaining_protected_count: Option<usize>,
+    pub candidate_count: usize,
+    pub counts_complete: bool,
+    pub invalid_count: usize,
+    pub errors: Vec<ProfileAssignmentError>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplicaSelectionDefaultResult {
+    pub target_replica_path: String,
+    pub matrix_path: String,
+    /// `null` only when the Matrix has no stored default (old creation
+    /// behavior); a malformed default is an error, never a silent `null`.
+    pub default: Option<SelectionDefault>,
+    pub default_fingerprint: String,
+    pub warnings: Vec<String>,
 }
 
 #[tauri::command]
@@ -1149,13 +1333,21 @@ pub async fn preview_coding_agent_profile_selection(
     settings: State<'_, SettingsState>,
     request: PreviewCodingAgentProfileSelectionRequest,
 ) -> Result<PreviewCodingAgentProfileSelectionResult, String> {
-    preview_coding_agent_profile_selection_inner(session_mgr.inner(), settings.inner(), request)
-        .await
+    // #1941 - a preview takes the shared operation turn for a consistent
+    // operation boundary; its owned task survives a dropped or timed-out caller
+    // (the transport discards the late response) without cancelling the read.
+    let session_mgr = Arc::clone(session_mgr.inner());
+    let settings = settings.inner().clone();
+    crate::session::selection::run_owned_selection_operation(move || async move {
+        preview_coding_agent_profile_selection_inner(&session_mgr, &settings, request).await
+    })
+    .await
 }
 
 /// Enumerate the replicas a broad-scope profile assignment would touch and
-/// return a fingerprint the frontend echoes back on apply. Shared by the
-/// desktop command and the web dispatcher; reads settings + sessions only.
+/// return the fingerprints the frontend echoes back on apply. Shared by the
+/// desktop command and the web dispatcher; the caller owns the #1940 turn and
+/// this function only reads settings, sessions and strict replica state.
 pub(crate) async fn preview_coding_agent_profile_selection_inner(
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
     settings: &SettingsState,
@@ -1167,6 +1359,7 @@ pub(crate) async fn preview_coding_agent_profile_selection_inner(
         &request.coding_agent_id,
         &request.profile,
     )?;
+    let normalized_profile = normalize_profile_letter_for_assignment(&request.profile)?;
     let sessions = { session_mgr.read().await.list_sessions().await };
     let enumeration = enumerate_profile_assignment_targets(
         &settings_snapshot,
@@ -1174,28 +1367,32 @@ pub(crate) async fn preview_coding_agent_profile_selection_inner(
         &request.scope,
         &sessions,
     )?;
-    let normalized_profile = normalize_profile_letter_for_assignment(&request.profile)?;
-    let target_fingerprint = profile_assignment_fingerprint(
+    let snapshot = assignment_snapshot(
+        &enumeration,
+        &sessions,
+        &request.scope,
+        request.assignment_mode,
         &request.coding_agent_id,
         &normalized_profile,
         request.restart_sessions,
-        &enumeration.canonical_target_paths,
-    );
-    let live_session_count = enumeration
-        .targets
-        .iter()
-        .map(|target| target.live_session_ids.len())
-        .sum();
+    )?;
     Ok(PreviewCodingAgentProfileSelectionResult {
         scope: request.scope.clone(),
-        target_count: enumeration.targets.len(),
-        live_session_count,
-        target_fingerprint,
+        target_count: snapshot.top_eligible_count,
+        live_session_count: snapshot.top_live_session_count,
+        target_fingerprint: snapshot.top_fingerprint,
         requires_explicit_confirmation: profile_assignment_requires_explicit_confirmation(
             &request.scope,
+            request.assignment_mode,
         ),
-        targets: enumeration.targets,
+        targets: enumeration.targets(),
         warnings: enumeration.warnings,
+        counts_complete: enumeration.counts_complete,
+        candidate_count: enumeration.candidates.len(),
+        protected_count: snapshot.protected_count,
+        invalid_count: snapshot.invalid_count,
+        conflict_count: snapshot.conflict_count,
+        decisions: snapshot.decisions,
     })
 }
 
@@ -1248,6 +1445,14 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
     // #1940 - the caller owns the selection operation turn; this inner function
     // neither reacquires it nor spawns another turn, and it does not release it
     // before the last restart reply, classification and publication.
+    //
+    // #1941 - a conflict decision is only meaningful for a bulk assign-and-lock;
+    // every other scope/mode rejects it before any enumeration or write.
+    validate_assignment_decision_scope(
+        &request.scope,
+        request.assignment_mode,
+        request.conflict_decision,
+    )?;
     let settings_snapshot = settings.read().await.clone();
     validate_profile_assignment_request(
         &settings_snapshot,
@@ -1262,67 +1467,130 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
         &request.scope,
         &sessions,
     )?;
-    let target_fingerprint = profile_assignment_fingerprint(
+    // #1941 - re-enumerate the complete candidate set under the owned turn and
+    // build fresh fingerprints from the strict per-candidate state; the client's
+    // approval is compared against THIS snapshot before any write.
+    let snapshot = assignment_snapshot(
+        &enumeration,
+        &sessions,
+        &request.scope,
+        request.assignment_mode,
         &request.coding_agent_id,
         &normalized_profile,
         request.restart_sessions,
-        &enumeration.canonical_target_paths,
-    );
-    validate_profile_assignment_confirmation(&request, &target_fingerprint)?;
+    )?;
+    let resolved_decision =
+        resolve_assignment_conflict_decision(&snapshot, request.conflict_decision)?;
+    let target_fingerprint = assignment_expected_fingerprint(&snapshot, resolved_decision)?;
+    validate_profile_assignment_confirmation(
+        &request.scope,
+        request.assignment_mode,
+        request.confirmed_target_fingerprint.as_deref(),
+        &target_fingerprint,
+    )?;
 
+    let write_eligible_paths = assignment_write_paths(&snapshot, &request.scope, resolved_decision);
     if request.restart_sessions {
+        let restart_targets: Vec<ProfileAssignmentTarget> = enumeration
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                write_eligible_paths.contains(&canonical_compare_key(Path::new(
+                    &candidate.target.replica_path,
+                )))
+            })
+            .map(|candidate| candidate.target.clone())
+            .collect();
         prevalidate_profile_assignment_restarts(
             &settings_snapshot,
             &request.coding_agent_id,
             &normalized_profile,
-            &enumeration.targets,
+            &restart_targets,
         )?;
     }
 
+    let intent =
+        assignment_write_intent(&request.scope, request.assignment_mode, resolved_decision);
     let mut updated_replica_paths = Vec::new();
+    let mut newly_protected_paths = Vec::new();
+    let mut skipped_locked_paths = Vec::new();
+    let mut invalid_paths = Vec::new();
     let mut write_succeeded_keys = BTreeSet::new();
     let mut errors = Vec::new();
-    let mut warnings = enumeration.warnings;
-    for target in &enumeration.targets {
-        // #1940 - ordinary bulk assignment names the #1939 BulkOrdinary intent,
-        // which never forces a lock: a valid locked replica is skipped (no write,
-        // no restart) and reported as a warning, so even a hand-authored lock is
-        // safe before the #1941 UI/API exposes the flag.
-        let state = crate::config::coding_agent_profiles::read_replica_selection_state(Path::new(
-            &target.replica_path,
-        ));
-        let expected = match state.expectation() {
-            Ok(expected) => expected,
-            Err(e) => {
-                errors.push(ProfileAssignmentError {
-                    code: "configWriteFailed".to_string(),
-                    message: e,
-                    session_ids: target.live_session_ids.clone(),
-                    replica_paths: vec![target.replica_path.clone()],
-                });
-                continue;
+    let mut warnings = enumeration.warnings.clone();
+    let mut force_applied = false;
+    for candidate in &enumeration.candidates {
+        let target = &candidate.target;
+        let key = canonical_compare_key(Path::new(&target.replica_path));
+        if target.selection_state == SelectionState::Invalid {
+            // #1941 - an invalid protection state is an explicit error with no
+            // write and no restart; it is never read as an unlocked replica.
+            invalid_paths.push(target.replica_path.clone());
+            errors.push(ProfileAssignmentError {
+                code: "invalidSelectionState".to_string(),
+                message: target.selection_error.clone().unwrap_or_else(|| {
+                    format!(
+                        "Replica '{}' has an invalid selection state",
+                        target.replica_path
+                    )
+                }),
+                session_ids: target.live_session_ids.clone(),
+                replica_paths: vec![target.replica_path.clone()],
+            });
+            continue;
+        }
+        if !write_eligible_paths.contains(&key) {
+            if target.selection_state == SelectionState::Locked {
+                // #1939/#1941 - ordinary and unlocked-only policies never force
+                // a valid lock: skip it (no write, no restart) and report it.
+                skipped_locked_paths.push(target.replica_path.clone());
+                warnings.push(format!("Skipping locked replica '{}'", target.replica_path));
             }
+            continue;
+        }
+        let expected = crate::config::coding_agent_profiles::ReplicaSelectionExpectation {
+            identity: target.identity_path.clone(),
+            pair: target_pair(target),
+            locked: target.selection_state == SelectionState::Locked,
         };
         let pair = crate::config::coding_agent_profiles::ReplicaSelectionPair {
             coding_agent_id: request.coding_agent_id.clone(),
             requested_profile: normalized_profile.clone(),
         };
+        // #1940/#1939 - the guarded callback re-reads the strict state and
+        // compares this expectation inside the OS write lock, so a target that
+        // changed after enumeration fails its own CAS instead of being
+        // overwritten; earlier writes stay committed and accurately reported.
         match crate::config::coding_agent_profiles::write_replica_selection(
             &settings_snapshot,
             Path::new(&target.replica_path),
             &pair,
-            crate::config::coding_agent_profiles::SelectionWriteIntent::BulkOrdinary,
+            intent,
             &expected,
         ) {
             Ok(outcome) if outcome.changed => {
+                if outcome.lock_transition
+                    == Some(crate::config::coding_agent_profiles::SelectionLockTransition::UnlockedToLocked)
+                {
+                    newly_protected_paths.push(target.replica_path.clone());
+                }
+                if intent
+                    == crate::config::coding_agent_profiles::SelectionWriteIntent::BulkForceReviewed
+                    && expected.locked
+                {
+                    // #1941 - forceApplied means a protected target was actually
+                    // overwritten, never merely that a decision was selected.
+                    force_applied = true;
+                }
                 updated_replica_paths.push(target.replica_path.clone());
-                write_succeeded_keys.insert(canonical_compare_key(Path::new(&target.replica_path)));
+                write_succeeded_keys.insert(key);
             }
-            Ok(_skipped_locked) => {
-                warnings.push(format!("Skipping locked replica '{}'", target.replica_path))
-            }
+            Ok(_unchanged) => warnings.push(format!(
+                "Replica '{}' was already in the requested state",
+                target.replica_path
+            )),
             Err(e) => errors.push(ProfileAssignmentError {
-                code: "configWriteFailed".to_string(),
+                code: selection_error_code(&e).to_string(),
                 message: e,
                 session_ids: target.live_session_ids.clone(),
                 replica_paths: vec![target.replica_path.clone()],
@@ -1333,7 +1601,7 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
     let mut restarted_session_ids = Vec::new();
     let mut destroyed_but_not_recreated_session_ids = Vec::new();
     if request.restart_sessions && !write_succeeded_keys.is_empty() {
-        for target in &enumeration.targets {
+        for target in &enumeration.targets() {
             if !write_succeeded_keys
                 .contains(&canonical_compare_key(Path::new(&target.replica_path)))
             {
@@ -1378,6 +1646,9 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
         }
     }
 
+    // #1941 - refresh under the same turn so the reported remaining protection
+    // never comes from the pre-write snapshot; an unknowable total is `null`.
+    let locked_after_apply_count = refresh_locked_count(&enumeration);
     let result = ApplyCodingAgentProfileSelectionResult {
         scope: request.scope.clone(),
         updated_count: updated_replica_paths.len(),
@@ -1388,23 +1659,81 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
         target_fingerprint,
         warnings,
         errors,
+        newly_protected_paths,
+        skipped_locked_paths,
+        invalid_paths,
+        locked_after_apply_count,
+        force_applied,
+    };
+    let operation = match request.assignment_mode {
+        AssignmentMode::Ordinary => "assign",
+        AssignmentMode::AssignAndLock => "assignAndLock",
     };
     let payload = serde_json::json!({
         "scope": request.scope,
+        "operation": operation,
         "codingAgentId": request.coding_agent_id,
         "profile": normalized_profile,
         "updatedCount": result.updated_count,
         "restartedCount": result.restarted_count,
         "targetFingerprint": &result.target_fingerprint,
+        "affectedPaths": &result.updated_replica_paths,
+        "newlyProtectedCount": result.newly_protected_paths.len(),
+        "skippedLockedCount": result.skipped_locked_paths.len(),
         "errors": &result.errors,
     });
     Ok((result, payload))
 }
 
+/// #1941 - one identified candidate plus its canonical Matrix dir, kept so a
+/// fingerprint never has to re-resolve identity from a mutable path.
+struct ProfileCandidate {
+    target: ProfileAssignmentTarget,
+    matrix_dir: PathBuf,
+}
+
+/// #1941 - the complete identified candidate set for one scope, together with
+/// whether the directory walk could establish that set.
 struct ProfileTargetEnumeration {
-    targets: Vec<ProfileAssignmentTarget>,
-    canonical_target_paths: Vec<String>,
+    anchor_dir: PathBuf,
+    anchor_matrix_dir: PathBuf,
+    candidates: Vec<ProfileCandidate>,
     warnings: Vec<String>,
+    counts_complete: bool,
+}
+
+impl ProfileTargetEnumeration {
+    fn targets(&self) -> Vec<ProfileAssignmentTarget> {
+        self.candidates
+            .iter()
+            .map(|candidate| candidate.target.clone())
+            .collect()
+    }
+}
+
+/// #1941 - directory-walk accumulator. A read failure is a visible warning that
+/// makes the scope counts incomplete, never a silent skip: an unreadable member
+/// could be protected, so the scope can no longer certify a total.
+#[derive(Default)]
+struct CandidateDirs {
+    dirs: Vec<PathBuf>,
+    warnings: Vec<String>,
+    complete: bool,
+}
+
+impl CandidateDirs {
+    fn new() -> Self {
+        Self {
+            dirs: Vec::new(),
+            warnings: Vec::new(),
+            complete: true,
+        }
+    }
+
+    fn mark_incomplete(&mut self, warning: String) {
+        self.warnings.push(warning);
+        self.complete = false;
+    }
 }
 
 fn validate_profile_assignment_request(
@@ -1428,33 +1757,51 @@ fn normalize_profile_letter_for_assignment(profile: &str) -> Result<String, Stri
         .ok_or_else(|| "Profile must be a single letter A through Z".to_string())
 }
 
-fn profile_assignment_requires_explicit_confirmation(scope: &ProfileAssignmentScope) -> bool {
-    *scope != ProfileAssignmentScope::Replica
+fn profile_assignment_requires_explicit_confirmation(
+    scope: &ProfileAssignmentScope,
+    mode: AssignmentMode,
+) -> bool {
+    *scope != ProfileAssignmentScope::Replica || mode == AssignmentMode::AssignAndLock
+}
+
+/// #1941 - a conflict decision belongs only to a bulk assign-and-lock; anything
+/// else is rejected before enumeration so no client boolean can widen force.
+fn validate_assignment_decision_scope(
+    scope: &ProfileAssignmentScope,
+    mode: AssignmentMode,
+    decision: Option<ConflictDecision>,
+) -> Result<(), String> {
+    if decision.is_none() {
+        return Ok(());
+    }
+    if *scope == ProfileAssignmentScope::Replica {
+        return Err("conflictDecision is not valid for replica scope".to_string());
+    }
+    if mode == AssignmentMode::Ordinary {
+        return Err("conflictDecision is only valid with assignmentMode assignAndLock".to_string());
+    }
+    Ok(())
 }
 
 fn validate_profile_assignment_confirmation(
-    request: &ApplyCodingAgentProfileSelectionRequest,
+    scope: &ProfileAssignmentScope,
+    mode: AssignmentMode,
+    provided: Option<&str>,
     fingerprint: &str,
 ) -> Result<(), String> {
-    if request.scope != ProfileAssignmentScope::Replica {
-        match request.confirmed_target_fingerprint.as_deref() {
-            Some(value) if value == fingerprint => {}
-            _ => {
-                return Err(
-                    "Target selection changed. Rerun preview before applying profile selection."
-                        .to_string(),
-                )
-            }
+    let stale = || {
+        "stalePreview: Target selection changed. Rerun preview before applying profile selection."
+            .to_string()
+    };
+    match provided {
+        Some(value) if value == fingerprint => Ok(()),
+        // #1941 - the legacy deliberate replica assignment keeps working without
+        // a fingerprint; every bulk, assignAndLock and removal path needs one.
+        None if *scope == ProfileAssignmentScope::Replica && mode == AssignmentMode::Ordinary => {
+            Ok(())
         }
-    } else if let Some(value) = request.confirmed_target_fingerprint.as_deref() {
-        if value != fingerprint {
-            return Err(
-                "Target selection changed. Rerun preview before applying profile selection."
-                    .to_string(),
-            );
-        }
+        _ => Err(stale()),
     }
-    Ok(())
 }
 
 fn prevalidate_profile_assignment_restarts(
@@ -1492,80 +1839,136 @@ async fn classify_restart_failure(
     }
 }
 
+/// #1941 - the scope anchor must be a strictly validated `__agent_*` replica
+/// inside a `room-*`/`wg-*` directory whose canonical origin Matrix lives under
+/// a configured project root. An origin Matrix or the Root Agent is never a
+/// lockable replica target, and no client-supplied target list is accepted.
+fn validate_selection_anchor(
+    settings: &AppSettings,
+    target_replica_path: &Path,
+) -> Result<(PathBuf, PathBuf), String> {
+    let target_replica = canonical_real_dir(target_replica_path, "target replica")?;
+    validate_wg_replica_path(&target_replica)?;
+    let validated = crate::config::coding_agent_profiles::validate_profile_selection_agent_path(
+        settings,
+        &target_replica,
+    )?;
+    let is_replica = validated
+        .launch_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("__agent_"));
+    if !is_replica {
+        return Err(format!(
+            "Selection lock target '{}' is not a Room replica",
+            validated.launch_path.display()
+        ));
+    }
+    Ok((validated.launch_path, validated.origin_matrix_dir))
+}
+
 fn enumerate_profile_assignment_targets(
     settings: &AppSettings,
     target_replica_path: &Path,
     scope: &ProfileAssignmentScope,
     sessions: &[SessionInfo],
 ) -> Result<ProfileTargetEnumeration, String> {
-    let target_replica = canonical_real_dir(target_replica_path, "target replica")?;
-    validate_wg_replica_path(&target_replica)?;
-    let (_target_config, target_identity) =
-        crate::config::replica_identity::read_wg_replica_config_read_only(&target_replica)?;
-    let mut warnings = Vec::new();
-    let mut candidate_dirs = Vec::new();
+    let (anchor_dir, anchor_matrix_dir) = validate_selection_anchor(settings, target_replica_path)?;
+    let mut candidate_dirs = CandidateDirs::new();
     match scope {
-        ProfileAssignmentScope::Replica => candidate_dirs.push(target_replica.clone()),
+        ProfileAssignmentScope::Replica => candidate_dirs.dirs.push(anchor_dir.clone()),
         ProfileAssignmentScope::Workgroup => {
-            let wg_dir = target_replica
+            let room_dir = anchor_dir
                 .parent()
                 .ok_or_else(|| "Target replica has no room parent".to_string())?;
-            collect_replica_dirs_in_workgroup(wg_dir, &mut candidate_dirs)?;
+            collect_replica_dirs_in_workgroup(room_dir, &mut candidate_dirs);
         }
         ProfileAssignmentScope::Kind => {
             for ac_root in crate::config::coding_agent_profiles::configured_ac_roots(settings) {
-                collect_kind_replica_dirs(&ac_root, &mut candidate_dirs)?;
+                collect_kind_replica_dirs(&ac_root, &mut candidate_dirs);
             }
         }
     }
+    let mut warnings = candidate_dirs.warnings;
+    let mut counts_complete = candidate_dirs.complete;
 
+    let anchor_matrix_key = canonical_compare_key(&anchor_matrix_dir);
     let live_by_cwd = live_sessions_by_cwd(sessions);
     let mut seen = BTreeSet::new();
-    let mut targets = Vec::new();
-    for candidate in candidate_dirs {
+    let mut candidates = Vec::new();
+
+    // The anchor always belongs to its own scope; the walk dedupes against it.
+    let anchor_state =
+        crate::config::coding_agent_profiles::read_replica_selection_state(&anchor_dir);
+    let (anchor_config, anchor_identity) =
+        crate::config::replica_identity::read_wg_replica_config_read_only(&anchor_dir)
+            .map_err(|e| format!("Target replica '{}': {}", anchor_dir.display(), e))?;
+    let _ = anchor_config;
+    seen.insert(canonical_compare_key(&anchor_dir));
+    candidates.push(ProfileCandidate {
+        target: build_profile_assignment_target(
+            &anchor_dir,
+            &anchor_identity,
+            &anchor_state,
+            &live_by_cwd,
+        ),
+        matrix_dir: anchor_identity.matrix_dir,
+    });
+
+    for candidate in candidate_dirs.dirs {
         let Ok(replica_dir) = canonical_real_dir(&candidate, "candidate replica") else {
             warnings.push(format!(
                 "Skipping unreadable replica '{}'",
                 candidate.display()
             ));
+            counts_complete = false;
             continue;
         };
         let key = canonical_compare_key(&replica_dir);
         if !seen.insert(key) {
             continue;
         }
-        let Ok((_, identity)) =
+        let Ok((_config, identity)) =
             crate::config::replica_identity::read_wg_replica_config_read_only(&replica_dir)
         else {
+            // #1941 - an unprovable identity inside the scope means membership
+            // cannot be established: keep the diagnostic visible and refuse to
+            // certify a scope total for it.
             warnings.push(format!(
                 "Skipping invalid replica '{}'",
                 replica_dir.display()
             ));
+            counts_complete = false;
             continue;
         };
         if *scope == ProfileAssignmentScope::Kind
-            && canonical_compare_key(&identity.matrix_dir)
-                != canonical_compare_key(&target_identity.matrix_dir)
+            && canonical_compare_key(&identity.matrix_dir) != anchor_matrix_key
         {
+            // Homonymous matrices in other projects stay excluded: Kind means
+            // the canonical origin Matrix, not the directory name.
             continue;
         }
-        let target = build_profile_assignment_target(&replica_dir, &identity, &live_by_cwd);
-        targets.push(target);
+        let state =
+            crate::config::coding_agent_profiles::read_replica_selection_state(&replica_dir);
+        let target = build_profile_assignment_target(&replica_dir, &identity, &state, &live_by_cwd);
+        candidates.push(ProfileCandidate {
+            target,
+            matrix_dir: identity.matrix_dir,
+        });
     }
-    targets.sort_by(|a, b| {
-        a.workgroup_name
-            .cmp(&b.workgroup_name)
-            .then_with(|| a.replica_name.cmp(&b.replica_name))
-            .then_with(|| a.replica_path.cmp(&b.replica_path))
+    candidates.sort_by(|a, b| {
+        a.target
+            .workgroup_name
+            .cmp(&b.target.workgroup_name)
+            .then_with(|| a.target.replica_name.cmp(&b.target.replica_name))
+            .then_with(|| a.target.replica_path.cmp(&b.target.replica_path))
     });
-    let canonical_target_paths = targets
-        .iter()
-        .map(|target| canonical_compare_key(Path::new(&target.replica_path)))
-        .collect();
     Ok(ProfileTargetEnumeration {
-        targets,
-        canonical_target_paths,
+        anchor_dir,
+        anchor_matrix_dir,
+        candidates,
         warnings,
+        counts_complete,
     })
 }
 
@@ -1623,30 +2026,81 @@ fn validate_wg_replica_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn collect_replica_dirs_in_workgroup(wg_dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(wg_dir)
-        .map_err(|e| format!("Failed to read room '{}': {}", wg_dir.display(), e))?;
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
+fn collect_replica_dirs_in_workgroup(wg_dir: &Path, out: &mut CandidateDirs) {
+    let entries = match std::fs::read_dir(wg_dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            out.mark_incomplete(format!("Failed to read room '{}': {}", wg_dir.display(), e));
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                out.mark_incomplete(format!(
+                    "Failed to read an entry in room '{}': {}",
+                    wg_dir.display(),
+                    e
+                ));
+                continue;
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(e) => {
+                out.mark_incomplete(format!(
+                    "Failed to inspect an entry in room '{}': {}",
+                    wg_dir.display(),
+                    e
+                ));
+                continue;
+            }
         };
         if !file_type.is_dir() {
             continue;
         }
         let name = entry.file_name();
         if name.to_string_lossy().starts_with("__agent_") {
-            out.push(entry.path());
+            out.dirs.push(entry.path());
         }
     }
-    Ok(())
 }
 
-fn collect_kind_replica_dirs(ac_root: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(ac_root)
-        .map_err(|e| format!("Failed to read workspace '{}': {}", ac_root.display(), e))?;
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
+fn collect_kind_replica_dirs(ac_root: &Path, out: &mut CandidateDirs) {
+    let entries = match std::fs::read_dir(ac_root) {
+        Ok(entries) => entries,
+        Err(e) => {
+            out.mark_incomplete(format!(
+                "Failed to read workspace '{}': {}",
+                ac_root.display(),
+                e
+            ));
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                out.mark_incomplete(format!(
+                    "Failed to read an entry in workspace '{}': {}",
+                    ac_root.display(),
+                    e
+                ));
+                continue;
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(e) => {
+                out.mark_incomplete(format!(
+                    "Failed to inspect an entry in workspace '{}': {}",
+                    ac_root.display(),
+                    e
+                ));
+                continue;
+            }
         };
         if !file_type.is_dir()
             || !crate::config::entity_prefix::has_entity_prefix(
@@ -1655,9 +2109,8 @@ fn collect_kind_replica_dirs(ac_root: &Path, out: &mut Vec<PathBuf>) -> Result<(
         {
             continue;
         }
-        collect_replica_dirs_in_workgroup(&entry.path(), out)?;
+        collect_replica_dirs_in_workgroup(&entry.path(), out);
     }
-    Ok(())
 }
 
 fn live_sessions_by_cwd(sessions: &[SessionInfo]) -> BTreeMap<String, Vec<String>> {
@@ -1679,6 +2132,7 @@ fn live_sessions_by_cwd(sessions: &[SessionInfo]) -> BTreeMap<String, Vec<String
 fn build_profile_assignment_target(
     replica_dir: &Path,
     identity: &crate::config::replica_identity::WgReplicaIdentity,
+    state: &crate::config::coding_agent_profiles::ReplicaSelectionState,
     live_by_cwd: &BTreeMap<String, Vec<String>>,
 ) -> ProfileAssignmentTarget {
     let wg_dir = replica_dir.parent().unwrap_or_else(|| Path::new(""));
@@ -1699,6 +2153,7 @@ fn build_profile_assignment_target(
         .and_then(|project| project.file_name())
         .and_then(|name| name.to_str())
         .map(str::to_string);
+    let (saved_pair, selection_state, selection_error) = target_selection_wire(state);
     ProfileAssignmentTarget {
         workgroup_name,
         workgroup_path: crate::path_utils::path_to_string_without_windows_verbatim_prefix(wg_dir),
@@ -1712,21 +2167,859 @@ fn build_profile_assignment_target(
             .get(&canonical_compare_key(replica_dir))
             .cloned()
             .unwrap_or_default(),
+        saved_pair,
+        selection_state,
+        selection_error,
     }
 }
 
-fn profile_assignment_fingerprint(
-    coding_agent_id: &str,
-    profile: &str,
+/// #1941 - strict state to wire fields. An invalid state carries its diagnostic
+/// and never a synthesized `selectionLocked: false`.
+fn target_selection_wire(
+    state: &crate::config::coding_agent_profiles::ReplicaSelectionState,
+) -> (Option<SavedPair>, SelectionState, Option<String>) {
+    use crate::config::coding_agent_profiles::ReplicaSelectionState;
+    match state {
+        ReplicaSelectionState::Unlocked { pair, .. } => (
+            pair.as_ref().map(saved_pair_wire),
+            SelectionState::Unlocked,
+            None,
+        ),
+        ReplicaSelectionState::Locked { pair, .. } => {
+            (Some(saved_pair_wire(pair)), SelectionState::Locked, None)
+        }
+        ReplicaSelectionState::Invalid { diagnostic } => {
+            (None, SelectionState::Invalid, Some(diagnostic.clone()))
+        }
+    }
+}
+
+fn saved_pair_wire(pair: &crate::config::coding_agent_profiles::ReplicaSelectionPair) -> SavedPair {
+    SavedPair {
+        coding_agent_id: Some(pair.coding_agent_id.clone()),
+        requested_profile: Some(pair.requested_profile.clone()),
+    }
+}
+
+fn target_pair(
+    target: &ProfileAssignmentTarget,
+) -> Option<crate::config::coding_agent_profiles::ReplicaSelectionPair> {
+    let pair = target.saved_pair.as_ref()?;
+    match (&pair.coding_agent_id, &pair.requested_profile) {
+        (Some(coding_agent_id), Some(requested_profile)) => {
+            Some(crate::config::coding_agent_profiles::ReplicaSelectionPair {
+                coding_agent_id: coding_agent_id.clone(),
+                requested_profile: requested_profile.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+// ── #1941 selection fingerprints ───────────────────────────────────────────
+//
+// Fingerprints are lowercase SHA-256 of a typed serde tuple with a schema tag.
+// The complete candidate list (pair, flag, identity state and the live-session
+// provider/profile identity) plus the eligible membership are part of the
+// tuple, so a flag, pair, membership, anchor-identity or relevant session change
+// invalidates an old approval. A conflicting bulk assign-and-lock offers one
+// hash per decision; a no-conflict operation binds decision `null`.
+
+const SELECTION_LOCK_FINGERPRINT_SCHEMA: &str = "selection-lock-v1";
+const SELECTION_DEFAULT_FINGERPRINT_SCHEMA: &str = "replica-selection-default-v1";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionFingerprintPair {
+    coding_agent_id: String,
+    requested_profile: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionFingerprintSession {
+    id: String,
+    coding_agent_id: Option<String>,
+    requested_profile: Option<String>,
+    effective_profile: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionFingerprintCandidate {
+    path: String,
+    matrix: String,
+    pair: Option<SelectionFingerprintPair>,
+    locked: bool,
+    invalid: bool,
+    live_sessions: Vec<SelectionFingerprintSession>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionAssignmentFingerprint {
+    schema: &'static str,
+    operation: &'static str,
+    anchor: String,
+    matrix: String,
+    scope: &'static str,
+    coding_agent_id: String,
+    requested_profile: String,
     restart_sessions: bool,
-    canonical_target_paths: &[String],
-) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    coding_agent_id.hash(&mut hasher);
-    profile.hash(&mut hasher);
-    restart_sessions.hash(&mut hasher);
-    canonical_target_paths.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    decision: Option<&'static str>,
+    candidates: Vec<SelectionFingerprintCandidate>,
+    eligible_paths: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionRemovalFingerprint {
+    schema: &'static str,
+    operation: &'static str,
+    anchor: String,
+    matrix: String,
+    scope: &'static str,
+    candidates: Vec<SelectionFingerprintCandidate>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionFingerprintDefault {
+    coding_agent_id: String,
+    requested_profile: String,
+    selection_locked: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionDefaultFingerprint {
+    schema: &'static str,
+    matrix: String,
+    default: Option<SelectionFingerprintDefault>,
+}
+
+fn sha256_hex<T: serde::Serialize>(value: &T) -> Result<String, String> {
+    let serialized = serde_json::to_vec(value)
+        .map_err(|e| format!("Failed to serialize selection fingerprint: {e}"))?;
+    Ok(Sha256::digest(&serialized)
+        .iter()
+        .map(|byte| format!("{:02x}", byte))
+        .collect())
+}
+
+fn selection_scope_wire(scope: &ProfileAssignmentScope) -> &'static str {
+    match scope {
+        ProfileAssignmentScope::Replica => "replica",
+        ProfileAssignmentScope::Kind => "kind",
+        ProfileAssignmentScope::Workgroup => "workgroup",
+    }
+}
+
+fn conflict_decision_wire(decision: ConflictDecision) -> &'static str {
+    match decision {
+        ConflictDecision::UnlockedOnly => "unlockedOnly",
+        ConflictDecision::ForceReviewed => "forceReviewed",
+    }
+}
+
+fn live_session_identities(
+    sessions: &[SessionInfo],
+) -> BTreeMap<String, SelectionFingerprintSession> {
+    sessions
+        .iter()
+        .map(|session| {
+            (
+                session.id.clone(),
+                SelectionFingerprintSession {
+                    id: session.id.clone(),
+                    coding_agent_id: session.agent_id.clone(),
+                    requested_profile: session.requested_profile.clone(),
+                    effective_profile: session.effective_profile.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn fingerprint_candidates(
+    enumeration: &ProfileTargetEnumeration,
+    sessions: &[SessionInfo],
+) -> Vec<SelectionFingerprintCandidate> {
+    let live = live_session_identities(sessions);
+    let mut candidates: Vec<SelectionFingerprintCandidate> = enumeration
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let target = &candidate.target;
+            let mut live_sessions: Vec<SelectionFingerprintSession> = target
+                .live_session_ids
+                .iter()
+                .filter_map(|id| live.get(id).cloned())
+                .collect();
+            live_sessions.sort_by(|a, b| a.id.cmp(&b.id));
+            SelectionFingerprintCandidate {
+                path: canonical_compare_key(Path::new(&target.replica_path)),
+                matrix: canonical_compare_key(&candidate.matrix_dir),
+                pair: target_pair(target).map(|pair| SelectionFingerprintPair {
+                    coding_agent_id: pair.coding_agent_id,
+                    requested_profile: pair.requested_profile,
+                }),
+                locked: target.selection_state == SelectionState::Locked,
+                invalid: target.selection_state == SelectionState::Invalid,
+                live_sessions,
+            }
+        })
+        .collect();
+    candidates.sort_by(|a, b| a.path.cmp(&b.path));
+    candidates
+}
+
+struct EligibilitySets {
+    unlocked_paths: Vec<String>,
+    valid_paths: Vec<String>,
+}
+
+fn eligibility_sets(enumeration: &ProfileTargetEnumeration) -> EligibilitySets {
+    let mut unlocked_paths = Vec::new();
+    let mut valid_paths = Vec::new();
+    for candidate in &enumeration.candidates {
+        let path = canonical_compare_key(Path::new(&candidate.target.replica_path));
+        match candidate.target.selection_state {
+            SelectionState::Invalid => {}
+            SelectionState::Unlocked => {
+                unlocked_paths.push(path.clone());
+                valid_paths.push(path);
+            }
+            SelectionState::Locked => valid_paths.push(path),
+        }
+    }
+    unlocked_paths.sort();
+    valid_paths.sort();
+    EligibilitySets {
+        unlocked_paths,
+        valid_paths,
+    }
+}
+
+fn live_session_count_for(
+    enumeration: &ProfileTargetEnumeration,
+    eligible_paths: &[String],
+) -> usize {
+    enumeration
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            eligible_paths.contains(&canonical_compare_key(Path::new(
+                &candidate.target.replica_path,
+            )))
+        })
+        .map(|candidate| candidate.target.live_session_ids.len())
+        .sum()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assignment_fingerprint(
+    enumeration: &ProfileTargetEnumeration,
+    sessions: &[SessionInfo],
+    scope: &ProfileAssignmentScope,
+    operation: &'static str,
+    coding_agent_id: &str,
+    requested_profile: &str,
+    restart_sessions: bool,
+    decision: Option<ConflictDecision>,
+    eligible_paths: &[String],
+) -> Result<String, String> {
+    let tuple = SelectionAssignmentFingerprint {
+        schema: SELECTION_LOCK_FINGERPRINT_SCHEMA,
+        operation,
+        anchor: canonical_compare_key(&enumeration.anchor_dir),
+        matrix: canonical_compare_key(&enumeration.anchor_matrix_dir),
+        scope: selection_scope_wire(scope),
+        coding_agent_id: coding_agent_id.to_string(),
+        requested_profile: requested_profile.to_string(),
+        restart_sessions,
+        decision: decision.map(conflict_decision_wire),
+        candidates: fingerprint_candidates(enumeration, sessions),
+        eligible_paths: eligible_paths.to_vec(),
+    };
+    sha256_hex(&tuple)
+}
+
+/// #1941 - a removal fingerprint binds only the operation, scope, anchor and
+/// each candidate's pair/flag/identity state; removal has no session operation.
+fn removal_fingerprint(
+    enumeration: &ProfileTargetEnumeration,
+    scope: &ProfileAssignmentScope,
+) -> Result<String, String> {
+    let tuple = SelectionRemovalFingerprint {
+        schema: SELECTION_LOCK_FINGERPRINT_SCHEMA,
+        operation: "unlock",
+        anchor: canonical_compare_key(&enumeration.anchor_dir),
+        matrix: canonical_compare_key(&enumeration.anchor_matrix_dir),
+        scope: selection_scope_wire(scope),
+        candidates: fingerprint_candidates(enumeration, &[]),
+    };
+    sha256_hex(&tuple)
+}
+
+fn selection_default_fingerprint(
+    matrix_dir: &Path,
+    default: Option<&crate::config::coding_agent_profiles::ReplicaSelectionDefault>,
+) -> Result<String, String> {
+    let tuple = SelectionDefaultFingerprint {
+        schema: SELECTION_DEFAULT_FINGERPRINT_SCHEMA,
+        matrix: canonical_compare_key(matrix_dir),
+        default: default.map(|default| SelectionFingerprintDefault {
+            coding_agent_id: default.coding_agent_id.clone(),
+            requested_profile: default.requested_profile.clone(),
+            selection_locked: default.selection_locked,
+        }),
+    };
+    sha256_hex(&tuple)
+}
+
+struct AssignmentSnapshot {
+    direct_fingerprint: String,
+    decisions: Option<SelectionDecisions>,
+    conflict_count: usize,
+    protected_count: usize,
+    invalid_count: usize,
+    top_fingerprint: String,
+    top_eligible_count: usize,
+    top_live_session_count: usize,
+    eligibility: EligibilitySets,
+}
+
+fn assignment_snapshot(
+    enumeration: &ProfileTargetEnumeration,
+    sessions: &[SessionInfo],
+    scope: &ProfileAssignmentScope,
+    mode: AssignmentMode,
+    coding_agent_id: &str,
+    requested_profile: &str,
+    restart_sessions: bool,
+) -> Result<AssignmentSnapshot, String> {
+    let eligibility = eligibility_sets(enumeration);
+    let protected_count = enumeration
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.target.selection_state == SelectionState::Locked)
+        .count();
+    let invalid_count = enumeration
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.target.selection_state == SelectionState::Invalid)
+        .count();
+    let bulk = *scope != ProfileAssignmentScope::Replica;
+    let conflict_count = if bulk && mode == AssignmentMode::AssignAndLock {
+        protected_count
+    } else {
+        0
+    };
+    let operation = match mode {
+        AssignmentMode::Ordinary => "assign",
+        AssignmentMode::AssignAndLock => "assignAndLock",
+    };
+    // A deliberate replica target counts whenever it is valid; a bulk ordinary
+    // assignment is actionable only for unlocked replicas.
+    let direct_eligible = if *scope == ProfileAssignmentScope::Replica {
+        eligibility.valid_paths.clone()
+    } else {
+        eligibility.unlocked_paths.clone()
+    };
+    let direct_fingerprint = assignment_fingerprint(
+        enumeration,
+        sessions,
+        scope,
+        operation,
+        coding_agent_id,
+        requested_profile,
+        restart_sessions,
+        None,
+        &direct_eligible,
+    )?;
+    let decisions = if conflict_count > 0 {
+        let unlocked_only = SelectionDecisionProjection {
+            fingerprint: assignment_fingerprint(
+                enumeration,
+                sessions,
+                scope,
+                operation,
+                coding_agent_id,
+                requested_profile,
+                restart_sessions,
+                Some(ConflictDecision::UnlockedOnly),
+                &eligibility.unlocked_paths,
+            )?,
+            eligible_paths: eligibility.unlocked_paths.clone(),
+            eligible_count: eligibility.unlocked_paths.len(),
+            skipped_locked_count: protected_count,
+            live_session_count: live_session_count_for(enumeration, &eligibility.unlocked_paths),
+        };
+        let force_reviewed = SelectionDecisionProjection {
+            fingerprint: assignment_fingerprint(
+                enumeration,
+                sessions,
+                scope,
+                operation,
+                coding_agent_id,
+                requested_profile,
+                restart_sessions,
+                Some(ConflictDecision::ForceReviewed),
+                &eligibility.valid_paths,
+            )?,
+            eligible_paths: eligibility.valid_paths.clone(),
+            eligible_count: eligibility.valid_paths.len(),
+            skipped_locked_count: 0,
+            live_session_count: live_session_count_for(enumeration, &eligibility.valid_paths),
+        };
+        Some(SelectionDecisions {
+            unlocked_only,
+            force_reviewed,
+        })
+    } else {
+        None
+    };
+    let (top_fingerprint, top_eligible_paths) = match &decisions {
+        Some(decisions) => (
+            decisions.unlocked_only.fingerprint.clone(),
+            decisions.unlocked_only.eligible_paths.clone(),
+        ),
+        None => (direct_fingerprint.clone(), direct_eligible),
+    };
+    let top_live_session_count = live_session_count_for(enumeration, &top_eligible_paths);
+    Ok(AssignmentSnapshot {
+        direct_fingerprint,
+        decisions,
+        conflict_count,
+        protected_count,
+        invalid_count,
+        top_fingerprint,
+        top_eligible_count: top_eligible_paths.len(),
+        top_live_session_count,
+        eligibility,
+    })
+}
+
+fn resolve_assignment_conflict_decision(
+    snapshot: &AssignmentSnapshot,
+    requested: Option<ConflictDecision>,
+) -> Result<Option<ConflictDecision>, String> {
+    if snapshot.conflict_count == 0 {
+        if requested.is_some() {
+            return Err(
+                "conflictDecision is not required because no protected replica is in scope"
+                    .to_string(),
+            );
+        }
+        return Ok(None);
+    }
+    Ok(Some(requested.ok_or_else(|| {
+        "conflictDecisionRequired: protected replicas are in scope; choose unlockedOnly or forceReviewed"
+            .to_string()
+    })?))
+}
+
+fn assignment_expected_fingerprint(
+    snapshot: &AssignmentSnapshot,
+    decision: Option<ConflictDecision>,
+) -> Result<String, String> {
+    match decision {
+        None => Ok(snapshot.direct_fingerprint.clone()),
+        Some(ConflictDecision::UnlockedOnly) => snapshot
+            .decisions
+            .as_ref()
+            .map(|decisions| decisions.unlocked_only.fingerprint.clone())
+            .ok_or_else(|| "selection decision projection is missing".to_string()),
+        Some(ConflictDecision::ForceReviewed) => snapshot
+            .decisions
+            .as_ref()
+            .map(|decisions| decisions.force_reviewed.fingerprint.clone())
+            .ok_or_else(|| "selection decision projection is missing".to_string()),
+    }
+}
+
+fn assignment_write_paths(
+    snapshot: &AssignmentSnapshot,
+    scope: &ProfileAssignmentScope,
+    decision: Option<ConflictDecision>,
+) -> Vec<String> {
+    if *scope == ProfileAssignmentScope::Replica
+        || decision == Some(ConflictDecision::ForceReviewed)
+    {
+        snapshot.eligibility.valid_paths.clone()
+    } else {
+        snapshot.eligibility.unlocked_paths.clone()
+    }
+}
+
+fn assignment_write_intent(
+    scope: &ProfileAssignmentScope,
+    mode: AssignmentMode,
+    decision: Option<ConflictDecision>,
+) -> crate::config::coding_agent_profiles::SelectionWriteIntent {
+    use crate::config::coding_agent_profiles::SelectionWriteIntent;
+    match (scope, mode) {
+        (ProfileAssignmentScope::Replica, AssignmentMode::Ordinary) => {
+            SelectionWriteIntent::Individual
+        }
+        (ProfileAssignmentScope::Replica, AssignmentMode::AssignAndLock) => {
+            SelectionWriteIntent::IndividualAssignLock
+        }
+        (_, AssignmentMode::Ordinary) => SelectionWriteIntent::BulkOrdinary,
+        (_, AssignmentMode::AssignAndLock) => match decision {
+            Some(ConflictDecision::ForceReviewed) => SelectionWriteIntent::BulkForceReviewed,
+            _ => SelectionWriteIntent::BulkAssignLockUnlockedOnly,
+        },
+    }
+}
+
+/// #1941 - classify a guarded-write error into the wire error vocabulary while
+/// preserving the original message and paths.
+fn selection_error_code(message: &str) -> &'static str {
+    if message.starts_with("stale replica selection") {
+        "stalePreview"
+    } else if message.starts_with("invalid replica selection") {
+        "invalidSelectionState"
+    } else if message.contains("configLockTimeout") {
+        "configLockTimeout"
+    } else {
+        "configWriteFailed"
+    }
+}
+
+/// #1941 - count the protected replicas left after an operation. `None` means
+/// the total cannot be established (incomplete membership or an invalid state),
+/// never a false zero.
+fn refresh_locked_count(enumeration: &ProfileTargetEnumeration) -> Option<usize> {
+    if !enumeration.counts_complete {
+        return None;
+    }
+    let mut count = 0;
+    for candidate in &enumeration.candidates {
+        match crate::config::coding_agent_profiles::read_replica_selection_state(Path::new(
+            &candidate.target.replica_path,
+        )) {
+            crate::config::coding_agent_profiles::ReplicaSelectionState::Unlocked { .. } => {}
+            crate::config::coding_agent_profiles::ReplicaSelectionState::Locked { .. } => {
+                count += 1
+            }
+            crate::config::coding_agent_profiles::ReplicaSelectionState::Invalid { .. } => {
+                return None
+            }
+        }
+    }
+    Some(count)
+}
+
+// ── #1941 selection-lock removal commands ────────────────────────────────
+
+#[tauri::command]
+pub async fn preview_selection_lock_removal(
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    settings: State<'_, SettingsState>,
+    request: PreviewSelectionLockRemovalRequest,
+) -> Result<PreviewSelectionLockRemovalResult, String> {
+    let session_mgr = Arc::clone(session_mgr.inner());
+    let settings = settings.inner().clone();
+    crate::session::selection::run_owned_selection_operation(move || async move {
+        preview_selection_lock_removal_inner(&session_mgr, &settings, request).await
+    })
+    .await
+}
+
+/// Enumerate the removal candidates and compute the fingerprint the client
+/// echoes back on apply. Reads only; the caller owns the #1940 turn.
+pub(crate) async fn preview_selection_lock_removal_inner(
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    settings: &SettingsState,
+    request: PreviewSelectionLockRemovalRequest,
+) -> Result<PreviewSelectionLockRemovalResult, String> {
+    let settings_snapshot = settings.read().await.clone();
+    let sessions = { session_mgr.read().await.list_sessions().await };
+    let enumeration = enumerate_profile_assignment_targets(
+        &settings_snapshot,
+        Path::new(&request.target_replica_path),
+        &request.scope,
+        &sessions,
+    )?;
+    let target_fingerprint = removal_fingerprint(&enumeration, &request.scope)?;
+    let protected_count = enumeration
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.target.selection_state == SelectionState::Locked)
+        .count();
+    let already_unlocked_count = enumeration
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.target.selection_state == SelectionState::Unlocked)
+        .count();
+    let invalid_count = enumeration
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.target.selection_state == SelectionState::Invalid)
+        .count();
+    Ok(PreviewSelectionLockRemovalResult {
+        scope: request.scope,
+        target_fingerprint,
+        candidate_count: enumeration.candidates.len(),
+        counts_complete: enumeration.counts_complete,
+        protected_count,
+        already_unlocked_count,
+        invalid_count,
+        targets: enumeration.targets(),
+        warnings: enumeration.warnings,
+    })
+}
+
+#[tauri::command]
+pub async fn apply_selection_lock_removal<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    settings: State<'_, SettingsState>,
+    request: ApplySelectionLockRemovalRequest,
+) -> Result<ApplySelectionLockRemovalResult, String> {
+    // #1940/#1941 - the whole removal (prevalidation re-read, every guarded
+    // unlock and the final refresh) is one owned operation; the event is emitted
+    // before the turn is released, so no later bulk can restart behind it.
+    let app_handle = app.clone();
+    let settings = settings.inner().clone();
+    crate::session::selection::run_owned_selection_operation(move || {
+        let app = app_handle.clone();
+        async move {
+            let (result, payload) = apply_selection_lock_removal_inner(&settings, request).await?;
+            let _ = app.emit("coding_agent_profile_selection_updated", payload);
+            Ok(result)
+        }
+    })
+    .await
+}
+
+/// Remove selection locks for the enumerated candidates. Already-unlocked
+/// targets are classified from the validated read and never rewritten; only
+/// protected candidates reach `clear_replica_selection_lock`, each behind its
+/// own per-file CAS. Removal never assigns and never requests a restart.
+pub(crate) async fn apply_selection_lock_removal_inner(
+    settings: &SettingsState,
+    request: ApplySelectionLockRemovalRequest,
+) -> Result<(ApplySelectionLockRemovalResult, serde_json::Value), String> {
+    let settings_snapshot = settings.read().await.clone();
+    let enumeration = enumerate_profile_assignment_targets(
+        &settings_snapshot,
+        Path::new(&request.target_replica_path),
+        &request.scope,
+        // Removal has no session operation, so live-session identity is not part
+        // of its fingerprint and no session state is read.
+        &[],
+    )?;
+    let target_fingerprint = removal_fingerprint(&enumeration, &request.scope)?;
+    if request.confirmed_target_fingerprint != target_fingerprint {
+        return Err(
+            "stalePreview: Target selection changed. Rerun preview before removing selection locks."
+                .to_string(),
+        );
+    }
+    let mut removed_replica_paths = Vec::new();
+    let mut already_unlocked_paths = Vec::new();
+    let mut failed_replica_paths = Vec::new();
+    let mut errors = Vec::new();
+    for candidate in &enumeration.candidates {
+        let target = &candidate.target;
+        match target.selection_state {
+            SelectionState::Invalid => {
+                errors.push(ProfileAssignmentError {
+                    code: "invalidSelectionState".to_string(),
+                    message: target.selection_error.clone().unwrap_or_else(|| {
+                        format!(
+                            "Replica '{}' has an invalid selection state",
+                            target.replica_path
+                        )
+                    }),
+                    session_ids: target.live_session_ids.clone(),
+                    replica_paths: vec![target.replica_path.clone()],
+                });
+            }
+            SelectionState::Unlocked => {
+                // #1941 - classified from the validated read; the mutation
+                // funnel is deliberately NOT called for this target, so no
+                // config publish, sidecar or restart can happen for it.
+                already_unlocked_paths.push(target.replica_path.clone());
+            }
+            SelectionState::Locked => {
+                let expected = crate::config::coding_agent_profiles::ReplicaSelectionExpectation {
+                    identity: target.identity_path.clone(),
+                    pair: target_pair(target),
+                    locked: true,
+                };
+                match crate::config::coding_agent_profiles::clear_replica_selection_lock(
+                    &settings_snapshot,
+                    Path::new(&target.replica_path),
+                    &expected,
+                ) {
+                    Ok(outcome) if outcome.changed => {
+                        removed_replica_paths.push(target.replica_path.clone())
+                    }
+                    Ok(_unchanged) => already_unlocked_paths.push(target.replica_path.clone()),
+                    Err(e) => {
+                        failed_replica_paths.push(target.replica_path.clone());
+                        errors.push(ProfileAssignmentError {
+                            code: selection_error_code(&e).to_string(),
+                            message: e,
+                            session_ids: target.live_session_ids.clone(),
+                            replica_paths: vec![target.replica_path.clone()],
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let remaining_protected_count = refresh_locked_count(&enumeration);
+    let invalid_count = enumeration
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.target.selection_state == SelectionState::Invalid)
+        .count();
+    let removed_count = removed_replica_paths.len();
+    let result = ApplySelectionLockRemovalResult {
+        scope: request.scope.clone(),
+        target_fingerprint,
+        removed_count,
+        removed_replica_paths,
+        already_unlocked_paths,
+        failed_replica_paths,
+        remaining_protected_count,
+        candidate_count: enumeration.candidates.len(),
+        counts_complete: enumeration.counts_complete,
+        invalid_count,
+        errors,
+        warnings: enumeration.warnings.clone(),
+    };
+    let payload = serde_json::json!({
+        "scope": request.scope,
+        "operation": "unlock",
+        "affectedPaths": &result.removed_replica_paths,
+        "removedCount": result.removed_count,
+    });
+    Ok((result, payload))
+}
+
+// ── #1941 Matrix selection default commands ──────────────────────────────
+
+#[tauri::command]
+pub async fn get_replica_selection_default(
+    settings: State<'_, SettingsState>,
+    request: GetReplicaSelectionDefaultRequest,
+) -> Result<ReplicaSelectionDefaultResult, String> {
+    let settings = settings.inner().clone();
+    crate::session::selection::run_owned_selection_operation(move || async move {
+        get_replica_selection_default_inner(&settings, request).await
+    })
+    .await
+}
+
+pub(crate) async fn get_replica_selection_default_inner(
+    settings: &SettingsState,
+    request: GetReplicaSelectionDefaultRequest,
+) -> Result<ReplicaSelectionDefaultResult, String> {
+    let settings_snapshot = settings.read().await.clone();
+    let (replica_dir, matrix_dir) =
+        validate_selection_anchor(&settings_snapshot, Path::new(&request.target_replica_path))?;
+    let default =
+        crate::config::coding_agent_profiles::read_replica_selection_default(&matrix_dir)?;
+    let default_wire = default.as_ref().map(selection_default_to_wire);
+    let default_fingerprint = selection_default_fingerprint(&matrix_dir, default.as_ref())?;
+    Ok(ReplicaSelectionDefaultResult {
+        target_replica_path: crate::path_utils::path_to_string_without_windows_verbatim_prefix(
+            &replica_dir,
+        ),
+        matrix_path: crate::path_utils::path_to_string_without_windows_verbatim_prefix(&matrix_dir),
+        default: default_wire,
+        default_fingerprint,
+        warnings: Vec::new(),
+    })
+}
+
+#[tauri::command]
+pub async fn set_replica_selection_default<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    settings: State<'_, SettingsState>,
+    request: SetReplicaSelectionDefaultRequest,
+) -> Result<ReplicaSelectionDefaultResult, String> {
+    let app_handle = app.clone();
+    let settings = settings.inner().clone();
+    crate::session::selection::run_owned_selection_operation(move || {
+        let app = app_handle.clone();
+        async move {
+            let (result, payload) = set_replica_selection_default_inner(&settings, request).await?;
+            let _ = app.emit("coding_agent_profile_selection_updated", payload);
+            Ok(result)
+        }
+    })
+    .await
+}
+
+pub(crate) async fn set_replica_selection_default_inner(
+    settings: &SettingsState,
+    request: SetReplicaSelectionDefaultRequest,
+) -> Result<(ReplicaSelectionDefaultResult, serde_json::Value), String> {
+    let settings_snapshot = settings.read().await.clone();
+    validate_profile_assignment_request(
+        &settings_snapshot,
+        &request.coding_agent_id,
+        &request.requested_profile,
+    )?;
+    let normalized_profile = normalize_profile_letter_for_assignment(&request.requested_profile)?;
+    let (replica_dir, matrix_dir) =
+        validate_selection_anchor(&settings_snapshot, Path::new(&request.target_replica_path))?;
+    // #1941 - the fingerprint binds the canonical Matrix plus the PRIOR default
+    // (including absence), so a stale window cannot silently overwrite a default
+    // published by another window; the write repeats the CAS inside its lock.
+    let prior = crate::config::coding_agent_profiles::read_replica_selection_default(&matrix_dir)?;
+    let prior_fingerprint = selection_default_fingerprint(&matrix_dir, prior.as_ref())?;
+    if request.confirmed_default_fingerprint != prior_fingerprint {
+        return Err(
+            "stalePreview: The Matrix selection default changed. Rerun the read before saving."
+                .to_string(),
+        );
+    }
+    let default = crate::config::coding_agent_profiles::ReplicaSelectionDefault {
+        coding_agent_id: request.coding_agent_id.clone(),
+        requested_profile: normalized_profile,
+        selection_locked: request.selection_locked,
+    };
+    crate::config::coding_agent_profiles::write_replica_selection_default(
+        &matrix_dir,
+        &default,
+        prior.as_ref(),
+    )?;
+    let default_wire = selection_default_to_wire(&default);
+    let default_fingerprint = selection_default_fingerprint(&matrix_dir, Some(&default))?;
+    let result = ReplicaSelectionDefaultResult {
+        target_replica_path: crate::path_utils::path_to_string_without_windows_verbatim_prefix(
+            &replica_dir,
+        ),
+        matrix_path: crate::path_utils::path_to_string_without_windows_verbatim_prefix(&matrix_dir),
+        default: Some(default_wire.clone()),
+        default_fingerprint,
+        warnings: Vec::new(),
+    };
+    let payload = serde_json::json!({
+        "scope": "default",
+        "operation": "default",
+        "agentPath": &result.matrix_path,
+        "affectedPaths": [],
+        "default": default_wire,
+    });
+    Ok((result, payload))
+}
+
+fn selection_default_to_wire(
+    default: &crate::config::coding_agent_profiles::ReplicaSelectionDefault,
+) -> SelectionDefault {
+    SelectionDefault {
+        coding_agent_id: default.coding_agent_id.clone(),
+        requested_profile: default.requested_profile.clone(),
+        selection_locked: default.selection_locked,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -2807,6 +4100,7 @@ mod tests {
         ApiServerHandle, ApiServerTask, WebServerHandle, WebServerLifecycle,
         WEB_SERVER_START_CANCELLED,
     };
+    use serde_json::{json, Value};
     use std::collections::{BTreeMap, HashMap, VecDeque};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::path::{Path, PathBuf};
@@ -3066,6 +4360,11 @@ mod tests {
         let target = build_profile_assignment_target(
             Path::new(r"\\?\UNC\server\share\repo\.ac\wg-1\__agent_dev"),
             &identity,
+            &crate::config::coding_agent_profiles::ReplicaSelectionState::Unlocked {
+                identity: "../../_agent_dev".to_string(),
+                pair: None,
+                warning: None,
+            },
             &live_by_cwd,
         );
 
@@ -4510,48 +5809,145 @@ mod tests {
             confirmed_target_fingerprint: confirmed_target_fingerprint
                 .map(|value| value.to_string()),
             typed_confirmation: typed_confirmation.map(|value| value.to_string()),
+            assignment_mode: super::AssignmentMode::Ordinary,
+            conflict_decision: None,
+        }
+    }
+
+    /// #1941 - a synthetic enumeration lets the fingerprint unit tests exercise
+    /// the typed tuple without a filesystem fixture.
+    fn fingerprint_enumeration(paths: &[&str]) -> super::ProfileTargetEnumeration {
+        super::ProfileTargetEnumeration {
+            anchor_dir: PathBuf::from("c:/ac/wg-1/__agent_a"),
+            anchor_matrix_dir: PathBuf::from("c:/ac/_agent_a"),
+            candidates: paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| super::ProfileCandidate {
+                    target: super::ProfileAssignmentTarget {
+                        workgroup_name: "wg-1".to_string(),
+                        workgroup_path: "c:/ac/wg-1".to_string(),
+                        replica_name: format!("agent_{index}"),
+                        replica_path: (*path).to_string(),
+                        identity_path: "../../_agent_a".to_string(),
+                        origin_project: Some("ac".to_string()),
+                        live_session_ids: Vec::new(),
+                        saved_pair: None,
+                        selection_state: super::SelectionState::Unlocked,
+                        selection_error: None,
+                    },
+                    matrix_dir: PathBuf::from("c:/ac/_agent_a"),
+                })
+                .collect(),
+            warnings: Vec::new(),
+            counts_complete: true,
         }
     }
 
     #[test]
     fn profile_assignment_fingerprint_uses_typed_fields() {
-        let targets = vec!["c:/ac/wg-1/__agent_a".to_string()];
+        let enumeration = fingerprint_enumeration(&["c:/ac/wg-1/__agent_a"]);
+        let other = fingerprint_enumeration(&["c:/ac/wg-1/__agent_b"]);
+        let eligible = vec!["c:/ac/wg-1/__agent_a".to_string()];
 
-        let ab_c = super::profile_assignment_fingerprint("ab", "C", false, &targets);
-        let a_bc = super::profile_assignment_fingerprint("a", "BC", false, &targets);
-        let restart = super::profile_assignment_fingerprint("ab", "C", true, &targets);
-        let other_targets = super::profile_assignment_fingerprint(
+        let base = super::assignment_fingerprint(
+            &enumeration,
+            &[],
+            &super::ProfileAssignmentScope::Kind,
+            "assign",
             "ab",
             "C",
             false,
+            None,
+            &eligible,
+        )
+        .expect("fingerprint");
+        let agent_bc = super::assignment_fingerprint(
+            &enumeration,
+            &[],
+            &super::ProfileAssignmentScope::Kind,
+            "assign",
+            "a",
+            "BC",
+            false,
+            None,
+            &eligible,
+        )
+        .expect("fingerprint");
+        let restart = super::assignment_fingerprint(
+            &enumeration,
+            &[],
+            &super::ProfileAssignmentScope::Kind,
+            "assign",
+            "ab",
+            "C",
+            true,
+            None,
+            &eligible,
+        )
+        .expect("fingerprint");
+        let decision = super::assignment_fingerprint(
+            &enumeration,
+            &[],
+            &super::ProfileAssignmentScope::Kind,
+            "assign",
+            "ab",
+            "C",
+            false,
+            Some(super::ConflictDecision::ForceReviewed),
+            &eligible,
+        )
+        .expect("fingerprint");
+        let other_targets = super::assignment_fingerprint(
+            &other,
+            &[],
+            &super::ProfileAssignmentScope::Kind,
+            "assign",
+            "ab",
+            "C",
+            false,
+            None,
             &["c:/ac/wg-1/__agent_b".to_string()],
-        );
+        )
+        .expect("fingerprint");
 
-        assert_ne!(ab_c, a_bc);
-        assert_ne!(ab_c, restart);
-        assert_ne!(ab_c, other_targets);
+        assert_eq!(base.len(), 64, "sha256 hex");
+        assert_eq!(base, base.to_lowercase(), "lowercase hex");
+        assert_ne!(base, agent_bc);
+        assert_ne!(base, restart);
+        assert_ne!(base, decision);
+        assert_ne!(base, other_targets);
     }
 
     #[test]
     fn profile_assignment_confirmation_hint_tracks_broad_scopes() {
         assert!(!super::profile_assignment_requires_explicit_confirmation(
-            &super::ProfileAssignmentScope::Replica
+            &super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::Ordinary
         ));
         assert!(super::profile_assignment_requires_explicit_confirmation(
-            &super::ProfileAssignmentScope::Workgroup
+            &super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::AssignAndLock
         ));
         assert!(super::profile_assignment_requires_explicit_confirmation(
-            &super::ProfileAssignmentScope::Kind
+            &super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary
+        ));
+        assert!(super::profile_assignment_requires_explicit_confirmation(
+            &super::ProfileAssignmentScope::Kind,
+            super::AssignmentMode::Ordinary
         ));
     }
 
     #[test]
     fn kind_assignment_accepts_fingerprint_without_typed_confirmation() {
-        let request =
-            profile_assignment_request(super::ProfileAssignmentScope::Kind, Some("fp-kind"), None);
-
         assert_eq!(
-            super::validate_profile_assignment_confirmation(&request, "fp-kind"),
+            super::validate_profile_assignment_confirmation(
+                &super::ProfileAssignmentScope::Kind,
+                super::AssignmentMode::Ordinary,
+                Some("fp-kind"),
+                "fp-kind",
+            ),
             Ok(())
         );
     }
@@ -4565,7 +5961,12 @@ mod tests {
         );
 
         assert_eq!(
-            super::validate_profile_assignment_confirmation(&request, "fp-kind"),
+            super::validate_profile_assignment_confirmation(
+                &request.scope,
+                request.assignment_mode,
+                request.confirmed_target_fingerprint.as_deref(),
+                "fp-kind",
+            ),
             Ok(())
         );
     }
@@ -4577,13 +5978,23 @@ mod tests {
             super::ProfileAssignmentScope::Workgroup,
         ] {
             let missing = profile_assignment_request(scope.clone(), None, None);
-            let err = super::validate_profile_assignment_confirmation(&missing, "current-fp")
-                .unwrap_err();
+            let err = super::validate_profile_assignment_confirmation(
+                &missing.scope,
+                missing.assignment_mode,
+                missing.confirmed_target_fingerprint.as_deref(),
+                "current-fp",
+            )
+            .unwrap_err();
             assert!(err.contains("Target selection changed"), "{err}");
 
             let stale = profile_assignment_request(scope, Some("old-fp"), None);
-            let err =
-                super::validate_profile_assignment_confirmation(&stale, "current-fp").unwrap_err();
+            let err = super::validate_profile_assignment_confirmation(
+                &stale.scope,
+                stale.assignment_mode,
+                stale.confirmed_target_fingerprint.as_deref(),
+                "current-fp",
+            )
+            .unwrap_err();
             assert!(err.contains("Target selection changed"), "{err}");
         }
     }
@@ -5854,5 +7265,2009 @@ mod tests {
                 .get("scratch-agent")
                 .is_none());
         }
+    }
+
+    // ── #1941 scoped selection-lock API ─────────────────────────────
+
+    struct SelectionApiFixture {
+        _temp: tempfile::TempDir,
+        project: PathBuf,
+        ac_root: PathBuf,
+    }
+
+    fn selection_api_fixture() -> SelectionApiFixture {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("create .ac");
+        SelectionApiFixture {
+            _temp: temp,
+            project,
+            ac_root,
+        }
+    }
+
+    fn selection_api_settings(fixture: &SelectionApiFixture) -> AppSettings {
+        let mut settings = settings_with_single_agent();
+        settings.project_paths = vec![fixture.project.to_string_lossy().to_string()];
+        settings
+    }
+
+    /// Create a valid `_agent_<name>` Matrix plus a `room-*` replica whose
+    /// config.json stores the given tooling block and the correct identity.
+    fn selection_api_replica(
+        fixture: &SelectionApiFixture,
+        room: &str,
+        name: &str,
+        tooling: serde_json::Value,
+    ) -> PathBuf {
+        let matrix = fixture.ac_root.join(format!("_agent_{name}"));
+        let replica = fixture.ac_root.join(room).join(format!("__agent_{name}"));
+        selection_api_replica_at(fixture, &matrix, &replica, name, tooling);
+        replica
+    }
+
+    fn selection_api_replica_at(
+        _fixture: &SelectionApiFixture,
+        matrix: &Path,
+        replica: &Path,
+        name: &str,
+        tooling: serde_json::Value,
+    ) {
+        std::fs::create_dir_all(matrix).expect("create matrix");
+        std::fs::create_dir_all(replica).expect("create replica");
+        std::fs::write(matrix.join("Role.md"), "# Role\n").expect("write Role.md");
+        let config = json!({
+            "identity": format!("../../_agent_{name}"),
+            "tooling": tooling,
+        });
+        std::fs::write(
+            replica.join("config.json"),
+            serde_json::to_vec(&config).expect("serialize config"),
+        )
+        .expect("write config");
+    }
+
+    fn locked_tooling(profile: &str, agent: &str) -> serde_json::Value {
+        json!({
+            "profile": profile,
+            "currentCodingAgent": agent,
+            "selectionLocked": true,
+        })
+    }
+
+    fn unlocked_tooling(profile: &str, agent: &str) -> serde_json::Value {
+        json!({
+            "profile": profile,
+            "currentCodingAgent": agent,
+        })
+    }
+
+    fn config_bytes(replica: &Path) -> Vec<u8> {
+        std::fs::read(replica.join("config.json")).expect("read config.json")
+    }
+
+    fn sidecar_path(replica: &Path) -> PathBuf {
+        replica.join(".config.json.lock")
+    }
+
+    fn empty_session_manager() -> Arc<RwLock<SessionManager>> {
+        Arc::new(RwLock::new(SessionManager::new()))
+    }
+
+    fn api_preview_request(
+        path: &Path,
+        scope: super::ProfileAssignmentScope,
+        mode: super::AssignmentMode,
+    ) -> super::PreviewCodingAgentProfileSelectionRequest {
+        super::PreviewCodingAgentProfileSelectionRequest {
+            target_replica_path: path.to_string_lossy().to_string(),
+            coding_agent_id: "agent-0".to_string(),
+            profile: "B".to_string(),
+            scope,
+            restart_sessions: false,
+            assignment_mode: mode,
+        }
+    }
+
+    fn api_apply_request(
+        path: &Path,
+        scope: super::ProfileAssignmentScope,
+        mode: super::AssignmentMode,
+        decision: Option<super::ConflictDecision>,
+        fingerprint: Option<&str>,
+    ) -> super::ApplyCodingAgentProfileSelectionRequest {
+        super::ApplyCodingAgentProfileSelectionRequest {
+            target_replica_path: path.to_string_lossy().to_string(),
+            coding_agent_id: "agent-0".to_string(),
+            profile: "B".to_string(),
+            scope,
+            restart_sessions: false,
+            confirmed_target_fingerprint: fingerprint.map(str::to_string),
+            typed_confirmation: None,
+            assignment_mode: mode,
+            conflict_decision: decision,
+        }
+    }
+
+    fn api_removal_preview_request(
+        path: &Path,
+        scope: super::ProfileAssignmentScope,
+    ) -> super::PreviewSelectionLockRemovalRequest {
+        super::PreviewSelectionLockRemovalRequest {
+            target_replica_path: path.to_string_lossy().to_string(),
+            scope,
+        }
+    }
+
+    fn api_removal_apply_request(
+        path: &Path,
+        scope: super::ProfileAssignmentScope,
+        fingerprint: &str,
+    ) -> super::ApplySelectionLockRemovalRequest {
+        super::ApplySelectionLockRemovalRequest {
+            target_replica_path: path.to_string_lossy().to_string(),
+            scope,
+            confirmed_target_fingerprint: fingerprint.to_string(),
+        }
+    }
+
+    fn api_default_request(path: &Path) -> super::GetReplicaSelectionDefaultRequest {
+        super::GetReplicaSelectionDefaultRequest {
+            target_replica_path: path.to_string_lossy().to_string(),
+        }
+    }
+
+    fn api_set_default_request(
+        path: &Path,
+        agent: &str,
+        profile: &str,
+        locked: bool,
+        fingerprint: &str,
+    ) -> super::SetReplicaSelectionDefaultRequest {
+        super::SetReplicaSelectionDefaultRequest {
+            target_replica_path: path.to_string_lossy().to_string(),
+            coding_agent_id: agent.to_string(),
+            requested_profile: profile.to_string(),
+            selection_locked: locked,
+            confirmed_default_fingerprint: fingerprint.to_string(),
+        }
+    }
+
+    async fn api_preview(
+        settings: &SettingsState,
+        path: &Path,
+        scope: super::ProfileAssignmentScope,
+        mode: super::AssignmentMode,
+    ) -> super::PreviewCodingAgentProfileSelectionResult {
+        api_preview_result(settings, path, scope, mode)
+            .await
+            .expect("assignment preview")
+    }
+
+    async fn api_preview_result(
+        settings: &SettingsState,
+        path: &Path,
+        scope: super::ProfileAssignmentScope,
+        mode: super::AssignmentMode,
+    ) -> Result<super::PreviewCodingAgentProfileSelectionResult, String> {
+        super::preview_coding_agent_profile_selection_inner(
+            &empty_session_manager(),
+            settings,
+            api_preview_request(path, scope, mode),
+        )
+        .await
+    }
+
+    /// Minimal PTY backend for the non-restarting apply paths: the manager is
+    /// required by the command signature but no spawn/kill is ever requested.
+    struct SelectionApiPtyBackend;
+
+    impl crate::pty::backend::PtyBackend for SelectionApiPtyBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            _spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            _id: uuid::Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn resize(
+            &self,
+            _id: uuid::Uuid,
+            _cols: u16,
+            _rows: u16,
+        ) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn kill(&self, _id: uuid::Uuid) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn has_session(&self, _id: uuid::Uuid) -> bool {
+            false
+        }
+
+        fn get_screen_snapshot(
+            &self,
+            _id: uuid::Uuid,
+        ) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, _id: uuid::Uuid) -> Option<(u16, u16)> {
+            None
+        }
+
+        fn get_screen_rows(&self, _id: uuid::Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: uuid::Uuid,
+            _request_id: String,
+            _response_dir: PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: uuid::Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
+    async fn api_apply(
+        settings: &SettingsState,
+        path: &Path,
+        scope: super::ProfileAssignmentScope,
+        mode: super::AssignmentMode,
+        decision: Option<super::ConflictDecision>,
+        fingerprint: Option<&str>,
+    ) -> Result<super::ApplyCodingAgentProfileSelectionResult, String> {
+        let app = crate::test_support::test_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build selection api test app");
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            Arc::new(SelectionApiPtyBackend),
+        )));
+        super::apply_coding_agent_profile_selection_inner(
+            app.handle(),
+            &empty_session_manager(),
+            &pty_mgr,
+            settings,
+            api_apply_request(path, scope, mode, decision, fingerprint),
+        )
+        .await
+        .map(|(result, _payload)| result)
+    }
+
+    async fn api_default(
+        settings: &SettingsState,
+        path: &Path,
+    ) -> super::ReplicaSelectionDefaultResult {
+        super::get_replica_selection_default_inner(settings, api_default_request(path))
+            .await
+            .expect("default read")
+    }
+
+    async fn api_removal_preview(
+        settings: &SettingsState,
+        path: &Path,
+        scope: super::ProfileAssignmentScope,
+    ) -> super::PreviewSelectionLockRemovalResult {
+        super::preview_selection_lock_removal_inner(
+            &empty_session_manager(),
+            settings,
+            api_removal_preview_request(path, scope),
+        )
+        .await
+        .expect("removal preview")
+    }
+
+    async fn api_removal_apply(
+        settings: &SettingsState,
+        path: &Path,
+        scope: super::ProfileAssignmentScope,
+        fingerprint: &str,
+    ) -> Result<super::ApplySelectionLockRemovalResult, String> {
+        super::apply_selection_lock_removal_inner(
+            settings,
+            api_removal_apply_request(path, scope, fingerprint),
+        )
+        .await
+        .map(|(result, _payload)| result)
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_preview_replica_reports_saved_pair_and_state() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            locked_tooling("B", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let preview = api_preview(
+            &settings,
+            &replica,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::Ordinary,
+        )
+        .await;
+
+        assert_eq!(preview.scope, super::ProfileAssignmentScope::Replica);
+        assert!(preview.counts_complete);
+        assert_eq!(preview.candidate_count, 1);
+        assert_eq!(preview.protected_count, 1);
+        assert_eq!(preview.invalid_count, 0);
+        assert_eq!(preview.conflict_count, 0);
+        assert!(preview.decisions.is_none());
+        assert_eq!(
+            preview.target_count, 1,
+            "a deliberate replica target counts"
+        );
+        assert_eq!(preview.targets.len(), 1);
+        let target = &preview.targets[0];
+        assert_eq!(target.selection_state, super::SelectionState::Locked);
+        assert_eq!(
+            target.saved_pair,
+            Some(super::SavedPair {
+                coding_agent_id: Some("agent-0".to_string()),
+                requested_profile: Some("B".to_string()),
+            })
+        );
+        assert!(target.selection_error.is_none());
+        assert_eq!(preview.target_fingerprint.len(), 64);
+        assert_eq!(
+            preview.target_fingerprint,
+            preview.target_fingerprint.to_lowercase()
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_scopes_enumerate_canonical_matrices_only() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            locked_tooling("B", "agent-0"),
+        );
+        selection_api_replica(
+            &fixture,
+            "room-2-team",
+            "dev-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        // Homonymous Matrix in another configured project: same directory name,
+        // different canonical origin Matrix, so Kind must exclude it.
+        let other_project = fixture._temp.path().join("other-project");
+        let other_fixture = SelectionApiFixture {
+            _temp: tempfile::tempdir().expect("second tempdir"),
+            project: other_project,
+            ac_root: PathBuf::new(),
+        };
+        let other_ac = other_fixture.project.join(".ac");
+        selection_api_replica_at(
+            &other_fixture,
+            &other_ac.join("_agent_dev-rust"),
+            &other_ac.join("room-1-team").join("__agent_dev-rust"),
+            "dev-rust",
+            locked_tooling("C", "agent-0"),
+        );
+        let mut settings = selection_api_settings(&fixture);
+        settings
+            .project_paths
+            .push(other_fixture.project.to_string_lossy().to_string());
+        let settings = state_for(settings);
+
+        let room = api_preview(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+        )
+        .await;
+        assert!(room.counts_complete);
+        assert_eq!(room.candidate_count, 1, "one Workgroup means one room");
+
+        let kind = api_preview(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Kind,
+            super::AssignmentMode::Ordinary,
+        )
+        .await;
+        assert!(kind.counts_complete);
+        assert_eq!(
+            kind.candidate_count, 2,
+            "the canonical Matrix, not the name"
+        );
+        assert_eq!(kind.protected_count, 1);
+        assert_eq!(kind.invalid_count, 0);
+        let paths: Vec<&str> = kind
+            .targets
+            .iter()
+            .map(|target| target.replica_path.as_str())
+            .collect();
+        assert!(paths.iter().any(|path| path.contains("room-1-team")));
+        assert!(paths.iter().any(|path| path.contains("room-2-team")));
+        assert!(
+            paths.iter().all(|path| path.contains("project")),
+            "the homonymous other-project replica must stay excluded: {paths:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_preview_counts_offline_and_live_replicas() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let live = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let manager = SessionManager::new();
+        let session = manager
+            .create_session(
+                "codex".to_string(),
+                Vec::new(),
+                live.to_string_lossy().to_string(),
+                Some("agent-0".to_string()),
+                Some("Codex".to_string()),
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create live session");
+        let settings = state_for(selection_api_settings(&fixture));
+        let preview = super::preview_coding_agent_profile_selection_inner(
+            &Arc::new(RwLock::new(manager)),
+            &settings,
+            api_preview_request(
+                &anchor,
+                super::ProfileAssignmentScope::Workgroup,
+                super::AssignmentMode::Ordinary,
+            ),
+        )
+        .await
+        .expect("preview");
+
+        assert_eq!(preview.candidate_count, 2, "offline replicas stay listed");
+        assert_eq!(preview.live_session_count, 1);
+        let live_target = preview
+            .targets
+            .iter()
+            .find(|target| target.replica_path.contains("b-rust"))
+            .expect("live target");
+        assert_eq!(live_target.live_session_ids, vec![session.id.to_string()]);
+        let offline_target = preview
+            .targets
+            .iter()
+            .find(|target| target.replica_path.contains("a-rust"))
+            .expect("offline target");
+        assert!(offline_target.live_session_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_all_protected_bulk_offers_both_decisions() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            locked_tooling("B", "agent-0"),
+        );
+        // Equal pair as well: a valid lock is still a conflict.
+        selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            locked_tooling("B", "agent-0"),
+        );
+        selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "c-rust",
+            locked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let preview = api_preview(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::AssignAndLock,
+        )
+        .await;
+
+        assert_eq!(preview.candidate_count, 3);
+        assert_eq!(preview.protected_count, 3);
+        assert_eq!(preview.conflict_count, 3, "valid protected candidates only");
+        assert_eq!(preview.target_count, 0, "top-level uses unlockedOnly");
+        let decisions = preview.decisions.as_ref().expect("both decisions");
+        assert_eq!(decisions.unlocked_only.eligible_count, 0);
+        assert_eq!(decisions.unlocked_only.skipped_locked_count, 3);
+        assert_eq!(decisions.force_reviewed.eligible_count, 3);
+        assert_eq!(decisions.force_reviewed.skipped_locked_count, 0);
+        assert_ne!(
+            decisions.unlocked_only.fingerprint,
+            decisions.force_reviewed.fingerprint
+        );
+        assert_eq!(
+            preview.target_fingerprint,
+            decisions.unlocked_only.fingerprint
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_absent_assignment_mode_is_ordinary_legacy() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let request: super::PreviewCodingAgentProfileSelectionRequest =
+            serde_json::from_value(json!({
+                "targetReplicaPath": replica.to_string_lossy(),
+                "codingAgentId": "agent-0",
+                "profile": "B",
+                "scope": "replica",
+                "restartSessions": false,
+            }))
+            .expect("deserialize legacy preview request");
+        assert_eq!(request.assignment_mode, super::AssignmentMode::Ordinary);
+
+        let settings = state_for(selection_api_settings(&fixture));
+        let preview = super::preview_coding_agent_profile_selection_inner(
+            &empty_session_manager(),
+            &settings,
+            request,
+        )
+        .await
+        .expect("legacy preview");
+        assert!(!preview.requires_explicit_confirmation);
+        let result = api_apply(
+            &settings,
+            &replica,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::Ordinary,
+            None,
+            None,
+        )
+        .await
+        .expect("legacy replica apply without fingerprint");
+        assert_eq!(result.updated_count, 1);
+        assert_eq!(result.newly_protected_paths.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_apply_ordinary_bulk_skips_locked() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            locked_tooling("A", "agent-0"),
+        );
+        let unlocked = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let locked_bytes = config_bytes(&anchor);
+        let settings = state_for(selection_api_settings(&fixture));
+        let preview = api_preview(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+        )
+        .await;
+        assert_eq!(
+            preview.target_count, 1,
+            "actionable count skips the locked one"
+        );
+        assert!(preview.decisions.is_none());
+
+        let result = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+            None,
+            Some(&preview.target_fingerprint),
+        )
+        .await
+        .expect("ordinary bulk apply");
+
+        assert_eq!(result.updated_count, 1);
+        assert_eq!(result.newly_protected_paths.len(), 0);
+        assert_eq!(result.skipped_locked_paths.len(), 1);
+        assert!(result.skipped_locked_paths[0].contains("a-rust"));
+        assert!(result.errors.is_empty());
+        assert_eq!(result.locked_after_apply_count, Some(1));
+        assert!(!result.force_applied);
+        assert_eq!(
+            config_bytes(&anchor),
+            locked_bytes,
+            "locked bytes untouched"
+        );
+        let saved: serde_json::Value =
+            serde_json::from_slice(&config_bytes(&unlocked)).expect("parse unlocked config");
+        assert_eq!(saved["tooling"]["profile"], json!("B"));
+        assert_eq!(saved["tooling"]["currentCodingAgent"], json!("agent-0"));
+        assert!(saved["tooling"].get("selectionLocked").is_none());
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_replica_assign_and_lock_is_atomic() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let preview = api_preview(
+            &settings,
+            &replica,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::AssignAndLock,
+        )
+        .await;
+        assert!(preview.requires_explicit_confirmation);
+        assert!(
+            preview.decisions.is_none(),
+            "replica needs no conflict dialog"
+        );
+
+        let result = api_apply(
+            &settings,
+            &replica,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::AssignAndLock,
+            None,
+            Some(&preview.target_fingerprint),
+        )
+        .await
+        .expect("replica assign and lock");
+
+        assert_eq!(result.updated_count, 1);
+        assert_eq!(
+            result.newly_protected_paths,
+            vec![result.updated_replica_paths[0].clone()]
+        );
+        assert!(!result.force_applied);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&config_bytes(&replica)).expect("parse config");
+        assert_eq!(saved["tooling"]["selectionLocked"], json!(true));
+        assert_eq!(saved["tooling"]["currentCodingAgent"], json!("agent-0"));
+        assert_eq!(saved["tooling"]["profile"], json!("B"));
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_rejects_decision_outside_bulk_assign_and_lock() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            locked_tooling("A", "agent-0"),
+        );
+        selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            locked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let bytes_before = config_bytes(&anchor);
+
+        let ordinary = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+            Some(super::ConflictDecision::ForceReviewed),
+            Some("whatever"),
+        )
+        .await
+        .expect_err("ordinary plus decision must be rejected");
+        assert!(
+            ordinary.contains("only valid with assignmentMode assignAndLock"),
+            "{ordinary}"
+        );
+
+        let single = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::AssignAndLock,
+            Some(super::ConflictDecision::ForceReviewed),
+            Some("whatever"),
+        )
+        .await
+        .expect_err("replica plus decision must be rejected");
+        assert!(single.contains("not valid for replica scope"), "{single}");
+
+        assert_eq!(
+            config_bytes(&anchor),
+            bytes_before,
+            "no writes on rejection"
+        );
+        assert!(!sidecar_path(&anchor).exists(), "no sidecar on rejection");
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_bulk_assign_and_lock_requires_decision() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            locked_tooling("A", "agent-0"),
+        );
+        let second = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            locked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let bytes_before = config_bytes(&anchor);
+        let second_bytes = config_bytes(&second);
+        let preview = api_preview(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::AssignAndLock,
+        )
+        .await;
+
+        let error = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::AssignAndLock,
+            None,
+            Some(&preview.target_fingerprint),
+        )
+        .await
+        .expect_err("conflicts need a decision");
+        assert!(error.contains("conflictDecisionRequired"), "{error}");
+        // A force decision without the current preview fingerprint is rejected.
+        let error = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::AssignAndLock,
+            Some(super::ConflictDecision::ForceReviewed),
+            None,
+        )
+        .await
+        .expect_err("a force decision still needs the reviewed fingerprint");
+        assert!(error.contains("stalePreview"), "{error}");
+        assert_eq!(config_bytes(&anchor), bytes_before);
+        assert_eq!(config_bytes(&second), second_bytes);
+        assert!(!sidecar_path(&anchor).exists());
+        assert!(!sidecar_path(&second).exists());
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_decision_snapshots_are_per_decision() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            locked_tooling("A", "agent-0"),
+        );
+        selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            locked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let preview = api_preview(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::AssignAndLock,
+        )
+        .await;
+        let decisions = preview.decisions.as_ref().expect("decisions");
+
+        // Force with the unlockedOnly hash is a stale approval: no force applied.
+        let stale = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::AssignAndLock,
+            Some(super::ConflictDecision::ForceReviewed),
+            Some(&decisions.unlocked_only.fingerprint),
+        )
+        .await
+        .expect_err("force with the wrong decision hash");
+        assert!(stale.contains("stalePreview"), "{stale}");
+
+        // UnlockedOnly with its own hash skips every protected replica.
+        let unlocked_only = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::AssignAndLock,
+            Some(super::ConflictDecision::UnlockedOnly),
+            Some(&decisions.unlocked_only.fingerprint),
+        )
+        .await
+        .expect("unlockedOnly apply");
+        assert_eq!(unlocked_only.updated_count, 0);
+        assert_eq!(unlocked_only.skipped_locked_paths.len(), 2);
+        assert!(!unlocked_only.force_applied);
+        assert_eq!(unlocked_only.locked_after_apply_count, Some(2));
+
+        // ForceReviewed with its own hash overwrites the protected targets.
+        let forced = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::AssignAndLock,
+            Some(super::ConflictDecision::ForceReviewed),
+            Some(&decisions.force_reviewed.fingerprint),
+        )
+        .await
+        .expect("forceReviewed apply");
+        assert_eq!(forced.updated_count, 2);
+        assert!(forced.skipped_locked_paths.is_empty());
+        assert!(
+            forced.force_applied,
+            "a protected target was actually overwritten"
+        );
+        assert_eq!(forced.locked_after_apply_count, Some(2));
+        assert!(
+            forced.newly_protected_paths.is_empty(),
+            "already locked stays locked"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_stale_approvals_are_rejected_without_writes() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+
+        // (a) the stored pair changes after the preview.
+        let pair_preview = api_preview(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+        )
+        .await;
+        let mut value: Value =
+            serde_json::from_slice(&config_bytes(&anchor)).expect("parse config");
+        value["tooling"]["profile"] = json!("C");
+        std::fs::write(
+            anchor.join("config.json"),
+            serde_json::to_vec(&value).expect("serialize"),
+        )
+        .expect("rewrite config");
+        let changed_bytes = config_bytes(&anchor);
+        let error = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+            None,
+            Some(&pair_preview.target_fingerprint),
+        )
+        .await
+        .expect_err("pair change must stale");
+        assert!(error.contains("stalePreview"), "{error}");
+        assert_eq!(config_bytes(&anchor), changed_bytes);
+
+        // (b) the flag changes after the preview.
+        let flag_preview = api_preview(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+        )
+        .await;
+        let mut value: Value =
+            serde_json::from_slice(&config_bytes(&anchor)).expect("parse config");
+        value["tooling"]["selectionLocked"] = json!(true);
+        value["tooling"]["currentCodingAgent"] = json!("agent-0");
+        std::fs::write(
+            anchor.join("config.json"),
+            serde_json::to_vec(&value).expect("serialize"),
+        )
+        .expect("rewrite config");
+        let changed_bytes = config_bytes(&anchor);
+        let error = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+            None,
+            Some(&flag_preview.target_fingerprint),
+        )
+        .await
+        .expect_err("flag change must stale");
+        assert!(error.contains("stalePreview"), "{error}");
+        assert_eq!(config_bytes(&anchor), changed_bytes);
+
+        // (c) membership grows after the preview.
+        let membership_preview = api_preview(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+        )
+        .await;
+        let added = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let added_bytes = config_bytes(&added);
+        let error = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+            None,
+            Some(&membership_preview.target_fingerprint),
+        )
+        .await
+        .expect_err("membership change must stale");
+        assert!(error.contains("stalePreview"), "{error}");
+        assert_eq!(config_bytes(&added), added_bytes);
+
+        // (d) a relevant live session appears after the preview.
+        let manager = SessionManager::new();
+        let live = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "c-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let session_mgr = Arc::new(RwLock::new(manager));
+        let session_preview = super::preview_coding_agent_profile_selection_inner(
+            &session_mgr,
+            &settings,
+            api_preview_request(
+                &anchor,
+                super::ProfileAssignmentScope::Workgroup,
+                super::AssignmentMode::Ordinary,
+            ),
+        )
+        .await
+        .expect("preview with sessions");
+        {
+            let manager = session_mgr.write().await;
+            manager
+                .create_session(
+                    "codex".to_string(),
+                    Vec::new(),
+                    live.to_string_lossy().to_string(),
+                    Some("agent-0".to_string()),
+                    Some("Codex".to_string()),
+                    Vec::new(),
+                    false,
+                    crate::pty::backend::SessionBackendKind::LocalProcess,
+                )
+                .await
+                .expect("create session");
+        }
+        let live_bytes = config_bytes(&live);
+        let app = crate::test_support::test_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app");
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            Arc::new(SelectionApiPtyBackend),
+        )));
+        let error = super::apply_coding_agent_profile_selection_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            &settings,
+            api_apply_request(
+                &anchor,
+                super::ProfileAssignmentScope::Workgroup,
+                super::AssignmentMode::Ordinary,
+                None,
+                Some(&session_preview.target_fingerprint),
+            ),
+        )
+        .await
+        .expect_err("session change must stale");
+        assert!(error.contains("stalePreview"), "{error}");
+        assert_eq!(config_bytes(&live), live_bytes);
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_skipped_locked_never_restarts_live_session() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            locked_tooling("A", "agent-0"),
+        );
+        let manager = SessionManager::new();
+        let session = manager
+            .create_session(
+                "codex".to_string(),
+                Vec::new(),
+                anchor.to_string_lossy().to_string(),
+                Some("agent-0".to_string()),
+                Some("Codex".to_string()),
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create session");
+        let session_mgr = Arc::new(RwLock::new(manager));
+        let settings = state_for(selection_api_settings(&fixture));
+        let bytes_before = config_bytes(&anchor);
+        let mut preview_request = api_preview_request(
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+        );
+        preview_request.restart_sessions = true;
+        let preview = super::preview_coding_agent_profile_selection_inner(
+            &session_mgr,
+            &settings,
+            preview_request,
+        )
+        .await
+        .expect("preview");
+        assert_eq!(
+            preview.live_session_count, 0,
+            "the actionable count skips the protected replica's session"
+        );
+        assert_eq!(preview.target_count, 0, "the only replica is protected");
+        assert_eq!(preview.targets.len(), 1);
+        assert_eq!(
+            preview.targets[0].live_session_ids,
+            vec![session.id.to_string()],
+            "the protected target still reports its live session"
+        );
+
+        let app = crate::test_support::test_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app");
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            Arc::new(SelectionApiPtyBackend),
+        )));
+        let mut request = api_apply_request(
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+            None,
+            Some(&preview.target_fingerprint),
+        );
+        request.restart_sessions = true;
+        let result = super::apply_coding_agent_profile_selection_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            &settings,
+            request,
+        )
+        .await
+        .expect("skipping a locked replica is not an error")
+        .0;
+
+        assert_eq!(result.updated_count, 0);
+        assert_eq!(
+            result.restarted_count, 0,
+            "no lifecycle invocation for a skip"
+        );
+        assert_eq!(result.skipped_locked_paths.len(), 1);
+        assert!(result.errors.is_empty());
+        assert_eq!(config_bytes(&anchor), bytes_before);
+        assert!(
+            session_mgr
+                .read()
+                .await
+                .get_session(session.id)
+                .await
+                .is_some(),
+            "the skipped replica's session must survive untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_later_target_race_yields_partial_results() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let later = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let preview = api_preview(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+        )
+        .await;
+        let later_bytes = config_bytes(&later);
+
+        // Hold the later target's sidecar lock to force a real per-file write
+        // failure after the first target has already committed.
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(sidecar_path(&later))
+            .expect("open sidecar");
+        lock_file.lock().expect("hold later target lock");
+        let result = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+            None,
+            Some(&preview.target_fingerprint),
+        )
+        .await
+        .expect("earlier writes stay committed");
+        lock_file.unlock().expect("release sidecar");
+        drop(lock_file);
+
+        assert_eq!(result.updated_count, 1, "the first target still committed");
+        assert!(result.updated_replica_paths[0].contains("a-rust"));
+        assert_eq!(
+            config_bytes(&later),
+            later_bytes,
+            "the failed target is untouched"
+        );
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].code, "configLockTimeout");
+        assert!(result.errors[0].replica_paths[0].contains("b-rust"));
+        assert_eq!(result.locked_after_apply_count, Some(0));
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_invalid_state_is_visible_and_never_written() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            json!({"selectionLocked": true}),
+        );
+        let unlocked = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let invalid_bytes = config_bytes(&anchor);
+        let preview = api_preview(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+        )
+        .await;
+        assert_eq!(preview.invalid_count, 1);
+        assert_eq!(preview.protected_count, 0);
+        assert_eq!(
+            preview.target_count, 1,
+            "only the valid replica is actionable"
+        );
+        let invalid = preview
+            .targets
+            .iter()
+            .find(|target| target.replica_path.contains("a-rust"))
+            .expect("invalid target listed");
+        assert_eq!(invalid.selection_state, super::SelectionState::Invalid);
+        assert!(invalid.saved_pair.is_none());
+        assert!(invalid.selection_error.is_some());
+
+        let result = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::Ordinary,
+            None,
+            Some(&preview.target_fingerprint),
+        )
+        .await
+        .expect("valid targets still apply");
+        assert_eq!(result.updated_count, 1);
+        assert_eq!(result.invalid_paths.len(), 1);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].code, "invalidSelectionState");
+        assert_eq!(config_bytes(&anchor), invalid_bytes);
+        assert_eq!(
+            result.locked_after_apply_count, None,
+            "invalid state is unknowable"
+        );
+        let saved: Value = serde_json::from_slice(&config_bytes(&unlocked)).expect("parse");
+        assert_eq!(saved["tooling"]["profile"], json!("B"));
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_anchor_must_be_a_configured_replica() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let matrix = fixture.ac_root.join("_agent_dev-rust");
+        // Origin Matrix is not a lockable replica target.
+        let mut unconfigured = settings_with_single_agent();
+        unconfigured.project_paths = Vec::new();
+        let unconfigured = state_for(unconfigured);
+        let error = api_preview_result(
+            &unconfigured,
+            &replica,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::Ordinary,
+        )
+        .await
+        .expect_err("an unconfigured project root must be rejected");
+        assert!(
+            error.contains("outside configured AC project roots"),
+            "{error}"
+        );
+
+        let settings = state_for(selection_api_settings(&fixture));
+        let error = api_preview_result(
+            &settings,
+            &matrix,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::Ordinary,
+        )
+        .await
+        .expect_err("the origin Matrix must be rejected");
+        assert!(error.contains("not a Room replica"), "{error}");
+
+        // A `__agent_*` directly under `.ac` has no room parent.
+        let roomless = fixture.ac_root.join("__agent_dev-rust");
+        std::fs::create_dir_all(&roomless).expect("create roomless replica dir");
+        let error = api_preview_result(
+            &settings,
+            &roomless,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::Ordinary,
+        )
+        .await
+        .expect_err("a roomless replica must be rejected");
+        assert!(
+            error.contains("room-*") || error.contains("Room"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_removal_zero_protected_is_a_pure_no_op() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let second = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            unlocked_tooling("C", "agent-0"),
+        );
+        let matrix = fixture.ac_root.join("_agent_a-rust");
+        let settings = state_for(selection_api_settings(&fixture));
+        let anchor_bytes = config_bytes(&anchor);
+        let second_bytes = config_bytes(&second);
+        let mut dir_before: Vec<std::ffi::OsString> = std::fs::read_dir(&anchor)
+            .expect("read anchor dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        dir_before.sort();
+
+        let preview =
+            api_removal_preview(&settings, &anchor, super::ProfileAssignmentScope::Workgroup).await;
+        assert!(preview.counts_complete);
+        assert_eq!(preview.candidate_count, 2);
+        assert_eq!(preview.protected_count, 0);
+        assert_eq!(preview.already_unlocked_count, 2);
+        assert_eq!(preview.invalid_count, 0);
+        assert_eq!(preview.target_fingerprint.len(), 64);
+
+        let result = api_removal_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            &preview.target_fingerprint,
+        )
+        .await
+        .expect("zero-protected removal");
+        assert_eq!(result.removed_count, 0);
+        assert_eq!(result.already_unlocked_paths.len(), 2);
+        assert!(result.failed_replica_paths.is_empty());
+        assert_eq!(result.remaining_protected_count, Some(0));
+        assert!(result.errors.is_empty());
+
+        assert_eq!(config_bytes(&anchor), anchor_bytes);
+        assert_eq!(config_bytes(&second), second_bytes);
+        let mut dir_after: Vec<std::ffi::OsString> = std::fs::read_dir(&anchor)
+            .expect("read anchor dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        dir_after.sort();
+        assert_eq!(
+            dir_after, dir_before,
+            "zero-protected removal creates no sidecar or temp file"
+        );
+        assert!(!sidecar_path(&anchor).exists(), "no sidecar for a no-op");
+        assert!(!sidecar_path(&second).exists(), "no sidecar for a no-op");
+        assert!(
+            !matrix.join("config.json").exists(),
+            "removal never writes a Matrix default"
+        );
+
+        // The single-replica scope has the same zero-protected shape.
+        let single =
+            api_removal_preview(&settings, &anchor, super::ProfileAssignmentScope::Replica).await;
+        assert_eq!(single.candidate_count, 1);
+        assert_eq!(single.protected_count, 0);
+        let single_result = api_removal_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Replica,
+            &single.target_fingerprint,
+        )
+        .await
+        .expect("single zero-protected removal");
+        assert_eq!(single_result.removed_count, 0);
+        assert_eq!(config_bytes(&anchor), anchor_bytes);
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_removal_preserves_pair_and_unknown_tooling() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            json!({
+                "profile": "A",
+                "currentCodingAgent": "agent-0",
+                "selectionLocked": true,
+                "lastCodingAgent": "legacy-agent",
+                "profileContentHash": "deadbeef",
+            }),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let preview =
+            api_removal_preview(&settings, &replica, super::ProfileAssignmentScope::Replica).await;
+        assert_eq!(preview.protected_count, 1);
+
+        let result = api_removal_apply(
+            &settings,
+            &replica,
+            super::ProfileAssignmentScope::Replica,
+            &preview.target_fingerprint,
+        )
+        .await
+        .expect("removal");
+        assert_eq!(result.removed_count, 1);
+        assert_eq!(result.remaining_protected_count, Some(0));
+        assert!(result.errors.is_empty());
+        let saved: Value = serde_json::from_slice(&config_bytes(&replica)).expect("parse");
+        assert_eq!(saved["tooling"]["selectionLocked"], json!(false));
+        assert_eq!(saved["tooling"]["currentCodingAgent"], json!("agent-0"));
+        assert_eq!(saved["tooling"]["profile"], json!("A"));
+        assert_eq!(saved["tooling"]["lastCodingAgent"], json!("legacy-agent"));
+        assert_eq!(saved["tooling"]["profileContentHash"], json!("deadbeef"));
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_removal_mixed_skips_the_unlocked_target() {
+        let fixture = selection_api_fixture();
+        let first = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            locked_tooling("A", "agent-0"),
+        );
+        selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            locked_tooling("B", "agent-0"),
+        );
+        selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "c-rust",
+            locked_tooling("C", "agent-0"),
+        );
+        let unlocked_fourth = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "d-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let fourth_bytes = config_bytes(&unlocked_fourth);
+        let preview =
+            api_removal_preview(&settings, &first, super::ProfileAssignmentScope::Workgroup).await;
+        assert_eq!(preview.candidate_count, 4);
+        assert_eq!(preview.protected_count, 3);
+        assert_eq!(preview.already_unlocked_count, 1);
+
+        let result = api_removal_apply(
+            &settings,
+            &first,
+            super::ProfileAssignmentScope::Workgroup,
+            &preview.target_fingerprint,
+        )
+        .await
+        .expect("mixed removal");
+        assert_eq!(result.removed_count, 3);
+        assert_eq!(result.already_unlocked_paths.len(), 1);
+        assert!(result.already_unlocked_paths[0].contains("d-rust"));
+        assert_eq!(
+            config_bytes(&unlocked_fourth),
+            fourth_bytes,
+            "no writer for the fourth"
+        );
+        assert!(
+            !sidecar_path(&unlocked_fourth).exists(),
+            "the unlocked fourth target must not create a write sidecar"
+        );
+        assert!(
+            sidecar_path(&first).exists(),
+            "the protected targets did write"
+        );
+        assert_eq!(result.remaining_protected_count, Some(0));
+        assert!(result.errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_removal_stale_scope_rejects_without_effects() {
+        let fixture = selection_api_fixture();
+        let first = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "a-rust",
+            locked_tooling("A", "agent-0"),
+        );
+        let second = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "b-rust",
+            locked_tooling("B", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let preview =
+            api_removal_preview(&settings, &first, super::ProfileAssignmentScope::Workgroup).await;
+        // Another window unlocks the first replica after the preview.
+        let mut value: Value = serde_json::from_slice(&config_bytes(&first)).expect("parse");
+        value["tooling"]["selectionLocked"] = json!(false);
+        std::fs::write(
+            first.join("config.json"),
+            serde_json::to_vec(&value).expect("serialize"),
+        )
+        .expect("rewrite");
+        let first_bytes = config_bytes(&first);
+        let second_bytes = config_bytes(&second);
+
+        let error = api_removal_apply(
+            &settings,
+            &first,
+            super::ProfileAssignmentScope::Workgroup,
+            &preview.target_fingerprint,
+        )
+        .await
+        .expect_err("scope-level stale");
+        assert!(error.contains("stalePreview"), "{error}");
+        assert_eq!(config_bytes(&first), first_bytes);
+        assert_eq!(
+            config_bytes(&second),
+            second_bytes,
+            "the second stays locked"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_per_file_cas_rejects_changed_target() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let settings_snapshot = settings.read().await.clone();
+        let enumeration = super::enumerate_profile_assignment_targets(
+            &settings_snapshot,
+            &replica,
+            &super::ProfileAssignmentScope::Replica,
+            &[],
+        )
+        .expect("enumerate");
+        let target = &enumeration.candidates[0].target;
+        let expected = crate::config::coding_agent_profiles::ReplicaSelectionExpectation {
+            identity: target.identity_path.clone(),
+            pair: super::target_pair(target),
+            locked: false,
+        };
+        // The stored pair changes after the enumeration but before the write.
+        let mut value: Value = serde_json::from_slice(&config_bytes(&replica)).expect("parse");
+        value["tooling"]["profile"] = json!("C");
+        std::fs::write(
+            replica.join("config.json"),
+            serde_json::to_vec(&value).expect("serialize"),
+        )
+        .expect("rewrite");
+        let changed_bytes = config_bytes(&replica);
+
+        let error = crate::config::coding_agent_profiles::write_replica_selection(
+            &settings_snapshot,
+            &replica,
+            &crate::config::coding_agent_profiles::ReplicaSelectionPair {
+                coding_agent_id: "agent-0".to_string(),
+                requested_profile: "B".to_string(),
+            },
+            crate::config::coding_agent_profiles::SelectionWriteIntent::BulkOrdinary,
+            &expected,
+        )
+        .expect_err("stale expectation must fail its CAS");
+        assert!(error.starts_with("stale replica selection"), "{error}");
+        assert_eq!(
+            config_bytes(&replica),
+            changed_bytes,
+            "failed CAS writes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_default_round_trip_and_atomic_publication() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let matrix = fixture.ac_root.join("_agent_dev-rust");
+        std::fs::write(
+            matrix.join("config.json"),
+            serde_json::to_vec(&json!({
+                "tooling": { "defaultProfile": "A", "unknownKey": 123 },
+            }))
+            .expect("serialize matrix config"),
+        )
+        .expect("seed matrix config");
+        let settings = state_for(selection_api_settings(&fixture));
+        let replica_bytes = config_bytes(&replica);
+
+        let initial = api_default(&settings, &replica).await;
+        assert!(initial.default.is_none());
+        assert_eq!(initial.default_fingerprint.len(), 64);
+        // The returned replica path is the canonical identity, not the raw
+        // spelling: on Windows the temp path may carry an 8.3 short component
+        // (`RUNNER~1`) while the validated path is the long canonical form.
+        assert_eq!(initial.target_replica_path, canonical_display(&replica));
+
+        let error = super::set_replica_selection_default_inner(
+            &settings,
+            api_set_default_request(&replica, "agent-0", "B", true, "wrong"),
+        )
+        .await
+        .expect_err("stale default fingerprint");
+        assert!(error.contains("stalePreview"), "{error}");
+
+        let (set, payload) = super::set_replica_selection_default_inner(
+            &settings,
+            api_set_default_request(&replica, "agent-0", "B", true, &initial.default_fingerprint),
+        )
+        .await
+        .expect("set default");
+        assert_eq!(
+            set.default,
+            Some(super::SelectionDefault {
+                coding_agent_id: "agent-0".to_string(),
+                requested_profile: "B".to_string(),
+                selection_locked: true,
+            })
+        );
+        assert_eq!(payload["scope"], json!("default"));
+        assert_eq!(payload["operation"], json!("default"));
+        assert_eq!(payload["agentPath"], json!(set.matrix_path));
+        assert_eq!(payload["affectedPaths"], json!([]));
+        assert_eq!(payload["default"]["selectionLocked"], json!(true));
+
+        let disk: Value =
+            serde_json::from_slice(&std::fs::read(matrix.join("config.json")).expect("read"))
+                .expect("parse matrix config");
+        assert_eq!(
+            disk["tooling"]["replicaSelectionDefault"],
+            json!({
+                "codingAgentId": "agent-0",
+                "requestedProfile": "B",
+                "selectionLocked": true,
+            })
+        );
+        assert_eq!(disk["tooling"]["defaultProfile"], json!("A"));
+        assert_eq!(disk["tooling"]["unknownKey"], json!(123));
+        assert_eq!(
+            config_bytes(&replica),
+            replica_bytes,
+            "replicas are untouched"
+        );
+
+        let reread = api_default(&settings, &replica).await;
+        assert_eq!(reread.default, set.default);
+        assert_eq!(reread.default_fingerprint, set.default_fingerprint);
+
+        // A second window that still holds the pre-set fingerprint is stale.
+        let error = super::set_replica_selection_default_inner(
+            &settings,
+            api_set_default_request(
+                &replica,
+                "agent-0",
+                "C",
+                false,
+                &initial.default_fingerprint,
+            ),
+        )
+        .await
+        .expect_err("the old window must not overwrite the new default");
+        assert!(error.contains("stalePreview"), "{error}");
+        let unchanged: Value =
+            serde_json::from_slice(&std::fs::read(matrix.join("config.json")).expect("read"))
+                .expect("parse");
+        assert_eq!(
+            unchanged["tooling"]["replicaSelectionDefault"]["requestedProfile"],
+            json!("B")
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_default_rejects_malformed_and_invalid_input() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let matrix = fixture.ac_root.join("_agent_dev-rust");
+        let settings = state_for(selection_api_settings(&fixture));
+
+        // A malformed stored default is an error, never a silent absence.
+        std::fs::write(
+            matrix.join("config.json"),
+            serde_json::to_vec(&json!({
+                "tooling": { "replicaSelectionDefault": { "codingAgentId": "agent-0" } },
+            }))
+            .expect("serialize malformed config"),
+        )
+        .expect("write malformed config");
+        let error =
+            super::get_replica_selection_default_inner(&settings, api_default_request(&replica))
+                .await
+                .expect_err("malformed default must fail the read");
+        let error = error.to_string();
+        assert!(error.contains("replicaSelectionDefault"), "{error}");
+
+        let error = super::set_replica_selection_default_inner(
+            &settings,
+            api_set_default_request(&replica, "agent-0", "B", true, "whatever"),
+        )
+        .await
+        .expect_err("malformed prior default must fail the CAS read");
+        assert!(error.contains("replicaSelectionDefault"), "{error}");
+
+        std::fs::remove_file(matrix.join("config.json")).expect("remove malformed config");
+        let error = super::set_replica_selection_default_inner(
+            &settings,
+            api_set_default_request(&replica, "agent-0", "BB", true, "whatever"),
+        )
+        .await
+        .expect_err("the profile must be a single letter");
+        assert!(error.contains("single letter A through Z"), "{error}");
+
+        let error = super::set_replica_selection_default_inner(
+            &settings,
+            api_set_default_request(&replica, "missing-agent", "B", true, "whatever"),
+        )
+        .await
+        .expect_err("the coding agent must be configured");
+        assert!(error.contains("not configured"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_barrier_unlock_waits_for_paused_apply_publication() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let settings_for_holder = settings.clone();
+        let replica_for_holder = replica.clone();
+        let (entered_tx, entered_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+
+        let holder = tokio::spawn(crate::session::selection::run_owned_selection_operation(
+            move || {
+                let settings = settings_for_holder;
+                let replica = replica_for_holder;
+                async move {
+                    // Publication phase of an apply, then the held restart span.
+                    let snapshot = settings.read().await.clone();
+                    let enumeration = super::enumerate_profile_assignment_targets(
+                        &snapshot,
+                        &replica,
+                        &super::ProfileAssignmentScope::Replica,
+                        &[],
+                    )
+                    .expect("enumerate");
+                    let target = &enumeration.candidates[0].target;
+                    let expected =
+                        crate::config::coding_agent_profiles::ReplicaSelectionExpectation {
+                            identity: target.identity_path.clone(),
+                            pair: super::target_pair(target),
+                            locked: false,
+                        };
+                    crate::config::coding_agent_profiles::write_replica_selection(
+                        &snapshot,
+                        &replica,
+                        &crate::config::coding_agent_profiles::ReplicaSelectionPair {
+                            coding_agent_id: "agent-0".to_string(),
+                            requested_profile: "B".to_string(),
+                        },
+                        crate::config::coding_agent_profiles::SelectionWriteIntent::IndividualAssignLock,
+                        &expected,
+                    )
+                    .expect("publish the lock");
+                    entered_tx.send(()).expect("signal entered");
+                    release_rx.await.expect("release the publication span");
+                    Ok::<(), String>(())
+                }
+            },
+        ));
+        entered_rx.await.expect("holder entered");
+
+        let preview =
+            api_removal_preview(&settings, &replica, super::ProfileAssignmentScope::Replica).await;
+        assert_eq!(preview.protected_count, 1);
+        let fingerprint = preview.target_fingerprint.clone();
+        let settings_for_unlock = settings.clone();
+        let replica_for_unlock = replica.clone();
+        let unlock = tokio::spawn(crate::session::selection::run_owned_selection_operation(
+            move || {
+                let settings = settings_for_unlock;
+                let replica = replica_for_unlock;
+                let fingerprint = fingerprint.clone();
+                async move {
+                    super::apply_selection_lock_removal_inner(
+                        &settings,
+                        api_removal_apply_request(
+                            &replica,
+                            super::ProfileAssignmentScope::Replica,
+                            &fingerprint,
+                        ),
+                    )
+                    .await
+                    .map(|(result, _payload)| result)
+                }
+            },
+        ));
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !unlock.is_finished(),
+            "the unlock must not acknowledge while the earlier apply still owns the turn"
+        );
+
+        release_tx.send(()).expect("release holder");
+        holder
+            .await
+            .expect("holder join")
+            .expect("holder operation");
+        let removed = unlock
+            .await
+            .expect("unlock join")
+            .expect("unlock operation");
+        assert_eq!(removed.removed_count, 1);
+        assert_eq!(removed.remaining_protected_count, Some(0));
+        let saved: Value = serde_json::from_slice(&config_bytes(&replica)).expect("parse");
+        assert_eq!(saved["tooling"]["selectionLocked"], json!(false));
+        assert_eq!(saved["tooling"]["currentCodingAgent"], json!("agent-0"));
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_barrier_read_cannot_observe_half_settled_apply() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let settings_for_holder = settings.clone();
+        let replica_for_holder = replica.clone();
+        let (entered_tx, entered_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+
+        let holder = tokio::spawn(crate::session::selection::run_owned_selection_operation(
+            move || {
+                let settings = settings_for_holder;
+                let replica = replica_for_holder;
+                async move {
+                    let snapshot = settings.read().await.clone();
+                    let enumeration = super::enumerate_profile_assignment_targets(
+                        &snapshot,
+                        &replica,
+                        &super::ProfileAssignmentScope::Replica,
+                        &[],
+                    )
+                    .expect("enumerate");
+                    let target = &enumeration.candidates[0].target;
+                    let expected =
+                        crate::config::coding_agent_profiles::ReplicaSelectionExpectation {
+                            identity: target.identity_path.clone(),
+                            pair: super::target_pair(target),
+                            locked: false,
+                        };
+                    crate::config::coding_agent_profiles::write_replica_selection(
+                        &snapshot,
+                        &replica,
+                        &crate::config::coding_agent_profiles::ReplicaSelectionPair {
+                            coding_agent_id: "agent-0".to_string(),
+                            requested_profile: "B".to_string(),
+                        },
+                        crate::config::coding_agent_profiles::SelectionWriteIntent::IndividualAssignLock,
+                        &expected,
+                    )
+                    .expect("publish the lock");
+                    entered_tx.send(()).expect("signal entered");
+                    release_rx.await.expect("release the publication span");
+                    Ok::<(), String>(())
+                }
+            },
+        ));
+        entered_rx.await.expect("holder entered");
+        let published_bytes = config_bytes(&replica);
+        let mut dir_before: Vec<std::ffi::OsString> = std::fs::read_dir(&replica)
+            .expect("read replica dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        dir_before.sort();
+
+        let settings_for_read = settings.clone();
+        let replica_for_read = replica.clone();
+        let read = tokio::spawn(crate::session::selection::run_owned_selection_operation(
+            move || {
+                let settings = settings_for_read;
+                let replica = replica_for_read;
+                async move {
+                    super::preview_selection_lock_removal_inner(
+                        &empty_session_manager(),
+                        &settings,
+                        api_removal_preview_request(
+                            &replica,
+                            super::ProfileAssignmentScope::Replica,
+                        ),
+                    )
+                    .await
+                    .map(|preview| preview.protected_count)
+                }
+            },
+        ));
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !read.is_finished(),
+            "the read must not observe the state while the mutation still owns the turn"
+        );
+
+        // Dropping the read waiter leaves the earlier mutation's ownership intact.
+        read.abort();
+        let _ = read.await;
+        let probe = tokio::time::timeout(
+            Duration::from_millis(150),
+            crate::session::selection::acquire_selection_operation_turn(),
+        )
+        .await;
+        assert!(
+            probe.is_err(),
+            "the earlier mutation must still own the turn after the read waiter is dropped"
+        );
+
+        release_tx.send(()).expect("release holder");
+        holder
+            .await
+            .expect("holder join")
+            .expect("holder operation");
+        assert_eq!(
+            config_bytes(&replica),
+            published_bytes,
+            "the read wrote nothing"
+        );
+        let mut dir_after: Vec<std::ffi::OsString> = std::fs::read_dir(&replica)
+            .expect("read replica dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        dir_after.sort();
+        assert_eq!(dir_after, dir_before, "the read created no files");
+
+        // A fresh read after release observes the settled publication.
+        let preview =
+            api_removal_preview(&settings, &replica, super::ProfileAssignmentScope::Replica).await;
+        assert_eq!(preview.protected_count, 1);
+        assert_eq!(
+            preview.targets[0].saved_pair,
+            Some(super::SavedPair {
+                coding_agent_id: Some("agent-0".to_string()),
+                requested_profile: Some("B".to_string()),
+            })
+        );
     }
 }
