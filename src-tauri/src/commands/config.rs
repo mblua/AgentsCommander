@@ -8903,10 +8903,10 @@ mod tests {
         let initial = api_default(&settings, &replica).await;
         assert!(initial.default.is_none());
         assert_eq!(initial.default_fingerprint.len(), 64);
-        assert_eq!(
-            initial.target_replica_path,
-            replica.to_string_lossy().to_string()
-        );
+        // The returned replica path is the canonical identity, not the raw
+        // spelling: on Windows the temp path may carry an 8.3 short component
+        // (`RUNNER~1`) while the validated path is the long canonical form.
+        assert_eq!(initial.target_replica_path, canonical_display(&replica));
 
         let error = super::set_replica_selection_default_inner(
             &settings,
