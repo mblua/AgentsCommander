@@ -587,6 +587,10 @@ fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
     }
     #[cfg(not(windows))]
     {
+        // Reparse points are a Windows attribute; this parameter is only read
+        // on Windows, so bind it explicitly to stay lint-clean under the
+        // Linux/macOS clippy runs (`-D warnings`).
+        let _ = metadata;
         false
     }
 }
