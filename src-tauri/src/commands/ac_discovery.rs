@@ -125,6 +125,23 @@ pub struct AcAgentReplica {
     /// meaningful when `is_coordinator`. Drives the MANUALLY-CLOSED pill;
     /// cleared on reopen. Read from the same persisted store entry.
     pub manually_closed_at: Option<String>,
+    /// #1941 - the stored selection pair from the strict #1939 read, or `null`
+    /// when no complete pair exists (including an invalid state).
+    pub saved_pair: Option<AcReplicaSavedPair>,
+    /// #1941 - `unlocked` | `locked` | `invalid`, from the strict state read.
+    /// Never a synthesized default: an unreadable/malformed state is `invalid`.
+    pub selection_state: Option<String>,
+    /// #1941 - the strict-read diagnostic when `selection_state` is `invalid`.
+    pub selection_error: Option<String>,
+}
+
+/// #1941 - the selection pair as discovery exposes it. A strict complete pair
+/// fills both fields; the option type leaves room for legacy/partial data.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcReplicaSavedPair {
+    pub coding_agent_id: Option<String>,
+    pub requested_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -169,6 +186,35 @@ struct ReplicaIdentityRead {
     config: Option<serde_json::Value>,
     identity: Option<crate::config::replica_identity::WgReplicaIdentity>,
     invalid_identity: bool,
+}
+
+/// #1941 - strict protection state for discovery: `invalid` carries its
+/// diagnostic and is never reported as an unlocked/false default.
+fn replica_selection_wire_fields(
+    replica_dir: &Path,
+) -> (Option<AcReplicaSavedPair>, Option<String>, Option<String>) {
+    use crate::config::coding_agent_profiles::ReplicaSelectionState;
+    match crate::config::coding_agent_profiles::read_replica_selection_state(replica_dir) {
+        ReplicaSelectionState::Unlocked { pair, .. } => (
+            pair.map(|pair| AcReplicaSavedPair {
+                coding_agent_id: Some(pair.coding_agent_id),
+                requested_profile: Some(pair.requested_profile),
+            }),
+            Some("unlocked".to_string()),
+            None,
+        ),
+        ReplicaSelectionState::Locked { pair, .. } => (
+            Some(AcReplicaSavedPair {
+                coding_agent_id: Some(pair.coding_agent_id),
+                requested_profile: Some(pair.requested_profile),
+            }),
+            Some("locked".to_string()),
+            None,
+        ),
+        ReplicaSelectionState::Invalid { diagnostic } => {
+            (None, Some("invalid".to_string()), Some(diagnostic))
+        }
+    }
 }
 
 fn read_replica_config_with_valid_identity(replica_dir: &Path) -> ReplicaIdentityRead {
@@ -1310,6 +1356,12 @@ pub async fn discover_ac_agents(
                                     .and_then(|e| e.manually_closed_at)
                                     .map(|dt| dt.to_rfc3339());
 
+                                // #1941 - strict protection state from the same
+                                // validated replica directory; an invalid state is
+                                // surfaced as `invalid`, never as default false.
+                                let (saved_pair, selection_state, selection_error) =
+                                    replica_selection_wire_fields(&wg_path);
+
                                 wg_agents.push(AcAgentReplica {
                                     name: replica_name,
                                     path: projected_path_string(&wg_path),
@@ -1324,6 +1376,9 @@ pub async fn discover_ac_agents(
                                     last_user_message_at,
                                     auto_closed_at,
                                     manually_closed_at,
+                                    saved_pair,
+                                    selection_state,
+                                    selection_error,
                                 });
                             }
                         }
@@ -2089,6 +2144,12 @@ pub(crate) async fn discover_project_inner(
                             .and_then(|e| e.manually_closed_at)
                             .map(|dt| dt.to_rfc3339());
 
+                        // #1941 - strict protection state from the same validated
+                        // replica directory; an invalid state is surfaced as
+                        // `invalid`, never as default false.
+                        let (saved_pair, selection_state, selection_error) =
+                            replica_selection_wire_fields(&wg_path);
+
                         wg_agents.push(AcAgentReplica {
                             name: replica_name,
                             path: projected_path_string(&wg_path),
@@ -2103,6 +2164,9 @@ pub(crate) async fn discover_project_inner(
                             last_user_message_at,
                             auto_closed_at,
                             manually_closed_at,
+                            saved_pair,
+                            selection_state,
+                            selection_error,
                         });
                     }
                 }
@@ -5978,5 +6042,187 @@ mod tests {
             !ignored,
             "{replica} must not be ignored by the 7 patterns alone"
         );
+    }
+
+    // ── #1941 strict selection state in both discovery constructors ─────
+
+    struct DiscoverySelectionFixture {
+        _temp: tempfile::TempDir,
+        project: PathBuf,
+        app: tauri::App,
+        settings: SettingsState,
+        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        branch_watcher: Arc<DiscoveryBranchWatcher>,
+        clocks: crate::config::coordinator_clocks::CoordinatorClocksState,
+    }
+
+    fn discovery_selection_fixture() -> DiscoverySelectionFixture {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        let ac_root = project.join(".ac");
+        let room = ac_root.join("room-1-team");
+        let replicas: [(&str, Value); 4] = [
+            (
+                "locked",
+                json!({"profile": "A", "currentCodingAgent": "codex", "selectionLocked": true}),
+            ),
+            (
+                "unlocked",
+                json!({"profile": "B", "currentCodingAgent": "codex"}),
+            ),
+            (
+                "fallback",
+                json!({"currentCodingAgent": "codex", "instanceProfileOverride": "C"}),
+            ),
+            ("invalid", json!({"selectionLocked": true})),
+        ];
+        for (name, tooling) in replicas {
+            let matrix = ac_root.join(format!("_agent_{name}"));
+            let replica = room.join(format!("__agent_{name}"));
+            std::fs::create_dir_all(&matrix).expect("create matrix");
+            std::fs::create_dir_all(&replica).expect("create replica");
+            std::fs::write(matrix.join("Role.md"), "# Role\n").expect("write Role.md");
+            std::fs::write(
+                replica.join("config.json"),
+                serde_json::to_vec(&json!({
+                    "identity": format!("../../_agent_{name}"),
+                    "tooling": tooling,
+                }))
+                .expect("serialize replica config"),
+            )
+            .expect("write replica config");
+        }
+        let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(AppSettings {
+            agents: vec![crate::config::settings::AgentConfig {
+                id: "codex".to_string(),
+                label: "Codex".to_string(),
+                command: "codex".to_string(),
+                color: "#000000".to_string(),
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
+                config_seed: None,
+                context_regex: None,
+                blocking_menus: None,
+                backend: Default::default(),
+            }],
+            project_paths: vec![project.to_string_lossy().to_string()],
+            ..AppSettings::default()
+        }));
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let clocks: crate::config::coordinator_clocks::CoordinatorClocksState = Arc::new(
+            std::sync::Mutex::new(crate::config::coordinator_clocks::CoordinatorClocks::default()),
+        );
+        let app = crate::test_support::test_builder()
+            .manage(settings.clone())
+            .manage(Arc::clone(&session_mgr))
+            .manage(clocks.clone())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build discovery test app");
+        let branch_watcher =
+            DiscoveryBranchWatcher::new(app.handle().clone(), Arc::clone(&session_mgr));
+        assert!(app.manage(Arc::clone(&branch_watcher)));
+        DiscoverySelectionFixture {
+            _temp: temp,
+            project,
+            app,
+            settings,
+            session_mgr,
+            branch_watcher,
+            clocks,
+        }
+    }
+
+    fn assert_discovery_selection_wire(result: &AcDiscoveryResult) {
+        let room = result
+            .workgroups
+            .iter()
+            .find(|wg| wg.name == "room-1-team")
+            .expect("room discovered");
+        let agent = |name: &str| {
+            room.agents
+                .iter()
+                .find(|agent| agent.name == name)
+                .unwrap_or_else(|| panic!("replica {name} discovered"))
+        };
+
+        let locked = agent("locked");
+        assert_eq!(locked.selection_state.as_deref(), Some("locked"));
+        let pair = locked.saved_pair.as_ref().expect("locked pair");
+        assert_eq!(pair.coding_agent_id.as_deref(), Some("codex"));
+        assert_eq!(pair.requested_profile.as_deref(), Some("A"));
+        assert!(locked.selection_error.is_none());
+        assert_eq!(locked.current_coding_agent_id.as_deref(), Some("codex"));
+        assert_eq!(locked.current_profile.as_deref(), Some("A"));
+
+        let unlocked = agent("unlocked");
+        assert_eq!(unlocked.selection_state.as_deref(), Some("unlocked"));
+        assert_eq!(
+            unlocked
+                .saved_pair
+                .as_ref()
+                .expect("unlocked pair")
+                .requested_profile
+                .as_deref(),
+            Some("B")
+        );
+        assert!(unlocked.selection_error.is_none());
+
+        let invalid = agent("invalid");
+        assert_eq!(invalid.selection_state.as_deref(), Some("invalid"));
+        assert!(invalid.saved_pair.is_none());
+        assert!(
+            invalid.selection_error.is_some(),
+            "an invalid protection state carries its diagnostic"
+        );
+
+        // The existing resolver behavior is preserved: the legacy
+        // instanceProfileOverride still resolves as the current profile, and
+        // the strict pair reports the same letter.
+        let fallback = agent("fallback");
+        assert_eq!(fallback.current_profile.as_deref(), Some("C"));
+        assert_eq!(fallback.selection_state.as_deref(), Some("unlocked"));
+        assert_eq!(
+            fallback
+                .saved_pair
+                .as_ref()
+                .expect("fallback pair")
+                .requested_profile
+                .as_deref(),
+            Some("C")
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_1937_selection_api_discovery_constructors_report_strict_selection_state() {
+        let fixture = discovery_selection_fixture();
+        let app_handle = fixture.app.handle().clone();
+        let result = discover_ac_agents(
+            app_handle.clone(),
+            fixture
+                .app
+                .state::<Arc<tokio::sync::RwLock<SessionManager>>>(),
+            fixture.app.state::<SettingsState>(),
+            fixture.app.state::<Arc<DiscoveryBranchWatcher>>(),
+            fixture
+                .app
+                .state::<crate::config::coordinator_clocks::CoordinatorClocksState>(),
+        )
+        .await
+        .expect("discover_ac_agents");
+        assert_discovery_selection_wire(&result);
+
+        let project = fixture.project.to_string_lossy().to_string();
+        let direct = discover_project_inner(
+            &app_handle,
+            &fixture.session_mgr,
+            &project,
+            &fixture.settings,
+            &fixture.branch_watcher,
+            &fixture.clocks,
+        )
+        .await
+        .expect("discover_project_inner");
+        assert_discovery_selection_wire(&direct);
     }
 }
