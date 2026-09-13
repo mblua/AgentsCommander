@@ -1846,6 +1846,7 @@ mod tests {
         live_checks: AtomicUsize,
         resolve_calls: AtomicUsize,
         prepare_calls: Mutex<Vec<AttemptSnapshot>>,
+        prepare_live_checks: Mutex<Vec<(u64, u32, usize)>>,
         deliveries: Mutex<Vec<AttemptSnapshot>>,
         delivery_results: Mutex<VecDeque<Result<(), String>>>,
         blocked_delivery: Mutex<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>>,
@@ -1880,6 +1881,7 @@ mod tests {
                 live_checks: AtomicUsize::new(0),
                 resolve_calls: AtomicUsize::new(0),
                 prepare_calls: Mutex::new(Vec::new()),
+                prepare_live_checks: Mutex::new(Vec::new()),
                 deliveries: Mutex::new(Vec::new()),
                 delivery_results: Mutex::new(VecDeque::new()),
                 blocked_delivery: Mutex::new(None),
@@ -2039,6 +2041,11 @@ mod tests {
             cancellation: CancellationToken,
         ) -> BoxFuture<'static, AttemptPreparation> {
             self.prepare_calls.lock().unwrap().push(snapshot.clone());
+            self.prepare_live_checks.lock().unwrap().push((
+                snapshot.generation,
+                snapshot.failure_count,
+                self.live_checks.load(Ordering::SeqCst),
+            ));
             let policy = self
                 .policies
                 .lock()
@@ -3652,7 +3659,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closed_sample_receiver_keeps_due_retry_and_biased_deadline_live() {
+    async fn closed_sample_receiver_prepares_due_retry_before_next_backlog_sample() {
         let id = Uuid::new_v4();
         let runtime = ScriptedRuntime::new();
         runtime.set_policy(id, &[50]);
@@ -3694,13 +3701,50 @@ mod tests {
             .send(())
             .expect("release the first queued liveness check");
         runtime.wait_for_delivery_count(2).await;
-        assert!(
-            runtime.live_checks.load(Ordering::SeqCst) < 1_000,
-            "the biased due deadline must run before draining a ready sample backlog"
-        );
-
+        // The ordering evidence is a saved count, so let the actor finish the whole
+        // closed-receiver backlog before any observer reads the recorded state.
+        runtime.wait_for_live_checks(1_000).await;
+        // The saved liveness count in the retry preparation record proves the due retry
+        // was prepared before the actor consumed a second queued sample, while the
+        // eventual second delivery proves the dispatch completed. It does not prove
+        // which redundant dispatch route ran (sample postprocessing or the deadline
+        // arm), how the delivery task was scheduled, or any wall-clock latency, and it
+        // says nothing about when recv() first returned None; the sender-closed backlog
+        // integration is what the drain above still covers.
+        let preparations = runtime.prepare_live_checks.lock().unwrap().clone();
+        let deliveries = runtime.deliveries.lock().unwrap().clone();
         shutdown.cancel();
         actor.await.unwrap();
+
+        assert_eq!(
+            preparations.len(),
+            2,
+            "the first delivery and its due retry must each prepare exactly once"
+        );
+        assert_eq!(
+            preparations[0].0, preparations[1].0,
+            "preparations must stay within one generation"
+        );
+        assert_eq!(
+            preparations[0].1, 0,
+            "the initial preparation carries no failures"
+        );
+        assert_eq!(
+            preparations[1].1, 1,
+            "the retry preparation follows the first failure"
+        );
+        assert_eq!(preparations[0].2, 0);
+        assert_eq!(deliveries.len(), 2);
+        assert_eq!(deliveries[0].session_id, id);
+        assert_eq!(deliveries[1].session_id, id);
+        assert_eq!(deliveries[0].generation, deliveries[1].generation);
+        assert_eq!(deliveries[0].failure_count, 0);
+        assert_eq!(deliveries[1].failure_count, 1);
+        assert_eq!(runtime.live_checks.load(Ordering::SeqCst), 1_000);
+        assert_eq!(
+            preparations[1].2, 1,
+            "due retry preparation must precede the next backlog sample"
+        );
     }
 
     #[tokio::test]
