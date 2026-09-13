@@ -1582,6 +1582,43 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
             "_agent_*/**/*.pyc",
             "# AgentsCommander: exclude Python bytecode inside agent folders.",
         ),
+        // #1968 - the machine-local coding-agent catalog children. The tracked
+        // `agents.json` and `_seed/` masters stay tracked; these are the
+        // sidecars, lock and publication temporaries that must never be
+        // committed. Literals on purpose: importing the leaf registry here
+        // would add a `commands -> config::instance_artifacts` module arc.
+        (
+            "/coding-agents/agents.local.json",
+            "# AgentsCommander: exclude machine-local coding-agent overrides.",
+        ),
+        (
+            "/coding-agents/agents.migration-v1.backup.json",
+            "# AgentsCommander: exclude the coding-agent migration backup (byte-exact pre-migration source copy).",
+        ),
+        (
+            "/coding-agents/.agents.migration-v1.json",
+            "# AgentsCommander: exclude the coding-agent migration journal.",
+        ),
+        (
+            "/coding-agents/.agents.json.lock",
+            "# AgentsCommander: exclude the coding-agent catalog write-lock sidecar.",
+        ),
+        (
+            "/coding-agents/.agents.json.*.tmp",
+            "# AgentsCommander: exclude coding-agent base publication temporaries.",
+        ),
+        (
+            "/coding-agents/.agents.local.json.*.tmp",
+            "# AgentsCommander: exclude coding-agent local override publication temporaries.",
+        ),
+        (
+            "/coding-agents/.agents.migration-v1.backup.json.*.tmp",
+            "# AgentsCommander: exclude coding-agent migration backup publication temporaries.",
+        ),
+        (
+            "/coding-agents/..agents.migration-v1.json.*.tmp",
+            "# AgentsCommander: exclude coding-agent migration journal publication temporaries (the journal name starts with a dot).",
+        ),
     ];
 
     if gitignore_path.exists() {
@@ -4546,6 +4583,62 @@ mod tests {
         assert!(
             content.lines().any(|line| line.trim() == "wg-*/"),
             "the legacy wg-*/ exclusion must survive; existing Rooms are still supported"
+        );
+    }
+
+    /// #1968 - the project `.ac/.gitignore` carries the narrow coding-agent
+    /// sidecar rules. The patterns are literals here (importing the leaf
+    /// registry would add a module arc), so this fixture pins the intended
+    /// policy: every local/migration/temp sidecar is excluded, while the tracked
+    /// base `agents.json` and the `_seed/` masters stay visible, and no broad
+    /// `coding-agents/` rule exists.
+    #[test]
+    fn managed_catalog_ac_root_gitignore_carries_sidecar_rules() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
+        for pattern in [
+            "/coding-agents/agents.local.json",
+            "/coding-agents/agents.migration-v1.backup.json",
+            "/coding-agents/.agents.migration-v1.json",
+            "/coding-agents/.agents.json.lock",
+            "/coding-agents/.agents.json.*.tmp",
+            "/coding-agents/.agents.local.json.*.tmp",
+            "/coding-agents/.agents.migration-v1.backup.json.*.tmp",
+            "/coding-agents/..agents.migration-v1.json.*.tmp",
+        ] {
+            assert_eq!(
+                content
+                    .lines()
+                    .filter(|line| line.trim() == pattern)
+                    .count(),
+                1,
+                "workspace .gitignore must carry {pattern} exactly once"
+            );
+        }
+        for broad in [
+            "/coding-agents/*",
+            "/coding-agents",
+            "coding-agents/",
+            "/coding-agents/agents.json",
+        ] {
+            assert!(
+                !content.lines().any(|line| line.trim() == broad),
+                "workspace .gitignore must not carry the broad rule {broad}"
+            );
+        }
+
+        // Idempotent: a second ensure appends nothing.
+        let before = content;
+        ensure_ac_root_gitignore(&ac_root).expect("second ensure");
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(".gitignore")).expect("re-read"),
+            before,
+            "a second call must be a no-op"
         );
     }
 
