@@ -408,6 +408,7 @@ agentscommander_lib::commands::entity_creation -> agentscommander_lib::commands:
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::commands::wg_delete_diagnostic
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::ac_root
+agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::coordinator_clocks
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::local_config_io

@@ -47,7 +47,7 @@ Enhanced controls not applicable: executable self-hash/host attestation, DLL/SDK
 
 ## Partition, native IDs and shared-file handoffs
 
-PARTITION: 6 phases. Trigger: multiple owners/contracts and26 unique product paths; no mechanical exception. Every phase is self-contained, one owner, one external contract at most, <=10 modified files, no added/deleted product files. Each requires landed predecessor/current-main branch; all parallel-with none. Frontend client phase class is design-bearing because it adjusts operation completion timing.
+PARTITION: 6 phases. Trigger: multiple owners/contracts and27 unique product paths; no mechanical exception. Every phase is self-contained, one owner, one external contract at most, <=10 modified files, no added/deleted product files. Each requires landed predecessor/current-main branch; all parallel-with none. Frontend client phase class is design-bearing because it adjusts operation completion timing.
 
 Native children #1938-#1943 were created OPEN by coordinator and mapped2026-09-11T02:20Z. Branch slugs exactly match filenames. No placeholder issue IDs. Real-ID phase documents inline full decisions, commands, delivery contract and wire schema where consumed. No implementer needs epic for an action.
 
@@ -58,7 +58,7 @@ Phase table follows with SHA256 of exact bytes (uppercase). Epic digest is compu
 | Child | Class | Owner | Files | Depends-on | Parallel-with | Phase-SHA256 |
 |---|---|---|---:|---|---|---|
 | [#1938](1938-config-write-locks.md) | design-bearing | ac-dev-rust-v4 | 3 | none | none | E9147B778F1B3DAD275153984893473D2AA7694334C181680EBB8F7A1DFA964B |
-| [#1939](1939-replica-selection-state.md) | design-bearing | ac-dev-rust-v4 | 5 | #1938 | none | 98FFDE5A19AAAB26CD8645802BF948088F0923C7007C2D190C20BCB53E6BFA7C |
+| [#1939](1939-replica-selection-state.md) | design-bearing | ac-dev-rust-v4 | 6 | #1938 | none | 51A50421B614ABF4DA291F3B84CE20734A9558D727F80C90AAD9DE5458C3CE1E |
 | [#1940](1940-selection-operation-lifetime.md) | design-bearing | ac-dev-rust-v4 | 4 | #1939 | none | 54704707D5E8D204746F718955F429C628EF8466D989D124ACC17F50D35179F7 |
 | [#1941](1941-selection-lock-api.md) | design-bearing | ac-dev-rust-v4 | 4 | #1940 | none | F93345EB8F31347F7FE7457057D7906EC8CAA096D60528D77A94D742086283D2 |
 | [#1942](1942-selection-lock-client.md) | design-bearing | ac-dev-webpage-ui-v4 | 5 | #1941 | none | A8697CC9B26467525DE924A7A393015216768048E017BCDD249053E5E153EB24 |
