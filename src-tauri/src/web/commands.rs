@@ -638,13 +638,22 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         "preview_coding_agent_profile_selection" => {
             let request: crate::commands::config::PreviewCodingAgentProfileSelectionRequest =
                 require_json(args, "request")?;
-            let result = crate::commands::config::preview_coding_agent_profile_selection_inner(
-                &state.session_mgr,
-                &state.settings,
-                request,
-            )
-            .await?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
+            // #1941 - the preview takes the owned selection turn for a consistent
+            // operation boundary, exactly like its sibling selection arms: a read
+            // queued behind a mutation waits (and may time out at the transport
+            // without canceling the mutation) instead of observing half-settled
+            // state.
+            let state = state.clone();
+            crate::session::selection::run_owned_selection_operation(move || async move {
+                let result = crate::commands::config::preview_coding_agent_profile_selection_inner(
+                    &state.session_mgr,
+                    &state.settings,
+                    request,
+                )
+                .await?;
+                serde_json::to_value(result).map_err(|e| e.to_string())
+            })
+            .await
         }
 
         "apply_coding_agent_profile_selection" => {
@@ -2106,6 +2115,96 @@ mod tests {
             disk["tooling"]["replicaSelectionDefault"]["requestedProfile"],
             json!("B"),
             "the detached owned task still completed the write"
+        );
+    }
+
+    /// #1941 rework ronda 1 - the real WebSocket dispatch route for the
+    /// assignment preview must queue behind the owned selection turn. On the
+    /// pre-fix arm (no `run_owned_selection_operation`) the dispatch completes
+    /// while the turn is held and reads the half-settled pre-publication state.
+    #[tokio::test]
+    async fn issue_1937_transport_parity_assignment_preview_queues_behind_the_turn() {
+        let (_temp, replica, settings) = selection_lock_web_fixture(false);
+        let replica_text = replica.to_string_lossy().to_string();
+        let (state, _rx) = ws_state_for(settings);
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let settings_for_holder = state.settings.clone();
+        let replica_for_holder = replica.clone();
+        // The holder owns the turn while a mutation is still in flight; the
+        // publication happens after the barrier, so a racing preview would
+        // observe the unlocked pre-publication state.
+        let holder = tokio::spawn(crate::session::selection::run_owned_selection_operation(
+            move || {
+                let settings = settings_for_holder;
+                let replica = replica_for_holder;
+                async move {
+                    entered_tx.send(()).expect("signal entered");
+                    release_rx.await.expect("release holder");
+                    let snapshot = settings.read().await.clone();
+                    let expected =
+                        crate::config::coding_agent_profiles::read_replica_selection_state(
+                            &replica,
+                        )
+                        .expectation()
+                        .expect("fresh expectation");
+                    crate::config::coding_agent_profiles::write_replica_selection(
+                        &snapshot,
+                        &replica,
+                        &crate::config::coding_agent_profiles::ReplicaSelectionPair {
+                            coding_agent_id: "codex".to_string(),
+                            requested_profile: "B".to_string(),
+                        },
+                        crate::config::coding_agent_profiles::SelectionWriteIntent::IndividualAssignLock,
+                        &expected,
+                    )
+                    .expect("publish the lock");
+                    Ok::<(), String>(())
+                }
+            },
+        ));
+        entered_rx.await.expect("holder entered");
+
+        let state_for_dispatch = state.clone();
+        let dispatch_task = tokio::spawn(async move {
+            dispatch(
+                &state_for_dispatch,
+                51,
+                "preview_coding_agent_profile_selection",
+                &json!({ "request": {
+                    "targetReplicaPath": replica_text,
+                    "codingAgentId": "codex",
+                    "profile": "B",
+                    "scope": "replica",
+                    "restartSessions": false,
+                } }),
+            )
+            .await
+        });
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !dispatch_task.is_finished(),
+            "the transport preview must queue behind the owned selection turn"
+        );
+
+        release_tx.send(()).expect("release holder");
+        holder
+            .await
+            .expect("holder join")
+            .expect("holder operation");
+        let response = dispatch_task.await.expect("dispatch join");
+        assert!(response.get("error").is_none(), "{response:?}");
+        assert_eq!(
+            response["result"]["targets"][0]["selectionState"],
+            json!("locked")
+        );
+        assert_eq!(
+            response["result"]["targets"][0]["savedPair"]["requestedProfile"],
+            json!("B"),
+            "the queued preview must see the settled publication"
         );
     }
 
