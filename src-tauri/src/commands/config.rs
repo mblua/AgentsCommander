@@ -8064,6 +8064,18 @@ mod tests {
         .await
         .expect_err("conflicts need a decision");
         assert!(error.contains("conflictDecisionRequired"), "{error}");
+        // A force decision without the current preview fingerprint is rejected.
+        let error = api_apply(
+            &settings,
+            &anchor,
+            super::ProfileAssignmentScope::Workgroup,
+            super::AssignmentMode::AssignAndLock,
+            Some(super::ConflictDecision::ForceReviewed),
+            None,
+        )
+        .await
+        .expect_err("a force decision still needs the reviewed fingerprint");
+        assert!(error.contains("stalePreview"), "{error}");
         assert_eq!(config_bytes(&anchor), bytes_before);
         assert_eq!(config_bytes(&second), second_bytes);
         assert!(!sidecar_path(&anchor).exists());
@@ -8602,6 +8614,11 @@ mod tests {
         let settings = state_for(selection_api_settings(&fixture));
         let anchor_bytes = config_bytes(&anchor);
         let second_bytes = config_bytes(&second);
+        let mut dir_before: Vec<std::ffi::OsString> = std::fs::read_dir(&anchor)
+            .expect("read anchor dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        dir_before.sort();
 
         let preview =
             api_removal_preview(&settings, &anchor, super::ProfileAssignmentScope::Workgroup).await;
@@ -8628,6 +8645,15 @@ mod tests {
 
         assert_eq!(config_bytes(&anchor), anchor_bytes);
         assert_eq!(config_bytes(&second), second_bytes);
+        let mut dir_after: Vec<std::ffi::OsString> = std::fs::read_dir(&anchor)
+            .expect("read anchor dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        dir_after.sort();
+        assert_eq!(
+            dir_after, dir_before,
+            "zero-protected removal creates no sidecar or temp file"
+        );
         assert!(!sidecar_path(&anchor).exists(), "no sidecar for a no-op");
         assert!(!sidecar_path(&second).exists(), "no sidecar for a no-op");
         assert!(
