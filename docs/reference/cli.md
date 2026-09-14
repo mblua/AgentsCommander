@@ -625,16 +625,18 @@ Subcommands:
 |---|---|---|
 | `list` | reads disk | array of `AgentConfig` |
 | `show --id <id>` | reads disk | one `AgentConfig` (exact id) |
-| `catalog` | reads disk | array of `CodingAgentDefinition` (read-only catalog) |
+| `catalog` | reads disk | array of `CodingAgentDefinition` (read-only persisted catalog; JSON array on stdout, warnings on stderr, nonzero unavailability error) |
 | `add` | writes | `{ "ok": true, "op": "add", "agent": { ... } }` |
 | `update --id <id>` | writes | `{ "ok": true, "op": "update", "agent": { ... } }` |
 | `remove --id <id>` | writes | `{ "ok": true, "op": "remove", "id": "<id>" }` |
+
+`catalog` reads the persisted project catalog, or the read-only instance catalog in no-project mode; it never seeds, migrates or writes. Stdout is a single JSON array; report warnings print to stderr; when no readable catalog exists the verb exits 1 with the unavailability code, path and reason and prints no array. See [Coding agents § Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration).
 
 `add` / `update` flags:
 
 | Flag | Description |
 |---|---|
-| `--from-catalog <key>` | (add) Seed label/command/color/envs/isolatedHome (and optional instructions/seed) from a catalog entry; explicit flags below override. Without it, `--label` and `--command` are required. The final label must still be non-empty: a catalog entry with an empty label requires `--label`. |
+| `--from-catalog <key>` | (add) Seed label/command/color/envs/isolatedHome (and optional instructions/seed) from a catalog entry; explicit flags below override. Without it, `--label` and `--command` are required. The final label must still be non-empty: a catalog entry with an empty label requires `--label`. An unavailable catalog aborts the add before any settings change; an unknown key keeps the not-found error. |
 | `--id <id>` | (add) Custom id, `^[a-z0-9][a-z0-9_-]{0,63}$`. Default: a minted `agent_<ms>_<hex>` id. Ids are unique case-insensitively. |
 | `--label <s>` | Display label (non-empty, trimmed). |
 | `--command <s>` | Launch command. Banned for AC-managed providers: Claude `--continue`/`-c`, Codex `resume`/`--last`, and Antigravity `--continue`/`-c`. Pi is the intentional exception: canonical Pi commands may contain `-c`, `-r`, `--continue`, `--resume`, `--session`, `--session-id`, `--fork`, or `--no-session`, including long `--name=value` forms. These user-authored controls remain configured and veto AC injection. See [Pi resume behavior](../integrations/coding-agents.md#pi-resume-behavior). |
