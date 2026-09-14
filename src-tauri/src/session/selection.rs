@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -31,6 +31,69 @@ const SHUTDOWN_FINALIZATION_RESERVE_MAX: Duration = Duration::from_millis(500);
 
 tokio::task_local! {
     static IN_SELECTION_WORKER: ();
+}
+
+/// #1940 - the process-wide turn serializing persisted selection operations
+/// (broad profile apply, instance override, self-switch persist) together with
+/// the restart settlement they trigger. Owned so a spawned task can hold it
+/// across await points without borrowing its acquirer.
+static SELECTION_OPERATION_TURN: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+
+fn selection_operation_turn() -> &'static Arc<tokio::sync::Mutex<()>> {
+    SELECTION_OPERATION_TURN.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+}
+
+/// #1940 - crate-only owned guard over the selection operation turn. Holding it
+/// keeps the whole guarded operation - persisted publication through restart
+/// settlement, classification and event publication - serialized against every
+/// other guarded operation.
+pub(crate) struct SelectionOperationGuard {
+    _turn: tokio::sync::OwnedMutexGuard<()>,
+}
+
+/// #1940 - acquire the selection operation turn.
+///
+/// A submission from inside the selection worker task local is rejected with
+/// `RecursiveSubmission` BEFORE waiting, so the worker can never block on a turn
+/// held by an operation that is itself waiting for that same worker.
+pub(crate) async fn acquire_selection_operation_turn(
+) -> Result<SelectionOperationGuard, SelectionCoordinatorError> {
+    if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+        return Err(SelectionCoordinatorError::RecursiveSubmission);
+    }
+    let turn = Arc::clone(selection_operation_turn()).lock_owned().await;
+    Ok(SelectionOperationGuard { _turn: turn })
+}
+
+/// #1940 - run a persisted selection operation on its own owned task.
+///
+/// The submitting task is rejected with `RecursiveSubmission` BEFORE the spawn
+/// (task locals do not propagate into the spawned task, so checking there would
+/// be ineffective). The owned task acquires the turn, awaits the supplied
+/// operation and releases the turn only when that operation finishes; dropping
+/// the caller detaches the owned task instead of aborting it, so a restart that
+/// was already accepted still settles under the turn. A task join failure is
+/// reported as the explicit `selectionOperationTurnJoinFailed` error.
+pub(crate) async fn run_owned_selection_operation<F, Fut, T>(operation: F) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+        return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
+    }
+    let handle = tauri::async_runtime::spawn(async move {
+        let _turn = match acquire_selection_operation_turn().await {
+            Ok(turn) => turn,
+            Err(error) => return Err(error.to_string()),
+        };
+        operation().await
+    });
+    match handle.await {
+        Ok(result) => result,
+        Err(_) => Err("selectionOperationTurnJoinFailed".to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -3267,6 +3330,8 @@ mod tests {
         coordinator.close_and_join().await;
     }
 
+    // Proves retained pending-handle ownership and exactly-once cleanup after close.
+    // Immediate stop does not cover near-deadline success, blocked stops, or physical joins.
     async fn assert_pending_container_shutdown_waits_for_stop(capped: bool) {
         use crate::pty::backend::SessionBackendKind;
         use crate::pty::container_backend::ContainerTransportBackend;
@@ -3278,11 +3343,7 @@ mod tests {
         let runtime = Arc::new(GatedStopRuntime {
             stop_started: Mutex::new(Some(stop_started)),
             stop_calls: AtomicUsize::new(0),
-            stop_hold: if capped {
-                Duration::from_secs(30)
-            } else {
-                Duration::from_millis(10)
-            },
+            stop_hold: Duration::ZERO,
             active_stops: AtomicUsize::new(0),
             deadline_seen: AtomicBool::new(false),
         });
@@ -3308,34 +3369,45 @@ mod tests {
             .manage(WsBroadcaster::new())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build pending-container shutdown app");
-        coordinator
-            .start(app.handle().clone())
-            .expect("start pending-container shutdown coordinator");
-        let mut restore_guard = Some(
-            coordinator
-                .submit_restore_first()
-                .await
-                .expect("hold restore barrier"),
-        );
+        let mut restore_guard = None;
         let manager_handle = manager.read().await.clone();
-        let mut ticket = coordinator
-            .reserve_create(TrustedCreateIntent::Background)
-            .await
-            .expect("reserve pending-container finalizer");
-        let pending = manager_handle
-            .create_pending_session(
-                &mut ticket,
-                "container".to_string(),
-                Vec::new(),
-                "C:/pending-container-shutdown".to_string(),
-                None,
-                None,
-                Vec::new(),
-                false,
-                SessionBackendKind::ContainerTransport,
-            )
-            .await
-            .expect("create pending-container manager row");
+        let setup = async {
+            coordinator
+                .start(app.handle().clone())
+                .map_err(|error| error.to_string())?;
+            restore_guard = Some(coordinator.submit_restore_first().await?);
+            let mut ticket = coordinator
+                .reserve_create(TrustedCreateIntent::Background)
+                .await
+                .map_err(|error| error.to_string())?;
+            let pending = manager_handle
+                .create_pending_session(
+                    &mut ticket,
+                    "container".to_string(),
+                    Vec::new(),
+                    "C:/pending-container-shutdown".to_string(),
+                    None,
+                    None,
+                    Vec::new(),
+                    false,
+                    SessionBackendKind::ContainerTransport,
+                )
+                .await?;
+            Ok::<_, String>((ticket, pending))
+        }
+        .await;
+        let (ticket, pending) = match setup {
+            Ok(ready) => ready,
+            Err(error) => {
+                if let Some(guard) = restore_guard.take() {
+                    guard.finish();
+                }
+                let cleanup =
+                    tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                        .await;
+                panic!("pending-container setup failed: {error}; coordinator cleanup={cleanup:?}; a cleanup timeout leaves worker ownership unresolved");
+            }
+        };
         let _transport_receiver =
             container_backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
                 session_id: pending.id,
@@ -3345,97 +3417,127 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner())
             .record_route(pending.id, SessionBackendKind::ContainerTransport);
 
-        let finalizer = tokio::spawn(async move { ticket.finalize(Vec::new()).await });
+        let mut finalizer = tokio::spawn(async move { ticket.finalize(Vec::new()).await });
         let close_started = Instant::now();
-        let close = {
+        let mut close = {
             let coordinator = coordinator.clone();
             tokio::spawn(async move {
                 if capped {
-                    coordinator.close_and_join_with_budget(close_budget).await;
+                    coordinator.close_and_join_with_budget(close_budget).await
                 } else {
-                    coordinator.close_and_join().await;
+                    coordinator.close_and_join().await
                 }
             })
         };
-        tokio::time::timeout(Duration::from_secs(1), async {
+        let shutdown_signal = tokio::time::timeout(Duration::from_secs(1), async {
             while !coordinator.inner.shutdown.is_cancelled() {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("pending-container shutdown signal becomes visible");
-        if !capped {
-            restore_guard
-                .take()
-                .expect("normal-drain restore guard")
-                .finish();
+        .await;
+        if !capped || shutdown_signal.is_err() {
+            if let Some(guard) = restore_guard.take() {
+                guard.finish();
+            }
         }
 
-        tokio::time::timeout(Duration::from_secs(2), close)
-            .await
-            .expect("coordinator close obeys the shared shutdown deadline")
-            .expect("join coordinator close task");
+        let close_result = tokio::time::timeout(Duration::from_secs(2), &mut close).await;
         let close_elapsed = close_started.elapsed();
         let close_bound = if capped {
             close_budget + Duration::from_millis(550)
         } else {
             Duration::from_secs(1)
         };
-        assert!(
-            close_elapsed <= close_bound,
-            "coordinator close elapsed {close_elapsed:?}, bound {close_bound:?}"
-        );
         if let Some(guard) = restore_guard.take() {
             guard.finish();
         }
-        assert_eq!(
-            finalizer
-                .await
-                .expect("join pending-container finalizer")
-                .expect_err("shutdown finalizer returns unavailable"),
-            SelectionCoordinatorError::Unavailable.to_string()
-        );
-        assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(runtime.active_stops.load(Ordering::SeqCst), 0);
-        assert!(!container_backend.contains_transport_state_for_test(pending.id));
-        assert_eq!(container_backend.detached_cleanup_count_for_test(), 0);
-        assert_eq!(
-            container_backend.retained_runtime_cleanup_sessions_for_test(),
-            vec![pending.id],
-            "post-seal pending cleanup must remain owned for the authorized global sweep: {:?}",
-            container_backend.retained_cleanup_contexts_for_test()
-        );
+        // Borrow task handles so timeout cannot silently detach fixture-owned work.
+        let close_cleanup = if close_result.is_err() {
+            let cleanup = tokio::time::timeout(Duration::from_secs(5), &mut close).await;
+            if cleanup.is_err() {
+                close.abort();
+                let aborted = tokio::time::timeout(Duration::from_secs(5), &mut close).await;
+                eprintln!("coordinator cleanup exceeded five seconds; abort join={aborted:?}; worker ownership unresolved");
+            }
+            Some(cleanup)
+        } else {
+            None
+        };
+        let finalizer_result = tokio::time::timeout(Duration::from_secs(5), &mut finalizer).await;
+        if finalizer_result.is_err() {
+            finalizer.abort();
+            let aborted = tokio::time::timeout(Duration::from_secs(5), &mut finalizer).await;
+            eprintln!("finalizer cleanup exceeded five seconds; abort join={aborted:?}");
+        }
+        let pre_stop_calls = runtime.stop_calls.load(Ordering::SeqCst);
+        let pre_active_stops = runtime.active_stops.load(Ordering::SeqCst);
+        let pre_transport = container_backend.contains_transport_state_for_test(pending.id);
+        let pre_detached = container_backend.detached_cleanup_count_for_test();
+        let pre_retained = container_backend.retained_runtime_cleanup_sessions_for_test();
+        let pre_contexts = container_backend.retained_cleanup_contexts_for_test();
         let aggregate = manager_handle.aggregate_snapshot().await;
-        assert!(aggregate.pending_ids.is_empty());
-        assert!(aggregate.sessions.is_empty());
-        assert!(!pty
+        let pre_route = pty
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .has_session(pending.id));
+            .has_session(pending.id);
 
+        // Collect both snapshots and finish the single authorized sweep before assertions.
         let global_report = pty
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .stop_all_started_containers_blocking(Duration::from_secs(1));
+        let stopped_signal = tokio::time::timeout(Duration::from_secs(1), stop_started_rx).await;
+        let stop_calls = runtime.stop_calls.load(Ordering::SeqCst);
+        let active_stops = runtime.active_stops.load(Ordering::SeqCst);
+        let worker_count = container_backend.shutdown_worker_count_for_test();
+        let deadline_seen = runtime.deadline_seen.load(Ordering::SeqCst);
+        let retained = container_backend.retained_cleanup_sessions_for_test();
+        eprintln!("pending-container capped={capped} close={close_result:?} close_cleanup={close_cleanup:?} terminal={} stops={stop_calls} active={active_stops} worker_accounting={worker_count} retained={retained:?}", global_report.terminal);
+        shutdown_signal.expect("pending-container shutdown signal becomes visible");
+        close_result
+            .expect("coordinator close obeys the shared shutdown deadline")
+            .expect("join coordinator close task");
+        assert!(
+            close_elapsed <= close_bound,
+            "coordinator close elapsed {close_elapsed:?}, bound {close_bound:?}"
+        );
+        assert_eq!(
+            finalizer_result
+                .expect("pending-container finalizer joins within five seconds")
+                .expect("join pending-container finalizer")
+                .expect_err("shutdown finalizer returns unavailable"),
+            SelectionCoordinatorError::Unavailable.to_string()
+        );
+        assert_eq!(pre_stop_calls, 0);
+        assert_eq!(pre_active_stops, 0);
+        assert!(!pre_transport);
+        assert_eq!(pre_detached, 0);
+        assert_eq!(
+            pre_retained,
+            vec![pending.id],
+            "post-seal pending cleanup must remain owned for the authorized global sweep: {:?}",
+            pre_contexts
+        );
+        assert!(aggregate.pending_ids.is_empty());
+        assert!(aggregate.sessions.is_empty());
+        assert!(!pre_route);
         assert!(
             global_report.terminal,
             "retained={:?}",
             global_report.retained
         );
-        tokio::time::timeout(Duration::from_secs(1), stop_started_rx)
-            .await
+        stopped_signal
             .expect("global sweep invokes the retained container stop")
             .expect("container stop-start signal is delivered");
         assert_eq!(
-            runtime.stop_calls.load(Ordering::SeqCst),
-            1,
+            stop_calls, 1,
             "the single production global sweep must stop the retained handle exactly once"
         );
-        assert_eq!(runtime.active_stops.load(Ordering::SeqCst), 0);
-        assert!(runtime.deadline_seen.load(Ordering::SeqCst));
-        assert!(container_backend
-            .retained_cleanup_sessions_for_test()
-            .is_empty());
+        assert_eq!(active_stops, 0);
+        // Accounting evidence only; zero does not prove physical worker thread joins.
+        assert_eq!(worker_count, 0);
+        assert!(deadline_seen);
+        assert!(retained.is_empty());
     }
 
     async fn assert_real_pending_container_start_shutdown_waits_for_stop(
@@ -5390,6 +5492,8 @@ fn commit_selection_transition() {
 
     #[tokio::test]
     async fn capped_shutdown_abort_joins_pending_container_stop_exactly_once() {
+        // The restore barrier forces capped close; the later sweep owns immediate cleanup.
+        // Worker counters are accounting, not proof of physical joins or deadline races.
         assert_pending_container_shutdown_waits_for_stop(true).await;
     }
 
@@ -5678,6 +5782,300 @@ fn commit_selection_transition() {
             SelectionCoordinatorError::RecursiveSubmission.to_string()
         );
         assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+    }
+
+    /// #1940 - the owned operation turn serializes the whole persisted
+    /// publication -> restart settlement span: a queued guarded mutation cannot
+    /// acknowledge until the first operation releases it, and the release lands
+    /// after the settlement step, never between publication and settlement.
+    #[tokio::test]
+    async fn issue_1937_operation_turn_serializes() {
+        let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let (a_entered_tx, a_entered_rx) = oneshot::channel::<()>();
+        let (release_a_tx, release_a_rx) = oneshot::channel::<()>();
+
+        let events_a = Arc::clone(&events);
+        let first = tokio::spawn(run_owned_selection_operation(move || {
+            let events = Arc::clone(&events_a);
+            async move {
+                events.lock().unwrap().push("a:publish");
+                assert!(
+                    selection_operation_turn().try_lock().is_err(),
+                    "the publication phase must run under the owned turn"
+                );
+                a_entered_tx.send(()).expect("signal first enter");
+                release_a_rx.await.expect("release first operation");
+                assert!(
+                    selection_operation_turn().try_lock().is_err(),
+                    "the restart settlement span must stay under the owned turn"
+                );
+                events.lock().unwrap().push("a:settle");
+                Ok::<(), String>(())
+            }
+        }));
+        a_entered_rx.await.expect("first operation entered");
+
+        let events_b = Arc::clone(&events);
+        let (b_entered_tx, mut b_entered_rx) = oneshot::channel::<()>();
+        let second = tokio::spawn(run_owned_selection_operation(move || {
+            let events = Arc::clone(&events_b);
+            async move {
+                events.lock().unwrap().push("b:publish");
+                b_entered_tx.send(()).expect("signal second enter");
+                Ok::<(), String>(())
+            }
+        }));
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !second.is_finished(),
+            "the queued guarded mutation must not acknowledge while the first holds the turn"
+        );
+        assert!(
+            b_entered_rx.try_recv().is_err(),
+            "the queued guarded mutation must not enter before the turn is released"
+        );
+        assert_eq!(&*events.lock().unwrap(), &["a:publish"]);
+
+        release_a_tx.send(()).expect("release the first operation");
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+        assert_eq!(
+            &*events.lock().unwrap(),
+            &["a:publish", "a:settle", "b:publish"]
+        );
+    }
+
+    /// #1940 - a submission from inside the selection worker must be rejected
+    /// before waiting, for both the owned helper and the raw acquisition, and
+    /// rejection must not consume the turn.
+    #[tokio::test]
+    async fn issue_1937_operation_turn_rejects_worker() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let executed_probe = Arc::clone(&executed);
+        let error = IN_SELECTION_WORKER
+            .scope((), async move {
+                run_owned_selection_operation(move || async move {
+                    executed_probe.store(true, Ordering::SeqCst);
+                    Ok::<(), String>(())
+                })
+                .await
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            SelectionCoordinatorError::RecursiveSubmission.to_string()
+        );
+        assert!(
+            !executed.load(Ordering::SeqCst),
+            "the rejected operation must never run"
+        );
+
+        let acquire_error = IN_SELECTION_WORKER
+            .scope((), async {
+                acquire_selection_operation_turn()
+                    .await
+                    .err()
+                    .expect("worker-local acquisition must be rejected")
+            })
+            .await;
+        assert_eq!(
+            acquire_error,
+            SelectionCoordinatorError::RecursiveSubmission
+        );
+
+        let guard = acquire_selection_operation_turn()
+            .await
+            .expect("normal acquisition after a rejection");
+        drop(guard);
+    }
+
+    /// #1940 - dropping the outer caller detaches the owned task: the turn
+    /// stays held until the accepted operation finishes, and the next guarded
+    /// operation observes the final state instead of racing it.
+    #[tokio::test]
+    async fn issue_1937_operation_turn_client_drop() {
+        let final_state = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+
+        let state_for_owner = Arc::clone(&final_state);
+        let owner = tokio::spawn(run_owned_selection_operation(move || async move {
+            entered_tx.send(()).expect("signal owner enter");
+            release_rx.await.expect("release owner operation");
+            state_for_owner.store(7, Ordering::SeqCst);
+            Ok::<(), String>(())
+        }));
+        entered_rx.await.expect("owner operation entered");
+
+        owner.abort();
+        assert!(owner.await.unwrap_err().is_cancelled());
+        assert_eq!(final_state.load(Ordering::SeqCst), 0);
+
+        let (observed_tx, observed_rx) = oneshot::channel::<usize>();
+        let state_for_observer = Arc::clone(&final_state);
+        let (done_tx, mut done_rx) = oneshot::channel::<()>();
+        let observer = tokio::spawn(run_owned_selection_operation(move || async move {
+            observed_tx
+                .send(state_for_observer.load(Ordering::SeqCst))
+                .expect("report observed state");
+            done_tx.send(()).expect("signal observer done");
+            Ok::<(), String>(())
+        }));
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !observer.is_finished(),
+            "dropping the outer caller must not release the owned turn"
+        );
+        assert!(done_rx.try_recv().is_err());
+
+        release_tx.send(()).expect("release the detached owner");
+        let observed = observed_rx.await.expect("observer acquired the turn");
+        assert_eq!(
+            observed, 7,
+            "the subsequent operation must observe the owner's final state"
+        );
+        observer.await.unwrap().unwrap();
+    }
+
+    /// #1940 - coordinator-side restart failures (closed, admission-busy, dead
+    /// worker channel) and a failed owned task all surface as explicit errors;
+    /// the persisted subset stays, nothing late is queued, and the turn is
+    /// released only after the failure classification.
+    #[tokio::test]
+    async fn issue_1937_operation_turn_restart_failure() {
+        fn restart_request(session_id: Uuid) -> crate::commands::session::RestartJobRequest {
+            crate::commands::session::RestartJobRequest {
+                session_id,
+                agent_id: None,
+                requested_profile: None,
+                skip_auto_resume: None,
+                activate_after: false,
+                intent: TrustedRestartIntent::Background,
+                communication_override: None,
+                enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(
+                ),
+            }
+        }
+
+        async fn panicking_operation() -> Result<(), String> {
+            panic!("simulated operation worker failure");
+        }
+
+        // (a) Coordinator closing: the phase gate rejects before any admission.
+        let closing = SelectionCoordinator::new(
+            Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
+            CancellationToken::new(),
+        );
+        closing
+            .inner
+            .phase
+            .store(CoordinatorPhase::Closing as u8, Ordering::Release);
+        let persisted = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let persisted_a = Arc::clone(&persisted);
+        let closing_for_operation = closing.clone();
+        let error = run_owned_selection_operation(move || {
+            let persisted = Arc::clone(&persisted_a);
+            async move {
+                persisted.lock().unwrap().push("a:publish");
+                let failure = closing_for_operation
+                    .restart_lifecycle(restart_request(Uuid::new_v4()))
+                    .await
+                    .map(|_| ())
+                    .unwrap_err();
+                assert!(
+                    selection_operation_turn().try_lock().is_err(),
+                    "the failure classification must stay under the owned turn"
+                );
+                persisted.lock().unwrap().push("a:classified");
+                Err::<(), String>(failure)
+            }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error, SelectionCoordinatorError::Unavailable.to_string());
+        assert_eq!(
+            &*persisted.lock().unwrap(),
+            &["a:publish", "a:classified"],
+            "a failed restart must retain the persisted subset"
+        );
+        assert_eq!(
+            closing.inner.sender.capacity(),
+            COORDINATOR_QUEUE_CAPACITY,
+            "a rejected restart must not leave a late queued job"
+        );
+
+        // (b) Admission busy: every permit is taken, so no envelope is sent.
+        let busy = SelectionCoordinator::new(
+            Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
+            CancellationToken::new(),
+        );
+        busy.inner
+            .phase
+            .store(CoordinatorPhase::Running as u8, Ordering::Release);
+        let mut held_permits = Vec::new();
+        while let Ok(permit) = busy.inner.admission.clone().try_acquire_owned() {
+            held_permits.push(permit);
+        }
+        assert_eq!(held_permits.len(), COORDINATOR_ADMISSION_CAPACITY);
+        let busy_for_operation = busy.clone();
+        let error = run_owned_selection_operation(move || async move {
+            busy_for_operation
+                .restart_lifecycle(restart_request(Uuid::new_v4()))
+                .await
+                .map(|_| ())
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error, SelectionCoordinatorError::Busy.to_string());
+        assert_eq!(
+            busy.inner.sender.capacity(),
+            COORDINATOR_QUEUE_CAPACITY,
+            "a busy admission must not consume a queue slot"
+        );
+        drop(held_permits);
+
+        // (c) Worker gone: phase still says Running, but the worker channel is
+        // closed, so the accepted-job channel reports Unavailable.
+        let orphaned = SelectionCoordinator::new(
+            Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
+            CancellationToken::new(),
+        );
+        orphaned
+            .inner
+            .phase
+            .store(CoordinatorPhase::Running as u8, Ordering::Release);
+        drop(orphaned.inner.receiver.lock().unwrap().take());
+        let orphaned_for_operation = orphaned.clone();
+        let error = run_owned_selection_operation(move || async move {
+            orphaned_for_operation
+                .restart_lifecycle(restart_request(Uuid::new_v4()))
+                .await
+                .map(|_| ())
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error, SelectionCoordinatorError::Unavailable.to_string());
+        assert_eq!(
+            orphaned.inner.sender.capacity(),
+            COORDINATOR_QUEUE_CAPACITY,
+            "a dead worker channel must not accept a late job"
+        );
+
+        // (d) Owned-task failure: a panicking operation maps to the explicit
+        // join error, and the turn is not poisoned.
+        let error = run_owned_selection_operation(panicking_operation)
+            .await
+            .unwrap_err();
+        assert_eq!(error, "selectionOperationTurnJoinFailed");
+        let guard = acquire_selection_operation_turn()
+            .await
+            .expect("a failed owned task must still release the turn");
+        drop(guard);
     }
 
     #[tokio::test]

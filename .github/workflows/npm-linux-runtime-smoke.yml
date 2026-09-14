@@ -1,0 +1,45 @@
+name: npm Linux runtime smoke
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - '.github/workflows/npm-linux-runtime-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  npm-linux-runtime-smoke:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+      - name: Run the release job's runtime setup on a fresh runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import subprocess
+          workflow = Path('.github/workflows/release.yml').read_text()
+          job = workflow.split('\n  publish-npm:', 1)[1]
+          step = job.split('      - name: Install Linux runtime dependencies for the npm CLI smoke test\n', 1)[1]
+          script = step.split('        run: |\n', 1)[1].split('\n      - ', 1)[0]
+          lines = [line[10:] for line in script.splitlines() if line.strip()]
+          assert lines and all(line.startswith('          ') for line in script.splitlines() if line.strip())
+          subprocess.run(['bash', '-euo', 'pipefail', '-c', '\n'.join(lines)], check=True)
+          PYTHON
+      - name: Install and execute the public npm CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/npm-runtime-smoke" --registry https://registry.npmjs.org/ @mblua/agentscommander@latest
+          binary="$RUNNER_TEMP/npm-runtime-smoke/node_modules/@mblua/agentscommander/bin/agentscommander"
+          ldd "$binary" | tee "$RUNNER_TEMP/npm-runtime-libraries.txt"
+          if grep -F 'not found' "$RUNNER_TEMP/npm-runtime-libraries.txt"; then
+            exit 1
+          fi
+          "$RUNNER_TEMP/npm-runtime-smoke/node_modules/.bin/agentscommander" --version

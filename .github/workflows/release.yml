@@ -2510,6 +2510,16 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # Jobs use separate runners; build dependencies do not carry over here.
+      - name: Install Linux runtime dependencies for the npm CLI smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-0 libgtk-3-0 libgbm1 libxcb1 \
+            libssl3 libwayland-client0
+
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ${{ github.ref }}

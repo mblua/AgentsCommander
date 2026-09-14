@@ -11,9 +11,12 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::cli::task_ops;
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
 use crate::config::ac_root::existing_ac_root;
+use crate::config::coding_agent_profiles::{
+    apply_replica_selection_default, read_replica_selection_default,
+};
 use crate::config::replica_identity::{
-    expected_wg_replica_identity, normalize_wg_replica_context_entries,
-    repair_wg_replica_config_value, ROLE_MD_FILENAME, WG_REPLICA_REQUIRED_CONTEXT,
+    normalize_wg_replica_context_entries, repair_wg_replica_config_value, ROLE_MD_FILENAME,
+    WG_REPLICA_REQUIRED_CONTEXT,
 };
 use crate::config::seed_manifest::{
     ManifestActivationToken, ManifestLifecycleFilter, ProjectSeedManifestGuard, SeedManifestError,
@@ -1243,21 +1246,105 @@ pub(crate) fn create_or_update_replica_on_disk(
         })
         .collect();
 
-    let identity = expected_wg_replica_identity(&replica_dir)?;
-    let context_entries = normalize_wg_replica_context_entries(
-        &[],
-        WG_REPLICA_REQUIRED_CONTEXT,
-        &identity.identity,
-        identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
-    );
-
-    let replica_config = serde_json::json!({
-        "identity": identity.identity,
-        "repos": assigned_repos,
-        "context": context_entries,
-    });
-    write_local_config_value(&replica_dir.join("config.json"), replica_config)?;
+    initialize_replica_config_on_disk(&replica_dir, &assigned_repos)?;
     Ok(replica_dir)
+}
+
+/// #1939 - guarded, lossless initialization of one Room replica config.
+///
+/// Shared by `create_or_update_replica_on_disk` and the GUI workgroup loop so
+/// both publish through the #1938 sidecar with one merge: repair identity and
+/// context, refresh `repos`, and preserve tooling, custom context and unknown
+/// keys. A missing config file inside the guard is the first-creation boundary
+/// (`try_exists`, so an inspection error is an error, never absence); only then
+/// is the Matrix creation default read and materialized. An existing config
+/// never reads the default, so a later invalid default cannot block a valid
+/// retry, and a concurrent winner's bytes are merged, not overwritten.
+fn initialize_replica_config_on_disk(
+    replica_dir: &Path,
+    assigned_repos: &[String],
+) -> Result<(), String> {
+    let config_path = replica_dir.join("config.json");
+    crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
+        let had_config = config_path.try_exists().map_err(|error| {
+            format!(
+                "Failed to inspect replica config {}: {}",
+                config_path.display(),
+                error
+            )
+        })?;
+        let mut config = serde_json::Value::Object(std::mem::take(obj));
+        if !had_config {
+            // First creation: establish the canonical identity the repair below
+            // then validates, exactly like any other identity.
+            let expected =
+                crate::config::replica_identity::expected_wg_replica_identity(replica_dir)?;
+            config["identity"] = serde_json::json!(expected.identity);
+        }
+        let identity =
+            repair_wg_replica_config_value(replica_dir, &mut config, WG_REPLICA_REQUIRED_CONTEXT)?;
+        config["repos"] = serde_json::json!(assigned_repos);
+        let existing_context: Vec<String> = config
+            .get("context")
+            .and_then(|value| value.as_array())
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
+            &existing_context,
+            &["$AGENTSCOMMANDER_CONTEXT"],
+            &identity.identity,
+            identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
+        ));
+        if !had_config {
+            if let Some(default) = read_replica_selection_default(&identity.matrix_dir)? {
+                apply_replica_selection_default(&mut config, &default)?;
+            }
+        }
+        let final_object = config.as_object_mut().ok_or_else(|| {
+            format!(
+                "Replica config {} must be a JSON object",
+                config_path.display()
+            )
+        })?;
+        *obj = std::mem::take(final_object);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// #1939 - the GUI workgroup replica loop. Kept as one function so the GUI path
+/// and the on-disk path provably share the same guarded initializer instead of
+/// a second destructive writer.
+fn initialize_workgroup_replicas_on_disk(
+    ac_root: &Path,
+    wg_dir: &Path,
+    agents: &[String],
+    repos: &[RepoAssignment],
+) -> Result<(), String> {
+    for agent_path in agents {
+        let agent_ref = resolve_agent_ref(ac_root, agent_path)?;
+        let agent_name = agent_ref_bare_name(&agent_ref);
+        let replica_dir = wg_dir.join(format!("__agent_{}", agent_name));
+        create_agent_replica_layout(&replica_dir).map_err(|(sub, error)| match sub {
+            "replica_dir" => format!("Failed to create replica dir for {}: {}", agent_name, error),
+            _ => format!("Failed to create {} for {}: {}", sub, agent_name, error),
+        })?;
+        let assigned_repos: Vec<String> = repos
+            .iter()
+            .filter(|repo| repo.agents.iter().any(|a| agent_matches(a, &agent_name)))
+            .map(|repo| {
+                let dir_name = format!("repo-{}", repo_dir_name_from_url(&repo.url));
+                format!("../{}", dir_name)
+            })
+            .collect();
+        initialize_replica_config_on_disk(&replica_dir, &assigned_repos)?;
+    }
+    Ok(())
 }
 
 /// Typed outcome of removing one replica directory (#1063, plan section 5.4).
@@ -2883,45 +2970,10 @@ pub async fn create_workgroup(
         }
     }
 
-    // Create __agent_*/ replica dirs
-    for agent_path in &team_agents {
-        let agent_ref = resolve_agent_ref(&base, agent_path)?;
-        let agent_name = agent_ref_bare_name(&agent_ref);
-
-        let replica_dir = wg_dir.join(format!("__agent_{}", agent_name));
-
-        // Per-replica layout. Canonical state stays in the origin matrix.
-        create_agent_replica_layout(&replica_dir).map_err(|(sub, e)| match sub {
-            "replica_dir" => format!("Failed to create replica dir for {}: {}", agent_name, e),
-            _ => format!("Failed to create {} for {}: {}", sub, agent_name, e),
-        })?;
-
-        // Determine repos assigned to this agent (match by _agent_ name)
-        let assigned_repos: Vec<String> = team_repos
-            .iter()
-            .filter(|r| r.agents.iter().any(|a| agent_matches(a, &agent_name)))
-            .map(|r| {
-                let dir_name = format!("repo-{}", repo_dir_name_from_url(&r.url));
-                format!("../{}", dir_name)
-            })
-            .collect();
-
-        let identity = expected_wg_replica_identity(&replica_dir)?;
-        let context_entries = normalize_wg_replica_context_entries(
-            &[],
-            WG_REPLICA_REQUIRED_CONTEXT,
-            &identity.identity,
-            identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
-        );
-
-        let replica_config = serde_json::json!({
-            "identity": identity.identity,
-            "repos": assigned_repos,
-            "context": context_entries,
-        });
-
-        write_local_config_value(&replica_dir.join("config.json"), replica_config)?;
-    }
+    // Create __agent_*/ replica dirs through the same guarded, lossless
+    // initialization the CLI/on-disk path uses (#1939): a replica's tooling,
+    // custom context and unknown keys survive re-creation.
+    initialize_workgroup_replicas_on_disk(&base, &wg_dir, &team_agents, &team_repos)?;
 
     // Clone repos (async, partial failures logged but don't rollback)
     let mut clone_errors: Vec<CloneError> = Vec::new();
@@ -5041,6 +5093,308 @@ mod tests {
         )
         .expect("parse config");
         assert_eq!(config["identity"], "../../_agent_tech-lead");
+    }
+
+    // ------------------------------------------------------------------
+    // #1939 replica config initialization (guarded, lossless, default).
+    // ------------------------------------------------------------------
+
+    struct ReplicaCreationFixture {
+        _temp: tempfile::TempDir,
+        ac_root: PathBuf,
+        wg_dir: PathBuf,
+        matrix_dir: PathBuf,
+    }
+
+    fn replica_creation_fixture() -> ReplicaCreationFixture {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("AgentsCommander_ac");
+        let ac_root = project.join(".ac");
+        let matrix_dir = ac_root.join("_agent_tech-lead");
+        let wg_dir = ac_root.join("wg-2-dev-team");
+        std::fs::create_dir_all(&matrix_dir).expect("create matrix");
+        std::fs::create_dir_all(&wg_dir).expect("create wg");
+        std::fs::write(matrix_dir.join(ROLE_MD_FILENAME), "# Tech Lead\n").expect("write role");
+        ReplicaCreationFixture {
+            _temp: temp,
+            ac_root,
+            wg_dir,
+            matrix_dir,
+        }
+    }
+
+    fn write_matrix_default(fixture: &ReplicaCreationFixture, value: serde_json::Value) {
+        std::fs::write(
+            fixture.matrix_dir.join("config.json"),
+            serde_json::to_string(&value).expect("serialize"),
+        )
+        .expect("write matrix config");
+    }
+
+    fn create_replica(fixture: &ReplicaCreationFixture) -> Result<PathBuf, String> {
+        create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
+            ac_root: fixture.ac_root.clone(),
+            wg_dir: fixture.wg_dir.clone(),
+            agent_path: "_agent_tech-lead".to_string(),
+            team_repos: Vec::new(),
+        })
+    }
+
+    fn replica_config(replica_dir: &Path) -> serde_json::Value {
+        serde_json::from_str(
+            &std::fs::read_to_string(replica_dir.join("config.json")).expect("read config"),
+        )
+        .expect("parse config")
+    }
+
+    #[test]
+    fn issue_1937_creation_materializes_matrix_default_on_first_creation() {
+        let fixture = replica_creation_fixture();
+        write_matrix_default(
+            &fixture,
+            serde_json::json!({
+                "tooling": {
+                    "defaultProfile": "A",
+                    "replicaSelectionDefault": {
+                        "codingAgentId": "codex",
+                        "requestedProfile": "b",
+                        "selectionLocked": true
+                    }
+                }
+            }),
+        );
+
+        let replica_dir = create_replica(&fixture).expect("create replica");
+        let config = replica_config(&replica_dir);
+
+        assert_eq!(config["identity"], "../../_agent_tech-lead");
+        assert_eq!(config["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(config["tooling"]["profile"], "B");
+        assert_eq!(config["tooling"]["instanceProfileOverride"], "B");
+        assert_eq!(config["tooling"]["instanceProfileOverrideSource"], "manual");
+        assert_eq!(config["tooling"]["selectionLocked"], true);
+        // The Matrix profile-only default stays independent of the replica.
+        assert!(config["tooling"].get("defaultProfile").is_none());
+        let context = config["context"].as_array().expect("context array");
+        assert!(context
+            .iter()
+            .any(|entry| entry.as_str() == Some("../../_agent_tech-lead/Role.md")));
+    }
+
+    #[test]
+    fn issue_1937_creation_absent_default_keeps_old_creation_shape() {
+        let fixture = replica_creation_fixture();
+
+        let replica_dir = create_replica(&fixture).expect("create replica");
+        let config = replica_config(&replica_dir);
+
+        assert_eq!(config["identity"], "../../_agent_tech-lead");
+        assert!(config.get("tooling").is_none(), "{config}");
+        assert!(config["repos"].is_array());
+        let context = config["context"].as_array().expect("context array");
+        assert_eq!(context[0], "$AGENTSCOMMANDER_CONTEXT");
+    }
+
+    #[test]
+    fn issue_1937_creation_existing_config_skips_reading_the_default() {
+        let fixture = replica_creation_fixture();
+        let replica_dir = create_replica(&fixture).expect("create replica");
+
+        // The replica already carries a selection; the Matrix default is now
+        // invalid and names a different pair. An existing config must not read
+        // it, so the retry still succeeds and keeps the saved selection.
+        write_matrix_default(
+            &fixture,
+            serde_json::json!({
+                "tooling": {
+                    "replicaSelectionDefault": {
+                        "codingAgentId": "claude",
+                        "requestedProfile": "C"
+                    }
+                }
+            }),
+        );
+        let mut config = replica_config(&replica_dir);
+        config["tooling"] = serde_json::json!({
+            "currentCodingAgent": "codex",
+            "profile": "B",
+            "selectionLocked": true,
+            "lastCodingAgent": "claude"
+        });
+        config["customTopLevel"] = serde_json::json!({"keep": true});
+        std::fs::write(
+            replica_dir.join("config.json"),
+            serde_json::to_string(&config).expect("serialize"),
+        )
+        .expect("write replica config");
+
+        create_replica(&fixture).expect("existing config must skip default reading");
+
+        let saved = replica_config(&replica_dir);
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(saved["tooling"]["profile"], "B");
+        assert_eq!(saved["tooling"]["selectionLocked"], true);
+        assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+        assert_eq!(saved["customTopLevel"]["keep"], true);
+        assert_eq!(saved["identity"], "../../_agent_tech-lead");
+    }
+
+    #[test]
+    fn issue_1937_creation_invalid_default_fails_before_publishing() {
+        let fixture = replica_creation_fixture();
+        write_matrix_default(
+            &fixture,
+            serde_json::json!({
+                "tooling": {
+                    "replicaSelectionDefault": {
+                        "codingAgentId": "codex",
+                        "requestedProfile": "B",
+                        "selectionLocked": "yes"
+                    }
+                }
+            }),
+        );
+
+        let error = create_replica(&fixture).expect_err("invalid default must fail");
+        assert!(error.contains("selectionLocked"), "{error}");
+        let replica_dir = fixture.wg_dir.join("__agent_tech-lead");
+        assert!(
+            !replica_dir.join("config.json").exists(),
+            "no misleading replica config may be published"
+        );
+    }
+
+    #[test]
+    fn issue_1937_creation_merges_context_and_preserves_tooling_unknown_keys() {
+        let fixture = replica_creation_fixture();
+        let replica_dir = create_replica(&fixture).expect("create replica");
+
+        let mut config = replica_config(&replica_dir);
+        config["tooling"] = serde_json::json!({
+            "currentCodingAgent": "codex",
+            "profile": "B",
+            "profileContentHash": "deadbeef"
+        });
+        config["context"] = serde_json::json!([
+            "$AGENTSCOMMANDER_CONTEXT",
+            "custom-notes.md",
+            "../../agentscommander-old/.ac/_agent_tech-lead/Role.md"
+        ]);
+        config["unknownKey"] = serde_json::json!({"nested": [1, 2, 3]});
+        std::fs::write(
+            replica_dir.join("config.json"),
+            serde_json::to_string(&config).expect("serialize"),
+        )
+        .expect("write replica config");
+
+        create_replica(&fixture).expect("re-creation merges");
+
+        let saved = replica_config(&replica_dir);
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(saved["tooling"]["profile"], "B");
+        assert_eq!(saved["tooling"]["profileContentHash"], "deadbeef");
+        assert_eq!(saved["unknownKey"]["nested"][2], 3);
+        let context: Vec<&str> = saved["context"]
+            .as_array()
+            .expect("context array")
+            .iter()
+            .filter_map(|entry| entry.as_str())
+            .collect();
+        assert_eq!(context[0], "$AGENTSCOMMANDER_CONTEXT");
+        assert!(context.contains(&"custom-notes.md"), "{context:?}");
+        assert!(
+            context.contains(&"../../_agent_tech-lead/Role.md"),
+            "{context:?}"
+        );
+        assert!(
+            !context
+                .iter()
+                .any(|entry| entry.contains("agentscommander-old")),
+            "stale Role.md entry must be replaced: {context:?}"
+        );
+    }
+
+    #[test]
+    fn issue_1937_creation_concurrent_and_retry_initialization_is_lossless() {
+        let fixture = replica_creation_fixture();
+        write_matrix_default(
+            &fixture,
+            serde_json::json!({
+                "tooling": {
+                    "replicaSelectionDefault": {
+                        "codingAgentId": "codex",
+                        "requestedProfile": "B",
+                        "selectionLocked": false
+                    }
+                }
+            }),
+        );
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let ac_root = fixture.ac_root.clone();
+            let wg_dir = fixture.wg_dir.clone();
+            handles.push(std::thread::spawn(move || {
+                create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
+                    ac_root,
+                    wg_dir,
+                    agent_path: "_agent_tech-lead".to_string(),
+                    team_repos: Vec::new(),
+                })
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("join").expect("concurrent create");
+        }
+
+        let replica_dir = fixture.wg_dir.join("__agent_tech-lead");
+        let config = replica_config(&replica_dir);
+        assert_eq!(config["identity"], "../../_agent_tech-lead");
+        assert_eq!(config["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(config["tooling"]["profile"], "B");
+        assert_eq!(config["tooling"]["selectionLocked"], false);
+        let context = config["context"].as_array().expect("context array");
+        assert!(context
+            .iter()
+            .any(|entry| entry.as_str() == Some("../../_agent_tech-lead/Role.md")));
+    }
+
+    #[test]
+    fn issue_1937_creation_gui_loop_and_on_disk_initialization_are_identical() {
+        let fixture = replica_creation_fixture();
+        write_matrix_default(
+            &fixture,
+            serde_json::json!({
+                "tooling": {
+                    "replicaSelectionDefault": {
+                        "codingAgentId": "codex",
+                        "requestedProfile": "B",
+                        "selectionLocked": true
+                    }
+                }
+            }),
+        );
+
+        let on_disk_replica = create_replica(&fixture).expect("on-disk create");
+
+        // The GUI workgroup loop is this shared helper; both entry points must
+        // publish byte-identical initialization.
+        let gui_wg_dir = fixture.ac_root.join("wg-3-dev-team");
+        std::fs::create_dir_all(&gui_wg_dir).expect("gui wg dir");
+        initialize_workgroup_replicas_on_disk(
+            &fixture.ac_root,
+            &gui_wg_dir,
+            &["_agent_tech-lead".to_string()],
+            &[],
+        )
+        .expect("gui loop initialization");
+        let gui_replica = gui_wg_dir.join("__agent_tech-lead");
+
+        assert_eq!(
+            std::fs::read(on_disk_replica.join("config.json")).expect("read on-disk"),
+            std::fs::read(gui_replica.join("config.json")).expect("read gui"),
+            "the GUI loop must initialize through the same guarded helper"
+        );
     }
 
     /// Success path: a clean WG dir with no blockers gets renamed and removed.

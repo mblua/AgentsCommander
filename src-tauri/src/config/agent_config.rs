@@ -252,7 +252,22 @@ fn upsert_config(
     entry: &CodingAgentEntry,
 ) -> Result<(), String> {
     crate::config::local_config_io::update_config_json_object(config_path, true, |obj| {
-        let tooling = ensure_object(obj, "tooling", config_path);
+        // #1939 - the discriminator is the JSON shape, not the path: for both
+        // `root/config.json` and `root/<agent_local_dir>/config.json`, an absent
+        // top-level tooling is created, an object is preserved and updated, and
+        // any present non-object (including null) is an error before
+        // mutation/publication. The historical repair-by-reset is deliberately
+        // gone: a malformed tooling is never silently replaced. Nested
+        // `codingAgents` repair stays.
+        let tooling_value = obj
+            .entry("tooling".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let tooling = tooling_value.as_object_mut().ok_or_else(|| {
+            format!(
+                "'tooling' must be a JSON object at {}",
+                config_path.display()
+            )
+        })?;
         tooling.insert("lastCodingAgent".to_string(), serde_json::json!(agent_id));
 
         let coding_agents = ensure_object(tooling, "codingAgents", config_path);
@@ -439,5 +454,128 @@ mod tests {
             ..Default::default()
         }
         .is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // #1939 tooling-shape discriminator for config metadata writes.
+    // ------------------------------------------------------------------
+
+    fn codex_entry() -> CodingAgentEntry {
+        CodingAgentEntry {
+            app: "Codex".to_string(),
+            ac_session_id: Some("sid".to_string()),
+            last_used: T1.to_string(),
+        }
+    }
+
+    fn root_config(dir: &Path) -> PathBuf {
+        dir.join("config.json")
+    }
+
+    #[test]
+    fn issue_1937_selection_state_tooling_shape_missing_and_object_succeed_on_both_targets() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        for path in [root_config(dir), instance_config(dir)] {
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("parent dir");
+
+            // Missing file: the write creates the tooling object.
+            upsert_config(&path, "codex", &codex_entry()).expect("missing config must succeed");
+            let saved: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+            assert_eq!(saved["tooling"]["lastCodingAgent"], "codex");
+
+            // Present object: preserved and updated.
+            upsert_config(&path, "claude", &codex_entry()).expect("object tooling must succeed");
+            let saved: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+            assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+            assert_eq!(saved["tooling"]["codingAgents"]["claude"]["app"], "Codex");
+        }
+    }
+
+    #[test]
+    fn issue_1937_selection_state_tooling_shape_non_object_fails_without_rewrite_on_both_targets() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        for path in [root_config(dir), instance_config(dir)] {
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("parent dir");
+            for literal in ["null", "5", "\"tooling\"", "[]", "false"] {
+                let original = format!(r#"{{"tooling":{literal},"repos":["repo-a"]}}"#);
+                std::fs::write(&path, &original).expect("seed");
+                let error = upsert_config(&path, "codex", &codex_entry())
+                    .expect_err("non-object tooling must fail");
+                assert!(
+                    error.contains("'tooling' must be a JSON object"),
+                    "{literal}: {error}"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&path).expect("read"),
+                    original,
+                    "{literal}: bytes must be preserved"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn issue_1937_selection_state_tooling_shape_nested_coding_agents_repairs_on_both_targets() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        for path in [root_config(dir), instance_config(dir)] {
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("parent dir");
+            std::fs::write(
+                &path,
+                r#"{"tooling":{"lastCodingAgent":"claude","codingAgents":7},"repos":["repo-a"]}"#,
+            )
+            .expect("seed");
+            upsert_config(&path, "codex", &codex_entry()).expect("nested repair must succeed");
+            let saved: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+            assert_eq!(saved["tooling"]["codingAgents"]["codex"]["app"], "Codex");
+            assert_eq!(saved["tooling"]["lastCodingAgent"], "codex");
+            assert_eq!(saved["repos"][0], "repo-a");
+        }
+    }
+
+    #[test]
+    fn issue_1937_selection_state_tooling_shape_malformed_selection_locked_is_preserved() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        for path in [root_config(dir), instance_config(dir)] {
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("parent dir");
+            std::fs::write(
+                &path,
+                r#"{"tooling":{"selectionLocked":"yes","lastCodingAgent":"claude"},"repos":["repo-a"]}"#,
+            )
+            .expect("seed");
+            upsert_config(&path, "codex", &codex_entry()).expect("metadata write must succeed");
+            let saved: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+            assert_eq!(saved["tooling"]["selectionLocked"], "yes");
+            assert_eq!(saved["tooling"]["lastCodingAgent"], "codex");
+            assert_eq!(saved["repos"][0], "repo-a");
+        }
+    }
+
+    #[test]
+    fn issue_1937_selection_state_tooling_shape_plain_repo_metadata_stays_compatible() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        for path in [root_config(dir), instance_config(dir)] {
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("parent dir");
+            std::fs::write(
+                &path,
+                r#"{"identity":"../../_agent_dev-rust","repos":["repo-a"],"tooling":{"lastCodingAgent":"claude"}}"#,
+            )
+            .expect("seed");
+            upsert_config(&path, "codex", &codex_entry())
+                .expect("valid plain-repo metadata must stay compatible");
+            let saved: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+            assert_eq!(saved["identity"], "../../_agent_dev-rust");
+            assert_eq!(saved["repos"][0], "repo-a");
+            assert_eq!(saved["tooling"]["lastCodingAgent"], "codex");
+        }
     }
 }
