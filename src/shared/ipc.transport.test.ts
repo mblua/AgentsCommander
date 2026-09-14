@@ -498,3 +498,399 @@ describe("agent-update ipc contract (#1551)", () => {
     }
   });
 });
+
+describe("selection-lock transport contract (#1942)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  function legacyTarget(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      workgroupName: "wg-12-ac-dev-team-v4",
+      workgroupPath: "C:\\proj\\.ac\\wg-12",
+      replicaName: "dev-webpage-ui-v4",
+      replicaPath: "C:\\proj\\.ac\\wg-12\\__agent_dev-webpage-ui-v4",
+      identityPath: "C:\\proj\\.ac\\wg-12\\__agent_dev-webpage-ui-v4\\identity.json",
+      originProject: "proj",
+      liveSessionIds: ["sess-1"],
+      ...overrides,
+    };
+  }
+
+  it("sends both removal operations and both default operations as exact wire names inside {request}", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    fake.resolve("preview_selection_lock_removal", {
+      scope: "replica",
+      targetFingerprint: "fp-removal-preview",
+      candidateCount: 1,
+      countsComplete: true,
+      protectedCount: 1,
+      alreadyUnlockedCount: 0,
+      invalidCount: 0,
+      targets: [],
+      warnings: [],
+    });
+    fake.resolve("apply_selection_lock_removal", {
+      scope: "replica",
+      targetFingerprint: "fp-removal-preview",
+      removedCount: 1,
+      removedReplicaPaths: ["C:\\replica"],
+      alreadyUnlockedPaths: [],
+      failedReplicaPaths: [],
+      remainingProtectedCount: 0,
+      candidateCount: 1,
+      countsComplete: true,
+      invalidCount: 0,
+      errors: [],
+      warnings: [],
+    });
+    fake.resolve("get_replica_selection_default", {
+      targetReplicaPath: "C:\\replica",
+      matrixPath: "C:\\matrix",
+      default: null,
+      defaultFingerprint: "fp-default",
+      warnings: [],
+    });
+    fake.resolve("set_replica_selection_default", {
+      targetReplicaPath: "C:\\replica",
+      matrixPath: "C:\\matrix",
+      default: {
+        codingAgentId: "codex",
+        requestedProfile: "fast",
+        selectionLocked: true,
+      },
+      defaultFingerprint: "fp-default-set",
+      warnings: [],
+    });
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      const previewRemoval = {
+        targetReplicaPath: "C:\\replica",
+        scope: "replica",
+      } as const;
+      const applyRemoval = {
+        targetReplicaPath: "C:\\replica",
+        scope: "kind",
+        confirmedTargetFingerprint: "fp-removal-preview",
+      } as const;
+      const getDefault = { targetReplicaPath: "C:\\replica" } as const;
+      const setDefault = {
+        targetReplicaPath: "C:\\replica",
+        codingAgentId: "codex",
+        requestedProfile: "fast",
+        selectionLocked: true,
+        confirmedDefaultFingerprint: "fp-default-cas",
+      } as const;
+
+      await ipc.SettingsAPI.previewSelectionLockRemoval(previewRemoval);
+      await ipc.SettingsAPI.applySelectionLockRemoval(applyRemoval);
+      await ipc.SettingsAPI.getReplicaSelectionDefault(getDefault);
+      const setResult = await ipc.SettingsAPI.setReplicaSelectionDefault(setDefault);
+
+      expect(fake.callsFor("preview_selection_lock_removal")).toEqual([
+        { cmd: "preview_selection_lock_removal", args: { request: previewRemoval } },
+      ]);
+      expect(fake.callsFor("apply_selection_lock_removal")).toEqual([
+        { cmd: "apply_selection_lock_removal", args: { request: applyRemoval } },
+      ]);
+      expect(fake.callsFor("get_replica_selection_default")).toEqual([
+        { cmd: "get_replica_selection_default", args: { request: getDefault } },
+      ]);
+      expect(fake.callsFor("set_replica_selection_default")).toEqual([
+        { cmd: "set_replica_selection_default", args: { request: setDefault } },
+      ]);
+      // The confirmed default fingerprint crosses verbatim; the backend owns the CAS.
+      expect(fake.lastCall("set_replica_selection_default")?.args).toEqual({
+        request: { ...setDefault },
+      });
+      expect(setResult.default).toEqual({
+        codingAgentId: "codex",
+        requestedProfile: "fast",
+        selectionLocked: true,
+      });
+      expect(setResult.defaultFingerprint).toBe("fp-default-set");
+    } finally {
+      restore();
+    }
+  });
+
+  it("keeps the legacy ordinary assignment payload unchanged and never manufactures new fields", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    const bareTarget = legacyTarget();
+    fake.resolve("preview_coding_agent_profile_selection", {
+      scope: "replica",
+      targetCount: 1,
+      liveSessionCount: 1,
+      targetFingerprint: "fp-legacy",
+      requiresExplicitConfirmation: false,
+      targets: [bareTarget],
+      warnings: [],
+    });
+    fake.resolve("apply_coding_agent_profile_selection", {
+      scope: "replica",
+      updatedCount: 1,
+      restartedCount: 0,
+      updatedReplicaPaths: ["C:\\replica"],
+      restartedSessionIds: [],
+      destroyedButNotRecreatedSessionIds: [],
+      targetFingerprint: "fp-legacy",
+      warnings: [],
+      errors: [],
+    });
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      const previewRequest = {
+        targetReplicaPath: "C:\\replica",
+        codingAgentId: "codex",
+        profile: "fast",
+        scope: "replica",
+        restartSessions: false,
+      } as const;
+      const applyRequest = {
+        targetReplicaPath: "C:\\replica",
+        codingAgentId: "codex",
+        profile: "fast",
+        scope: "replica",
+        restartSessions: true,
+        confirmedTargetFingerprint: "fp-legacy",
+        typedConfirmation: "dev-webpage-ui-v4",
+      } as const;
+
+      const preview =
+        await ipc.SettingsAPI.previewCodingAgentProfileSelection(previewRequest);
+      await ipc.SettingsAPI.applyCodingAgentProfileSelection(applyRequest);
+
+      const previewArgs = fake.lastCall("preview_coding_agent_profile_selection")?.args;
+      const applyArgs = fake.lastCall("apply_coding_agent_profile_selection")?.args;
+      expect(previewArgs).toEqual({ request: previewRequest });
+      expect(applyArgs).toEqual({ request: applyRequest });
+      expect(Object.keys(previewArgs?.request as Record<string, unknown>)).toEqual([
+        "targetReplicaPath",
+        "codingAgentId",
+        "profile",
+        "scope",
+        "restartSessions",
+      ]);
+      expect(Object.keys(applyArgs?.request as Record<string, unknown>)).toEqual([
+        "targetReplicaPath",
+        "codingAgentId",
+        "profile",
+        "scope",
+        "restartSessions",
+        "confirmedTargetFingerprint",
+        "typedConfirmation",
+      ]);
+
+      // An older backend's target has no new fields; they stay absent, never
+      // normalized to "unlocked" or a synthesized pair.
+      expect(preview.targets[0]).toEqual(bareTarget);
+      expect("savedPair" in preview.targets[0]).toBe(false);
+      expect("selectionState" in preview.targets[0]).toBe(false);
+      expect("selectionError" in preview.targets[0]).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it("forwards the reviewed decision and its fingerprint without recomputation", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    const decisions = {
+      unlockedOnly: {
+        fingerprint: "fp-decision-unlocked",
+        eligiblePaths: ["C:\\a"],
+        eligibleCount: 1,
+        skippedLockedCount: 1,
+        liveSessionCount: 1,
+      },
+      forceReviewed: {
+        fingerprint: "fp-decision-force",
+        eligiblePaths: ["C:\\a", "C:\\b"],
+        eligibleCount: 2,
+        skippedLockedCount: 0,
+        liveSessionCount: 1,
+      },
+    };
+    fake.resolve("preview_coding_agent_profile_selection", {
+      scope: "kind",
+      targetCount: 2,
+      liveSessionCount: 1,
+      targetFingerprint: "fp-top",
+      requiresExplicitConfirmation: true,
+      targets: [],
+      warnings: [],
+      countsComplete: true,
+      candidateCount: 2,
+      protectedCount: 1,
+      invalidCount: 0,
+      conflictCount: 1,
+      decisions,
+    });
+    fake.resolve("apply_coding_agent_profile_selection", {
+      scope: "kind",
+      updatedCount: 2,
+      restartedCount: 1,
+      updatedReplicaPaths: ["C:\\a", "C:\\b"],
+      restartedSessionIds: ["sess-1"],
+      destroyedButNotRecreatedSessionIds: [],
+      targetFingerprint: "fp-top",
+      warnings: [],
+      errors: [],
+      newlyProtectedPaths: ["C:\\a", "C:\\b"],
+      skippedLockedPaths: [],
+      invalidPaths: [],
+      lockedAfterApplyCount: 2,
+      forceApplied: true,
+    });
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      const preview = await ipc.SettingsAPI.previewCodingAgentProfileSelection({
+        targetReplicaPath: "C:\\replica",
+        codingAgentId: "codex",
+        profile: "fast",
+        scope: "kind",
+        restartSessions: false,
+        assignmentMode: "assignAndLock",
+      });
+      expect(preview.decisions?.unlockedOnly.fingerprint).toBe("fp-decision-unlocked");
+      expect(preview.decisions?.forceReviewed.fingerprint).toBe("fp-decision-force");
+
+      const applyRequest = {
+        targetReplicaPath: "C:\\replica",
+        codingAgentId: "codex",
+        profile: "fast",
+        scope: "kind",
+        restartSessions: true,
+        confirmedTargetFingerprint: "fp-decision-force",
+        assignmentMode: "assignAndLock",
+        conflictDecision: "forceReviewed",
+      } as const;
+      const applied =
+        await ipc.SettingsAPI.applyCodingAgentProfileSelection(applyRequest);
+      expect(fake.lastCall("apply_coding_agent_profile_selection")?.args).toEqual({
+        request: applyRequest,
+      });
+      const forwarded = fake.lastCall("apply_coding_agent_profile_selection")?.args
+        .request as Record<string, unknown>;
+      expect(forwarded.confirmedTargetFingerprint).toBe("fp-decision-force");
+      expect(forwarded.conflictDecision).toBe("forceReviewed");
+      expect(applied.forceApplied).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("propagates errors and preserves null/unknown diagnostics without synthesizing state", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      fake.reject("apply_selection_lock_removal", "stalePreview");
+      await expect(
+        ipc.SettingsAPI.applySelectionLockRemoval({
+          targetReplicaPath: "C:\\replica",
+          scope: "workgroup",
+          confirmedTargetFingerprint: "fp",
+        }),
+      ).rejects.toBe("stalePreview");
+
+      fake.reject("get_replica_selection_default", "configLockTimeout");
+      await expect(
+        ipc.SettingsAPI.getReplicaSelectionDefault({
+          targetReplicaPath: "C:\\replica",
+        }),
+      ).rejects.toBe("configLockTimeout");
+
+      const bare = legacyTarget();
+      const unknownState = legacyTarget({
+        selectionState: "unsupported-by-this-build",
+        selectionError: "identity unreadable",
+      });
+      const locked = legacyTarget({
+        savedPair: { codingAgentId: "codex", requestedProfile: "fast" },
+        selectionState: "locked",
+        selectionError: null,
+      });
+      fake.resolve("preview_selection_lock_removal", {
+        scope: "kind",
+        targetFingerprint: "fp-removal",
+        candidateCount: 3,
+        countsComplete: false,
+        protectedCount: 1,
+        alreadyUnlockedCount: 1,
+        invalidCount: 1,
+        targets: [bare, unknownState, locked],
+        warnings: ["directory walk incomplete"],
+      });
+      const preview = await ipc.SettingsAPI.previewSelectionLockRemoval({
+        targetReplicaPath: "C:\\replica",
+        scope: "kind",
+      });
+      expect(preview.countsComplete).toBe(false);
+      expect(preview.targets[0]).toEqual(bare);
+      expect("selectionState" in preview.targets[0]).toBe(false);
+      expect(preview.targets[1]).toMatchObject({
+        selectionState: "unsupported-by-this-build",
+        selectionError: "identity unreadable",
+      });
+      expect(preview.targets[1]?.selectionState).not.toBe("unlocked");
+      expect(preview.targets[2]).toEqual(locked);
+      expect(preview.warnings).toEqual(["directory walk incomplete"]);
+
+      fake.resolve("apply_selection_lock_removal", {
+        scope: "kind",
+        targetFingerprint: "fp-removal",
+        removedCount: 1,
+        removedReplicaPaths: ["C:\\replica"],
+        alreadyUnlockedPaths: ["C:\\other"],
+        failedReplicaPaths: [],
+        remainingProtectedCount: null,
+        candidateCount: 3,
+        countsComplete: false,
+        invalidCount: 1,
+        errors: [
+          {
+            code: "invalidSelectionState",
+            message: "identity unreadable",
+            sessionIds: [],
+            replicaPaths: ["C:\\broken"],
+          },
+        ],
+        warnings: [],
+      });
+      const applied = await ipc.SettingsAPI.applySelectionLockRemoval({
+        targetReplicaPath: "C:\\replica",
+        scope: "kind",
+        confirmedTargetFingerprint: "fp-removal",
+      });
+      // Unknown candidates keep `null`; never a fabricated zero.
+      expect(applied.remainingProtectedCount).toBeNull();
+      expect(applied.errors[0]).toEqual({
+        code: "invalidSelectionState",
+        message: "identity unreadable",
+        sessionIds: [],
+        replicaPaths: ["C:\\broken"],
+      });
+
+      fake.resolve("get_replica_selection_default", {
+        targetReplicaPath: "C:\\replica",
+        matrixPath: "C:\\matrix",
+        default: null,
+        defaultFingerprint: "fp-default",
+        warnings: ["malformed default is not reported absent"],
+      });
+      const fetched = await ipc.SettingsAPI.getReplicaSelectionDefault({
+        targetReplicaPath: "C:\\replica",
+      });
+      expect(fetched.default).toBeNull();
+      expect(fetched.defaultFingerprint).toBe("fp-default");
+      expect(fetched.warnings).toEqual(["malformed default is not reported absent"]);
+    } finally {
+      restore();
+    }
+  });
+});
