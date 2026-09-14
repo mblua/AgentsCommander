@@ -1,118 +1,36 @@
 import type { AgentConfig, CodingAgentDefinition } from "./types";
 
 // Mirror of the ENABLED rows of `BUILTIN_AGENT_SUPPORT`
-// (`src-tauri/src/config/coding_agents_catalog.rs`), same order and fields as
-// `agents.default.json`. Served only when the IPC catalog call rejects, so it
-// must never resurrect a de-supported built-in.
-export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
-  {
-    key: "claude",
-    label: "Claude Code",
-    description: "Coding Agent by Anthropic",
-    color: "#d97706",
-    command: "claude",
-    instructionsFilename: "CLAUDE.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
-    // #1318/#1325/#1546 - mirror of the embedded default: claude, pi, codex,
-    // hermes, opencode, and antigravity ship the update command; cursor ships
-    // none; every entry defaults autoUpdate to false.
-    updateCommands: ["claude --update"],
-    autoUpdate: false,
-  },
-  {
-    key: "codex",
-    label: "Codex",
-    description: "Coding Agent by OpenAI",
-    color: "#10b981",
-    command: "codex",
-    instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
-    updateCommands: ["codex update"],
-    autoUpdate: false,
-  },
-  {
-    key: "hermes",
-    label: "Hermes",
-    description: "Coding Agent by Nous Research",
-    color: "#8b5cf6",
-    command: "hermes",
-    instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
-    updateCommands: ["hermes update --yes"],
-    autoUpdate: false,
-  },
-  {
-    key: "cursor",
-    label: "Cursor CLI",
-    description: "Coding Agent by Cursor",
-    color: "#22d3ee",
-    command: "agent",
-    instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
-    updateCommands: [],
-    autoUpdate: false,
-  },
-  {
-    key: "pi",
-    label: "Pi",
-    description: "Coding Agent by Earendil Inc",
-    color: "#ec4899",
-    command: "pi",
-    instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
-    updateCommands: ["pi update"],
-    autoUpdate: false,
-  },
-  {
-    key: "opencode",
-    label: "OpenCode",
-    description: "Open-source terminal coding agent by Anomaly",
-    color: "#64748b",
-    command: "opencode",
-    instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
-    updateCommands: ["opencode upgrade"],
-    autoUpdate: false,
-  },
-  {
-    key: "antigravity",
-    label: "Antigravity",
-    description: "Coding Agent by Google",
-    color: "#4285F4",
-    command: "agy",
-    instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
-    // #1482/#1546 - mirror of the embedded default: Antigravity ships the verified 'agy update' command (autoUpdate stays false).
-    updateCommands: ["agy update"],
-    autoUpdate: false,
-  },
-  {
-    key: "muse",
-    label: "Muse Code",
-    description: "Meta terminal coding agent (beta; macOS/Linux host only)",
-    color: "#0668E1",
-    command: "muse",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
-    updateCommands: [],
-    autoUpdate: false,
-  },
-];
+// (`src-tauri/src/config/coding_agents_catalog.rs`), in `agents.default.json`
+// order. `agents.default.json` keeps muse's disabled row; this mirror carries
+// enabled rows only, so it must never resurrect a de-supported built-in.
+// #1965 — not served on an IPC failure anymore: the catalog store disables
+// registrations instead (`src/sidebar/stores/coding-agents.ts`), so this is the
+// drift-guard mirror only.
+export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = ([
+  // #1318/#1325/#1546 - mirror of the embedded default: claude, pi, codex,
+  // hermes, opencode, and antigravity ship the update command; cursor and
+  // grok ship none; every entry defaults autoUpdate to false.
+  ["claude", "Claude Code", "Coding Agent by Anthropic", "#d97706", "claude", "CLAUDE.md", ["claude --update"]],
+  ["codex", "Codex", "Coding Agent by OpenAI", "#10b981", "codex", "AGENTS.md", ["codex update"]],
+  ["hermes", "Hermes", "Coding Agent by Nous Research", "#8b5cf6", "hermes", "AGENTS.md", ["hermes update --yes"]],
+  ["cursor", "Cursor CLI", "Coding Agent by Cursor", "#22d3ee", "agent", "AGENTS.md", []],
+  ["pi", "Pi", "Coding Agent by Earendil Inc", "#ec4899", "pi", "AGENTS.md", ["pi update"]],
+  ["opencode", "OpenCode", "Open-source terminal coding agent by Anomaly", "#64748b", "opencode", "AGENTS.md", ["opencode upgrade"]],
+  // #1482/#1546 - mirror of the embedded default: Antigravity ships the verified 'agy update' command (autoUpdate stays false).
+  ["antigravity", "Antigravity", "Coding Agent by Google", "#4285F4", "agy", "AGENTS.md", ["agy update"]],
+  ["grok", "Grok Build", "Coding agent Grok Build", "#64748b", "grok", "AGENTS.md", []],
+] satisfies Array<[
+  key: string, label: string, description: string, color: string,
+  command: string, instructionsFilename: string, updateCommands: string[],
+]>).map(([key, label, description, color, command,
+          instructionsFilename, updateCommands]): CodingAgentDefinition => ({
+  key, label, description, color, command, instructionsFilename, updateCommands,
+  envs: [],
+  isolatedHome: false,
+  removable: true,
+  autoUpdate: false,
+}));
 
 export function definitionToSeed(def: CodingAgentDefinition): Omit<AgentConfig, "id"> {
   const seed: Omit<AgentConfig, "id"> = {
