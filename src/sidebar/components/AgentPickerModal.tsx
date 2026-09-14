@@ -603,8 +603,27 @@ const AgentPickerModal: Component<{
     return selectedProfile() === currentProfileLetter();
   });
 
+  /** A backend-owned mutation is in flight. Every mutating control waits for it;
+   *  #1942 keeps the promise open until the operation really settles. */
+  const mutating = createMemo(() => busy() || removeBusy() || defaultBusy());
+
+  /** The persisted protection snapshot. `null` means this build did not report
+   *  one: unknown, never downgraded to unlocked. */
+  const persistedLockState = createMemo<SelectionState | null>(
+    () => props.scopeContext?.selectionState ?? null
+  );
+  const lockStateUsable = createMemo(
+    () => persistedLockState() === "locked" || persistedLockState() === "unlocked"
+  );
+
   const applyEnabled = createMemo(() => {
-    if (busy() || profileResolving() || !selectedAgent()) return false;
+    // ANY backend mutation in flight blocks a second one, not just this button's
+    // own apply: a removal or a default save is an owned operation too.
+    if (mutating() || profileResolving() || !selectedAgent()) return false;
+    // A `+ lock` operation needs an established protection state. When the state
+    // stops being usable the operation is BLOCKED here rather than silently
+    // demoted to an ordinary assignment, which would change the chosen policy.
+    if (assignmentMode() === "assignAndLock" && !lockStateUsable()) return false;
     const scope = selectedScope();
     if (scope === "replica") return !isRedundantReplicaSelection();
     if (!isWgReplica()) return false;
@@ -615,19 +634,7 @@ const AgentPickerModal: Component<{
 
   // ── #1943 selection lock: persisted state, removal scope, Matrix default ──
 
-  /** A backend-owned mutation is in flight. Every mutating control waits for it;
-   *  #1942 keeps the promise open until the operation really settles. */
-  const mutating = createMemo(() => busy() || removeBusy() || defaultBusy());
-
-  /** The persisted protection snapshot. `null` means this build did not report
-   *  one: unknown, never downgraded to unlocked. */
-  const persistedLockState = createMemo<SelectionState | null>(
-    () => props.scopeContext?.selectionState ?? null
-  );
   const persistedPair = createMemo<SavedPair | null>(() => props.scopeContext?.savedPair ?? null);
-  const lockStateUsable = createMemo(
-    () => persistedLockState() === "locked" || persistedLockState() === "unlocked"
-  );
   const lockStateDiagnostic = createMemo(() => {
     const state = persistedLockState();
     if (state === "invalid") {
@@ -671,7 +678,8 @@ const AgentPickerModal: Component<{
   };
   const removeStateChip = createMemo(() => {
     const preview = removePreview();
-    if (persistedLockState() === "invalid" || removeInvalidCount() > 0) {
+    const persisted = persistedLockState();
+    if (persisted === "invalid" || removeInvalidCount() > 0) {
       return { state: "invalid", label: "Check state" };
     }
     if (!preview) {
@@ -679,11 +687,18 @@ const AgentPickerModal: Component<{
     }
     // An incomplete enumeration must never claim "0 of N".
     if (!preview.countsComplete) return { state: "unknown", label: "Protection unknown" };
+    // A claim about the FOCUSED replica needs an ESTABLISHED persisted state: an
+    // unreported state must never be drawn as the reassuring "Unlocked" while
+    // the adjacent diagnostic says the state was not reported.
+    if (removeScope() === "replica" && persisted === null) {
+      return { state: "unknown", label: "State unknown" };
+    }
     if (removeScope() === "replica") {
       return preview.protectedCount > 0
         ? { state: "locked", label: "Protected" }
         : { state: "open", label: "Unlocked" };
     }
+    // A bulk count is not a claim about the focused replica, so it stays a count.
     return {
       state: preview.protectedCount > 0 ? "locked" : "open",
       label: `${preview.protectedCount} of ${preview.candidateCount} protected`,

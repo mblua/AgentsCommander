@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import AgentPickerModal, {
   type AgentPickerScopeContext,
@@ -1765,6 +1766,61 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
+    it("blocks an already-selected + lock when the protection state stops being readable", async () => {
+      // The scope context is reactive here on purpose: the reviewer's scenario is
+      // an external update that turns a usable state into an unreadable one AFTER
+      // `+ lock` was already chosen.
+      const [lockState, setLockState] = createSignal<SelectionState | undefined>("unlocked");
+      const root = document.createElement("div");
+      document.body.append(root);
+      const dispose = render(
+        () => (
+          <AgentPickerModal
+            sessionName="wg-7-dev-team/dev-webpage-ui"
+            agentPath={WG_REPLICA_PATH}
+            currentAgentId="codex"
+            explicitCurrentAgentId="codex"
+            currentRequestedProfile="A"
+            scopeContext={{ ...WG_SCOPE_CONTEXT, selectionState: lockState() }}
+            disableRedundantReplicaAssign
+            onSelect={vi.fn()}
+            onClose={vi.fn()}
+          />
+        ),
+        root,
+      );
+      await settle();
+
+      clickRadio("agentPicker.scope.lock.kind");
+      await settle();
+      target<HTMLInputElement>("agentPicker.armToggle").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      // Another window invalidates the protection and discovery reloads.
+      setLockState("invalid");
+      await settle();
+
+      expect(text("agentPicker.lockState")).toBe("Check state");
+      // The lock operation is BLOCKED, never silently demoted to an ordinary
+      // assignment: demoting would change the policy the user chose.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+      expect(target("agentPicker.scope.lock.kind").getAttribute("data-ac-state")).toBe("active");
+      expect(target("agentPicker.scope.kind").getAttribute("data-ac-state")).toBe("inactive");
+      const lockRadio = target("agentPicker.scope.lock.kind").querySelector<HTMLInputElement>("input");
+      expect(lockRadio?.checked).toBe(true);
+      expect(lockRadio?.disabled).toBe(true);
+
+      // Re-arming cannot smuggle the lock operation through either.
+      target<HTMLInputElement>("agentPicker.armToggle").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).not.toHaveBeenCalled();
+
+      dispose();
+      document.body.replaceChildren();
+    });
+
     it("diagnoses a protection state this build did not receive", async () => {
       const { dispose } = renderLockPicker({
         // Redundancy is disabled here so `apply` reports ONLY the lock state.
@@ -1774,6 +1830,12 @@ describe("AgentPickerModal", () => {
       await settle();
 
       expect(text("agentPicker.lockDiagnostic")).toContain("was not reported");
+      // The chip must never claim the reassuring state while the diagnostic right
+      // beside it says the protection state was not reported at all.
+      expect(text("agentPicker.lockState")).toBe("State unknown");
+      expect(text("agentPicker.lockState")).not.toBe("Unlocked");
+      // A bulk count is not a claim about the focused replica, so it survives.
+      expect(text("agentPicker.removeScopeCount.kind")).toBe("2 of 3 protected");
       expect(
         target("agentPicker.scope.lock.replica").querySelector<HTMLInputElement>("input")?.disabled,
       ).toBe(true);
@@ -1886,6 +1948,53 @@ describe("AgentPickerModal", () => {
 
       expect(text("agentPicker.removeDone")).toContain("Lock removed from 2 replicas");
       expect(mockSettingsApi.applySelectionLockRemoval).toHaveBeenCalledTimes(1);
+
+      dispose();
+    });
+
+    it("blocks a second mutation while a removal or a default save is in flight", async () => {
+      // The #551 redundant-pair opt-in is off so the ONLY thing that can disable
+      // Apply in this test is the pending mutation itself.
+      const { dispose } = renderLockPicker({ disableRedundantReplicaAssign: false });
+      await settle();
+
+      // Baseline: an ordinary replica assign needs no arming and no lock state.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      let resolveRemoval!: (value: ApplySelectionLockRemovalResult) => void;
+      mockSettingsApi.applySelectionLockRemoval.mockImplementation(
+        () =>
+          new Promise<ApplySelectionLockRemovalResult>((resolve) => {
+            resolveRemoval = resolve;
+          }),
+      );
+      clickRadio("agentPicker.removeScope.kind");
+      await settle();
+      target<HTMLButtonElement>("agentPicker.removeLock").click();
+      await settle();
+
+      // A removal is an owned backend operation: no concurrent assignment.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+      resolveRemoval(removalApplyResult({ scope: "kind", removedCount: 2, candidateCount: 3 }));
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      // And the same rule for a default save that has not settled.
+      let resolveDefault!: (value: ReplicaSelectionDefaultResult) => void;
+      mockSettingsApi.setReplicaSelectionDefault.mockImplementation(
+        () =>
+          new Promise<ReplicaSelectionDefaultResult>((resolve) => {
+            resolveDefault = resolve;
+          }),
+      );
+      target<HTMLButtonElement>("agentPicker.defaultSave").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+      resolveDefault(defaultResult());
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
 
       dispose();
     });
