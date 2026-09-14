@@ -2,13 +2,21 @@ import { Component, createSignal, createMemo, For, Show, onMount, onCleanup, cre
 import type {
   AgentConfig,
   AppSettings,
+  ApplySelectionLockRemovalResult,
+  AssignmentMode,
   CodingAgentProfileResolution,
+  ConflictDecision,
   ProfileCellConfig,
   ProfileAssignmentScope,
   ProfileAssignmentError,
   PreviewCodingAgentProfileSelectionResult,
+  PreviewSelectionLockRemovalResult,
+  ReplicaSelectionDefaultResult,
+  SavedPair,
+  SelectionError,
+  SelectionState,
 } from "../../shared/types";
-import { SettingsAPI } from "../../shared/ipc";
+import { SettingsAPI, onCodingAgentProfileSelectionUpdated } from "../../shared/ipc";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { automationAttrs } from "../../shared/automation-hooks";
 import {
@@ -28,6 +36,21 @@ import {
   targetProfileFqn,
 } from "../../shared/profile-utils";
 
+/** #1943 - the lock glyph. Exported so the sidebar KEEP chip draws the same
+ *  shape without a second definition; ProjectPanel already imports this module,
+ *  so it adds no dependency edge. */
+export const LockIcon: Component<{ class?: string }> = (props) => (
+  <svg class={props.class} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <rect x="3" y="7" width="10" height="7" rx="1.6" stroke="currentColor" stroke-width="1.5" />
+    <path
+      d="M5.5 7V5.4A2.5 2.5 0 0 1 8 3a2.5 2.5 0 0 1 2.5 2.4V7"
+      stroke="currentColor"
+      stroke-width="1.5"
+      stroke-linecap="round"
+    />
+  </svg>
+);
+
 export type AgentPickerScopeContext = {
   workgroupPath?: string;
   workgroupName?: string;
@@ -35,6 +58,13 @@ export type AgentPickerScopeContext = {
   targetReplicaName?: string;
   currentCodingAgentId?: string | null;
   currentProfile?: string | null;
+  /** #1943 - the persisted protected pair from discovery. `undefined` is an
+   *  older backend: unsupported/unknown, never proven unlocked. */
+  savedPair?: SavedPair | null;
+  /** #1943 - strict protection state from discovery; absent is unknown. */
+  selectionState?: SelectionState;
+  /** #1943 - strict-read diagnostic carried beside an `invalid` state. */
+  selectionError?: string | null;
 };
 
 export interface AgentPickerSelection {
@@ -63,6 +93,29 @@ const SELECTION_PILL_LABEL: Record<Exclude<ProfileBadgeKind, "invalid">, string>
 
 const REDUNDANT_REPLICA_ASSIGN_TOOLTIP =
   "This replica already uses this Coding Agent + Profile.";
+
+/** #1943 - the three scopes, in the order the lock radios and the independent
+ *  "Remove lock from" group both render them. */
+const LOCK_SCOPES: ProfileAssignmentScope[] = ["replica", "kind", "workgroup"];
+
+const LOCK_SCOPE_LABEL: Record<ProfileAssignmentScope, string> = {
+  replica: "This replica",
+  kind: "All replicas of this kind",
+  workgroup: "Entire room",
+};
+
+const LOCK_SCOPE_TEST_ID: Record<ProfileAssignmentScope, string> = {
+  replica: "replica",
+  kind: "kind",
+  workgroup: "workgroup",
+};
+
+/** #1943 - the one sentence a complete removal reports. A partial run still
+ *  states the count that actually landed; the error rows carry the rest. */
+function removalOutcomeMessage(result: ApplySelectionLockRemovalResult): string {
+  const noun = result.removedCount === 1 ? "replica" : "replicas";
+  return `Lock removed from ${result.removedCount} ${noun} · Coding Agent + Profile kept · no restart`;
+}
 
 const AgentPickerModal: Component<{
   sessionName: string;
@@ -114,9 +167,50 @@ const AgentPickerModal: Component<{
   const [applyErrors, setApplyErrors] = createSignal<ProfileAssignmentError[]>([]);
   const [toastMsg, setToastMsg] = createSignal<string | null>(null);
 
+  // #1943 - the operation is one mutually exclusive selection of (scope, mode):
+  // the ordinary scope the picker always had, plus the same scope with `+ lock`.
+  const [assignmentMode, setAssignmentMode] = createSignal<AssignmentMode>("ordinary");
+  // #1943 - a reviewed conflict policy is only ever echoed with the fingerprint
+  // the backend issued for that exact decision.
+  const [conflictDecision, setConflictDecision] = createSignal<ConflictDecision | null>(null);
+  const [conflictOpen, setConflictOpen] = createSignal(false);
+
+  // #1943 - "Remove lock from" keeps its OWN scope, previews and counts: it is
+  // deliberately independent of the `Apply to` selection above.
+  const [removeScope, setRemoveScope] = createSignal<ProfileAssignmentScope>("replica");
+  const emptyRemovePreviews: Record<ProfileAssignmentScope, PreviewSelectionLockRemovalResult | null> = {
+    replica: null,
+    kind: null,
+    workgroup: null,
+  };
+  const [removePreviews, setRemovePreviews] = createSignal<
+    Record<ProfileAssignmentScope, PreviewSelectionLockRemovalResult | null>
+  >({ ...emptyRemovePreviews });
+  const [removePreviewBusyMap, setRemovePreviewBusyMap] = createSignal<
+    Record<ProfileAssignmentScope, boolean>
+  >({ replica: false, kind: false, workgroup: false });
+  const [removePreviewErrorMap, setRemovePreviewErrorMap] = createSignal<
+    Record<ProfileAssignmentScope, string>
+  >({ replica: "", kind: "", workgroup: "" });
+  const [removeResult, setRemoveResult] = createSignal<ApplySelectionLockRemovalResult | null>(null);
+  const [removeErrors, setRemoveErrors] = createSignal<SelectionError[]>([]);
+  const [removeBusy, setRemoveBusy] = createSignal(false);
+
+  // #1943 - the Matrix default for FUTURE replicas. The persisted snapshot and
+  // the user's unsaved draft stay separate: nothing here saves on change.
+  const [selectionDefault, setSelectionDefault] = createSignal<ReplicaSelectionDefaultResult | null>(null);
+  const [defaultDraftLocked, setDefaultDraftLocked] = createSignal(false);
+  const [defaultBusy, setDefaultBusy] = createSignal(false);
+  const [defaultNotice, setDefaultNotice] = createSignal("");
+
   let overlayRef!: HTMLDivElement;
   let profileResolveSeq = 0;
   let previewSeqByScope: Record<ProfileAssignmentScope, number> = { replica: 0, kind: 0, workgroup: 0 };
+  let removeSeqByScope: Record<ProfileAssignmentScope, number> = { replica: 0, kind: 0, workgroup: 0 };
+  let defaultSeq = 0;
+  // The draft is seeded ONCE from the stored default, so a later refresh cannot
+  // silently discard what the user typed but did not save.
+  let defaultDraftSeeded = false;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
   const showToast = (message: string) => {
@@ -287,6 +381,27 @@ const AgentPickerModal: Component<{
 
   onMount(async () => {
     overlayRef?.focus();
+    // #1943 - reload this modal's own previews and default on external updates.
+    // App already owns the global project/settings refresh; this listener is
+    // modal-scoped and adds no second refresh owner.
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void onCodingAgentProfileSelectionUpdated(() => {
+      if (disposed) return;
+      handleExternalSelectionUpdate();
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    onCleanup(() => {
+      disposed = true;
+      unlisten?.();
+      unlisten = null;
+    });
+
     const loaded = await SettingsAPI.get();
     const agentIndex = loaded.agents
       .slice()
@@ -302,6 +417,10 @@ const AgentPickerModal: Component<{
     const requested = currentRequested ?? acDefault ?? "A";
     setSelectedProfile(requested);
     setInitialProfileShouldLaunch(Boolean(currentRequested) || Boolean(acDefault));
+    if (isWgReplica()) {
+      refreshRemovePreviews();
+      void refreshSelectionDefault();
+    }
   });
 
   createEffect(() => {
@@ -352,6 +471,7 @@ const AgentPickerModal: Component<{
       profile,
       scope,
       restartSessions: restartSessions(),
+      assignmentMode: assignmentMode(),
     })
       .then((result) => {
         if (seq !== previewSeqByScope[scope]) return;
@@ -369,6 +489,9 @@ const AgentPickerModal: Component<{
 
   createEffect(() => {
     selectedScope();
+    // The operation is (scope, mode): switching to or from `+ lock` is a new
+    // operation, so it re-previews and drops any reviewed conflict policy.
+    assignmentMode();
     const agent = selectedAgent();
     const profile = selectedProfile();
     restartSessions();
@@ -378,6 +501,8 @@ const AgentPickerModal: Component<{
     previewSeqByScope.kind += 1;
     previewSeqByScope.workgroup += 1;
     setDangerArmed(false);
+    setConflictOpen(false);
+    setConflictDecision(null);
     setScopePreviews({ ...emptyScopePreviews });
     setScopePreviewErrorMap({ ...emptyScopeErrors });
     setApplyErrors([]);
@@ -429,11 +554,18 @@ const AgentPickerModal: Component<{
 
   const applyLabel = createMemo(() => {
     const scope = selectedScope();
-    if (scope === "replica") return "Assign to this replica";
+    const withLock = assignmentMode() === "assignAndLock";
+    if (scope === "replica") {
+      return withLock ? "Assign + lock this replica" : "Assign to this replica";
+    }
     const count = scopePreview()?.targetCount ?? 0;
-    if (scope === "kind") return `Overwrite ${count} of this kind`;
     const wg = props.scopeContext?.workgroupName;
-    return `Overwrite ${count}${wg ? ` in ${wg}` : " in this room"}`;
+    const base =
+      scope === "kind"
+        ? `Overwrite ${count} of this kind`
+        : `Overwrite ${count}${wg ? ` in ${wg}` : " in this room"}`;
+    // The label states the policy: never a silent upgrade to lock or downgrade.
+    return withLock ? `${base} + lock` : base;
   });
 
   const currentProfileLetter = createMemo(() => {
@@ -459,6 +591,9 @@ const AgentPickerModal: Component<{
   const isRedundantReplicaSelection = createMemo(() => {
     if (!props.disableRedundantReplicaAssign) return false;
     if (selectedScope() !== "replica") return false;
+    // #1943 - writing the SAME pair while ALSO setting the lock is a real change,
+    // so the #551 no-op guard must not swallow it.
+    if (assignmentMode() === "assignAndLock") return false;
     if (props.targetProfileOutdated) return false;
     const agent = selectedAgent();
     const baselineAgentId = props.explicitCurrentAgentId;
@@ -478,17 +613,344 @@ const AgentPickerModal: Component<{
     return false;
   });
 
+  // ── #1943 selection lock: persisted state, removal scope, Matrix default ──
+
+  /** A backend-owned mutation is in flight. Every mutating control waits for it;
+   *  #1942 keeps the promise open until the operation really settles. */
+  const mutating = createMemo(() => busy() || removeBusy() || defaultBusy());
+
+  /** The persisted protection snapshot. `null` means this build did not report
+   *  one: unknown, never downgraded to unlocked. */
+  const persistedLockState = createMemo<SelectionState | null>(
+    () => props.scopeContext?.selectionState ?? null
+  );
+  const persistedPair = createMemo<SavedPair | null>(() => props.scopeContext?.savedPair ?? null);
+  const lockStateUsable = createMemo(
+    () => persistedLockState() === "locked" || persistedLockState() === "unlocked"
+  );
+  const lockStateDiagnostic = createMemo(() => {
+    const state = persistedLockState();
+    if (state === "invalid") {
+      const detail = props.scopeContext?.selectionError;
+      return detail
+        ? `Protection state invalid: ${detail}`
+        : "Protection state invalid for this replica. Lock operations stay disabled until it is readable.";
+    }
+    if (state === null) {
+      return "Protection state was not reported for this replica. Lock operations stay disabled; assignment still works.";
+    }
+    return "";
+  });
+
+  /** SAVED provider label and requested profile, falling back to the raw id when
+   *  the provider is no longer configured. */
+  const savedPairLabel = (saved: SavedPair | null | undefined): string => {
+    const provider = saved?.codingAgentId
+      ? settings()?.agents.find((a) => a.id === saved.codingAgentId)?.label ?? saved.codingAgentId
+      : null;
+    const profile = saved?.requestedProfile
+      ? profileLabel(saved.requestedProfile, saved.codingAgentId)
+      : null;
+    if (!provider && !profile) return "Pair unavailable";
+    return [provider, profile ? `Profile ${profile}` : null].filter(Boolean).join(" · ");
+  };
+  const persistedPairLabel = createMemo(() => savedPairLabel(persistedPair()));
+
+  // Removal: its own scope, its own previews and counts.
+  const removePreview = createMemo(() => removePreviews()[removeScope()]);
+  const removeProtectedCount = createMemo(() => removePreview()?.protectedCount ?? 0);
+  const removeCountsComplete = createMemo(() => removePreview()?.countsComplete === true);
+  const removeInvalidCount = createMemo(() => removePreview()?.invalidCount ?? 0);
+  const removeScopeCountLabel = (scope: ProfileAssignmentScope): string => {
+    const preview = removePreviews()[scope];
+    if (!preview) return removePreviewBusyMap()[scope] ? "…" : "—";
+    if (!preview.countsComplete) return "count unknown";
+    return scope === "replica"
+      ? `${preview.protectedCount} protected`
+      : `${preview.protectedCount} of ${preview.candidateCount} protected`;
+  };
+  const removeStateChip = createMemo(() => {
+    const preview = removePreview();
+    if (persistedLockState() === "invalid" || removeInvalidCount() > 0) {
+      return { state: "invalid", label: "Check state" };
+    }
+    if (!preview) {
+      return { state: "unknown", label: removePreviewBusyMap()[removeScope()] ? "Checking…" : "Unknown" };
+    }
+    // An incomplete enumeration must never claim "0 of N".
+    if (!preview.countsComplete) return { state: "unknown", label: "Protection unknown" };
+    if (removeScope() === "replica") {
+      return preview.protectedCount > 0
+        ? { state: "locked", label: "Protected" }
+        : { state: "open", label: "Unlocked" };
+    }
+    return {
+      state: preview.protectedCount > 0 ? "locked" : "open",
+      label: `${preview.protectedCount} of ${preview.candidateCount} protected`,
+    };
+  });
+  const removeLabel = createMemo(() => {
+    if (!removeCountsComplete() || removeProtectedCount() === 0) return "Nothing to remove";
+    if (removeScope() === "replica") return "Remove lock";
+    return `Remove lock from ${removeProtectedCount()} ${
+      removeProtectedCount() === 1 ? "replica" : "replicas"
+    }`;
+  });
+  const removeNote = createMemo(() => {
+    const failure = removePreviewErrorMap()[removeScope()];
+    if (failure) return failure;
+    if (!removeCountsComplete()) return "Scope totals could not be established here; nothing is offered for removal.";
+    return removeProtectedCount() > 0
+      ? "Keeps Coding Agent + Profile. No restart."
+      : "No protected replicas in this scope — nothing to remove.";
+  });
+  /** Independent of the focused replica: an unlocked focus never disables a
+   *  scope whose own preview found protected peers. */
+  const canRemove = createMemo(
+    () => !mutating() && lockStateUsable() && removeCountsComplete() && removeProtectedCount() > 0
+  );
+  const lockHint = createMemo(() => {
+    if (removeScope() !== "replica") {
+      return "Only protection changes here: pairs, sessions and the future default stay untouched.";
+    }
+    return removeProtectedCount() > 0
+      ? "Bulk assignments and restarts skip it. Removing the lock keeps the pair and does not restart."
+      : 'Bulk assignments may overwrite this pair. Use "+ lock" below to write and protect in one step.';
+  });
+  const removeDone = createMemo(() => {
+    const result = removeResult();
+    return result ? removalOutcomeMessage(result) : "";
+  });
+
+  // Conflict review for a bulk assign-and-lock that found protected replicas.
+  /** The six radios are ONE selection: a scope either without or with the lock. */
+  const isOrdinaryScope = (scope: ProfileAssignmentScope) =>
+    selectedScope() === scope && assignmentMode() === "ordinary";
+  const isLockScope = (scope: ProfileAssignmentScope) =>
+    selectedScope() === scope && assignmentMode() === "assignAndLock";
+  const conflictEffectText = (decision: ConflictDecision): string => {
+    const projection = conflictProjection(decision);
+    if (!projection) return "The backend re-checks the scope before writing anything.";
+    if (decision === "unlockedOnly") {
+      return `${projection.eligibleCount} updated + locked; ${projection.skippedLockedCount} protected stay untouched.`;
+    }
+    return `${projection.eligibleCount} updated + locked; the ${conflictCount()} protected keep their lock.`;
+  };
+  const lockedKindTargets = createMemo(() =>
+    (scopePreview()?.targets ?? []).filter((t) => t.selectionState === "locked")
+  );
+  const conflictCount = createMemo(() => {
+    if (assignmentMode() !== "assignAndLock" || selectedScope() === "replica") return 0;
+    return scopePreview()?.conflictCount ?? 0;
+  });
+  const conflictProjection = (decision: ConflictDecision) => {
+    const projections = scopePreview()?.decisions ?? null;
+    if (!projections) return null;
+    return decision === "unlockedOnly" ? projections.unlockedOnly : projections.forceReviewed;
+  };
+
+  // The Matrix default for FUTURE replicas: persisted snapshot vs. user draft.
+  const persistedDefault = createMemo(() => selectionDefault()?.default ?? null);
+  const persistedDefaultLabel = createMemo(() => {
+    const stored = persistedDefault();
+    if (!stored) return "No Matrix default stored yet — Save default writes the pair below.";
+    const provider =
+      settings()?.agents.find((a) => a.id === stored.codingAgentId)?.label ?? stored.codingAgentId;
+    const profile = profileLabel(stored.requestedProfile, stored.codingAgentId);
+    return `Pair used at creation: ${provider} · Profile ${profile}${
+      stored.selectionLocked ? " · Start locked" : " · Start unlocked"
+    }`;
+  });
+  const canSaveDefault = createMemo(
+    () => !mutating() && lockStateUsable() && !!selectedAgent() && !!selectionDefault()
+  );
+
+  const refreshSelectionDefault = async () => {
+    const target = targetReplicaPath();
+    if (!target || !isWgReplica()) return;
+    const seq = ++defaultSeq;
+    setDefaultBusy(true);
+    try {
+      const result = await SettingsAPI.getReplicaSelectionDefault({ targetReplicaPath: target });
+      if (seq !== defaultSeq) return;
+      setSelectionDefault(result);
+      // Deliberately does NOT clear `defaultNotice`: a failed save tells the user
+      // to review the refreshed default, so the refresh must not erase the ask.
+      if (!defaultDraftSeeded) {
+        defaultDraftSeeded = true;
+        setDefaultDraftLocked(result.default?.selectionLocked ?? false);
+      }
+    } catch (err: unknown) {
+      if (seq !== defaultSeq) return;
+      setSelectionDefault(null);
+      setDefaultNotice(launchErrorMessage(err));
+    } finally {
+      if (seq === defaultSeq) setDefaultBusy(false);
+    }
+  };
+
+  const runRemovePreview = (scope: ProfileAssignmentScope) => {
+    const target = targetReplicaPath();
+    if (!target || !isWgReplica()) return;
+    const seq = ++removeSeqByScope[scope];
+    setRemovePreviewBusyMap((prev) => ({ ...prev, [scope]: true }));
+    setRemovePreviewErrorMap((prev) => ({ ...prev, [scope]: "" }));
+    SettingsAPI.previewSelectionLockRemoval({ targetReplicaPath: target, scope })
+      .then((result) => {
+        if (seq !== removeSeqByScope[scope]) return;
+        setRemovePreviews((prev) => ({ ...prev, [scope]: result }));
+      })
+      .catch((err: unknown) => {
+        if (seq !== removeSeqByScope[scope]) return;
+        setRemovePreviews((prev) => ({ ...prev, [scope]: null }));
+        setRemovePreviewErrorMap((prev) => ({ ...prev, [scope]: launchErrorMessage(err) }));
+      })
+      .finally(() => {
+        if (seq === removeSeqByScope[scope]) {
+          setRemovePreviewBusyMap((prev) => ({ ...prev, [scope]: false }));
+        }
+      });
+  };
+
+  const refreshRemovePreviews = () => {
+    for (const scope of LOCK_SCOPES) runRemovePreview(scope);
+  };
+
+  /** Removal carries no pair and no restart: it only clears protection. */
+  const removeLock = async () => {
+    const target = targetReplicaPath();
+    const preview = removePreview();
+    if (!canRemove() || !target || !preview) return;
+    setRemoveBusy(true);
+    setRemoveErrors([]);
+    setRemoveResult(null);
+    try {
+      const result = await SettingsAPI.applySelectionLockRemoval({
+        targetReplicaPath: target,
+        scope: removeScope(),
+        confirmedTargetFingerprint: preview.targetFingerprint,
+      });
+      setRemoveResult(result);
+      setRemoveErrors(result.errors);
+      const first = result.errors[0];
+      if (first) {
+        showToast(
+          result.errors.length > 1 ? `${first.message} (+${result.errors.length - 1} more)` : first.message,
+        );
+      } else {
+        showToast(removalOutcomeMessage(result));
+      }
+    } catch (err: unknown) {
+      // A dropped reply must not be read as "nothing happened".
+      const message = `Outcome unknown: ${launchErrorMessage(err)}. The lock may still have been removed; the scope will refresh.`;
+      setRemoveErrors([
+        { code: "removalOutcomeUnknown", message, sessionIds: [], replicaPaths: [] },
+      ]);
+      showToast(message);
+    } finally {
+      setRemoveBusy(false);
+      // Re-read the authoritative state instead of mutating optimistically.
+      refreshRemovePreviews();
+      void refreshSelectionDefault();
+    }
+  };
+
+  const saveSelectionDefault = async () => {
+    const target = targetReplicaPath();
+    const agent = selectedAgent();
+    const current = selectionDefault();
+    if (!canSaveDefault() || !target || !agent || !current) return;
+    setDefaultBusy(true);
+    setDefaultNotice("");
+    try {
+      const result = await SettingsAPI.setReplicaSelectionDefault({
+        targetReplicaPath: target,
+        codingAgentId: agent.id,
+        requestedProfile: selectedProfile(),
+        selectionLocked: defaultDraftLocked(),
+        confirmedDefaultFingerprint: current.defaultFingerprint,
+      });
+      setSelectionDefault(result);
+      defaultDraftSeeded = true;
+      setDefaultDraftLocked(result.default?.selectionLocked ?? defaultDraftLocked());
+      showToast("Default for new replicas saved.");
+    } catch (err: unknown) {
+      // Keep the stored view AND the draft; the retry needs a fresh review.
+      const message = launchErrorMessage(err);
+      setDefaultNotice(`${message} Review the refreshed default before retrying.`);
+      showToast(message);
+      void refreshSelectionDefault();
+    } finally {
+      setDefaultBusy(false);
+    }
+  };
+
+  const openConflictReview = () => {
+    setConflictDecision(null);
+    setConflictOpen(true);
+  };
+
+  /** Cancel/Escape: the review closes and nothing at all is sent. */
+  const cancelConflict = () => {
+    setConflictOpen(false);
+    setConflictDecision(null);
+  };
+
+  const resolveConflict = (decision: ConflictDecision) => {
+    setConflictDecision(decision);
+    setConflictOpen(false);
+    // The reviewed policy is consumed by this one apply: a later force needs a
+    // fresh review, so the decision never survives the request.
+    void apply().finally(() => setConflictDecision(null));
+  };
+
+  /** An external selection update invalidates reviews and snapshots alike. */
+  const handleExternalSelectionUpdate = () => {
+    setConflictOpen(false);
+    setConflictDecision(null);
+    setDangerArmed(false);
+    refreshRemovePreviews();
+    void refreshSelectionDefault();
+    const agent = selectedAgent();
+    if (agent) {
+      // Every scope's count is on screen at once, so all three are reloaded.
+      for (const scope of LOCK_SCOPES) runScopePreview(scope, agent.id, selectedProfile());
+    }
+  };
+
   const apply = async () => {
     const agent = selectedAgent();
     if (!agent || !applyEnabled()) return;
+    const scope = selectedScope();
+    const mode = assignmentMode();
+    // A bulk assign-and-lock that found protected replicas cannot proceed on a
+    // guess: pick one of the two reviewed outcomes first.
+    if (
+      mode === "assignAndLock" &&
+      scope !== "replica" &&
+      conflictCount() > 0 &&
+      !conflictDecision()
+    ) {
+      openConflictReview();
+      return;
+    }
+    const decision = conflictDecision();
     setBusy(true);
     setError("");
     setApplyErrors([]);
-    const scope = selectedScope();
     const requested = requestedProfileForSelection();
     const effective = effectivePreview().effectiveProfile;
     const target = targetReplicaPath();
     const restart = scope === "replica" ? false : restartSessions();
+    // Each reviewed policy carries its OWN backend-issued fingerprint; the
+    // no-conflict path uses the preview's direct fingerprint.
+    const reviewedFingerprint = decision
+      ? conflictProjection(decision)?.fingerprint ?? null
+      : null;
+    const confirmedFingerprint =
+      scope === "replica"
+        ? null
+        : reviewedFingerprint ?? scopePreview()?.targetFingerprint ?? null;
     try {
       let updatedCount: number | undefined;
       let restartedCount: number | undefined;
@@ -499,9 +961,12 @@ const AgentPickerModal: Component<{
           profile: selectedProfile(),
           scope,
           restartSessions: restart,
-          confirmedTargetFingerprint:
-            scope === "replica" ? null : scopePreview()?.targetFingerprint ?? null,
+          confirmedTargetFingerprint: confirmedFingerprint,
           typedConfirmation: null,
+          assignmentMode: mode,
+          // Deliberately omitted unless a policy was actually reviewed: replica
+          // scope and ordinary mode must never carry a decision.
+          ...(decision ? { conflictDecision: decision } : {}),
         });
         if (result.errors.length > 0) {
           setApplyErrors(result.errors);
@@ -509,6 +974,7 @@ const AgentPickerModal: Component<{
           const extra = result.errors.length - 1;
           showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
           setDangerArmed(false);
+          setConflictDecision(null);
           if (scope !== "replica") setScopePreviews((prev) => ({ ...prev, [scope]: null }));
           setBusy(false);
           runScopePreview(scope, agent.id, selectedProfile());
@@ -530,11 +996,16 @@ const AgentPickerModal: Component<{
       const message = launchErrorMessage(err);
       setError(message);
       showToast(message);
+      setConflictDecision(null);
       if (scope !== "replica" && target && isWgReplica()) {
         setDangerArmed(false);
         setScopePreviews((prev) => ({ ...prev, [scope]: null }));
         runScopePreview(scope, agent.id, selectedProfile());
       }
+    } finally {
+      // The backend-owned mutation has settled. Releasing the gate here (instead
+      // of only on the error paths) keeps "busy until the promise settles" true
+      // for callers that leave the modal open after a successful apply.
       setBusy(false);
     }
   };
@@ -549,6 +1020,11 @@ const AgentPickerModal: Component<{
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
+      // Escape backs out of an open review first; either way nothing is sent.
+      if (conflictOpen()) {
+        cancelConflict();
+        return;
+      }
       props.onClose();
       return;
     }
@@ -601,6 +1077,215 @@ const AgentPickerModal: Component<{
             <span>{props.sessionName}</span>
           </div>
         </div>
+
+        {/* #1943 - the persisted selection lock. The pair shown is the STORED
+            one, never the unsaved picker selection, and the `Remove lock from`
+            scope keeps its own state, previews and counts. */}
+        <Show when={showBroadScope()}>
+          <div
+            class="selection-lock-bar"
+            data-state={removeProtectedCount() > 0 ? "locked" : "open"}
+            data-ac-testid="agentPicker.lockBar"
+          >
+            <div class="selection-lock-icon">
+              <LockIcon />
+            </div>
+            <div class="selection-lock-main">
+              <div class="selection-lock-title">
+                Selection lock
+                <span
+                  class="selection-lock-state"
+                  data-state={removeStateChip().state}
+                  data-ac-testid="agentPicker.lockState"
+                  data-ac-role="status"
+                >
+                  {removeStateChip().label}
+                </span>
+              </div>
+              <div class="selection-lock-pair" data-ac-testid="agentPicker.lockPair">
+                {persistedPairLabel()}
+              </div>
+              <div class="selection-lock-hint">{lockHint()}</div>
+            </div>
+            <div class="selection-lock-right">
+              <div class="selection-lock-remove-head">Remove lock from</div>
+              <div
+                class="selection-lock-remove-scopes"
+                role="radiogroup"
+                aria-label="Remove lock scope"
+              >
+                <For each={LOCK_SCOPES}>
+                  {(scope) => (
+                    <label
+                      class="selection-lock-scope-opt"
+                      classList={{
+                        active: removeScope() === scope,
+                        empty: (removePreviews()[scope]?.protectedCount ?? 0) === 0,
+                      }}
+                      {...automationAttrs(
+                        `agentPicker.removeScope.${LOCK_SCOPE_TEST_ID[scope]}`,
+                        "button",
+                        removeScope() === scope ? "active" : "inactive",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="agentPickerRemoveScope"
+                        checked={removeScope() === scope}
+                        onChange={() => setRemoveScope(scope)}
+                      />
+                      {LOCK_SCOPE_LABEL[scope]}{" "}
+                      <span
+                        class="selection-lock-scope-count"
+                        data-ac-testid={`agentPicker.removeScopeCount.${LOCK_SCOPE_TEST_ID[scope]}`}
+                      >
+                        {removeScopeCountLabel(scope)}
+                      </span>
+                    </label>
+                  )}
+                </For>
+              </div>
+              <div class="selection-lock-remove-row">
+                <span class="selection-lock-remove-note" data-ac-testid="agentPicker.removeNote">
+                  {removeNote()}
+                </span>
+                <button
+                  type="button"
+                  class="selection-lock-remove"
+                  disabled={!canRemove()}
+                  onClick={() => void removeLock()}
+                  {...automationAttrs(
+                    "agentPicker.removeLock",
+                    "button",
+                    canRemove() ? "enabled" : "disabled",
+                  )}
+                >
+                  {removeLabel()}
+                </button>
+              </div>
+              <Show when={removeDone()}>
+                <div
+                  class="selection-lock-remove-done"
+                  data-ac-testid="agentPicker.removeDone"
+                  data-ac-role="status"
+                >
+                  {removeDone()}
+                </div>
+              </Show>
+            </div>
+          </div>
+
+          {/* Unknown/invalid protection is a diagnostic, never a silent
+              "unlocked", and it keeps the new lock controls disabled. */}
+          <Show when={lockStateDiagnostic()}>
+            <div
+              class="agent-scope-warnings"
+              data-ac-testid="agentPicker.lockDiagnostic"
+              data-ac-role="status"
+            >
+              {lockStateDiagnostic()}
+            </div>
+          </Show>
+          <Show when={removeErrors().length > 0}>
+            <div
+              class="agent-scope-error"
+              data-ac-testid="agentPicker.removeErrors"
+              data-ac-role="alert"
+            >
+              <For each={removeErrors()}>{(error) => <div>{error.message}</div>}</For>
+            </div>
+          </Show>
+
+          {/* Informational only: protected rows, while the counts and the
+              eligible set keep using the complete target list. */}
+          <Show when={selectedScope() === "kind" && scopePreview()}>
+            <div class="selection-lock-kind" data-ac-testid="agentPicker.lockKindList">
+              <div class="selection-lock-kind-head">
+                {scopePreview()!.targetCount} replica(s) of this kind ·{" "}
+                {distinctWorkgroupCount()} room(s) · every row shows its own pair
+              </div>
+              <For each={lockedKindTargets()}>
+                {(t) => (
+                  <div
+                    class="selection-lock-kind-row"
+                    data-ac-role="row"
+                    data-ac-replica-path={t.replicaPath}
+                  >
+                    <span class="wg">{t.workgroupName}</span>
+                    <span class="name">{t.replicaName}</span>
+                    <span class="pair">{savedPairLabel(t.savedPair)}</span>
+                    <span class="selection-lock-pill locked">Protected</span>
+                  </div>
+                )}
+              </For>
+              <div class="selection-lock-kind-note">
+                Apply to and + lock act on every eligible row; protected rows are resolved by the
+                conflict dialog. New replicas inherit this Matrix default.
+              </div>
+            </div>
+          </Show>
+
+          {/* The Matrix default for FUTURE replicas: stored snapshot above, the
+              user's unsaved draft beside it. Nothing saves on change. */}
+          <Show when={selectionDefault() || defaultNotice()}>
+            <div class="selection-lock-future" data-ac-testid="agentPicker.defaultSection">
+              <div class="selection-lock-future-head">
+                Default for new replicas of this Matrix
+                <Show when={persistedDefault()}>
+                  <span class="decision-tag">saved</span>
+                </Show>
+                <label class="selection-lock-scope-opt active" style={{ "margin-left": "auto" }}>
+                  <input
+                    type="checkbox"
+                    checked={defaultDraftLocked()}
+                    disabled={!lockStateUsable() || defaultBusy()}
+                    onChange={(e) => setDefaultDraftLocked(e.currentTarget.checked)}
+                    {...automationAttrs(
+                      "agentPicker.defaultStartLocked",
+                      "checkbox",
+                      defaultDraftLocked() ? "checked" : "unchecked",
+                    )}
+                  />
+                  Start locked
+                </label>
+              </div>
+              <div class="selection-lock-kind-row">
+                <span class="pair" data-ac-testid="agentPicker.defaultPersisted">
+                  {persistedDefaultLabel()}
+                </span>
+              </div>
+              <div class="selection-lock-future-note">
+                Inherited by replicas created in future rooms of this team. Existing replicas keep
+                their current lock state; changing this default never propagates, never assigns and
+                never restarts.
+              </div>
+              <div class="selection-lock-remove-row">
+                <Show when={defaultNotice()}>
+                  <span
+                    class="selection-lock-remove-note"
+                    data-ac-testid="agentPicker.defaultNotice"
+                    data-ac-role="alert"
+                  >
+                    {defaultNotice()}
+                  </span>
+                </Show>
+                <button
+                  type="button"
+                  class="selection-lock-remove"
+                  disabled={!canSaveDefault()}
+                  onClick={() => void saveSelectionDefault()}
+                  {...automationAttrs(
+                    "agentPicker.defaultSave",
+                    "button",
+                    canSaveDefault() ? "enabled" : "disabled",
+                  )}
+                >
+                  Save default
+                </button>
+              </div>
+            </div>
+          </Show>
+        </Show>
 
         <div class="agent-profile-assignment-body" data-component="Coding Agent profile modal variant C layout">
           <aside class="agent-profile-panel agent-profile-provider-panel" data-component="Coding Agents selector panel">
@@ -902,51 +1587,114 @@ const AgentPickerModal: Component<{
           {...automationAttrs("agentPicker.scope", "surface", selectedScope())}
         >
           <Show when={showBroadScope()}>
-            <div class="agent-scope-picker" role="radiogroup" aria-label="Apply scope">
-              <span class="agent-scope-label">Apply to</span>
-              <label
-                class="agent-scope-opt"
-                classList={{ active: selectedScope() === "replica" }}
-                {...automationAttrs("agentPicker.scope.replica", "button", selectedScope() === "replica" ? "active" : "inactive")}
-              >
-                <input
-                  type="radio"
-                  name="agentPickerScope"
-                  checked={selectedScope() === "replica"}
-                  onChange={() => setSelectedScope("replica")}
-                />
-                This replica <span class="agent-scope-count">{scopeCount("replica")} replica</span>
-              </label>
-              <label
-                class="agent-scope-opt"
-                classList={{ active: selectedScope() === "kind", dangerous: selectedScope() === "kind" }}
-                {...automationAttrs("agentPicker.scope.kind", "button", selectedScope() === "kind" ? "active" : "inactive")}
-              >
-                <input
-                  type="radio"
-                  name="agentPickerScope"
-                  checked={selectedScope() === "kind"}
-                  onChange={() => setSelectedScope("kind")}
-                />
-                All replicas of this kind <span class="agent-scope-count">{scopeCount("kind")} replicas</span>
-              </label>
-              <label
-                class="agent-scope-opt"
-                classList={{ active: selectedScope() === "workgroup", dangerous: selectedScope() === "workgroup" }}
-                {...automationAttrs("agentPicker.scope.workgroup", "button", selectedScope() === "workgroup" ? "active" : "inactive")}
-              >
-                <input
-                  type="radio"
-                  name="agentPickerScope"
-                  checked={selectedScope() === "workgroup"}
-                  onChange={() => setSelectedScope("workgroup")}
-                />
-                Entire room <span class="agent-scope-count">{scopeCount("workgroup")} replicas</span>
-              </label>
+            {/* Six radios, one mutually exclusive operation: the ordinary scopes
+                the picker always had, then the same scopes with `+ lock`. */}
+            <div
+              class="agent-scope-stack"
+              role="radiogroup"
+              aria-label="Apply to, optionally with lock"
+            >
+              <div class="agent-scope-picker">
+                <span class="agent-scope-label">Apply to</span>
+                <label
+                  class="agent-scope-opt"
+                  classList={{ active: isOrdinaryScope("replica") }}
+                  {...automationAttrs("agentPicker.scope.replica", "button", isOrdinaryScope("replica") ? "active" : "inactive")}
+                >
+                  <input
+                    type="radio"
+                    name="agentPickerScope"
+                    checked={isOrdinaryScope("replica")}
+                    onChange={() => {
+                      setAssignmentMode("ordinary");
+                      setSelectedScope("replica");
+                    }}
+                  />
+                  This replica <span class="agent-scope-count">{scopeCount("replica")} replica</span>
+                </label>
+                <label
+                  class="agent-scope-opt"
+                  classList={{ active: isOrdinaryScope("kind"), dangerous: isOrdinaryScope("kind") }}
+                  {...automationAttrs("agentPicker.scope.kind", "button", isOrdinaryScope("kind") ? "active" : "inactive")}
+                >
+                  <input
+                    type="radio"
+                    name="agentPickerScope"
+                    checked={isOrdinaryScope("kind")}
+                    onChange={() => {
+                      setAssignmentMode("ordinary");
+                      setSelectedScope("kind");
+                    }}
+                  />
+                  All replicas of this kind <span class="agent-scope-count">{scopeCount("kind")} replicas</span>
+                </label>
+                <label
+                  class="agent-scope-opt"
+                  classList={{ active: isOrdinaryScope("workgroup"), dangerous: isOrdinaryScope("workgroup") }}
+                  {...automationAttrs("agentPicker.scope.workgroup", "button", isOrdinaryScope("workgroup") ? "active" : "inactive")}
+                >
+                  <input
+                    type="radio"
+                    name="agentPickerScope"
+                    checked={isOrdinaryScope("workgroup")}
+                    onChange={() => {
+                      setAssignmentMode("ordinary");
+                      setSelectedScope("workgroup");
+                    }}
+                  />
+                  Entire room <span class="agent-scope-count">{scopeCount("workgroup")} replicas</span>
+                </label>
+              </div>
+              <div class="agent-scope-picker agent-scope-picker--lock">
+                <span class="agent-scope-label">
+                  Apply to{" "}
+                  <span class="agent-scope-lock-badge">
+                    <LockIcon /> + lock
+                  </span>
+                </span>
+                <For each={LOCK_SCOPES}>
+                  {(scope) => (
+                    <label
+                      class="agent-scope-opt"
+                      classList={{
+                        active: isLockScope(scope),
+                        dangerous: isLockScope(scope),
+                        "locked-choice": true,
+                      }}
+                      {...automationAttrs(
+                        `agentPicker.scope.lock.${LOCK_SCOPE_TEST_ID[scope]}`,
+                        "button",
+                        isLockScope(scope) ? "active" : "inactive",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="agentPickerScope"
+                        checked={isLockScope(scope)}
+                        disabled={!lockStateUsable()}
+                        onChange={() => {
+                          setAssignmentMode("assignAndLock");
+                          setSelectedScope(scope);
+                        }}
+                      />
+                      <LockIcon class="agent-scope-opt-lock" />
+                      {LOCK_SCOPE_LABEL[scope]} + lock{" "}
+                      <span class="agent-scope-count">
+                        {scopeCount(scope)} {scopeCount(scope) === 1 ? "replica" : "replicas"}
+                      </span>
+                    </label>
+                  )}
+                </For>
+              </div>
             </div>
             <div class="agent-scope-live-note">
               <span class="agent-scope-live-tag">live</span>
               Counts are read from the current room; the backend re-enumerates targets before applying.
+            </div>
+            <div class="agent-scope-lock-assumption">
+              One step: <strong>+ lock</strong> writes the pair and sets the lock on the same eligible
+              replicas. Replicas already locked are listed by the conflict dialog before applying;{" "}
+              <strong>Cancel</strong> changes nothing.
             </div>
           </Show>
 
@@ -1091,6 +1839,96 @@ const AgentPickerModal: Component<{
 
         </div>
       </div>
+      {/* #1943 conflict review. A bulk assign-and-lock over protected replicas
+          is decided here, never silently downgraded or upgraded; Cancel and
+          Escape both send nothing at all. */}
+      <Show when={conflictOpen() && scopePreview()}>
+        <div class="lock-conflict-overlay" data-ac-testid="agentPicker.conflict">
+          <div class="lock-conflict-scrim" onClick={cancelConflict} />
+          <div
+            class="lock-conflict-card"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="agentPickerConflictTitle"
+          >
+            <div class="lock-conflict-head">
+              <div class="lock-conflict-title" id="agentPickerConflictTitle">
+                {lockedKindTargets().length}{" "}
+                {lockedKindTargets().length === 1 ? "replica is" : "replicas are"} already locked
+              </div>
+              <div class="lock-conflict-sub">
+                {scopePreview()!.targets.length} replica(s) in scope for <strong>+ lock</strong> with{" "}
+                {selectedAgent()?.label} · Profile {profileLabel(selectedProfile())}. Choose how to treat
+                them.
+              </div>
+            </div>
+            <div class="lock-conflict-list">
+              <For each={lockedKindTargets()}>
+                {(t) => (
+                  <div
+                    class="lock-conflict-row"
+                    data-ac-role="row"
+                    data-ac-replica-path={t.replicaPath}
+                  >
+                    <span class="lock-conflict-who">
+                      <span class="wg">{t.workgroupName}</span> ·{" "}
+                      <span class="name">{t.replicaName}</span>
+                    </span>
+                    <span class="lock-conflict-now">
+                      Now: {savedPairLabel(t.savedPair)}{" "}
+                      <span class="selection-lock-pill locked">Protected</span>
+                    </span>
+                    <span class="lock-conflict-arrow">&#8594;</span>
+                    <span class="lock-conflict-next">
+                      Requested: {selectedAgent()?.label} · Profile {profileLabel(selectedProfile())}
+                    </span>
+                  </div>
+                )}
+              </For>
+            </div>
+            <div class="lock-conflict-effects">
+              <div class="lock-conflict-effect">
+                <strong>Cancel</strong>
+                <span>Nothing changes: no pair, no lock and no restart.</span>
+              </div>
+              <div class="lock-conflict-effect">
+                <strong>Apply only to unlocked</strong>
+                <span>{conflictEffectText("unlockedOnly")}</span>
+              </div>
+              <div class="lock-conflict-effect danger">
+                <strong>Force all, including locked</strong>
+                <span>{conflictEffectText("forceReviewed")}</span>
+              </div>
+            </div>
+            <div class="lock-conflict-actions">
+              <button
+                type="button"
+                class="modal-btn modal-btn-cancel"
+                onClick={cancelConflict}
+                {...automationAttrs("agentPicker.conflict.cancel", "button")}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                class="modal-btn modal-btn-save"
+                onClick={() => resolveConflict("unlockedOnly")}
+                {...automationAttrs("agentPicker.conflict.unlockedOnly", "button")}
+              >
+                Apply only to unlocked
+              </button>
+              <button
+                type="button"
+                class="modal-btn modal-btn-save danger"
+                onClick={() => resolveConflict("forceReviewed")}
+                {...automationAttrs("agentPicker.conflict.forceAll", "button")}
+              >
+                Force all, including locked
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
     </div>
     {/* #537: viewport-level toast so the failure is unmissable even with the
         modal scrolled. Mirrors SidebarApp/SettingsModal `.toast-error`. */}
