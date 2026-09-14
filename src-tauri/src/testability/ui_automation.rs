@@ -1815,6 +1815,65 @@ fn write_json_atomic_replace<T: Serialize>(path: &Path, value: &T) -> io::Result
     write_json_atomic(path, value, true)
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct SessionReadHookState {
+    active: bool,
+    path: PathBuf,
+    callback: Option<Box<dyn FnOnce()>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SESSION_READ_HOOK: std::cell::RefCell<SessionReadHookState> =
+        std::cell::RefCell::new(SessionReadHookState::default());
+}
+
+#[cfg(test)]
+struct SessionReadHookGuard(std::marker::PhantomData<std::rc::Rc<()>>);
+
+#[cfg(test)]
+impl SessionReadHookGuard {
+    fn install(path: PathBuf, callback: impl FnOnce() + 'static) -> Self {
+        SESSION_READ_HOOK.with(|state| {
+            let mut state = state.borrow_mut();
+            assert!(!state.active, "session read hook already registered");
+            *state = SessionReadHookState {
+                active: true,
+                path,
+                callback: Some(Box::new(callback)),
+            };
+        });
+        Self(std::marker::PhantomData)
+    }
+}
+
+#[cfg(test)]
+impl Drop for SessionReadHookGuard {
+    fn drop(&mut self) {
+        let _ = SESSION_READ_HOOK.try_with(|state| {
+            if let Ok(mut state) = state.try_borrow_mut() {
+                *state = SessionReadHookState::default();
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+fn observe_session_read_not_found(path: &Path) {
+    let callback = SESSION_READ_HOOK.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.active && state.path == path {
+            state.callback.take()
+        } else {
+            None
+        }
+    });
+    if let Some(callback) = callback {
+        callback();
+    }
+}
+
 fn read_session_file_with_retry(path: &Path) -> io::Result<String> {
     let mut last_not_found = None;
     for attempt in 0..SESSION_READ_RETRY_COUNT {
@@ -1825,6 +1884,8 @@ fn read_session_file_with_retry(path: &Path) -> io::Result<String> {
                     && attempt + 1 < SESSION_READ_RETRY_COUNT =>
             {
                 last_not_found = Some(e);
+                #[cfg(test)]
+                observe_session_read_not_found(path);
                 std::thread::sleep(Duration::from_millis(SESSION_READ_RETRY_DELAY_MS));
             }
             Err(e) => return Err(e),
@@ -3056,14 +3117,67 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(SESSION_FILE);
         let writer_path = path.clone();
-        let writer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(SESSION_READ_RETRY_DELAY_MS));
-            fs::write(writer_path, "{\"ok\":true}").unwrap();
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = count.clone();
+        let guard = SessionReadHookGuard::install(path.clone(), move || {
+            observed.set(observed.get() + 1);
+            write_json_atomic_new(&writer_path, &serde_json::json!({"ok": true})).unwrap_or_else(
+                |error| panic!("publish session fixture {}: {error}", writer_path.display()),
+            );
         });
 
-        let raw = read_session_file_with_retry(&path).unwrap();
-        writer.join().unwrap();
-        assert_eq!(raw, "{\"ok\":true}");
+        let result = read_session_file_with_retry(&path);
+        assert!(
+            result.is_ok(),
+            "session reader must recover after observed NotFound: {result:?}"
+        );
+        assert_eq!(result.unwrap(), "{\"ok\":true}");
+        assert_eq!(count.get(), 1);
+        assert!(!path.with_extension("tmp").exists());
+        drop(guard);
+        tmp.close().expect("remove transient session fixture");
+    }
+
+    #[test]
+    fn session_read_not_found_exhausts_attempts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SESSION_FILE);
+        let error = read_session_file_with_retry(&path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        tmp.close().expect("remove absent session fixture");
+    }
+
+    #[test]
+    fn session_read_invalid_utf8_is_not_retried() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SESSION_FILE);
+        fs::write(&path, [0xff]).unwrap();
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = count.clone();
+        let guard = SessionReadHookGuard::install(path.clone(), move || {
+            observed.set(observed.get() + 1);
+        });
+        let error = read_session_file_with_retry(&path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(count.get(), 0);
+        drop(guard);
+        tmp.close().expect("remove invalid UTF-8 session fixture");
+    }
+
+    #[test]
+    fn session_read_empty_success_is_not_retried() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SESSION_FILE);
+        fs::write(&path, "").unwrap();
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = count.clone();
+        let guard = SessionReadHookGuard::install(path.clone(), move || {
+            observed.set(observed.get() + 1);
+        });
+        assert_eq!(read_session_file_with_retry(&path).unwrap(), "");
+        assert_eq!(count.get(), 0);
+        drop(guard);
+        tmp.close().expect("remove empty session fixture");
     }
 
     #[test]
