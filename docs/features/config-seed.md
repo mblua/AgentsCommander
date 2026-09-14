@@ -50,7 +50,7 @@ You never name a source folder directly. `<dest>` is exactly the **Config folder
 | 2 | Workspace, base | `<workspace>/default<dest>` |
 | 3 | Matrix, profile-lettered | `<matrix>/default_profile_<letter><dest>` |
 | 4 | Matrix, base | `<matrix>/default<dest>` |
-| 5 | Factory default (AC catalog) | `<config_dir>/coding-agents/_seed/<dest>` |
+| 5 | Factory default (AC catalog) | `<workspace>/coding-agents/_seed/<dest>` |
 
 **The first matching tier wins.** AC checks the tiers top to bottom and stops at the first one that qualifies; lower tiers are not consulted for that spawn.
 
@@ -58,7 +58,7 @@ The path roots:
 
 - `<workspace>` is the project's `.ac` root.
 - `<matrix>` is the agent's canonical `_agent_<name>` directory.
-- `<config_dir>` is the application config directory selected by the exact binary version (see [Portable instances](portable-instances.md#config-directory-rule)).
+- `<config_dir>` is the application config directory selected by the exact binary version (see [Portable instances](portable-instances.md#config-directory-rule)); it holds the legacy tier-5 masters a session without a workspace falls back to.
 - `<letter>` is the session's resolved profile letter, lowercased, so profile `B` looks for `default_profile_b<dest>`. See [Coding Agent Profiles](coding-agent-profiles.md) for how the letter is resolved.
 
 ### The two kinds of tier
@@ -70,7 +70,7 @@ The five tiers split into two groups with **different ownership and different ov
 - **Workspace beats matrix.** Every workspace-level candidate outranks every matrix-level candidate.
 - **Profile beats base.** Within a location, the folder named for the session's resolved profile letter outranks the plain `default<dest>` folder.
 
-**Tier 5 is the AC factory default (catalog-owned).** This is the config folder AC ships for a recognized `<dest>` value, at `<config_dir>/coding-agents/_seed/<dest>/`. It has the **lowest precedence** and behaves differently from tiers 1-4: it is **absent-only**. AC fills `<replica>/<dest>` from it **only when the destination does not already exist** (and the factory folder holds at least one file). It **never overwrites** an existing config folder, so a replica's accumulated config, credentials, and session state are safe. If the destination is already present, tier 5 is skipped and the spawn is byte-for-byte unchanged. Tier 5 is, in effect, a one-time bootstrap for a brand-new replica when you have supplied no template of your own.
+**Tier 5 is the AC factory default (catalog-owned).** This is the config folder AC ships for a recognized `<dest>` value, at the session's own `<workspace>/coding-agents/_seed/<dest>/` (a session without a workspace falls back to the legacy `<config_dir>/coding-agents/_seed/<dest>/`). It has the **lowest precedence** and behaves differently from tiers 1-4: it is **absent-only**. AC fills `<replica>/<dest>` from it **only when the destination does not already exist** (and the factory folder holds at least one file). It **never overwrites** an existing config folder, so a replica's accumulated config, credentials, and session state are safe. If the destination is already present, tier 5 is skipped and the spawn is byte-for-byte unchanged. Tier 5 is, in effect, a one-time bootstrap for a brand-new replica when you have supplied no template of your own.
 
 > **The matrix's own `<dest>` is not a template.** A folder like `_agent_<name>/.claude` is the matrix agent's live config, not a seed source. AC deliberately never copies from it, so seeding cannot clobber the agent's real config. The matrix tiers use the `default<dest>` and `default_profile_<letter><dest>` naming instead.
 
@@ -82,25 +82,25 @@ AC looks, in order, for:
 2. `<workspace>/default.claude` - a template you own; if it exists it wins, and it is re-copied on every spawn.
 3. `<matrix>/default_profile_a.claude`
 4. `<matrix>/default.claude`
-5. `<config_dir>/coding-agents/_seed/.claude` - the AC factory fallback, used **only** when none of the above exists **and** the replica has no `.claude` yet.
+5. `<workspace>/coding-agents/_seed/.claude` - the AC factory fallback, used **only** when none of the above exists **and** the replica has no `.claude` yet.
 
-The first that qualifies is copied to `<replica>/.claude`. So `<workspace>/default.claude`, the user template, always wins ahead of the factory seed; `<config_dir>/coding-agents/_seed/.claude` is only the factory fallback that bootstraps a fresh replica.
+The first that qualifies is copied to `<replica>/.claude`. So `<workspace>/default.claude`, the user template, always wins ahead of the factory seed; `<workspace>/coding-agents/_seed/.claude` is only the factory fallback that bootstraps a fresh replica.
 
 ## The factory default and the "Re-seed" button
 
 AC ships factory masters for three Config folder values only: `.claude`, `.codex`, and `.opencode` (the defaults of the built-in Claude, Codex, and OpenCode agents). **Tier 5 is keyed by the Config folder value, not by agent identity.** It therefore exists for any agent whose Config folder is one of those three, including an agent you create yourself. For any other Config folder value the tier is absent.
 
-AC writes each shipped master into `<config_dir>/coding-agents/_seed/<dest>/` on launch if that master is absent, and never touches one that already exists. The master is **yours to edit** afterward: change `_seed/.claude/settings.json` and every future absent-only bootstrap uses your edited copy.
+AC writes each shipped master into the project's `<workspace>/coding-agents/_seed/<dest>/` at startup and project registration if that master is absent, and never touches one that already exists; when the project master is absent, a pre-migration master left at the legacy `<config_dir>/coding-agents/_seed/<dest>/` is copied into the project verbatim instead of the shipped default, so your edits survive the move. The master is **yours to edit** afterward: change `_seed/.claude/settings.json` and every future absent-only bootstrap uses your edited copy.
 
 **Settings -> Coding Agents** shows a **Re-seed default configuration** button on any agent whose command is exactly `claude`, `codex`, or `opencode`. That button is gated on the **command's executable basename**, not on the Config folder, so a custom agent that runs `claude` shows it too. It restores the master for that command's shipped Config folder back to the version AC ships:
 
 - It first backs up your current master to `<dest>.bak-<timestamp>` (your edits are never lost), then atomically swaps AC's shipped default into place.
-- It changes **only** the tier-5 master under `<config_dir>/coding-agents/_seed/`. It does **not** touch any running session, any replica's live `<dest>`, or your workspace/matrix templates (tiers 1-4).
+- It changes **only** the tier-5 master under the primary registered project's `.ac/coding-agents/_seed/`. It does **not** touch any running session, any replica's live `<dest>`, or your workspace/matrix templates (tiers 1-4).
 - Because tier 5 is absent-only, re-seeding affects only future replicas that still have no `<dest>` and no higher-tier template; existing replicas keep their config.
 
 Use it when you have edited a factory master and want AC's original default back.
 
-**Re-seed is not the managed catalog.** The button writes only the tier-5 master under `<config_dir>/coding-agents/_seed/`. It never touches the project's managed `agents.json`, its `agents.local.json`, a registered agent, or a running session. Settings' **Reload catalog** re-reads the persisted catalog files (it does not re-seed), and a restart is what retries managed-base refresh or migration. See [Coding agents § Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration).
+**Re-seed is not the managed catalog.** The button writes only the tier-5 master under the primary registered project's `.ac/coding-agents/_seed/`; with no primary project it uses the legacy `<config_dir>/coding-agents/_seed/`. It never touches the project's managed `agents.json`, its `agents.local.json`, a registered agent, or a running session. Settings' **Reload catalog** re-reads the persisted catalog files (it does not re-seed), and a restart is what retries managed-base refresh or migration. See [Coding agents § Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration).
 
 ## Token substitution
 

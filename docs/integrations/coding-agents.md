@@ -154,7 +154,7 @@ A base AC owns carries a `managed` marker beside `schemaVersion: 1` and `agents`
 
 An unrecognized owner or version means the file is not AC's: it stays readable but is never refreshed or migrated. A formatting-only edit does not change `contentSha256` and does not pin the file. A semantic edit stops `contentSha256` matching the entries; the file stays readable with a `managedBaseEdited` warning, and AC never auto-refreshes or auto-migrates it. To customize entries, use `agents.local.json`, not `agents.json`.
 
-A refresh replaces a verified managed base only; it never changes the composed view you read. A fresh project writes the base and a creation-only stub `{"schemaVersion":1,"agents":[]}` in `agents.local.json`, and only when the local path does not exist at all: an existing file, directory or link is preserved and reported, never overwritten. If the stub cannot be created, the usable base remains and a warning names the local path.
+A refresh replaces only a verified managed base: it can bring new or updated shipped definitions into the composed view you read, and it never edits `agents.local.json`. A fresh project writes the base and a creation-only stub `{"schemaVersion":1,"agents":[]}` in `agents.local.json`, and only when the local path does not exist at all: any existing entry is preserved and never overwritten. An existing valid regular file is composed as your overrides with no warning; a directory, link, unreadable or schema-invalid local is preserved and surfaces `localInvalid` with the path and reason when read. If the stub cannot be created, the usable base remains and a startup log names the local path.
 
 ### Migration, sidecars, and recovery
 
@@ -176,16 +176,18 @@ Warnings keep a failed state visible without changing bytes:
 |---|---|
 | `baseUnavailable` | no readable persisted catalog exists at the selected path; AC substitutes nothing |
 | `baseInvalid` | the persisted base is corrupt or invalid; its bytes are preserved |
-| `invalidDefinition` | a catalog entry did not validate and was omitted from the read |
+| `invalidDefinition` | a catalog entry did not validate and was omitted from the read, or a built-in is suppressed by this build's support table |
 | `duplicateKey` | a catalog entry's key duplicates an earlier entry and was omitted |
 | `localInvalid` | the local file is not valid under the strict schema; the base still applies |
-| `migrationPending` | a legacy catalog or an unusable ownership state needs a supported restart to migrate |
-| `migrationConflict` | a sidecar, source or base changed during migration, or an existing local/sidecar blocks it; nothing was overwritten |
+| `migrationPending` | the base is legacy or unmanaged, an entry is missing `updateCommands`, or the base carries unrecognized fields, so a supported restart can migrate it; also a journal or a local layer is waiting for a managed base |
+| `migrationConflict` | the base carries an unrecognized managed ownership marker, or a sidecar, source or local file changed during migration, or an existing local/sidecar blocks it; nothing was overwritten |
 | `managedBaseEdited` | the base no longer matches its content digest; it stays readable and is never auto-refreshed |
-| `refreshFailed` | the persisted revision differs from this build; the entries stay usable and a restart retries the refresh |
+| `refreshFailed` | the persisted revision differs from this build, so the entries stay usable and a restart retries the refresh; initialization also logs it when it cannot create the local stub or inspect a sidecar, without adding it to this report |
 | `publicationUntracked` | the base is verified managed but the seed manifest does not record it yet; the next initialization records it without republishing |
 
-**Reload catalog** (Settings and the New Agent picker) re-reads the files after you edit them by hand. A restart is what retries the managed-base refresh and migration. The config-seed **Re-seed default configuration** button is unrelated: it writes only the `_seed/` master under the config directory (see [Config seed](../features/config-seed.md#the-factory-default-and-the-re-seed-button)).
+The table describes the warnings a read report can carry. A failed initialization logs the same codes, and some failures reach only the log: a blocked recovery logs `migrationConflict`, and a local-stub or sidecar failure logs `refreshFailed`, without appearing in the report.
+
+**Reload catalog** (Settings and the New Agent picker) re-reads the files after you edit them by hand. A restart is what retries the managed-base refresh and migration. The config-seed **Re-seed default configuration** button is unrelated: it writes only the `_seed/` master under the primary registered project's `.ac/coding-agents/`, or the legacy `<config_dir>/coding-agents/_seed/` when no project is registered (see [Config seed](../features/config-seed.md#the-factory-default-and-the-re-seed-button)).
 
 If migration cannot resume, reconcile it by hand:
 

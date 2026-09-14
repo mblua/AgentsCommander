@@ -475,20 +475,23 @@ Steps:
 2. Inspect `.ac/coding-agents/`: confirm `agents.json` now carries the `managed` marker, `agents.local.json` exists, and both `agents.migration-v1.backup.json` and `.agents.migration-v1.json` exist. Confirm the backup bytes equal the original legacy fixture byte-for-byte.
 3. Confirm the extraction: the changed/custom command has `updateCommands: []`, the unchanged shipped entry keeps its explicit values and inherits absent update commands, and shipped keys absent from the fixture have `remove: true` tombstones.
 4. Relaunch and close. Confirm the base and local bytes are unchanged (no re-extraction) and the seed manifest records one `catalog:coding-agents` row.
-5. Conflict retention: while the GUI is closed, append an edit to `agents.local.json`, relaunch, open Settings > Coding Agents, and confirm a warning names the local path and reason while valid base entries remain usable and every file is preserved.
+5. Blocked recovery: while the GUI is closed, recreate the interrupted-before-base-publication state without deleting anything: copy `agents.migration-v1.backup.json` over `agents.json` (the backup is byte-equal to the legacy source, so the base now holds exactly the bytes the transaction started from), then edit `agents.local.json` (for example, change one inherited value). Relaunch, open Settings > Coding Agents, and confirm every byte is preserved:
+   - `app.log` records a `migrationConflict` line naming the journal path and stating that the local overrides file does not match the interrupted migration;
+   - the surfaces report `migrationPending` for the local path (`settings.catalog.warning.<index>`) while the readable base entries remain selectable;
+   - `agents.json`, `agents.local.json`, `agents.migration-v1.backup.json` and `.agents.migration-v1.json` are byte-for-byte unchanged.
 6. Reconcile per [Coding agents § Migration, sidecars, and recovery](../integrations/coding-agents.md#migration-sidecars-and-recovery): write a valid local file, move the conflicting base and sidecars to archival names of your choice (do not delete them), and restart. Confirm AC initializes a fresh managed base and preserves the reconciled local file.
 7. Restore the fixture originals saved in the preconditions.
 
 Expected Result:
 
-A legacy catalog migrates once into a managed base plus a local layer with exact-byte backup and journal sidecars; restarts are idempotent; a blocked recovery preserves all bytes and reports path and reason; reconciliation produces a fresh managed base without losing the user's reconciled local file.
+A legacy catalog migrates once into a managed base plus a local layer with exact-byte backup and journal sidecars; restarts are idempotent; a blocked recovery preserves all bytes and logs the conflict path and reason; reconciliation produces a fresh managed base without losing the user's reconciled local file.
 
 Evidence Required:
 
 - Before/after byte listings and hashes of `agents.json`, `agents.local.json`, `agents.migration-v1.backup.json`, and `.agents.migration-v1.json` at every step.
 - `settings.json` snapshots before and after migration proving registered agents are unchanged.
 - The extracted local file content and the seed-manifest `catalog:coding-agents` row.
-- Screenshot or semantic result of the warning path and reason after the injected conflict.
+- The `migrationConflict` `app.log` line and the `settings.catalog.warning.<index>` path and reason for the blocked recovery, with before/after hashes proving every fixture byte is unchanged.
 - Proof the original fixture files were restored afterwards.
 
 Pass/Fail Criteria:
