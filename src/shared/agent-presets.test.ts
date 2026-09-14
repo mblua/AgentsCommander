@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { FALLBACK_CODING_AGENTS, definitionToSeed } from "./agent-presets";
 import type { CodingAgentDefinition } from "./types";
 
-// #769 — FALLBACK_CODING_AGENTS is a second copy of the backend's embedded
-// default (`src-tauri/resources/coding-agents/agents.default.json`). This is the
-// FE half of the drift guard: it pins the fallback to the exact same 8 built-ins
-// the backend ships, so the two copies cannot silently diverge (the backend's
-// `embedded_default_matches_current_presets_exactly` pins the other half).
+// #769 — second copy of the backend's ENABLED built-ins
+// (`src-tauri/resources/coding-agents/agents.default.json`). This is the FE half
+// of the drift guard: it pins the enabled set and order, so the two copies cannot
+// silently diverge (the backend's `embedded_default_matches_current_presets_exactly`
+// pins the 9-row embedded default).
 // #1912 — the mirror rule: FALLBACK_CODING_AGENTS must equal the ENABLED rows of
 // `BUILTIN_AGENT_SUPPORT` (`src-tauri/src/config/coding_agents_catalog.rs`), in
 // the same order; it must never resurrect a de-supported built-in.
@@ -23,11 +23,11 @@ const EXPECTED_BUILTINS: Array<
   { key: "pi", label: "Pi", description: "Coding Agent by Earendil Inc", color: "#ec4899", command: "pi", instructionsFilename: "AGENTS.md" },
   { key: "opencode", label: "OpenCode", description: "Open-source terminal coding agent by Anomaly", color: "#64748b", command: "opencode", instructionsFilename: "AGENTS.md" },
   { key: "antigravity", label: "Antigravity", description: "Coding Agent by Google", color: "#4285F4", command: "agy", instructionsFilename: "AGENTS.md" },
-  { key: "muse", label: "Muse Code", description: "Meta terminal coding agent (beta; macOS/Linux host only)", color: "#0668E1", command: "muse" },
+  { key: "grok", label: "Grok Build", description: "Coding agent Grok Build", color: "#64748b", command: "grok", instructionsFilename: "AGENTS.md" },
 ];
 
 describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
-  it("matches the backend embedded default: 8 built-ins, exact order and fields", () => {
+  it("matches the enabled built-ins: 8 rows (muse disabled, grok added), exact order and fields", () => {
     expect(FALLBACK_CODING_AGENTS.map((a) => a.key)).toEqual([
       "claude",
       "codex",
@@ -36,8 +36,11 @@ describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
       "pi",
       "opencode",
       "antigravity",
-      "muse",
+      "grok",
     ]);
+    // #1999 — muse stays in the embedded default as a disabled row, so the
+    // enabled-row mirror must not carry it.
+    expect(FALLBACK_CODING_AGENTS.some((a) => a.key === "muse")).toBe(false);
     for (const expected of EXPECTED_BUILTINS) {
       const actual = FALLBACK_CODING_AGENTS.find((a) => a.key === expected.key);
       expect(actual).toBeTruthy();
@@ -62,7 +65,7 @@ describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
     }
   });
 
-  it("#1318/#1325/#1546: claude, pi, codex, hermes, opencode, and antigravity ship update commands; cursor ships none; every entry defaults autoUpdate off", () => {
+  it("#1318/#1325/#1546: claude, pi, codex, hermes, opencode, and antigravity ship update commands; cursor and grok ship none; every entry defaults autoUpdate off", () => {
     for (const def of FALLBACK_CODING_AGENTS) {
       expect(def.autoUpdate).toBe(false);
       if (def.key === "claude") {

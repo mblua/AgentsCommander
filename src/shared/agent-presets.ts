@@ -1,9 +1,12 @@
 import type { AgentConfig, CodingAgentDefinition } from "./types";
 
 // Mirror of the ENABLED rows of `BUILTIN_AGENT_SUPPORT`
-// (`src-tauri/src/config/coding_agents_catalog.rs`), same order and fields as
-// `agents.default.json`. Served only when the IPC catalog call rejects, so it
-// must never resurrect a de-supported built-in.
+// (`src-tauri/src/config/coding_agents_catalog.rs`), in `agents.default.json`
+// order. `agents.default.json` keeps muse's disabled row; this mirror carries
+// enabled rows only, so it must never resurrect a de-supported built-in.
+// #1965 — not served on an IPC failure anymore: the catalog store disables
+// registrations instead (`src/sidebar/stores/coding-agents.ts`), so this is the
+// drift-guard mirror only.
 export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
   {
     key: "claude",
@@ -16,8 +19,8 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     isolatedHome: false,
     removable: true,
     // #1318/#1325/#1546 - mirror of the embedded default: claude, pi, codex,
-    // hermes, opencode, and antigravity ship the update command; cursor ships
-    // none; every entry defaults autoUpdate to false.
+    // hermes, opencode, and antigravity ship the update command; cursor and
+    // grok ship none; every entry defaults autoUpdate to false.
     updateCommands: ["claude --update"],
     autoUpdate: false,
   },
@@ -101,11 +104,12 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     autoUpdate: false,
   },
   {
-    key: "muse",
-    label: "Muse Code",
-    description: "Meta terminal coding agent (beta; macOS/Linux host only)",
-    color: "#0668E1",
-    command: "muse",
+    key: "grok",
+    label: "Grok Build",
+    description: "Coding agent Grok Build",
+    color: "#64748b",
+    command: "grok",
+    instructionsFilename: "AGENTS.md",
     envs: [],
     isolatedHome: false,
     removable: true,
