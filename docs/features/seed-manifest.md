@@ -22,10 +22,14 @@ publication by AgentsCommander. Three publisher families write rows:
   [config seed](config-seed.md) copies into a room replica at spawn. Each
   installed regular file is one row under a single `config:<dest>` scope.
 - **Coding-agent catalog** (#1318) - `.ac/coding-agents/agents.json` (scope
-  `catalog:coding-agents`, source `builtin`), published once per project when the
-  catalog is first seeded (embedded default or a byte-for-byte migration of the
-  legacy `<config_dir>/coding-agents/agents.json`). The `_seed/` masters tree is
-  not rowed: one row per catalog publication.
+  `catalog:coding-agents`, source `builtin`). One row is recorded for every
+  actual base publication: the first management of a fresh catalog, a one-time
+  legacy migration, or a later refresh to a new shipped revision. The row is
+  re-timestamped on each such publication; a bookkeeping retry can add the row
+  for an already-published base without republishing it. The user-owned
+  `agents.local.json`, the migration backup `agents.migration-v1.backup.json`
+  and the journal `.agents.migration-v1.json` are never published files and
+  never get rows. The `_seed/` masters tree is not rowed.
 
 Everything else is deliberately **out of scope**: the manifest does not track
 files you create by hand, the `.agentscommander-context-templates.json` ownership
@@ -80,7 +84,9 @@ path)`, so re-serialization is deterministic and Git-friendly.
 - `last_seeded_at` is a millisecond-precision RFC 3339 UTC timestamp ending in `Z`.
 
 The schema intentionally omits content hashes, file size, source paths, host, user,
-process id, and any operation history.
+process id, and any operation history. A catalog row therefore proves that a
+publication was recorded, not which revision is current: it carries no content
+hash or revision.
 
 ## v1 to v2 upgrade
 

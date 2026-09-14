@@ -39,6 +39,8 @@ Test data: TBD
 | SET-009 | NOT RUN | No evidence because NOT RUN. | Malformed companion retention not executed in this run. |
 | SET-010 | NOT RUN | No evidence because NOT RUN. | Failed-write byte preservation not executed in this run. |
 | SET-011 | NOT RUN | No evidence because NOT RUN. | CLI/GUI interleaving pair preservation not executed in this run. |
+| SET-012 | NOT RUN | No evidence because NOT RUN. | Managed catalog migration/restart recovery not executed in this run. |
+| SET-013 | NOT RUN | No evidence because NOT RUN. | Registered-agent snapshot preservation not executed in this run. |
 
 Residual test data:
 
@@ -452,3 +454,79 @@ Evidence Required:
 Pass/Fail Criteria:
 
 PASS if all registrations and companions survive the interleaving with aligned pairs. PARTIAL if state is correct but one snapshot is missing. FAIL if the CLI-registered entry is clobbered, a companion is dropped or misaligned, or a project registration is lost. BLOCKED if the interleaving cannot be exercised on the testable identity.
+
+### SET-012: Managed catalog migration, restart, and recovery
+
+Status: PENDING - not run. This case needs GUI interaction and fixture files; it was not executed in the documentation phase.
+
+Purpose:
+
+Verify that a legacy project catalog migrates into an AC-managed base plus a user-owned local layer through the backup and journal, survives restarts without re-extracting, and preserves every byte when recovery is blocked.
+
+Preconditions:
+
+- A disposable testable identity with a disposable registered project. The GUI is closed while fixtures are prepared.
+- This case deliberately extends the suite's hand-edit boundary to the disposable test project's `.ac/coding-agents/` directory only. Back up `agents.json` and `agents.local.json` (when present) before replacing anything, and restore those originals afterwards. Do not touch a live project.
+- A legacy fixture `agents.json` without a `managed` marker: one shipped entry with a changed command and no `updateCommands`, one shipped entry with its current command and an explicit field, and no `agents.local.json`.
+
+Steps:
+
+1. Capture the fixture bytes and the disposable `settings.json` snapshot. Launch `agentscommander_testeable.exe --app` and let startup finish, then close it.
+2. Inspect `.ac/coding-agents/`: confirm `agents.json` now carries the `managed` marker, `agents.local.json` exists, and both `agents.migration-v1.backup.json` and `.agents.migration-v1.json` exist. Confirm the backup bytes equal the original legacy fixture byte-for-byte.
+3. Confirm the extraction: the changed/custom command has `updateCommands: []`, the unchanged shipped entry keeps its explicit values and inherits absent update commands, and shipped keys absent from the fixture have `remove: true` tombstones.
+4. Relaunch and close. Confirm the base and local bytes are unchanged (no re-extraction) and the seed manifest records one `catalog:coding-agents` row.
+5. Conflict retention: while the GUI is closed, append an edit to `agents.local.json`, relaunch, open Settings > Coding Agents, and confirm a warning names the local path and reason while valid base entries remain usable and every file is preserved.
+6. Reconcile per [Coding agents § Migration, sidecars, and recovery](../integrations/coding-agents.md#migration-sidecars-and-recovery): write a valid local file, move the conflicting base and sidecars to archival names of your choice (do not delete them), and restart. Confirm AC initializes a fresh managed base and preserves the reconciled local file.
+7. Restore the fixture originals saved in the preconditions.
+
+Expected Result:
+
+A legacy catalog migrates once into a managed base plus a local layer with exact-byte backup and journal sidecars; restarts are idempotent; a blocked recovery preserves all bytes and reports path and reason; reconciliation produces a fresh managed base without losing the user's reconciled local file.
+
+Evidence Required:
+
+- Before/after byte listings and hashes of `agents.json`, `agents.local.json`, `agents.migration-v1.backup.json`, and `.agents.migration-v1.json` at every step.
+- `settings.json` snapshots before and after migration proving registered agents are unchanged.
+- The extracted local file content and the seed-manifest `catalog:coding-agents` row.
+- Screenshot or semantic result of the warning path and reason after the injected conflict.
+- Proof the original fixture files were restored afterwards.
+
+Pass/Fail Criteria:
+
+PASS if migration, idempotent restart, conflict preservation and reconciliation all match the documented behavior and no user byte is lost or overwritten. PARTIAL if behavior is correct but one artifact is missing. FAIL if migration re-extracts, overwrites a local or source edit, hides a conflict, or loses bytes. BLOCKED if the fixture cannot be prepared or restored safely.
+
+### SET-013: Registered coding agents stay snapshots across catalog changes
+
+Status: PENDING - not run. This case needs GUI interaction and was not executed in the documentation phase.
+
+Purpose:
+
+Verify that changing the catalog base or local layer does not rewrite already registered `settings.agents[]` rows, while a new registration picks up the changed values.
+
+Preconditions:
+
+- A disposable testable identity with a disposable project and at least one agent registered from the catalog.
+- A backup of the disposable catalog files and `settings.json`; restore them afterwards.
+
+Steps:
+
+1. Capture the registered agent's `settings.json` row and its launcher entry.
+2. With the GUI closed, change that catalog entry's `label` and `command` in `agents.local.json`, then relaunch.
+3. Confirm the existing registered row in `settings.json` is byte-unchanged and the launcher still shows the stored snapshot.
+4. Add a new agent from the same catalog entry and confirm the new row carries the changed label and command.
+5. Restart and confirm both rows remain as recorded.
+6. Restore the fixture originals and the `settings.json` snapshot.
+
+Expected Result:
+
+Registered agents are launch snapshots: catalog edits never rewrite them, and only new registrations reflect changed catalog values.
+
+Evidence Required:
+
+- Before/after `settings.json` snapshots showing the existing row unchanged.
+- Semantic results for the existing launcher entry and the newly added row.
+- Proof the fixture originals were restored afterwards.
+
+Pass/Fail Criteria:
+
+PASS if the existing registered row never changes and the new registration carries the edited values. PARTIAL if behavior is correct but one snapshot is missing. FAIL if a catalog change rewrites a registered agent or the new registration keeps the old values. BLOCKED if the disposable registration cannot be prepared or restored safely.

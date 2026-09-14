@@ -100,6 +100,8 @@ AC writes each shipped master into `<config_dir>/coding-agents/_seed/<dest>/` on
 
 Use it when you have edited a factory master and want AC's original default back.
 
+**Re-seed is not the managed catalog.** The button writes only the tier-5 master under `<config_dir>/coding-agents/_seed/`. It never touches the project's managed `agents.json`, its `agents.local.json`, a registered agent, or a running session. Settings' **Reload catalog** re-reads the persisted catalog files (it does not re-seed), and a restart is what retries managed-base refresh or migration. See [Coding agents § Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration).
+
 ## Token substitution
 
 AC substitutes the three AC path tokens inside the **content** of seeded files, so a template can refer to its own replica, workspace, or matrix path and have it resolve correctly per replica:

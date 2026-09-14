@@ -29,6 +29,7 @@ Known automation support:
 
 - First-run onboarding has semantic selectors for `onboarding.modal`, `onboarding.agentPreset.claude`, `onboarding.agentPreset.codex`, `onboarding.agentPreset.antigravity`, `onboarding.agentPreset.custom`, `onboarding.custom.label`, `onboarding.custom.command`, `onboarding.cancel`, `onboarding.confirm`, `onboarding.done`, and `onboarding.done.close`.
 - Settings has semantic selectors for `actionBar.settings`, `settings.modal`, `settings.tab.agents`, `settings.agentPreset.<presetKey>`, `settings.agent.addCustom`, `settings.agentRow.<index>.*`, `settings.save`, and `settings.cancel`.
+- Catalog status selectors on both registration surfaces: `settings.catalog.loading`, `settings.catalog.empty`, `settings.catalog.error`, `settings.catalog.warning.<index>`, `settings.catalog.reload`, `onboarding.catalog.loading`, `onboarding.catalog.empty`, `onboarding.catalog.error`, `onboarding.catalog.warning.<index>`, and `onboarding.catalog.reload`.
 
 Known automation gaps:
 
@@ -322,3 +323,39 @@ Evidence Required:
 Pass/Fail Criteria:
 
 Pass if the custom row persists with the expected label, command, and color. Fail if it disappears, duplicates, or blocks later app use.
+
+### OCA-008: Catalog status on both registration surfaces
+
+Status: PENDING - not run. This case needs GUI interaction and was not executed in the documentation phase.
+
+Purpose:
+
+Verify that Settings > Coding Agents and the New Agent picker both show the persisted catalog's status and never substitute selectable embedded defaults.
+
+Preconditions:
+
+- A disposable testable identity with a disposable project. Back up the project's `.ac/coding-agents/agents.json` and `agents.local.json` (when present) before preparing each fixture; restore those originals afterwards instead of deleting them.
+- Fixtures are prepared only while the GUI is closed. Relaunch with `agentscommander_testeable.exe --app --ui-automation`.
+
+Steps:
+
+1. Valid empty: close the GUI, replace `agents.json` with a managed base whose `agents` array is `[]`, launch, and open Settings > Coding Agents. Confirm `settings.catalog.empty` reads `No catalog agents available`, `settings.catalog.reload` is offered, no preset cards are selectable, and the manual Custom Agent row is still usable.
+2. Unavailable: close the GUI, move `agents.json` aside (do not delete it), launch, and inspect both Settings > Coding Agents and the New Agent picker. Confirm `settings.catalog.error` and `onboarding.catalog.error` read `Catalog unavailable`, show the path and reason, offer `Reload catalog`, and show no selectable bundled defaults.
+3. Local warning with usable base: close the GUI, restore a valid base and add an `agents.local.json` whose row carries an unknown field, launch, and inspect both surfaces. Confirm a warning renders its path and reason while base rows remain selectable and manual Custom Agent still works.
+4. Reload recovery: fix `agents.local.json`, click `Reload catalog` on each surface, and confirm the warning clears and rows become selectable again without an app restart.
+5. Primary source switch: with two disposable projects, switch the primary project and confirm both surfaces clear any previously selected catalog preset, refetch, and show the new project's catalog; a stale preset cannot be confirmed after the switch.
+
+Expected Result:
+
+Both registration surfaces show the persisted catalog's empty, unavailable and warning states with path and reason, never offer embedded defaults, keep manual Custom Agent usable, recover through `Reload catalog`, and clear stale selections when the primary project changes.
+
+Evidence Required:
+
+- Screenshots and semantic query results for `settings.catalog.empty`, `settings.catalog.error`, `settings.catalog.warning.<index>`, `settings.catalog.reload`, `onboarding.catalog.error`, `onboarding.catalog.warning.<index>`, and `onboarding.catalog.reload` in each state.
+- Settings snapshot or log lines showing each warning path and reason.
+- Before/after byte copies or hashes of the fixture files proving the read-only surfaces did not change them.
+- Proof the original fixtures were restored after the case.
+
+Pass/Fail Criteria:
+
+PASS if every state renders as described on both surfaces, Reload recovers without a restart, selection never survives a source change, and no read writes fixture bytes. FAIL if a state is silently replaced by embedded presets, a path or reason is missing, Reload cannot recover, or a stale preset can be confirmed. BLOCKED if the disposable fixture cannot be prepared or restored safely.
