@@ -179,7 +179,7 @@ Warnings keep a failed state visible without changing bytes:
 | `invalidDefinition` | a catalog entry did not validate and was omitted from the read, or a built-in is suppressed by this build's support table |
 | `duplicateKey` | a catalog entry's key duplicates an earlier entry and was omitted |
 | `localInvalid` | the local file is not valid under the strict schema; the base still applies |
-| `migrationPending` | the base is legacy or unmanaged, an entry is missing `updateCommands`, or the base carries unrecognized fields, so a supported restart can migrate it; also a journal or a local layer is waiting for a managed base |
+| `migrationPending` | a persisted base carries unrecognized fields or an entry missing `updateCommands`, a local file exists while the base is not AC-managed, or a journal or local file is waiting for an absent base; a supported restart migrates it |
 | `migrationConflict` | the base carries an unrecognized managed ownership marker, or a sidecar, source or local file changed during migration, or an existing local/sidecar blocks it; nothing was overwritten |
 | `managedBaseEdited` | the base no longer matches its content digest; it stays readable and is never auto-refreshed |
 | `refreshFailed` | the persisted revision differs from this build, so the entries stay usable and a restart retries the refresh; initialization also logs it when it cannot create the local stub or inspect a sidecar, without adding it to this report |
