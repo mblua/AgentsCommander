@@ -1,6 +1,6 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport } from "../../shared/types";
+import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport, AppSettings } from "../../shared/types";
 import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import {
@@ -61,7 +61,7 @@ import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
 import NewLoopModal from "./NewLoopModal";
 import EditLoopModal from "./EditLoopModal";
-import AgentPickerModal, { type AgentPickerScopeContext } from "./AgentPickerModal";
+import AgentPickerModal, { type AgentPickerScopeContext, LockIcon } from "./AgentPickerModal";
 import RestartPromptModal from "./RestartPromptModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
@@ -156,7 +156,31 @@ function replicaScopeContext(wg: AcWorkgroup, replica: AcAgentReplica): AgentPic
     targetReplicaName: replica.name,
     currentCodingAgentId: replica.currentCodingAgentId ?? null,
     currentProfile: replica.currentProfile ?? null,
+    // #1943 - the persisted protection snapshot, so the picker's lock bar starts
+    // from the stored state instead of waiting for its own first preview.
+    savedPair: replica.savedPair,
+    selectionState: replica.selectionState,
+    selectionError: replica.selectionError,
   };
+}
+
+/** #1943 - KEEP chip title. Reads the SAVED pair, never the session's
+ *  launch-time pair, and falls back to the stored identifier when the provider
+ *  is no longer configured instead of dropping the fact. */
+function selectionLockChipTitle(replica: AcAgentReplica, settings: AppSettings | null): string {
+  const saved = replica.savedPair ?? null;
+  const agents = settings?.agents ?? [];
+  const provider = saved?.codingAgentId
+    ? agents.find((a) => a.id === saved.codingAgentId)?.label ?? saved.codingAgentId
+    : null;
+  const profiles = settings?.codingAgentProfiles;
+  const profile = saved?.requestedProfile
+    ? profiles
+      ? profileDisplayLabel(profiles, agents, saved.codingAgentId, saved.requestedProfile)
+      : saved.requestedProfile
+    : null;
+  const pair = [provider, profile ? `Profile ${profile}` : null].filter(Boolean).join(" · ");
+  return `Protected from bulk changes · ${pair || "saved pair unavailable"}`;
 }
 
 function deriveScopeContextFromSession(
@@ -487,6 +511,45 @@ const ProjectPanel: Component = () => {
     const wg = proj?.workgroups.find((w) => w.path === target.wgPath);
     const replica = wg?.agents.find((r) => r.path === target.replicaPath);
     return proj && wg && replica ? { proj, wg, replica } : null;
+  });
+
+  /** #1943 - the discovery replica behind the LIVE-session picker, resolved by the
+   *  session's working directory, so its lock bar reads the same persisted
+   *  snapshot as the gray rows. Not found means unknown, never assumed. */
+  const livePickerReplica = createMemo(() => {
+    const target = replicaCodingAgentTarget();
+    if (!target) return null;
+    const replicaPath = sessionsStore.sessions.find(
+      (s) => s.id === target.sessionId,
+    )?.workingDirectory;
+    if (!replicaPath) return null;
+    const normalized = normalizeProjectPathForCompare(replicaPath);
+    for (const proj of projectStore.projects) {
+      for (const wg of proj.workgroups) {
+        const replica = wg.agents.find(
+          (r) => normalizeProjectPathForCompare(r.path) === normalized,
+        );
+        if (replica) return replica;
+      }
+    }
+    return null;
+  });
+
+  const livePickerScopeContext = createMemo<AgentPickerScopeContext | undefined>(() => {
+    const target = replicaCodingAgentTarget();
+    if (!target) return undefined;
+    const session = sessionsStore.sessions.find((s) => s.id === target.sessionId);
+    const base = deriveScopeContextFromSession(session, target.sessionName);
+    if (!base) return undefined;
+    const replica = livePickerReplica();
+    return replica
+      ? {
+          ...base,
+          savedPair: replica.savedPair,
+          selectionState: replica.selectionState,
+          selectionError: replica.selectionError,
+        }
+      : base;
   });
 
   const editingLoopResolved = createMemo(() => {
@@ -2382,6 +2445,8 @@ const ProjectPanel: Component = () => {
             `replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const repoBadgeTestId = (label: string, index: number) =>
             `replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
+          const lockChipTestId = () =>
+            `replica.lockChip.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const liveAgentLabel = () => resolveReplicaAgentLabel(session(), replica);
           const profileBadge = () => resolveReplicaProfileBadge(session(), replica);
           const ctxVisible = () =>
@@ -2533,6 +2598,19 @@ const ProjectPanel: Component = () => {
                   </Show>
                   <Show when={profileBadge()}>
                     {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
+                  </Show>
+                  {/* #1943 - KEEP chip for a locked replica. Only an established
+                      `locked` state renders it, so an unknown or invalid state is
+                      never drawn as unlocked. The same helper covers every
+                      renderReplicaItem call site (workgroups, selected, quick). */}
+                  <Show when={replica.selectionState === "locked"}>
+                    <span
+                      class="selection-lock-chip"
+                      title={selectionLockChipTitle(replica, settingsStore.current)}
+                      data-ac-testid={lockChipTestId()}
+                    >
+                      <LockIcon />KEEP
+                    </span>
                   </Show>
                   <Show when={ctxVisible()}>
                     <ContextBadge
@@ -4356,10 +4434,7 @@ const ProjectPanel: Component = () => {
           currentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
           explicitCurrentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
           currentRequestedProfile={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.requestedProfile}
-          scopeContext={deriveScopeContextFromSession(
-            sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId),
-            replicaCodingAgentTarget()!.sessionName,
-          )}
+          scopeContext={livePickerScopeContext()}
           disableRedundantReplicaAssign
           targetProfileOutdated={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.profileOutdated}
           onSelect={async (selection) => {
