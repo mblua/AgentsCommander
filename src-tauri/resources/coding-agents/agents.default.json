@@ -88,6 +88,17 @@
       "updateCommands": ["agy update"]
     },
     {
+      "key": "grok",
+      "label": "Grok Build",
+      "description": "Coding agent Grok Build",
+      "color": "#64748b",
+      "command": "grok",
+      "instructionsFilename": "AGENTS.md",
+      "envs": [],
+      "isolatedHome": false,
+      "removable": true
+    },
+    {
       "key": "muse",
       "label": "Muse Code",
       "description": "Meta terminal coding agent (beta; macOS/Linux host only)",
