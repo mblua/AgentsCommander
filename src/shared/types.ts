@@ -1327,6 +1327,14 @@ export interface AcAgentReplica {
   lastUserMessageAt?: string;
   autoClosedAt?: string;
   manuallyClosedAt?: string;
+  /** #1942 - complete stored protected pair, or `null` when absent/invalid. An
+   *  absent property is an older backend: unsupported/unknown, never proven
+   *  unlocked. */
+  savedPair?: SavedPair | null;
+  /** #1942 - strict protection state; absent means unsupported/unknown. */
+  selectionState?: SelectionState;
+  /** #1942 - strict-read diagnostic when `selectionState` is invalid. */
+  selectionError?: string | null;
 }
 
 export interface CoordinatorCloseOutcome {
@@ -1493,6 +1501,42 @@ export interface AcDiscoveryResult {
 
 export type ProfileAssignmentScope = "replica" | "kind" | "workgroup";
 
+/** #1942 - requested publication policy. Absent keeps the legacy ordinary
+ *  semantics. */
+export type AssignmentMode = "ordinary" | "assignAndLock";
+
+/** #1942 - explicit review decision for a bulk assign-and-lock that found
+ *  protected replicas. There is deliberately no default. */
+export type ConflictDecision = "unlockedOnly" | "forceReviewed";
+
+/** #1942 - strict protection state read by #1939. `invalid` is a diagnostic,
+ *  never a permissive default. */
+export type SelectionState = "unlocked" | "locked" | "invalid";
+
+/** #1942 - the complete stored protected pair; both fields are `null` when no
+ *  complete pair is stored. */
+export interface SavedPair {
+  codingAgentId: string | null;
+  requestedProfile: string | null;
+}
+
+/** #1942 - the Matrix creation default (`tooling.replicaSelectionDefault`). */
+export interface SelectionDefault {
+  codingAgentId: string;
+  requestedProfile: string;
+  selectionLocked: boolean;
+}
+
+/** #1942 - one explicit conflict outcome as offered by a preview; the client
+ *  echoes this fingerprint for the decision it reviewed. */
+export interface DecisionProjection {
+  fingerprint: string;
+  eligiblePaths: string[];
+  eligibleCount: number;
+  skippedLockedCount: number;
+  liveSessionCount: number;
+}
+
 export interface ProfileAssignmentTarget {
   workgroupName: string;
   workgroupPath: string;
@@ -1501,6 +1545,15 @@ export interface ProfileAssignmentTarget {
   identityPath: string;
   originProject: string | null;
   liveSessionIds: string[];
+  /** #1942 - complete stored pair or `null` when absent/invalid. An absent
+   *  property is an older backend: unsupported/unknown, never proven
+   *  unlocked. */
+  savedPair?: SavedPair | null;
+  /** #1942 - strict protection state; absent is unknown, never synthesized to
+   *  `unlocked`. */
+  selectionState?: SelectionState;
+  /** #1942 - strict-read diagnostic when `selectionState` is invalid. */
+  selectionError?: string | null;
 }
 
 export interface PreviewCodingAgentProfileSelectionRequest {
@@ -1509,6 +1562,8 @@ export interface PreviewCodingAgentProfileSelectionRequest {
   profile: string;
   scope: ProfileAssignmentScope;
   restartSessions: boolean;
+  /** #1942 - absent keeps the legacy ordinary semantics. */
+  assignmentMode?: AssignmentMode;
 }
 
 export interface PreviewCodingAgentProfileSelectionResult {
@@ -1519,6 +1574,21 @@ export interface PreviewCodingAgentProfileSelectionResult {
   requiresExplicitConfirmation: boolean;
   targets: ProfileAssignmentTarget[];
   warnings: string[];
+  /** #1942 - false when scoped membership could not be established from the
+   *  directory walk. Optional for older producers. */
+  countsComplete?: boolean;
+  candidateCount?: number;
+  protectedCount?: number;
+  invalidCount?: number;
+  /** #1942 - valid protected candidates for a bulk assign-and-lock; zero for
+   *  every other mode. */
+  conflictCount?: number;
+  /** #1942 - both reviewable outcomes; present only when a bulk
+   *  assign-and-lock preview found protected candidates. */
+  decisions?: {
+    unlockedOnly: DecisionProjection;
+    forceReviewed: DecisionProjection;
+  } | null;
 }
 
 export interface ApplyCodingAgentProfileSelectionRequest {
@@ -1529,6 +1599,11 @@ export interface ApplyCodingAgentProfileSelectionRequest {
   restartSessions: boolean;
   confirmedTargetFingerprint?: string | null;
   typedConfirmation?: string | null;
+  /** #1942 - absent keeps the legacy ordinary semantics. */
+  assignmentMode?: AssignmentMode;
+  /** #1942 - required only for a bulk assign-and-lock that found protected
+   *  candidates; rejected in every other mode/scope combination. */
+  conflictDecision?: ConflictDecision | null;
 }
 
 export interface ProfileAssignmentError {
@@ -1537,6 +1612,10 @@ export interface ProfileAssignmentError {
   sessionIds: string[];
   replicaPaths: string[];
 }
+
+/** #1942 - removal/default errors carry the same precise diagnostics as
+ *  assignment errors. */
+export type SelectionError = ProfileAssignmentError;
 
 export interface ApplyCodingAgentProfileSelectionResult {
   scope: ProfileAssignmentScope;
@@ -1548,6 +1627,78 @@ export interface ApplyCodingAgentProfileSelectionResult {
   targetFingerprint: string;
   warnings: string[];
   errors: ProfileAssignmentError[];
+  /** #1942 - false-to-true lock flips only. Optional for older producers. */
+  newlyProtectedPaths?: string[];
+  /** #1942 - valid protected replicas deliberately skipped by the policy. */
+  skippedLockedPaths?: string[];
+  /** #1942 - candidates whose strict protection state is invalid. */
+  invalidPaths?: string[];
+  /** #1942 - protected replicas left after the operation; `null` when the
+   *  refresh cannot establish the total. */
+  lockedAfterApplyCount?: number | null;
+  /** #1942 - true only when a reviewed force actually overwrote a protected
+   *  target, never merely because a decision was selected. */
+  forceApplied?: boolean;
+}
+
+// ── #1942 selection-lock removal and Matrix default wire contract ──────────
+
+export interface PreviewSelectionLockRemovalRequest {
+  targetReplicaPath: string;
+  scope: ProfileAssignmentScope;
+}
+
+export interface PreviewSelectionLockRemovalResult {
+  scope: ProfileAssignmentScope;
+  targetFingerprint: string;
+  candidateCount: number;
+  countsComplete: boolean;
+  protectedCount: number;
+  alreadyUnlockedCount: number;
+  invalidCount: number;
+  targets: ProfileAssignmentTarget[];
+  warnings: string[];
+}
+
+export interface ApplySelectionLockRemovalRequest {
+  targetReplicaPath: string;
+  scope: ProfileAssignmentScope;
+  confirmedTargetFingerprint: string;
+}
+
+export interface ApplySelectionLockRemovalResult {
+  scope: ProfileAssignmentScope;
+  targetFingerprint: string;
+  removedCount: number;
+  removedReplicaPaths: string[];
+  alreadyUnlockedPaths: string[];
+  failedReplicaPaths: string[];
+  remainingProtectedCount: number | null;
+  candidateCount: number;
+  countsComplete: boolean;
+  invalidCount: number;
+  errors: SelectionError[];
+  warnings: string[];
+}
+
+export interface GetReplicaSelectionDefaultRequest {
+  targetReplicaPath: string;
+}
+
+export interface SetReplicaSelectionDefaultRequest {
+  targetReplicaPath: string;
+  codingAgentId: string;
+  requestedProfile: string;
+  selectionLocked: boolean;
+  confirmedDefaultFingerprint: string;
+}
+
+export interface ReplicaSelectionDefaultResult {
+  targetReplicaPath: string;
+  matrixPath: string;
+  default: SelectionDefault | null;
+  defaultFingerprint: string;
+  warnings: string[];
 }
 
 export type AcProjectRefreshReason =

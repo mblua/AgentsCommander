@@ -12,6 +12,18 @@ interface PendingRequest {
   reject: (reason: string) => void;
 }
 
+/** #1942 - mutating selection operations whose completion is owned by the
+ *  backend task, not by this transport's 30s convenience timer. A broad
+ *  restart can outlive the timer, and dropping the reply locally would
+ *  fabricate a timeout for work that is still running. They stay pending until
+ *  the matching response arrives or the socket closes. */
+const BACKEND_OWNED_COMPLETION_COMMANDS = new Set<string>([
+  "apply_coding_agent_profile_selection",
+  "apply_selection_lock_removal",
+  "set_replica_selection_default",
+  "set_instance_profile_override",
+]);
+
 /// Transport implementation using WebSocket.
 /// Connects to the embedded axum server for remote browser access.
 export class WsTransport implements Transport {
@@ -267,13 +279,17 @@ export class WsTransport implements Transport {
       });
       this.ws!.send(msg);
 
-      // Timeout after 30s
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(`Command timeout: ${cmd}`);
-        }
-      }, 30000);
+      // Timeout after 30s. #1942: the backend-owned mutating operations above
+      // are exempt while the socket remains connected - disconnect still
+      // rejects every pending request through rejectAllPending.
+      if (!BACKEND_OWNED_COMPLETION_COMMANDS.has(cmd)) {
+        setTimeout(() => {
+          if (this.pending.has(id)) {
+            this.pending.delete(id);
+            reject(`Command timeout: ${cmd}`);
+          }
+        }, 30000);
+      }
     });
   }
 

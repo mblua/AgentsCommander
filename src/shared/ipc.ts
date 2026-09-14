@@ -73,6 +73,14 @@ import type {
   PreviewCodingAgentProfileSelectionResult,
   ApplyCodingAgentProfileSelectionRequest,
   ApplyCodingAgentProfileSelectionResult,
+  PreviewSelectionLockRemovalRequest,
+  PreviewSelectionLockRemovalResult,
+  ApplySelectionLockRemovalRequest,
+  ApplySelectionLockRemovalResult,
+  GetReplicaSelectionDefaultRequest,
+  SetReplicaSelectionDefaultRequest,
+  ReplicaSelectionDefaultResult,
+  SelectionDefault,
   SpecBoardDocument,
   SpecBoardSnapshot,
   SpecBoardChangedEvent,
@@ -187,6 +195,14 @@ export interface CodingAgentProfileSelectionUpdatedPayload {
   restartedCount?: number;
   targetFingerprint?: string;
   errors?: ProfileAssignmentError[];
+  /** #1942 - which operation produced this event; absent on legacy payloads. */
+  operation?: "assign" | "assignAndLock" | "unlock" | "default";
+  affectedPaths?: string[];
+  removedCount?: number;
+  newlyProtectedCount?: number;
+  skippedLockedCount?: number;
+  /** #1942 - the published Matrix default on an `operation: "default"` event. */
+  default?: SelectionDefault | null;
 }
 
 export const SessionAPI = {
@@ -414,6 +430,34 @@ export const SettingsAPI = {
   ) =>
     transport.invoke<ApplyCodingAgentProfileSelectionResult>(
       "apply_coding_agent_profile_selection",
+      { request },
+    ),
+  previewSelectionLockRemoval: (
+    request: PreviewSelectionLockRemovalRequest,
+  ) =>
+    transport.invoke<PreviewSelectionLockRemovalResult>(
+      "preview_selection_lock_removal",
+      { request },
+    ),
+  applySelectionLockRemoval: (
+    request: ApplySelectionLockRemovalRequest,
+  ) =>
+    transport.invoke<ApplySelectionLockRemovalResult>(
+      "apply_selection_lock_removal",
+      { request },
+    ),
+  getReplicaSelectionDefault: (
+    request: GetReplicaSelectionDefaultRequest,
+  ) =>
+    transport.invoke<ReplicaSelectionDefaultResult>(
+      "get_replica_selection_default",
+      { request },
+    ),
+  setReplicaSelectionDefault: (
+    request: SetReplicaSelectionDefaultRequest,
+  ) =>
+    transport.invoke<ReplicaSelectionDefaultResult>(
+      "set_replica_selection_default",
       { request },
     ),
   resolveCodingAgentProfile: (
