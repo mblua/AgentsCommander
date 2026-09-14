@@ -3326,6 +3326,14 @@ mod tests {
             .expect("fresh same-kind submission succeeds"),
             CriticalAdmissionOutcome::Completed(())
         );
+        // Completed reports the operation result; the admission guard drops afterwards.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while coordinator.critical_key_registered_for_test(session.id, kind) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fresh probe releases its critical admission key");
         assert!(!coordinator.critical_key_registered_for_test(session.id, kind));
         coordinator.close_and_join().await;
     }
@@ -4870,6 +4878,16 @@ fn commit_selection_transition() {
                 .expect("critical route-loss result"),
             CriticalAdmissionOutcome::Completed(())
         );
+        // Completed is observed before the first waiter's admission guard drops.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while coordinator
+                .critical_key_registered_for_test(session.id, CriticalAdmissionKind::RouteLoss)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first route-loss waiter releases its critical admission key");
         assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
         assert_eq!(
             manager
@@ -4889,6 +4907,16 @@ fn commit_selection_transition() {
                 .unwrap(),
             CriticalAdmissionOutcome::Completed(())
         );
+        // Completed is observed before the follow-up probe's admission guard drops.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while coordinator
+                .critical_key_registered_for_test(session.id, CriticalAdmissionKind::RouteLoss)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("follow-up route-loss probe releases its critical admission key");
         assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
         coordinator.close_and_join().await;
     }
