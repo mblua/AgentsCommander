@@ -18,8 +18,12 @@ import type {
   AcAgentReplica,
   AgentConfig,
   ApplyCodingAgentProfileSelectionResult,
+  ApplySelectionLockRemovalResult,
   CodingAgentProfileResolution,
   PreviewCodingAgentProfileSelectionResult,
+  PreviewSelectionLockRemovalResult,
+  ProfileAssignmentScope,
+  ReplicaSelectionDefaultResult,
 } from "../../shared/types";
 
 // #599 R1 — reopening a coordinator that AC tore down (auto-close #552/#580 or
@@ -65,6 +69,9 @@ function coordDiscovery(coord: Partial<AcAgentReplica>) {
             path: coordPath,
             repoPaths: [],
             isCoordinator: true,
+            // #1943 - full persisted lock payload on the discovered replica.
+            savedPair: null,
+            selectionState: "unlocked",
             ...coord,
           },
         ],
@@ -113,6 +120,49 @@ function applyResult(): ApplyCodingAgentProfileSelectionResult {
   };
 }
 
+// #1943 - the four selection-lock commands the picker drives, with the fully
+// populated payload shapes the backend emits.
+function removalPreviewResult(scope: ProfileAssignmentScope): PreviewSelectionLockRemovalResult {
+  return {
+    scope,
+    targetFingerprint: `fp-remove-${scope}`,
+    candidateCount: 1,
+    countsComplete: true,
+    protectedCount: 0,
+    alreadyUnlockedCount: 1,
+    invalidCount: 0,
+    targets: [],
+    warnings: [],
+  };
+}
+
+function removalApplyResult(): ApplySelectionLockRemovalResult {
+  return {
+    scope: "replica",
+    targetFingerprint: "fp-remove-replica",
+    removedCount: 0,
+    removedReplicaPaths: [],
+    alreadyUnlockedPaths: [coordPath],
+    failedReplicaPaths: [],
+    remainingProtectedCount: 0,
+    candidateCount: 1,
+    countsComplete: true,
+    invalidCount: 0,
+    errors: [],
+    warnings: [],
+  };
+}
+
+function selectionDefaultResult(): ReplicaSelectionDefaultResult {
+  return {
+    targetReplicaPath: coordPath,
+    matrixPath: `${projectPath}\\.ac\\_agent_${coordName}`,
+    default: null,
+    defaultFingerprint: "fp-default-1",
+    warnings: [],
+  };
+}
+
 /** Mount ProjectPanel with a single (no-session) coordinator replica and every
  *  backend command the reopen → picker-apply → create flow touches. */
 function mountWith(coord: Partial<AcAgentReplica>) {
@@ -123,6 +173,12 @@ function mountWith(coord: Partial<AcAgentReplica>) {
   fake.resolve("resolve_coding_agent_profile", resolution());
   fake.resolve("preview_coding_agent_profile_selection", previewResult());
   fake.resolve("apply_coding_agent_profile_selection", applyResult());
+  fake.onInvoke("preview_selection_lock_removal", (args) =>
+    removalPreviewResult((args.request as { scope: ProfileAssignmentScope }).scope),
+  );
+  fake.resolve("apply_selection_lock_removal", removalApplyResult());
+  fake.resolve("get_replica_selection_default", selectionDefaultResult());
+  fake.resolve("set_replica_selection_default", selectionDefaultResult());
   fake.resolve(
     "create_session",
     session({ id: "reopened", name: coordSessionName, workingDirectory: coordPath, isCoordinator: true }),
