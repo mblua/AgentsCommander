@@ -7,85 +7,25 @@ import type { AgentConfig, CodingAgentDefinition } from "./types";
 // #1965 — not served on an IPC failure anymore: the catalog store disables
 // registrations instead (`src/sidebar/stores/coding-agents.ts`), so this is the
 // drift-guard mirror only.
-export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
-  {
-    key: "claude",
-    label: "Claude Code",
-    description: "Coding Agent by Anthropic",
-    color: "#d97706",
-    command: "claude",
-    instructionsFilename: "CLAUDE.md",
-    // #1318/#1325/#1546 - mirror of the embedded default: claude, pi, codex,
-    // hermes, opencode, and antigravity ship the update command; cursor and
-    // grok ship none; every entry defaults autoUpdate to false.
-    updateCommands: ["claude --update"],
-  },
-  {
-    key: "codex",
-    label: "Codex",
-    description: "Coding Agent by OpenAI",
-    color: "#10b981",
-    command: "codex",
-    instructionsFilename: "AGENTS.md",
-    updateCommands: ["codex update"],
-  },
-  {
-    key: "hermes",
-    label: "Hermes",
-    description: "Coding Agent by Nous Research",
-    color: "#8b5cf6",
-    command: "hermes",
-    instructionsFilename: "AGENTS.md",
-    updateCommands: ["hermes update --yes"],
-  },
-  {
-    key: "cursor",
-    label: "Cursor CLI",
-    description: "Coding Agent by Cursor",
-    color: "#22d3ee",
-    command: "agent",
-    instructionsFilename: "AGENTS.md",
-    updateCommands: [],
-  },
-  {
-    key: "pi",
-    label: "Pi",
-    description: "Coding Agent by Earendil Inc",
-    color: "#ec4899",
-    command: "pi",
-    instructionsFilename: "AGENTS.md",
-    updateCommands: ["pi update"],
-  },
-  {
-    key: "opencode",
-    label: "OpenCode",
-    description: "Open-source terminal coding agent by Anomaly",
-    color: "#64748b",
-    command: "opencode",
-    instructionsFilename: "AGENTS.md",
-    updateCommands: ["opencode upgrade"],
-  },
-  {
-    key: "antigravity",
-    label: "Antigravity",
-    description: "Coding Agent by Google",
-    color: "#4285F4",
-    command: "agy",
-    instructionsFilename: "AGENTS.md",
-    // #1482/#1546 - mirror of the embedded default: Antigravity ships the verified 'agy update' command (autoUpdate stays false).
-    updateCommands: ["agy update"],
-  },
-  {
-    key: "grok",
-    label: "Grok Build",
-    description: "Coding agent Grok Build",
-    color: "#64748b",
-    command: "grok",
-    instructionsFilename: "AGENTS.md",
-    updateCommands: [],
-  },
-].map((definition): CodingAgentDefinition => ({
-  ...definition,
+export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = ([
+  // #1318/#1325/#1546 - mirror of the embedded default: claude, pi, codex,
+  // hermes, opencode, and antigravity ship the update command; cursor and
+  // grok ship none; every entry defaults autoUpdate to false.
+  ["claude", "Claude Code", "Coding Agent by Anthropic", "#d97706", "claude", "CLAUDE.md", ["claude --update"]],
+  ["codex", "Codex", "Coding Agent by OpenAI", "#10b981", "codex", "AGENTS.md", ["codex update"]],
+  ["hermes", "Hermes", "Coding Agent by Nous Research", "#8b5cf6", "hermes", "AGENTS.md", ["hermes update --yes"]],
+  ["cursor", "Cursor CLI", "Coding Agent by Cursor", "#22d3ee", "agent", "AGENTS.md", []],
+  ["pi", "Pi", "Coding Agent by Earendil Inc", "#ec4899", "pi", "AGENTS.md", ["pi update"]],
+  ["opencode", "OpenCode", "Open-source terminal coding agent by Anomaly", "#64748b", "opencode", "AGENTS.md", ["opencode upgrade"]],
+  // #1482/#1546 - mirror of the embedded default: Antigravity ships the verified 'agy update' command (autoUpdate stays false).
+  ["antigravity", "Antigravity", "Coding Agent by Google", "#4285F4", "agy", "AGENTS.md", ["agy update"]],
+  ["grok", "Grok Build", "Coding agent Grok Build", "#64748b", "grok", "AGENTS.md", []],
+] satisfies Array<[
+  key: string, label: string, description: string, color: string,
+  command: string, instructionsFilename: string, updateCommands: string[],
+]>).map(([key, label, description, color, command,
+          instructionsFilename, updateCommands]): CodingAgentDefinition => ({
+  key, label, description, color, command, instructionsFilename, updateCommands,
   envs: [],
   isolatedHome: false,
   removable: true,
