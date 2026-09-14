@@ -15,14 +15,10 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     color: "#d97706",
     command: "claude",
     instructionsFilename: "CLAUDE.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
     // #1318/#1325/#1546 - mirror of the embedded default: claude, pi, codex,
     // hermes, opencode, and antigravity ship the update command; cursor and
     // grok ship none; every entry defaults autoUpdate to false.
     updateCommands: ["claude --update"],
-    autoUpdate: false,
   },
   {
     key: "codex",
@@ -31,11 +27,7 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     color: "#10b981",
     command: "codex",
     instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
     updateCommands: ["codex update"],
-    autoUpdate: false,
   },
   {
     key: "hermes",
@@ -44,11 +36,7 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     color: "#8b5cf6",
     command: "hermes",
     instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
     updateCommands: ["hermes update --yes"],
-    autoUpdate: false,
   },
   {
     key: "cursor",
@@ -57,11 +45,7 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     color: "#22d3ee",
     command: "agent",
     instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
     updateCommands: [],
-    autoUpdate: false,
   },
   {
     key: "pi",
@@ -70,11 +54,7 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     color: "#ec4899",
     command: "pi",
     instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
     updateCommands: ["pi update"],
-    autoUpdate: false,
   },
   {
     key: "opencode",
@@ -83,11 +63,7 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     color: "#64748b",
     command: "opencode",
     instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
     updateCommands: ["opencode upgrade"],
-    autoUpdate: false,
   },
   {
     key: "antigravity",
@@ -96,12 +72,8 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     color: "#4285F4",
     command: "agy",
     instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
     // #1482/#1546 - mirror of the embedded default: Antigravity ships the verified 'agy update' command (autoUpdate stays false).
     updateCommands: ["agy update"],
-    autoUpdate: false,
   },
   {
     key: "grok",
@@ -110,13 +82,15 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     color: "#64748b",
     command: "grok",
     instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
     updateCommands: [],
-    autoUpdate: false,
   },
-];
+].map((definition): CodingAgentDefinition => ({
+  ...definition,
+  envs: [],
+  isolatedHome: false,
+  removable: true,
+  autoUpdate: false,
+}));
 
 export function definitionToSeed(def: CodingAgentDefinition): Omit<AgentConfig, "id"> {
   const seed: Omit<AgentConfig, "id"> = {

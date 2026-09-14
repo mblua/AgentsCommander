@@ -1,14 +1,22 @@
 # #1999 — Hermes/OpenCode/Grok submit; disable Muse
 
-Status: READY_FOR_IMPLEMENTATION (reviewable plan; not permission to implement), pending Grinch confirmation of the final bytes. Decision complete; frontend note incorporated (ac-dev-webpage-ui, 2026-09-14). No implementation, build, test run, commit or push performed. User approval gate applies before implementation.
+Status: READY_FOR_IMPLEMENTATION CANDIDATE — round-2 amendment 2026-09-14: corrects Grinch's round-1 plan-text CHANGES_REQUIRED (1: removes the obsolete global nonterminal-executions/idle gate; 2: step 7, Acceptance, Status and Delivery now separate the pre-implementation recipe review from the post-implementation review of the real eight-row bytes, required before commit/push). Round-1 verdict: the Sonar `.map` recipe D1-D3 and scope were accepted; that review covered the recipe only, never product bytes, which do not exist yet (the step-7 delta is unapplied). Steps 1-6 and 8, and the E1-E4 semantics of step 7, are already implemented and committed (`5ec18a5`, `05a700b`). Still pending: Grinch review of this round-2 text and user approval of the amended recipe; this is not permission to implement. No implementation, build, test run, commit or push performed by the amender. Decision complete; frontend note incorporated (ac-dev-webpage-ui, 2026-09-14).
 Canonical: this file, `plans/1999-agent-submit-disable-muse.md` in `repo-AgentsCommander` (branch `fix/1999-agent-submit-disable-muse`). Earlier copies in the project-shared `.ac/plans/issue-1999/` and in the author's Agent Matrix are historical.
 PARTITION: 1 phase; owner ac-dev-rust-v4 for the 4 backend files, ac-dev-webpage-ui for the 2 TS mirror files; reviewer ac-dev-rust-grinch-v4; no new interface, dependency, schema, IPC or module arc.
 
 ## Base and evidence (2026-09-14)
 
-- Repo `D:/0_repos/AgentsCommander_iac/.ac/room-3-ac-dev-team-v4/repo-AgentsCommander`; branch `fix/1999-agent-submit-disable-muse`; HEAD = `main` = `origin/main` = `51fff3d1946ea71ddf32cbdc583d6446548398e7`. Tree clean; only untracked `.codebase-memory/` (discovery artifact — preserve, never commit).
+- Repo `D:/0_repos/AgentsCommander_iac/.ac/room-3-ac-dev-team-v4/repo-AgentsCommander`; branch `fix/1999-agent-submit-disable-muse`; base at plan creation: HEAD = `main` = `origin/main` = `51fff3d1946ea71ddf32cbdc583d6446548398e7` (round-1 context: HEAD `b2e3f9e67abb6fa00ac73303503de20428140c3d`, implementation commits `5ec18a5`, `05a700b`, PR #2003). Tree clean; only untracked `.codebase-memory/` (discovery artifact — preserve, never commit).
 - Issue #1999 OPEN (gh). `node scripts/validate-branch-name.mjs fix/1999-agent-submit-disable-muse` → OK. Graph at that root: ready, 24151 nodes / 162887 edges. All cited files read directly (coverage `metadata_changed`; `agent-presets.test.ts` excluded from the index by design, read directly).
 - Prior evidence: `room-shared/expanded-agent-submit-proposal.md`, `room-shared/hermes-opencode-submit-proposal.md`, `room-shared/informe-hermes-enter-room3-20260914.md`. Grok identity confirmed by the user (`grok` command, npm `@xai-official/grok`, label "Grok Build") and primary docs (`docs.x.ai/build/cli/reference`, `.../keyboard-shortcuts`, `.../features/project-rules`).
+
+## Round-1 amendment (2026-09-14) — Sonar new-code duplication
+
+Trigger: PR #2003 (head `b2e3f9e67abb6fa00ac73303503de20428140c3d`, base `main`) has all GitHub Actions jobs green; the only red check is SonarCloud Code Analysis — **30.8% duplication on new code (required ≤3%)**: `src/shared/agent-presets.ts` `new_lines=14`, `new_duplicated_lines=8` (57.14% file density; total file duplication 76.1%, pre-existing); `src/shared/agent-presets.test.ts` 0% (12 new lines). Duplicated groups are all inside `agent-presets.ts`: 11-65 ↔ 66-118 and 25-62 / 64-101 / 77-115; new-and-duplicated lines are 22, 23 (claude comment) and 107-112 (grok `key`..`instructionsFilename`). No Rust/JSON or test counterpart; the detector matches rows whose string values differ (it normalizes literals).
+
+Sources: amender `ac-dev-webpage-ui-v4` (band 1-25) per the `ac-tech-lead-v4` round-1 request; architect proposal `messaging/20260914-082000-room3-ac-architect-v4-to-room3-ac-tech-lead-v4-1999-sonar-analysis.md`; FE feasibility verdict `messaging/20260914-081523-room3-ac-dev-webpage-ui-v4-to-room3-ac-tech-lead-v4-1999-sonar-feasibility-verdict.md` (implementation feasibility APPROVED; Sonar sufficiency **not demonstrable statically**).
+
+Amended scope: step 7's prescribed bytes are replaced by the `.map` normalization (D1-D3). Scope is otherwise unchanged (muse out, grok in after `antigravity`, comments corrected, tests untouched). No exclusion, no threshold relaxation, no blind reruns. The amended plan needs Grinch recipe review and user approval of the new recipe before implementation; the eight-row equivalence is a post-implementation byte gate (step 7), not a claim made at recipe time. I2001 stays separate.
 
 ## Requirement and confirmed design
 
@@ -28,7 +36,7 @@ Support submit for Hermes, OpenCode, Grok Build and Cursor CLI (Cursor already s
 | 2 | `src-tauri/src/config/coding_agents_catalog.rs` | `grok=true`, `muse=false`, test adaptations |
 | 3 | `src-tauri/resources/coding-agents/agents.default.json` | Grok row |
 | 4 | `src-tauri/tests/cli_project_registration.rs` | seeded last-row expectation |
-| 5 | `src/shared/agent-presets.ts` (owner ac-dev-webpage-ui) | mirror: muse out, grok in, header comment corrected |
+| 5 | `src/shared/agent-presets.ts` (owner ac-dev-webpage-ui) | mirror (muse out, grok in, header comment corrected) committed in `05a700b`; **round-1 pending delta**: remove the four repeated defaults from the eight rows and close with the final `.map` (Sonar ≤3%) |
 | 6 | `src/shared/agent-presets.test.ts` (owner ac-dev-webpage-ui) | mirror test: set, order, titles, de-supported negative |
 | 7 | `plans/1999-agent-submit-disable-muse.md` | this plan (new doc) |
 
@@ -72,37 +80,30 @@ No `configSeed`, no `updateCommands`, no `autoUpdate` (reads default to `[]`/fal
    - `supported_agent_final_snapshot_rejects_unsafe_recipient_records`: positives for the three stems; keep root/exited/agentless/`pwsh` negatives.
    - New in-module recorder tests on the existing `RecordingBackend`: `explicit_submit_stems_write_text_then_two_enters` (hermes/opencode/grok via `tokio::join!`, assert `[payload, \r, \r]`) and `unsupported_stem_writes_text_without_enter` (muse → `[payload]`).
    - Kept as recorder coverage: `a_waiting_user_write_cannot_splice_between_text_and_enters` (`[text, \r, \r, user]`), `exact_submission_phase_outcomes_and_backend_calls_are_pinned` (first CR fatal, second non-fatal), menu-guard block, plain-shell negatives, and mailbox `pi_canonical_injector_writes_arbitrary_text_then_two_enters`, `remote_established_command_branches_preserve_text_and_submission`, `remote_cursor_command_branches_preserve_text_and_submission`.
-7. `src/shared/agent-presets.ts` (exact deltas from the ac-dev-webpage-ui note): E1 remove the muse object (lines 103-114); E2 insert after the antigravity object (after line 102, its closing `},`) this byte-exact row:
+7. `src/shared/agent-presets.ts` (round-1 amended recipe; owner ac-dev-webpage-ui). Already implemented and committed in `05a700b` under the original recipe: E1 muse object removed; E2 grok row inserted after `antigravity` (`key: "grok"`, label `Grok Build`, color `#64748b`, command `grok`, `instructionsFilename: "AGENTS.md"`, `updateCommands: []`); E3 claude-row comment updated; E4 obsolete header comment replaced with the #1965 wording. Evidence: `room-shared/1999-fe-implementation-evidence.md`; its file/patch hashes are superseded by this delta and must be re-pinned after implementation. The Sonar amendment replaces the byte recipe with this **pending delta on the same single file**:
+
+   - D1 Remove `envs: [], isolatedHome: false, removable: true, autoUpdate: false,` from each of the eight row literals. Keep every other field, comment and row order exactly as committed; keep `updateCommands` explicit in every row (including `[]` in cursor and grok).
+   - D2 Close the array with this byte-exact map (architect's proposal):
 
 ```ts
-  {
-    key: "grok",
-    label: "Grok Build",
-    description: "Coding agent Grok Build",
-    color: "#64748b",
-    command: "grok",
-    instructionsFilename: "AGENTS.md",
-    envs: [],
-    isolatedHome: false,
-    removable: true,
-    updateCommands: [],
-    autoUpdate: false,
-  },
+].map((definition): CodingAgentDefinition => ({
+  ...definition,
+  envs: [],
+  isolatedHome: false,
+  removable: true,
+  autoUpdate: false,
+}));
 ```
 
-E3 claude-row comment (lines 18-20) ends: "... hermes, opencode, and antigravity ship the update command; cursor and grok ship none; every entry defaults autoUpdate to false." E4 replace the obsolete header comment (lines 3-6) with:
+   - D3 Nothing else: `FALLBACK_CODING_AGENTS` name/export/type `CodingAgentDefinition[]`, row order (grok last, muse absent), fields, comments, `definitionToSeed` and `newAgentId` stay byte-unchanged; no helper/export/import/module/dependency. `.map` evaluates the literal per element, so every row gets its own fresh `envs: []` — never a shared defaults object; `definitionToSeed` keeps copying `envs` by reference exactly as today.
+   - Recipe review gate (Grinch, before implementation): reviews the recipe only — D1-D3, the four defaults, array independence by construction, helpers untouched, and the expected diff (only the four-field removal per row plus the map tail). The product bytes do not exist at this gate, so it must not claim to have reviewed them; the eight-row equivalence is asserted as an expected result, not as verified bytes.
+   - Byte review gate (Grinch, after implementation and before commit/push): reviews the real implemented diff of `src/shared/agent-presets.ts` row by row — the eight rows are value-identical before/after the `.map` normalization (same keys, same values including `updateCommands`, same order), each row's `envs` is a distinct array, `definitionToSeed` and `newAgentId` are byte-unchanged, and the new file/patch hashes are re-pinned in `room-shared/1999-fe-implementation-evidence.md`, superseding the `05a700b` hashes. No commit or push before this gate passes.
 
-```ts
-// Mirror of the ENABLED rows of `BUILTIN_AGENT_SUPPORT`
-// (`src-tauri/src/config/coding_agents_catalog.rs`), in `agents.default.json`
-// order. `agents.default.json` keeps muse's disabled row; this mirror carries
-// enabled rows only, so it must never resurrect a de-supported built-in.
-// #1965 — not served on an IPC failure anymore: the catalog store disables
-// registrations instead (`src/sidebar/stores/coding-agents.ts`), so this is the
-// drift-guard mirror only.
-```
-
-No constant rename, no new export, `definitionToSeed`/`newAgentId` untouched.
+Risks recorded (confirmed):
+   - Typing: the spread weakens TS excess-property checking on the row literals; a stray or misspelled key in a future row would flow silently (none today).
+   - Future overrides: `.map` assigns the four fields after `...definition`, so a future row with its own `envs`/`isolatedHome`/`removable`/`autoUpdate` would be silently overwritten (TS will not flag it); a future non-default must be handled explicitly.
+   - Property order: the four defaults move to the end of each definition object. Harmless today — no production consumer of the constant (#1965 serves no embedded bytes on IPC failure); production importers use only `newAgentId`/`definitionToSeed`; the two test consumers use `toEqual`/`toMatchObject`, with no snapshots and no `JSON.stringify`.
+   - Sonar is not predictable statically: whether the residual 4-vs-4 row block falls under the analyzer's ~100-token reporting floor depends on normalization depth (simulation: 86 literal-normalized tokens vs 114 with identifiers). Only the real run on the amended SHA decides; no exclusion, no threshold relaxation, no blind reruns. If it stays red, the decision returns to the architect for diagnosis (I2001 stays separate).
 8. `src/shared/agent-presets.test.ts` (exact deltas from the same note): T1 `EXPECTED_BUILTINS` line 26 →
 
 ```ts
@@ -117,7 +118,7 @@ T2 first-test key list ends `..., "antigravity", "grok"` (muse removed). T3 add,
     expect(FALLBACK_CODING_AGENTS.some((a) => a.key === "muse")).toBe(false);
 ```
 
-T4 first-test title: "matches the enabled built-ins: 8 rows (muse disabled, grok added), exact order and fields". T5 update-command test title: "#1318/#1325/#1546: claude, pi, codex, hermes, opencode, and antigravity ship update commands; cursor and grok ship none; every entry defaults autoUpdate off" (body unchanged; grok falls into the `else` → `[]`). T6 header: "#769 — second copy of the backend's ENABLED built-ins ... pins the enabled set and order (the backend's `embedded_default_matches_current_presets_exactly` pins the 9-row embedded default)"; the #1912 block stays. `SettingsModal.automation.test.ts` needs no change (its codex/opencode presets remain; it does not reference muse or grok). No length assertions exist; the set stays 8 and no dynamic test iterates muse.
+T4 first-test title: "matches the enabled built-ins: 8 rows (muse disabled, grok added), exact order and fields". T5 update-command test title: "#1318/#1325/#1546: claude, pi, codex, hermes, opencode, and antigravity ship update commands; cursor and grok ship none; every entry defaults autoUpdate off" (body unchanged; grok falls into the `else` → `[]`). T6 header: "#769 — second copy of the backend's ENABLED built-ins ... pins the enabled set and order (the backend's `embedded_default_matches_current_presets_exactly` pins the 9-row embedded default)"; the #1912 block stays. `SettingsModal.automation.test.ts` needs no change (its codex/opencode presets remain; it does not reference muse or grok). No length assertions exist; the set stays 8 and no dynamic test iterates muse. Round-1 delta: no test change — the existing assertions pin values, order and defaults and remain valid for the normalized form; do not regenerate `EXPECTED_BUILTINS` from the same data. Already committed in `05a700b`.
 
 ## Acceptance
 
@@ -126,6 +127,8 @@ T4 first-test title: "matches the enabled built-ins: 8 rows (muse disabled, grok
 - Muse disabled on every catalog read path; fresh seed publishes 8 enabled rows (grok present, muse absent); managed base refresh drops muse; local layer, migration backup and corrupt bytes preserved; reversibility retained.
 - Admission widening for internal notices/context alerts/restart-resume pinned, with root/exited/agentless still rejected.
 - Frontend mirror equals the enabled rows (muse out, grok in) and its drift test passes; the parity is manual byte-copy (no cross-language check) and the corrected header no longer claims a runtime fallback.
+- Round-1 delta, post-implementation byte gate (before commit/push): on the real implemented diff, the eight rows are value-identical before/after the `.map` normalization (row-by-row reviewer comparison: same keys, same values including `updateCommands`, same order), each row's `envs` is a distinct array, `definitionToSeed`/`newAgentId` are byte-unchanged, and the new file/patch hashes are re-pinned. The earlier pre-implementation gate covers the recipe only and claims no product bytes.
+- Sonar: new-code duplication ≤3% on the exact amended PR SHA, proven by the real Sonar run only; no exclusions, no threshold changes, no blind reruns. If it stays red, the decision returns to the architect for diagnosis.
 - Cursor, Claude, Codex, Pi, Antigravity tests green.
 
 ## Transitions
@@ -153,6 +156,8 @@ npm run test -- src/sidebar/components/SettingsModal.automation.test.ts   # the 
 ```
 CI parity (`.github/workflows/pr-regression-gates.yml`): `rust-fmt`; `rust-regression` (windows: `cargo check --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --lib --bins --tests`); `validate-branch-name`; `frontend-regression` (`npm ci`, `npm run typecheck`, `npm test`) once the mirror files are included. No check is claimed from a byte recorder alone.
 
+Sonar gate (round-1): SonarCloud PR analysis on the exact amended SHA must report new-code duplication ≤3%. Measured baseline before the amendment: overall 30.8% (8 of 26 new lines), `src/shared/agent-presets.ts` 8/14 = 57.14% (total file duplication 76.1%, pre-existing), `agent-presets.test.ts` 0%. The analyzer's token normalization is not fully predictable locally, so this gate is decided only by the real run; exclusions, threshold relaxation and blind reruns are forbidden.
+
 ## Limits and runtime proof (not claimable statically)
 
 - The recorder proves AC's write order/serialization only, not client compatibility.
@@ -160,8 +165,9 @@ CI parity (`.github/workflows/pr-regression-gates.yml`): `rust-fmt`; `rust-regre
 - Grok AGENTS.md discovery: docs warn ignored files may be skipped and AC replicas are gitignored — unverified; do not add flags or touch `.gitignore` without evidence.
 - The first CR can be dropped (#611); the second is the mitigation. Clear/compact, maintenance and switch stay unavailable by design.
 - Frontend parity is enforced only within each half (Rust pins table↔JSON; the FE pins its own copy). The two halves are copied byte-exactly by hand, and `#64748b` intentionally repeats opencode's color (no uniqueness test).
+- Sonar duplication analyzer uncertainty (declared, tooling): the `.map` removes real repetition, but whether the residual 4-row-vs-4-row block (~86 literal-normalized tokens, ~114 with identifiers, against the analyzer's ~100-token reporting floor) is reported at all depends on its normalization depth; ≤3% cannot be claimed statically, only by the real run on the amended SHA.
 - `src/shared/types.ts` `CodingAgentKind` (`"claude" | "codex" | "pi" | "antigravity" | "muse"`) mirrors the Rust session enum (`session.rs:598`), not the catalog; muse stays a valid kind (a custom key whose command is `muse` is preserved). Not touched.
 
 ## Delivery gates
 
-User approval before implementation; Grinch review before implementation. Before every push/PR/update/merge/workflow/release trigger, verify all project repos have no nonterminal executions using complete paginated queries; if busy, recheck every 10 minutes. Shipper requires the applicable checks green on the exact PR head. Recovery: revert only this change set; preserve `.codebase-memory/` and unrelated state.
+User approval before implementation (the round-1 amended recipe is pending that approval). Grinch review is two-stage: recipe review of this plan before implementation (no product bytes exist yet), and the real eight-row byte review of the implemented diff (step 7) after implementation and before commit/push. Runner capacity (single policy): at most 3 distinct repo+branch pairs with pending executions across all rooms and repos in the project; workflows/jobs of the same pair occupy one slot and `main` counts. With 1-2 active pairs another pair may start; with 3 the shipper waits. The previous batch on the same branch must finish before the next trigger. The shipper queries a fresh capture immediately before triggering and rechecks every 10 minutes while blocked by capacity or by its own unfinished batch (no extra 10 minutes when eligible). No reservations or atomic locks (accepted race risk), no cancellations, no skipping required validations, no global nonterminal-executions/idle gate. Shipper requires the applicable checks green on the exact PR head, including the real SonarCloud new-code duplication ≤3% on the amended SHA; no exclusions, no threshold relaxation, no blind reruns. If Sonar stays red, return to the architect for diagnosis. Recovery: revert only this change set; preserve `.codebase-memory/` and unrelated state.
