@@ -82,6 +82,8 @@ A minimal `settings.json`:
 
 Besides the GUI Settings dialog and Onboarding, `agents[]` has a scriptable writer: the [`coding-agent`](cli.md#coding-agent) CLI verb (`list`/`show`/`catalog`/`add`/`update`/`remove`). It writes safely whether or not the GUI is running.
 
+The catalog entry's own `autoUpdate` field is inert: only `agentAutoUpdateByCommand` authorizes an update, keyed by the exact command string, and a changed command never inherits another command's answer. `updateCommands` likewise resolve only from the persisted catalog (project `.ac/coding-agents/agents.json` layered with `agents.local.json`); see [Coding agents § Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration).
+
 `AgentConfig`:
 
 | Field | Type | Default | Description |

@@ -85,11 +85,120 @@ On startup AC reads `settings.json → agents[]`. Each entry has:
 
 The default coding-agent catalog includes a Pi entry with command `pi` and instructions file `AGENTS.md`.
 
-**Where `updateCommands` lives.** The catalog is a separate manifest from `settings.json`: it is `agents.json`, in the project's own `.ac/coding-agents/` directory (see [Directory layout](../reference/directory-layout.md)), seeded per registered project. Each catalog definition can carry `updateCommands`, the commands AC runs to update that tool, and `autoUpdate`; both default to empty and `false` when the manifest omits them. **Neither is a `settings.json` key**, and the CLI exposes the catalog read-only (`coding-agent catalog`). What you set in `settings.json` is your answer to the startup prompt, `agentAutoUpdateByCommand`, described in [Coding agent auto-update](../features/agent-auto-update.md).
+**Where `updateCommands` lives.** The catalog is a separate manifest from `settings.json`. It is `<project>/.ac/coding-agents/agents.json`, an AC-managed snapshot that startup and project registration initialize or refresh; your overrides live beside it in `<project>/.ac/coding-agents/agents.local.json`. Each catalog definition can carry `updateCommands`, the commands AC runs to update that tool, and `autoUpdate`. **Neither is a `settings.json` key**, and the CLI exposes the catalog read-only (`coding-agent catalog`). What you set in `settings.json` is your answer to the startup prompt, `agentAutoUpdateByCommand`, described in [Coding agent auto-update](../features/agent-auto-update.md); the catalog's `autoUpdate` field is inert.
 
-Catalogs seeded before the update-command era (before #1325) carry no `updateCommands` for any entry. AC backfills them **in memory** at read time from the built-in default, matching by `command` and never rewriting the user-owned file: entries with an empty sequence get the default's sequence, and commands you author yourself always win. `cursor` intentionally ships no update command (its CLI self-updates with the desktop app).
+Commands resolve only from the persisted catalog. AC never substitutes the shipped defaults at read time, so a legacy catalog's absent `updateCommands` stays empty until a supported restart migrates it; `cursor` and `muse` intentionally ship no update command (`cursor`'s CLI self-updates with the desktop app). See [Managed catalog: base, local overrides, and migration](#managed-catalog-base-local-overrides-and-migration) for the schema, refresh and recovery rules.
 
-Entries with a non-empty `updateCommands` are the rows of the Settings > Coding Agents **Auto-update** table (see [Coding agent auto-update](../features/agent-auto-update.md)). There is no `versionCommand` field: AC detects installed versions with a built-in `--version` probe for the built-in commands (`claude`, `codex`, `hermes`, `pi`, `opencode`, `agy`), only for bare command names resolved through PATH; a custom entry or an explicit path shows `Installed` without a version.
+In the Settings > Coding Agents **Auto-update** table, one row appears per command whose first effective entry has a non-empty `updateCommands` (see [Coding agent auto-update](../features/agent-auto-update.md)). There is no `versionCommand` field: AC detects installed versions with a built-in `--version` probe for the built-in commands (`claude`, `codex`, `hermes`, `pi`, `opencode`, `agy`), only for bare command names resolved through PATH; a custom entry or an explicit path shows `Installed` without a version.
+
+## Managed catalog: base, local overrides, and migration
+
+`<project>/.ac/coding-agents/agents.json` is the file AgentsCommander manages; `<project>/.ac/coding-agents/agents.local.json` is yours. Startup and every project registration initialize or refresh the managed base. Ordinary reads and **Reload catalog** never write. The embedded catalog is seed material only. With no registered project, AC reads an existing instance catalog read-only (`<config_dir>/coding-agents/agents.json`) or reports it unavailable; it never initializes the instance.
+
+**Existing registrations are snapshots.** Adding an agent from the catalog copies `label`, `command`, `color`, `envs`, `isolatedHome`, and, when present, `instructionsFilename` and `configSeed` into `settings.agents[]` (the CLI's `add --from-catalog` does the same). Later catalog changes do not rewrite registered agents.
+
+### The local overrides file
+
+`agents.local.json` is strict. Its root is an object with `schemaVersion: 1`, an `agents` array, and an optional `order` array of unique keys. Anything AC does not recognize — an unknown field at the root, in a row or in a nested object; a duplicate JSON member; a duplicate key; an unsupported `schemaVersion` — disables the **whole** local layer with a `localInvalid` warning naming the path and reason. The base stays readable and usable; AC never applies a partial local file or rewrites it.
+
+A row with an existing `key` patches that base entry. `label`, `description`, `color`, `command`, `instructionsFilename`, `envs`, `isolatedHome`, `configSeed`, `removable`, `updateCommands` and `autoUpdate` are accepted. A field you omit is inherited; `false`, `""` and `[]` are explicit values. `null` is accepted only for `instructionsFilename` (clear it) and `configSeed` (clear the whole object). `configSeed` merges by presence (`enabled`, `dest` only); an object after a missing or `null` base starts from the defaults `enabled: true`, `dest: ""`. `envs` and `updateCommands` replace the whole array in the order you write; env rows are never merged by key. Each env object accepts only `key`, `value`, `source` (`user` or `system`/`agentsCommander`) and `enabled`.
+
+A row with a new `key` must be complete: `label`, `description`, `color`, `command`, `envs`, `isolatedHome`, `removable`, `updateCommands` and `autoUpdate` are all required; `instructionsFilename` and `configSeed` may be absent or `null`. New definitions append after the base entries unless `order` places them.
+
+A tombstone is a row with `remove: true` and only `key` and `remove`. Removing a nonremovable base entry invalidates the whole layer; `remove: false` is rejected — omit `remove` for an ordinary patch. An unknown key's tombstone is valid and kept for a future shipped key.
+
+`order` lists surviving keys first; unlisted survivors keep base-then-local-add order. Unknown or removed keys in `order` are ignored, so you can pre-position a key a future AC version adds. After composition AC applies its built-in support table; an unsupported built-in stays suppressed.
+
+This example patches Codex to an explicit empty command list and a partial seed, removes the Pi entry (Pi is removable), adds a complete custom agent, and pre-positions a future key:
+
+```json
+{
+  "schemaVersion": 1,
+  "agents": [
+    {
+      "key": "codex",
+      "command": "codex --model gpt-5",
+      "updateCommands": [],
+      "configSeed": { "enabled": false }
+    },
+    { "key": "pi", "remove": true },
+    {
+      "key": "my-cli",
+      "label": "My CLI",
+      "description": "Internal wrapper",
+      "color": "#6366f1",
+      "command": "my-cli --fast",
+      "envs": [],
+      "isolatedHome": false,
+      "removable": true,
+      "updateCommands": ["my-cli self-update"],
+      "autoUpdate": false
+    }
+  ],
+  "order": ["codex", "my-cli", "future-tool"]
+}
+```
+
+When several catalog entries share one command, the updater uses the **first effective entry** for that command — its label, color and exact sequence — even when that sequence is `[]`; later duplicates are ignored. Settings consent stays keyed by the exact command string and is never inherited by a changed command.
+
+### The managed base
+
+A base AC owns carries a `managed` marker beside `schemaVersion: 1` and `agents`:
+
+| Field | Value |
+|---|---|
+| `owner` | `agentscommander` |
+| `version` | `1` |
+| `revision` | SHA-256 of the deterministic compact UTF-8 serialization of the supported shipped definitions |
+| `contentSha256` | The same SHA-256; identifies the exact content AC published |
+
+An unrecognized owner or version means the file is not AC's: it stays readable but is never refreshed or migrated. A formatting-only edit does not change `contentSha256` and does not pin the file. A semantic edit stops `contentSha256` matching the entries; the file stays readable with a `managedBaseEdited` warning, and AC never auto-refreshes or auto-migrates it. To customize entries, use `agents.local.json`, not `agents.json`.
+
+A refresh replaces only a verified managed base: it can bring new or updated shipped definitions into the composed view you read, and it never edits `agents.local.json`. A fresh project writes the base and a creation-only stub `{"schemaVersion":1,"agents":[]}` in `agents.local.json`, and only when the local path does not exist at all: any existing entry is preserved and never overwritten. An existing valid regular file is composed as your overrides with no warning; a directory, link, unreadable or schema-invalid local is preserved and surfaces `localInvalid` with the path and reason when read. If the stub cannot be created, the usable base remains and a startup log names the local path.
+
+### Migration, sidecars, and recovery
+
+If `agents.json` has no recognized managed marker it is legacy user-owned data. On a supported restart AC migrates it before claiming ownership, and requires `agents.local.json` to be completely absent: an existing local file of any kind blocks the transfer, even an empty stub AC may not have written. A readable legacy base plus a valid local file stays usable with a `migrationPending` warning while the transfer is blocked. A legacy file stays readable at all times — AC does not extract values or insert defaults while reading.
+
+An existing local file does **not** block fresh initialization when there is no project base and no instance legacy source: AC writes the managed base and leaves your local file in place.
+
+The one-time extraction is computed and strictly validated before any write:
+
+- for a shipped key whose command is unchanged, explicitly present fields are pinned as local values; an absent `updateCommands` inherits the persisted default sequence;
+- a custom key or a changed command is materialized completely; an absent `updateCommands` becomes `[]`;
+- shipped keys absent from the legacy catalog become `remove: true` tombstones (an empty legacy catalog tombstones every supported shipped key), so future AC versions can still add new defaults.
+
+AC then publishes an immutable byte-exact backup `agents.migration-v1.backup.json`, a journal `.agents.migration-v1.json`, the extracted local file, and finally the managed base — the local file before the base. The journal records the version, source kind (`project` or `instance`), source path and SHA-256, the local file's SHA-256 and byte length, and the complete intended managed base with its revision and content digest. A restart resumes an interrupted migration only when the recorded source, backup and local bytes still match; a changed source or local file, a missing backup, or an inconsistent sidecar stops recovery and preserves every byte, with the conflict path and reason reported. An instance source is read-only: only its bytes are imported, into the project's base and backup, and only when the project has no base at all. `agents.local.json` is never imported from the instance.
+
+Warnings keep a failed state visible without changing bytes:
+
+| Warning | Meaning |
+|---|---|
+| `baseUnavailable` | no readable persisted catalog exists at the selected path; AC substitutes nothing |
+| `baseInvalid` | the persisted base is corrupt or invalid; its bytes are preserved |
+| `invalidDefinition` | a catalog entry did not validate and was omitted from the read, or a built-in is suppressed by this build's support table |
+| `duplicateKey` | a catalog entry's key duplicates an earlier entry and was omitted |
+| `localInvalid` | the local file is not valid under the strict schema; the base still applies |
+| `migrationPending` | a persisted base carries unrecognized fields or an entry missing `updateCommands`, a local file exists while the base is not AC-managed, or a journal or local file is waiting for an absent base |
+| `migrationConflict` | the base carries an unrecognized managed ownership marker, or a sidecar, source or local file changed during migration, or an existing local/sidecar blocks it; nothing was overwritten |
+| `managedBaseEdited` | the base no longer matches its content digest; it stays readable and is never auto-refreshed |
+| `refreshFailed` | the persisted revision differs from this build, so the entries stay usable and a restart retries the refresh; initialization also logs it when it cannot create the local stub or inspect a sidecar, without adding it to this report |
+| `publicationUntracked` | the base is verified managed but the seed manifest does not record it yet; the next initialization records it without republishing |
+
+The table describes the warnings a read report can carry. A failed initialization logs the same codes, and some failures reach only the log: a blocked recovery logs `migrationConflict`, and a local-stub or sidecar failure logs `refreshFailed`, without appearing in the report.
+
+**Reload catalog** (Settings and the New Agent picker) re-reads the files after you edit them by hand. A restart is what retries the managed-base refresh and migration. The config-seed **Re-seed default configuration** button is unrelated: it writes only the `_seed/` master under the primary registered project's `.ac/coding-agents/`, or the legacy `<config_dir>/coding-agents/_seed/` when no project is registered (see [Config seed](../features/config-seed.md#the-factory-default-and-the-re-seed-button)).
+
+If migration cannot resume, reconcile it by hand:
+
+1. Stop AgentsCommander.
+2. Keep `agents.json`, `agents.local.json`, `agents.migration-v1.backup.json` and `.agents.migration-v1.json` — do not delete them.
+3. Prepare a valid `agents.local.json` with the customizations you want to keep.
+4. Move a conflicting base and transaction sidecars aside to archival names of your choice.
+5. Make sure no instance legacy catalog will silently re-enter migration.
+6. Restart AC: it initializes a fresh managed base and preserves your reconciled local file.
+
+There is no repair command that deletes or overwrites these files. An unsupported lock or hard-link filesystem stops migration safely instead of publishing a partial local file; move the project to a supported local filesystem or reconcile by hand.
 
 ## Switching the coding agent per session
 
