@@ -65,8 +65,10 @@ The project-scoped tree. AC creates and maintains it, and the recommended layout
 | `_agent_<name>/` | Agent matrix: one directory per agent, holding `Role.md`, `config.json`, `memory/`, `memory_YYYYMMDD_hhmmss/` (rotated memory archives), `plans/`, and `skills/`. See [Agent Matrix conventions](../agent-matrix-conventions.md), and see [Agent Matrix conventions §11](../agent-matrix-conventions.md#11-agent-memory-rotation-at-spawn) for how the archives are made |
 | `_team_<name>/` | Team definitions: `config.json` (members, orchestrator, repos) and `conventions.md` |
 | `room-<N>-<name>/` | Rooms: `__agent_<name>/` replica directories, `messaging/` (inter-agent message files), `repo-*/` [work repo](../glossary.md#work-repo) clones, `TASK*.md` briefs. Project-scoped and shared, but gitignored (`room-*/`) because the `repo-*` folders are their own git repositories |
-| `coding-agents/` | Coding-agent catalog: `agents.json` (manifest) and `_seed/` (per-tool default config-folder masters). Seeded per registered project; this is the copy AC reads and writes |
+| `coding-agents/` | Coding-agent catalog: AC-managed `agents.json`, user-owned `agents.local.json`, migration sidecars `agents.migration-v1.backup.json` and `.agents.migration-v1.json`, the `.agents.json.lock` write lock, and `_seed/` (per-tool default config-folder masters). Seeded per registered project. `agents.json` and `_seed/` stay tracked; the local file, sidecars, lock and publication temporaries are ignored (see [Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration)) |
 | `competitions/` | Competition packages, one folder per competition with a `MANIFEST.md`. No writer in the current source; treat as hand-managed |
+
+`agents.json` and the `_seed/` masters stay tracked under `.ac/coding-agents/`. The exact ignored children are `agents.local.json`, `agents.migration-v1.backup.json`, `.agents.migration-v1.json`, `.agents.json.lock`, `.agents.json.*.tmp`, `.agents.local.json.*.tmp`, `.agents.migration-v1.backup.json.*.tmp` and `..agents.migration-v1.json.*.tmp` (the journal's own publication temporary carries the doubled leading dot because the journal file name already starts with one). AC writes them as rooted `/coding-agents/<child>` rules into the project's `.ac/.gitignore`, and the instance config directory's generated `.gitignore` applies the equivalent root-relative `coding-agents/` child rules to its tree. An ignore rule keeps a new file out of git only: it does not untrack a file git already tracks. Reads with no registered project do not create these sidecars.
 
 ## `.agentscommander_ac2/` (per-instance, never shared)
 
@@ -108,7 +110,7 @@ This deployment's selected machine-local application state. Never commit or shar
 | Entry | What it is |
 |---|---|
 | `instances/<uuid>/outbox/` | App outbox for the current run; AC removes stale instance dirs at boot |
-| `coding-agents/` | Legacy catalog location, kept as a read and seed source only. Since #1318 the catalog AC reads and writes is the project's `.ac/coding-agents/`; nothing is written here |
+| `coding-agents/` | Legacy catalog location: read and seed source only. Since #1318 the managed catalog is the project's `.ac/coding-agents/`; with no project AC may read an existing `agents.json` here, but it never seeds, migrates or creates sidecars in the instance, and nothing is written here |
 | `context-cache/` | Rendered session contexts (`ac-context-*.md`) |
 | `pty-input-locks/` | PTY input serialization locks |
 | `git-guard/` | Windows git guard shim (`git.cmd`, `git-guard.ps1`) that wraps git for guarded subprocesses |
@@ -118,7 +120,7 @@ This deployment's selected machine-local application state. Never commit or shar
 
 ## Where the seed manifest tracks seeded files
 
-The seed manifest at `.ac/seed-manifest.toml` records every file AC seeded into `.ac`, one row per project-relative logical destination: the project context templates (`.ac/Context.AgentsCommander.md`, `.ac/Context.coordinator.md`) and the replica config folders (rows under `config:<dest>` scopes such as `__agent_<name>/.claude/`). `.seed-manifest.lock` serializes the writes. See [Seed manifest](../features/seed-manifest.md) for the schema and [Config seed](../features/config-seed.md) for what gets copied.
+The seed manifest at `.ac/seed-manifest.toml` records every file AC seeded into `.ac`, one row per project-relative logical destination: the project context templates (`.ac/Context.AgentsCommander.md`, `.ac/Context.coordinator.md`), the replica config folders (rows under `config:<dest>` scopes such as `__agent_<name>/.claude/`), and the managed catalog publication (`.ac/coding-agents/agents.json`, scope `catalog:coding-agents`). The catalog's `agents.local.json` and migration sidecars are never rowed. `.seed-manifest.lock` serializes the writes. See [Seed manifest](../features/seed-manifest.md) for the schema and [Config seed](../features/config-seed.md) for what gets copied.
 
 The manifest never tracks the selected application config dir. Under the unpublished `main` resolver, a public override can place that directory anywhere, including under a project tree, but it remains machine-local state outside seed-manifest ownership. Published `v0.30.3` has no public override.
 
