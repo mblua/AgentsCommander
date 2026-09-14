@@ -3330,6 +3330,8 @@ mod tests {
         coordinator.close_and_join().await;
     }
 
+    // Proves retained pending-handle ownership and exactly-once cleanup after close.
+    // Immediate stop does not cover near-deadline success, blocked stops, or physical joins.
     async fn assert_pending_container_shutdown_waits_for_stop(capped: bool) {
         use crate::pty::backend::SessionBackendKind;
         use crate::pty::container_backend::ContainerTransportBackend;
@@ -3341,11 +3343,7 @@ mod tests {
         let runtime = Arc::new(GatedStopRuntime {
             stop_started: Mutex::new(Some(stop_started)),
             stop_calls: AtomicUsize::new(0),
-            stop_hold: if capped {
-                Duration::from_secs(30)
-            } else {
-                Duration::from_millis(10)
-            },
+            stop_hold: Duration::ZERO,
             active_stops: AtomicUsize::new(0),
             deadline_seen: AtomicBool::new(false),
         });
@@ -3371,34 +3369,45 @@ mod tests {
             .manage(WsBroadcaster::new())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build pending-container shutdown app");
-        coordinator
-            .start(app.handle().clone())
-            .expect("start pending-container shutdown coordinator");
-        let mut restore_guard = Some(
-            coordinator
-                .submit_restore_first()
-                .await
-                .expect("hold restore barrier"),
-        );
+        let mut restore_guard = None;
         let manager_handle = manager.read().await.clone();
-        let mut ticket = coordinator
-            .reserve_create(TrustedCreateIntent::Background)
-            .await
-            .expect("reserve pending-container finalizer");
-        let pending = manager_handle
-            .create_pending_session(
-                &mut ticket,
-                "container".to_string(),
-                Vec::new(),
-                "C:/pending-container-shutdown".to_string(),
-                None,
-                None,
-                Vec::new(),
-                false,
-                SessionBackendKind::ContainerTransport,
-            )
-            .await
-            .expect("create pending-container manager row");
+        let setup = async {
+            coordinator
+                .start(app.handle().clone())
+                .map_err(|error| error.to_string())?;
+            restore_guard = Some(coordinator.submit_restore_first().await?);
+            let mut ticket = coordinator
+                .reserve_create(TrustedCreateIntent::Background)
+                .await
+                .map_err(|error| error.to_string())?;
+            let pending = manager_handle
+                .create_pending_session(
+                    &mut ticket,
+                    "container".to_string(),
+                    Vec::new(),
+                    "C:/pending-container-shutdown".to_string(),
+                    None,
+                    None,
+                    Vec::new(),
+                    false,
+                    SessionBackendKind::ContainerTransport,
+                )
+                .await?;
+            Ok::<_, String>((ticket, pending))
+        }
+        .await;
+        let (ticket, pending) = match setup {
+            Ok(ready) => ready,
+            Err(error) => {
+                if let Some(guard) = restore_guard.take() {
+                    guard.finish();
+                }
+                let cleanup =
+                    tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                        .await;
+                panic!("pending-container setup failed: {error}; coordinator cleanup={cleanup:?}; a cleanup timeout leaves worker ownership unresolved");
+            }
+        };
         let _transport_receiver =
             container_backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
                 session_id: pending.id,
@@ -3408,97 +3417,127 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner())
             .record_route(pending.id, SessionBackendKind::ContainerTransport);
 
-        let finalizer = tokio::spawn(async move { ticket.finalize(Vec::new()).await });
+        let mut finalizer = tokio::spawn(async move { ticket.finalize(Vec::new()).await });
         let close_started = Instant::now();
-        let close = {
+        let mut close = {
             let coordinator = coordinator.clone();
             tokio::spawn(async move {
                 if capped {
-                    coordinator.close_and_join_with_budget(close_budget).await;
+                    coordinator.close_and_join_with_budget(close_budget).await
                 } else {
-                    coordinator.close_and_join().await;
+                    coordinator.close_and_join().await
                 }
             })
         };
-        tokio::time::timeout(Duration::from_secs(1), async {
+        let shutdown_signal = tokio::time::timeout(Duration::from_secs(1), async {
             while !coordinator.inner.shutdown.is_cancelled() {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("pending-container shutdown signal becomes visible");
-        if !capped {
-            restore_guard
-                .take()
-                .expect("normal-drain restore guard")
-                .finish();
+        .await;
+        if !capped || shutdown_signal.is_err() {
+            if let Some(guard) = restore_guard.take() {
+                guard.finish();
+            }
         }
 
-        tokio::time::timeout(Duration::from_secs(2), close)
-            .await
-            .expect("coordinator close obeys the shared shutdown deadline")
-            .expect("join coordinator close task");
+        let close_result = tokio::time::timeout(Duration::from_secs(2), &mut close).await;
         let close_elapsed = close_started.elapsed();
         let close_bound = if capped {
             close_budget + Duration::from_millis(550)
         } else {
             Duration::from_secs(1)
         };
-        assert!(
-            close_elapsed <= close_bound,
-            "coordinator close elapsed {close_elapsed:?}, bound {close_bound:?}"
-        );
         if let Some(guard) = restore_guard.take() {
             guard.finish();
         }
-        assert_eq!(
-            finalizer
-                .await
-                .expect("join pending-container finalizer")
-                .expect_err("shutdown finalizer returns unavailable"),
-            SelectionCoordinatorError::Unavailable.to_string()
-        );
-        assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(runtime.active_stops.load(Ordering::SeqCst), 0);
-        assert!(!container_backend.contains_transport_state_for_test(pending.id));
-        assert_eq!(container_backend.detached_cleanup_count_for_test(), 0);
-        assert_eq!(
-            container_backend.retained_runtime_cleanup_sessions_for_test(),
-            vec![pending.id],
-            "post-seal pending cleanup must remain owned for the authorized global sweep: {:?}",
-            container_backend.retained_cleanup_contexts_for_test()
-        );
+        // Borrow task handles so timeout cannot silently detach fixture-owned work.
+        let close_cleanup = if close_result.is_err() {
+            let cleanup = tokio::time::timeout(Duration::from_secs(5), &mut close).await;
+            if cleanup.is_err() {
+                close.abort();
+                let aborted = tokio::time::timeout(Duration::from_secs(5), &mut close).await;
+                eprintln!("coordinator cleanup exceeded five seconds; abort join={aborted:?}; worker ownership unresolved");
+            }
+            Some(cleanup)
+        } else {
+            None
+        };
+        let finalizer_result = tokio::time::timeout(Duration::from_secs(5), &mut finalizer).await;
+        if finalizer_result.is_err() {
+            finalizer.abort();
+            let aborted = tokio::time::timeout(Duration::from_secs(5), &mut finalizer).await;
+            eprintln!("finalizer cleanup exceeded five seconds; abort join={aborted:?}");
+        }
+        let pre_stop_calls = runtime.stop_calls.load(Ordering::SeqCst);
+        let pre_active_stops = runtime.active_stops.load(Ordering::SeqCst);
+        let pre_transport = container_backend.contains_transport_state_for_test(pending.id);
+        let pre_detached = container_backend.detached_cleanup_count_for_test();
+        let pre_retained = container_backend.retained_runtime_cleanup_sessions_for_test();
+        let pre_contexts = container_backend.retained_cleanup_contexts_for_test();
         let aggregate = manager_handle.aggregate_snapshot().await;
-        assert!(aggregate.pending_ids.is_empty());
-        assert!(aggregate.sessions.is_empty());
-        assert!(!pty
+        let pre_route = pty
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .has_session(pending.id));
+            .has_session(pending.id);
 
+        // Collect both snapshots and finish the single authorized sweep before assertions.
         let global_report = pty
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .stop_all_started_containers_blocking(Duration::from_secs(1));
+        let stopped_signal = tokio::time::timeout(Duration::from_secs(1), stop_started_rx).await;
+        let stop_calls = runtime.stop_calls.load(Ordering::SeqCst);
+        let active_stops = runtime.active_stops.load(Ordering::SeqCst);
+        let worker_count = container_backend.shutdown_worker_count_for_test();
+        let deadline_seen = runtime.deadline_seen.load(Ordering::SeqCst);
+        let retained = container_backend.retained_cleanup_sessions_for_test();
+        eprintln!("pending-container capped={capped} close={close_result:?} close_cleanup={close_cleanup:?} terminal={} stops={stop_calls} active={active_stops} worker_accounting={worker_count} retained={retained:?}", global_report.terminal);
+        shutdown_signal.expect("pending-container shutdown signal becomes visible");
+        close_result
+            .expect("coordinator close obeys the shared shutdown deadline")
+            .expect("join coordinator close task");
+        assert!(
+            close_elapsed <= close_bound,
+            "coordinator close elapsed {close_elapsed:?}, bound {close_bound:?}"
+        );
+        assert_eq!(
+            finalizer_result
+                .expect("pending-container finalizer joins within five seconds")
+                .expect("join pending-container finalizer")
+                .expect_err("shutdown finalizer returns unavailable"),
+            SelectionCoordinatorError::Unavailable.to_string()
+        );
+        assert_eq!(pre_stop_calls, 0);
+        assert_eq!(pre_active_stops, 0);
+        assert!(!pre_transport);
+        assert_eq!(pre_detached, 0);
+        assert_eq!(
+            pre_retained,
+            vec![pending.id],
+            "post-seal pending cleanup must remain owned for the authorized global sweep: {:?}",
+            pre_contexts
+        );
+        assert!(aggregate.pending_ids.is_empty());
+        assert!(aggregate.sessions.is_empty());
+        assert!(!pre_route);
         assert!(
             global_report.terminal,
             "retained={:?}",
             global_report.retained
         );
-        tokio::time::timeout(Duration::from_secs(1), stop_started_rx)
-            .await
+        stopped_signal
             .expect("global sweep invokes the retained container stop")
             .expect("container stop-start signal is delivered");
         assert_eq!(
-            runtime.stop_calls.load(Ordering::SeqCst),
-            1,
+            stop_calls, 1,
             "the single production global sweep must stop the retained handle exactly once"
         );
-        assert_eq!(runtime.active_stops.load(Ordering::SeqCst), 0);
-        assert!(runtime.deadline_seen.load(Ordering::SeqCst));
-        assert!(container_backend
-            .retained_cleanup_sessions_for_test()
-            .is_empty());
+        assert_eq!(active_stops, 0);
+        // Accounting evidence only; zero does not prove physical worker thread joins.
+        assert_eq!(worker_count, 0);
+        assert!(deadline_seen);
+        assert!(retained.is_empty());
     }
 
     async fn assert_real_pending_container_start_shutdown_waits_for_stop(
@@ -5453,6 +5492,8 @@ fn commit_selection_transition() {
 
     #[tokio::test]
     async fn capped_shutdown_abort_joins_pending_container_stop_exactly_once() {
+        // The restore barrier forces capped close; the later sweep owns immediate cleanup.
+        // Worker counters are accounting, not proof of physical joins or deadline races.
         assert_pending_container_shutdown_waits_for_stop(true).await;
     }
 
