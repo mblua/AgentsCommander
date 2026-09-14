@@ -805,10 +805,57 @@ enum CoordinatorJob {
 }
 
 struct CoordinatorEnvelope {
-    job: CoordinatorJob,
+    // #1580: admission and critical key are declared before `job` so an envelope
+    // dropped without execution frees both before `job` drops the caller's sender.
     _admission: OwnedSemaphorePermit,
-    _create_ticket: Option<OwnedSemaphorePermit>,
     _critical_admission: Option<CriticalAdmissionGuard>,
+    job: CoordinatorJob,
+    _create_ticket: Option<OwnedSemaphorePermit>,
+}
+
+/// #1580: the guards an executing envelope still owns after its job moved out.
+struct EnvelopeHold {
+    admission: Option<OwnedSemaphorePermit>,
+    critical_admission: Option<CriticalAdmissionGuard>,
+    _create_ticket: Option<OwnedSemaphorePermit>,
+}
+
+impl CoordinatorEnvelope {
+    fn into_parts(self) -> (CoordinatorJob, EnvelopeHold) {
+        let CoordinatorEnvelope {
+            _admission: admission,
+            _critical_admission: critical_admission,
+            job,
+            _create_ticket: create_ticket,
+        } = self;
+        (
+            job,
+            EnvelopeHold {
+                admission: Some(admission),
+                critical_admission,
+                _create_ticket: create_ticket,
+            },
+        )
+    }
+}
+
+impl EnvelopeHold {
+    /// Capacity first, then the dedup key. Runs before every completion send.
+    /// The create ticket is not released here; it drops with the hold.
+    fn release(&mut self) {
+        drop(self.admission.take());
+        drop(self.critical_admission.take());
+    }
+
+    fn is_released(&self) -> bool {
+        self.admission.is_none() && self.critical_admission.is_none()
+    }
+
+    /// Releases, then sends. Use only for a completion send.
+    fn respond<T>(&mut self, response: oneshot::Sender<T>, value: T) -> Result<(), T> {
+        self.release();
+        response.send(value)
+    }
 }
 
 struct CoordinatorInner {
@@ -2060,11 +2107,15 @@ async fn drain_after_shutdown<R: Runtime>(
     receiver: &mut mpsc::Receiver<CoordinatorEnvelope>,
 ) {
     while let Some(envelope) = receiver.recv().await {
-        match envelope.job {
+        let (job, mut hold) = envelope.into_parts();
+        match job {
             CoordinatorJob::FinalizeCreate { request, response } => {
                 execute_rollback_create(transaction, request.binding).await;
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!(
@@ -2075,74 +2126,102 @@ async fn drain_after_shutdown<R: Runtime>(
             }
             CoordinatorJob::RollbackCreate { binding } => {
                 execute_rollback_create(transaction, binding).await;
+                hold.release();
             }
             CoordinatorJob::Transition { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued transition caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Snapshot { response } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued snapshot caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RouteLoss { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued route-loss caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Destroy { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued destroy caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RestartLifecycle { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued restart caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RootLifecycle { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued Root caller dropped during shutdown");
                 }
             }
             CoordinatorJob::ResourceKill { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued resource-kill caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Detach { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued detach caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Attach { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued attach caller dropped during shutdown");
@@ -2152,8 +2231,13 @@ async fn drain_after_shutdown<R: Runtime>(
                 if started.send(()).is_err() {
                     log::debug!("[selection] restore submitter dropped during shutdown");
                 }
+                hold.release();
             }
         }
+        debug_assert!(
+            hold.is_released(),
+            "#1580: a coordinator job arm finished without releasing admission and critical key"
+        );
     }
 }
 
@@ -2161,23 +2245,24 @@ async fn execute_envelope<R: Runtime>(
     transaction: &SelectionTransaction<R>,
     envelope: CoordinatorEnvelope,
 ) {
-    match envelope.job {
+    let (job, mut hold) = envelope.into_parts();
+    match job {
         CoordinatorJob::Transition { request, response } => {
             let result = execute_transition(transaction, request).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!("[selection] transition caller dropped before result delivery");
             }
         }
         CoordinatorJob::Snapshot { response } => {
             let snapshot = transaction.manager().await.selection_payload().await;
-            if response.send(Ok(snapshot)).is_err() {
+            if hold.respond(response, Ok(snapshot)).is_err() {
                 log::debug!("[selection] snapshot caller dropped before result delivery");
             }
         }
         CoordinatorJob::FinalizeCreate { request, response } => {
             let session_id = request.binding.session_id();
             let result = execute_finalize_create(transaction, request).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!(
                     "[selection] create finalizer caller dropped before result delivery session={}",
                     session_id
@@ -2186,6 +2271,7 @@ async fn execute_envelope<R: Runtime>(
         }
         CoordinatorJob::RollbackCreate { binding } => {
             execute_rollback_create(transaction, binding).await;
+            hold.release();
         }
         CoordinatorJob::RouteLoss {
             session_id,
@@ -2193,7 +2279,7 @@ async fn execute_envelope<R: Runtime>(
             response,
         } => {
             let result = execute_route_loss(transaction, session_id, exit_code).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!(
                     "[selection] route-loss caller dropped before result delivery session={}",
                     session_id
@@ -2203,21 +2289,21 @@ async fn execute_envelope<R: Runtime>(
         CoordinatorJob::Destroy { request, response } => {
             let result =
                 crate::commands::session::execute_destroy_transaction(transaction, request).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!("[selection] destroy caller dropped before result delivery");
             }
         }
         CoordinatorJob::RestartLifecycle { request, response } => {
             let result =
                 crate::commands::session::execute_restart_transaction(transaction, request).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!("[selection] restart caller dropped before result delivery");
             }
         }
         CoordinatorJob::RootLifecycle { request, response } => {
             let result =
                 crate::commands::session::execute_root_transaction(transaction, request).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!("[selection] Root caller dropped before result delivery");
             }
         }
@@ -2232,7 +2318,7 @@ async fn execute_envelope<R: Runtime>(
                 intent,
             )
             .await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!(
                     "[selection] resource-kill caller dropped before result delivery session={}",
                     session_id
@@ -2252,7 +2338,7 @@ async fn execute_envelope<R: Runtime>(
                 suppress_selection,
             )
             .await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!(
                     "[selection] detach caller dropped before result delivery session={}",
                     session_id
@@ -2265,7 +2351,7 @@ async fn execute_envelope<R: Runtime>(
         } => {
             let result =
                 crate::commands::window::execute_attach_transaction(transaction, session_id).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!(
                     "[selection] attach caller dropped before result delivery session={}",
                     session_id
@@ -2279,8 +2365,13 @@ async fn execute_envelope<R: Runtime>(
             if release.await.is_err() {
                 log::warn!("[selection] restore barrier released by dropped owner");
             }
+            hold.release();
         }
     }
+    debug_assert!(
+        hold.is_released(),
+        "#1580: a coordinator job arm finished without releasing admission and critical key"
+    );
 }
 
 async fn execute_transition<R: Runtime>(
@@ -3326,7 +3417,7 @@ mod tests {
             .expect("fresh same-kind submission succeeds"),
             CriticalAdmissionOutcome::Completed(())
         );
-        // Completed reports the operation result; the admission guard drops afterwards.
+        // #1580 releases the key before Completed; this bounded wait is kept unchanged.
         tokio::time::timeout(Duration::from_secs(1), async {
             while coordinator.critical_key_registered_for_test(session.id, kind) {
                 tokio::task::yield_now().await;
