@@ -7975,6 +7975,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn issue_2010_selection_api_replica_locked_same_pair_keeps_lock() {
+        for mode in [
+            super::AssignmentMode::Ordinary,
+            super::AssignmentMode::AssignAndLock,
+        ] {
+            let fixture = selection_api_fixture();
+            let replica = selection_api_replica(
+                &fixture,
+                "room-1-team",
+                "dev-rust",
+                locked_tooling("B", "agent-0"),
+            );
+            let settings = state_for(selection_api_settings(&fixture));
+            let before = config_bytes(&replica);
+            let preview = api_preview(
+                &settings,
+                &replica,
+                super::ProfileAssignmentScope::Replica,
+                mode,
+            )
+            .await;
+
+            let result = api_apply(
+                &settings,
+                &replica,
+                super::ProfileAssignmentScope::Replica,
+                mode,
+                None,
+                Some(&preview.target_fingerprint),
+            )
+            .await
+            .expect("locked same-pair replica apply");
+
+            assert!(result.errors.is_empty(), "{mode:?}: {:?}", result.errors);
+            assert_eq!(result.updated_count, 0, "{mode:?}");
+            assert!(result.updated_replica_paths.is_empty(), "{mode:?}");
+            assert!(result.newly_protected_paths.is_empty(), "{mode:?}");
+            assert!(result.skipped_locked_paths.is_empty(), "{mode:?}");
+            assert_eq!(result.restarted_count, 0, "{mode:?}");
+            assert!(!result.force_applied, "{mode:?}");
+            assert_eq!(config_bytes(&replica), before, "{mode:?}");
+            let saved: serde_json::Value =
+                serde_json::from_slice(&config_bytes(&replica)).expect("parse config");
+            assert_eq!(saved["tooling"]["selectionLocked"], json!(true), "{mode:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_2010_selection_api_replica_locked_different_pair_still_errors() {
+        for mode in [
+            super::AssignmentMode::Ordinary,
+            super::AssignmentMode::AssignAndLock,
+        ] {
+            let fixture = selection_api_fixture();
+            let replica = selection_api_replica(
+                &fixture,
+                "room-1-team",
+                "dev-rust",
+                locked_tooling("A", "agent-0"),
+            );
+            let settings = state_for(selection_api_settings(&fixture));
+            let before = config_bytes(&replica);
+            let preview = api_preview(
+                &settings,
+                &replica,
+                super::ProfileAssignmentScope::Replica,
+                mode,
+            )
+            .await;
+
+            let result = api_apply(
+                &settings,
+                &replica,
+                super::ProfileAssignmentScope::Replica,
+                mode,
+                None,
+                Some(&preview.target_fingerprint),
+            )
+            .await
+            .expect("apply reaches the writer");
+
+            assert_eq!(result.errors.len(), 1, "{mode:?}: {:?}", result.errors);
+            assert!(
+                result.errors[0].message.contains("locked"),
+                "{mode:?}: {:?}",
+                result.errors
+            );
+            assert_eq!(result.updated_count, 0, "{mode:?}");
+            assert_eq!(config_bytes(&replica), before, "{mode:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn issue_1937_selection_api_rejects_decision_outside_bulk_assign_and_lock() {
         let fixture = selection_api_fixture();
         let anchor = selection_api_replica(
