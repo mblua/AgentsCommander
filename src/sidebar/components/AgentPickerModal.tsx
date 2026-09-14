@@ -1859,7 +1859,11 @@ const AgentPickerModal: Component<{
           Escape both send nothing at all. */}
       <Show when={conflictOpen() && scopePreview()}>
         <div class="lock-conflict-overlay" data-ac-testid="agentPicker.conflict">
-          <div class="lock-conflict-scrim" onClick={cancelConflict} />
+          {/* #1943 P1 - decorative scrim only, deliberately WITHOUT a click
+              handler: the approved v3 prototype has no dismissal here, and a
+              click-only div is what raised Sonar typescript:S1082 (Reliability
+              New Code B) plus S6848. Cancel and Escape own dismissal. */}
+          <div class="lock-conflict-scrim" />
           <div
             class="lock-conflict-card"
             role="alertdialog"
