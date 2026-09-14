@@ -4,9 +4,13 @@ import ProjectPanel, { RESTART_TIMEOUT_MS } from "./ProjectPanel";
 import type {
   AgentConfig,
   ApplyCodingAgentProfileSelectionResult,
+  ApplySelectionLockRemovalResult,
   AppSettings,
   CodingAgentProfileResolution,
   PreviewCodingAgentProfileSelectionResult,
+  PreviewSelectionLockRemovalResult,
+  ProfileAssignmentScope,
+  ReplicaSelectionDefaultResult,
 } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
@@ -130,11 +134,58 @@ function discoveryResult(taskTitle = "Restart prompt") {
             path: replicaPath,
             repoPaths: [],
             isCoordinator: true,
+            // #1943 - a full persisted selection-lock payload: the replica is
+            // unprotected, so no KEEP chip and an actionable lock row.
+            savedPair: null,
+            selectionState: "unlocked",
           },
         ],
       },
     ],
   });
+}
+
+// #1943 - the four selection-lock commands the picker drives. Each payload is
+// the fully populated shape the backend emits, not a partial stub.
+function removalPreviewResult(scope: ProfileAssignmentScope): PreviewSelectionLockRemovalResult {
+  return {
+    scope,
+    targetFingerprint: `fp-remove-${scope}`,
+    candidateCount: 1,
+    countsComplete: true,
+    protectedCount: 0,
+    alreadyUnlockedCount: 1,
+    invalidCount: 0,
+    targets: [],
+    warnings: [],
+  };
+}
+
+function removalApplyResult(): ApplySelectionLockRemovalResult {
+  return {
+    scope: "replica",
+    targetFingerprint: "fp-remove-replica",
+    removedCount: 0,
+    removedReplicaPaths: [],
+    alreadyUnlockedPaths: [replicaPath],
+    failedReplicaPaths: [],
+    remainingProtectedCount: 0,
+    candidateCount: 1,
+    countsComplete: true,
+    invalidCount: 0,
+    errors: [],
+    warnings: [],
+  };
+}
+
+function selectionDefaultResult(): ReplicaSelectionDefaultResult {
+  return {
+    targetReplicaPath: replicaPath,
+    matrixPath: `${projectPath}\\.ac\\_agent_${replicaName}`,
+    default: null,
+    defaultFingerprint: "fp-default-1",
+    warnings: [],
+  };
 }
 
 function setupTransport(fake: FakeTransport): void {
@@ -147,6 +198,12 @@ function setupTransport(fake: FakeTransport): void {
   fake.resolve("resolve_coding_agent_profile", resolution());
   fake.resolve("preview_coding_agent_profile_selection", previewResult());
   fake.resolve("apply_coding_agent_profile_selection", applyResult());
+  fake.onInvoke("preview_selection_lock_removal", (args) =>
+    removalPreviewResult((args.request as { scope: ProfileAssignmentScope }).scope),
+  );
+  fake.resolve("apply_selection_lock_removal", removalApplyResult());
+  fake.resolve("get_replica_selection_default", selectionDefaultResult());
+  fake.resolve("set_replica_selection_default", selectionDefaultResult());
   fake.resolve(
     "restart_session",
     session({ id: sessionId, name: sessionName, workingDirectory: replicaPath }),

@@ -5,7 +5,11 @@ import type {
   AcLoopSummary,
   AgentConfig,
   AppSettings,
+  ApplySelectionLockRemovalResult,
   CodingAgentProfileResolution,
+  PreviewSelectionLockRemovalResult,
+  ProfileAssignmentScope,
+  ReplicaSelectionDefaultResult,
 } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
@@ -110,6 +114,10 @@ function discoveryResult(extraTeams: string[] = [], loops: AcLoopSummary[] = [])
             path: replicaPath,
             repoPaths: [],
             isCoordinator: true,
+            // #1943 - full persisted lock payload: unprotected, so the lock row
+            // is actionable and no KEEP chip is drawn.
+            savedPair: null,
+            selectionState: "unlocked",
           },
         ],
       },
@@ -151,6 +159,64 @@ function setupTransport(fake: FakeTransport): void {
     baseSettings({ agents: [codexAgent(), claudeAgent()] }) satisfies AppSettings,
   );
   fake.resolve("resolve_coding_agent_profile", resolution());
+  // #1943 - every command the lock bar drives, with fully populated payloads.
+  fake.resolve("preview_coding_agent_profile_selection", {
+    scope: "replica",
+    targetCount: 1,
+    liveSessionCount: 1,
+    targetFingerprint: "fp-replica",
+    requiresExplicitConfirmation: false,
+    targets: [],
+    warnings: [],
+  });
+  fake.resolve("apply_coding_agent_profile_selection", {
+    scope: "replica",
+    updatedCount: 1,
+    restartedCount: 0,
+    updatedReplicaPaths: [replicaPath],
+    restartedSessionIds: [],
+    destroyedButNotRecreatedSessionIds: [],
+    targetFingerprint: "fp-replica",
+    warnings: [],
+    errors: [],
+  });
+  fake.onInvoke("preview_selection_lock_removal", (args) => {
+    const scope = (args.request as { scope: ProfileAssignmentScope }).scope;
+    return {
+      scope,
+      targetFingerprint: `fp-remove-${scope}`,
+      candidateCount: 1,
+      countsComplete: true,
+      protectedCount: 0,
+      alreadyUnlockedCount: 1,
+      invalidCount: 0,
+      targets: [],
+      warnings: [],
+    } satisfies PreviewSelectionLockRemovalResult;
+  });
+  fake.resolve("apply_selection_lock_removal", {
+    scope: "replica",
+    targetFingerprint: "fp-remove-replica",
+    removedCount: 0,
+    removedReplicaPaths: [],
+    alreadyUnlockedPaths: [replicaPath],
+    failedReplicaPaths: [],
+    remainingProtectedCount: 0,
+    candidateCount: 1,
+    countsComplete: true,
+    invalidCount: 0,
+    errors: [],
+    warnings: [],
+  } satisfies ApplySelectionLockRemovalResult);
+  const selectionDefault: ReplicaSelectionDefaultResult = {
+    targetReplicaPath: replicaPath,
+    matrixPath: `${projectPath}\\.ac\\_agent_${replicaName}`,
+    default: null,
+    defaultFingerprint: "fp-default-1",
+    warnings: [],
+  };
+  fake.resolve("get_replica_selection_default", selectionDefault);
+  fake.resolve("set_replica_selection_default", selectionDefault);
 }
 
 /** Seed a live PTY session for the replica so its row routes to the active
