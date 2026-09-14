@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import AgentPickerModal, {
   type AgentPickerScopeContext,
@@ -8,10 +9,16 @@ import AgentPickerModal, {
 import type {
   AgentConfig,
   AppSettings,
+  ApplyCodingAgentProfileSelectionResult,
+  ApplySelectionLockRemovalResult,
   CodingAgentProfileResolution,
   PreviewCodingAgentProfileSelectionResult,
-  ApplyCodingAgentProfileSelectionResult,
+  PreviewSelectionLockRemovalResult,
+  ProfileAssignmentScope,
   ProfileAssignmentTarget,
+  ReplicaSelectionDefaultResult,
+  SavedPair,
+  SelectionState,
 } from "../../shared/types";
 import { resolveProfilePreview } from "../../shared/profile-utils";
 
@@ -20,6 +27,11 @@ const mockSettingsApi = vi.hoisted(() => ({
   resolveCodingAgentProfile: vi.fn(),
   previewCodingAgentProfileSelection: vi.fn(),
   applyCodingAgentProfileSelection: vi.fn(),
+  previewSelectionLockRemoval: vi.fn(),
+  applySelectionLockRemoval: vi.fn(),
+  getReplicaSelectionDefault: vi.fn(),
+  setReplicaSelectionDefault: vi.fn(),
+  onCodingAgentProfileSelectionUpdated: vi.fn(),
 }));
 
 vi.mock("../../shared/ipc", () => ({
@@ -28,7 +40,12 @@ vi.mock("../../shared/ipc", () => ({
     resolveCodingAgentProfile: mockSettingsApi.resolveCodingAgentProfile,
     previewCodingAgentProfileSelection: mockSettingsApi.previewCodingAgentProfileSelection,
     applyCodingAgentProfileSelection: mockSettingsApi.applyCodingAgentProfileSelection,
+    previewSelectionLockRemoval: mockSettingsApi.previewSelectionLockRemoval,
+    applySelectionLockRemoval: mockSettingsApi.applySelectionLockRemoval,
+    getReplicaSelectionDefault: mockSettingsApi.getReplicaSelectionDefault,
+    setReplicaSelectionDefault: mockSettingsApi.setReplicaSelectionDefault,
   },
+  onCodingAgentProfileSelectionUpdated: mockSettingsApi.onCodingAgentProfileSelectionUpdated,
 }));
 
 const ORIGIN_AGENT_PATH = "C:\\Users\\maria\\0_repos\\AgentsCommander_ac\\.ac\\_agent_architect";
@@ -42,6 +59,11 @@ const WG_SCOPE_CONTEXT: AgentPickerScopeContext = {
   targetReplicaName: "dev-webpage-ui",
   currentCodingAgentId: "codex",
   currentProfile: "A",
+  // #1943 - the gray/default focus is an UNLOCKED replica whose SCOPE may still
+  // hold protected peers, which is exactly the case the removal bar must keep
+  // separate from the picker selection.
+  savedPair: null,
+  selectionState: "unlocked",
 };
 
 let currentSettings: AppSettings;
@@ -229,7 +251,12 @@ function defaultBackendResolve(
   );
 }
 
-function makeTarget(name: string, wg: string, liveSessions: string[]): ProfileAssignmentTarget {
+function makeTarget(
+  name: string,
+  wg: string,
+  liveSessions: string[],
+  lock?: { savedPair?: SavedPair | null; selectionState?: SelectionState },
+): ProfileAssignmentTarget {
   return {
     workgroupName: wg,
     workgroupPath: `C:\\repos\\proj\\.ac\\${wg}`,
@@ -238,6 +265,8 @@ function makeTarget(name: string, wg: string, liveSessions: string[]): ProfileAs
     identityPath: `C:\\repos\\proj\\.ac\\${wg}\\__agent_${name}\\identity.json`,
     originProject: "proj",
     liveSessionIds: liveSessions,
+    savedPair: lock?.savedPair ?? null,
+    selectionState: lock?.selectionState ?? "unlocked",
   };
 }
 
@@ -257,41 +286,160 @@ function previewResult(
 }
 
 function scopeAwarePreview(): void {
-  mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation((req: { scope: string }) => {
-    if (req.scope === "kind") {
-      return Promise.resolve(
-        previewResult({
-          scope: "kind",
-          targetCount: 3,
-          liveSessionCount: 3,
-          targetFingerprint: "fp-kind",
-          requiresExplicitConfirmation: true,
-          targets: [
-            makeTarget("dev-webpage-ui", "wg-7-dev-team", ["sess-1", "sess-2"]),
-            makeTarget("dev-webpage-ui", "wg-9-other", ["sess-3"]),
-            makeTarget("dev-webpage-ui", "wg-12-more", []),
-          ],
-        }),
-      );
-    }
-    if (req.scope === "workgroup") {
-      return Promise.resolve(
-        previewResult({
-          scope: "workgroup",
-          targetCount: 4,
-          liveSessionCount: 2,
-          targetFingerprint: "fp-wg",
-          targets: [
-            makeTarget("dev-webpage-ui", "wg-7-dev-team", ["sess-1"]),
-            makeTarget("dev-rust", "wg-7-dev-team", ["sess-2"]),
-            makeTarget("architect", "wg-7-dev-team", []),
-            makeTarget("shipper", "wg-7-dev-team", []),
-          ],
-        }),
-      );
-    }
-    return Promise.resolve(previewResult({ scope: "replica", targetFingerprint: "fp-replica" }));
+  mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation(
+    (req: { scope: string; assignmentMode?: string }) => {
+      if (req.scope === "kind") {
+        // #1943 - the SAME scope changes meaning with `+ lock`, so the two
+        // modes get different previews exactly as the backend would emit them.
+        if (req.assignmentMode === "assignAndLock") {
+          return Promise.resolve(kindLockPreview());
+        }
+        return Promise.resolve(
+          previewResult({
+            scope: "kind",
+            targetCount: 3,
+            liveSessionCount: 3,
+            targetFingerprint: "fp-kind",
+            requiresExplicitConfirmation: true,
+            targets: [
+              makeTarget("dev-webpage-ui", "wg-7-dev-team", ["sess-1", "sess-2"]),
+              makeTarget("dev-webpage-ui", "wg-9-other", ["sess-3"]),
+              makeTarget("dev-webpage-ui", "wg-12-more", []),
+            ],
+          }),
+        );
+      }
+      if (req.scope === "workgroup") {
+        return Promise.resolve(
+          previewResult({
+            scope: "workgroup",
+            targetCount: 4,
+            liveSessionCount: 2,
+            targetFingerprint: "fp-wg",
+            targets: [
+              makeTarget("dev-webpage-ui", "wg-7-dev-team", ["sess-1"]),
+              makeTarget("dev-rust", "wg-7-dev-team", ["sess-2"]),
+              makeTarget("architect", "wg-7-dev-team", []),
+              makeTarget("shipper", "wg-7-dev-team", []),
+            ],
+          }),
+        );
+      }
+      return Promise.resolve(previewResult({ scope: "replica", targetFingerprint: "fp-replica" }));
+    },
+  );
+}
+
+// ── #1943 selection-lock fixtures ──────────────────────────────────────────
+
+/** Bulk `kind` with `+ lock` over three candidates, two of them protected - one
+ *  of those already on the requested pair, which must STILL be listed. */
+function kindLockPreview(): PreviewCodingAgentProfileSelectionResult {
+  const requested: SavedPair = { codingAgentId: "codex", requestedProfile: "A" };
+  const unlocked = makeTarget("dev-webpage-ui", "wg-7-dev-team", ["sess-1"]);
+  const equalPair = makeTarget("dev-webpage-ui", "wg-9-other", ["sess-2"], {
+    savedPair: requested,
+    selectionState: "locked",
   });
+  const otherPair = makeTarget("dev-webpage-ui", "wg-12-more", [], {
+    savedPair: { codingAgentId: "claude", requestedProfile: "A" },
+    selectionState: "locked",
+  });
+  return previewResult({
+    scope: "kind",
+    targetCount: 3,
+    liveSessionCount: 3,
+    // Before a policy is chosen the top-level view IS the unlockedOnly outcome.
+    targetFingerprint: "fp-unlocked-only",
+    requiresExplicitConfirmation: true,
+    targets: [unlocked, equalPair, otherPair],
+    countsComplete: true,
+    candidateCount: 3,
+    protectedCount: 2,
+    invalidCount: 0,
+    conflictCount: 2,
+    decisions: {
+      unlockedOnly: {
+        fingerprint: "fp-unlocked-only",
+        eligiblePaths: [unlocked.replicaPath],
+        eligibleCount: 1,
+        skippedLockedCount: 2,
+        liveSessionCount: 1,
+      },
+      forceReviewed: {
+        fingerprint: "fp-force-all",
+        eligiblePaths: [unlocked.replicaPath, equalPair.replicaPath, otherPair.replicaPath],
+        eligibleCount: 3,
+        skippedLockedCount: 0,
+        liveSessionCount: 3,
+      },
+    },
+  });
+}
+
+function removePreview(
+  scope: ProfileAssignmentScope,
+  overrides: Partial<PreviewSelectionLockRemovalResult> = {},
+): PreviewSelectionLockRemovalResult {
+  const counts: Record<ProfileAssignmentScope, { candidateCount: number; protectedCount: number }> = {
+    // The focused replica is UNLOCKED while the wider scopes still hold
+    // protected peers: protection is counted per scope, never from the focus.
+    replica: { candidateCount: 1, protectedCount: 0 },
+    kind: { candidateCount: 3, protectedCount: 2 },
+    workgroup: { candidateCount: 4, protectedCount: 3 },
+  };
+  const base = counts[scope];
+  return {
+    scope,
+    targetFingerprint: `fp-remove-${scope}`,
+    candidateCount: base.candidateCount,
+    countsComplete: true,
+    protectedCount: base.protectedCount,
+    alreadyUnlockedCount: base.candidateCount - base.protectedCount,
+    invalidCount: 0,
+    targets: [],
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function removalApplyResult(
+  overrides: Partial<ApplySelectionLockRemovalResult> = {},
+): ApplySelectionLockRemovalResult {
+  return {
+    scope: "replica",
+    targetFingerprint: "fp-remove-replica",
+    removedCount: 1,
+    removedReplicaPaths: [WG_REPLICA_PATH],
+    alreadyUnlockedPaths: [],
+    failedReplicaPaths: [],
+    remainingProtectedCount: 0,
+    candidateCount: 1,
+    countsComplete: true,
+    invalidCount: 0,
+    errors: [],
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function defaultResult(
+  overrides: Partial<ReplicaSelectionDefaultResult> = {},
+): ReplicaSelectionDefaultResult {
+  return {
+    targetReplicaPath: WG_REPLICA_PATH,
+    matrixPath: "C:\\repos\\proj\\.ac\\_agent_dev-webpage-ui",
+    default: { codingAgentId: "codex", requestedProfile: "A", selectionLocked: false },
+    defaultFingerprint: "fp-default-1",
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function lockAwareRemovalPreviews(): void {
+  mockSettingsApi.previewSelectionLockRemoval.mockImplementation(
+    (req: { scope: ProfileAssignmentScope }) => Promise.resolve(removePreview(req.scope)),
+  );
 }
 
 function applyResult(
@@ -389,10 +537,26 @@ describe("AgentPickerModal", () => {
     mockSettingsApi.resolveCodingAgentProfile.mockReset();
     mockSettingsApi.previewCodingAgentProfileSelection.mockReset();
     mockSettingsApi.applyCodingAgentProfileSelection.mockReset();
+    mockSettingsApi.previewSelectionLockRemoval.mockReset();
+    mockSettingsApi.applySelectionLockRemoval.mockReset();
+    mockSettingsApi.getReplicaSelectionDefault.mockReset();
+    mockSettingsApi.setReplicaSelectionDefault.mockReset();
+    mockSettingsApi.onCodingAgentProfileSelectionUpdated.mockReset();
     mockSettingsApi.get.mockResolvedValue(currentSettings);
     mockSettingsApi.resolveCodingAgentProfile.mockImplementation(defaultBackendResolve);
     scopeAwarePreview();
+    lockAwareRemovalPreviews();
     mockSettingsApi.applyCodingAgentProfileSelection.mockResolvedValue(applyResult());
+    mockSettingsApi.applySelectionLockRemoval.mockResolvedValue(removalApplyResult());
+    mockSettingsApi.getReplicaSelectionDefault.mockImplementation(() =>
+      Promise.resolve(defaultResult()),
+    );
+    mockSettingsApi.setReplicaSelectionDefault.mockImplementation(() =>
+      Promise.resolve(defaultResult()),
+    );
+    mockSettingsApi.onCodingAgentProfileSelectionUpdated.mockImplementation(() =>
+      Promise.resolve(() => {}),
+    );
   });
 
   afterEach(() => {
@@ -1234,6 +1398,727 @@ describe("AgentPickerModal", () => {
       target<HTMLButtonElement>("agentPicker.provider.codex").click();
       target<HTMLButtonElement>("agentPicker.profile.A").click();
       await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      dispose();
+    });
+  });
+
+  // #1943 - the approved selection-lock picker. The fingerprint echoed with each
+  // policy is the whole safety mechanism, so every assertion here pins exactly
+  // what the backend receives (and, for Cancel, that it receives nothing).
+  describe("selection lock picker (#1943)", () => {
+    function renderLockPicker(overrides: Parameters<typeof renderPicker>[0] = {}) {
+      return renderPicker({
+        agentPath: WG_REPLICA_PATH,
+        scopeContext: WG_SCOPE_CONTEXT,
+        currentRequestedProfile: "A",
+        disableRedundantReplicaAssign: true,
+        ...overrides,
+      });
+    }
+
+    function scopeRadios(): HTMLInputElement[] {
+      return Array.from(
+        document.querySelectorAll<HTMLInputElement>('input[name="agentPickerScope"]'),
+      );
+    }
+
+    async function armKindLockAndReview(): Promise<void> {
+      clickRadio("agentPicker.scope.lock.kind");
+      await settle();
+      target<HTMLInputElement>("agentPicker.armToggle").click();
+      await settle();
+      target<HTMLButtonElement>("agentPicker.apply").click();
+      await settle();
+    }
+
+    it("renders six radios as ONE selection while keeping the ordinary scope row", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      // The ordinary row keeps its three test ids and its live counts.
+      expect(text("agentPicker.scope.replica")).toContain("1 replica");
+      expect(text("agentPicker.scope.kind")).toContain("3 replicas");
+      expect(text("agentPicker.scope.workgroup")).toContain("4 replicas");
+      // The lock row repeats exactly the same three scopes.
+      expect(text("agentPicker.scope.lock.replica")).toContain("This replica + lock");
+      expect(text("agentPicker.scope.lock.kind")).toContain("All replicas of this kind + lock");
+      expect(text("agentPicker.scope.lock.workgroup")).toContain("Entire room + lock");
+
+      expect(scopeRadios()).toHaveLength(6);
+      expect(scopeRadios().filter((input) => input.checked)).toHaveLength(1);
+
+      clickRadio("agentPicker.scope.lock.kind");
+      await settle();
+
+      // Still one selection, and the label states the policy it will apply.
+      expect(scopeRadios().filter((input) => input.checked)).toHaveLength(1);
+      expect(target("agentPicker.scope.lock.kind").getAttribute("data-ac-state")).toBe("active");
+      expect(target("agentPicker.scope.kind").getAttribute("data-ac-state")).toBe("inactive");
+      expect(text("agentPicker.apply")).toContain("Overwrite 3 of this kind + lock");
+      // Every scope is re-previewed for the new mode, keeping all six counts real.
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: "kind", assignmentMode: "assignAndLock" }),
+      );
+
+      dispose();
+    });
+
+    it("keeps same-pair assignAndLock enabled when the ordinary redundant assign is disabled", async () => {
+      const { dispose } = renderLockPicker({ currentAgentId: "codex", currentRequestedProfile: "A" });
+      await settle();
+
+      // Ordinary replica scope on the already-current pair is the #551 no-op.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+      clickRadio("agentPicker.scope.lock.replica");
+      await settle();
+
+      // Writing the same pair PLUS the lock is a real change, never a no-op.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+      expect(text("agentPicker.apply")).toContain("Assign + lock this replica");
+
+      dispose();
+    });
+
+    it("opens an accessible review for a conflicting bulk lock and sends nothing on Cancel", async () => {
+      const { dispose, onSelect } = renderLockPicker();
+      await settle();
+
+      await armKindLockAndReview();
+
+      // The review opens INSTEAD of writing: no policy has been chosen yet.
+      expect(maybe("agentPicker.conflict")).toBeTruthy();
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).not.toHaveBeenCalled();
+
+      const dialog = target("agentPicker.conflict");
+      expect(dialog.querySelector('[role="alertdialog"]')).toBeTruthy();
+      const rows = dialog.querySelectorAll('[data-ac-role="row"]');
+      // Every protected candidate is listed, INCLUDING the one already on the
+      // requested pair.
+      expect(rows).toHaveLength(2);
+      expect(dialog.textContent).toContain("2 replicas are already locked");
+
+      target<HTMLButtonElement>("agentPicker.conflict.cancel").click();
+      await settle();
+
+      expect(maybe("agentPicker.conflict")).toBeNull();
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).not.toHaveBeenCalled();
+      expect(onSelect).not.toHaveBeenCalled();
+
+      dispose();
+    });
+
+    it("closes the review on Escape without sending anything", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      await armKindLockAndReview();
+      expect(maybe("agentPicker.conflict")).toBeTruthy();
+
+      const overlay = target("agentPicker.overlay");
+      overlay.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await settle();
+
+      expect(maybe("agentPicker.conflict")).toBeNull();
+      expect(maybe("agentPicker.modal")).toBeTruthy();
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).not.toHaveBeenCalled();
+
+      dispose();
+    });
+
+    it("sends only unlocked candidates with the fingerprint of that exact policy", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      await armKindLockAndReview();
+      target<HTMLButtonElement>("agentPicker.conflict.unlockedOnly").click();
+      await settle();
+
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: "kind",
+          assignmentMode: "assignAndLock",
+          conflictDecision: "unlockedOnly",
+          confirmedTargetFingerprint: "fp-unlocked-only",
+        }),
+      );
+
+      dispose();
+    });
+
+    it("sends the force fingerprint only after the force was actually reviewed", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      await armKindLockAndReview();
+      target<HTMLButtonElement>("agentPicker.conflict.forceAll").click();
+      await settle();
+
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: "kind",
+          assignmentMode: "assignAndLock",
+          conflictDecision: "forceReviewed",
+          confirmedTargetFingerprint: "fp-force-all",
+        }),
+      );
+
+      dispose();
+    });
+
+    it("drops the reviewed force and the arming when the operation changes", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      await armKindLockAndReview();
+      target<HTMLButtonElement>("agentPicker.conflict.forceAll").click();
+      await settle();
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenLastCalledWith(
+        expect.objectContaining({ conflictDecision: "forceReviewed" }),
+      );
+
+      // A new profile is a NEW operation: the reviewed force cannot be replayed.
+      mockSettingsApi.applyCodingAgentProfileSelection.mockClear();
+      target<HTMLButtonElement>("agentPicker.profile.B").click();
+      await settle();
+      expect(target<HTMLInputElement>("agentPicker.armToggle").checked).toBe(false);
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+      // Re-arming is not enough: the fresh preview demands a fresh review.
+      target<HTMLInputElement>("agentPicker.armToggle").click();
+      await settle();
+      expect(target<HTMLInputElement>("agentPicker.armToggle").disabled).toBe(false);
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+      target<HTMLButtonElement>("agentPicker.apply").click();
+      await settle();
+
+      expect(maybe("agentPicker.conflict")).toBeTruthy();
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).not.toHaveBeenCalled();
+
+      dispose();
+    });
+
+    it("lists only protected rows for a bulk lock while the totals stay complete", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      clickRadio("agentPicker.scope.lock.kind");
+      await settle();
+
+      const list = target("agentPicker.lockKindList");
+      // Two protected rows of three candidates: the unprotected one is not drawn.
+      expect(list.querySelectorAll('[data-ac-role="row"]')).toHaveLength(2);
+      // The head still reports the complete total, and so does the radio count.
+      expect(text("agentPicker.lockKindList")).toContain("3 replica(s) of this kind");
+      expect(text("agentPicker.lockKindList")).toContain("3 room(s)");
+      expect(text("agentPicker.scope.lock.kind")).toContain("3 replicas");
+
+      dispose();
+    });
+
+    it("counts protection per removal scope, independent of the focused replica", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      // The focused replica is unlocked, so ITS scope has nothing to remove...
+      expect(text("agentPicker.removeScopeCount.replica")).toBe("0 protected");
+      expect(text("agentPicker.removeLock")).toBe("Nothing to remove");
+      expect(target<HTMLButtonElement>("agentPicker.removeLock").disabled).toBe(true);
+      expect(text("agentPicker.removeNote")).toContain("No protected replicas in this scope");
+
+      // ...while a scope with protected peers stays actionable: the focused
+      // replica never decides for the whole scope.
+      clickRadio("agentPicker.removeScope.kind");
+      await settle();
+      expect(text("agentPicker.removeScopeCount.kind")).toBe("2 of 3 protected");
+      expect(text("agentPicker.removeLock")).toBe("Remove lock from 2 replicas");
+      expect(target<HTMLButtonElement>("agentPicker.removeLock").disabled).toBe(false);
+
+      clickRadio("agentPicker.removeScope.workgroup");
+      await settle();
+      expect(text("agentPicker.removeScopeCount.workgroup")).toBe("3 of 4 protected");
+      expect(text("agentPicker.removeLock")).toBe("Remove lock from 3 replicas");
+
+      // The removal scope never moves the Apply to selection.
+      expect(target("agentPicker.scope.replica").getAttribute("data-ac-state")).toBe("active");
+      expect(text("agentPicker.apply")).toContain("Assign to this replica");
+
+      dispose();
+    });
+
+    it("reports a complete room removal with the count, the kept pair and no restart", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      clickRadio("agentPicker.removeScope.workgroup");
+      await settle();
+      expect(text("agentPicker.removeScopeCount.workgroup")).toBe("3 of 4 protected");
+
+      // After the removal the scope is re-enumerated from the backend, so the
+      // chip shows the authoritative 0 of 4 instead of a local guess.
+      mockSettingsApi.previewSelectionLockRemoval.mockImplementation(
+        (req: { scope: ProfileAssignmentScope }) =>
+          Promise.resolve(
+            removePreview(req.scope, {
+              protectedCount: 0,
+              alreadyUnlockedCount: req.scope === "workgroup" ? 4 : 1,
+            }),
+          ),
+      );
+      mockSettingsApi.applySelectionLockRemoval.mockResolvedValue(
+        removalApplyResult({
+          scope: "workgroup",
+          targetFingerprint: "fp-remove-workgroup",
+          removedCount: 3,
+          removedReplicaPaths: [WG_REPLICA_PATH, "p2", "p3"],
+          candidateCount: 4,
+          remainingProtectedCount: 0,
+        }),
+      );
+
+      target<HTMLButtonElement>("agentPicker.removeLock").click();
+      await settle();
+
+      // A removal carries no pair, no restart and no decision.
+      expect(mockSettingsApi.applySelectionLockRemoval).toHaveBeenCalledWith({
+        targetReplicaPath: WG_REPLICA_PATH,
+        scope: "workgroup",
+        confirmedTargetFingerprint: "fp-remove-workgroup",
+      });
+      expect(text("agentPicker.removeDone")).toBe(
+        "Lock removed from 3 replicas · Coding Agent + Profile kept · no restart",
+      );
+      expect(text("agentPicker.removeScopeCount.workgroup")).toBe("0 of 4 protected");
+      expect(text("agentPicker.removeLock")).toBe("Nothing to remove");
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).not.toHaveBeenCalled();
+
+      dispose();
+    });
+
+    it("reports the count that landed and never claims 0 of N on an unknown total", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      clickRadio("agentPicker.removeScope.workgroup");
+      await settle();
+
+      mockSettingsApi.previewSelectionLockRemoval.mockImplementation(
+        (req: { scope: ProfileAssignmentScope }) =>
+          Promise.resolve(
+            removePreview(req.scope, {
+              countsComplete: req.scope !== "workgroup",
+            }),
+          ),
+      );
+      mockSettingsApi.applySelectionLockRemoval.mockResolvedValue(
+        removalApplyResult({
+          scope: "workgroup",
+          targetFingerprint: "fp-remove-workgroup",
+          removedCount: 2,
+          candidateCount: 4,
+          remainingProtectedCount: null,
+          failedReplicaPaths: ["p4"],
+          errors: [
+            {
+              code: "configWriteFailed",
+              message: "p4 could not be written",
+              sessionIds: [],
+              replicaPaths: ["p4"],
+            },
+          ],
+        }),
+      );
+
+      target<HTMLButtonElement>("agentPicker.removeLock").click();
+      await settle();
+
+      expect(text("agentPicker.removeDone")).toContain("Lock removed from 2 replicas");
+      expect(text("agentPicker.removeErrors")).toContain("p4 could not be written");
+      // An incomplete enumeration is never rendered as a confident zero.
+      expect(text("agentPicker.lockState")).toBe("Protection unknown");
+      expect(text("agentPicker.removeScopeCount.workgroup")).toBe("count unknown");
+      expect(text("agentPicker.removeLock")).toBe("Nothing to remove");
+
+      dispose();
+    });
+
+    it("never draws an invalid protection state as unlocked, and disables the lock controls", async () => {
+      const { dispose } = renderLockPicker({
+        scopeContext: {
+          ...WG_SCOPE_CONTEXT,
+          selectionState: "invalid",
+          selectionError: "identity unreadable",
+        },
+      });
+      await settle();
+
+      expect(text("agentPicker.lockDiagnostic")).toContain("identity unreadable");
+      expect(text("agentPicker.lockState")).toBe("Check state");
+      expect(text("agentPicker.lockState")).not.toBe("Unlocked");
+      expect(
+        target("agentPicker.scope.lock.replica").querySelector<HTMLInputElement>("input")?.disabled,
+      ).toBe(true);
+      expect(target<HTMLButtonElement>("agentPicker.removeLock").disabled).toBe(true);
+      expect(target<HTMLButtonElement>("agentPicker.defaultSave").disabled).toBe(true);
+
+      dispose();
+    });
+
+    it("blocks an already-selected + lock when the protection state stops being readable", async () => {
+      // The scope context is reactive here on purpose: the reviewer's scenario is
+      // an external update that turns a usable state into an unreadable one AFTER
+      // `+ lock` was already chosen.
+      const [lockState, setLockState] = createSignal<SelectionState | undefined>("unlocked");
+      const root = document.createElement("div");
+      document.body.append(root);
+      const dispose = render(
+        () => (
+          <AgentPickerModal
+            sessionName="wg-7-dev-team/dev-webpage-ui"
+            agentPath={WG_REPLICA_PATH}
+            currentAgentId="codex"
+            explicitCurrentAgentId="codex"
+            currentRequestedProfile="A"
+            scopeContext={{ ...WG_SCOPE_CONTEXT, selectionState: lockState() }}
+            disableRedundantReplicaAssign
+            onSelect={vi.fn()}
+            onClose={vi.fn()}
+          />
+        ),
+        root,
+      );
+      await settle();
+
+      clickRadio("agentPicker.scope.lock.kind");
+      await settle();
+      target<HTMLInputElement>("agentPicker.armToggle").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      // Another window invalidates the protection and discovery reloads.
+      setLockState("invalid");
+      await settle();
+
+      expect(text("agentPicker.lockState")).toBe("Check state");
+      // The lock operation is BLOCKED, never silently demoted to an ordinary
+      // assignment: demoting would change the policy the user chose.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+      expect(target("agentPicker.scope.lock.kind").getAttribute("data-ac-state")).toBe("active");
+      expect(target("agentPicker.scope.kind").getAttribute("data-ac-state")).toBe("inactive");
+      const lockRadio = target("agentPicker.scope.lock.kind").querySelector<HTMLInputElement>("input");
+      expect(lockRadio?.checked).toBe(true);
+      expect(lockRadio?.disabled).toBe(true);
+
+      // Re-arming cannot smuggle the lock operation through either.
+      target<HTMLInputElement>("agentPicker.armToggle").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).not.toHaveBeenCalled();
+
+      dispose();
+      document.body.replaceChildren();
+    });
+
+    it("diagnoses a protection state this build did not receive", async () => {
+      const { dispose } = renderLockPicker({
+        // Redundancy is disabled here so `apply` reports ONLY the lock state.
+        disableRedundantReplicaAssign: false,
+        scopeContext: { ...WG_SCOPE_CONTEXT, selectionState: undefined, savedPair: undefined },
+      });
+      await settle();
+
+      expect(text("agentPicker.lockDiagnostic")).toContain("was not reported");
+      // The chip must never claim the reassuring state while the diagnostic right
+      // beside it says the protection state was not reported at all.
+      expect(text("agentPicker.lockState")).toBe("State unknown");
+      expect(text("agentPicker.lockState")).not.toBe("Unlocked");
+      // A bulk count is not a claim about the focused replica, so it survives.
+      expect(text("agentPicker.removeScopeCount.kind")).toBe("2 of 3 protected");
+      expect(
+        target("agentPicker.scope.lock.replica").querySelector<HTMLInputElement>("input")?.disabled,
+      ).toBe(true);
+      expect(target<HTMLButtonElement>("agentPicker.removeLock").disabled).toBe(true);
+      // Assignment itself is untouched by an unknown lock state.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      dispose();
+    });
+
+    it("shows the stored Matrix default and saves the draft only when asked", async () => {
+      mockSettingsApi.setReplicaSelectionDefault.mockImplementation(
+        (req: { codingAgentId: string; requestedProfile: string; selectionLocked: boolean }) =>
+          Promise.resolve(
+            defaultResult({
+              default: {
+                codingAgentId: req.codingAgentId,
+                requestedProfile: req.requestedProfile,
+                selectionLocked: req.selectionLocked,
+              },
+              defaultFingerprint: "fp-default-2",
+            }),
+          ),
+      );
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      expect(text("agentPicker.defaultPersisted")).toContain("Codex · Profile A");
+      expect(text("agentPicker.defaultPersisted")).toContain("Start unlocked");
+
+      // Neither a picker change nor the draft toggle saves anything.
+      target<HTMLButtonElement>("agentPicker.profile.B").click();
+      await settle();
+      target<HTMLInputElement>("agentPicker.defaultStartLocked").click();
+      await settle();
+      expect(mockSettingsApi.setReplicaSelectionDefault).not.toHaveBeenCalled();
+      expect(text("agentPicker.defaultPersisted")).toContain("Codex · Profile A");
+
+      target<HTMLButtonElement>("agentPicker.defaultSave").click();
+      await settle();
+
+      // The SAVE writes the currently selected pair with the draft flag, against
+      // the latest fingerprint the backend gave us.
+      expect(mockSettingsApi.setReplicaSelectionDefault).toHaveBeenCalledWith({
+        targetReplicaPath: WG_REPLICA_PATH,
+        codingAgentId: "codex",
+        requestedProfile: "B",
+        selectionLocked: true,
+        confirmedDefaultFingerprint: "fp-default-1",
+      });
+      // Only the confirmed payload replaces the stored view.
+      expect(text("agentPicker.defaultPersisted")).toContain("Codex · Profile B");
+      expect(text("agentPicker.defaultPersisted")).toContain("Start locked");
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).not.toHaveBeenCalled();
+
+      dispose();
+    });
+
+    it("keeps the stored default and the draft when the default save is stale", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      target<HTMLButtonElement>("agentPicker.profile.B").click();
+      await settle();
+      target<HTMLInputElement>("agentPicker.defaultStartLocked").click();
+      await settle();
+
+      mockSettingsApi.setReplicaSelectionDefault.mockRejectedValue(
+        new Error("staleDefaultFingerprint"),
+      );
+      target<HTMLButtonElement>("agentPicker.defaultSave").click();
+      await settle();
+
+      expect(text("agentPicker.defaultNotice")).toContain(
+        "Review the refreshed default before retrying",
+      );
+      // The stored view keeps the CONFIRMED pair, not the unsaved draft.
+      expect(text("agentPicker.defaultPersisted")).toContain("Codex · Profile A");
+      expect(text("agentPicker.defaultPersisted")).toContain("Start unlocked");
+      // The draft survives for the retry, and a refreshed default was fetched.
+      expect(target<HTMLInputElement>("agentPicker.defaultStartLocked").checked).toBe(true);
+      expect(mockSettingsApi.getReplicaSelectionDefault.mock.calls.length).toBeGreaterThan(1);
+
+      dispose();
+    });
+
+    it("keeps the mutating controls disabled until the removal settles", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      clickRadio("agentPicker.removeScope.kind");
+      await settle();
+
+      let resolveRemoval!: (value: ApplySelectionLockRemovalResult) => void;
+      mockSettingsApi.applySelectionLockRemoval.mockImplementation(
+        () =>
+          new Promise<ApplySelectionLockRemovalResult>((resolve) => {
+            resolveRemoval = resolve;
+          }),
+      );
+
+      target<HTMLButtonElement>("agentPicker.removeLock").click();
+      await settle();
+
+      // #1942 keeps the promise open until the operation really settles.
+      expect(target<HTMLButtonElement>("agentPicker.removeLock").disabled).toBe(true);
+
+      resolveRemoval(removalApplyResult({ scope: "kind", removedCount: 2, candidateCount: 3 }));
+      await settle();
+
+      expect(text("agentPicker.removeDone")).toContain("Lock removed from 2 replicas");
+      expect(mockSettingsApi.applySelectionLockRemoval).toHaveBeenCalledTimes(1);
+
+      dispose();
+    });
+
+    it("blocks a second mutation while a removal or a default save is in flight", async () => {
+      // The #551 redundant-pair opt-in is off so the ONLY thing that can disable
+      // Apply in this test is the pending mutation itself.
+      const { dispose } = renderLockPicker({ disableRedundantReplicaAssign: false });
+      await settle();
+
+      // Baseline: an ordinary replica assign needs no arming and no lock state.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      let resolveRemoval!: (value: ApplySelectionLockRemovalResult) => void;
+      mockSettingsApi.applySelectionLockRemoval.mockImplementation(
+        () =>
+          new Promise<ApplySelectionLockRemovalResult>((resolve) => {
+            resolveRemoval = resolve;
+          }),
+      );
+      clickRadio("agentPicker.removeScope.kind");
+      await settle();
+      target<HTMLButtonElement>("agentPicker.removeLock").click();
+      await settle();
+
+      // A removal is an owned backend operation: no concurrent assignment.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+      resolveRemoval(removalApplyResult({ scope: "kind", removedCount: 2, candidateCount: 3 }));
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      // And the same rule for a default save that has not settled.
+      let resolveDefault!: (value: ReplicaSelectionDefaultResult) => void;
+      mockSettingsApi.setReplicaSelectionDefault.mockImplementation(
+        () =>
+          new Promise<ReplicaSelectionDefaultResult>((resolve) => {
+            resolveDefault = resolve;
+          }),
+      );
+      target<HTMLButtonElement>("agentPicker.defaultSave").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+      resolveDefault(defaultResult());
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      dispose();
+    });
+
+    it("reloads its own previews and default when another window updates the selection", async () => {
+      let externalUpdate: (() => void) | null = null;
+      mockSettingsApi.onCodingAgentProfileSelectionUpdated.mockImplementation(
+        (callback: () => void) => {
+          externalUpdate = callback;
+          return Promise.resolve(() => {});
+        },
+      );
+      const { dispose } = renderLockPicker();
+      await settle();
+      expect(externalUpdate).toBeTruthy();
+
+      mockSettingsApi.previewSelectionLockRemoval.mockClear();
+      mockSettingsApi.getReplicaSelectionDefault.mockClear();
+      mockSettingsApi.previewCodingAgentProfileSelection.mockClear();
+
+      externalUpdate!();
+      await settle();
+
+      expect(mockSettingsApi.previewSelectionLockRemoval).toHaveBeenCalledTimes(3);
+      expect(mockSettingsApi.getReplicaSelectionDefault).toHaveBeenCalledTimes(1);
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledTimes(3);
+
+      dispose();
+    });
+
+    it("releases the external-update listener on unmount", async () => {
+      const unlisten = vi.fn();
+      mockSettingsApi.onCodingAgentProfileSelectionUpdated.mockImplementation(() =>
+        Promise.resolve(unlisten),
+      );
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      dispose();
+      await settle();
+
+      expect(unlisten).toHaveBeenCalledTimes(1);
+    });
+
+    it("drops a stale removal preview so the newest scope state wins", async () => {
+      const pending: Array<{
+        scope: string;
+        resolve: (value: PreviewSelectionLockRemovalResult) => void;
+      }> = [];
+      mockSettingsApi.previewSelectionLockRemoval.mockImplementation(
+        (req: { scope: string }) =>
+          new Promise<PreviewSelectionLockRemovalResult>((resolve) => {
+            pending.push({ scope: req.scope, resolve });
+          }),
+      );
+      let externalUpdate: (() => void) | null = null;
+      mockSettingsApi.onCodingAgentProfileSelectionUpdated.mockImplementation(
+        (callback: () => void) => {
+          externalUpdate = callback;
+          return Promise.resolve(() => {});
+        },
+      );
+      const { dispose } = renderLockPicker();
+      await settle();
+      expect(pending).toHaveLength(3);
+
+      externalUpdate!();
+      await settle();
+      expect(pending).toHaveLength(6);
+
+      const stale = pending[0];
+      const fresh = pending[3];
+      expect(stale.scope).toBe("replica");
+      expect(fresh.scope).toBe("replica");
+
+      // The newest request lands first; the older reply arrives LAST and must be
+      // dropped by the per-scope sequence token.
+      fresh.resolve(removePreview("replica", { protectedCount: 1, alreadyUnlockedCount: 0 }));
+      await settle();
+      stale.resolve(removePreview("replica", { protectedCount: 0, alreadyUnlockedCount: 1 }));
+      await settle();
+
+      expect(text("agentPicker.removeScopeCount.replica")).toBe("1 protected");
+
+      dispose();
+    });
+
+    it("places the lock bar above the three-panel body and keeps the review over the modal", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      const modal = target("agentPicker.modal");
+      const bar = target("agentPicker.lockBar");
+      const body = modal.querySelector(".agent-profile-assignment-body");
+      expect(body).toBeTruthy();
+      // The bar is a flex child of the modal, ABOVE the body: the CSS gives it
+      // flex: 0 0 auto and a bottom border, so DOM order IS the layout contract.
+      expect(bar.parentElement).toBe(modal);
+      expect(
+        bar.compareDocumentPosition(body!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+
+      await armKindLockAndReview();
+      const dialog = target("agentPicker.conflict");
+      // The review covers the whole overlay instead of being clipped inside the
+      // modal's own overflow, which is why it is a sibling of the modal.
+      expect(modal.parentElement?.classList.contains("modal-overlay")).toBe(true);
+      expect(dialog.parentElement).toBe(modal.parentElement);
+
+      dispose();
+    });
+
+    it("leaves the root/origin picker untouched and never calls a lock command", async () => {
+      const { dispose } = renderPicker({ scopeContext: undefined });
+      await settle();
+
+      expect(maybe("agentPicker.lockBar")).toBeNull();
+      expect(maybe("agentPicker.scope.lock.replica")).toBeNull();
+      expect(maybe("agentPicker.defaultSection")).toBeNull();
+      expect(maybe("agentPicker.conflict")).toBeNull();
+      expect(mockSettingsApi.previewSelectionLockRemoval).not.toHaveBeenCalled();
+      expect(mockSettingsApi.applySelectionLockRemoval).not.toHaveBeenCalled();
+      expect(mockSettingsApi.getReplicaSelectionDefault).not.toHaveBeenCalled();
+      expect(mockSettingsApi.setReplicaSelectionDefault).not.toHaveBeenCalled();
       expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
 
       dispose();

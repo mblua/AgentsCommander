@@ -16,7 +16,7 @@ import { sessionsStore } from "../stores/sessions";
 import { replicaVolatileStore } from "../stores/replica-volatile";
 import { settingsStore } from "../../shared/stores/settings";
 import { automationIdPart } from "./replica-repo-badges";
-import type { AcWorkgroup, AppSettings, Session } from "../../shared/types";
+import type { AcWorkgroup, AppSettings, SavedPair, SelectionState, Session } from "../../shared/types";
 
 // #1730 - the replica row's chip strip. Nothing in the suite reads the child
 // list of .ac-discovery-badges, so without this file an implementation that
@@ -67,7 +67,9 @@ function chipSettings(): AppSettings {
 // renders. Of renderReplicaItem's two call sites only the .coord-quick-access
 // one, the call that passes "quick" as its row context, passes extraBadge,
 // runningPeers and taskTitle, so it is the only row that can light them all.
-function maximalWorkgroup(): AcWorkgroup {
+function maximalWorkgroup(
+  lock: { savedPair?: SavedPair | null; selectionState?: SelectionState } = {},
+): AcWorkgroup {
   return {
     name: wgName,
     path: wgPath,
@@ -81,6 +83,10 @@ function maximalWorkgroup(): AcWorkgroup {
         repoPaths: [],
         isCoordinator: true,
         lastUserMessageAt: isoMinutesAgo(90),
+        // #1943 - the persisted protection payload. `unlocked` (the default here)
+        // draws no chip; `locked` adds exactly one.
+        savedPair: lock.savedPair ?? null,
+        selectionState: lock.selectionState ?? "unlocked",
       },
       {
         name: peerName,
@@ -239,8 +245,97 @@ describe("ProjectPanel replica chip strip order (#1730)", () => {
     expect(row.querySelector(".session-item-bridge-icon")).toBeNull();
   });
 
-  it("lands the auto-closed pill at index 2 with the chip still at index 3", async () => {
+  // #1943 - the KEEP chip: one more child than the unlocked row above, inserted
+  // right after the profile badge, with every later badge pushed back one slot
+  // and keeping its relative order. The chip strip IS the row's only identity,
+  // so a silent insertion here would be invisible to typecheck and to CI.
+  it("inserts the KEEP chip at index 7 on a locked row and shifts the later badges", async () => {
     sessionsStore.setSessionContext(coordSessionId, 42);
+    rendered = await mountProject(
+      [
+        maximalWorkgroup({
+          savedPair: { codingAgentId: "codex", requestedProfile: "B" },
+          selectionState: "locked",
+        }),
+      ],
+      [coordSession(), peerSession()],
+    );
+
+    const strip = stripOf(rendered.root, "quick", coordName);
+    const children = Array.from(strip.children) as HTMLElement[];
+    const classNames = children.map((el) => el.className);
+
+    expect(classNames).toHaveLength(13);
+    expect(classNames[6]).toBe("profile-badge");
+    expect(classNames[7]).toBe("selection-lock-chip");
+    expect(classNames[8]).toBe("ctx-badge");
+    expect(classNames[9]).toBe("ac-discovery-badge team");
+    expect(classNames[10]).toBe("ac-discovery-badge branch");
+    expect(classNames[11]).toBe("ac-discovery-badge branch");
+    expect(classNames[12]).toBe("ac-discovery-badge running-peer");
+
+    const chips = strip.querySelectorAll<HTMLElement>(".selection-lock-chip");
+    expect(chips).toHaveLength(1);
+    expect(chips[0].textContent?.replace(/\s+/g, "")).toBe("KEEP");
+    // The title names the SAVED pair, resolved through the configured label -
+    // never the session's launch-time pair.
+    expect(chips[0].getAttribute("title")).toBe(
+      "Protected from bulk changes · Codex · Profile B",
+    );
+    expect(children[7].getAttribute("data-ac-testid")).toBe(
+      `replica.lockChip.quick.${automationIdPart(wgName)}.${automationIdPart(coordName)}`,
+    );
+  });
+
+  it("falls back to the stored provider id when the provider is gone", async () => {
+    sessionsStore.setSessionContext(coordSessionId, 42);
+    rendered = await mountProject(
+      [
+        maximalWorkgroup({
+          savedPair: { codingAgentId: "retired-agent", requestedProfile: "B" },
+          selectionState: "locked",
+        }),
+      ],
+      [coordSession(), peerSession()],
+    );
+
+    // The lock is a FACT about the replica, so it still renders - with the stored
+    // identifier instead of a label this build can no longer resolve.
+    const chip = stripOf(rendered.root, "quick", coordName).querySelector<HTMLElement>(
+      ".selection-lock-chip",
+    );
+    expect(chip).not.toBeNull();
+    expect(chip!.getAttribute("title")).toBe(
+      "Protected from bulk changes · retired-agent · Profile B",
+    );
+  });
+
+  // An unknown or invalid protection state is never drawn, and never drawn as
+  // "unlocked" either: absence of a chip is the only honest rendering.
+  it("draws no KEEP chip, and no unlocked claim, for a state this build does not know", async () => {
+    rendered = await mountProject(
+      [
+        {
+          name: wgName,
+          path: wgPath,
+          task: null,
+          taskTitle: null,
+          agents: [
+            { name: peerName, path: peerPath, repoPaths: [], isCoordinator: false },
+          ],
+        },
+      ],
+      [],
+    );
+
+    const strip = stripOf(rendered.root, "workgroups", peerName);
+    expect(strip.querySelector(".selection-lock-chip")).toBeNull();
+    expect(strip.textContent).not.toContain("KEEP");
+    expect(strip.querySelector("[title*='unlocked']")).toBeNull();
+    expect(strip.querySelector("[title*='Unlocked']")).toBeNull();
+  });
+
+  it("lands the auto-closed pill at index 2 with the chip still at index 3", async () => {    sessionsStore.setSessionContext(coordSessionId, 42);
     rendered = await mountProject(
       [maximalWorkgroup()],
       [coordSession({ status: { exited: 0 } }), peerSession()],
@@ -289,5 +384,7 @@ describe("ProjectPanel replica chip strip order (#1730)", () => {
     expect(classNames).toEqual(["agent-name-chip"]);
     expect(strip.querySelector(".agent-name-chip")?.textContent).toBe(peerName);
     expect(row.querySelector(".replica-item-name-row")).toBeNull();
+    // No selectionState on this fixture: the row states nothing about protection.
+    expect(strip.querySelector(".selection-lock-chip")).toBeNull();
   });
 });
