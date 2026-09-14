@@ -1,9 +1,12 @@
 // Codex CLI session-file watcher.
 //
-// Polls `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` files for `event_msg`
-// records with `payload.type == "agent_message"` and sends the assistant prose
-// to Telegram. Uses Kernel A (offset-based append-only JSONL) from
-// `jsonl_kernel.rs` once `find_session_file` selects the right rollout.
+// Polls `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` files for
+// `response_item` records with `payload.type == "message"`,
+// `payload.role == "assistant"` and `payload.phase == "final_answer"`, joining
+// their `output_text` content blocks into the assistant prose sent to Telegram.
+// Historical `event_msg + agent_message` records are deliberately ignored.
+// Uses Kernel A (offset-based append-only JSONL) from `jsonl_kernel.rs` once
+// `find_session_file` selects the right rollout.
 
 use std::io::Read as IoRead;
 use std::path::{Path, PathBuf};
@@ -21,9 +24,9 @@ use crate::telegram::jsonl_kernel::{
 };
 use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
 
-/// Buffer thresholds tuned for Codex's commentary cadence.
-/// `event_msg + agent_message` events average 200-400 B and arrive 3-8 per
-/// turn within 800-2500 ms. Coalesce a whole turn into one Telegram message.
+/// Buffer thresholds for Codex final answers: the extracted prose of a turn is
+/// coalesced into one Telegram message once it settles for `FLUSH_DELAY_MS` or
+/// grows past `FLUSH_BYTES`.
 const FLUSH_DELAY_MS: u64 = 1500;
 const FLUSH_BYTES: usize = 3000;
 
@@ -66,10 +69,10 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
 
 /// Extractor for `read_preamble_for_race`: pairs each emitted body with the
 /// line's top-level `timestamp` field so the kernel can apply its grace-window
-/// filter. Codex agent_message events have no stable per-line id we need for
-/// dedup, so the id slot is always `None`.
+/// filter. Codex final-answer records have no stable per-line id this watcher
+/// dedups on, so the id slot is always `None`.
 fn codex_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>, String)> {
-    let body = extract_agent_message(line)?;
+    let body = extract_assistant_final(line)?;
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let ts_str = v.get("timestamp")?.as_str()?;
     let ts = DateTime::parse_from_rfc3339(ts_str)
@@ -78,25 +81,55 @@ fn codex_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>
     Some((ts, None, body))
 }
 
-/// Parse a single Codex rollout JSONL line and extract the `agent_message`
-/// body, if any. Returns `None` for any other event/payload type, or for
-/// empty/whitespace-only messages.
-fn extract_agent_message(line: &str) -> Option<String> {
-    // Fast-path: skip lines that can't be agent_message events. Codex rollouts
-    // contain many tool_call / response_item lines per assistant turn.
-    if !line.contains("\"type\":\"event_msg\"") && !line.contains("\"type\": \"event_msg\"") {
-        return None;
-    }
+/// Parse a single Codex rollout JSONL line and extract the current-format
+/// final assistant answer body, if any.
+///
+/// Accepts exactly `type=response_item`, `payload.type=message`,
+/// `payload.role=assistant` and `payload.phase=final_answer` (all
+/// case-sensitive) with an array `payload.content`. The string `text` values of
+/// its `output_text` blocks are joined in array order with a single newline and
+/// the result is trimmed of its outer whitespace; `None` is returned when no
+/// usable text remains. Individually malformed content blocks and non-string
+/// `text` values are skipped without discarding the other valid blocks. Every
+/// other record shape — including all `event_msg` records — malformed JSON and
+/// missing or wrong fields fail closed to `None`, with no panic, fallback,
+/// dedup or per-line diagnostics. Internal metadata, ids and turn metadata are
+/// never read or rendered.
+fn extract_assistant_final(line: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    if v.get("type")?.as_str()? != "event_msg" {
+    if v.get("type")?.as_str()? != "response_item" {
         return None;
     }
     let payload = v.get("payload")?;
-    if payload.get("type")?.as_str()? != "agent_message" {
+    if payload.get("type")?.as_str()? != "message" {
         return None;
     }
-    let msg = payload.get("message")?.as_str()?;
-    let trimmed = msg.trim();
+    if payload.get("role")?.as_str()? != "assistant" {
+        return None;
+    }
+    if payload.get("phase")?.as_str()? != "final_answer" {
+        return None;
+    }
+    let content = payload.get("content")?.as_array()?;
+
+    let mut parts: Vec<&str> = Vec::new();
+    for block in content {
+        let Some(obj) = block.as_object() else {
+            continue; // non-object block
+        };
+        if obj.get("type").and_then(|t| t.as_str()) != Some("output_text") {
+            continue; // non-output_text block
+        }
+        if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
+            parts.push(text);
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+
+    let joined = parts.join("\n");
+    let trimmed = joined.trim();
     if trimmed.is_empty() {
         None
     } else {
@@ -264,9 +297,9 @@ async fn watch_loop<R: tauri::Runtime>(
                     if let Some(found) = find_session_file(&search_root, &expected_cwd, attach_time) {
                         if Some(&found) != current_file.as_ref() {
                             // First bind OR rotation. On first bind, run the §J
-                            // preamble scan to emit any agent_message from the file's
-                            // tail with timestamp >= attach_time - 5s. Then set
-                            // offset = file_len.
+                            // preamble scan to emit any final assistant answer from
+                            // the file's tail with timestamp >= attach_time - 5s.
+                            // Then set offset = file_len.
                             let first_bind = current_file.is_none();
                             line_remainder.clear();
                             if first_bind {
@@ -314,7 +347,7 @@ async fn watch_loop<R: tauri::Runtime>(
                     match read_new_lines(path, &mut file_offset, &mut line_remainder) {
                         Ok(new_lines) => {
                             for line in new_lines {
-                                if let Some(text) = extract_agent_message(&line) {
+                                if let Some(text) = extract_assistant_final(&line) {
                                     logger.log("CODEX_EXTRACT", &session_id, &text);
                                     buffer.push_str(&text);
                                     buffer.push('\n');
@@ -360,7 +393,7 @@ async fn watch_loop<R: tauri::Runtime>(
     if let Some(ref path) = current_file {
         if let Ok(new_lines) = read_new_lines(path, &mut file_offset, &mut line_remainder) {
             for line in new_lines {
-                if let Some(text) = extract_agent_message(&line) {
+                if let Some(text) = extract_assistant_final(&line) {
                     buffer.push_str(&text);
                     buffer.push('\n');
                 }
@@ -403,72 +436,696 @@ mod tests {
         path
     }
 
-    // ── extract_agent_message ─────────────────────────────────────────────
+    /// Byte-exact sanitized copy of the real Codex 0.154.0 `final_answer`
+    /// record captured at rollout byte offset 87513 (room-shared
+    /// `codex-real-assistant-sanitized.jsonl`, SHA256
+    /// 76d5a755f02e62242c6b8ce7804a5ebf9322e66d14785d0109dba45dd6f70498).
+    const REAL_CURRENT_CODEX_FINAL: &str = r#"{"timestamp":"2026-09-13T18:28:25.938Z","ordinal":12,"type":"response_item","payload":{"type":"message","id":"msg_07770767cb7cb624016aa6eb4a72d487d2bcf644a579754670","role":"assistant","content":[{"type":"output_text","text":"sanitized assistant reply"}],"phase":"final_answer","internal_chat_message_metadata_passthrough":{"turn_id":"01a09c07-0ad4-7710-9c1d-ce3f8dd0aaac","create_time":1789324104.823481,"content_item_kinds":["unknown"]}}}"#;
+
+    /// Payload of a valid current-format record.
+    fn valid_final_payload() -> serde_json::Value {
+        serde_json::json!({
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "body"}]
+        })
+    }
+
+    /// A valid current-format record with every field the extractor requires.
+    fn valid_final_value() -> serde_json::Value {
+        serde_json::json!({
+            "type": "response_item",
+            "payload": valid_final_payload()
+        })
+    }
+
+    /// Synthetic current-format record carrying the given `output_text` texts.
+    fn current_final_record(texts: &[&str]) -> String {
+        let content: Vec<serde_json::Value> = texts
+            .iter()
+            .map(|t| serde_json::json!({"type": "output_text", "text": t}))
+            .collect();
+        let mut v = valid_final_value();
+        v["payload"]["content"] = serde_json::Value::Array(content);
+        v.to_string()
+    }
+
+    /// Synthetic current-format record with an explicit top-level `timestamp`;
+    /// `None` omits the field.
+    fn current_final_record_with_ts(text: &str, ts: Option<&str>) -> String {
+        let mut v = valid_final_value();
+        v["payload"]["content"] = serde_json::json!([{"type": "output_text", "text": text}]);
+        if let Some(ts) = ts {
+            v["timestamp"] = serde_json::json!(ts);
+        }
+        v.to_string()
+    }
+
+    /// Extract the assistant bodies of already-read JSONL lines, exactly as
+    /// the watcher's incremental and final-drain call sites do.
+    fn extract_bodies(lines: &[String]) -> Vec<String> {
+        lines
+            .iter()
+            .filter_map(|l| extract_assistant_final(l.as_str()))
+            .collect()
+    }
+
+    // ── extract_assistant_final: accepted current format ──────────────────
 
     #[test]
-    fn extract_agent_message_from_real_event() {
-        let line = r#"{"timestamp":"2026-05-19T05:00:00Z","type":"event_msg","payload":{"type":"agent_message","message":"  Hello from Codex.  ","phase":"commentary"}}"#;
+    fn real_current_codex_final() {
         assert_eq!(
-            extract_agent_message(line),
-            Some("Hello from Codex.".into())
+            extract_assistant_final(REAL_CURRENT_CODEX_FINAL),
+            Some("sanitized assistant reply".to_string())
         );
     }
 
     #[test]
-    fn extract_agent_message_skips_non_event_msg_types() {
-        for kind in [
-            "session_meta",
-            "turn_context",
-            "task_started",
-            "response_item",
-            "token_count",
+    fn extract_assistant_final_accepts_synthetic_positive_control() {
+        // Independent synthetic record (not the real fixture) exercising the
+        // accepted path: response_item / message / assistant / final_answer.
+        let line = current_final_record(&["Synthetic final answer."]);
+        assert_eq!(
+            extract_assistant_final(&line),
+            Some("Synthetic final answer.".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_assistant_final_rejects_task_and_tool_records() {
+        // Negative controls: task lifecycle and tool traffic must stay silent.
+        let task_started = serde_json::json!({
+            "timestamp": "2026-09-13T18:28:09.828Z",
+            "type": "event_msg",
+            "payload": {"type": "task_started"}
+        })
+        .to_string();
+        let task_complete = serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "last_agent_message": "x"}
+        })
+        .to_string();
+        let tool_call = serde_json::json!({
+            "type": "response_item",
+            "payload": {"type": "function_call", "name": "shell", "arguments": "{}"}
+        })
+        .to_string();
+        let tool_output = serde_json::json!({
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "call_id": "c1", "output": "ok"}
+        })
+        .to_string();
+        for (label, line) in [
+            ("task_started", task_started),
+            ("task_complete", task_complete),
+            ("function_call", tool_call),
+            ("function_call_output", tool_output),
         ] {
-            let line = format!(r#"{{"type":"{}","payload":{{}}}}"#, kind);
-            assert_eq!(extract_agent_message(&line), None, "kind={}", kind);
+            assert_eq!(extract_assistant_final(&line), None, "{}", label);
         }
     }
 
     #[test]
-    fn extract_agent_message_skips_other_payload_types() {
+    fn extract_assistant_final_handles_compact_and_spaced_json() {
+        let compact = current_final_record(&["body"]);
+        let spaced = r#"{
+            "type" : "response_item",
+            "payload" : {
+                "type" : "message",
+                "role" : "assistant",
+                "phase" : "final_answer",
+                "content" : [ { "type" : "output_text", "text" : "body" } ]
+            }
+        }"#;
+        assert_eq!(extract_assistant_final(&compact), Some("body".to_string()));
+        assert_eq!(extract_assistant_final(spaced), Some("body".to_string()));
+    }
+
+    #[test]
+    fn extract_assistant_final_joins_text_blocks_in_array_order() {
+        let line = current_final_record(&["first block", "second block", "third block"]);
+        assert_eq!(
+            extract_assistant_final(&line),
+            Some("first block\nsecond block\nthird block".to_string())
+        );
+        // Only the outer whitespace of the joined result is trimmed.
+        let line = current_final_record(&["  padded  "]);
+        assert_eq!(extract_assistant_final(&line), Some("padded".to_string()));
+    }
+
+    #[test]
+    fn extract_assistant_final_skips_malformed_blocks_but_keeps_valid_ones() {
+        let mut v = valid_final_value();
+        v["payload"]["content"] = serde_json::json!([
+            {"type": "output_text", "text": "kept one"},
+            null,
+            42,
+            "a bare string",
+            {"type": "input_text", "text": "not output_text"},
+            {"type": 7, "text": "non-string type"},
+            {"type": "output_text", "text": 99},
+            {"type": "output_text"},
+            {"type": "output_text", "text": "kept two"},
+        ]);
+        assert_eq!(
+            extract_assistant_final(&v.to_string()),
+            Some("kept one\nkept two".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_assistant_final_returns_none_for_empty_or_all_invalid_content() {
+        let cases: Vec<serde_json::Value> = vec![
+            serde_json::json!([]),
+            serde_json::json!([null, 1, "text"]),
+            serde_json::json!([{"type": "input_text", "text": "x"}]),
+            serde_json::json!([{"type": "output_text", "text": ""}]),
+            serde_json::json!([{"type": "output_text", "text": "   \n\t "}]),
+        ];
+        for content in cases {
+            let mut v = valid_final_value();
+            v["payload"]["content"] = content;
+            assert_eq!(
+                extract_assistant_final(&v.to_string()),
+                None,
+                "content={}",
+                v["payload"]["content"]
+            );
+        }
+    }
+
+    #[test]
+    fn extract_assistant_final_returns_none_for_malformed_json() {
+        for line in [
+            "",
+            "not json at all",
+            "{\"type\":\"response_item\"",
+            "null",
+            "[1,2,3]",
+            "{ this is not JSON }",
+        ] {
+            assert_eq!(extract_assistant_final(line), None, "line={:?}", line);
+        }
+    }
+
+    #[test]
+    fn extract_assistant_final_rejects_every_other_type_role_and_phase() {
+        // Top-level types other than `response_item` (event_msg included).
+        for kind in [
+            "session_meta",
+            "event_msg",
+            "turn_context",
+            "world_state",
+            "token_usage_record",
+            "compacted",
+            "Response_Item",
+        ] {
+            let line =
+                serde_json::json!({"type": kind, "payload": valid_final_payload()}).to_string();
+            assert_eq!(extract_assistant_final(&line), None, "type={}", kind);
+        }
+
+        // Payload types other than `message`.
         for ptype in [
             "reasoning",
             "function_call",
             "function_call_output",
             "input_text",
             "output_text",
+            "message_summary",
+            "Message",
         ] {
-            let line = format!(
-                r#"{{"type":"event_msg","payload":{{"type":"{}","message":"x"}}}}"#,
+            let line = serde_json::json!({
+                "type": "response_item",
+                "payload": {"type": ptype, "role": "assistant", "phase": "final_answer",
+                            "content": [{"type": "output_text", "text": "body"}]}
+            })
+            .to_string();
+            assert_eq!(
+                extract_assistant_final(&line),
+                None,
+                "payload.type={}",
                 ptype
             );
-            assert_eq!(extract_agent_message(&line), None, "ptype={}", ptype);
         }
+
+        // Roles other than `assistant`.
+        for role in ["user", "system", "developer", "tool", "Assistant", ""] {
+            let mut payload = valid_final_payload();
+            payload["role"] = serde_json::json!(role);
+            let line = serde_json::json!({"type": "response_item", "payload": payload}).to_string();
+            assert_eq!(extract_assistant_final(&line), None, "role={}", role);
+        }
+
+        // Phases other than `final_answer`.
+        for phase in [
+            "commentary",
+            "analysis",
+            "final",
+            "Final_Answer",
+            "final_answer ",
+            "",
+        ] {
+            let mut payload = valid_final_payload();
+            payload["phase"] = serde_json::json!(phase);
+            let line = serde_json::json!({"type": "response_item", "payload": payload}).to_string();
+            assert_eq!(extract_assistant_final(&line), None, "phase={}", phase);
+        }
+        // Missing phase entirely.
+        let mut payload = valid_final_payload();
+        payload.as_object_mut().unwrap().remove("phase");
+        let line = serde_json::json!({"type": "response_item", "payload": payload}).to_string();
+        assert_eq!(extract_assistant_final(&line), None, "phase absent");
     }
 
     #[test]
-    fn extract_agent_message_skips_empty_or_whitespace() {
-        for msg in ["", "   ", "\n", "\t  \t"] {
-            let line = format!(
-                r#"{{"type":"event_msg","payload":{{"type":"agent_message","message":"{}"}}}}"#,
-                msg.replace('\t', "\\t").replace('\n', "\\n")
+    fn extract_assistant_final_rejects_absent_or_non_string_fields() {
+        // Missing / non-string top-level type.
+        let mut v = valid_final_value();
+        v.as_object_mut().unwrap().remove("type");
+        assert_eq!(extract_assistant_final(&v.to_string()), None, "type absent");
+        let mut v = valid_final_value();
+        v["type"] = serde_json::json!(7);
+        assert_eq!(
+            extract_assistant_final(&v.to_string()),
+            None,
+            "type non-string"
+        );
+
+        // Missing / non-object payload.
+        let mut v = valid_final_value();
+        v.as_object_mut().unwrap().remove("payload");
+        assert_eq!(
+            extract_assistant_final(&v.to_string()),
+            None,
+            "payload absent"
+        );
+        let mut v = valid_final_value();
+        v["payload"] = serde_json::json!("not an object");
+        assert_eq!(
+            extract_assistant_final(&v.to_string()),
+            None,
+            "payload non-object"
+        );
+
+        // Missing payload fields.
+        for field in ["type", "role", "phase", "content"] {
+            let mut payload = valid_final_payload();
+            payload.as_object_mut().unwrap().remove(field);
+            let line = serde_json::json!({"type": "response_item", "payload": payload}).to_string();
+            assert_eq!(
+                extract_assistant_final(&line),
+                None,
+                "payload.{} absent",
+                field
             );
-            assert_eq!(extract_agent_message(&line), None, "msg={:?}", msg);
+        }
+
+        // Non-string payload fields.
+        for field in ["type", "role", "phase"] {
+            let mut payload = valid_final_payload();
+            payload[field] = serde_json::json!(["not", "a", "string"]);
+            let line = serde_json::json!({"type": "response_item", "payload": payload}).to_string();
+            assert_eq!(
+                extract_assistant_final(&line),
+                None,
+                "payload.{} non-string",
+                field
+            );
+        }
+
+        // Content not an array.
+        for content in [
+            serde_json::json!("body"),
+            serde_json::json!({"type": "output_text"}),
+            serde_json::json!(3),
+        ] {
+            let mut payload = valid_final_payload();
+            payload["content"] = content;
+            let line = serde_json::json!({"type": "response_item", "payload": payload}).to_string();
+            assert_eq!(extract_assistant_final(&line), None, "content non-array");
         }
     }
 
     #[test]
-    fn extract_agent_message_fast_path_rejects_unrelated_lines() {
-        // Line shouldn't even contain `"type":"event_msg"` substring.
-        assert_eq!(extract_agent_message(r#"{"type":"response_item"}"#), None);
-        assert_eq!(extract_agent_message("not json at all"), None);
+    fn extract_assistant_final_rejects_legacy_event_msg_records() {
+        // Historical Codex format: event_msg / agent_message. Rejected even
+        // when its phase string matches the current vocabulary.
+        for phase in ["commentary", "final", "final_answer"] {
+            let line = serde_json::json!({
+                "timestamp": "2026-05-19T05:00:00Z",
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "  legacy prose  ", "phase": phase}
+            })
+            .to_string();
+            assert_eq!(
+                extract_assistant_final(&line),
+                None,
+                "legacy phase={}",
+                phase
+            );
+        }
+        // Legacy envelope carrying response-shaped payload fields.
+        let line = serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "agent_message", "role": "assistant", "phase": "final_answer",
+                        "content": [{"type": "output_text", "text": "legacy-shaped"}]}
+        })
+        .to_string();
+        assert_eq!(
+            extract_assistant_final(&line),
+            None,
+            "event_msg with response fields"
+        );
     }
 
     #[test]
-    fn extract_agent_message_handles_phase_variants() {
-        let commentary = r#"{"type":"event_msg","payload":{"type":"agent_message","message":"a","phase":"commentary"}}"#;
-        let final_ = r#"{"type":"event_msg","payload":{"type":"agent_message","message":"b","phase":"final"}}"#;
-        assert_eq!(extract_agent_message(commentary), Some("a".into()));
-        assert_eq!(extract_agent_message(final_), Some("b".into()));
+    fn extraction_is_independent_of_session_metadata_variants() {
+        let base = current_final_record(&["stable body"]);
+        let mut with_meta = serde_json::from_str::<serde_json::Value>(&base).unwrap();
+        with_meta["cli_version"] = serde_json::json!("0.154.0");
+        with_meta["originator"] = serde_json::json!("codex-tui");
+        let mut changed_meta = with_meta.clone();
+        changed_meta["cli_version"] = serde_json::json!("9.9.9");
+        changed_meta["originator"] = serde_json::json!("other-originator");
+        for line in [base, with_meta.to_string(), changed_meta.to_string()] {
+            assert_eq!(
+                extract_assistant_final(&line),
+                Some("stable body".to_string()),
+                "line={}",
+                line
+            );
+        }
+    }
+
+    // ── extract_assistant_final through the kernel watch paths ────────────
+
+    #[test]
+    fn preamble_emits_fresh_final_answer_and_incremental_read_does_not_repeat() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-preamble.jsonl");
+        let now = Utc::now();
+        // Real fixture bytes with the timestamp rewritten into the grace
+        // window; the JSON shape and sanitized text are preserved.
+        let fresh_ts = (now - chrono::Duration::seconds(1)).to_rfc3339();
+        let fresh = REAL_CURRENT_CODEX_FINAL.replace("2026-09-13T18:28:25.938Z", &fresh_ts);
+        assert!(
+            fresh.contains(&fresh_ts),
+            "fixture timestamp must be rewritten"
+        );
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, "{}", fresh).unwrap();
+        drop(f);
+
+        let (bodies, ids, file_len) =
+            read_preamble_for_race(&path, now, codex_preamble_extractor).unwrap();
+        assert_eq!(bodies, vec!["sanitized assistant reply".to_string()]);
+        assert_eq!(ids, vec![None]);
+        assert_eq!(file_len, fs::metadata(&path).unwrap().len());
+
+        // The first bind advances the consumer to EOF: the next incremental
+        // read must not repeat the consumed record.
+        let mut offset = file_len;
+        let mut remainder = String::new();
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert!(lines.is_empty(), "consumed preamble must not replay");
+    }
+
+    #[test]
+    fn preamble_rejects_missing_invalid_and_out_of_grace_timestamps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-preamble-reject.jsonl");
+        let now = Utc::now();
+
+        let fresh_ts = (now - chrono::Duration::seconds(1)).to_rfc3339();
+        let stale_ts = (now - chrono::Duration::seconds(30)).to_rfc3339();
+        let fresh = current_final_record_with_ts("fresh body", Some(&fresh_ts));
+        let stale = current_final_record_with_ts("stale body", Some(&stale_ts));
+        let invalid = current_final_record_with_ts("invalid body", Some("not-a-timestamp"));
+        let missing = current_final_record_with_ts("missing body", None);
+
+        let mut f = fs::File::create(&path).unwrap();
+        for line in [&stale, &invalid, &missing, &fresh] {
+            writeln!(f, "{}", line).unwrap();
+        }
+        drop(f);
+
+        let (bodies, _ids, file_len) =
+            read_preamble_for_race(&path, now, codex_preamble_extractor).unwrap();
+        assert_eq!(
+            bodies,
+            vec!["fresh body".to_string()],
+            "only the in-grace record may be emitted"
+        );
+        assert_eq!(file_len, fs::metadata(&path).unwrap().len());
+
+        // Offset moves to EOF, so the rejected records are not replayed later
+        // either.
+        let mut offset = file_len;
+        let mut remainder = String::new();
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert!(
+            lines.is_empty(),
+            "rejected preamble records must not replay"
+        );
+    }
+
+    #[test]
+    fn incremental_read_completes_a_split_json_line_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-split.jsonl");
+        let line = current_final_record(&["split body"]);
+        let (head, tail) = line.split_at(line.len() / 2);
+
+        let mut f = fs::File::create(&path).unwrap();
+        f.write_all(head.as_bytes()).unwrap();
+        drop(f);
+
+        let mut offset = 0u64;
+        let mut remainder = String::new();
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert!(lines.is_empty(), "partial JSON must not produce a record");
+        assert_eq!(offset, head.len() as u64);
+
+        // Complete the line; the record is extracted exactly once.
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(tail.as_bytes()).unwrap();
+        f.write_all(b"\n").unwrap();
+        drop(f);
+
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(extract_bodies(&lines), vec!["split body".to_string()]);
+        assert_eq!(offset, fs::metadata(&path).unwrap().len());
+
+        // A further poll (the same path the final drain uses) finds nothing.
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert!(lines.is_empty(), "completed record must not repeat");
+    }
+
+    #[test]
+    fn final_drain_extracts_complete_appended_records_once() {
+        // Mirrors the cancel path: the final poll drains the complete records
+        // appended since the last incremental read.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-drain.jsonl");
+        let first = current_final_record(&["drain one"]);
+        let second = current_final_record(&["drain two"]);
+
+        let mut offset = 0u64;
+        let mut remainder = String::new();
+        let mut f = fs::File::create(&path).unwrap();
+        write!(f, "{}\n{}\n", first, second).unwrap();
+        drop(f);
+
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert_eq!(
+            extract_bodies(&lines),
+            vec!["drain one".to_string(), "drain two".to_string()]
+        );
+        assert_eq!(offset, fs::metadata(&path).unwrap().len());
+
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert!(lines.is_empty(), "drained records must not repeat");
+    }
+
+    #[test]
+    fn coexisting_legacy_and_current_records_emit_only_the_response_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-coexist.jsonl");
+        let legacy = |msg: &str| {
+            serde_json::json!({
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": msg, "phase": "final"}
+            })
+            .to_string()
+        };
+        let current = current_final_record(&["current body"]);
+        let mut offset = 0u64;
+        let mut remainder = String::new();
+
+        // Order 1: legacy before current in the same read.
+        let mut f = fs::File::create(&path).unwrap();
+        write!(f, "{}\n{}\n", legacy("legacy first"), current).unwrap();
+        drop(f);
+        let mut buffer =
+            extract_bodies(&read_new_lines(&path, &mut offset, &mut remainder).unwrap());
+        assert_eq!(buffer, vec!["current body".to_string()]);
+
+        // Simulated flush: the Telegram buffer was cleared, then more records
+        // arrive. Nothing already consumed may be re-emitted.
+        buffer.clear();
+
+        // Order 2: current before legacy, appended after the flush.
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        write!(f, "{}\n{}\n", current, legacy("legacy second")).unwrap();
+        drop(f);
+        buffer.extend(extract_bodies(
+            &read_new_lines(&path, &mut offset, &mut remainder).unwrap(),
+        ));
+        assert_eq!(buffer, vec!["current body".to_string()]);
+    }
+
+    #[test]
+    fn two_identical_final_records_remain_two_bodies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-dupe.jsonl");
+        let record = current_final_record(&["identical body"]);
+        let mut offset = 0u64;
+        let mut remainder = String::new();
+
+        let mut f = fs::File::create(&path).unwrap();
+        write!(f, "{}\n{}\n", record, record).unwrap();
+        drop(f);
+
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert_eq!(
+            extract_bodies(&lines),
+            vec!["identical body".to_string(), "identical body".to_string()],
+            "no text dedup may collapse two distinct records"
+        );
+    }
+
+    /// Appends synthetic, never-valid filler records until the file reaches
+    /// `target_len` bytes, always ending on a line boundary.
+    fn write_synthetic_filler(f: &mut fs::File, target_len: u64) {
+        const LINE: &str = "synthetic filler for issue 1997 geometry (not a codex record)\n";
+        let mut written = f.metadata().unwrap().len();
+        while written + LINE.len() as u64 <= target_len {
+            f.write_all(LINE.as_bytes()).unwrap();
+            written += LINE.len() as u64;
+        }
+        if written < target_len {
+            let rem = (target_len - written) as usize;
+            let mut last = "x".repeat(rem - 1);
+            last.push('\n');
+            f.write_all(last.as_bytes()).unwrap();
+            written += rem as u64;
+        }
+        assert_eq!(written, target_len);
+        f.flush().unwrap();
+    }
+
+    #[test]
+    fn replay_prefix_geometry_extracts_the_real_fixture_once() {
+        // Real rollout geometry: the watcher binds at byte 22352 and the real
+        // final answer lands at byte 87513. The filler is synthetic; the
+        // record is the byte-exact real fixture.
+        const BIND_OFFSET: u64 = 22_352;
+        const FIXTURE_OFFSET: u64 = 87_513;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-geometry.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        write_synthetic_filler(&mut f, BIND_OFFSET);
+
+        // First bind: the preamble scan leaves the consumer at EOF.
+        let mut offset = f.metadata().unwrap().len();
+        assert_eq!(offset, BIND_OFFSET);
+        let mut remainder = String::new();
+
+        // Filler arrives up to the byte where the real answer starts.
+        write_synthetic_filler(&mut f, FIXTURE_OFFSET);
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert!(
+            extract_bodies(&lines).is_empty(),
+            "synthetic filler must never be extracted"
+        );
+        assert_eq!(offset, FIXTURE_OFFSET, "offset advances with the filler");
+
+        // The real final answer arrives.
+        f.write_all(REAL_CURRENT_CODEX_FINAL.as_bytes()).unwrap();
+        f.write_all(b"\n").unwrap();
+        f.flush().unwrap();
+
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert_eq!(
+            extract_bodies(&lines),
+            vec!["sanitized assistant reply".to_string()]
+        );
+        assert_eq!(
+            offset,
+            FIXTURE_OFFSET + REAL_CURRENT_CODEX_FINAL.len() as u64 + 1,
+            "offset advances past the consumed record"
+        );
+
+        // Next poll: nothing new and nothing replayed.
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert!(
+            extract_bodies(&lines).is_empty(),
+            "record must not replay on the next poll"
+        );
+    }
+
+    #[test]
+    fn rotation_reanchor_and_truncation_do_not_replay_consumed_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-rotation.jsonl");
+        let mut offset = 0u64;
+        let mut remainder = String::new();
+
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, "{}", REAL_CURRENT_CODEX_FINAL).unwrap();
+        drop(f);
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert_eq!(
+            extract_bodies(&lines),
+            vec!["sanitized assistant reply".to_string()]
+        );
+
+        // Rotation: the watcher re-anchors at the new file's EOF instead of
+        // replaying it.
+        let mut rotated_offset = fs::metadata(&path).unwrap().len();
+        let lines = read_new_lines(&path, &mut rotated_offset, &mut remainder).unwrap();
+        assert!(lines.is_empty(), "rotation re-anchor must not replay");
+
+        // Truncation: the kernel re-anchors to the new EOF, skipping replay.
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        writeln!(f, "{{ truncated }}").unwrap();
+        drop(f);
+        let new_len = fs::metadata(&path).unwrap().len();
+        assert!(new_len < offset, "truncation must shrink the file");
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert!(
+            lines.is_empty(),
+            "truncation must not replay consumed records"
+        );
+        assert_eq!(offset, new_len, "offset re-anchors to the new EOF");
+
+        // A record appended after truncation is extracted normally.
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "{}", REAL_CURRENT_CODEX_FINAL).unwrap();
+        drop(f);
+        let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
+        assert_eq!(
+            extract_bodies(&lines),
+            vec!["sanitized assistant reply".to_string()]
+        );
     }
 
     // ── find_session_file ─────────────────────────────────────────────────
