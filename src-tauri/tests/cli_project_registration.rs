@@ -662,17 +662,22 @@ fn new_project_seeds_catalog_into_ac() {
     assert_eq!(
         parsed["agents"].as_array().map(Vec::len),
         Some(8),
-        "the seeded catalog carries the 8 built-ins: {catalog}"
+        "the seeded catalog carries the 8 enabled built-ins: {catalog}"
     );
     assert_eq!(parsed["schemaVersion"], 1);
+    assert!(
+        !catalog.contains("\"muse\""),
+        "the disabled muse row must not be seeded: {catalog}"
+    );
     assert_eq!(
         parsed["agents"].as_array().unwrap().last().unwrap(),
         &serde_json::json!({
-            "key": "muse",
-            "label": "Muse Code",
-            "description": "Meta terminal coding agent (beta; macOS/Linux host only)",
-            "color": "#0668E1",
-            "command": "muse",
+            "key": "grok",
+            "label": "Grok Build",
+            "description": "Coding agent Grok Build",
+            "color": "#64748b",
+            "command": "grok",
+            "instructionsFilename": "AGENTS.md",
             "envs": [],
             "isolatedHome": false,
             "removable": true,
