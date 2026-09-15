@@ -5781,6 +5781,27 @@ html.light-theme .settings-hint-error {
   }
 }
 
+/* ── #2038: the two right-hand columns of the Coding Agent profile modal scroll
+   independently. Above the 900px stacking breakpoint the wrapper only lays the
+   columns out: its single row is the frame height (scroll range 0), each column
+   panel is its own scroll area, and the comparison-table row keeps the 220px floor
+   of the table's own clamp(220px, 42vh, 420px) so a short frame scrolls column 3
+   instead of squeezing the rows out of view. The @media (max-width: 900px)
+   single-column block above is deliberately untouched. */
+@media (min-width: 901px) {
+  .agent-profile-assignment-scroll {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .agent-profile-assignment-scroll > .agent-profile-panel {
+    overflow-y: auto;
+  }
+
+  .agent-projection-panel {
+    grid-template-rows: auto auto minmax(220px, 1fr) auto;
+  }
+}
+
 /* Footer hints */
 .agent-modal-footer {
   display: flex;
