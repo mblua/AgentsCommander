@@ -11,9 +11,12 @@ For developers editing `settings.json` by hand, or scripting AgentsCommander con
 | `v0.30.3`, executable parent and stem available for `C:\tools\agentscommander.exe` | `C:\tools\.agentscommander\` | `C:\tools\.agentscommander\settings.json` |
 | `v0.30.3`, executable parent or stem unavailable, normal production identity | `$HOME/.agentscommander-new` | `$HOME/.agentscommander-new/settings.json` |
 | Unpublished `main`, nonblank `AGENTSCOMMANDER_CONFIG_DIR` | Override value, verbatim | `<override>/settings.json` |
-| Unpublished `main`, unmarked adjacent candidate conclusively unwritable, normal production identity | `$HOME/.agentscommander-new` | `$HOME/.agentscommander-new/settings.json` |
+| Unpublished `main`, executable without an underscore suffix (for example `agentscommander.exe`), no override | `$HOME/.agentscommander` | `$HOME/.agentscommander/settings.json` |
+| Unpublished `main`, `agentscommander_<suffix>.exe`, no override, adjacent folder writable | `<executable folder>/.agentscommander_<suffix>` | `<executable folder>/.agentscommander_<suffix>/settings.json` |
 
 Published `v0.30.3` has no public override, marker, or writability probe; it does not fall back because a derivable adjacent path is read-only. The public override and `portable.txt` behavior belong to the newer unpublished `main` resolver until an exact later tag is verified to contain them. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the complete versioned contract.
+
+On unpublished `main`, `agentscommander_<suffix>.exe` never uses `$HOME`. If its adjacent folder cannot be written, it does not start. Without `portable.txt` the message tells you to move the executable to a writable folder or set `AGENTSCOMMANDER_CONFIG_DIR`; with `portable.txt` it tells you to set `AGENTSCOMMANDER_CONFIG_DIR`. A `main` build never reads, moves or copies settings that a published release wrote; to find and reuse them, see [Settings left by published releases](../features/portable-instances.md#settings-left-by-published-releases).
 
 ## Editing rules
 

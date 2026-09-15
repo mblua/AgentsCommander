@@ -59,7 +59,7 @@ containing eight values:
 | `npm/package.json` | npm wrapper `version` |
 | `npm/install.js` | `VERSION` constant |
 | `src-tauri/Cargo.toml` | `[package]` version |
-| `Cargo.lock` | internal `agentscommander-new` crate version |
+| `Cargo.lock` | internal `agentscommander` crate version |
 | `src-tauri/tauri.conf.json` | `version` |
 
 Move the prepared Unreleased body into the new root changelog section, leaving a

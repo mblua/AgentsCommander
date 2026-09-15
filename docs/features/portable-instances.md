@@ -24,12 +24,12 @@ For a `v0.30.3` AppImage, the native executable is inside the temporary, read-on
 The newer resolver in `main` adds this precedence, but it is not `v0.30.3` behavior:
 
 1. A nonblank `AGENTSCOMMANDER_CONFIG_DIR` selects its original value verbatim and skips marker and write probes. An empty or whitespace-only value is ignored; prefer an absolute value so the selected path is unambiguous.
-2. Without the override, AC derives the adjacent candidate and inspects `portable.txt` beside the native executable.
-   - **Marker present:** a successful write probe selects the adjacent candidate. Any write-probe failure, or an indeterminate marker state, stops startup. There is no home fallback.
-   - **Marker absent:** a successful write probe selects the adjacent candidate. A conclusively unwritable candidate selects the home fallback. An indeterminate write failure stops startup rather than guessing.
-3. If the runtime cannot derive a usable executable parent and stem, AC uses the home fallback when one is available.
+2. Without the override, an executable without an underscore suffix, such as `agentscommander.exe`, uses `$HOME/.agentscommander`. It skips `portable.txt`, the adjacent candidate and both probes. If the runtime cannot report a usable executable name, AC treats it the same way.
+3. An executable with an underscore suffix, `agentscommander_<suffix>.exe`, derives the adjacent candidate `<native-executable-folder>/.agentscommander_<suffix>` and inspects `portable.txt` beside the native executable. It never uses `$HOME`.
+   - **Marker present:** a successful write probe selects the adjacent candidate. Any write-probe failure, or an indeterminate marker state, stops startup, and the message tells you to set `AGENTSCOMMANDER_CONFIG_DIR` to a writable directory.
+   - **Marker absent:** a successful write probe selects the adjacent candidate. A conclusively unwritable candidate stops startup with `AgentsCommander cannot start because it cannot write its configuration directory "<candidate>" next to the executable: <reason>. Move the executable to a writable folder, or set AGENTSCOMMANDER_CONFIG_DIR to a writable directory, and restart.` An indeterminate write failure stops startup rather than guessing, and the message tells you to set `AGENTSCOMMANDER_CONFIG_DIR` to a writable directory.
 
-For the normal production identity, this `main` fallback is `$HOME/.agentscommander-new`; the `dev` identity uses `$HOME/.agentscommander-new-dev`. A marker cannot override the public environment variable because the override is evaluated first.
+A marker cannot override the public environment variable because the override is evaluated first.
 
 ### Any other release
 
@@ -44,6 +44,24 @@ C:\work\agentscommander_team-a.exe    ->  C:\work\.agentscommander_team-a\
 ```
 
 The selected directory contains `settings.json`, `sessions.json`, the web token, conversation logs, and other machine-local application state. Two copies have separate application state only when they select different configuration directories. Project-scoped team state remains in each project's shared `.ac/` tree.
+
+### Settings left by published releases
+
+A `main` build never reads, moves, copies or deletes configuration that a published release wrote. After you switch from a published release such as `v0.31.0`, AC can open with empty settings while your old settings are still on disk. Close every AgentsCommander window, then look for `settings.json` in these folders:
+
+- `.agentscommander` next to `agentscommander.exe`. `v0.30.3`, `v0.30.5` and `v0.31.0` chose this folder first. For an npm install it is `@mblua/agentscommander/bin/.agentscommander` under the folder that `npm root -g` prints.
+- `$HOME/.agentscommander-new`. `v0.30.5` and `v0.31.0` used it when there was no `portable.txt` and the executable's folder could not be written, for `agentscommander.exe` and for every renamed copy except `agentscommander_dev.exe`. `v0.32.0` used it the same way, but only for renamed copies other than `agentscommander_dev.exe`. `v0.30.3` used it only when the executable's path could not be derived.
+- `$HOME/.agentscommander-new-dev`. `agentscommander_dev.exe` from `v0.30.5`, `v0.31.0` or `v0.32.0` used it when there was no `portable.txt` and its folder could not be written.
+- `.agentscommander_<suffix>` next to `agentscommander_<suffix>.exe`. `main` still uses this folder, so a renamed copy in a writable folder keeps its settings.
+
+For any other release, inspect its exact tag as described above. To reuse old settings, move or rename the folder that holds them so that it ends up where `main` looks:
+
+- For `agentscommander.exe`, the folder must become `$HOME/.agentscommander`.
+- For `agentscommander_<suffix>.exe`, the folder must sit next to that executable and be named `.agentscommander_<suffix>`.
+
+If a folder with the target name already exists, AC never merges the two; decide which one to keep before you move anything.
+
+Copy an npm install's `bin/.agentscommander` out of the package folder before you run an npm update or uninstall, as the [npm guide](../../npm/README.md) requires. `settings.json` holds API keys and bot tokens, so keep every copy private.
 
 ## Instance labels via underscore suffix
 
@@ -70,7 +88,7 @@ Unknown suffixes get a deterministic port in the 9880–9899 range based on a ha
 2. Copy it to a user-writable folder and rename it with an underscore suffix, such as `agentscommander_myteam.exe`.
 3. Apply the rule for that exact version:
    - For `v0.30.3`, run the renamed native executable. It selects the adjacent directory immediately; `portable.txt` and `AGENTSCOMMANDER_CONFIG_DIR` have no release-build effect.
-   - For a development build using the unpublished `main` resolver, confirm that no nonblank public override is present, then create an empty regular `portable.txt` beside the executable. If selection fails, move the tree to a writable location; do not remove the marker merely to obtain a home fallback.
+   - For a development build using the unpublished `main` resolver, confirm that no nonblank public override is present, then create an empty regular `portable.txt` beside the executable. If selection fails, move the tree to a writable location or set `AGENTSCOMMANDER_CONFIG_DIR`; a suffixed executable on `main` has no home fallback.
    - For any other release, inspect its exact tag before proceeding.
 4. Confirm the selected directory from runtime evidence before treating the copy as isolated.
 
