@@ -2510,7 +2510,17 @@ pub fn run(
     // migrations. The per-project steady-state pre-check keeps the common
     // already-seeded case lock-free.
     let settings = config::settings::load_settings_for_cli();
-    for root in config::coding_agents_catalog::registered_project_roots(&settings) {
+    let registered_roots = config::coding_agents_catalog::registered_project_roots(&settings);
+    if registered_roots.is_empty() {
+        // #2021: with no registered project, initialize or refresh the instance
+        // catalog at <config_dir>/coding-agents so the Welcome surface lists
+        // the built-in agents on first run. Fail-soft: log-only, never aborts
+        // boot.
+        if let Some(dir) = config::config_dir() {
+            config::coding_agents_catalog::ensure_seeded_instance(&dir);
+        }
+    }
+    for root in registered_roots {
         config::coding_agents_catalog::ensure_seeded_for_project(&root);
     }
 

@@ -2088,9 +2088,10 @@ fn push_unknown_field_warnings(
 
 /// Which surface asked for a catalog report. The wire shape never changes;
 /// only the restart guidance attached to a stale managed revision differs:
-/// project catalogs refresh during every startup/registration, instance
-/// catalogs are read-only and never initialize or seed, and direct callers
-/// receive the neutral wording.
+/// project catalogs refresh during every startup/registration, the instance
+/// catalog is initialized or refreshed at startup only when no project is
+/// registered (every read stays read-only), and direct callers receive the
+/// neutral wording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CatalogSourceContext {
     Project,
@@ -2107,10 +2108,10 @@ impl CatalogSourceContext {
                 "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Restart retries project catalog refresh."
             }
             Self::Instance => {
-                "The persisted instance catalog revision differs from this build. Current persisted entries remain usable. Instance catalogs are read-only; select a project to initialize or refresh its catalog."
+                "The persisted instance catalog revision differs from this build. Current persisted entries remain usable. Restart retries instance catalog refresh when no project is registered."
             }
             Self::Direct => {
-                "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Project catalog refresh runs during initialization; instance catalogs remain read-only."
+                "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Catalog refresh runs during initialization."
             }
         }
     }
@@ -2166,7 +2167,8 @@ fn load_catalog_report_with_context(
 /// Settings-level resolver: the primary project root (first nonblank
 /// `project_paths` entry, else the legacy `project_path`) selects the project's
 /// `.ac` dir; with no project the INSTANCE catalog at
-/// `<config_dir>/coding-agents/agents.json` is read (read-only, never seeded).
+/// `<config_dir>/coding-agents/agents.json` is read (reads never write; the
+/// no-project boot path initializes or refreshes that file).
 /// A failure in the primary project is never retried against another project.
 /// P5 (#1968) extends this resolver to compose the local layer.
 pub fn load_catalog_report_for_settings(settings: &AppSettings) -> CatalogReport {
@@ -2214,8 +2216,9 @@ fn load_catalog_report_for_settings_with_config_dir(
         }
         None => match config_dir {
             // Deliberately the private context-aware builder, NOT the public
-            // Direct wrapper: the no-project surface never seeds or migrates
-            // the instance, so its restart guidance must say so.
+            // Direct wrapper: reads never seed or migrate the instance (the
+            // no-project boot path initializes it), so its restart guidance
+            // must say so.
             Some(dir) => load_catalog_report_with_context(&dir, CatalogSourceContext::Instance).0,
             None => report_without_source(),
         },
@@ -3249,62 +3252,80 @@ struct CatalogInitOutcome {
     warnings: Vec<CatalogDiagnostic>,
 }
 
+/// Which surface is being initialized. `Project` keeps the complete project
+/// state machine above it (recovery, migration, seed-manifest ownership);
+/// `Instance` is the #2021 no-project instance catalog, which may only
+/// fresh-seed an absent base or refresh a stale managed one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InitScope {
+    Project,
+    Instance,
+}
+
 /// One initialization pass UNDER THE HELD CATALOG LOCK: recover an interrupted
 /// transaction, then refresh, migrate or fresh-seed exactly one base. Order is
-/// fixed by the plan: recovery first, then the base state machine.
+/// fixed by the plan: recovery first, then the base state machine. `scope`
+/// selects the #2021 instance policy: instance initialization never resumes a
+/// migration journal or backup, and never migrates a legacy file in place.
 fn initialize_catalog_under_lock(
     paths: &CatalogPaths,
     legacy_catalog_dir: Option<&Path>,
+    scope: InitScope,
 ) -> CatalogInitOutcome {
     let mut outcome = CatalogInitOutcome::default();
 
-    let journal_exists = match std::fs::symlink_metadata(&paths.journal) {
-        Ok(_) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => {
-            outcome.warnings.push(catalog_diagnostic(
-                REPORT_CODE_REFRESH_FAILED,
-                &paths.journal,
-                format!("the migration journal could not be inspected ({error})"),
-            ));
-            return outcome;
-        }
-    };
-    let backup_exists = match std::fs::symlink_metadata(&paths.backup) {
-        Ok(_) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => {
-            outcome.warnings.push(catalog_diagnostic(
-                REPORT_CODE_REFRESH_FAILED,
-                &paths.backup,
-                format!("the migration backup could not be inspected ({error})"),
-            ));
-            return outcome;
-        }
-    };
-
-    if journal_exists {
-        match recover_interrupted_migration(paths) {
-            Ok(published_at) => outcome.published_at = published_at,
-            Err(reason) => {
+    // #2021: no production caller has ever run this initialization on the
+    // config dir, so a journal or backup beside an instance catalog cannot be
+    // ours. Leave any such sidecar untouched and never resume it.
+    if scope == InitScope::Project {
+        let journal_exists = match std::fs::symlink_metadata(&paths.journal) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
                 outcome.warnings.push(catalog_diagnostic(
-                    REPORT_CODE_MIGRATION_CONFLICT,
+                    REPORT_CODE_REFRESH_FAILED,
                     &paths.journal,
-                    reason,
+                    format!("the migration journal could not be inspected ({error})"),
                 ));
                 return outcome;
             }
-        }
-    } else if backup_exists {
-        match resume_backup_only_migration(paths, legacy_catalog_dir) {
-            Ok(published_at) => outcome.published_at = published_at,
-            Err(reason) => {
+        };
+        let backup_exists = match std::fs::symlink_metadata(&paths.backup) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
                 outcome.warnings.push(catalog_diagnostic(
-                    REPORT_CODE_MIGRATION_CONFLICT,
+                    REPORT_CODE_REFRESH_FAILED,
                     &paths.backup,
-                    reason,
+                    format!("the migration backup could not be inspected ({error})"),
                 ));
                 return outcome;
+            }
+        };
+
+        if journal_exists {
+            match recover_interrupted_migration(paths) {
+                Ok(published_at) => outcome.published_at = published_at,
+                Err(reason) => {
+                    outcome.warnings.push(catalog_diagnostic(
+                        REPORT_CODE_MIGRATION_CONFLICT,
+                        &paths.journal,
+                        reason,
+                    ));
+                    return outcome;
+                }
+            }
+        } else if backup_exists {
+            match resume_backup_only_migration(paths, legacy_catalog_dir) {
+                Ok(published_at) => outcome.published_at = published_at,
+                Err(reason) => {
+                    outcome.warnings.push(catalog_diagnostic(
+                        REPORT_CODE_MIGRATION_CONFLICT,
+                        &paths.backup,
+                        reason,
+                    ));
+                    return outcome;
+                }
             }
         }
     }
@@ -3353,15 +3374,20 @@ fn initialize_catalog_under_lock(
                 }
                 CatalogBaseKind::ForeignManaged => {}
                 CatalogBaseKind::Legacy => {
-                    match migrate_legacy(paths, MIGRATION_SOURCE_PROJECT, &paths.base, &bytes) {
-                        Ok(published_at) => {
-                            outcome.published_at = published_at.or(outcome.published_at)
+                    // #2021: a legacy instance file is the migration source for
+                    // future projects; the instance scope never migrates or
+                    // rewrites it in place.
+                    if scope == InitScope::Project {
+                        match migrate_legacy(paths, MIGRATION_SOURCE_PROJECT, &paths.base, &bytes) {
+                            Ok(published_at) => {
+                                outcome.published_at = published_at.or(outcome.published_at)
+                            }
+                            Err(reason) => outcome.warnings.push(catalog_diagnostic(
+                                REPORT_CODE_MIGRATION_CONFLICT,
+                                &paths.base,
+                                reason,
+                            )),
                         }
-                        Err(reason) => outcome.warnings.push(catalog_diagnostic(
-                            REPORT_CODE_MIGRATION_CONFLICT,
-                            &paths.base,
-                            reason,
-                        )),
                     }
                 }
             }
@@ -3383,8 +3409,26 @@ fn initialize_catalog_under_lock(
                 },
                 None => None,
             };
+            // #2021 2.3: a MANAGED (or foreign-managed) instance base is not
+            // importable legacy territory; importing it would fail with
+            // MIGRATION_CONFLICT and leave the project without a catalog, so
+            // fresh-seed the project's own managed base instead. A marker-less
+            // legacy file, or bytes this build cannot parse, stay on the
+            // existing migration path unchanged (it already reports corrupt
+            // input).
+            let instance_is_managed = match (instance_bytes.as_deref(), instance_path.as_ref()) {
+                (Some(bytes), Some(path)) => matches!(
+                    analyze_base_bytes(path, bytes),
+                    Ok(analysis)
+                        if matches!(
+                            analysis.kind,
+                            CatalogBaseKind::Managed | CatalogBaseKind::ForeignManaged
+                        )
+                ),
+                _ => false,
+            };
             match (instance_bytes, instance_path) {
-                (Some(bytes), Some(path)) => {
+                (Some(bytes), Some(path)) if !instance_is_managed => {
                     match migrate_legacy(paths, MIGRATION_SOURCE_INSTANCE, &path, &bytes) {
                         Ok(published_at) => outcome.published_at = published_at,
                         Err(reason) => outcome.warnings.push(catalog_diagnostic(
@@ -3416,6 +3460,28 @@ fn run_catalog_initialization(
     ac_dir: &Path,
     legacy_catalog_dir: Option<&Path>,
 ) -> CatalogInitOutcome {
+    run_catalog_initialization_with_scope(ac_dir, legacy_catalog_dir, InitScope::Project)
+}
+
+/// #2021: initialize or refresh the INSTANCE catalog at
+/// `<config_dir>/coding-agents/agents.json` when no project is registered, so
+/// the first-run Welcome surface lists the built-in coding agents.
+///
+/// Same lock discipline, path resolution and fail-soft logging as
+/// [`run_catalog_initialization`], with instance semantics: a fresh or stale
+/// managed base is initialized or refreshed, while a legacy, foreign-managed,
+/// edited or corrupt instance file is never rewritten and never migrated. The
+/// instance neither imports from nor publishes to another location. Returns
+/// the publication time when the managed base was actually written.
+pub(crate) fn ensure_seeded_instance(config_dir: &Path) -> Option<DateTime<Utc>> {
+    run_catalog_initialization_with_scope(config_dir, None, InitScope::Instance).published_at
+}
+
+fn run_catalog_initialization_with_scope(
+    ac_dir: &Path,
+    legacy_catalog_dir: Option<&Path>,
+    scope: InitScope,
+) -> CatalogInitOutcome {
     let dir = match ensure_catalog_dir(ac_dir) {
         Ok(dir) => dir,
         Err(reason) => {
@@ -3445,7 +3511,7 @@ fn run_catalog_initialization(
             }
         }
     };
-    let outcome = initialize_catalog_under_lock(&paths, legacy_catalog_dir);
+    let outcome = initialize_catalog_under_lock(&paths, legacy_catalog_dir, scope);
     for warning in &outcome.warnings {
         log::warn!(
             "[coding-agents] {} at {}: {}",
@@ -7740,7 +7806,7 @@ mod tests {
             .expect("direct refreshFailed");
         assert_eq!(
             warning.reason,
-            "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Project catalog refresh runs during initialization; instance catalogs remain read-only."
+            "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Catalog refresh runs during initialization."
         );
         assert_eq!(
             warning.path,
@@ -7786,7 +7852,7 @@ mod tests {
             .expect("instance refreshFailed");
         assert_eq!(
             warning.reason,
-            "The persisted instance catalog revision differs from this build. Current persisted entries remain usable. Instance catalogs are read-only; select a project to initialize or refresh its catalog."
+            "The persisted instance catalog revision differs from this build. Current persisted entries remain usable. Restart retries instance catalog refresh when no project is registered."
         );
         assert_eq!(
             warning.path,
@@ -8565,6 +8631,334 @@ mod tests {
         assert!(
             acquired.is_ok(),
             "a crashed holder releases the OS lock: {acquired:?}"
+        );
+    }
+
+    // ---- #2021: no-project instance catalog seeding ------------------------
+
+    /// The no-project report as the settings wrapper builds it for `config_dir`.
+    fn instance_report(config_dir: &Path) -> CatalogReport {
+        load_catalog_report_for_settings_with_config_dir(
+            &AppSettings::default(),
+            Some(config_dir.to_path_buf()),
+        )
+    }
+
+    /// Catalog-directory entries minus the lock file that every initialization
+    /// creates.
+    fn non_lock_entries(root: &Path) -> Vec<String> {
+        let mut names: Vec<String> = dir_entries(&catalog_dir(root))
+            .into_iter()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        names.retain(|name| name != CATALOG_LOCK_FILENAME);
+        names
+    }
+
+    /// AC-1: a fresh config dir with no project seeds the instance managed base
+    /// and the no-project report lists exactly the supported built-ins.
+    #[test]
+    fn ensure_seeded_instance_fresh_config_dir_seeds_the_supported_builtins() {
+        let instance = seed_dir();
+        let published = ensure_seeded_instance(instance.path());
+        assert!(published.is_some(), "an absent instance base is created");
+
+        let report = instance_report(instance.path());
+        assert!(report.unavailable.is_none(), "{:?}", report.unavailable);
+        let expected: Vec<String> = supported_shipped_definitions()
+            .into_iter()
+            .map(|definition| definition.key)
+            .collect();
+        let actual: Vec<String> = report
+            .catalog
+            .iter()
+            .map(|definition| definition.key.clone())
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "exactly the supported built-in keys in persisted order"
+        );
+        assert_eq!(
+            std::fs::read(local_catalog_path(instance.path())).unwrap(),
+            LOCAL_STUB_BYTES,
+            "the create-once local stub is part of a fresh instance seed"
+        );
+    }
+
+    /// AC-2: a second call leaves the base bytes alone and publishes nothing.
+    #[test]
+    fn ensure_seeded_instance_is_idempotent() {
+        let instance = seed_dir();
+        assert!(ensure_seeded_instance(instance.path()).is_some());
+        let base_before = std::fs::read(manifest_path(instance.path())).unwrap();
+        let local_before = std::fs::read(local_catalog_path(instance.path())).unwrap();
+
+        assert!(ensure_seeded_instance(instance.path()).is_none());
+        assert_eq!(
+            std::fs::read(manifest_path(instance.path())).unwrap(),
+            base_before
+        );
+        assert_eq!(
+            std::fs::read(local_catalog_path(instance.path())).unwrap(),
+            local_before
+        );
+    }
+
+    /// AC-3: a marker-less legacy instance file is never migrated, rewritten or
+    /// accompanied by sidecars.
+    #[test]
+    fn ensure_seeded_instance_leaves_a_legacy_instance_file_untouched() {
+        let instance = seed_dir();
+        let legacy = String::from_utf8(legacy_catalog_json()).expect("utf-8 legacy fixture");
+        write_legacy_base(instance.path(), &legacy);
+        let bytes_before = std::fs::read(manifest_path(instance.path())).unwrap();
+
+        assert!(ensure_seeded_instance(instance.path()).is_none());
+        assert_eq!(
+            std::fs::read(manifest_path(instance.path())).unwrap(),
+            bytes_before
+        );
+        assert_eq!(
+            non_lock_entries(instance.path()),
+            vec![CATALOG_MANIFEST_FILENAME.to_string()],
+            "a legacy instance file creates no local, backup or journal sidecar"
+        );
+        let report = instance_report(instance.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(
+            report
+                .catalog
+                .iter()
+                .map(|definition| definition.key.as_str())
+                .collect::<Vec<_>>(),
+            ["mine"],
+            "the legacy instance file stays readable as before"
+        );
+    }
+
+    /// AC-4: corrupt instance bytes are preserved and the report keeps the same
+    /// unavailability code before and after the call.
+    #[test]
+    fn ensure_seeded_instance_leaves_a_corrupt_instance_file_untouched() {
+        let instance = seed_dir();
+        write_legacy_base(instance.path(), "{ not JSON");
+        let bytes_before = std::fs::read(manifest_path(instance.path())).unwrap();
+        let code_before = instance_report(instance.path())
+            .unavailable
+            .as_ref()
+            .map(|diagnostic| diagnostic.code.clone());
+        assert_eq!(code_before.as_deref(), Some("baseInvalid"));
+
+        assert!(ensure_seeded_instance(instance.path()).is_none());
+        assert_eq!(
+            std::fs::read(manifest_path(instance.path())).unwrap(),
+            bytes_before
+        );
+        let code_after = instance_report(instance.path())
+            .unavailable
+            .as_ref()
+            .map(|diagnostic| diagnostic.code.clone());
+        assert_eq!(code_after, code_before);
+    }
+
+    /// AC-5: a MANAGED instance base must not be imported as legacy territory
+    /// by a later project; the project gets a fresh managed base instead of
+    /// MIGRATION_CONFLICT. This drives the same production initialization path
+    /// that `ensure_seeded_for_project_with_token` uses, with the instance
+    /// catalog dir injected explicitly because the process-global `config_dir()`
+    /// has no test seam.
+    #[test]
+    fn managed_instance_base_does_not_block_a_later_project_fresh_seed() {
+        let instance = seed_dir();
+        assert!(ensure_seeded_instance(instance.path()).is_some());
+        assert_eq!(
+            base_json(instance.path())["managed"]["owner"],
+            "agentscommander"
+        );
+
+        let project = seed_dir();
+        let ac_dir = ac_dir_for(project.path());
+        let outcome = run_catalog_initialization(&ac_dir, Some(&catalog_dir(instance.path())));
+        assert!(
+            !outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "migrationConflict"),
+            "a managed instance base must not be imported as legacy territory: {:?}",
+            outcome.warnings
+        );
+        assert!(
+            outcome.published_at.is_some(),
+            "the project fresh-seeds its own managed base"
+        );
+
+        let base = base_json(&ac_dir);
+        assert_eq!(base["managed"]["owner"], "agentscommander");
+        assert_eq!(
+            std::fs::read(local_catalog_path(&ac_dir)).unwrap(),
+            LOCAL_STUB_BYTES,
+            "the project's own local stub is published"
+        );
+        let entries = non_lock_entries(&ac_dir);
+        assert!(
+            !entries.contains(&MIGRATION_BACKUP_FILENAME.to_string())
+                && !entries.contains(&MIGRATION_JOURNAL_FILENAME.to_string()),
+            "no project backup or journal may be written: {entries:?}"
+        );
+
+        let report = load_catalog_report_for_settings_with_config_dir(
+            &AppSettings {
+                project_paths: vec![project.path().to_string_lossy().to_string()],
+                ..AppSettings::default()
+            },
+            None,
+        );
+        assert!(report.unavailable.is_none(), "{:?}", report.unavailable);
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "migrationConflict"),
+            "the managed instance base must not be imported: {:?}",
+            report.warnings
+        );
+        assert_eq!(report.catalog.len(), 8);
+    }
+
+    /// AC-8: an existing instance local layer still wins over the seeded base
+    /// with no project registered.
+    #[test]
+    fn ensure_seeded_instance_local_overrides_win_with_no_project() {
+        let instance = seed_dir();
+        write_local(
+            instance.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"MY CLAUDE","updateCommands":["my-claude-update"]}]}"##,
+        );
+        let local_before = std::fs::read(local_catalog_path(instance.path())).unwrap();
+
+        assert!(ensure_seeded_instance(instance.path()).is_some());
+        assert_eq!(
+            std::fs::read(local_catalog_path(instance.path())).unwrap(),
+            local_before
+        );
+
+        let report = instance_report(instance.path());
+        assert!(report.unavailable.is_none());
+        let claude = report
+            .catalog
+            .iter()
+            .find(|definition| definition.key == "claude")
+            .expect("claude present");
+        assert_eq!(claude.label, "MY CLAUDE");
+        assert_eq!(
+            claude.update_commands,
+            vec!["my-claude-update".to_string()],
+            "the local override wins over the shipped command list"
+        );
+        let codex = report
+            .catalog
+            .iter()
+            .find(|definition| definition.key == "codex")
+            .expect("codex present");
+        assert_eq!(codex.label, "Codex", "unpinned agents keep shipped values");
+    }
+
+    /// AC-9: a stale verified managed instance base is refreshed to the current
+    /// fresh-seed bytes; an edited one is never replaced.
+    #[test]
+    fn ensure_seeded_instance_refreshes_only_a_stale_verified_base() {
+        let stale = seed_dir();
+        let mut claude = shipped_def_json(&["claude"]).remove(0);
+        claude["label"] = serde_json::json!("OLD LABEL");
+        write_managed_base(stale.path(), &[claude], "stale-revision", true);
+        assert!(
+            ensure_seeded_instance(stale.path()).is_some(),
+            "a stale managed instance base refreshes"
+        );
+        let refreshed = std::fs::read(manifest_path(stale.path())).unwrap();
+        assert_eq!(
+            base_json(stale.path())["managed"]["revision"],
+            managed_content_sha256(&supported_shipped_definitions())
+        );
+        let fresh = seed_dir();
+        assert!(ensure_seeded_instance(fresh.path()).is_some());
+        assert_eq!(
+            refreshed,
+            std::fs::read(manifest_path(fresh.path())).unwrap(),
+            "the refreshed bytes equal a fresh instance seed"
+        );
+        let report = instance_report(stale.path());
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "refreshFailed"),
+            "a successful refresh leaves no stale-revision warning: {:?}",
+            report.warnings
+        );
+        assert_eq!(report.catalog.len(), 8);
+
+        // Edited managed base: readable but never replaced.
+        let edited = seed_dir();
+        write_managed_base(
+            edited.path(),
+            &shipped_def_json(&["claude"]),
+            "stale-revision",
+            false,
+        );
+        let edited_before = std::fs::read(manifest_path(edited.path())).unwrap();
+        assert!(ensure_seeded_instance(edited.path()).is_none());
+        assert_eq!(
+            std::fs::read(manifest_path(edited.path())).unwrap(),
+            edited_before
+        );
+    }
+
+    /// AC-10: an existing local layer with an absent base is kept verbatim and
+    /// its overrides show in the report.
+    #[test]
+    fn ensure_seeded_instance_keeps_an_existing_local_with_an_absent_base() {
+        let instance = seed_dir();
+        write_local(
+            instance.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"pi","label":"PINNED PI"}]}"##,
+        );
+        let local_before = std::fs::read(local_catalog_path(instance.path())).unwrap();
+
+        assert!(ensure_seeded_instance(instance.path()).is_some());
+        assert_eq!(
+            std::fs::read(local_catalog_path(instance.path())).unwrap(),
+            local_before,
+            "the create-once stub never overwrites an existing local layer"
+        );
+        let report = instance_report(instance.path());
+        assert!(report.unavailable.is_none());
+        let pi = report
+            .catalog
+            .iter()
+            .find(|definition| definition.key == "pi")
+            .expect("pi present");
+        assert_eq!(pi.label, "PINNED PI");
+    }
+
+    /// 2.2 instance policy: a foreign journal beside the instance catalog is
+    /// never resumed, rewritten or removed; the base still fresh-seeds.
+    #[test]
+    fn ensure_seeded_instance_never_resumes_a_foreign_sidecar() {
+        let instance = seed_dir();
+        let journal_path = catalog_dir(instance.path()).join(MIGRATION_JOURNAL_FILENAME);
+        std::fs::create_dir_all(journal_path.parent().unwrap()).unwrap();
+        std::fs::write(&journal_path, b"{ foreign journal }").unwrap();
+        let journal_before = std::fs::read(&journal_path).unwrap();
+
+        assert!(
+            ensure_seeded_instance(instance.path()).is_some(),
+            "the instance base still fresh-seeds"
+        );
+        assert_eq!(
+            std::fs::read(&journal_path).unwrap(),
+            journal_before,
+            "the instance never resumes or rewrites a foreign journal"
         );
     }
 }
