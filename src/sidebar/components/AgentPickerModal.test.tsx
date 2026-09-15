@@ -616,7 +616,9 @@ describe("AgentPickerModal", () => {
     expect(target("agentPicker.comparison.row.claude").getAttribute("data-ac-state")).toBe("active");
     expect(text("agentPicker.comparison.row.claude")).toContain("Claude Code");
     expect(text("agentPicker.comparison.row.claude")).toContain("A direct");
-    expect(text("agentPicker.comparison.row.claude")).not.toContain("claude --dangerously-skip-permissions");
+    expect(text("agentPicker.comparison.row.claude.launchLine")).toBe(
+      "claude claude --dangerously-skip-permissions",
+    );
 
     dispose();
   });
@@ -700,7 +702,9 @@ describe("AgentPickerModal", () => {
     expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("active");
     expect(target("agentPicker.comparison.row.claude").getAttribute("data-ac-state")).toBe("active");
     expect(text("agentPicker.comparison.row.claude")).toContain("A direct");
-    expect(text("agentPicker.comparison.row.claude")).not.toContain("claude --dangerously-skip-permissions");
+    expect(text("agentPicker.comparison.row.claude.launchLine")).toBe(
+      "claude claude --dangerously-skip-permissions",
+    );
 
     dispose();
   });
@@ -2082,7 +2086,7 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    it("places the lock bar above the three-panel body and keeps the review over the modal", async () => {
+    it("places the lock bar below the three-panel body and keeps the review over the modal", async () => {
       const { dispose } = renderLockPicker();
       await settle();
 
@@ -2090,11 +2094,11 @@ describe("AgentPickerModal", () => {
       const bar = target("agentPicker.lockBar");
       const body = modal.querySelector(".agent-profile-assignment-body");
       expect(body).toBeTruthy();
-      // The bar is a flex child of the modal, ABOVE the body: the CSS gives it
-      // flex: 0 0 auto and a bottom border, so DOM order IS the layout contract.
+      // Layout A (#2014): the bar is a flex child of the modal BELOW the
+      // three-panel body, so DOM order IS the layout contract.
       expect(bar.parentElement).toBe(modal);
       expect(
-        bar.compareDocumentPosition(body!) & Node.DOCUMENT_POSITION_FOLLOWING,
+        body!.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
 
       await armKindLockAndReview();
@@ -2103,6 +2107,33 @@ describe("AgentPickerModal", () => {
       // modal's own overflow, which is why it is a sibling of the modal.
       expect(modal.parentElement?.classList.contains("modal-overlay")).toBe(true);
       expect(dialog.parentElement).toBe(modal.parentElement);
+
+      dispose();
+    });
+
+    it("O1 layout A order: body, lock bar, Matrix default, Apply to, action bar last", async () => {
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      const modal = target("agentPicker.modal");
+      const follows = (first: Element, second: Element) =>
+        (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+      const header = modal.querySelector(".agent-picker-modal-header")!;
+      const body = modal.querySelector(".agent-profile-assignment-body")!;
+      const lockBar = target("agentPicker.lockBar");
+      const defaultSection = target("agentPicker.defaultSection");
+      const botonera = modal.querySelector(".agent-picker-botonera")!;
+
+      expect(follows(header, body)).toBe(true);
+      expect(follows(body, lockBar)).toBe(true);
+      expect(follows(lockBar, defaultSection)).toBe(true);
+      expect(follows(defaultSection, botonera)).toBe(true);
+      expect(modal.lastElementChild).toBe(botonera);
+      expect(botonera.lastElementChild?.classList.contains("agent-picker-bar")).toBe(true);
+      // Cancel and Assign exist exactly once; the action bar is the last block.
+      expect(document.querySelectorAll('[data-ac-testid="agentPicker.cancel"]')).toHaveLength(1);
+      expect(document.querySelectorAll('[data-ac-testid="agentPicker.apply"]')).toHaveLength(1);
 
       dispose();
     });
@@ -2120,6 +2151,260 @@ describe("AgentPickerModal", () => {
       expect(mockSettingsApi.getReplicaSelectionDefault).not.toHaveBeenCalled();
       expect(mockSettingsApi.setReplicaSelectionDefault).not.toHaveBeenCalled();
       expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      dispose();
+    });
+  });
+
+  describe("#2014 launch lines and left-only filter", () => {
+    async function setAgentFilter(value: string): Promise<void> {
+      const input = target<HTMLInputElement>("agentPicker.agentFilter");
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+    }
+
+    function renderWgPicker(overrides: Parameters<typeof renderPicker>[0] = {}) {
+      return renderPicker({
+        agentPath: WG_REPLICA_PATH,
+        scopeContext: WG_SCOPE_CONTEXT,
+        currentRequestedProfile: "A",
+        ...overrides,
+      });
+    }
+
+    it("L1 shows each agent's full launch line instead of configured peer", async () => {
+      const { dispose } = renderPicker({ agentPath: REPO_PATH });
+      await settle();
+
+      expect(text("agentPicker.comparison.row.codex.launchLine")).toBe("codex codex --model gpt-5");
+      expect(text("agentPicker.comparison.row.claude.launchLine")).toBe(
+        "claude claude --dangerously-skip-permissions",
+      );
+      const comparison = text("agentPicker.comparison");
+      expect(comparison).not.toContain("configured peer");
+      expect(comparison).not.toContain("selected coding agent");
+
+      dispose();
+    });
+
+    it("L2 launch line follows the effective profile after fallback", async () => {
+      const { dispose } = renderPicker({ agentPath: REPO_PATH });
+      await settle();
+
+      target<HTMLButtonElement>("agentPicker.profile.C").click();
+      await settle();
+
+      // codex C -> B (B is the last enabled cell below C); claude C -> B -> A.
+      expect(text("agentPicker.comparison.row.codex.launchLine")).toBe("codex codex --profile fast");
+      expect(text("agentPicker.comparison.row.claude.launchLine")).toBe(
+        "claude claude --dangerously-skip-permissions",
+      );
+      expect(target("agentPicker.comparison.row.codex").getAttribute("data-ac-profile-status")).toBe(
+        "fallback",
+      );
+      expect(target("agentPicker.comparison.row.claude").getAttribute("data-ac-profile-status")).toBe(
+        "fallback",
+      );
+
+      dispose();
+    });
+
+    it("L3 launch line ignores a disabled cell and mirrors the backend fallback case", async () => {
+      const base = settings();
+      currentSettings = settings({
+        codingAgentProfiles: {
+          ...base.codingAgentProfiles,
+          profileSlots: { ...base.codingAgentProfiles.profileSlots, D: { label: "" } },
+          profilesByAgent: {
+            ...base.codingAgentProfiles.profilesByAgent,
+            codex: {
+              A: { enabled: true, command: "codex --a", env: {}, notes: "" },
+              C: { enabled: true, command: "codex --c", env: {}, notes: "" },
+              D: { enabled: false, command: "codex --d", env: {}, notes: "" },
+            },
+          },
+        },
+      });
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      const { dispose } = renderPicker({ agentPath: REPO_PATH });
+      await settle();
+
+      target<HTMLButtonElement>("agentPicker.profile.D").click();
+      await settle();
+
+      // The disabled D is skipped by resolution, never composed into the line.
+      expect(text("agentPicker.comparison.row.codex.launchLine")).toBe("codex codex --c");
+
+      dispose();
+    });
+
+    it("L4 launch line drops a disabled profile A to the bare command", async () => {
+      const base = settings();
+      currentSettings = settings({
+        codingAgentProfiles: {
+          ...base.codingAgentProfiles,
+          profilesByAgent: {
+            ...base.codingAgentProfiles.profilesByAgent,
+            codex: { A: { enabled: false, command: "codex --a", env: {}, notes: "" } },
+          },
+        },
+      });
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      const { dispose } = renderPicker({ agentPath: REPO_PATH });
+      await settle();
+
+      // Resolution always stops at A, so only `enabled` can hide `--a`.
+      expect(target("agentPicker.profile.A").getAttribute("data-ac-state")).toBe("active");
+      expect(text("agentPicker.comparison.row.codex.launchLine")).toBe("codex");
+
+      dispose();
+    });
+
+    it("F1 filters only the left list by name, executable, argument and case", async () => {
+      const { dispose } = renderPicker({ agentPath: REPO_PATH });
+      await settle();
+
+      const present = (id: string) => maybe(`agentPicker.provider.${id}`) !== null;
+
+      await setAgentFilter("CLAUDE");
+      expect(present("claude")).toBe(true);
+      expect(present("codex")).toBe(false);
+
+      // Case-folding kill: only the lowercased label carries "claude code".
+      await setAgentFilter("CLAUDE CODE");
+      expect(present("claude")).toBe(true);
+      expect(present("codex")).toBe(false);
+
+      await setAgentFilter("codex");
+      expect(present("claude")).toBe(false);
+      expect(present("codex")).toBe(true);
+
+      // Argument-only match: "--model" is in the line, never in the label.
+      await setAgentFilter("--model");
+      expect(present("claude")).toBe(false);
+      expect(present("codex")).toBe(true);
+
+      await setAgentFilter("Dangerously");
+      expect(present("claude")).toBe(true);
+      expect(present("codex")).toBe(false);
+
+      dispose();
+    });
+
+    it("F2 right panel is byte-identical under every filter query, including zero matches", async () => {
+      const { dispose } = renderPicker({ agentPath: REPO_PATH });
+      await settle();
+
+      const before = target("agentPicker.comparison").outerHTML;
+      for (const query of ["claude", "--model"]) {
+        await setAgentFilter(query);
+        expect(target("agentPicker.comparison").outerHTML).toBe(before);
+      }
+
+      await setAgentFilter("zzz-no-match");
+      expect(target("agentPicker.comparison").outerHTML).toBe(before);
+      expect(maybe("agentPicker.provider.codex")).toBeNull();
+      expect(maybe("agentPicker.provider.claude")).toBeNull();
+      expect(text("agentPicker.agentFilterStatus")).toBe(
+        'No coding agent matches "zzz-no-match". Clear the filter to see all 2.',
+      );
+
+      await setAgentFilter("");
+      expect(target("agentPicker.comparison").outerHTML).toBe(before);
+      expect(maybe("agentPicker.provider.codex")).toBeTruthy();
+      expect(maybe("agentPicker.provider.claude")).toBeTruthy();
+      expect(text("agentPicker.agentFilterStatus")).toBe("2 agents");
+
+      dispose();
+    });
+
+    it("F3 filtering never changes selection, profile, radios or buttons", async () => {
+      const { dispose, onSelect } = renderWgPicker();
+      await settle();
+
+      target<HTMLButtonElement>("agentPicker.provider.claude").click();
+      await settle();
+      target<HTMLButtonElement>("agentPicker.profile.B").click();
+      await settle();
+
+      const previewCalls = mockSettingsApi.previewCodingAgentProfileSelection.mock.calls.length;
+      const applyCalls = mockSettingsApi.applyCodingAgentProfileSelection.mock.calls.length;
+      const applyDisabled = target<HTMLButtonElement>("agentPicker.apply").disabled;
+      const stateSnapshot = () => {
+        const map = new Map<string, string | null>();
+        document.querySelectorAll<HTMLElement>('[data-ac-testid^="agentPicker."]').forEach((element) => {
+          const id = element.getAttribute("data-ac-testid")!;
+          if (id.startsWith("agentPicker.provider.") || id.startsWith("agentPicker.agentFilter")) return;
+          map.set(id, element.getAttribute("data-ac-state"));
+        });
+        return map;
+      };
+      const before = stateSnapshot();
+
+      await setAgentFilter("codex");
+      expect(maybe("agentPicker.provider.claude")).toBeNull();
+      expect(target("agentPicker.provider.codex").getAttribute("data-ac-state")).not.toBe("active");
+      expect(target("agentPicker.provider.codex").getAttribute("aria-pressed")).toBe("false");
+      expect(target("agentPicker.comparison.row.claude").getAttribute("data-ac-state")).toBe("active");
+
+      await setAgentFilter("");
+      expect(stateSnapshot()).toEqual(before);
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(applyDisabled);
+      expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("active");
+      expect(target("agentPicker.provider.claude").getAttribute("aria-pressed")).toBe("true");
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledTimes(previewCalls);
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledTimes(applyCalls);
+      expect(onSelect).not.toHaveBeenCalled();
+
+      dispose();
+    });
+
+    it("F3b clicking a card while filtered selects that card", async () => {
+      const { dispose } = renderPicker({ agentPath: REPO_PATH });
+      await settle();
+
+      // Sorted order is Claude Code (0), Codex (1): an index taken from the
+      // filtered list would select claude instead of the clicked codex card.
+      await setAgentFilter("codex");
+      target<HTMLButtonElement>("agentPicker.provider.codex").click();
+      await settle();
+
+      expect(target("agentPicker.comparison.row.codex").getAttribute("data-ac-state")).toBe("active");
+      expect(target("agentPicker.comparison.row.claude").getAttribute("data-ac-state")).not.toBe("active");
+      expect(target("agentPicker.provider.codex").getAttribute("aria-pressed")).toBe("true");
+
+      dispose();
+    });
+
+    it("F4 keys typed in the filter do not move profile or selection", async () => {
+      const { dispose } = renderPicker({ agentPath: REPO_PATH });
+      await settle();
+
+      const input = target<HTMLInputElement>("agentPicker.agentFilter");
+      input.focus();
+      for (const key of ["ArrowRight", "ArrowLeft", "ArrowDown", "Enter"]) {
+        input.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+        await settle();
+        // Checked after EVERY key: ArrowRight then ArrowLeft would otherwise
+        // cancel each other out and hide a moved profile.
+        expect(target("agentPicker.profile.A").getAttribute("data-ac-state")).toBe("active");
+        expect(target("agentPicker.provider.codex").getAttribute("data-ac-state")).toBe("active");
+        expect(target("agentPicker.comparison.row.codex").getAttribute("data-ac-state")).toBe("active");
+      }
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).not.toHaveBeenCalled();
+
+      dispose();
+    });
+
+    it("F5 filter is labelled and placed right before the first card", async () => {
+      const { dispose } = renderPicker({ agentPath: REPO_PATH });
+      await settle();
+
+      const input = target<HTMLInputElement>("agentPicker.agentFilter");
+      expect(input.labels && input.labels[0]?.textContent).toBe("Filter by name or start line");
+      const wrapper = input.closest(".agent-profile-provider-filter");
+      expect(wrapper?.nextElementSibling).toBe(target("agentPicker.providers"));
 
       dispose();
     });

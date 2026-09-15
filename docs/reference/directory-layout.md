@@ -110,7 +110,7 @@ This deployment's selected machine-local application state. Never commit or shar
 | Entry | What it is |
 |---|---|
 | `instances/<uuid>/outbox/` | App outbox for the current run; AC removes stale instance dirs at boot |
-| `coding-agents/` | Legacy catalog location: read and seed source only. Since #1318 the managed catalog is the project's `.ac/coding-agents/`; with no project AC may read an existing `agents.json` here, but it never seeds, migrates or creates sidecars in the instance, and nothing is written here |
+| `coding-agents/` | Instance catalog directory. For a project it is the legacy read and migration source, and since #1318 the managed catalog is the project's `.ac/coding-agents/`. With no registered project, startup seeds or refreshes a managed catalog here (`agents.json`, the `agents.local.json` stub and the lock file); it never migrates a legacy file here |
 | `context-cache/` | Rendered session contexts (`ac-context-*.md`) |
 | `pty-input-locks/` | PTY input serialization locks |
 | `git-guard/` | Windows git guard shim (`git.cmd`, `git-guard.ps1`) that wraps git for guarded subprocesses |

@@ -154,11 +154,11 @@ pub enum CodingAgentEnvSource {
 pub struct CodingAgentProfilesConfig {
     #[serde(default = "default_profiles_schema_version")]
     pub schema_version: u32,
-    #[serde(default = "default_profile_slots", alias = "letters")]
+    #[serde(default = "default_profile_slots")]
     pub profile_slots: BTreeMap<String, ProfileSlotConfig>,
-    #[serde(default, alias = "agentDefaults")]
+    #[serde(default)]
     pub default_profile_by_agent: BTreeMap<String, String>,
-    #[serde(default, alias = "matrix")]
+    #[serde(default)]
     pub profiles_by_agent: BTreeMap<String, BTreeMap<String, ProfileCellConfig>>,
     /// #548: per-(agent, letter) label override. Empty for an agent/letter means
     /// "inherit": primigenio (agents[0]) label, else legacy profile_slots[letter].label,
@@ -183,7 +183,7 @@ impl Default for CodingAgentProfilesConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileSlotConfig {
-    #[serde(default, alias = "name")]
+    #[serde(default)]
     pub label: String,
 }
 
@@ -1770,15 +1770,15 @@ fn parse_settings_json(
 ) -> Result<(AppSettings, bool), String> {
     let mut value: Value = serde_json::from_str(contents)
         .map_err(|e| format!("Failed to parse settings file: {}", e))?;
-    let migrated = migrate_settings_value_to_v2(&mut value);
+    let legacy_profiles = value.as_object().is_some_and(legacy_profiles_shape_present);
     // #1737 (D21): the clone must be taken BEFORE the merge, because the merge is
     // in place and the overlay's presence is not known until it returns. Gated on
     // `settings_path.is_some()`, which is true on all three production loaders and
     // false on the in-module test call sites. Cost: one Value clone per load.
     let pre_merge = settings_path.map(|_| value.clone());
-    // #1737 (D5): the merge point, after the v2 migration and before the project
-    // decode. Merging after the migration keeps the `migrated` flag a property of
-    // the base file alone and makes the B7 cross-key edge impossible.
+    // #1737 (D5): the merge point, after the legacy-shape detection and before the
+    // project decode. Merging after the detection keeps the `legacy_profiles` flag
+    // a property of the base file alone and makes the B7 cross-key edge impossible.
     let mut overlay = match settings_path {
         Some(p) => LocalSettingsOverlay::load_and_merge(
             p,
@@ -1820,7 +1820,45 @@ fn parse_settings_json(
     settings.project_path_state = Arc::new(state);
     report_overlay_diagnostics(source, &overlay);
     settings.local_overlay_state = Arc::new(overlay);
-    Ok((settings, migrated))
+    Ok((settings, legacy_profiles))
+}
+
+/// #2015: legacy pre-v2 codingAgentProfiles are no longer migrated. Detection only;
+/// never mutates the value.
+fn legacy_profiles_shape_present(root: &Map<String, Value>) -> bool {
+    let Some(p) = root.get("codingAgentProfiles").and_then(Value::as_object) else {
+        return false;
+    };
+    if ["letters", "matrix", "agentDefaults"]
+        .iter()
+        .any(|key| p.contains_key(*key))
+    {
+        return true;
+    }
+    if matches!(p.get("schemaVersion"), Some(Value::Number(n)) if n.as_f64().is_some_and(|v| v < 2.0))
+    {
+        return true;
+    }
+    if p.get("profileSlots")
+        .and_then(Value::as_object)
+        .is_some_and(|slots| {
+            slots
+                .values()
+                .any(|slot| slot.as_object().is_some_and(|s| s.contains_key("name")))
+        })
+    {
+        return true;
+    }
+    p.get("profilesByAgent")
+        .and_then(Value::as_object)
+        .is_some_and(|by_agent| {
+            by_agent.values().filter_map(Value::as_object).any(|cells| {
+                cells
+                    .values()
+                    .filter_map(Value::as_object)
+                    .any(|cell| cell.contains_key("argv") || cell.contains_key("args"))
+            })
+        })
 }
 
 /// #1737 (D15) - the settings value when the base `settings.json` is absent,
@@ -1867,212 +1905,6 @@ fn default_settings_with_overlay(settings_path: &Path, source: &str) -> AppSetti
             AppSettings::default()
         }
     }
-}
-
-fn migrate_settings_value_to_v2(value: &mut Value) -> bool {
-    let Some(root) = value.as_object_mut() else {
-        return false;
-    };
-    let agent_commands = agent_command_map_from_value(root.get("agents"));
-    let Some(profiles_value) = root.get_mut("codingAgentProfiles") else {
-        return false;
-    };
-    let Some(profiles_obj) = profiles_value.as_object() else {
-        return false;
-    };
-    let migrated_profiles = migrate_profiles_object_to_v2(profiles_obj, &agent_commands);
-    let changed = *profiles_value != migrated_profiles;
-    if changed {
-        *profiles_value = migrated_profiles;
-    }
-    changed
-}
-
-fn agent_command_map_from_value(value: Option<&Value>) -> BTreeMap<String, String> {
-    value
-        .and_then(Value::as_array)
-        .map(|agents| {
-            agents
-                .iter()
-                .filter_map(|agent| {
-                    let obj = agent.as_object()?;
-                    let id = obj.get("id")?.as_str()?;
-                    let command = obj.get("command")?.as_str()?;
-                    Some((id.to_string(), command.to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn migrate_profiles_object_to_v2(
-    obj: &Map<String, Value>,
-    agent_commands: &BTreeMap<String, String>,
-) -> Value {
-    let mut out = Map::new();
-    out.insert("schemaVersion".to_string(), Value::Number(2.into()));
-    out.insert(
-        "profileSlots".to_string(),
-        migrate_profile_slots(obj.get("profileSlots").or_else(|| obj.get("letters"))),
-    );
-    out.insert(
-        "defaultProfileByAgent".to_string(),
-        obj.get("defaultProfileByAgent")
-            .or_else(|| obj.get("agentDefaults"))
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new())),
-    );
-    out.insert(
-        "profilesByAgent".to_string(),
-        migrate_profiles_by_agent(
-            obj.get("profilesByAgent").or_else(|| obj.get("matrix")),
-            agent_commands,
-        ),
-    );
-    Value::Object(out)
-}
-
-fn migrate_profile_slots(value: Option<&Value>) -> Value {
-    let mut out = Map::new();
-    if let Some(slots) = value.and_then(Value::as_object) {
-        for (letter, slot) in slots {
-            let label = slot
-                .get("label")
-                .or_else(|| slot.get("name"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            out.insert(
-                letter.clone(),
-                serde_json::json!({
-                    "label": label,
-                }),
-            );
-        }
-    }
-    if !out.contains_key("A") {
-        out.insert("A".to_string(), serde_json::json!({ "label": "" }));
-    }
-    Value::Object(out)
-}
-
-fn migrate_profiles_by_agent(
-    value: Option<&Value>,
-    agent_commands: &BTreeMap<String, String>,
-) -> Value {
-    let mut out = Map::new();
-    if let Some(by_agent) = value.and_then(Value::as_object) {
-        for (agent_id, cells_value) in by_agent {
-            let mut cells_out = Map::new();
-            if let Some(cells) = cells_value.as_object() {
-                for (letter, cell_value) in cells {
-                    cells_out.insert(
-                        letter.clone(),
-                        migrate_profile_cell(agent_id, letter, cell_value, agent_commands),
-                    );
-                }
-            }
-            out.insert(agent_id.clone(), Value::Object(cells_out));
-        }
-    }
-    Value::Object(out)
-}
-
-fn migrate_profile_cell(
-    agent_id: &str,
-    letter: &str,
-    value: &Value,
-    agent_commands: &BTreeMap<String, String>,
-) -> Value {
-    let Some(obj) = value.as_object() else {
-        return serde_json::json!({
-            "enabled": false,
-            "command": "",
-            "env": {},
-            "notes": "",
-        });
-    };
-
-    let mut enabled = obj.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-    let command = obj
-        .get("command")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let legacy_argv = legacy_string_array(obj.get("argv"));
-    let legacy_args = legacy_string_array(obj.get("args"));
-    if legacy_argv.is_some() && legacy_args.is_some() {
-        log::warn!(
-            "[settings-migration] profile {}:{} has both legacy argv and args; args ignored",
-            agent_id,
-            letter
-        );
-    }
-    let legacy_tokens = legacy_argv.or(legacy_args);
-    let command = command.unwrap_or_else(|| {
-        let Some(legacy_tokens) = legacy_tokens else {
-            return String::new();
-        };
-        match agent_commands.get(agent_id) {
-            Some(agent_command) => {
-                match crate::config::agent_command::normalize_legacy_agent_command(agent_command) {
-                    Ok(normalized) => {
-                        let mut tokens = Vec::with_capacity(1 + normalized.shell_args.len() + legacy_tokens.len());
-                        tokens.push(normalized.shell);
-                        tokens.extend(normalized.shell_args);
-                        tokens.extend(legacy_tokens);
-                        crate::config::agent_command::stringify_agent_command_tokens(&tokens)
-                    }
-                    Err(e) => {
-                        enabled = false;
-                        log::error!(
-                            "[settings-migration] profile {}:{} could not parse owning agent command {:?}: {}; preserving legacy args disabled",
-                            agent_id,
-                            letter,
-                            agent_command,
-                            e
-                        );
-                        crate::config::agent_command::stringify_agent_command_tokens(&legacy_tokens)
-                    }
-                }
-            }
-            None => {
-                enabled = false;
-                log::warn!(
-                    "[settings-migration] profile {}:{} has legacy args but no owning agent command; preserving disabled",
-                    agent_id,
-                    letter
-                );
-                crate::config::agent_command::stringify_agent_command_tokens(&legacy_tokens)
-            }
-        }
-    });
-
-    serde_json::json!({
-        "enabled": enabled,
-        "command": command,
-        "env": string_map_value(obj.get("env")),
-        "notes": obj.get("notes").and_then(Value::as_str).unwrap_or(""),
-    })
-}
-
-fn legacy_string_array(value: Option<&Value>) -> Option<Vec<String>> {
-    value.and_then(Value::as_array).map(|items| {
-        items
-            .iter()
-            .filter_map(|item| item.as_str().map(str::to_string))
-            .collect()
-    })
-}
-
-fn string_map_value(value: Option<&Value>) -> Value {
-    let mut out = Map::new();
-    if let Some(map) = value.and_then(Value::as_object) {
-        for (key, value) in map {
-            if let Some(value) = value.as_str() {
-                out.insert(key.clone(), Value::String(value.to_string()));
-            }
-        }
-    }
-    Value::Object(out)
 }
 
 pub fn empty_profile_cell() -> ProfileCellConfig {
@@ -2646,8 +2478,8 @@ pub fn load_settings() -> AppSettings {
 /// through the real loader instead of reproducing the loader in a test. No
 /// production caller outside this module.
 pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
-    let mut profile_migrated_to_v2 = false;
-    let mut pre_migration_contents: Option<String> = None;
+    let mut legacy_profiles_detected = false;
+    let mut legacy_profiles_contents: Option<String> = None;
     let mut settings = if !path.exists() {
         log::info!("No settings file found at {:?}, using defaults", path);
         default_settings_with_overlay(path, &path.to_string_lossy())
@@ -2655,11 +2487,14 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
         match std::fs::read_to_string(path) {
             Ok(contents) => {
                 match parse_settings_json(&contents, &path.to_string_lossy(), Some(path)) {
-                    Ok((s, migrated)) => {
+                    Ok((s, legacy_profiles)) => {
                         log::debug!("Loaded settings from {:?}", path);
-                        if migrated {
-                            profile_migrated_to_v2 = true;
-                            pre_migration_contents = Some(contents);
+                        if legacy_profiles {
+                            legacy_profiles_detected = true;
+                            legacy_profiles_contents = Some(contents);
+                            log::warn!(
+                                "[settings-migration] #2015 legacy pre-v2 codingAgentProfiles fields are no longer supported and were ignored; v2 fields kept; original kept in settings.pre-384-v1.json"
+                            );
                         }
                         s
                     }
@@ -2729,7 +2564,7 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
     apply_issue_248_migration(&mut settings);
 
     // Auto-generate root token if missing.
-    let mut needs_save = issue_248_migrated || profile_migrated_to_v2;
+    let mut needs_save = issue_248_migrated || legacy_profiles_detected;
     if export_blocking_menus_to_local_file(&mut settings, path) {
         log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
         needs_save = true;
@@ -2744,8 +2579,8 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
         needs_save = true;
     }
     if needs_save {
-        let backup_ok = if profile_migrated_to_v2 {
-            match pre_migration_contents.as_deref() {
+        let backup_ok = if legacy_profiles_detected {
+            match legacy_profiles_contents.as_deref() {
                 Some(contents) => match write_pre_384_v1_backup(path, contents) {
                     Ok(()) => true,
                     Err(e) => {
@@ -3135,16 +2970,14 @@ pub(crate) const OVERLAY_MIGRATION_DESTINATION_KEYS: &[&str] = &[
     OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE,
 ];
 
-/// #1737 (D16) - top-level keys whose value before the migrations differs from
-/// the value `parse_settings_json` produces, so `read_merged_top_level_key` may
-/// not serve them. `codingAgentProfiles` is rewritten by
-/// `migrate_settings_value_to_v2`; the six project keys are rewritten or removed
-/// by `apply_project_decode_to_value`. S26 derives this set from the two
-/// functions and fails if either starts writing a key that is not listed.
+/// #1737 (D16) - top-level keys whose value before the project decode differs from
+/// the value `parse_settings_json` produces, so `read_merged_top_level_key` may not
+/// serve them. The six project keys are rewritten or removed by
+/// `apply_project_decode_to_value`. S26 derives this set from that function and fails
+/// if it starts writing a key that is not listed.
 const OVERLAY_PREMIGRATION_UNSAFE_KEYS: &[&str] = &[
     FIELD_ARCHIVED,
     FIELD_ARCHIVED_REL,
-    "codingAgentProfiles",
     FIELD_PROJECT_PATH,
     FIELD_PROJECT_PATH_REL,
     FIELD_PROJECT_PATHS,
@@ -3171,10 +3004,9 @@ fn report_overlay_diagnostics(source: &str, overlay: &LocalSettingsOverlay) {
 /// object, read without migrations, without auto-token-gen and without any save.
 /// Deliberately pre-migration AND pre-project-decode, exactly as these readers
 /// were before #1737. Valid ONLY for keys outside
-/// `OVERLAY_PREMIGRATION_UNSAFE_KEYS`: `migrate_settings_value_to_v2` rewrites
-/// `codingAgentProfiles` and `apply_project_decode_to_value` rewrites or removes
-/// the six project keys, so for those seven the value here is not the value
-/// `parse_settings_json` produces. Renders no diagnostics: the load path already
+/// `OVERLAY_PREMIGRATION_UNSAFE_KEYS`: `apply_project_decode_to_value` rewrites
+/// or removes the six project keys, so for those six the value here is not the
+/// value `parse_settings_json` produces. Renders no diagnostics: the load path already
 /// reports the same records and this runs twice per startup, and
 /// `read_log_level_only` additionally runs before the logger exists.
 fn read_merged_top_level_key(path: &Path, key: &str) -> Option<Value> {
@@ -4241,6 +4073,16 @@ fn read_disk_object_for_write_typed(
     path: &Path,
     stage: SettingsSaveStage,
 ) -> Result<Option<Map<String, Value>>, SettingsSaveError> {
+    read_disk_object_and_contents_for_write_typed(path, stage).map(|disk| disk.map(|(map, _)| map))
+}
+
+/// Same read and gates as `read_disk_object_for_write_typed`, plus the raw file
+/// contents, so a Preserve save can back up a legacy-shaped file verbatim.
+#[allow(clippy::type_complexity)]
+fn read_disk_object_and_contents_for_write_typed(
+    path: &Path,
+    stage: SettingsSaveStage,
+) -> Result<Option<(Map<String, Value>, String)>, SettingsSaveError> {
     match std::fs::read_to_string(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => {
@@ -4281,7 +4123,7 @@ fn read_disk_object_for_write_typed(
                             SettingsSaveLegacyOutward::DiskValidation(outward),
                         ));
                     }
-                    Ok(Some(map))
+                    Ok(Some((map, contents)))
                 }
                 _ => {
                     let outward = format!(
@@ -4314,7 +4156,6 @@ fn validate_non_project_settings(disk: &Map<String, Value>) -> Result<(), String
         root.remove(FIELD_PROJECT_PATHS_REL);
         root.remove(FIELD_ARCHIVED_REL);
     }
-    migrate_settings_value_to_v2(&mut probe);
     serde_json::from_value::<AppSettings>(probe)
         .map(|_| ())
         .map_err(|e| {
@@ -4612,7 +4453,28 @@ fn save_settings_value_locked(
         ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
         ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
     };
-    let disk = read_disk_object_for_write_typed(path, disk_gate_stage)?;
+    let disk_read = read_disk_object_and_contents_for_write_typed(path, disk_gate_stage)?;
+    // #2015: Preserve builds from the struct, which ignores legacy pre-v2
+    // profile fields; keep the original once before any save drops them.
+    if matches!(mode, ProjectWriteMode::Preserve) {
+        if let Some((map, contents)) = &disk_read {
+            if legacy_profiles_shape_present(map) {
+                write_pre_384_v1_backup(path, contents).map_err(|e| {
+                    SettingsSaveError::io(
+                        disk_gate_stage,
+                        path,
+                        None,
+                        std::io::Error::other(e.clone()),
+                        SettingsSaveLegacyOutward::DiskRead(format!(
+                            "Refusing to overwrite {}: legacy settings backup failed ({e})",
+                            path.display()
+                        )),
+                    )
+                })?;
+            }
+        }
+    }
+    let disk = disk_read.map(|(map, _)| map);
     let state = hidden_state_for_write(settings);
 
     let serialize_object = || -> Result<Map<String, Value>, SettingsSaveError> {
@@ -5091,12 +4953,10 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
 ) -> Result<AppSettings, String> {
     let base = production_instance_base();
     let mut value = Value::Object(object);
-    migrate_settings_value_to_v2(&mut value);
     // #1737 (D17): re-apply the overlay to the disk-decoded object, so the
     // `disk_gate == enabled` early return does not hand the caller base values.
-    // Pinned between the v2 migration and the project decode, and therefore
-    // strictly before `candidate.terminal_snapshots_enabled = enabled` runs on
-    // the typed value.
+    // Pinned before the project decode, and therefore strictly before
+    // `candidate.terminal_snapshots_enabled = enabled` runs on the typed value.
     if let Value::Object(map) = &mut value {
         overlay.reapply_from(effective, map);
     }
@@ -7283,64 +7143,198 @@ mod tests {
         assert!(super::validate_and_repair_settings(&mut s).is_ok());
     }
 
-    #[test]
-    fn v1_profiles_migrate_to_v2_command_cells() {
-        let json = r##"{
-            "defaultShell": "bash",
-            "defaultShellArgs": [],
-            "agents": [{
-                "id": "codex",
-                "label": "Codex",
-                "command": "codex --base",
-                "color": "#000000"
-            }],
-            "codingAgentProfiles": {
-                "schemaVersion": 1,
-                "letters": { "A": { "name": "Baseline" } },
-                "agentDefaults": { "dev-rust": "B" },
-                "matrix": {
-                    "codex": {
-                        "B": {
-                            "enabled": true,
-                            "argv": ["--model", "gpt 5"],
-                            "env": { "OPENAI_API_BASE": "https://example.test" },
-                            "notes": "legacy"
-                        }
+    /// #2015: shared pre-v2 fixture: `letters.A.name` plus
+    /// `matrix.codex.A.argv` legacy data under `codingAgentProfiles`.
+    const LEGACY_PROFILES_SETTINGS_FIXTURE: &str = r##"{
+        "defaultShell": "bash",
+        "defaultShellArgs": [],
+        "rootToken": "existing-token",
+        "agents": [{
+            "id": "codex",
+            "label": "Codex",
+            "command": "codex",
+            "color": "#000000"
+        }],
+        "codingAgentProfiles": {
+            "schemaVersion": 1,
+            "letters": { "A": { "name": "Baseline" } },
+            "matrix": {
+                "codex": {
+                    "A": {
+                        "enabled": true,
+                        "argv": ["--model", "gpt'5"],
+                        "env": {},
+                        "notes": "legacy"
                     }
                 }
             }
-        }"##;
+        }
+    }"##;
 
-        let (settings, migrated) = super::parse_settings_json(json, "test", None).unwrap();
+    #[test]
+    fn load_settings_backs_up_and_drops_legacy_profiles_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, LEGACY_PROFILES_SETTINGS_FIXTURE).unwrap();
 
-        assert!(migrated);
+        let settings = super::load_settings_from_path(&path);
+
+        assert_eq!(settings.root_token.as_deref(), Some("existing-token"));
         assert_eq!(settings.coding_agent_profiles.schema_version, 2);
+        assert!(!settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get("codex")
+            .is_some_and(|cells| cells.values().any(|cell| cell.command.contains("--model"))));
+
+        let backup_path = temp.path().join("settings.pre-384-v1.json");
         assert_eq!(
-            settings.coding_agent_profiles.profile_slots["A"].label,
-            "Baseline"
+            std::fs::read_to_string(backup_path).unwrap(),
+            LEGACY_PROFILES_SETTINGS_FIXTURE
         );
-        assert_eq!(
-            settings
-                .coding_agent_profiles
-                .default_profile_by_agent
-                .get("dev-rust")
-                .map(String::as_str),
-            Some("B")
-        );
-        let cell = &settings.coding_agent_profiles.profiles_by_agent["codex"]["B"];
-        assert!(cell.enabled);
-        assert_eq!(cell.command, "codex --base --model \"gpt 5\"");
-        let out = serde_json::to_string(&settings).unwrap();
-        assert!(out.contains("profileSlots"));
-        assert!(out.contains("profilesByAgent"));
-        assert!(out.contains("defaultProfileByAgent"));
-        assert!(!out.contains("\"letters\""));
-        assert!(!out.contains("\"matrix\""));
-        assert!(!out.contains("\"argv\""));
+
+        let saved_raw = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved_raw).unwrap();
+        assert_eq!(saved["codingAgentProfiles"]["schemaVersion"], 2);
+        assert!(saved["codingAgentProfiles"].get("profileSlots").is_some());
+        assert!(saved["codingAgentProfiles"]
+            .get("profilesByAgent")
+            .is_some());
+        assert!(saved["codingAgentProfiles"]
+            .get("profileLabelsByAgent")
+            .is_some());
+        assert!(saved["codingAgentProfiles"].get("matrix").is_none());
+        assert!(saved["codingAgentProfiles"].get("letters").is_none());
     }
 
     #[test]
-    fn load_settings_persists_v1_to_v2_migration_and_backup() {
+    fn preserve_save_backs_up_legacy_disk_before_dropping_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, LEGACY_PROFILES_SETTINGS_FIXTURE).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let (settings, detected) = super::parse_settings_json(&contents, "test", None).unwrap();
+        assert!(detected);
+
+        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+        let backup_path = temp.path().join("settings.pre-384-v1.json");
+        assert_eq!(
+            std::fs::read_to_string(&backup_path).unwrap(),
+            LEGACY_PROFILES_SETTINGS_FIXTURE
+        );
+        let saved_raw = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved_raw).unwrap();
+        assert!(saved["codingAgentProfiles"].get("letters").is_none());
+        assert!(saved["codingAgentProfiles"].get("matrix").is_none());
+
+        // A later legacy-shaped disk file must not overwrite the first backup.
+        std::fs::write(
+            &path,
+            LEGACY_PROFILES_SETTINGS_FIXTURE.replace("existing-token", "second-token"),
+        )
+        .unwrap();
+        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&backup_path).unwrap(),
+            LEGACY_PROFILES_SETTINGS_FIXTURE
+        );
+    }
+
+    #[test]
+    fn reconcile_save_keeps_legacy_keys_and_writes_no_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, LEGACY_PROFILES_SETTINGS_FIXTURE).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let (settings, _) = super::parse_settings_json(&contents, "test", None).unwrap();
+
+        super::save_settings_with_project_paths_to_path(&settings, &path).unwrap();
+
+        let saved_raw = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved_raw).unwrap();
+        assert!(saved["codingAgentProfiles"].get("letters").is_some());
+        assert!(!temp.path().join("settings.pre-384-v1.json").exists());
+    }
+
+    #[test]
+    fn legacy_profiles_shape_detection_is_exact() {
+        let rows: [(serde_json::Value, bool); 16] = [
+            (serde_json::json!({}), false),
+            (serde_json::json!({"codingAgentProfiles": []}), false),
+            (
+                serde_json::json!({"codingAgentProfiles": {"schemaVersion": 2}}),
+                false,
+            ),
+            (serde_json::json!({"codingAgentProfiles": {}}), false),
+            (
+                serde_json::json!({"codingAgentProfiles": {
+                    "schemaVersion": 2,
+                    "profileSlots": {"A": {"label": "x"}},
+                    "profilesByAgent": {"claude": {"A": {"enabled": true, "command": "--m", "env": {}, "notes": ""}}},
+                    "profileLabelsByAgent": {"claude": {"A": "L"}}
+                }}),
+                false,
+            ),
+            (
+                serde_json::json!({"codingAgentProfiles": {"schemaVersion": "1"}}),
+                false,
+            ),
+            (
+                serde_json::json!({"codingAgentProfiles": {"profileSlots": {"A": "name"}}}),
+                false,
+            ),
+            (
+                serde_json::json!({"codingAgentProfiles": {"profilesByAgent": {"claude": {"A": ["argv"]}}}}),
+                false,
+            ),
+            (
+                serde_json::json!({"codingAgentProfiles": {"schemaVersion": 1}}),
+                true,
+            ),
+            (
+                serde_json::json!({"codingAgentProfiles": {"letters": {}}}),
+                true,
+            ),
+            (
+                serde_json::json!({"codingAgentProfiles": {"matrix": {}}}),
+                true,
+            ),
+            (
+                serde_json::json!({"codingAgentProfiles": {"agentDefaults": {}}}),
+                true,
+            ),
+            (
+                serde_json::json!({"codingAgentProfiles": {"schemaVersion": 2, "profileSlots": {"A": {"name": "Baseline"}}}}),
+                true,
+            ),
+            (
+                serde_json::json!({"codingAgentProfiles": {"profileSlots": {"A": {"label": "x", "name": "y"}}}}),
+                true,
+            ),
+            (
+                serde_json::json!({"codingAgentProfiles": {"schemaVersion": 2, "profilesByAgent": {"claude": {"A": {"argv": ["--model", "x"]}}}}}),
+                true,
+            ),
+            (
+                serde_json::json!({"codingAgentProfiles": {"profilesByAgent": {"claude": {"B": {"args": []}}}}}),
+                true,
+            ),
+        ];
+
+        for (value, expected) in rows {
+            let before = value.clone();
+            assert_eq!(
+                super::legacy_profiles_shape_present(value.as_object().unwrap()),
+                expected,
+                "{value}"
+            );
+            assert_eq!(value, before, "the predicate must not mutate the value");
+        }
+    }
+
+    #[test]
+    fn legacy_profiles_shape_warns_backs_up_and_keeps_v2_fields() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         let original = r##"{
@@ -7354,76 +7348,86 @@ mod tests {
                 "color": "#000000"
             }],
             "codingAgentProfiles": {
-                "schemaVersion": 1,
-                "letters": { "A": { "name": "Baseline" } },
-                "matrix": {
-                    "codex": {
-                        "A": {
-                            "enabled": true,
-                            "argv": ["--model", "gpt'5"],
-                            "env": {},
-                            "notes": "legacy"
-                        }
-                    }
-                }
+                "schemaVersion": 2,
+                "profileSlots": { "A": { "name": "Baseline" } },
+                "profileLabelsByAgent": { "codex": { "A": "Kept" } }
             }
         }"##;
         std::fs::write(&path, original).unwrap();
 
         let settings = super::load_settings_from_path(&path);
 
-        assert_eq!(settings.root_token.as_deref(), Some("existing-token"));
-        assert_eq!(settings.coding_agent_profiles.schema_version, 2);
-        let cell = &settings.coding_agent_profiles.profiles_by_agent["codex"]["A"];
-        assert_eq!(cell.command, "codex --model \"gpt'5\"");
-
         let backup_path = temp.path().join("settings.pre-384-v1.json");
         assert_eq!(std::fs::read_to_string(backup_path).unwrap(), original);
-
-        let saved_raw = std::fs::read_to_string(&path).unwrap();
-        let saved: serde_json::Value = serde_json::from_str(&saved_raw).unwrap();
-        assert_eq!(saved["codingAgentProfiles"]["schemaVersion"], 2);
-        assert!(saved["codingAgentProfiles"].get("profileSlots").is_some());
-        assert!(saved["codingAgentProfiles"]
-            .get("profilesByAgent")
-            .is_some());
-        assert!(saved["codingAgentProfiles"].get("matrix").is_none());
-        assert!(saved["codingAgentProfiles"].get("letters").is_none());
+        assert_eq!(
+            settings.coding_agent_profiles.profile_labels_by_agent["codex"]["A"],
+            "Kept"
+        );
+        assert_eq!(settings.coding_agent_profiles.profile_slots["A"].label, "");
     }
 
     #[test]
-    fn v1_profile_migration_prefers_argv_over_args_and_preserves_disabled_on_parse_error() {
-        let json = r##"{
+    fn profile_labels_survive_the_real_loader_round_trip() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let original = r##"{
             "defaultShell": "bash",
             "defaultShellArgs": [],
+            "rootToken": "round-trip-token",
             "agents": [{
                 "id": "codex",
                 "label": "Codex",
-                "command": "\"unterminated",
+                "command": "codex",
                 "color": "#000000"
             }],
             "codingAgentProfiles": {
-                "schemaVersion": 1,
-                "matrix": {
+                "schemaVersion": 2,
+                "profileSlots": { "A": { "label": "" } },
+                "defaultProfileByAgent": {},
+                "profilesByAgent": {
                     "codex": {
-                        "A": {
-                            "argv": ["--from-argv"],
-                            "args": ["--from-args"],
-                            "env": {},
-                            "notes": "repair me"
-                        }
+                        "A": { "enabled": true, "command": "", "env": {}, "notes": "" }
                     }
-                }
+                },
+                "profileLabelsByAgent": { "codex": { "A": "First" } }
             }
         }"##;
+        std::fs::write(&path, original).unwrap();
 
-        let (settings, migrated) = super::parse_settings_json(json, "test", None).unwrap();
-        let cell = &settings.coding_agent_profiles.profiles_by_agent["codex"]["A"];
+        let mut settings = super::load_settings_from_path(&path);
+        assert_eq!(
+            settings.coding_agent_profiles.profile_labels_by_agent["codex"]["A"],
+            "First"
+        );
 
-        assert!(migrated);
-        assert!(!cell.enabled);
-        assert_eq!(cell.command, "--from-argv");
-        assert_eq!(cell.notes, "repair me");
+        settings
+            .coding_agent_profiles
+            .profile_labels_by_agent
+            .entry("codex".to_string())
+            .or_default()
+            .insert("B".to_string(), "Second".to_string());
+        super::save_settings_to_path_preserving_project_paths_typed(&settings, &path).unwrap();
+
+        let reloaded = super::load_settings_from_path(&path);
+        assert_eq!(
+            reloaded.coding_agent_profiles.profile_labels_by_agent["codex"]["A"],
+            "First"
+        );
+        assert_eq!(
+            reloaded.coding_agent_profiles.profile_labels_by_agent["codex"]["B"],
+            "Second"
+        );
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            raw["codingAgentProfiles"]["profileLabelsByAgent"]["codex"]["A"],
+            "First"
+        );
+        assert_eq!(
+            raw["codingAgentProfiles"]["profileLabelsByAgent"]["codex"]["B"],
+            "Second"
+        );
+        assert!(!temp.path().join("settings.pre-384-v1.json").exists());
     }
 
     #[test]
@@ -11193,7 +11197,7 @@ mod tests {
 
         // S26
         #[test]
-        fn the_premigration_unsafe_set_is_derived_from_the_two_value_stage_functions() {
+        fn the_premigration_unsafe_set_is_derived_from_the_project_decode() {
             // Every project row is written by the decode: the two active keys are
             // rebuilt from the selected pairs (an unresolvable registration selects
             // nothing), the archived key is rebuilt from the archived pairs (a row
@@ -11207,11 +11211,6 @@ mod tests {
                 "logLevel": "info",
                 "activityLogEnabled": true,
                 "agents": [{"id": "codex", "label": "Codex", "command": "codex", "color": "#000"}],
-                "codingAgentProfiles": {
-                    "schemaVersion": 1,
-                    "letters": { "A": { "name": "Baseline" } },
-                    "matrix": { "codex": { "A": { "enabled": true, "argv": [], "env": {}, "notes": "" } } }
-                },
                 "projectPath": "no-such-project-directory",
                 "projectPathRelativeToInstance": "a",
                 "projectPaths": ["no-such-project-directory"],
@@ -11221,7 +11220,6 @@ mod tests {
             });
             let before = object_of(value.clone());
 
-            migrate_settings_value_to_v2(&mut value);
             let _ = apply_project_decode_to_value(
                 &mut value,
                 Some(instance_base),
@@ -11235,7 +11233,7 @@ mod tests {
                 .map(|key| (*key).to_string())
                 .collect();
             // Stated limit: this observes one fixture, not all inputs. It is the
-            // tripwire that fires if either function starts writing a key the D16
+            // tripwire that fires if the decode starts writing a key the D16
             // shortcut does not list; it is not a proof.
             assert_eq!(mutated, expected);
         }
