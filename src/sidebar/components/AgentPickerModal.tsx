@@ -351,10 +351,30 @@ const AgentPickerModal: Component<{
         index,
         preview,
         status,
+        // #2014 - the line the panel shows: command + the EFFECTIVE profile
+        // cell's arguments, never the final spawn argv (plan D1).
+        launchLine: command,
         active: index === highlightIndex(),
       };
     });
   });
+  const launchLineByAgentId = createMemo(
+    () => new Map(comparisonRows().map((row) => [row.agent.id, row.launchLine]))
+  );
+  // #2014 - the agent filter is a LEFT-COLUMN view concern: it never
+  // re-indexes sortedAgents(), so highlightIndex keeps addressing the full list.
+  const [agentFilter, setAgentFilter] = createSignal("");
+  const filterQuery = createMemo(() => agentFilter().trim().toLowerCase());
+  const matchesFilter = (agent: AgentConfig) => {
+    const q = filterQuery();
+    return (
+      q === "" ||
+      `${agent.label} ${launchLineByAgentId().get(agent.id) ?? agent.command}`
+        .toLowerCase()
+        .includes(q)
+    );
+  };
+  const visibleAgentCount = createMemo(() => sortedAgents().filter(matchesFilter).length);
   const comparisonSummary = createMemo(() => ({
     direct: comparisonRows().filter((row) => row.status === "direct").length,
     fallback: comparisonRows().filter((row) => row.status === "fallback").length,
@@ -1043,6 +1063,15 @@ const AgentPickerModal: Component<{
       props.onClose();
       return;
     }
+    // #2014 - keys typed in the agent filter must never move the profile
+    // (ArrowLeft/Right) or the selection (ArrowUp/Down). Escape still closes.
+    if (
+      e.target instanceof HTMLElement &&
+      e.target.id === "agentPickerAgentFilter" &&
+      e.key.startsWith("Arrow")
+    ) {
+      return;
+    }
     const list = sortedAgents();
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -1090,6 +1119,332 @@ const AgentPickerModal: Component<{
           <div class="agent-picker-context">
             <strong>{targetName()}</strong>
             <span>{props.sessionName}</span>
+          </div>
+        </div>
+
+        <div class="agent-profile-assignment-body" data-component="Coding Agent profile modal variant C layout">
+          <aside class="agent-profile-panel agent-profile-provider-panel" data-component="Coding Agents selector panel">
+            <div class="agent-profile-panel-head">
+              <div class="agent-profile-panel-heading">
+                <div class="agent-profile-panel-title">Coding Agent</div>
+                <div class="agent-profile-panel-kicker">Choose the tool first</div>
+              </div>
+              <span class="agent-profile-step cyan" data-ac-role="status">step 1</span>
+            </div>
+            {/* #2014 - the requested filter, immediately above the first Coding
+                Agent card. It hides non-matching cards only; the comparison
+                panel always keeps every row and nothing here assigns. */}
+            <Show when={sortedAgents().length > 0}>
+              <div class="agent-profile-provider-filter">
+                <label for="agentPickerAgentFilter">Filter by name or start line</label>
+                <input
+                  id="agentPickerAgentFilter"
+                  type="search"
+                  autocomplete="off"
+                  spellcheck={false}
+                  placeholder="name or command + args"
+                  aria-controls="agentPickerAgentList"
+                  value={agentFilter()}
+                  onInput={(e) => setAgentFilter(e.currentTarget.value)}
+                  data-ac-testid="agentPicker.agentFilter"
+                />
+                <div
+                  class="agent-profile-provider-filter-status"
+                  role="status"
+                  aria-live="polite"
+                  data-ac-testid="agentPicker.agentFilterStatus"
+                >
+                  {filterQuery() === ""
+                    ? `${sortedAgents().length} agents`
+                    : visibleAgentCount() === 0
+                    ? `No coding agent matches "${agentFilter().trim()}". Clear the filter to see all ${sortedAgents().length}.`
+                    : `${visibleAgentCount()} of ${sortedAgents().length} agents match "${agentFilter().trim()}".`}
+                </div>
+              </div>
+            </Show>
+            <div
+              id="agentPickerAgentList"
+              class="agent-profile-provider-list"
+              aria-label="Coding agent choices"
+              data-component="Coding agent selector"
+              {...automationAttrs("agentPicker.providers", "list")}
+            >
+              <Show
+                when={sortedAgents().length > 0}
+                fallback={<div class="agent-modal-empty">No agents configured. Add agents in Settings.</div>}
+              >
+                <For each={sortedAgents()}>
+                  {(agent, i) => {
+                    const defaultPreview = () => providerDefaultPreview(agent);
+                    const active = () => i() === highlightIndex();
+                    return (
+                      <Show when={matchesFilter(agent)}>
+                        <button
+                          type="button"
+                          class="agent-profile-provider-card"
+                          classList={{ active: active() }}
+                          aria-pressed={active()}
+                          onClick={() => setHighlightIndex(i())}
+                          data-component={`${agent.label} coding agent option`}
+                          data-ac-agent-id={agent.id}
+                          data-ac-agent-command={agent.command}
+                          data-ac-effective-profile={defaultPreview().effectiveProfile}
+                          data-ac-requested-profile={defaultPreview().requestedProfile}
+                          style={{ "--agent-color": agent.color }}
+                          {...automationAttrs(`agentPicker.provider.${agent.id}`, "button", active() ? "active" : "inactive")}
+                        >
+                          <span>
+                            <span class="agent-profile-provider-name">{agent.label}</span>
+                            <span class="agent-profile-provider-command">{agent.command}</span>
+                          </span>
+                          <span class="agent-profile-provider-chip">
+                            {defaultPreview().fallbackApplied
+                              ? `${defaultPreview().requestedProfile}->${defaultPreview().effectiveProfile}`
+                              : profileLabel(defaultPreview().effectiveProfile, agent.id)}
+                          </span>
+                        </button>
+                      </Show>
+                    );
+                  }}
+                </For>
+              </Show>
+            </div>
+          </aside>
+
+          <div class="agent-profile-assignment-scroll" data-component="Coding Agent profile selector independent scroll area">
+            <section class="agent-profile-panel" data-component="Coding Agent profile selector panel">
+              <div class="agent-profile-panel-head">
+                <div class="agent-profile-panel-heading">
+                  <div class="agent-profile-panel-title">Profile</div>
+                  <div class="agent-profile-panel-kicker">Choose the profile letter second</div>
+                </div>
+                <span class="agent-profile-step yellow" data-ac-role="status">step 2</span>
+              </div>
+              <div
+                class="agent-profile-card-list"
+                data-component="Selected Coding Agent available profile cards"
+                {...automationAttrs("agentPicker.profiles", "list")}
+              >
+                <For each={profileLetters()}>
+                  {(letter) => {
+                    const configured = () => isProfileConfiguredFor(selectedAgent(), letter);
+                    const selected = () => selectedProfile() === letter;
+                    const preview = () =>
+                      settings() && selectedAgent()
+                        ? resolveProfilePreview(settings()!.codingAgentProfiles, selectedAgent()!.id, letter)
+                        : {
+                            requestedProfile: letter,
+                            effectiveProfile: letter,
+                            fallbackChain: [letter],
+                            fallbackApplied: false,
+                          };
+                    const cell = () => enabledLaunchCellFor(selectedAgent(), preview().effectiveProfile);
+                    const pillKind = (): Exclude<ProfileBadgeKind, "invalid"> => {
+                      const current = settings();
+                      const agent = selectedAgent();
+                      if (!current || !agent) return letter === "A" ? "match" : "fallback";
+                      return profileBadgeKind(current.codingAgentProfiles, agent.id, letter);
+                    };
+                    return (
+                      <button
+                        type="button"
+                        class="agent-profile-card"
+                        classList={{
+                          active: selected(),
+                          missing: !configured(),
+                          default: configuredDefault() === letter,
+                        }}
+                        aria-pressed={selected()}
+                        onClick={() => chooseProfile(letter)}
+                        data-component={`${selectedAgent()?.label ?? "Coding Agent"} ${profileLabel(letter)} profile selector card`}
+                        data-ac-agent-id={selectedAgent()?.id}
+                        data-ac-profile-letter={letter}
+                        data-ac-effective-profile={preview().effectiveProfile}
+                        data-ac-configured={configured()}
+                        {...automationAttrs(
+                          `agentPicker.profile.${letter}`,
+                          "button",
+                          selected()
+                            ? "active"
+                            : !configured()
+                            ? "missing"
+                            : configuredDefault() === letter
+                            ? "default"
+                            : "available"
+                        )}
+                      >
+                        <span class="agent-profile-card-head">
+                          <span>
+                            <span class="agent-profile-card-title">{profileLabel(letter)}</span>
+                            <span class="agent-profile-card-subtitle">
+                              {configured()
+                                ? "configured for selected coding agent"
+                                : `missing; launches ${profileLabel(preview().effectiveProfile)}`}
+                            </span>
+                          </span>
+                          <span class="agent-profile-card-tags">
+                            <span
+                              class={`agent-profile-card-pill ${pillKind()}`}
+                              data-ac-role="status"
+                              data-ac-state={pillKind()}
+                              data-ac-testid={`agentPicker.profile.${letter}.pill`}
+                            >
+                              {SELECTION_PILL_LABEL[pillKind()]}
+                            </span>
+                            <Show when={configuredDefault() === letter}>
+                              <span class="agent-profile-default-marker">Default</span>
+                            </Show>
+                          </span>
+                        </span>
+                        <span class="agent-profile-param-list">
+                          <span class="agent-profile-param">
+                            <span>Command </span>
+                            <span>{composeEffectiveCommand(selectedAgent()?.command ?? "", profileCellCommandText(cell())) || "none"}</span>
+                          </span>
+                          <Show when={selected()}>
+                            <span
+                              class="agent-profile-declared-env"
+                              data-ac-testid={`agentPicker.profile.${letter}.env`}
+                              data-ac-role="list"
+                            >
+                              <span class="agent-profile-declared-env-head">Declared env</span>
+                              <Show
+                                when={declaredProfileEnv(selectedAgent(), letter).length > 0}
+                                fallback={
+                                  <span class="agent-profile-declared-env-empty">
+                                    No declared env vars for {profileLabel(letter)}
+                                  </span>
+                                }
+                              >
+                                <span class="agent-profile-declared-env-grid">
+                                  <For each={declaredProfileEnv(selectedAgent(), letter)}>
+                                    {(entry) => (
+                                      <span
+                                        class="agent-profile-declared-env-row"
+                                        data-ac-role="row"
+                                        data-ac-env-origin={entry.origin}
+                                      >
+                                        <span class="agent-profile-declared-env-key">{entry.key}</span>
+                                        <span class="agent-profile-declared-env-value">{entry.value}</span>
+                                        <span class="agent-profile-declared-env-origin">{entry.origin}</span>
+                                      </span>
+                                    )}
+                                  </For>
+                                </span>
+                              </Show>
+                            </span>
+                          </Show>
+                          <Show when={!configured()}>
+                            <span class="agent-profile-token warn">
+                              Fallback {letter}-&gt;{preview().effectiveProfile}
+                            </span>
+                          </Show>
+                        </span>
+                      </button>
+                    );
+                  }}
+                </For>
+              </div>
+            </section>
+
+            <section
+              class="agent-profile-panel agent-projection-panel"
+              data-component="Same profile comparison panel"
+              {...automationAttrs("agentPicker.comparison", "status")}
+            >
+              <div class="agent-projection-head">
+                <div class="agent-projection-heading">
+                  <div class="agent-profile-panel-title">Same Profile In Other Agents</div>
+                  <div class="agent-profile-panel-kicker">
+                    {profileLabel(selectedProfile())} compared across configured Coding Agents
+                  </div>
+                </div>
+              </div>
+
+              <div class="agent-comparison-summary" aria-label="Profile status summary">
+                <div class="agent-comparison-summary-tile">
+                  <span class="agent-comparison-summary-value direct">{comparisonSummary().direct}</span>
+                  <span class="agent-comparison-summary-label">Direct</span>
+                </div>
+                <div class="agent-comparison-summary-tile">
+                  <span class="agent-comparison-summary-value fallback">{comparisonSummary().fallback}</span>
+                  <span class="agent-comparison-summary-label">Fallback</span>
+                </div>
+                <div class="agent-comparison-summary-tile">
+                  <span class="agent-comparison-summary-value missing">{comparisonSummary().missing}</span>
+                  <span class="agent-comparison-summary-label">Missing</span>
+                </div>
+              </div>
+
+              <div class="agent-comparison-table" role="table" aria-label="Same profile comparison">
+                <div class="agent-comparison-table-head" role="row">
+                  <span>Coding Agent</span>
+                  <span>Resolution</span>
+                </div>
+                <div class="agent-comparison-table-body" role="rowgroup">
+                  <For each={comparisonRows()}>
+                    {(row) => (
+                      <button
+                        type="button"
+                        class="agent-comparison-row"
+                        classList={{ active: row.active }}
+                        role="row"
+                        onClick={() => setHighlightIndex(row.index)}
+                        data-ac-agent-id={row.agent.id}
+                        data-ac-profile-status={row.status}
+                        data-ac-effective-profile={row.preview.effectiveProfile}
+                        data-ac-requested-profile={row.preview.requestedProfile}
+                        {...automationAttrs(
+                          `agentPicker.comparison.row.${row.agent.id}`,
+                          "button",
+                          row.active ? "active" : "inactive",
+                        )}
+                      >
+                        <span class="agent-comparison-agent-cell">
+                          <span class="agent-comparison-agent-name">{row.agent.label}</span>
+                          <span
+                            class="agent-comparison-agent-sub"
+                            data-ac-testid={`agentPicker.comparison.row.${row.agent.id}.launchLine`}
+                          >
+                            {row.launchLine || "none"}
+                          </span>
+                        </span>
+                        <span class="agent-comparison-resolution-cell">
+                          <span
+                            class={`agent-comparison-status ${row.status}`}
+                            data-ac-role="status"
+                            data-ac-state={row.status}
+                          >
+                            {comparisonStatusLabel(row.status)}
+                          </span>
+                          <span class="agent-comparison-resolution">
+                            {comparisonResolutionText(row.agent.id, row.preview)}
+                          </span>
+                        </span>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </div>
+
+              <Show when={effectivePreview().fallbackApplied || hasBackendWarnings()}>
+                <div
+                  class="agent-profile-warning-strip agent-projection-status"
+                  classList={{ visible: true }}
+                  data-component="Coding Agent profile fallback explanation"
+                  {...automationAttrs("agentPicker.fallback", "status", "warning")}
+                >
+                  <Show when={effectivePreview().fallbackApplied}>
+                    <span>
+                      {`${profileLabel(effectivePreview().requestedProfile)} is not configured for ${selectedAgent()?.label ?? "the selected coding agent"}; launch resolves through ${profileLabel(effectivePreview().effectiveProfile)}. A remains the final fallback.`}
+                    </span>
+                  </Show>
+                  <Show when={hasBackendWarnings()}>
+                    <span>Profile warning: {backendWarnings().join(" ")}</span>
+                  </Show>
+                </div>
+              </Show>
+            </section>
           </div>
         </div>
 
@@ -1301,295 +1656,6 @@ const AgentPickerModal: Component<{
             </div>
           </Show>
         </Show>
-
-        <div class="agent-profile-assignment-body" data-component="Coding Agent profile modal variant C layout">
-          <aside class="agent-profile-panel agent-profile-provider-panel" data-component="Coding Agents selector panel">
-            <div class="agent-profile-panel-head">
-              <div class="agent-profile-panel-heading">
-                <div class="agent-profile-panel-title">Coding Agent</div>
-                <div class="agent-profile-panel-kicker">Choose the tool first</div>
-              </div>
-              <span class="agent-profile-step cyan" data-ac-role="status">step 1</span>
-            </div>
-            <div
-              class="agent-profile-provider-list"
-              aria-label="Coding agent choices"
-              data-component="Coding agent selector"
-              {...automationAttrs("agentPicker.providers", "list")}
-            >
-              <Show
-                when={sortedAgents().length > 0}
-                fallback={<div class="agent-modal-empty">No agents configured. Add agents in Settings.</div>}
-              >
-                <For each={sortedAgents()}>
-                  {(agent, i) => {
-                    const defaultPreview = () => providerDefaultPreview(agent);
-                    const active = () => i() === highlightIndex();
-                    return (
-                      <button
-                        type="button"
-                        class="agent-profile-provider-card"
-                        classList={{ active: active() }}
-                        aria-pressed={active()}
-                        onClick={() => setHighlightIndex(i())}
-                        data-component={`${agent.label} coding agent option`}
-                        data-ac-agent-id={agent.id}
-                        data-ac-agent-command={agent.command}
-                        data-ac-effective-profile={defaultPreview().effectiveProfile}
-                        data-ac-requested-profile={defaultPreview().requestedProfile}
-                        style={{ "--agent-color": agent.color }}
-                        {...automationAttrs(`agentPicker.provider.${agent.id}`, "button", active() ? "active" : "inactive")}
-                      >
-                        <span>
-                          <span class="agent-profile-provider-name">{agent.label}</span>
-                          <span class="agent-profile-provider-command">{agent.command}</span>
-                        </span>
-                        <span class="agent-profile-provider-chip">
-                          {defaultPreview().fallbackApplied
-                            ? `${defaultPreview().requestedProfile}->${defaultPreview().effectiveProfile}`
-                            : profileLabel(defaultPreview().effectiveProfile, agent.id)}
-                        </span>
-                      </button>
-                    );
-                  }}
-                </For>
-              </Show>
-            </div>
-          </aside>
-
-          <div class="agent-profile-assignment-scroll" data-component="Coding Agent profile selector independent scroll area">
-            <section class="agent-profile-panel" data-component="Coding Agent profile selector panel">
-              <div class="agent-profile-panel-head">
-                <div class="agent-profile-panel-heading">
-                  <div class="agent-profile-panel-title">Profile</div>
-                  <div class="agent-profile-panel-kicker">Choose the profile letter second</div>
-                </div>
-                <span class="agent-profile-step yellow" data-ac-role="status">step 2</span>
-              </div>
-              <div
-                class="agent-profile-card-list"
-                data-component="Selected Coding Agent available profile cards"
-                {...automationAttrs("agentPicker.profiles", "list")}
-              >
-                <For each={profileLetters()}>
-                  {(letter) => {
-                    const configured = () => isProfileConfiguredFor(selectedAgent(), letter);
-                    const selected = () => selectedProfile() === letter;
-                    const preview = () =>
-                      settings() && selectedAgent()
-                        ? resolveProfilePreview(settings()!.codingAgentProfiles, selectedAgent()!.id, letter)
-                        : {
-                            requestedProfile: letter,
-                            effectiveProfile: letter,
-                            fallbackChain: [letter],
-                            fallbackApplied: false,
-                          };
-                    const cell = () => enabledLaunchCellFor(selectedAgent(), preview().effectiveProfile);
-                    const pillKind = (): Exclude<ProfileBadgeKind, "invalid"> => {
-                      const current = settings();
-                      const agent = selectedAgent();
-                      if (!current || !agent) return letter === "A" ? "match" : "fallback";
-                      return profileBadgeKind(current.codingAgentProfiles, agent.id, letter);
-                    };
-                    return (
-                      <button
-                        type="button"
-                        class="agent-profile-card"
-                        classList={{
-                          active: selected(),
-                          missing: !configured(),
-                          default: configuredDefault() === letter,
-                        }}
-                        aria-pressed={selected()}
-                        onClick={() => chooseProfile(letter)}
-                        data-component={`${selectedAgent()?.label ?? "Coding Agent"} ${profileLabel(letter)} profile selector card`}
-                        data-ac-agent-id={selectedAgent()?.id}
-                        data-ac-profile-letter={letter}
-                        data-ac-effective-profile={preview().effectiveProfile}
-                        data-ac-configured={configured()}
-                        {...automationAttrs(
-                          `agentPicker.profile.${letter}`,
-                          "button",
-                          selected()
-                            ? "active"
-                            : !configured()
-                            ? "missing"
-                            : configuredDefault() === letter
-                            ? "default"
-                            : "available"
-                        )}
-                      >
-                        <span class="agent-profile-card-head">
-                          <span>
-                            <span class="agent-profile-card-title">{profileLabel(letter)}</span>
-                            <span class="agent-profile-card-subtitle">
-                              {configured()
-                                ? "configured for selected coding agent"
-                                : `missing; launches ${profileLabel(preview().effectiveProfile)}`}
-                            </span>
-                          </span>
-                          <span class="agent-profile-card-tags">
-                            <span
-                              class={`agent-profile-card-pill ${pillKind()}`}
-                              data-ac-role="status"
-                              data-ac-state={pillKind()}
-                              data-ac-testid={`agentPicker.profile.${letter}.pill`}
-                            >
-                              {SELECTION_PILL_LABEL[pillKind()]}
-                            </span>
-                            <Show when={configuredDefault() === letter}>
-                              <span class="agent-profile-default-marker">Default</span>
-                            </Show>
-                          </span>
-                        </span>
-                        <span class="agent-profile-param-list">
-                          <span class="agent-profile-param">
-                            <span>Command </span>
-                            <span>{composeEffectiveCommand(selectedAgent()?.command ?? "", profileCellCommandText(cell())) || "none"}</span>
-                          </span>
-                          <Show when={selected()}>
-                            <span
-                              class="agent-profile-declared-env"
-                              data-ac-testid={`agentPicker.profile.${letter}.env`}
-                              data-ac-role="list"
-                            >
-                              <span class="agent-profile-declared-env-head">Declared env</span>
-                              <Show
-                                when={declaredProfileEnv(selectedAgent(), letter).length > 0}
-                                fallback={
-                                  <span class="agent-profile-declared-env-empty">
-                                    No declared env vars for {profileLabel(letter)}
-                                  </span>
-                                }
-                              >
-                                <span class="agent-profile-declared-env-grid">
-                                  <For each={declaredProfileEnv(selectedAgent(), letter)}>
-                                    {(entry) => (
-                                      <span
-                                        class="agent-profile-declared-env-row"
-                                        data-ac-role="row"
-                                        data-ac-env-origin={entry.origin}
-                                      >
-                                        <span class="agent-profile-declared-env-key">{entry.key}</span>
-                                        <span class="agent-profile-declared-env-value">{entry.value}</span>
-                                        <span class="agent-profile-declared-env-origin">{entry.origin}</span>
-                                      </span>
-                                    )}
-                                  </For>
-                                </span>
-                              </Show>
-                            </span>
-                          </Show>
-                          <Show when={!configured()}>
-                            <span class="agent-profile-token warn">
-                              Fallback {letter}-&gt;{preview().effectiveProfile}
-                            </span>
-                          </Show>
-                        </span>
-                      </button>
-                    );
-                  }}
-                </For>
-              </div>
-            </section>
-
-            <section
-              class="agent-profile-panel agent-projection-panel"
-              data-component="Same profile comparison panel"
-              {...automationAttrs("agentPicker.comparison", "status")}
-            >
-              <div class="agent-projection-head">
-                <div class="agent-projection-heading">
-                  <div class="agent-profile-panel-title">Same Profile In Other Agents</div>
-                  <div class="agent-profile-panel-kicker">
-                    {profileLabel(selectedProfile())} compared across configured Coding Agents
-                  </div>
-                </div>
-              </div>
-
-              <div class="agent-comparison-summary" aria-label="Profile status summary">
-                <div class="agent-comparison-summary-tile">
-                  <span class="agent-comparison-summary-value direct">{comparisonSummary().direct}</span>
-                  <span class="agent-comparison-summary-label">Direct</span>
-                </div>
-                <div class="agent-comparison-summary-tile">
-                  <span class="agent-comparison-summary-value fallback">{comparisonSummary().fallback}</span>
-                  <span class="agent-comparison-summary-label">Fallback</span>
-                </div>
-                <div class="agent-comparison-summary-tile">
-                  <span class="agent-comparison-summary-value missing">{comparisonSummary().missing}</span>
-                  <span class="agent-comparison-summary-label">Missing</span>
-                </div>
-              </div>
-
-              <div class="agent-comparison-table" role="table" aria-label="Same profile comparison">
-                <div class="agent-comparison-table-head" role="row">
-                  <span>Coding Agent</span>
-                  <span>Resolution</span>
-                </div>
-                <div class="agent-comparison-table-body" role="rowgroup">
-                  <For each={comparisonRows()}>
-                    {(row) => (
-                      <button
-                        type="button"
-                        class="agent-comparison-row"
-                        classList={{ active: row.active }}
-                        role="row"
-                        onClick={() => setHighlightIndex(row.index)}
-                        data-ac-agent-id={row.agent.id}
-                        data-ac-profile-status={row.status}
-                        data-ac-effective-profile={row.preview.effectiveProfile}
-                        data-ac-requested-profile={row.preview.requestedProfile}
-                        {...automationAttrs(
-                          `agentPicker.comparison.row.${row.agent.id}`,
-                          "button",
-                          row.active ? "active" : "inactive",
-                        )}
-                      >
-                        <span class="agent-comparison-agent-cell">
-                          <span class="agent-comparison-agent-name">{row.agent.label}</span>
-                          <span class="agent-comparison-agent-sub">
-                            {row.active ? "selected coding agent" : "configured peer"}
-                          </span>
-                        </span>
-                        <span class="agent-comparison-resolution-cell">
-                          <span
-                            class={`agent-comparison-status ${row.status}`}
-                            data-ac-role="status"
-                            data-ac-state={row.status}
-                          >
-                            {comparisonStatusLabel(row.status)}
-                          </span>
-                          <span class="agent-comparison-resolution">
-                            {comparisonResolutionText(row.agent.id, row.preview)}
-                          </span>
-                        </span>
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </div>
-
-              <Show when={effectivePreview().fallbackApplied || hasBackendWarnings()}>
-                <div
-                  class="agent-profile-warning-strip agent-projection-status"
-                  classList={{ visible: true }}
-                  data-component="Coding Agent profile fallback explanation"
-                  {...automationAttrs("agentPicker.fallback", "status", "warning")}
-                >
-                  <Show when={effectivePreview().fallbackApplied}>
-                    <span>
-                      {`${profileLabel(effectivePreview().requestedProfile)} is not configured for ${selectedAgent()?.label ?? "the selected coding agent"}; launch resolves through ${profileLabel(effectivePreview().effectiveProfile)}. A remains the final fallback.`}
-                    </span>
-                  </Show>
-                  <Show when={hasBackendWarnings()}>
-                    <span>Profile warning: {backendWarnings().join(" ")}</span>
-                  </Show>
-                </div>
-              </Show>
-            </section>
-          </div>
-        </div>
 
         <Show when={error()}>
           <div class="agent-picker-error">{error()}</div>
