@@ -139,10 +139,10 @@ Lettered launch variants (`A`, `B`, `C`, ...) per coding agent. See [Coding Agen
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schemaVersion` | number | `2` | Schema version. A version-1 object is upgraded and persisted on load, after a one-time v1 backup. |
-| `profileSlots` | `{ <LETTER>: { label: string } }` | `{ "A": { "label": "" } }` | The defined profile letters. Alias: `letters`. |
-| `defaultProfileByAgent` | `{ <agent>: <LETTER> }` | `{}` | Tier-4 fallback letter per agent matrix. Alias: `agentDefaults`. Rarely set by hand. |
-| `profilesByAgent` | `{ <coding-agent-id>: { <LETTER>: ProfileCellConfig } }` | `{}` | The matrix: per coding agent, the cell for each letter. Alias: `matrix`. |
+| `schemaVersion` | number | `2` | Schema version. Older pre-v2 profile fields are no longer read: they are ignored. Before any save drops them, AC keeps the original once as `settings.pre-384-v1.json` and writes settings without them; the `open-project` and `new-project` CLI commands keep them and write no backup. |
+| `profileSlots` | `{ <LETTER>: { label: string } }` | `{ "A": { "label": "" } }` | The defined profile letters. |
+| `defaultProfileByAgent` | `{ <agent>: <LETTER> }` | `{}` | Tier-4 fallback letter per agent matrix. Rarely set by hand. |
+| `profilesByAgent` | `{ <coding-agent-id>: { <LETTER>: ProfileCellConfig } }` | `{}` | The matrix: per coding agent, the cell for each letter. |
 | `profileLabelsByAgent` | `{ <coding-agent-id>: { <LETTER>: string } }` | `{}` | Optional per-(agent, letter) label override. Empty inherits. |
 
 `ProfileCellConfig` (one cell of `profilesByAgent`):
