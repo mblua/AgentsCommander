@@ -135,7 +135,7 @@ function discoveryResult(taskTitle = "Restart prompt") {
             repoPaths: [],
             isCoordinator: true,
             // #1943 - a full persisted selection-lock payload: the replica is
-            // unprotected, so no KEEP chip and an actionable lock row.
+            // unprotected, so no lock chip and an actionable lock row.
             savedPair: null,
             selectionState: "unlocked",
           },
