@@ -115,7 +115,7 @@ function discoveryResult(extraTeams: string[] = [], loops: AcLoopSummary[] = [])
             repoPaths: [],
             isCoordinator: true,
             // #1943 - full persisted lock payload: unprotected, so the lock row
-            // is actionable and no KEEP chip is drawn.
+            // is actionable and no lock chip is drawn.
             savedPair: null,
             selectionState: "unlocked",
           },

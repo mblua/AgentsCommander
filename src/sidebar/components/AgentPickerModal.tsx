@@ -36,7 +36,7 @@ import {
   targetProfileFqn,
 } from "../../shared/profile-utils";
 
-/** #1943 - the lock glyph. Exported so the sidebar KEEP chip draws the same
+/** #1943 - the lock glyph. Exported so the sidebar lock chip draws the same
  *  shape without a second definition; ProjectPanel already imports this module,
  *  so it adds no dependency edge. */
 export const LockIcon: Component<{ class?: string }> = (props) => (
