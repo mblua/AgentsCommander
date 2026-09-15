@@ -93,7 +93,7 @@ In the Settings > Coding Agents **Auto-update** table, one row appears per comma
 
 ## Managed catalog: base, local overrides, and migration
 
-`<project>/.ac/coding-agents/agents.json` is the file AgentsCommander manages; `<project>/.ac/coding-agents/agents.local.json` is yours. Startup and every project registration initialize or refresh the managed base. Ordinary reads and **Reload catalog** never write. The embedded catalog is seed material only. With no registered project, AC reads an existing instance catalog read-only (`<config_dir>/coding-agents/agents.json`) or reports it unavailable; it never initializes the instance.
+`<project>/.ac/coding-agents/agents.json` is the file AgentsCommander manages; `<project>/.ac/coding-agents/agents.local.json` is yours. Startup and every project registration initialize or refresh the managed base. Ordinary reads and **Reload catalog** never write. The embedded catalog is seed material only. With no registered project, startup initializes or refreshes the instance managed base at `<config_dir>/coding-agents/agents.json` and, on initialization, creates the `agents.local.json` stub beside it; it never rewrites a legacy or edited instance file. Registering a project later gives that project its own managed base.
 
 **Existing registrations are snapshots.** Adding an agent from the catalog copies `label`, `command`, `color`, `envs`, `isolatedHome`, and, when present, `instructionsFilename` and `configSeed` into `settings.agents[]` (the CLI's `add --from-catalog` does the same). Later catalog changes do not rewrite registered agents.
 
