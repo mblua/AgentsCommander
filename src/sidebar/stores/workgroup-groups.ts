@@ -317,6 +317,50 @@ export function nonStopMatchesWorkgroup(config: NonStopGroupConfig, wg: AcWorkgr
   return !!regex?.test(id);
 }
 
+export interface CompiledWorkgroupGroup {
+  group: WorkgroupGroup;
+  regex: RegExp | null;
+}
+
+/** Compiles each configured group once, so a caller can test many rooms cheaply. */
+export function compileWorkgroupGroups(
+  groups: readonly WorkgroupGroup[]
+): CompiledWorkgroupGroup[] {
+  return groups.map((group) => ({ group, regex: compileGroupRegex(group) }));
+}
+
+function canTestGroupMatchId(wg: AcWorkgroup): boolean {
+  return charLength(groupMatchId(wg)) <= MAX_GROUP_MATCH_ID_LENGTH;
+}
+
+/** Regular-group membership: cap + compiled group regex. */
+export function groupMatchesWorkgroup(
+  compiled: readonly CompiledWorkgroupGroup[],
+  groupId: string,
+  wg: AcWorkgroup
+): boolean {
+  if (!canTestGroupMatchId(wg)) return false;
+  const entry = compiled.find((candidate) => candidate.group.id === groupId);
+  return !!entry?.regex?.test(groupMatchId(wg));
+}
+
+/**
+ * #2036 — THE Ungrouped membership rule. A room is ungrouped when its id is over
+ * MAX_GROUP_MATCH_ID_LENGTH, or when no compiled group regex and no Alert me!
+ * (NonStop) regex matches it (regardless of `nonStop.show`). The rail counter and
+ * the panel list MUST both call this; never re-derive either side locally.
+ */
+export function isUngroupedWorkgroup(
+  compiled: readonly CompiledWorkgroupGroup[],
+  nonStop: NonStopGroupConfig | null | undefined,
+  wg: AcWorkgroup
+): boolean {
+  if (!canTestGroupMatchId(wg)) return true;
+  const id = groupMatchId(wg);
+  if (compiled.some((entry) => !!entry.regex?.test(id))) return false;
+  return !nonStop || !nonStopMatchesWorkgroup(nonStop, wg);
+}
+
 export function validateGroupsConfig(
   config: WorkgroupGroupsConfig,
   options: { validateRegexSyntax?: boolean } = {}

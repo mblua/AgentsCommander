@@ -87,10 +87,11 @@ import {
   workgroupIsWorking,
 } from "./workgroup-session";
 import {
-  MAX_GROUP_MATCH_ID_LENGTH,
   DEFAULT_NON_STOP_NAME,
   compileGroupRegex,
-  groupMatchId,
+  compileWorkgroupGroups,
+  groupMatchesWorkgroup,
+  isUngroupedWorkgroup,
   nonStopMatchesWorkgroup,
   removeExactGroupToken,
   workgroupGroupsStore,
@@ -1104,33 +1105,17 @@ const ProjectPanel: Component = () => {
         };
         const groupsConfig = () => workgroupGroupsStore.config(proj.path);
         const selectedGroup = () => workgroupGroupsStore.selection(proj.path);
-        const compiledGroups = createMemo(() =>
-          groupsConfig().groups.map((group) => ({ group, regex: compileGroupRegex(group) }))
-        );
-        const canTestGroupMatchId = (wg: AcWorkgroup) =>
-          groupMatchId(wg).length <= MAX_GROUP_MATCH_ID_LENGTH;
-        const groupMatchesWorkgroup = (wg: AcWorkgroup, groupId: string) => {
-          if (!canTestGroupMatchId(wg)) return false;
-          const compiled = compiledGroups().find((entry) => entry.group.id === groupId);
-          return !!compiled?.regex?.test(groupMatchId(wg));
-        };
-        const workgroupMatchesAnyGroup = (wg: AcWorkgroup) => {
-          const nonStop = groupsConfig().nonStop;
-          return (
-            (canTestGroupMatchId(wg) &&
-              compiledGroups().some((entry) => entry.regex?.test(groupMatchId(wg)))) ||
-            (!!nonStop && nonStopMatchesWorkgroup(nonStop, wg))
-          );
-        };
+        const compiledGroups = createMemo(() => compileWorkgroupGroups(groupsConfig().groups));
         const groupPredicate = (wg: AcWorkgroup) => {
           const selected = selectedGroup();
           if (selected.kind === "all") return true;
-          if (selected.kind === "ungrouped") return !workgroupMatchesAnyGroup(wg);
+          if (selected.kind === "ungrouped")
+            return isUngroupedWorkgroup(compiledGroups(), groupsConfig().nonStop, wg);
           if (selected.kind === "nonstop") {
             const ns = groupsConfig().nonStop;
             return !!ns && nonStopMatchesWorkgroup(ns, wg);
           }
-          return groupMatchesWorkgroup(wg, selected.id);
+          return groupMatchesWorkgroup(compiledGroups(), selected.id, wg);
         };
         const groupVisibleWorkgroups = createMemo(() => proj.workgroups.filter(groupPredicate));
         const filteredWorkgroups = createMemo(() => {
@@ -1576,7 +1561,7 @@ const ProjectPanel: Component = () => {
         };
 
         const groupAlreadyMatches = (wg: AcWorkgroup, groupId: string) =>
-          groupMatchesWorkgroup(wg, groupId);
+          groupMatchesWorkgroup(compiledGroups(), groupId, wg);
 
         const toggleExistingGroup = async (wg: AcWorkgroup, groupId: string) => {
           setGroupMenuError("");
