@@ -72,7 +72,7 @@ Plus this plan (already tracked). No change to `src/sidebar/components/**`, `src
 
 ### 5.1 `src/sidebar/styles/sidebar.css` - one added block
 
-Insert verbatim between the end of the `@media (max-width: 900px)` block (`:5781`) and the `/* Footer hints */` comment (`:5783`). Byte order matters: `.agent-projection-panel`'s base rule at `:5551` must be overridden, and a rule inside a media block does not gain specificity from it.
+Insert verbatim between the end of the `@media (max-width: 900px)` block (`:5782`) and the `/* Footer hints */` comment (`:5784`). Byte order matters: `.agent-projection-panel`'s base rule at `:5551` must be overridden, and a rule inside a media block does not gain specificity from it.
 
 The exact anchor (the last lines of the narrow block, then a blank line, then the existing comment) is:
 
@@ -117,7 +117,7 @@ and the inserted block is:
 | `.agent-profile-assignment-scroll { grid-template-rows }` | none (initial `none`) | applies |
 | `... > .agent-profile-panel { overflow-y: auto }` (0,2,0) | `.agent-profile-panel` (0,1,0) `:4539` (declares no `overflow`) | applies |
 | `.agent-projection-panel { grid-template-rows }` (0,1,0) | same-selector rule `:5551` | later byte order wins; the block is inserted after it |
-| any of the three vs `@media (max-width: 900px)` `:5764-5781` | - | the two media conditions are mutually exclusive |
+| any of the three vs `@media (max-width: 900px)` `:5764-5782` | - | the two media conditions are mutually exclusive |
 
 ## 6. Behaviour and edge cases (all numbers measured in Chromium)
 
@@ -169,7 +169,7 @@ Unchanged and preserved. The table keeps `max-height: clamp(220px, 42vh, 420px)`
 
 - 1280x500 / 1000x560 / 1280x600 / 1600x520: everything reachable, column 2 shows at least one card (89-213 px of list) and column 3 shows 190 px of table body. These are the acceptance sizes.
 - 1280x420 (below the window minimum height 500): the shared wrapper stays at 0 and both columns still scroll, but column 1's list collapses to a sliver (its last card is unreachable) - a pre-existing condition of the same size in `before` (wrapper range 287 px, same unreachable card). Not a #2038 regression, not fixed here.
-- 901x500 with the heavy modal state (lock bar + Matrix default + scope stack, the `s1` fixture): the body itself is only 24 px tall and the pre-existing `body` overflow (26 px, present in `before` too) clips it; column 1's cards are already unreachable in `before` at that size. After the change column 2 matches column 1's pre-existing behaviour there (panel head 29 px > 24 px box, so the list gets a 0 px box). Fixing the lower-blocks height budget of that degenerate state is out of scope for #2038.
+- 901x500 with the heavy modal state (lock bar + Matrix default + scope stack, the `s1` fixture): the body itself is only 24 px tall and the pre-existing `body` overflow (26 px, present in `before` too) clips it; column 1's cards are already unreachable in `before` at that size. After the change column 2 matches column 1's pre-existing behaviour there (panel head 29 px > 24 px box, measured list box 0 px; the pristine layout gave the whole column only a 24 px band). Tracked as #2041 (https://github.com/mblua/AgentsCommander/issues/2041); the lower-blocks height budget of that degenerate state is out of scope for #2038.
 - The `(900 px, 901 px)` open interval keeps today's behaviour (section D4).
 
 ## 7. Tests and acceptance criteria
@@ -227,7 +227,7 @@ Recorded baseline and result: `geometry-2038-v6.json` (no warning strip) and `ge
 | types | `npm run typecheck` exit 0 |
 | build | `npm run build` exit 0 |
 | dependency rules | `npm run check:frontend-dependencies` green (no import added anywhere) |
-| scope | `git diff --name-only f83189a6...HEAD` = exactly the two paths of section 9 |
+| scope | `git diff --name-only "$(git log -1 --format=%H -- plans/2038-independent-column-scroll.md)"...HEAD` = exactly the two paths of section 9. Base at the plan's FINAL revision commit, stated explicitly: the plan commit itself is excluded by construction (with `f83189a6...HEAD` it would be counted as a change) |
 
 ## 8. Positive controls (mutants the reviewer runs)
 
@@ -235,7 +235,7 @@ Materialise each mutant, run the geometry gate (7.2) and, where listed, the byte
 
 | # | mutant | must fail |
 |---|---|---|
-| M1 | `minmax(220px, 1fr)` -> `minmax(0, 1fr)` in the wide block (i.e. only the panel scroller, no table floor) | A3 at 1000x560 / 1280x500 (table body box 0-9 px, comparison rows unreachable); measured as patch `v3` |
+| M1 | `minmax(220px, 1fr)` -> `minmax(0, 1fr)` in the wide block (i.e. only the panel scroller, no table floor) | A3: comparison rows unreachable at short frames. Measured by Grinch through a runtime override: at 1000x560 the table-body box is 0 px and the row box 0 px; at 1280x500 the box is 9 px, caught by the `>= 60` px guard of the verdict |
 | M2 | drop `.agent-profile-assignment-scroll > .agent-profile-panel { overflow-y: auto }` | A1 at 1280x600+ (wrapper range 107/207/257 px returns, both columns move); measured as patch `m-noscroll` |
 | M3 | `overflow-y: auto` -> `hidden` on those panels | A3/A6 (`panel3 overflows 81/181 px without its own scroll`); measured as patch `m-hidden` |
 | M4 | breakpoint `min-width: 901px` -> `900px` | A5 (at exactly 900x800 the wide rules apply: wrapper range 0, list range 306, narrow geometry changes) plus C1/C2 |
@@ -245,7 +245,7 @@ Materialise each mutant, run the geometry gate (7.2) and, where listed, the byte
 ## 9. File impact
 
 - **ADDED**: `src/sidebar/styles/agent-picker-column-scroll-css.test.ts`
-- **MODIFIED**: `src/sidebar/styles/sidebar.css` (one `@media (min-width: 901px)` block inserted after `:5781`; no existing declaration edited)
+- **MODIFIED**: `src/sidebar/styles/sidebar.css` (one `@media (min-width: 901px)` block inserted after `:5782`; no existing declaration edited)
 - **REMOVED**: none
 - **UNCHANGED (asserted)**: `src/sidebar/components/AgentPickerModal.tsx`, every other test file, `src/shared/**`, `src-tauri/**`
 
