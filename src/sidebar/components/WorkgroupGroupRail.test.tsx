@@ -562,6 +562,59 @@ describe("WorkgroupGroupRail", () => {
     }
   });
 
+  it("#2036 excludes Alert me!-only rooms from the Ungrouped counter", async () => {
+    const fake = new FakeTransport();
+    fake.resolve(
+      "get_project_groups",
+      groupsConfig({
+        groups: [{ id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") }],
+        nonStop: {
+          ...defaultNonStop(),
+          show: true,
+          regex: exactGroupRegexForWorkgroup("wg-2-rust-team"),
+        },
+      })
+    );
+    fake.onInvoke("update_project_groups", (args) => args.config);
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    try {
+      await waitFor(() =>
+        expect(railButtonOrder()).toEqual(["all", "ungrouped", "nonstop", "ui"])
+      );
+      // wg-3 only: wg-1 is in UI and wg-2 is Alert me!-only.
+      expect(target("workgroupGroups.button.ungrouped").textContent).toContain("0/1");
+      expect(target("workgroupGroups.button.nonstop").textContent).toContain("0/1");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("#2036 keeps a hidden Alert me!-only room out of Ungrouped", async () => {
+    const fake = new FakeTransport();
+    fake.resolve(
+      "get_project_groups",
+      groupsConfig({
+        groups: [{ id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") }],
+        nonStop: {
+          ...defaultNonStop(),
+          show: false,
+          regex: exactGroupRegexForWorkgroup("wg-2-rust-team"),
+        },
+      })
+    );
+    fake.onInvoke("update_project_groups", (args) => args.config);
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    try {
+      // Mirrors the panel's locked `hidden_alert_me_match_stays_excluded_from_ungrouped`.
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui"]));
+      expect(target("workgroupGroups.button.ungrouped").textContent).toContain("0/1");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("keeps quick click selection behavior and does not persist reorder before the hold threshold", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
