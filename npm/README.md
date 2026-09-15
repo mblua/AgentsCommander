@@ -1,5 +1,19 @@
 # AgentsCommander from npm
 
+## Recommended npm installation: global
+
+When installing through npm, use `-g` so the `agentscommander` command is available from any directory:
+
+```bash
+npm install -g @mblua/agentscommander@<version>
+```
+
+Replace `<version>` with the exact version selected using [Resolve versions and preserve configuration](#resolve-versions-and-preserve-configuration), then follow [Install and validate](#install-and-validate). Check the supported platforms and requirements below before installing.
+
+The npm website's **Install** sidebar shows the generic local-install command. For the recommended global npm installation, include `-g` as shown above.
+
+## Choosing the npm route
+
 For developers who deliberately choose the secondary npm route, this page defines the supported hosts, install command, verification signal, and configuration precaution.
 
 npm is not the recommended first install. Start with the reviewable [Coding Agent installation contract](https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md), which detects the host, selects an approved stable-release asset, verifies its checksum, and waits for approval.
