@@ -1,19 +1,21 @@
 # Plan #2016: npm launcher resolves the macOS `.app` bundle executable
 
-Status: READY_FOR_IMPLEMENTATION
+Status: READY_FOR_IMPLEMENTATION (round 4: SonarCloud remediation on top of the implemented fix)
 
-- Issue: https://github.com/mblua/AgentsCommander/issues/2016 (OPEN; technical score 23 → band 1-25, Lite)
+- Issue: https://github.com/mblua/AgentsCommander/issues/2016 (OPEN; technical score 23 → band 1-25, Lite; the PR #2025 re-score comment is the round-4 input)
 - Repository: `repo-AgentsCommander`
 - Branch: `fix/2016-npm-macos-launcher-path`
-- Base: `main` `f9ee9f654802d823def68cc15b291f040c5c65f9` = the merge-base of `fix/2016-npm-macos-launcher-path` with `origin/main` (verified with `git merge-base HEAD origin/main` and `git ls-remote`). On top of the base the branch holds only documentation commits (round-1 plan `7838aea0`, round-2 revision `bb630a5324c8ea9a34d5f64f048a9e20eb782f8d`, plus this round-3 revision); no code has changed yet.
+- Base: originally `main` `f9ee9f654802d823def68cc15b291f040c5c65f9` (the round-1..3 merge-base). Current first-parent history (verified with `git log --oneline --first-parent` and `git rev-parse`): `7838aea0` plan round 1, `bb630a53` plan round 2, `3c5e8fc7` plan round 3 (last approved revision), `2b78f5c9` implementation of §5 (`Grinch` PASS), `5b41d9be` merge of `origin/main` `36709240` — the head this round starts from.
 - Author: `ac-dev-rust-v4`. Reviewer: `ac-dev-rust-grinch-v4`.
 - Vetoes in force: Verification ≥ 8 and Environment ≥ 8. Both are addressed in §7 (proof package and the mandatory in-writing environment statement).
-- Task class: routine application fix in the npm wrapper; no Rust, no frontend, no IPC, no release, no version bump.
+- Task class: routine application fix in the npm wrapper plus a static-analysis cleanup of the PR diff (§9); no Rust, no frontend, no IPC, no release, no version bump.
 
 ## 1. Objective
 
 `npm install -g @mblua/agentscommander` on macOS completes, but the installed `agentscommander` command exits 1 with
 `Cannot find AgentsCommander executable at <prefix>/.../bin/agentscommander`, because the postinstall extracts the app bundle and the launcher looks for a renamed binary that was never created. Fix the launcher so the published npm package starts the app on macOS.
+
+Round 4 (this revision) keeps that fix and clears the 8 SonarCloud findings the PR #2025 analysis raised (§9): same behavior, same files, no version bump.
 
 Requirements from the user (mapped to design/test in §7.5):
 
@@ -52,6 +54,7 @@ In scope:
 - `npm/package.json`: add `resolve-bin.js` to `files` so `npm pack` ships it.
 - New `scripts/check-npm-launcher.mjs`: the executable proof harness (§7.1).
 - This plan.
+- Round 4 only (§9): the 8 SonarCloud findings on the PR diff are cleared inside `npm/resolve-bin.js` (`node:` specifiers) and `scripts/check-npm-launcher.mjs` (optional chaining, `String.raw`, fixed absolute `tar` / `npm-cli.js` paths). No other file changes.
 
 Out of scope (decided, not open):
 
@@ -81,11 +84,11 @@ Failure policy: when the executable cannot be determined (no bundle, more than o
 
 ## 5. Exact changes (files and symbols)
 
-### 5.1 NEW `npm/resolve-bin.js` (CommonJS, no dependencies beyond `fs`/`path`)
+### 5.1 NEW `npm/resolve-bin.js` (CommonJS, no dependencies beyond `node:fs`/`node:path`)
 
 ```js
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const CFBUNDLE_EXECUTABLE_RE = /<key>\s*CFBundleExecutable\s*<\/key>\s*<string>([^<]*)<\/string>/;
 
@@ -189,6 +192,7 @@ Harness mechanics (each item below was executed and verified on this Windows hos
 - Each H/I scenario starts from a freshly recreated `<work>/bin`, so no scenario can inherit another's state.
 - The I scenarios spawn `node -r ./stub.cjs ./install.js` with `cwd` = work dir. On win32 that child's env puts `%SystemRoot%\System32` first on `PATH`, so `install.js`'s `execSync('tar ...')` resolves to the Windows-native bsdtar (macOS also ships bsdtar) instead of Git Bash's GNU tar, which misreads a `D:\...` argument as the remote-host form `host:path` (verified: GNU tar fails with `tar (child): Cannot connect to D: resolve failed`; bsdtar extracts the same archive cleanly). If no usable `tar` is found, I1-I2 report `SKIP` with the reason (does not happen on this host).
 - Fixture tarballs and A1's real asset are always handled with relative paths (`tar -czf mac-ok.tar.gz -C fixture-ok "Agents Commander.app"`; the asset is copied into the work dir and extracted by relative name), so GNU tar never sees a drive-letter path.
+- Round 4 (§9.4): every program the harness itself starts is addressed by a fixed absolute path — `%SystemRoot%\System32\tar.exe` (win32) or `/usr/bin/tar` / `/bin/tar` (darwin/linux) for tar, and `node <npm-cli.js>` (npm-cli.js located from `process.execPath`) for `npm pack`. The `PATH` prepend above remains only for the child `install.js` process, whose shipped `execSync('tar ...')` is out of scope; its directory is fixed and OS-owned.
 
 | Id | Scenario | Expectation |
 |---|---|---|
@@ -236,7 +240,7 @@ Partial-state decision (installs, §5.3): a validation failure does not clean up
 
 ### 7.2 Implementation order with red/green control (owner: ac-dev-rust-v4)
 
-All commands from `repo-AgentsCommander` with Git Bash; logs under `target/` (gitignored).
+All commands from `repo-AgentsCommander` with Git Bash; logs under `target/` (gitignored). The base-fix order below was executed as written in `2b78f5c9` (its step 1 names the branch tip at that time, `3c5e8fc7`); it stays as the record of that round. §7.2.1 is the round-4 order.
 
 1. Preconditions: `git merge-base HEAD origin/main` = the base above (the branch tip is the docs-only plan commit, not the base); `git status --porcelain` empty; `test -f plans/2016-npm-macos-launcher-path.md`.
 2. Add `npm/resolve-bin.js` and `scripts/check-npm-launcher.mjs` only.
@@ -252,6 +256,18 @@ All commands from `repo-AgentsCommander` with Git Bash; logs under `target/` (gi
 7. Scope check: `git diff --name-only $(git merge-base HEAD origin/main)` lists exactly the five code files plus this plan; nothing else.
 8. Commit `fix(npm): resolve the macOS .app bundle executable in the npm launcher (#2016)`, push `git push origin HEAD`. No merge, no release.
 
+### 7.2.1 Round 4 order (SonarCloud remediation) — red/green re-validated in this revision
+
+Run from the head of this plan revision (implementation of §5 already committed):
+
+1. Apply only §9.4.1 and §9.4.2.
+2. Green: `node scripts/check-npm-launcher.mjs --work-dir target/i2016-work 2>&1 | tee target/i2016-green.log; echo "green_exit=$?"` → `28 passed, 0 failed, 1 skipped` (A1 skipped without `--asset`), `green_exit=0`.
+3. Red (harness validity): restore the pre-fix launcher revisions — `git checkout 3c5e8fc7 -- npm/run.js npm/install.js npm/package.json` — run the same command, expect exactly `FAIL P1, H2, H3, H4, H5, H6, H7, I2` with `20 passed, 8 failed, 1 skipped`, `red_exit=1`; then `git checkout HEAD -- npm/run.js npm/install.js npm/package.json`. An identical red set to the base-fix red set in §7.2 step 3 means the remediation did not weaken the harness.
+4. After step 3, `git status --porcelain` lists only `npm/resolve-bin.js` and `scripts/check-npm-launcher.mjs` as modified.
+5. Commit `fix(npm): clear SonarCloud findings on the #2016 launcher changes`, `git push origin HEAD`, then verify §7.5 criteria 10-11. The A1 real-asset replay (step 6 above) is unaffected by round 4 and is run the same way.
+
+Executed while writing this revision from `5b41d9be` (the §9.4 edits were applied in the working tree, exercised, then reverted so the round-4 commit carries only this plan): step 2 gave `28 passed, 0 failed, 1 skipped` (log `target/i2016-green-round4.log`); step 3 gave `20 passed, 8 failed, 1 skipped` with the 8 failures exactly P1/H2/H3/H4/H5/H6/H7/I2 (log `target/i2016-red-round4.log`); the regenerated `stub.cjs` was byte-identical to the pre-round-4 one (1129 bytes before and after).
+
 ### 7.3 macOS handoff (cannot be executed in this room; owner: user, prepared by ac-dev-rust-v4)
 
 On the branch: `cd npm && npm pack` → `mblua-agentscommander-0.32.0.tgz` (the postinstall downloads the already-published v0.32.0 assets, so no release is needed to test the launcher fix).
@@ -265,7 +281,7 @@ On one x86_64 Mac and one arm64 Mac:
 5. Terminal interaction (observational; record the observed behavior; not a pass/fail gate): with the app running from a terminal, press Ctrl+C and record whether the app quits; start it again, close the terminal window and record whether the app quits or keeps running. Direct `spawn` with `stdio: 'inherit'` ties the app to its terminal (no `open -a`, no detach), so this behavior is pre-existing and unchanged by this fix; the step documents what actually happens.
 6. Exit propagation and error path: `cd "$(npm root -g)/@mblua/agentscommander" && mv bin bin.off && node run.js --version; echo exit=$?` → `Error: macOS app bundle not found: cannot read .../bin (ENOENT)` plus `IGNORE_SCRIPTS_HINT`, `exit=1`; `mv bin.off bin`. If the global prefix is root-owned (e.g. `/usr/local`, the default with some Node installers), `mv` fails with `Permission denied`: prefix that command and its restore with `sudo`.
 7. Run the shipped validation directly against the real installed bundle: `cd "$(npm root -g)/@mblua/agentscommander" && node -e "const path = require('path'); console.log(require('./resolve-bin').assertExecutable('darwin', path.join(process.cwd(), 'bin')))"` → prints `.../Agents Commander.app/Contents/MacOS/agentscommander`, exit 0 (the exact function step 1's postinstall calls).
-8. Run `node scripts/check-npm-launcher.mjs` on macOS (H1/H2/H7 then exercise the real darwin branch, including H4's exit-7 propagation).
+8. Run `node scripts/check-npm-launcher.mjs` on macOS (H1/H2/H7 then exercise the real darwin branch, including H4's exit-7 propagation). The harness's own tar calls now use the fixed `/usr/bin/tar` (§9.4.2); `install.js` still resolves the same bsdtar through its PATH.
 9. Record `uname -m`, `node -v`, `node -p process.arch`, `npm list -g @mblua/agentscommander`, and the outputs above. An x64 Node on an arm64 Mac reports `x64`, so `install.js` downloads the `x86_64` bundle (pre-existing `os.arch()` mapping, unchanged by this fix); to validate the `aarch64` asset, run the handoff with an arm64-native Node and record both values.
 
 ### 7.4 Environment risk (mandatory in-writing statement)
@@ -275,7 +291,7 @@ Host is Windows; this room has no macOS machine, and a Mach-O binary cannot exec
 - Testable on this host and actually executed (the harness mechanics in §7.1 were exercised while writing this revision): the resolution contract against the **real published v0.32.0 tarball layout** extracted on Windows (A1: bundle name, plist read, resolved path is a real regular file); the full launcher behavior — resolve, direct `spawn`, stdio inherit, argv pass-through, exit-code propagation, and every failure message — using a copy of `node` as a stand-in executable inside fixture bundles, with darwin forced through `stub.cjs` and the fixture executable pinned per host (H1-H7); the darwin branch of `install.js` end-to-end — download plumbing, checksum, extraction, move loop, `assertExecutable`, failure exit and partial state — driven offline by a fixture HTTPS transport (I1-I2); the validation function the postinstall calls, invoked directly (V1-V3); the shipped file set (`npm pack --dry-run`); version sync.
 - NOT testable here and delegated to the macOS handoff (§7.3): the real HTTPS download (the harness substitutes the transport), real `npm install -g` postinstall on macOS, tar preserving the executable bit on APFS, launching the real (unsigned) Mach-O bundle, Gatekeeper/quarantine behaviour on the npm-installed tree, and real GUI startup, on both architectures; also the `--ignore-scripts` install and the `npm rebuild -g` remedy (handoff step 3), the terminal-tie behavior — Ctrl+C and closing the terminal while the app runs (handoff step 5) — and which architecture a Rosetta (x64) Node selects on an arm64 Mac (handoff step 9).
 - Residual risk of the fixture method: a stand-in executable cannot expose macOS-only spawn failures (for example a lost `+x` bit or quarantine), the fixture transport skips TLS/redirect/HTTP-error paths of `install.js`, and the offline I scenarios run the host's bsdtar rather than macOS's. The tests state their own limits; the handoff is the acceptance gate for that residue. The issue report already states the downloaded tree carries no quarantine attribute and runs, but it must be re-verified by the user after a real install.
-- Verification veto (≥ 8): the proof package is §7.1 plus the executed evidence of §7.2; the reviewer checks the red/green logs, the real-asset replay, and that the handoff steps have concrete commands and expected outputs (they do, §7.3). The implementation report must not claim macOS launch as verified from this host.
+- Verification veto (≥ 8): the proof package is §7.1 plus the executed evidence of §7.2 and §7.2.1; the reviewer checks the red/green logs, the real-asset replay, and that the handoff steps have concrete commands and expected outputs (they do, §7.3). The implementation report must not claim macOS launch as verified from this host.
 
 ### 7.5 Acceptance criteria
 
@@ -290,6 +306,9 @@ Host is Windows; this room has no macOS machine, and a Mach-O binary cannot exec
 | 7 | No `open -a`, no copy out of the bundle, no shell workaround | P3 |
 | 8 | The published package contains every file needed at run time | P1 |
 | 9 | An install that skipped the postinstall (`--ignore-scripts`) fails with a one-line reinstall/rebuild hint | H2 and H7 (harness, both launcher error paths); macOS handoff step 3 (real `--ignore-scripts` install plus the `npm rebuild -g` remedy) |
+| 10 | SonarCloud Quality Gate on PR #2025 is passed (`new_security_rating` A = 0 new vulnerabilities) | `gh pr checks 2025 --repo mblua/AgentsCommander` shows `SonarCloud Code Analysis pass`; `api/qualitygates/project_status?projectKey=mblua_AgentsCommander&pullRequest=2025` → `"status":"OK"` |
+| 11 | 0 unresolved Sonar findings on the PR (both `S4036` vulnerabilities and all 6 smells) | `api/issues/search?componentKeys=mblua_AgentsCommander&pullRequest=2025&resolved=false` → `"total":0` |
+| 12 | The remediation changes no launcher behavior | Red/green sets of the harness are identical to the base fix (§7.2.1); the round-4 diff touches only `npm/resolve-bin.js` and `scripts/check-npm-launcher.mjs`; no version bump |
 
 ## 8. Inventory and dependency impact
 
@@ -302,5 +321,195 @@ Host is Windows; this room has no macOS machine, and a Mach-O binary cannot exec
 | Modified | `npm/package.json` (`files` only) |
 | Modified | `plans/2016-npm-macos-launcher-path.md` (this plan; tracked since the round-1 plan commit) |
 | Removed | none |
+| Modified (round 4) | `npm/resolve-bin.js` (two `require` specifiers → `node:fs` / `node:path`) |
+| Modified (round 4) | `scripts/check-npm-launcher.mjs` (S7780 `String.raw`, S6582 optional chaining, S4036 fixed absolute paths) |
+| Modified (round 4) | `plans/2016-npm-macos-launcher-path.md` (this round-4 revision) |
 
-Dependency impact: two new intra-package require edges (`run.js → resolve-bin.js`, `install.js → resolve-bin.js`) and a new standalone script; no Rust, frontend, IPC, event, schema or lockfile changes; no new npm dependencies. `scripts/check-npm-launcher.mjs` is not shipped and is not wired into CI or into root `package.json` (avoids triggering `bundle-validation.yml`), so it is run directly as documented in §7.1-§7.2.
+Dependency impact: two new intra-package require edges (`run.js → resolve-bin.js`, `install.js → resolve-bin.js`) and a new standalone script; no Rust, frontend, IPC, event, schema or lockfile changes; no new npm dependencies. `scripts/check-npm-launcher.mjs` is not shipped and is not wired into CI or into root `package.json` (avoids triggering `bundle-validation.yml`), so it is run directly as documented in §7.1-§7.2. Round 4 adds no dependency: `resolveNpmCli()` reads only `process.execPath` and the fixed node install layout, and the npm CLI ships with node.
+
+## 9. Round 4: SonarCloud remediation on PR #2025 (this revision)
+
+### 9.1 Input: the 8 findings
+
+PR #2025 ran SonarCloud (`projectKey=mblua_AgentsCommander`, `pullRequest=2025`). The Quality Gate is `ERROR` on exactly one condition — `new_security_rating` (actual 2, threshold 1); `new_reliability_rating`, `new_maintainability_rating`, `new_duplicated_lines_density` and `new_security_hotspots_reviewed` are OK. The PR carries 8 unresolved issues (checked while writing this revision; analysis of `5b41d9be`):
+
+| # | Rule | Severity | Location (analysis) | Message |
+|---|---|---|---|---|
+| 1 | `javascript:S7772` | MINOR | `npm/resolve-bin.js:4` | Prefer `node:fs` over `fs` |
+| 2 | `javascript:S7772` | MINOR | `npm/resolve-bin.js:5` | Prefer `node:path` over `path` |
+| 3 | `javascript:S7780` | MINOR | `scripts/check-npm-launcher.mjs:60-91` (`STUB_SOURCE`) | `String.raw` should be used to avoid escaping `\` |
+| 4 | `javascript:S7780` | MINOR | `scripts/check-npm-launcher.mjs:220` (`resolveTar`) | `String.raw` should be used to avoid escaping `\` |
+| 5 | `javascript:S6582` | MINOR | `scripts/check-npm-launcher.mjs:133` (`record` catch) | Prefer using an optional chain expression |
+| 6 | `javascript:S6582` | MINOR | `scripts/check-npm-launcher.mjs:157` (`assertThrows` catch) | Prefer using an optional chain expression |
+| 7 | `javascript:S4036` | MINOR | `scripts/check-npm-launcher.mjs:225` (`execFileSync('tar', ...)`) | Make sure the "PATH" variable only contains fixed, unwriteable directories |
+| 8 | `javascript:S4036` | MINOR | `scripts/check-npm-launcher.mjs:384` (`spawnSync('npm pack ...', { shell: true })`) | Make sure the "PATH" variable only contains fixed, unwriteable directories |
+
+Findings 1-2 are in the shipped `npm/resolve-bin.js`; findings 3-8 are in the non-shipped harness. `npm/run.js`, `npm/install.js` and `npm/package.json` have no findings and are not touched by round 4.
+
+### 9.2 Per-finding resolution (one edit each)
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1-2 | `S7772` ×2 | `require('node:fs')` / `require('node:path')` in `npm/resolve-bin.js` (§9.4.1); the package's `engines.node` is already `>=18.0.0`, which supports the `node:` scheme in CommonJS (compatibility note in §9.4.1) |
+| 3 | `S7780` `STUB_SOURCE` | Tag the template literal with `String.raw` and write the generated newline as `'\n'`; the emitted `stub.cjs` stays byte-identical (verified: 1129 bytes before and after) |
+| 4 | `S7780` `'C:\\Windows'` | Replace the escaped literal with ``String.raw`C:\Windows` `` |
+| 5-6 | `S6582` ×2 | Translate the flagged `err && err.message` to `err?.message`; the ternary result is unchanged for every input (falsy or absent message → `String(err)`) |
+| 7 | `S4036` `tar` | `resolveTar()` returns fixed OS-owned absolute paths (`%SystemRoot%\System32\tar.exe`, or the first runnable of `/usr/bin/tar`, `/bin/tar`) and keeps the `--version` availability probe at the absolute path; the harness no longer resolves `tar` through PATH |
+| 8 | `S4036` `npm pack` | Replace the shell string with `spawnSync(process.execPath, [npmCli, 'pack', '--dry-run', '--json'])`, where `resolveNpmCli()` locates the npm CLI from `process.execPath` (`<nodeDir>/node_modules/npm/bin/npm-cli.js` or `<nodeDir>/../lib/node_modules/npm/bin/npm-cli.js`); no shell, no PATH |
+
+### 9.3 The one approach for PATH/tar resolution in the harness (decision)
+
+**Chosen: every program the harness itself starts is addressed by a fixed absolute path; exactly one PATH prepend remains, and only for the child `install.js` process.**
+
+1. tar: `%SystemRoot%\System32\tar.exe` on win32; `/usr/bin/tar` (probed with `--version`) then `/bin/tar` on darwin/linux. Both are fixed, OS-owned locations.
+2. npm: `process.execPath` plus the npm CLI found in the fixed layout of the running node install. No shell, no PATH.
+3. The child `install.js` still gets `%SystemRoot%\System32` prepended on win32, because the shipped `install.js` resolves `tar` through the child's PATH inside its own `execSync('tar ...')`; that shipped call is out of scope and was never a Sonar finding. The prepended directory is fixed and OS-owned.
+
+Verified facts preserved: Git Bash's GNU tar still misreads a `D:\...` argument as `host:path` and is still avoided for `install.js` (the System32 prepend is unchanged), while the harness's own tar calls no longer depend on which tar a caller's PATH would select; darwin/linux behavior is unchanged (system tar, relative-path fixtures).
+
+Rejected alternatives: (a) `// NOSONAR` suppressions — hide the finding instead of fixing the resolution; (b) mutating the harness's own `PATH` — the lookup remains, only its source changes; (c) replacing the child's PATH entirely — a larger deviation from the verified environment with no finding to fix; (d) passing an absolute tar path into `install.js` — requires editing shipped `install.js`, outside the approved scope.
+
+### 9.4 Exact edits
+
+#### 9.4.1 `npm/resolve-bin.js` — S7772 ×2
+
+```diff
+diff --git a/npm/resolve-bin.js b/npm/resolve-bin.js
+--- a/npm/resolve-bin.js
++++ b/npm/resolve-bin.js
+@@ -1,8 +1,8 @@
+ // Shared, platform-aware locator for the AgentsCommander executable inside the
+ // installed package. run.js (launch) and install.js (post-extraction validation)
+ // both use it so the two files agree on one on-disk contract. Issue #2016.
+-const fs = require('fs');
+-const path = require('path');
++const fs = require('node:fs');
++const path = require('node:path');
+```
+
+Engines compatibility: the `node:` scheme is accepted by `require()` since Node 14.18 / 16.0.0 (the `node:`-scheme support for `require`), and `npm/package.json#engines` declares `>=18.0.0`, so every runtime the package supports accepts both lines. There is no bundler or transpiler in this package, and the ESM harness already imports `node:`-prefixed specifiers. `npm/run.js` and `npm/install.js` keep their existing `require('fs')`/`require('path')` lines: those are pre-existing, unflagged lines, and touching shipped files for no finding is out of scope.
+
+#### 9.4.2 `scripts/check-npm-launcher.mjs` — S6582 ×2, S7780 ×2, S4036 ×2
+
+Full diff (applied and red/green-verified while writing this revision; run results in §7.2.1):
+
+```diff
+diff --git a/scripts/check-npm-launcher.mjs b/scripts/check-npm-launcher.mjs
+index 230322b2..01f967cd 100644
+--- a/scripts/check-npm-launcher.mjs
++++ b/scripts/check-npm-launcher.mjs
+@@ -57,7 +57,7 @@ const NODE_BYTES = fs.readFileSync(process.execPath);
+ const CHILD_SCRIPT = "console.log('AC_MARKER:' + process.argv[1])";
+ const COPIED_FILES = ['run.js', 'install.js', 'resolve-bin.js'];
+ 
+-const STUB_SOURCE = `// Generated by scripts/check-npm-launcher.mjs for issue #2016. Do not edit.
++const STUB_SOURCE = String.raw`// Generated by scripts/check-npm-launcher.mjs for issue #2016. Do not edit.
+ const fs = require('fs');
+ const path = require('path');
+ const crypto = require('crypto');
+@@ -78,7 +78,7 @@ https.get = function (url, options, callback) {
+   let payload;
+   if (String(url).indexOf('SHASUMS256.txt') !== -1) {
+     const digest = crypto.createHash('sha256').update(fs.readFileSync(fixturePath)).digest('hex');
+-    payload = digest + '  ' + ASSET_NAME + '\\n';
++    payload = digest + '  ' + ASSET_NAME + '\n';
+   } else {
+     payload = fs.readFileSync(fixturePath);
+   }
+@@ -130,7 +130,7 @@ function test(id, fn) {
+     const detail = fn();
+     record(id, 'PASS', detail || '');
+   } catch (err) {
+-    record(id, 'FAIL', err && err.message ? err.message : String(err));
++    record(id, 'FAIL', err?.message ? err.message : String(err));
+   }
+ }
+ function skip(id, reason) {
+@@ -154,7 +154,7 @@ function assertThrows(fn, needles, label) {
+   try {
+     fn();
+   } catch (err) {
+-    message = err && err.message ? err.message : String(err);
++    message = err?.message ? err.message : String(err);
+   }
+   assert(message !== null, `${label}: expected a throw, but the call succeeded`);
+   for (const needle of needles) assertIncludes(message, needle, `${label} thrown message`);
+@@ -215,18 +215,38 @@ function freshBin() {
+ 
+ // ---------- tar ----------
+ 
++// Fixed, OS-owned tar locations only: the harness never resolves tar through
++// PATH (javascript:S4036). Windows uses the native bsdtar in System32 because
++// Git Bash's GNU tar misreads a D:\... argument as the remote-host form
++// host:path; macOS (/usr/bin/tar is bsdtar) and Linux keep their system tar.
++const POSIX_TAR_CANDIDATES = ['/usr/bin/tar', '/bin/tar'];
++
+ function resolveTar() {
+   if (process.platform === 'win32') {
+-    const dir = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
++    const dir = path.join(process.env.SystemRoot || String.raw`C:\Windows`, 'System32');
+     const exe = path.join(dir, 'tar.exe');
+     return fs.existsSync(exe) ? { cmd: exe, dir } : null;
+   }
+-  try {
+-    execFileSync('tar', ['--version'], { stdio: 'ignore' });
+-    return { cmd: 'tar', dir: null };
+-  } catch {
+-    return null;
++  for (const cmd of POSIX_TAR_CANDIDATES) {
++    try {
++      execFileSync(cmd, ['--version'], { stdio: 'ignore' });
++      return { cmd, dir: null };
++    } catch {
++      // try the next fixed location
++    }
+   }
++  return null;
++}
++
++// The npm CLI shipped with the running node, derived from process.execPath
++// (fixed layout), never from PATH (javascript:S4036).
++function resolveNpmCli() {
++  const nodeDir = path.dirname(process.execPath);
++  const candidates = [
++    path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
++    path.join(nodeDir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
++  ];
++  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+ }
+ 
+ function prependPath(env, dir) {
+@@ -249,6 +269,9 @@ function runLauncher(launcherArgs, options = {}) {
+ 
+ function runInstall(fixture, tarInfo) {
+   const env = { ...process.env, I2016_PLATFORM: 'darwin', I2016_FIXTURE: fixture };
++  // Shipped install.js resolves `tar` through the child's PATH (its own
++  // execSync('tar ...') is out of scope); this is the only PATH use left in the
++  // harness and the prepended directory is fixed and OS-owned.
+   if (tarInfo.dir) prependPath(env, tarInfo.dir);
+   return spawnSync(
+     process.execPath,
+@@ -380,11 +403,12 @@ function runAllChecks() {
+ 
+   // --- package plumbing ---
+   test('P1', () => {
++    const npmCli = resolveNpmCli();
++    assert(npmCli !== null, `P1: npm-cli.js not found next to ${process.execPath}`);
+     const env = { ...process.env, npm_config_cache: path.join(workDir, 'npm-cache') };
+-    const r = spawnSync('npm pack --dry-run --json', {
++    const r = spawnSync(process.execPath, [npmCli, 'pack', '--dry-run', '--json'], {
+       cwd: NPM_DIR,
+       env,
+-      shell: true,
+       encoding: 'utf8',
+     });
+     expectExit(r, 0, 'P1 npm pack');
+```
+
+Semantics checks executed while writing this revision: the generated `stub.cjs` is byte-identical to the pre-remediation one (1129 bytes both, compared by evaluating both `STUB_SOURCE` templates); the optional-chain lines keep the same fallback for non-object errors and falsy messages; `resolveTar()` still returns `null` (→ I1/I2/A1 `SKIP`) when no usable tar exists; `resolveNpmCli()` resolves `C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js` on this host and P1's `PASS` is unchanged.
+
+### 9.5 Scope guard for round 4
+
+- No change to launcher behavior: `npm/run.js` and `npm/install.js` are untouched by round 4; `npm/package.json` (version, `files`, `engines`) is untouched; no version bump.
+- No new dependency; no new shipped file; `npm pack` file set is unchanged.
+- No CI workflow edit: the SonarCloud analysis is the SonarCloud GitHub App, re-run automatically when a commit is pushed to PR #2025; the gate and issue checks are API queries against sonarcloud.io (§7.5 criteria 10-11).
