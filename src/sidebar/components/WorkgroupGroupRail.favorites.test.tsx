@@ -720,6 +720,43 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
     });
   });
 
+  describe("the D2 match cap reaches the Favorites call site (#2036)", () => {
+    it("counts a 160-code-point astral room in a favorited group's counter", async () => {
+      // 160 code points but 320 UTF-16 units: legal under the store's charLength
+      // cap, so the shared groupMatchesWorkgroup must use the same reading at this
+      // second call site. With the old UTF-16 `.length` cap the favorite rendered
+      // 0/0 because the room was dropped from the group entirely.
+      const astralName = "𝕨".repeat(160);
+      const fake = railFake(
+        groupsConfig({
+          groups: [
+            {
+              id: "astral",
+              name: "Astral",
+              regex: exactGroupRegexForWorkgroup(astralName),
+              favorite: true,
+            },
+          ],
+        })
+      );
+      const rendered = renderWithFakeTransport(
+        () => (
+          <WorkgroupGroupRail projects={[{ ...project(), workgroups: [wg(astralName)] }]} />
+        ),
+        fake
+      );
+      try {
+        await waitFor(() =>
+          expect(target("workgroupGroups.favoriteButton.Project.astral").textContent).toContain(
+            "0/1"
+          )
+        );
+      } finally {
+        rendered.cleanup();
+      }
+    });
+  });
+
   describe("reorder safety", () => {
     // THE F2 CORRUPTION TEST. Never delete it. `targetIndexForPointer` ends
     // `return candidates.length`, so with every candidate gone it returns 0 — "drop
