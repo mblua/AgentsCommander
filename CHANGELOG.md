@@ -6,6 +6,32 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- **Coding-agent selections for replicas can be locked.** Assignments offer ordinary and assign-and-lock scopes with reviewed conflict decisions, independent lock removal, KEEP badges and an explicit Save default for future replicas. Replica creation preserves existing selections and applies Matrix defaults only when a replica config is first created. Selection ownership is retained through restart completion, and re-applying the same locked pair is an unchanged write. ([#1939](https://github.com/mblua/AgentsCommander/issues/1939), [#1940](https://github.com/mblua/AgentsCommander/issues/1940), [#1941](https://github.com/mblua/AgentsCommander/issues/1941), [#1942](https://github.com/mblua/AgentsCommander/issues/1942), [#1943](https://github.com/mblua/AgentsCommander/issues/1943), [#2010](https://github.com/mblua/AgentsCommander/issues/2010))
+- **The managed coding-agent catalog is persisted with local overrides.** User edits in `agents.local.json` win and survive restart; the catalog is seeded on first run even when no project is registered, and legacy, edited, foreign or corrupt files are never rewritten. ([#1968](https://github.com/mblua/AgentsCommander/issues/1968), [#1969](https://github.com/mblua/AgentsCommander/issues/1969), [#2021](https://github.com/mblua/AgentsCommander/issues/2021))
+- **Grok Build (`grok`) is available in the coding-agent catalog.** ([#1999](https://github.com/mblua/AgentsCommander/issues/1999))
+
+### Changed
+
+- **The Coding Agent assignment modal has a new layout**: three columns, a selection lock bar, Matrix default and Apply to controls, and profile comparison rows that show the launch line. ([#2014](https://github.com/mblua/AgentsCommander/issues/2014))
+- **Suffixed executables refuse to start when their adjacent `.agentscommander_<suffix>` configuration directory is not writable**, before any durable write and without a HOME fallback. Unsuffixed executables keep `HOME/.agentscommander`, and explicit overrides are retained. ([#1935](https://github.com/mblua/AgentsCommander/issues/1935))
+- **Muse is disabled in the coding-agent catalog.** ([#1999](https://github.com/mblua/AgentsCommander/issues/1999))
+- **The npm package README recommends global installation.** ([#1955](https://github.com/mblua/AgentsCommander/issues/1955))
+
+### Removed
+
+- **The legacy pre-v2 `codingAgentProfiles` settings migration was removed.** It ran on every load and dropped profile labels. ([#2018](https://github.com/mblua/AgentsCommander/issues/2018))
+
+### Fixed
+
+- **The npm launcher starts the app on macOS** by resolving the executable inside the installed `.app` bundle. ([#2016](https://github.com/mblua/AgentsCommander/issues/2016))
+- **Profile labels survive restart.** ([#2018](https://github.com/mblua/AgentsCommander/issues/2018))
+- **Current Codex final answers are forwarded to Telegram.** ([#1997](https://github.com/mblua/AgentsCommander/issues/1997))
+- **Injected messages are submitted in Hermes, OpenCode and Grok.** ([#1999](https://github.com/mblua/AgentsCommander/issues/1999))
+- **npm release verification installs the Linux runtime before running the CLI.** ([#1988](https://github.com/mblua/AgentsCommander/issues/1988))
+- Several intermittent test fixtures are now deterministic. ([#1466](https://github.com/mblua/AgentsCommander/issues/1466), [#1984](https://github.com/mblua/AgentsCommander/issues/1984), [#1996](https://github.com/mblua/AgentsCommander/issues/1996), [#1998](https://github.com/mblua/AgentsCommander/issues/1998))
+
 ## 0.32.0
 
 ### Added
