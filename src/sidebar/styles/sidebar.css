@@ -5027,19 +5027,19 @@ html.light-theme .settings-hint-error {
   color: var(--sidebar-fg-dim);
 }
 
-/* ── #1943 selection lock: KEEP chip, lock bar, conflict review ──
+/* ── #1943 selection lock: lock chip, lock bar, conflict review ──
    Ported from the approved v3 stylistic reference
    (.ac/plans/issue_1937/prototypes/index-v3.html, section "Candado de
    selección"). Amber marks protection everywhere; green marks the eligible
    set. Nothing here changes an unrelated theme or class. */
 
-/* The sidebar KEEP chip: only a locked replica renders it. */
+/* The sidebar lock chip: only a locked replica renders it. Icon-only since
+   #2030, so the label's gap and padding are gone. */
 .selection-lock-chip {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
   height: 16px;
-  padding: 0 5px;
+  padding: 0 3px;
   border-radius: 3px;
   border: 1px solid rgba(227, 179, 65, 0.55);
   background: rgba(227, 179, 65, 0.14);
