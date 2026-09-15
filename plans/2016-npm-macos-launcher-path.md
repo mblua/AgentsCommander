@@ -5,7 +5,7 @@ Status: READY_FOR_IMPLEMENTATION
 - Issue: https://github.com/mblua/AgentsCommander/issues/2016 (OPEN; technical score 23 → band 1-25, Lite)
 - Repository: `repo-AgentsCommander`
 - Branch: `fix/2016-npm-macos-launcher-path`
-- Base: `main` `f9ee9f654802d823def68cc15b291f040c5c65f9` = local `HEAD` = `origin/fix/2016-npm-macos-launcher-path` (verified with `git rev-parse HEAD` and `git ls-remote`)
+- Base: `main` `f9ee9f654802d823def68cc15b291f040c5c65f9` = the merge-base of `fix/2016-npm-macos-launcher-path` with `origin/main` (verified with `git merge-base HEAD origin/main` and `git ls-remote`). On top of the base the branch holds only documentation commits (round-1 plan `7838aea0`, round-2 revision `bb630a5324c8ea9a34d5f64f048a9e20eb782f8d`, plus this round-3 revision); no code has changed yet.
 - Author: `ac-dev-rust-v4`. Reviewer: `ac-dev-rust-grinch-v4`.
 - Vetoes in force: Verification ≥ 8 and Environment ≥ 8. Both are addressed in §7 (proof package and the mandatory in-writing environment statement).
 - Task class: routine application fix in the npm wrapper; no Rust, no frontend, no IPC, no release, no version bump.
@@ -20,11 +20,12 @@ Requirements from the user (mapped to design/test in §7.5):
 | # | Requirement | Design element | Tests |
 |---|---|---|---|
 | R1 | `run.js` resolves per platform; on darwin targets the executable inside the extracted `.app`, resilient to a bundle rename; direct `spawn` with `stdio:'inherit'`; no `open -a`; no copy out of the bundle | `npm/resolve-bin.js` (bundle glob + `Info.plist`), unchanged spawn block | R3, H1, H2, A1, macOS handoff |
-| R2 | `install.js` darwin branch validates the expected executable exists at the end and fails clearly | `assertExecutable('darwin', binDir)` after extraction | V1-V3, E5-H2 |
-| R3 | `run.js` error shows the concrete platform-specific path searched | resolver throws messages with absolute paths; `run.js` prints them; existing `existsSync` message now receives the resolved path | H2, E4, E5, E6 |
+| R2 | `install.js` darwin branch validates the expected executable exists at the end and fails clearly | `assertExecutable('darwin', binDir)` after extraction | V1-V3, I2 |
+| R3 | `run.js` error shows the concrete platform-specific path searched | resolver throws messages with absolute paths; `run.js` prints them; the `existsSync` message receives the resolved path | H2, H5, H6, H7, R5-R11, I2 |
 | R4 | Linux and Windows paths unchanged | non-darwin branch is the exact current expression | R1, R2 |
 | R5 | No version bump in this change | only `npm/package.json#files` changes | P1, P2 |
 | R6 | Do not replicate the user's shell-script workaround | no copy, no shell wrapper, no `open -a` | P3 |
+| R7 | An install whose postinstall never ran (`--ignore-scripts`) tells the user how to repair it | one `IGNORE_SCRIPTS_HINT` line in `run.js`, on both not-found paths | H2, H7, macOS handoff step 3 |
 
 ## 2. Cause with evidence
 
@@ -115,10 +116,13 @@ Every thrown message contains at least one absolute path (requirement R3).
 ### 5.2 MODIFIED `npm/run.js`
 
 - Add `const { resolveBinPath } = require('./resolve-bin');` after the existing requires (`:2-5`).
-- Replace `:7-8` with:
+- Add the shared hint constant and the resolver call, replacing `:7-8`:
 
 ```js
 const binDir = path.join(__dirname, 'bin');
+
+const IGNORE_SCRIPTS_HINT =
+  'Hint: if npm install ran with --ignore-scripts, reinstall without that flag, or run: npm rebuild -g @mblua/agentscommander';
 
 let binPath;
 try {
@@ -126,11 +130,13 @@ try {
 } catch (err) {
   console.error(`Error: ${err.message}`);
   console.error('Please ensure the package was installed correctly.');
+  console.error(IGNORE_SCRIPTS_HINT);
   process.exit(1);
 }
 ```
 
-- `:10-14` (`existsSync` + `Cannot find AgentsCommander executable at ${binPath}` + hint + exit 1) stays byte-identical; it now receives the platform-specific resolved path, which satisfies R3 for the missing-file case.
+- `:10-14` (`existsSync` guard + `Error: Cannot find AgentsCommander executable at ${binPath}` + `Please ensure the package was installed correctly.` + exit 1) keeps its current text; add `console.error(IGNORE_SCRIPTS_HINT);` after the `Please ensure…` line. It now receives the platform-specific resolved path, which satisfies R3 for the missing-file case.
+- The hint is printed on exactly the two not-found paths: the resolver throw (`bin/` missing/unreadable, no or ambiguous bundle, unusable plist) and the `existsSync` miss on the resolved path. Both are the visible symptom of an install whose postinstall never produced `bin/`, most commonly `npm install --ignore-scripts`, and the hint names the two repairs (R7). It is deliberately NOT printed for `Failed to start AgentsCommander` spawn errors: the executable exists there, so a reinstall hint would be wrong.
 - `:16-45` (spawn options `{ stdio: 'inherit', windowsHide: true }`, `error` handler, exit/signal mapping, `SIGINT`/`SIGTERM`/`SIGQUIT` forwarding) is untouched.
 
 ### 5.3 MODIFIED `npm/install.js`
@@ -160,7 +166,8 @@ Fixture harness, plain Node ESM, zero dependencies (§7.1). Not shipped (it live
 | More than one `*.app` directory | clear error listing the found names; no arbitrary pick |
 | Missing/unreadable `Info.plist`, missing/empty/unsafe `CFBundleExecutable` | clear error naming the plist path; no fallback guess |
 | Extraction produced an unusable bundle (install-time validation failure) | `install.js` exits 1 with the absolute path; downloaded temp files and `tmp-extract` are removed; already-extracted bundle entries stay in `bin/` (package-owned scratch): they are inert because the same defect makes `run.js` fail loudly, and a retry re-extracts over them |
-| Resolved executable missing at run time | `Error: Cannot find AgentsCommander executable at <resolved absolute path>` + existing hint, exit 1 |
+| Resolved executable missing at run time | `Error: Cannot find AgentsCommander executable at <resolved absolute path>` + the existing `Please ensure the package was installed correctly.` line + `IGNORE_SCRIPTS_HINT`, exit 1 |
+| Install whose postinstall never ran (`--ignore-scripts`): `bin/` missing, or the executable missing | `run.js` exits 1 with the resolver/`Cannot find` message naming the absolute path, plus the one-line hint: reinstall without `--ignore-scripts`, or run `npm rebuild -g @mblua/agentscommander` |
 | Executable present but not executable / quarantine | unchanged behavior: `spawn` emits `error` → `Failed to start AgentsCommander: <message>`, exit 1 |
 | Windows | `bin/agentscommander.exe`, exactly as today |
 | Linux | `bin/agentscommander`, exactly as today |
@@ -178,7 +185,7 @@ Harness mechanics (each item below was executed and verified on this Windows hos
 - The work dir gets a marker `package.json` containing `{"type": "commonjs"}`. This is load-bearing: the work dir under `target/` sits inside this repository, whose root `package.json` is `"type": "module"`, so without the marker every copied `.js` file — not only the preload stub — loads as ESM and dies with `ReferenceError: require is not defined` (verified with an unmodified copy of `run.js`).
 - The harness copies `npm/run.js`, `npm/install.js` and `npm/resolve-bin.js` byte-for-byte into the work dir (asserted before running) so the repository tree is never mutated (`npm/bin/` is gitignored anyway; the copy also proves the require graph).
 - The preload is `<work>/stub.cjs` — the `.cjs` extension pins CommonJS regardless of any enclosing `package.json` (verified: `node -r ./stub.cjs` loads and its `os.platform` override reaches the loaded script). It overrides `os.platform` and `os.arch` (fixed `x64`, so the asset name is deterministic) and replaces `https.get` with an offline transport used by I1-I2: `SHASUMS256.txt` is answered with the SHA-256 of the selected fixture tarball, the asset URL with that tarball's bytes (fixture selected by the `I2016_FIXTURE` env var, default `mac-ok.tar.gz`).
-- Host-pinned fixture executable: `FIXTURE_EXE = process.platform === 'win32' ? 'renamed-exe.exe' : 'renamed-exe'`. Windows `CreateProcess` appends `.exe` to an extensionless application path, so a fixture named `renamed-exe` cannot be spawned on Windows (verified: extensionless copy of `node.exe` alone → `spawn ENOENT`; with `renamed-exe.exe` beside it, spawning `.../renamed-exe` runs `renamed-exe.exe`). Every fixture plist, fixture file and expected resolved path uses `FIXTURE_EXE`; the harness prints which name it pinned.
+- Host-pinned fixture executable: `FIXTURE_EXE = process.platform === 'win32' ? 'renamed-exe.exe' : 'renamed-exe'`. Windows `CreateProcess` appends `.exe` to an extensionless application path, so a fixture named `renamed-exe` cannot be spawned on Windows (verified: extensionless copy of `node.exe` alone → `spawn ENOENT`; with `renamed-exe.exe` beside it, spawning `.../renamed-exe` runs `renamed-exe.exe`). Every synthetic fixture plist, fixture file and expected resolved path uses `FIXTURE_EXE` (including the I1-I2 fixtures); the real published asset in A1 keeps its real `agentscommander` name. The harness prints which name it pinned.
 - Each H/I scenario starts from a freshly recreated `<work>/bin`, so no scenario can inherit another's state.
 - The I scenarios spawn `node -r ./stub.cjs ./install.js` with `cwd` = work dir. On win32 that child's env puts `%SystemRoot%\System32` first on `PATH`, so `install.js`'s `execSync('tar ...')` resolves to the Windows-native bsdtar (macOS also ships bsdtar) instead of Git Bash's GNU tar, which misreads a `D:\...` argument as the remote-host form `host:path` (verified: GNU tar fails with `tar (child): Cannot connect to D: resolve failed`; bsdtar extracts the same archive cleanly). If no usable `tar` is found, I1-I2 report `SKIP` with the reason (does not happen on this host).
 - Fixture tarballs and A1's real asset are always handled with relative paths (`tar -czf mac-ok.tar.gz -C fixture-ok "Agents Commander.app"`; the asset is copied into the work dir and extracted by relative name), so GNU tar never sees a drive-letter path.
@@ -210,19 +217,20 @@ End-to-end launcher scenarios (the fixture "executable" is a copy of `process.ex
 | Id | Scenario | Expectation |
 |---|---|---|
 | H1 | host platform success — win32/linux: `bin/agentscommander[.exe]` copy of `process.execPath`; darwin: `Renamed Bundle.app` with `<FIXTURE_EXE>`. Child args `-e "console.log('AC_MARKER:' + process.argv[1])" 'hello-arg'` | exit 0, stdout `AC_MARKER:hello-arg` (resolution + argv pass-through + stdio inherit) |
-| H2 | host platform, executable missing | exit 1, stderr contains the concrete resolved path (`.../bin/agentscommander[.exe]`, or the `.app/Contents/MacOS/<FIXTURE_EXE>` path on darwin) |
+| H2 | host platform, executable missing | exit 1, stderr contains the concrete resolved path (`.../bin/agentscommander[.exe]`, or the `.app/Contents/MacOS/<FIXTURE_EXE>` path on darwin) and `IGNORE_SCRIPTS_HINT` |
 | H3 | darwin forced on any host via `node -r ./stub.cjs` (overrides `os.platform`); bundle fixture with `<FIXTURE_EXE>` whose bytes are a copy of `process.execPath` | exit 0, `AC_MARKER:hello-arg` |
 | H4 | darwin forced, child `-e "process.exit(7)"` | exit 7 (exit-code propagation) |
 | H5 | darwin forced, bundle exists, `<FIXTURE_EXE>` deleted | exit 1, stderr contains the full `.app/Contents/MacOS/<FIXTURE_EXE>` path |
 | H6 | darwin forced, no bundle | exit 1, stderr contains the fixture `bin/` absolute path and `expected exactly one` |
+| H7 | darwin forced, `bin/` does not exist (the exact `--ignore-scripts` symptom: no postinstall ran) | exit 1, stderr contains `cannot read`, the fixture `bin/` absolute path, and `IGNORE_SCRIPTS_HINT` |
 | E7 | `node --check` on `npm/run.js`, `npm/install.js`, `npm/resolve-bin.js` | exit 0 each |
 
 Darwin install-branch scenarios (offline; they execute the real `install.js` darwin branch from §5.3, including the extraction move loop, the `assertExecutable` call and the catch):
 
 | Id | Scenario | Expectation |
 |---|---|---|
-| I1 | fixture tarball `mac-ok.tar.gz` contains `Agents Commander.app` with a plist naming `agentscommander` and a regular `Contents/MacOS/agentscommander`; `node -r ./stub.cjs ./install.js` | exit 0; stdout `Installation completed successfully.`; `bin/Agents Commander.app/Contents/MacOS/agentscommander` exists; no `*.tmp`, no `SHASUMS256.txt*`, no `tmp-extract` |
-| I2 | same with `mac-incomplete.tar.gz`, whose bundle misses `Contents/MacOS/agentscommander` | exit 1; stderr `Installation failed:` and `executable missing at` and the full absolute `.../Agents Commander.app/Contents/MacOS/agentscommander` path; the incomplete `bin/Agents Commander.app` is still present (decided partial state below); no `*.tmp`, no `SHASUMS256.txt*`, no `tmp-extract` |
+| I1 | fixture tarball `mac-ok.tar.gz` contains `Agents Commander.app` with a plist naming `<FIXTURE_EXE>` and a regular `Contents/MacOS/<FIXTURE_EXE>`; `node -r ./stub.cjs ./install.js` | exit 0; stdout `Installation completed successfully.`; `bin/Agents Commander.app/Contents/MacOS/<FIXTURE_EXE>` exists; no `*.tmp`, no `SHASUMS256.txt*`, no `tmp-extract` |
+| I2 | same with `mac-incomplete.tar.gz`, whose bundle misses `Contents/MacOS/<FIXTURE_EXE>` | exit 1; stderr `Installation failed:` and `executable missing at` and the full absolute `.../Agents Commander.app/Contents/MacOS/<FIXTURE_EXE>` path; the incomplete `bin/Agents Commander.app` is still present (decided partial state below); no `*.tmp`, no `SHASUMS256.txt*`, no `tmp-extract` |
 
 Partial-state decision (installs, §5.3): a validation failure does not clean up the extracted bundle. `bin/` is package-owned scratch, the leftover is inert (the same defect makes `run.js` fail loudly), and a retry re-extracts over it. I2 asserts exactly this, so the decision is evidence, not prose.
 
@@ -230,18 +238,18 @@ Partial-state decision (installs, §5.3): a validation failure does not clean up
 
 All commands from `repo-AgentsCommander` with Git Bash; logs under `target/` (gitignored).
 
-1. Preconditions: `git rev-parse HEAD` = base above; `git status --porcelain` empty; `test -f plans/2016-npm-macos-launcher-path.md`.
+1. Preconditions: `git merge-base HEAD origin/main` = the base above (the branch tip is the docs-only plan commit, not the base); `git status --porcelain` empty; `test -f plans/2016-npm-macos-launcher-path.md`.
 2. Add `npm/resolve-bin.js` and `scripts/check-npm-launcher.mjs` only.
 3. Red control against the unmodified launcher (`npm/run.js`, `npm/install.js` and `npm/package.json` are still the base revisions; only `npm/resolve-bin.js` and the harness exist):
    `mkdir -p target && set -o pipefail && node scripts/check-npm-launcher.mjs --work-dir target/i2016-work 2>&1 | tee target/i2016-red.log; echo "red_exit=$?"`
-   Expected on this win32 host: `PASS` = R1-R12, V1-V3, P2, P3, E7, H1, H2, I1; `FAIL` = P1, H3, H4, H5, H6, I2; `red_exit` non-zero. Rationale: H1/H2 pass because win32 is deliberately unchanged (R4); H3-H6 fail because the unmodified launcher resolves `bin/agentscommander` for darwin and never reads the bundle (this is the bug proof); P1 fails because `files` does not list `resolve-bin.js` yet; I2 fails because no install-time validation exists yet, while I1 passes because extraction is unchanged. If H3-H6 (or I2) pass here, the harness does not prove the fix — stop and fix the harness.
+   Expected on this win32 host: `PASS` = R1-R12, V1-V3, P2, P3, E7, H1, I1; `FAIL` = P1, H2, H3, H4, H5, H6, H7, I2; `red_exit` non-zero. Rationale: H1 passes because win32 is deliberately unchanged (R4); H2 and H7 fail because the base launcher prints no hint line (H7 also because the base launcher never reads the bundle and so never prints `cannot read`); H3-H6 fail because the unmodified launcher resolves `bin/agentscommander` for darwin and never reads the bundle (this is the bug proof); P1 fails because `files` does not list `resolve-bin.js` yet; I2 fails because no install-time validation exists yet, while I1 passes because extraction is unchanged. If H3-H6 (or I2) pass here, the harness does not prove the fix — stop and fix the harness.
 4. Apply §5.2, §5.3, §5.4.
 5. Green control:
-   `node scripts/check-npm-launcher.mjs --work-dir target/i2016-work 2>&1 | tee target/i2016-green.log; echo "green_exit=$?"` → all PASS — including H3-H6 and I1-I2 on this host — `green_exit=0`.
+   `node scripts/check-npm-launcher.mjs --work-dir target/i2016-work 2>&1 | tee target/i2016-green.log; echo "green_exit=$?"` → all PASS — including H2 and H7 (the new hint line), H3-H6 and I1-I2 on this host — `green_exit=0`.
 6. Real-artifact replay: download the published tarball
    `gh release download v0.32.0 --repo mblua/AgentsCommander --pattern "agentscommander-mac-x86_64.app.tar.gz" --dir target` (and `aarch64` if cheap) then
    `node scripts/check-npm-launcher.mjs --work-dir target/i2016-work --asset target/agentscommander-mac-x86_64.app.tar.gz` → A1 passes against the real bundle layout.
-7. Scope check: `git diff --name-only f9ee9f65` lists exactly the five code files + (`git add -f`) the plan; nothing else.
+7. Scope check: `git diff --name-only $(git merge-base HEAD origin/main)` lists exactly the five code files plus this plan; nothing else.
 8. Commit `fix(npm): resolve the macOS .app bundle executable in the npm launcher (#2016)`, push `git push origin HEAD`. No merge, no release.
 
 ### 7.3 macOS handoff (cannot be executed in this room; owner: user, prepared by ac-dev-rust-v4)
@@ -251,19 +259,21 @@ On the branch: `cd npm && npm pack` → `mblua-agentscommander-0.32.0.tgz` (the 
 On one x86_64 Mac and one arm64 Mac:
 
 1. `npm install -g ./mblua-agentscommander-0.32.0.tgz` (exit 0; if the bundle validation fails, the exact path is in the error).
-2. `agentscommander --version; echo exit=$?` → prints `0.32.0`, `exit=0`.
-3. Start the app normally, confirm the window opens and the process command is `.../Agents Commander.app/Contents/MacOS/agentscommander`, quit; `echo exit=$?` → 0.
-4. Exit propagation and error path: `cd "$(npm root -g)/@mblua/agentscommander" && mv bin bin.off && node run.js --version; echo exit=$?` → error naming the `.app`/`bin` path, `exit=1`; `mv bin.off bin`.
-5. Run the shipped validation directly against the real installed bundle: `cd "$(npm root -g)/@mblua/agentscommander" && node -e "const path = require('path'); console.log(require('./resolve-bin').assertExecutable('darwin', path.join(process.cwd(), 'bin')))"` → prints `.../Agents Commander.app/Contents/MacOS/agentscommander`, exit 0 (the exact function step 1's postinstall calls).
-6. Run `node scripts/check-npm-launcher.mjs` on macOS (H1/H2 then exercise the real darwin branch, including H4's exit-7 propagation).
-7. Record `uname -m`, `node -v`, `npm list -g @mblua/agentscommander`, and the outputs above.
+2. `agentscommander --version; echo exit=$?` → prints `0.32.0`, `exit=0`; the process exits immediately and no window opens.
+3. `--ignore-scripts` round trip (the hint's own scenario, plus its remedy): `npm uninstall -g @mblua/agentscommander`, then `npm install -g --ignore-scripts ./mblua-agentscommander-0.32.0.tgz`, then `agentscommander --version; echo exit=$?` → `exit=1` and the `IGNORE_SCRIPTS_HINT` line; then `npm rebuild -g @mblua/agentscommander` and again `agentscommander --version; echo exit=$?` → `0.32.0`, `exit=0`.
+4. Start the app normally, confirm the window opens and the process command is `.../Agents Commander.app/Contents/MacOS/agentscommander`, quit; `echo exit=$?` → 0.
+5. Terminal interaction (observational; record the observed behavior; not a pass/fail gate): with the app running from a terminal, press Ctrl+C and record whether the app quits; start it again, close the terminal window and record whether the app quits or keeps running. Direct `spawn` with `stdio: 'inherit'` ties the app to its terminal (no `open -a`, no detach), so this behavior is pre-existing and unchanged by this fix; the step documents what actually happens.
+6. Exit propagation and error path: `cd "$(npm root -g)/@mblua/agentscommander" && mv bin bin.off && node run.js --version; echo exit=$?` → `Error: macOS app bundle not found: cannot read .../bin (ENOENT)` plus `IGNORE_SCRIPTS_HINT`, `exit=1`; `mv bin.off bin`. If the global prefix is root-owned (e.g. `/usr/local`, the default with some Node installers), `mv` fails with `Permission denied`: prefix that command and its restore with `sudo`.
+7. Run the shipped validation directly against the real installed bundle: `cd "$(npm root -g)/@mblua/agentscommander" && node -e "const path = require('path'); console.log(require('./resolve-bin').assertExecutable('darwin', path.join(process.cwd(), 'bin')))"` → prints `.../Agents Commander.app/Contents/MacOS/agentscommander`, exit 0 (the exact function step 1's postinstall calls).
+8. Run `node scripts/check-npm-launcher.mjs` on macOS (H1/H2/H7 then exercise the real darwin branch, including H4's exit-7 propagation).
+9. Record `uname -m`, `node -v`, `node -p process.arch`, `npm list -g @mblua/agentscommander`, and the outputs above. An x64 Node on an arm64 Mac reports `x64`, so `install.js` downloads the `x86_64` bundle (pre-existing `os.arch()` mapping, unchanged by this fix); to validate the `aarch64` asset, run the handoff with an arm64-native Node and record both values.
 
 ### 7.4 Environment risk (mandatory in-writing statement)
 
 Host is Windows; this room has no macOS machine, and a Mach-O binary cannot execute here. Therefore:
 
-- Testable on this host and actually executed (the harness mechanics in §7.1 were exercised while writing this revision): the resolution contract against the **real published v0.32.0 tarball layout** extracted on Windows (A1: bundle name, plist read, resolved path is a real regular file); the full launcher behavior — resolve, direct `spawn`, stdio inherit, argv pass-through, exit-code propagation, and every failure message — using a copy of `node` as a stand-in executable inside fixture bundles, with darwin forced through `stub.cjs` and the fixture executable pinned per host (H1-H6); the darwin branch of `install.js` end-to-end — download plumbing, checksum, extraction, move loop, `assertExecutable`, failure exit and partial state — driven offline by a fixture HTTPS transport (I1-I2); the validation function the postinstall calls, invoked directly (V1-V3); the shipped file set (`npm pack --dry-run`); version sync.
-- NOT testable here and delegated to the macOS handoff (§7.3): the real HTTPS download (the harness substitutes the transport), real `npm install -g` postinstall on macOS, tar preserving the executable bit on APFS, launching the real (unsigned) Mach-O bundle, Gatekeeper/quarantine behaviour on the npm-installed tree, and real GUI startup, on both architectures.
+- Testable on this host and actually executed (the harness mechanics in §7.1 were exercised while writing this revision): the resolution contract against the **real published v0.32.0 tarball layout** extracted on Windows (A1: bundle name, plist read, resolved path is a real regular file); the full launcher behavior — resolve, direct `spawn`, stdio inherit, argv pass-through, exit-code propagation, and every failure message — using a copy of `node` as a stand-in executable inside fixture bundles, with darwin forced through `stub.cjs` and the fixture executable pinned per host (H1-H7); the darwin branch of `install.js` end-to-end — download plumbing, checksum, extraction, move loop, `assertExecutable`, failure exit and partial state — driven offline by a fixture HTTPS transport (I1-I2); the validation function the postinstall calls, invoked directly (V1-V3); the shipped file set (`npm pack --dry-run`); version sync.
+- NOT testable here and delegated to the macOS handoff (§7.3): the real HTTPS download (the harness substitutes the transport), real `npm install -g` postinstall on macOS, tar preserving the executable bit on APFS, launching the real (unsigned) Mach-O bundle, Gatekeeper/quarantine behaviour on the npm-installed tree, and real GUI startup, on both architectures; also the `--ignore-scripts` install and the `npm rebuild -g` remedy (handoff step 3), the terminal-tie behavior — Ctrl+C and closing the terminal while the app runs (handoff step 5) — and which architecture a Rosetta (x64) Node selects on an arm64 Mac (handoff step 9).
 - Residual risk of the fixture method: a stand-in executable cannot expose macOS-only spawn failures (for example a lost `+x` bit or quarantine), the fixture transport skips TLS/redirect/HTTP-error paths of `install.js`, and the offline I scenarios run the host's bsdtar rather than macOS's. The tests state their own limits; the handoff is the acceptance gate for that residue. The issue report already states the downloaded tree carries no quarantine attribute and runs, but it must be re-verified by the user after a real install.
 - Verification veto (≥ 8): the proof package is §7.1 plus the executed evidence of §7.2; the reviewer checks the red/green logs, the real-asset replay, and that the handoff steps have concrete commands and expected outputs (they do, §7.3). The implementation report must not claim macOS launch as verified from this host.
 
@@ -271,25 +281,26 @@ Host is Windows; this room has no macOS machine, and a Mach-O binary cannot exec
 
 | # | Criterion | Verified by |
 |---|---|---|
-| 1 | On macOS the launcher starts the executable inside the extracted bundle with a direct spawn | H1/H3/H4 + A1; final proof: macOS handoff step 3 |
+| 1 | On macOS the launcher starts the executable inside the extracted bundle with a direct spawn | H1/H3/H4 + A1; final proof: macOS handoff step 4 |
 | 2 | Bundle rename does not break resolution | R3, R4, H3 |
-| 3 | `install.js` fails clearly when the expected executable is absent after extraction | V1-V3, R5-R11 (direct calls to the same exported functions `install.js` uses), I1-I2 (the darwin branch of `install.js` executed offline), macOS handoff steps 1 and 5 |
-| 4 | Error messages show the concrete platform-specific path searched | H2, H5, H6, R5-R11, I2 |
+| 3 | `install.js` fails clearly when the expected executable is absent after extraction | V1-V3, R5-R11 (direct calls to the same exported functions `install.js` uses), I1-I2 (the darwin branch of `install.js` executed offline), macOS handoff steps 1 and 7 |
+| 4 | Error messages show the concrete platform-specific path searched | H2, H5, H6, H7, R5-R11, I2 |
 | 5 | Linux/Windows resolution is unchanged | R1, R2, H1/H2 on Windows, diff shows the identical expression |
 | 6 | No version change (package 0.32.0, install.js VERSION 0.32.0) | P1, P2 |
 | 7 | No `open -a`, no copy out of the bundle, no shell workaround | P3 |
 | 8 | The published package contains every file needed at run time | P1 |
+| 9 | An install that skipped the postinstall (`--ignore-scripts`) fails with a one-line reinstall/rebuild hint | H2 and H7 (harness, both launcher error paths); macOS handoff step 3 (real `--ignore-scripts` install plus the `npm rebuild -g` remedy) |
 
 ## 8. Inventory and dependency impact
 
 | Type | Path |
 |---|---|
-| Added | `plans/2016-npm-macos-launcher-path.md` (this plan, `git add -f`) |
 | Added | `npm/resolve-bin.js` |
 | Added | `scripts/check-npm-launcher.mjs` |
 | Modified | `npm/run.js` |
 | Modified | `npm/install.js` |
 | Modified | `npm/package.json` (`files` only) |
+| Modified | `plans/2016-npm-macos-launcher-path.md` (this plan; tracked since the round-1 plan commit) |
 | Removed | none |
 
 Dependency impact: two new intra-package require edges (`run.js → resolve-bin.js`, `install.js → resolve-bin.js`) and a new standalone script; no Rust, frontend, IPC, event, schema or lockfile changes; no new npm dependencies. `scripts/check-npm-launcher.mjs` is not shipped and is not wired into CI or into root `package.json` (avoids triggering `bundle-validation.yml`), so it is run directly as documented in §7.1-§7.2.
