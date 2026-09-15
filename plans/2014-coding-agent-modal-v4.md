@@ -17,7 +17,13 @@ Routine frontend application change. No backend, IPC, persisted shape, dependenc
 
 ### D1. The launch line is computed on the frontend, no backend change
 
-The backend spawn line and the frontend preview use the same three rules. Checked in current code:
+Definition (owner ruling recorded on the issue, round 2): the line shown is the agent's `command` + the arguments of its EFFECTIVE profile cell (after fallback, enabled cells only). It is NOT the final spawn argv. Known differences from the real spawn, all accepted and none to be "fixed" in this plan:
+
+1. Session args: for Claude the spawn appends `--continue` (prior conversation) or `--session-id <uuid>` (fresh spawn) at `src-tauri/src/commands/session.rs:2007-2062`. The panel never shows them.
+2. Quoting: the panel keeps the user's quotes as typed; the backend removes them while tokenizing.
+3. Placeholder path spelling: `%AC_*%` is expanded by the panel against the modal's target path (`profile-utils.ts:131-142`), by the backend against the canonicalized launch root (`agent_command.rs:858-901`, `placeholders.rs:48-137`). A `%AC_REPLICA_ROOT%` on a non-AC path is refused by the backend but still previewed by the panel.
+
+Under that definition the backend and the frontend use the same three rules. Checked in current code:
 
 | Rule | Backend (spawns) | Frontend (modal) | Same? |
 |---|---|---|---|
@@ -25,11 +31,11 @@ The backend spawn line and the frontend preview use the same three rules. Checke
 | Enabled-only cells | `coding_agent_profiles.rs:1303` `.filter(|cell| cell.enabled)` | `profile-utils.ts:89` and `AgentPickerModal.tsx:278` | yes |
 | Compose | `src-tauri/src/config/agent_command.rs:721-730` trim both, one space, empty side drops; used at `:830-831` | `profile-utils.ts:97-103` identical; mirrored tests `profile-utils.test.ts:157-162` vs `agent_command.rs:2596-2609` | yes |
 
-The requested letter in the comparison is the modal's `selectedProfile()`. Assigning writes that letter as the replica's profile, and the backend then ranks it first (`coding_agent_profiles.rs:1375-1380`), so "this agent with this profile" is exactly what would launch.
+The requested letter in the comparison is the modal's `selectedProfile()`. Assigning writes that letter as the replica's profile, and the backend then ranks it first (`coding_agent_profiles.rs:1375-1380`), so the panel shows "this agent's command + effective profile args" for the profile being assigned (see the definition above; not the final argv).
 
 `comparisonRows` (`AgentPickerModal.tsx:334-357`) already computes that string as `command` for the status. The change is to return it and show it. No new computation, no duplicated args.
 
-Placeholder note (accepted limit, documented, not blocking). The backend expands `%AC_*%` per token after tokenizing, against the canonicalized launch root (`agent_command.rs:858-901`, `placeholders.rs:48-137`). The frontend shows `expandAcPlaceholdersPreview` against the modal's target path (`profile-utils.ts:131-142`). The texts are equal for commands without placeholders. With a placeholder they differ only in path spelling (canonical form), or when the backend would refuse the spawn (a `%AC_REPLICA_ROOT%` on a non-AC path). The line shown keeps the user's quotes as typed; the backend removes them while tokenizing. This is the same preview the modal already uses for env values (`:320`). Changing it would need a new backend command, out of scope for a Lite plan.
+The placeholder preview is the same one the modal already uses for env values (`:320`). Showing the final argv would need a new backend command; the owner ruled it out.
 
 ### D2. What the filter matches
 
@@ -102,9 +108,11 @@ New tests (names are the contract Grinch checks):
 - **L1 "shows each agent's full launch line instead of configured peer"**: profile A; codex row line `codex codex --model gpt-5`, claude row line `claude claude --dangerously-skip-permissions`; `text("agentPicker.comparison")` does not contain `configured peer` nor `selected coding agent`.
 - **L2 "launch line follows the effective profile after fallback"**: click profile C; codex line `codex codex --profile fast` (C falls to B), claude line `claude claude --dangerously-skip-permissions` (C falls to A); rows keep `data-ac-profile-status="fallback"`.
 - **L3 "launch line ignores a disabled cell and mirrors the backend fallback case"**: settings where codex has A `codex --a`, C `codex --c`, D disabled `codex --d`; select D (profileSlots include D); codex line `codex codex --c`. This is the TS twin of Rust `profile_content_hash_uses_effective_cell_after_fallback` (`agent_command.rs:2562-2593`).
-- **F1 "filters only the left list by name, executable, argument and case"**: queries `CLAUDE` (only claude card), `codex` (only codex), `--model` (only codex, arg only in the line), `Dangerously` (only claude). Card presence via `maybe("agentPicker.provider.<id>")`.
+- **L4 "launch line drops a disabled profile A to the bare command"**: settings where codex has only A, `enabled: false`, command `codex --a`; profile A selected; codex line is exactly `codex`. Why this case: resolution always stops at A (`profile-utils.ts:153-164`; backend `coding_agent_profiles.rs:1387-1400` returns an empty cell), so the ONLY guard that hides `--a` is `enabled` in `enabledLaunchCellFor` (`AgentPickerModal.tsx:276-279`). In L3 the disabled D is skipped earlier by resolution and never reaches that guard.
+- **F1 "filters only the left list by name, executable, argument and case"**: queries `CLAUDE` (only claude card), `CLAUDE CODE` (only claude card), `codex` (only codex), `--model` (only codex, arg only in the line), `Dangerously` (only claude). Card presence via `maybe("agentPicker.provider.<id>")`. `CLAUDE CODE` is the case-folding kill: the lowercase line `claude claude --dangerously-skip-permissions` does not contain `claude code`, only the lowercased label `Claude Code` does, so it matches only if the searched text is lowercased.
 - **F2 "right panel is byte-identical under every filter query, including zero matches"**: `const before = target("agentPicker.comparison").outerHTML;` then for each of `claude`, `--model`, `zzz-no-match`, `` (empty): set input value, dispatch `input`, `await settle()`, `expect(target("agentPicker.comparison").outerHTML).toBe(before)`. For `zzz-no-match`: both cards absent and status text `No coding agent matches "zzz-no-match". Clear the filter to see all 2.`; after empty: both cards present, status `2 agents`.
-- **F3 "filtering never changes selection, profile, radios or buttons"**: WG scope context; click claude card and profile B; capture `data-ac-state` of every `[data-ac-testid^="agentPicker."]` element except `agentPicker.provider.*`, `agentPicker.agentFilter*` into a map, plus `apply.disabled`. Filter `codex` (claude card hidden), then clear. Map and `disabled` equal before/after; after clear claude card `data-ac-state="active"`; `applyCodingAgentProfileSelection`, `previewCodingAgentProfileSelection` call counts unchanged across the filter steps; `onSelect` not called.
+- **F3 "filtering never changes selection, profile, radios or buttons"**: WG scope context; click claude card and profile B; capture `data-ac-state` of every `[data-ac-testid^="agentPicker."]` element except `agentPicker.provider.*`, `agentPicker.agentFilter*` into a map, plus `apply.disabled`. Filter `codex` (claude card hidden). While filtered: the visible `agentPicker.provider.codex` card has `data-ac-state` not `active` and `aria-pressed="false"`; `agentPicker.comparison.row.claude` still has `data-ac-state="active"`. Clear the filter. Map and `disabled` equal before/after; after clear claude card `data-ac-state="active"` and `aria-pressed="true"`; `applyCodingAgentProfileSelection`, `previewCodingAgentProfileSelection` call counts unchanged across the filter steps; `onSelect` not called.
+- **F3b "clicking a card while filtered selects that card"**: filter `codex`, click `agentPicker.provider.codex`, `await settle()`; `agentPicker.comparison.row.codex` has `data-ac-state="active"`, `agentPicker.comparison.row.claude` does not, and the codex card has `aria-pressed="true"`. Why: sorted order is `Claude Code` (index 0), `Codex` (index 1) (`AgentPickerModal.tsx:229-233`), so a `<For>` over the filtered list gives codex index 0 and would select claude.
 - **F4 "keys typed in the filter do not move profile or selection"**: focus input; dispatch bubbling `keydown` ArrowRight, ArrowLeft, ArrowDown, Enter on the input; profile A and codex stay active; apply mock not called.
 - **F5 "filter is labelled and placed right before the first card"**: `input.labels[0].textContent` is `Filter by name or start line`; filter wrapper's `nextElementSibling` is the provider list.
 - **O1 "layout A order: body, lock bar, Matrix default, Apply to, action bar last"**: with `renderLockPicker()`: children order `header < body < lockBar < defaultSection < botonera` by `compareDocumentPosition`; `modal.lastElementChild` is `.agent-picker-botonera`; `botonera.lastElementChild` is `.agent-picker-bar`; exactly one `agentPicker.cancel` and one `agentPicker.apply` in the document.
@@ -117,12 +125,13 @@ Materialise each mutant in the working tree, run `npx vitest run src/sidebar/com
 |---|---|---|
 | M1 | `comparisonRows` maps `sortedAgents().filter(matchesFilter)` | F2 |
 | M2 | haystack uses `agent.label` only | F1 (`--model`) |
-| M3 | drop `.toLowerCase()` on the haystack | F1 (`CLAUDE`) |
-| M4 | provider `<For each>` over the filtered list, index from that list | F3 |
+| M3 | drop `.toLowerCase()` on the haystack (searched text) | F1 (`CLAUDE CODE`; the other F1 queries may stay green) |
+| M4 | provider `<For each>` over the filtered list, index from that list | F3 (codex card active while filtered) and F3b (click selects claude) |
 | M5 | launch line = `agent.command` only | L1 |
 | M6 | line built from the requested (not effective) profile cell | L2 |
 | M7 | remove the Arrow early return in `handleKeyDown` | F4 |
 | M8 | move the lock `<Show>` block back above the body | O1 |
+| M9 | `enabledLaunchCellFor` ignores `enabled` (`return cell ?? EMPTY_DISPLAY_CELL;`) | L4 (line becomes `codex codex --a`) |
 
 ## 5. Geometry proof (jsdom has no layout, so this is done in real engines)
 
@@ -138,7 +147,7 @@ Recipe (memory-proven, `.visual-specs/` is gitignored, `.gitignore:9`):
    - every element under lock bar, Matrix default and botonera: rect inside modal and viewport; for text elements `scrollWidth <= clientWidth + 0.5` and computed `text-overflow` is not `ellipsis`
    - order by `top`: body < lock bar < Matrix default < scope stack < `.agent-picker-bar`; bar bottom is the largest bottom in the modal
    - comparison rows: `.agent-comparison-agent-sub` computed `white-space: normal`, no horizontal overflow
-   - filter invariance in a real engine: comparison `outerHTML` identical before/after typing `claude` and `zzz-no-match`
+   - (no filter check here: these are static snapshots with no Solid runtime; filter invariance is proven by F2 in jsdom and live in G2 step 3)
    - variant C body height as % of modal (report only; no 75% floor)
 4. Threshold sweep for the issue's "smaller sizes": width 1280, height from 800 down to 500 in 20 px steps; height 800, width from 1280 down to 900 in 20 px steps. Report the first size where any S1 check fails and confirm the modal scroll (safety valve) keeps every control reachable there.
 
@@ -147,10 +156,14 @@ Pass = all S1 and S2 checks at the three target sizes. If S2 fails at a target s
 ### G2. App WebView (owner dev; before PR)
 
 1. `npm run build:prod:no-bundle` (also runs `scripts/copy-testable-binary.mjs`, producing `target/release/agentscommander_testeable.exe`). Record path and SHA-256.
-2. Launch it with the hidden `--window-width/--window-height` flags at the three sizes (native zoom 1.0), open the Coding Agent modal on a WG replica, and run `ui-query` for `agentPicker.modal`, `agentPicker.lockBar`, `agentPicker.defaultSection`, `agentPicker.scope`, `agentPicker.apply`, `agentPicker.cancel`, `agentPicker.agentFilter`, and one `agentPicker.comparison.row.*.launchLine`.
-3. Pass: `viewport` from diagnostics equals the window content size; modal `rect.y` ≈ 3 and `rect.y + rect.height` ≈ `viewport.height - 3` (± 1); every other rect is non-null and its bottom <= modal bottom; the launch line text equals the configured `command + cell` for that agent in the local settings (write the expected string down before querying).
-4. Repeat 1400x1000 once with native zoom 1.2 and report the result (the safety-valve scroll is acceptable there; record it).
-5. Save the raw JSON outputs under `.visual-specs/2014/app/`. Do not use or modify the maintainer's running instance or its config dir.
+2. Isolated config (never the maintainer's instance or config dir). Scratch root `S` = `D:\ac_temp_builds\2014-g2` (outside every repo):
+   - `S\cfg\settings.json` with the five non-defaulted fields (else `load_settings` silently falls back to defaults; reason only in `S\cfg\app.log`): `projectPaths: ["S\\proj"]`, `rootToken: "<any uuid>"`, `defaultShell: "cmd.exe"`, `defaultShellArgs: []`, plus `agents` = two entries `codex` (label `Codex`, command `codex`) and `claude` (label `Claude Code`, command `claude`), and `codingAgentProfiles` (schemaVersion 2) with codex A `codex --model gpt-5` enabled, codex B `codex --profile fast` enabled, claude A `claude --dangerously-skip-permissions` enabled. Shape the JSON by copying the vitest fixture at `AgentPickerModal.test.tsx:135-185` into camelCase settings keys; if the app log reports a missing or unknown field, add it and record the fix.
+   - Replica: create empty dirs `S\proj\t\.ac\room-1-t\__agent_x` and `S\proj\t\.ac\room-1-t\repo-x`. No real agent dir is ever touched.
+   - Launch with `AGENTSCOMMANDER_CONFIG_DIR=S\cfg` (the value IS the config dir). Expected lines to write down before querying: codex `codex codex --model gpt-5`, claude `claude claude --dangerously-skip-permissions` (profile A).
+3. Launch it with the hidden `--window-width/--window-height` flags at the three sizes (native zoom 1.0), open the Coding Agent modal on replica `__agent_x`, and run `ui-query` for `agentPicker.modal`, `agentPicker.lockBar`, `agentPicker.defaultSection`, `agentPicker.scope`, `agentPicker.apply`, `agentPicker.cancel`, `agentPicker.agentFilter`, and both `agentPicker.comparison.row.*.launchLine`. Live filter check (at 1280x800 only): `ui-query agentPicker.comparison` text, `ui-type` `zzz-no-match` into `agentPicker.agentFilter`, query the comparison text again and both `agentPicker.provider.*`, clear the input (`ui-set` empty), query again.
+4. Pass: `viewport` from diagnostics equals the window content size; modal `rect.y` ≈ 3 and `rect.y + rect.height` ≈ `viewport.height - 3` (± 1); every other rect is non-null and its bottom <= modal bottom; each launch line text equals the expected string from step 2; the comparison text is identical before, during and after the filter, both provider cards are absent during `zzz-no-match` and present after clearing.
+5. Repeat 1400x1000 once with native zoom 1.2 and report the result (the safety-valve scroll is acceptable there; record it).
+6. Save the raw JSON outputs under `.visual-specs/2014/app/`. Delete `S` after the handoff numbers are recorded.
 
 If the bridge cannot open the modal or the build fails, report the blocker with its log; G1 does not replace G2.
 
@@ -163,7 +176,7 @@ If the bridge cannot open the modal or the build fails, report the blocker with 
 | Scope | `git diff --name-only <phase-base>...HEAD` = exactly the 3 paths of section 2 (plus the plan, if updated by architect only); `git status --porcelain` empty | dev before PR; Grinch | extra path blocks |
 | No new imports / cycles | `git diff <phase-base> -- src | grep -E '^[+-]import'` prints nothing; `npm run check:frontend-dependencies` passes | dev; Grinch | blocks |
 | Typecheck | `npm run typecheck` exit 0 | dev | blocks |
-| Targeted tests | `npx vitest run src/sidebar/components/AgentPickerModal.test.tsx src/shared/profile-utils.test.ts` all pass, new tests L1-L3, F1-F5, O1 present by name | dev; Grinch re-runs | blocks |
+| Targeted tests | `npx vitest run src/sidebar/components/AgentPickerModal.test.tsx src/shared/profile-utils.test.ts` all pass, new tests L1-L4, F1-F5, F3b, O1 present by name | dev; Grinch re-runs | blocks |
 | Full frontend tests | `npm test`; only the known #480 signature tolerated as CI does | dev | unexpected failure blocks |
 | Build | `npm run build` exit 0 | dev | blocks |
 | Positive controls | section 4 table, each mutant red then restored | Grinch | green mutant blocks |
