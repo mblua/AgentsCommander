@@ -558,10 +558,12 @@ impl ReplicaSelectionState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionWriteIntent {
     /// Deliberate single-replica assignment; preserves the existing flag.
-    /// A locked replica is rejected.
+    /// A locked replica is rejected unless the request equals its saved pair,
+    /// which returns UNCHANGED without publishing.
     Individual,
     /// Deliberate single-replica assignment plus `selectionLocked: true`.
-    /// A locked replica is rejected.
+    /// A locked replica is rejected unless the request equals its saved pair,
+    /// which returns UNCHANGED without publishing.
     IndividualAssignLock,
     /// Bulk assignment preserving flags; a locked replica is skipped.
     BulkOrdinary,
@@ -591,7 +593,8 @@ pub struct SelectionWriteOutcome {
 }
 
 impl SelectionWriteOutcome {
-    /// Nothing to change and nothing published (already-unlocked / skipped).
+    /// Nothing to change and nothing published (already-unlocked / skipped /
+    /// same locked pair).
     const UNCHANGED: Self = Self {
         changed: false,
         published: false,
@@ -1003,22 +1006,32 @@ pub fn write_replica_selection(
     }
     let replica_dir = validated_replica_dir(settings, replica_path)?;
     let config_path = replica_dir.join("config.json");
+    let requested_pair = ReplicaSelectionPair {
+        coding_agent_id: pair.coding_agent_id.clone(),
+        requested_profile: profile.clone(),
+    };
 
     let marker = std::cell::Cell::new(None::<SelectionGuardMarker>);
     let transition = std::cell::Cell::new(None::<SelectionLockTransition>);
 
     let written =
         crate::config::local_config_io::update_config_json_object(&config_path, false, |obj| {
-            let (_current_pair, current_locked) =
+            let (current_pair, current_locked) =
                 validate_selection_write_state(&replica_dir, expected)?;
             if current_locked {
                 match intent {
                     SelectionWriteIntent::Individual
                     | SelectionWriteIntent::IndividualAssignLock => {
+                        // #2010 - KEEP: the same stored pair is a no-op, not an
+                        // error; the lock stays and nothing is published.
+                        if current_pair.as_ref() == Some(&requested_pair) {
+                            marker.set(Some(SelectionGuardMarker::SkippedLocked));
+                            return Err(NO_PUBLISH_SENTINEL.to_string());
+                        }
                         return Err(format!(
                             "replica selection at {} is locked; unlock it or use a reviewed force",
                             replica_dir.display()
-                        ))
+                        ));
                     }
                     SelectionWriteIntent::BulkOrdinary
                     | SelectionWriteIntent::BulkAssignLockUnlockedOnly => {
@@ -1133,7 +1146,8 @@ pub fn clear_replica_selection_lock(
 
 /// #1939 - deliberate per-replica assignment. Preserves the stored flag through
 /// [`SelectionWriteIntent::Individual`] and cannot bypass a lock: a locked
-/// replica is rejected with the stored bytes untouched.
+/// replica with a different pair is rejected with the stored bytes untouched,
+/// while the same stored pair is a no-op that returns without writing.
 pub fn set_replica_coding_agent_selection(
     settings: &AppSettings,
     replica_path: &Path,
@@ -2711,5 +2725,189 @@ mod tests {
         assert_eq!(saved["tooling"]["selectionLocked"], "yes");
         assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
         assert_eq!(saved["tooling"]["profileContentHash"], "deadbeef");
+    }
+
+    // ------------------------------------------------------------------
+    // #2010 KEEP with the same locked pair (unchanged, no publish).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn issue_2010_locked_same_pair_individual_intents_are_unchanged() {
+        for intent in [
+            SelectionWriteIntent::Individual,
+            SelectionWriteIntent::IndividualAssignLock,
+        ] {
+            let fixture = selection_fixture();
+            write_config(
+                &fixture.replica,
+                &seed_selection_config(
+                    r#"{"currentCodingAgent":"codex","profile":"B","selectionLocked":true}"#,
+                ),
+            );
+            let before = config_bytes(&fixture.replica);
+            let expected = read_replica_selection_state(&fixture.replica)
+                .expectation()
+                .unwrap();
+
+            // A lowercase request proves the letter is normalized before the
+            // equality check and still matches the stored pair.
+            let outcome = write_replica_selection(
+                &fixture.settings,
+                &fixture.replica,
+                &pair("codex", "b"),
+                intent,
+                &expected,
+            )
+            .unwrap();
+            assert_eq!(outcome, SelectionWriteOutcome::UNCHANGED, "{intent:?}");
+            assert_eq!(config_bytes(&fixture.replica), before, "{intent:?}");
+            assert_eq!(
+                config_value(&fixture.replica)["tooling"]["selectionLocked"],
+                true,
+                "{intent:?}"
+            );
+
+            // A directory at the known temp-config path proves the unchanged
+            // path never even attempts a temp file.
+            let temp_obstruction = fixture
+                .replica
+                .join(format!(".config.json.{}.tmp", std::process::id()));
+            std::fs::create_dir(&temp_obstruction).unwrap();
+            let outcome = write_replica_selection(
+                &fixture.settings,
+                &fixture.replica,
+                &pair("codex", "b"),
+                intent,
+                &expected,
+            )
+            .unwrap();
+            assert_eq!(outcome, SelectionWriteOutcome::UNCHANGED, "{intent:?}");
+            assert!(temp_obstruction.is_dir());
+            assert_eq!(config_bytes(&fixture.replica), before, "{intent:?}");
+        }
+    }
+
+    #[test]
+    fn issue_2010_locked_different_agent_rejected() {
+        for intent in [
+            SelectionWriteIntent::Individual,
+            SelectionWriteIntent::IndividualAssignLock,
+        ] {
+            let fixture = selection_fixture();
+            write_config(
+                &fixture.replica,
+                &seed_selection_config(
+                    r#"{"currentCodingAgent":"codex","profile":"B","selectionLocked":true}"#,
+                ),
+            );
+            let before = config_bytes(&fixture.replica);
+            let expected = read_replica_selection_state(&fixture.replica)
+                .expectation()
+                .unwrap();
+            let error = write_replica_selection(
+                &fixture.settings,
+                &fixture.replica,
+                &pair("claude", "B"),
+                intent,
+                &expected,
+            )
+            .unwrap_err();
+            assert!(error.contains("locked"), "{intent:?}: {error}");
+            assert_eq!(config_bytes(&fixture.replica), before, "{intent:?}");
+        }
+    }
+
+    #[test]
+    fn issue_2010_locked_different_profile_rejected() {
+        for intent in [
+            SelectionWriteIntent::Individual,
+            SelectionWriteIntent::IndividualAssignLock,
+        ] {
+            let fixture = selection_fixture();
+            write_config(
+                &fixture.replica,
+                &seed_selection_config(
+                    r#"{"currentCodingAgent":"codex","profile":"B","selectionLocked":true}"#,
+                ),
+            );
+            let before = config_bytes(&fixture.replica);
+            let expected = read_replica_selection_state(&fixture.replica)
+                .expectation()
+                .unwrap();
+            let error = write_replica_selection(
+                &fixture.settings,
+                &fixture.replica,
+                &pair("codex", "C"),
+                intent,
+                &expected,
+            )
+            .unwrap_err();
+            assert!(error.contains("locked"), "{intent:?}: {error}");
+            assert_eq!(config_bytes(&fixture.replica), before, "{intent:?}");
+        }
+    }
+
+    #[test]
+    fn issue_2010_locked_same_pair_stale_expectation_rejected() {
+        for intent in [
+            SelectionWriteIntent::Individual,
+            SelectionWriteIntent::IndividualAssignLock,
+        ] {
+            let fixture = selection_fixture();
+            write_config(
+                &fixture.replica,
+                &seed_selection_config(
+                    r#"{"currentCodingAgent":"codex","profile":"B","selectionLocked":true}"#,
+                ),
+            );
+            let stale = read_replica_selection_state(&fixture.replica)
+                .expectation()
+                .unwrap();
+
+            // A concurrent writer moves the pair; the stale expectation must
+            // fail the CAS before the same-pair rule can apply.
+            let rewritten = seed_selection_config(
+                r#"{"currentCodingAgent":"codex","profile":"A","selectionLocked":true}"#,
+            );
+            write_config(&fixture.replica, &rewritten);
+            let error = write_replica_selection(
+                &fixture.settings,
+                &fixture.replica,
+                &pair("codex", "A"),
+                intent,
+                &stale,
+            )
+            .unwrap_err();
+            assert!(error.contains("stale"), "{intent:?}: {error}");
+            assert_eq!(config_bytes(&fixture.replica), rewritten, "{intent:?}");
+        }
+    }
+
+    #[test]
+    fn issue_2010_wrapper_locked_same_pair_is_no_write() {
+        let fixture = selection_fixture();
+        write_config(
+            &fixture.replica,
+            &seed_selection_config(
+                r#"{"currentCodingAgent":"codex","profile":"A","selectionLocked":true}"#,
+            ),
+        );
+        let before = config_bytes(&fixture.replica);
+
+        // Lowercase letter: the wrapper normalizes it to the stored pair and
+        // returns Ok without writing.
+        set_replica_coding_agent_selection(&fixture.settings, &fixture.replica, "codex", "a")
+            .unwrap();
+        assert_eq!(config_bytes(&fixture.replica), before);
+
+        // Obstructed temp path: still no write attempt and still Ok.
+        let temp_obstruction = fixture
+            .replica
+            .join(format!(".config.json.{}.tmp", std::process::id()));
+        std::fs::create_dir(&temp_obstruction).unwrap();
+        set_replica_coding_agent_selection(&fixture.settings, &fixture.replica, "codex", "a")
+            .unwrap();
+        assert!(temp_obstruction.is_dir());
+        assert_eq!(config_bytes(&fixture.replica), before);
     }
 }
