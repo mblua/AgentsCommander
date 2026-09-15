@@ -4125,6 +4125,180 @@ html.light-theme .settings-hint-error {
   max-height: min(760px, 88vh);
 }
 
+/* ── #2014 layout A: full-window frame, startup lines, left-only filter ──
+   Ported from ac/project-shared coding-agent-prototype/build/v4-framing.css
+   (sections 1-6, [V4-STARTUP-LINES], [V4-FILTER]) with the prototype's
+   `.pp-v4-frame` scope replaced by `.agent-picker-modal`, so no other surface
+   that shares `.selection-lock-*` or `.agent-comparison-*` can change.
+   The 3 px edge gaps are CSS px: in Tauri zoom is native setZoom, so 100vh/100vw
+   follow the real window with no prototype zoom factor. */
+
+/* 1. Full-window frame with the same 3 px gaps as v2/v3. */
+.agent-picker-modal {
+  width: calc(100vw - 6px);
+  max-width: none;
+  height: calc(100vh - 6px);
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto; /* safety valve only: no scroll at the target sizes */
+  scrollbar-gutter: stable;
+}
+.agent-picker-modal::-webkit-scrollbar { width: 4px; }
+.agent-picker-modal::-webkit-scrollbar-thumb {
+  background: var(--sidebar-border);
+  border-radius: 2px;
+}
+
+/* 2. Every block keeps its content height; the three-panel body absorbs the
+      rest, so the action bar never falls off the frame. */
+.agent-picker-modal .agent-picker-modal-header,
+.agent-picker-modal .agent-picker-botonera,
+.agent-picker-modal .selection-lock-bar,
+.agent-picker-modal .selection-lock-future {
+  flex-shrink: 0;
+}
+
+/* 3. Lower blocks: same elements and texts, compact rows. Nothing is hidden,
+      moved into a tooltip or ellipsised. */
+.agent-picker-modal .selection-lock-bar {
+  padding: 4px 12px;
+}
+.agent-picker-modal .selection-lock-future {
+  padding: 4px 12px 5px;
+}
+.agent-picker-modal .selection-lock-pair,
+.agent-picker-modal .selection-lock-hint {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+.agent-picker-modal .selection-lock-remove-scopes,
+.agent-picker-modal .selection-lock-remove-row {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+/* 4. Order-dependent separators: layout A is body -> lock bar -> Matrix default
+      -> Apply-to area + action bar, so the lock bar gains a top border and the
+      botonera drops the one that would double the Matrix default's. */
+.agent-picker-modal .selection-lock-bar {
+  border-top: 1px solid var(--sidebar-border);
+}
+.agent-picker-modal .agent-picker-botonera {
+  border-top: 0;
+}
+
+/* 5. Lock bar: title on its own row; pair and hint share the row below; the
+      "Remove lock from" column keeps two compact rows on the right. */
+.agent-picker-modal .selection-lock-main {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0 10px;
+}
+.agent-picker-modal .selection-lock-main > .selection-lock-title { grid-column: 1 / -1; }
+.agent-picker-modal .selection-lock-main > .selection-lock-pair { grid-column: 1; min-width: 0; }
+.agent-picker-modal .selection-lock-main > .selection-lock-hint { grid-column: 2; min-width: 0; }
+.agent-picker-modal .selection-lock-right {
+  grid-template-columns: auto auto;
+  justify-items: end;
+  align-items: center;
+  gap: 1px 8px;
+  flex-shrink: 0;
+}
+.agent-picker-modal .selection-lock-remove-head { grid-area: 1 / 1; }
+.agent-picker-modal .selection-lock-remove-scopes { grid-area: 1 / 2; justify-content: flex-end; }
+.agent-picker-modal .selection-lock-remove-row {
+  grid-area: 2 / 1 / 3 / 3;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
+/* 6. Matrix default: heading, stored pair and "Save default" share the first
+      line; the complete inheritance note keeps its own line underneath. */
+.agent-picker-modal .selection-lock-future {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 2px 12px;
+}
+.agent-picker-modal .selection-lock-future-head { grid-area: 1 / 1; }
+.agent-picker-modal .selection-lock-future .selection-lock-kind-row { grid-area: 1 / 2; min-width: 0; }
+.agent-picker-modal .selection-lock-future .selection-lock-future-note { grid-area: 2 / 1 / 3 / 3; }
+.agent-picker-modal .selection-lock-future .selection-lock-remove-row {
+  grid-area: 1 / 3 / 3 / 4;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
+/* [V4-STARTUP-LINES] the comparison rows show the complete startup line
+   (command + args) instead of "configured peer": monospace, full text,
+   wrapping — never an ellipsis and never tooltip-only. The agent column takes
+   the width the line needs; the resolution column sizes to its own text. */
+.agent-picker-modal .agent-comparison-table-head,
+.agent-picker-modal .agent-comparison-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.agent-picker-modal .agent-comparison-agent-sub {
+  font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--sidebar-fg-dim);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+/* [V4-FILTER] the agent filter, immediately above the first Coding Agent card.
+   It hides non-matching cards only; the comparison panel keeps every row and
+   the filter never changes the selection and never assigns anything. */
+.agent-picker-modal .agent-profile-provider-panel {
+  /* head + filter + scrolling list (the app rule has only two rows) */
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.agent-picker-modal .agent-profile-provider-filter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  padding: 6px 7px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.agent-picker-modal .agent-profile-provider-filter label {
+  color: var(--sidebar-fg-dim);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.agent-picker-modal .agent-profile-provider-filter input {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 4px;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: 11px;
+}
+.agent-picker-modal .agent-profile-provider-filter input::placeholder {
+  color: var(--sidebar-fg-dim);
+}
+.agent-picker-modal .agent-profile-provider-filter input:focus {
+  outline: none;
+  border-color: var(--sidebar-accent);
+  box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.35);
+}
+.agent-picker-modal .agent-profile-provider-filter-status {
+  min-width: 0;
+  color: var(--sidebar-fg-dim);
+  font-size: 9px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .agent-picker-modal-header {
   justify-content: space-between;
   align-items: flex-start;
