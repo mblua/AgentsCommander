@@ -16,7 +16,7 @@ For developers editing `settings.json` by hand, or scripting AgentsCommander con
 
 Published `v0.30.3` has no public override, marker, or writability probe; it does not fall back because a derivable adjacent path is read-only. The public override and `portable.txt` behavior belong to the newer unpublished `main` resolver until an exact later tag is verified to contain them. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the complete versioned contract.
 
-On unpublished `main`, `agentscommander_<suffix>.exe` never uses `$HOME`. If its adjacent folder cannot be written, it does not start. Without `portable.txt` the message tells you to move the executable to a writable folder or set `AGENTSCOMMANDER_CONFIG_DIR`; with `portable.txt` it tells you to set `AGENTSCOMMANDER_CONFIG_DIR`. A `main` build never reads, moves or copies settings that a published release wrote; to find and reuse them, see [Settings left by published releases](../features/portable-instances.md#settings-left-by-published-releases).
+On unpublished `main`, `agentscommander_<suffix>.exe` never uses `$HOME`. If its adjacent folder cannot be written, it does not start. Without `portable.txt`, a conclusively unwritable folder gives a message that tells you to move the executable to a writable folder or set `AGENTSCOMMANDER_CONFIG_DIR`; with `portable.txt`, or when the write result is indeterminate, the message tells you to set `AGENTSCOMMANDER_CONFIG_DIR`. A `main` build never moves, copies or merges settings from an older folder, and reads a folder only when its own rule selects it; to find and reuse them, see [Settings left by published releases](../features/portable-instances.md#settings-left-by-published-releases).
 
 ## Editing rules
 

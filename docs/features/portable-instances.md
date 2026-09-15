@@ -47,7 +47,7 @@ The selected directory contains `settings.json`, `sessions.json`, the web token,
 
 ### Settings left by published releases
 
-A `main` build never reads, moves, copies or deletes configuration that a published release wrote. After you switch from a published release such as `v0.31.0`, AC can open with empty settings while your old settings are still on disk. Close every AgentsCommander window, then look for `settings.json` in these folders:
+A `main` build never moves, copies, merges or deletes an older configuration folder, and reads a folder only when its own rule selects it. `v0.32.0`, including npm `0.32.0`, already used `$HOME/.agentscommander` for `agentscommander.exe`, and `main` uses the same folder, so those settings carry over. After you switch from an older release such as `v0.31.0`, AC can open with empty settings while your old settings are still on disk. Close every AgentsCommander window, then look for `settings.json` in these folders:
 
 - `.agentscommander` next to `agentscommander.exe`. `v0.30.3`, `v0.30.5` and `v0.31.0` chose this folder first. For an npm install it is `@mblua/agentscommander/bin/.agentscommander` under the folder that `npm root -g` prints.
 - `$HOME/.agentscommander-new`. `v0.30.5` and `v0.31.0` used it when there was no `portable.txt` and the executable's folder could not be written, for `agentscommander.exe` and for every renamed copy except `agentscommander_dev.exe`. `v0.32.0` used it the same way, but only for renamed copies other than `agentscommander_dev.exe`. `v0.30.3` used it only when the executable's path could not be derived.
@@ -61,7 +61,7 @@ For any other release, inspect its exact tag as described above. To reuse old se
 
 If a folder with the target name already exists, AC never merges the two; decide which one to keep before you move anything.
 
-Copy an npm install's `bin/.agentscommander` out of the package folder before you run an npm update or uninstall, as the [npm guide](../../npm/README.md) requires. `settings.json` holds API keys and bot tokens, so keep every copy private.
+Before you run an npm update or uninstall, back up the active configuration directory, as the [npm guide](../../npm/README.md) requires. For npm `0.30.3`, `0.30.5` and `0.31.0` it is normally `bin/.agentscommander` inside the package folder; for npm `0.32.0` it is normally `$HOME/.agentscommander`. `settings.json` holds API keys and bot tokens, so keep every copy private.
 
 ## Instance labels via underscore suffix
 
