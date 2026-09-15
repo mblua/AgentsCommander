@@ -4,15 +4,19 @@ import { __setTransportForTests } from "../../shared/ipc";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   appendExactGroupToken,
+  compileWorkgroupGroups,
   defaultGroupsConfig,
   defaultNonStop,
   exactGroupRegexForWorkgroup,
+  groupMatchesWorkgroup,
+  isUngroupedWorkgroup,
   nonStopMatchesWorkgroup,
   normalizeNonStop,
   removeExactGroupToken,
   reorderGroups,
   validateGroupsConfig,
   workgroupGroupsStore,
+  MAX_GROUP_REGEX_LENGTH,
 } from "./workgroup-groups";
 
 const projectPath = "C:\\Project";
@@ -335,6 +339,79 @@ describe("#777 Non-stop group", () => {
     expect(nonStopMatchesWorkgroup(cfg, wg("wg-2-dev-team"))).toBe(false);
     expect(nonStopMatchesWorkgroup({ ...defaultNonStop(), regex: "(" }, wg("wg-1-dev-team"))).toBe(false);
     expect(nonStopMatchesWorkgroup(cfg, wg("w".repeat(200)))).toBe(false);
+  });
+
+  // #2036 T3: `isUngroupedWorkgroup` is the ONE rule the rail counter and the
+  // panel list share. This matrix cannot be red on the pre-fix base: the helper
+  // does not exist there, so the pre-fix state is a compile error, not a failure.
+  it("compileWorkgroupGroups nulls invalid and oversized regexes", () => {
+    const compiled = compileWorkgroupGroups([
+      { id: "valid", name: "Valid", regex: "^wg-1-" },
+      { id: "invalid", name: "Invalid", regex: "(" },
+      { id: "oversized", name: "Oversized", regex: "a".repeat(MAX_GROUP_REGEX_LENGTH + 1) },
+    ]);
+    expect(compiled.map((entry) => entry.group.id)).toEqual(["valid", "invalid", "oversized"]);
+    expect(compiled[0].regex).toBeInstanceOf(RegExp);
+    expect(compiled[1].regex).toBeNull();
+    expect(compiled[2].regex).toBeNull();
+  });
+
+  it("isUngroupedWorkgroup: a group match OR an Alert me! match excludes, shown or hidden", () => {
+    const compiled = compileWorkgroupGroups([
+      { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
+    ]);
+    const nonStop = { ...defaultNonStop(), regex: exactGroupRegexForWorkgroup("wg-2-rust-team") };
+
+    // Alert me!-only (#2036): grouped whether the button is shown or hidden.
+    expect(isUngroupedWorkgroup(compiled, nonStop, wg("wg-2-rust-team"))).toBe(false);
+    expect(isUngroupedWorkgroup(compiled, { ...nonStop, show: false }, wg("wg-2-rust-team"))).toBe(false);
+    // Regular-group match, and a room matched by both, stay grouped.
+    expect(isUngroupedWorkgroup(compiled, nonStop, wg("wg-1-dev-team"))).toBe(false);
+    expect(
+      isUngroupedWorkgroup(
+        compiled,
+        { ...nonStop, regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
+        wg("wg-1-dev-team")
+      )
+    ).toBe(false);
+    // No match anywhere.
+    expect(isUngroupedWorkgroup(compiled, nonStop, wg("wg-3-docs-team"))).toBe(true);
+    expect(isUngroupedWorkgroup(compiled, null, wg("wg-3-docs-team"))).toBe(true);
+    expect(isUngroupedWorkgroup(compiled, undefined, wg("wg-3-docs-team"))).toBe(true);
+    // Invalid group regex is a non-match; invalid Alert me! regex is a non-match.
+    expect(
+      isUngroupedWorkgroup(
+        compileWorkgroupGroups([{ id: "bad", name: "Bad", regex: "(" }]),
+        nonStop,
+        wg("wg-1-dev-team")
+      )
+    ).toBe(true);
+    expect(isUngroupedWorkgroup(compiled, { ...nonStop, regex: "(" }, wg("wg-2-rust-team"))).toBe(true);
+  });
+
+  it("groupMatchesWorkgroup and isUngroupedWorkgroup cap at 160 CODE POINTS (#2036 D2)", () => {
+    // 160 astral code points are 320 UTF-16 units: the store's charLength guards
+    // accept them, so matching must accept them too (the old `.length` cap did not).
+    const atCap = "𝕨".repeat(160);
+    const overCap = "𝕨".repeat(161);
+    const compiled = compileWorkgroupGroups([
+      { id: "at", name: "At", regex: exactGroupRegexForWorkgroup(atCap) },
+      { id: "over", name: "Over", regex: exactGroupRegexForWorkgroup(overCap) },
+      { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
+    ]);
+
+    expect(groupMatchesWorkgroup(compiled, "at", wg(atCap))).toBe(true);
+    expect(groupMatchesWorkgroup(compiled, "over", wg(overCap))).toBe(false);
+    expect(groupMatchesWorkgroup(compiled, "ui", wg("wg-1-dev-team"))).toBe(true);
+    expect(groupMatchesWorkgroup(compiled, "ui", wg("wg-2-rust-team"))).toBe(false);
+    expect(groupMatchesWorkgroup(compiled, "missing", wg("wg-1-dev-team"))).toBe(false);
+
+    expect(isUngroupedWorkgroup(compiled, null, wg(atCap))).toBe(false);
+    expect(isUngroupedWorkgroup(compiled, null, wg(overCap))).toBe(true);
+
+    // Over the cap the id is never tested, even against a match-all regex.
+    const matchAll = compileWorkgroupGroups([{ id: "all", name: "All", regex: ".*" }]);
+    expect(isUngroupedWorkgroup(matchAll, null, wg("w".repeat(200)))).toBe(true);
   });
 
   it("normalizeNonStop clamps numerics, trims the name, repairs a bad regex, and keeps null/undefined absent", () => {
