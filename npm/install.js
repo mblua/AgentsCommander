@@ -6,7 +6,7 @@ const os = require('os');
 const { execSync } = require('child_process');
 const { assertExecutable } = require('./resolve-bin');
 
-const VERSION = "0.32.0"; // Must match package.json
+const VERSION = "0.33.0"; // Must match package.json
 const OWNER = 'mblua';
 const REPO = 'AgentsCommander';
 
