@@ -7,6 +7,7 @@ Repository: `repo-AgentsCommander`
 Base: `main` = `329ab94e`; branch `feature/2031-seed-answering-section` (local HEAD = `origin` = `329ab94e`)
 Band: Lite 1-25 (issue score 16, verification veto; Grinch reviews the proof). Author: `ac-dev-rust-v4`. Reviewer: Grinch, assigned by the coordinator.
 Task class: one literal in `get_default_agent_template()` plus tests in the two config modules that own the template. No IPC, no frontend, no persistence-format change, no migration.
+Revision: round 2 (`0c30f080` got CHANGES_REQUIRED): add the size-budget V6 rung (section 4.6), make the negative control order-independent and miscompile-proof (7.2), fix the Root test comment (4.2). Plan only, no code.
 
 ## 1. Objective and evidence
 
@@ -25,6 +26,8 @@ Discovery method: codebase-memory graph on this working copy at `329ab94e` (24,2
 | The scan is what runs the repair | `ac_discovery.rs:1033-1068` (`scan_project_context_templates_recorded`), called from project discovery at `:1163` and `:1988` |
 | Root never reads the template | `session_context.rs:3413-3458` (`ROOT_RUNTIME_PROLOGUE_HEADER` and the code-owned prologue); `docs/agent-matrix-conventions.md:38` ("The Root Agent does not use the global template (#979)") |
 | The issue's measurement commit agrees with base | `git show f9ee9f6:src-tauri/src/config/session_context.rs` -> same 559 bytes, same sha256; `f9ee9f6` is an ancestor of `329ab94e` |
+| The template body is size-budgeted by a test | `token_accounting::summarized_default_context_meets_size_budget` (`session_context.rs:13006`): rung constants at `:13013-13032`, pre-#1795 gates at `:13099-13107`, current gates at `:13208-13226` |
+| The section is +294 bytes and breaks exactly one test | Grinch applied the round-1 plan: `4436 passed; 1 failed`; first failure at the pre-#1795 full gate "pre-#1795 WG profile is 9386 bytes against v4 ceiling 9109", then the V5 full-profile gate (10220) by 277. `touched_owners` does not move: it sums the dynamic blocks, not the template body |
 
 ## 2. Cause
 
@@ -153,8 +156,9 @@ Insert with the Root prologue tests (after `root_prologue_renders_every_mandator
         );
         assert_eq!(count_section_headings(&out, "## Answering"), 0, "{out}");
         assert!(!out.contains("Report both counts"), "{out}");
-        // Control: the same render helper on a replica does carry it, so the zero
-        // above is the Root path and not a broken renderer.
+        // Control: `default_context` renders a replica through a different
+        // function (`render_default_agent_context`) and does carry the section,
+        // so the zero above is the Root path, not a broken renderer.
         let replica = default_context(
             "C:/fake/room-1-ac-dev-team-v4/__agent_ac-dev-rust-v4",
             None,
@@ -374,9 +378,94 @@ fn is_known_generated_standalone_global_template(content: &str) -> bool {
     }
 ```
 
-### 4.6 Files touched by the implementation
+### 4.6 `session_context.rs`, `token_accounting::summarized_default_context_meets_size_budget`: add the V6 rung
 
-- `src-tauri/src/config/session_context.rs` - the template literal plus the three tests in 4.2.
+The Answering section is template body text, so it grows the full WG profile by exactly 294 bytes and leaves `touched_owners` unchanged: `touched_owners` sums `write_restrictions`, `messaging`, `DEFAULT_CLI_CONTEXT`, `DEFAULT_SESSION_CREDENTIALS`, `DEFAULT_DELEGATED_TASK_REPORTING`, and the section is in none of them. Measured by Grinch on the round-1 patch: `pre_full_wg` = 9386 (V4 ceiling 9109), `full_wg` = 10497 (V5 full ceiling 10220), delta 294, headroom 17. Only the two full-profile gates fail; the touched gates stay green untouched. Post-fix expected: `pre_full_wg` 9386 <= 9403, `full_wg` 10497 <= 10514 (reduction 774 >= 757), both touched gates unchanged and green.
+
+Exact new integers:
+
+- `V6_FULL_WG_PROFILE_BYTES` = `11_271` (`10_977 + 294`)
+- `V6_MAX_FULL_WG_PROFILE_BYTES` = `10_514` (`10_220 + 294`)
+- `V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES` = `9_403` (`9_109 + 294`)
+- `V6_DELTA_BYTES` = `294`; `V6_PRE_TEMPLATE_BYTES` = `559`
+
+(a) Insert after the `V5_MAX_FULL_WG_PROFILE_BYTES` declaration at line 13032:
+
+```rust
+        // #2031 V6 generation: the Answering section is TEMPLATE BODY text, so it
+        // moves the full WG profile only. The five touched owners are summed from
+        // the dynamic blocks (write restrictions + messaging + CLI + credentials +
+        // delegated reporting), which this change does not touch, so their V5
+        // constants and gates stay exactly where they are.
+        //
+        // The delta is measured INSIDE this test against the frozen pre-Answering
+        // template size (559, pinned by
+        // `seeded_context_templates::tests::global_before_answering_snapshot_is_byte_exact`),
+        // so a later text edit cannot ride silently under the ceiling.
+        const V6_PRE_TEMPLATE_BYTES: usize = 559;
+        const V6_DELTA_BYTES: usize = 294;
+        const V6_FULL_WG_PROFILE_BYTES: usize = 11_271;
+        const V6_MAX_FULL_WG_PROFILE_BYTES: usize = 10_514;
+        // The pre-#1795 fixture renders no shared-location entries, so its full
+        // profile is the V4-shaped render plus the V6 template delta.
+        const V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES: usize =
+            V4_MAX_FULL_WG_PROFILE_BYTES + V6_DELTA_BYTES;
+```
+
+(b) Insert after the V5 ladder block (after the `V5_FULL_WG_PROFILE_BYTES - V5_MAX_FULL_WG_PROFILE_BYTES` assert that ends at line 13132):
+
+```rust
+        assert_eq!(
+            V6_DELTA_BYTES,
+            super::get_default_agent_template().len() - V6_PRE_TEMPLATE_BYTES,
+            "the V6 delta must be exactly the Answering template increase"
+        );
+        assert_eq!(
+            V6_FULL_WG_PROFILE_BYTES,
+            V5_FULL_WG_PROFILE_BYTES + V6_DELTA_BYTES
+        );
+        assert_eq!(
+            V6_MAX_FULL_WG_PROFILE_BYTES,
+            V5_MAX_FULL_WG_PROFILE_BYTES + V6_DELTA_BYTES
+        );
+        assert_eq!(
+            V6_FULL_WG_PROFILE_BYTES - V6_MAX_FULL_WG_PROFILE_BYTES,
+            REQUIRED_REDUCTION_BYTES
+        );
+```
+
+(c) Replace the pre-#1795 full gate at lines 13103-13107:
+
+```rust
+        assert!(
+            pre_full_wg.len() <= V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES,
+            "pre-#1795 WG profile is {} bytes against the V6 pre-#1795 ceiling {V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES}",
+            pre_full_wg.len()
+        );
+```
+
+The pre-#1795 touched gate at 13099-13102 stays on `V4_MAX_TOUCHED_OWNERS_BYTES` (7_606): the fixture renders the same dynamic blocks.
+
+(d) Replace the two current full-profile gates at lines 13217-13226:
+
+```rust
+        assert!(
+            full_wg.len() <= V6_MAX_FULL_WG_PROFILE_BYTES,
+            "WG profile is {} bytes; v6 baseline {V6_FULL_WG_PROFILE_BYTES}, ceiling {V6_MAX_FULL_WG_PROFILE_BYTES}",
+            full_wg.len()
+        );
+        assert!(
+            V6_FULL_WG_PROFILE_BYTES - full_wg.len() >= REQUIRED_REDUCTION_BYTES,
+            "WG reduction is only {} bytes",
+            V6_FULL_WG_PROFILE_BYTES - full_wg.len()
+        );
+```
+
+The two current touched gates at 13208-13216 stay on the V5 constants. Every V3, V4, and V5 constant and every existing V3/V4/V5 ladder assert stays unchanged and stays green: they are pure constant relations. Gates that move: pre-#1795 full profile, current full profile, and the current full-profile reduction. Gates that do not move: pre-#1795 touched owners, current touched owners, current touched-owner reduction.
+
+### 4.7 Files touched by the implementation
+
+- `src-tauri/src/config/session_context.rs` - the template literal, the three tests in 4.2, and the V6 rung in 4.6.
 - `src-tauri/src/config/seeded_context_templates.rs` - the const (4.3), the arm (4.4), the four tests (4.5).
 - No other source, test, doc, config, or frontend file. `docs/agent-matrix-conventions.md` lists placeholder tokens, not section headings, and this change adds no token, so it stays as is.
 
@@ -391,20 +480,23 @@ fn is_known_generated_standalone_global_template(content: &str) -> bool {
 - Orchestrator sessions: `Context.coordinator.md` is unchanged; orchestrators receive the global base plus the appended coordinator body, so they see the section through the base.
 - Symlinks, directories, invalid UTF-8: the scan keeps its existing error behavior; nothing in this change alters it.
 
-## 6. Existing tests: impact (expected: none break)
+## 6. Existing tests: impact
 
-| Test | Why it stays green |
+Exactly one test breaks and must change; every other test stays green. Grinch measured the full suite on the round-1 patch: `4436 passed; 1 failed`, the one failure the size-budget test.
+
+| Test | Impact |
 |---|---|
-| `default_agent_template_keeps_coarse_placeholder_order_after_summarization` (`session_context.rs:5175`) | The placeholder vector is unchanged; `ends_with('\n')` still holds (the raw string still ends with a newline) |
-| `assert_mandatory_sections_once` (`:4802`) and the heading-count tests (`:5097-5160`) | They count mandatory placeholder headings; `## Answering` is not a placeholder and is not in the checked set |
-| `seeded_template_versions_were_bumped` (`seeded_context_templates.rs:2549`), `project_specs_bump_global_to_v6_and_add_platform_specs` (`:2634`) | `current_version` is not bumped (3.1) |
-| `global_*_snapshot_is_byte_exact` and `both_frozen_global_generations_are_standalone_recognized_and_distinct` (`:2497`) | Existing frozen consts are untouched; each is still `!=` the new default |
-| `scan_replaces_pre_token_minimization_global_template` (`:3084`), `scan_replaces_v3_global_near_matches_in_both_project_state_shapes` (`:3349`) | Still `assert_ne!` against the default; the replacement path is unchanged |
-| `coordinator_template_carries_cross_workgroup_rule` (`session_context.rs:9237`) | The new text contains no coordinator rule, so `!get_default_agent_template().contains(RULE)` still holds |
-| `frozen_pre_room_rename_global_template_is_recognized` (`:2464`) | It asserts the default has no "workgroup"; the new text has none |
-| `root_prologue_*` tests (`session_context.rs:5917-7100`) | Root does not read the template; its ten blocks are unchanged |
+| `token_accounting::summarized_default_context_meets_size_budget` (`session_context.rs:13006`) | **Breaks, must change.** The Answering text is template body, so both full-profile renders grow 294 bytes and blow the V4 pre-#1795 ceiling (first failure) and the V5 full ceiling (next). Section 4.6 adds the V6 rung: ceilings 10_514 (current) and 9_403 (pre-#1795), the V6 ladder asserts, and the measured-delta oracle. The touched-owner gates do not move because the metric is unchanged |
+| `default_agent_template_keeps_coarse_placeholder_order_after_summarization` (`:5175`) | Green: placeholder vector unchanged; `ends_with('\n')` still holds |
+| `assert_mandatory_sections_once` (`:4802`) and heading-count tests (`:5097-5160`) | Green: they count mandatory placeholder headings; `## Answering` is not one |
+| `seeded_template_versions_were_bumped` (`seeded_context_templates.rs:2549`), `project_specs_bump_global_to_v6_and_add_platform_specs` (`:2634`) | Green: `current_version` is not bumped (3.1) |
+| `global_*_snapshot_is_byte_exact`, `both_frozen_global_generations_...` (`:2497`) | Green: existing frozen consts untouched and still `!=` the new default |
+| `scan_replaces_pre_token_minimization_global_template` (`:3084`), `scan_replaces_v3_global_near_matches_in_both_project_state_shapes` (`:3349`) | Green: still `assert_ne!` against the default; replacement path unchanged |
+| `coordinator_template_carries_cross_workgroup_rule` (`session_context.rs:9237`) | Green: the new text carries no coordinator rule |
+| `frozen_pre_room_rename_global_template_is_recognized` (`:2464`) | Green: the new text has no "workgroup" |
+| `root_prologue_*` tests (`session_context.rs:5917-7100`) | Green: Root does not read the template; its ten blocks are unchanged |
 
-No test pins the length or the sha256 of the current default: `grep` for `get_default_agent_template().len()` / a hash of it returns nothing. The existing length/hash tests pin only frozen consts.
+No test pins the length or sha256 of the current default. The 294-byte budget delta is now pinned by the V6 oracle in section 4.6; the new template body is 853 bytes (559 + 294).
 
 ## 7. Verification and acceptance mapping
 
@@ -415,6 +507,7 @@ cd repo-AgentsCommander
 cargo test -p agentscommander --lib config::session_context::tests::default_agent_template_carries_answering_section_once_after_messaging
 cargo test -p agentscommander --lib config::session_context::tests::materialized_replica_context_carries_answering_section
 cargo test -p agentscommander --lib config::session_context::tests::root_runtime_prologue_omits_answering_section
+cargo test -p agentscommander --lib config::session_context::token_accounting::summarized_default_context_meets_size_budget
 cargo test -p agentscommander --lib config::seeded_context_templates::tests::global_before_answering_snapshot_is_byte_exact
 cargo test -p agentscommander --lib config::seeded_context_templates::tests::frozen_pre_answering_global_template_is_recognized
 cargo test -p agentscommander --lib config::seeded_context_templates::tests::scan_replaces_pre_answering_global_template_and_backs_it_up
@@ -422,18 +515,27 @@ cargo test -p agentscommander --lib config::seeded_context_templates::tests::sca
 cargo test -p agentscommander --lib
 ```
 
-All pre-existing tests must stay green with no edits.
+All tests must be green. The only pre-existing test that changes is `summarized_default_context_meets_size_budget` (section 4.6); every other pre-existing test stays green with no edits.
 
-### 7.2 Negative control (exactly as the issue asks: the same test on the pre-change revision leaves the section absent)
+### 7.2 Negative control (order-independent, pinned panic)
+
+Run on the committed implementation, with a clean tree. It never relies on uncommitted changes, so it cannot go vacuous like the round-1 stash form; it checks the old blob out of `329ab94e` and restores the file from HEAD. Do not run it before committing: the restore step takes the file from HEAD, so an uncommitted implementation would be lost.
 
 ```
 cd repo-AgentsCommander
-git stash push -- src-tauri/src/config/session_context.rs
-cargo test -p agentscommander --lib config::seeded_context_templates::tests::scan_replaces_pre_answering_global_template_and_backs_it_up
-git stash pop
+mkdir -p target
+git checkout 329ab94e -- src-tauri/src/config/session_context.rs
+cargo test -p agentscommander --lib config::seeded_context_templates::tests::scan_replaces_pre_answering_global_template_and_backs_it_up 2>&1 | tee target/control-2031.log
+git checkout HEAD -- src-tauri/src/config/session_context.rs
 ```
 
-Expected on the stashed run: FAIL. With the literal reverted, the on-disk fixture equals `get_default_agent_template()`, so `sync_one_template` takes the `AlreadyCurrent` branch (`seeded_context_templates.rs:1308-1310`): `replacements.len() == 0`, no backup, and the file still lacks `## Answering`. That is the issue's control, reproducible at HEAD because `f9ee9f6` and `329ab94e` hold byte-identical templates (section 1).
+The control is valid only if `target/control-2031.log` contains ALL of:
+
+- ``assertion `left == right` failed: with no state entry the replacement is notified``
+- `left: 0` and `right: 1`
+- `scan_replaces_pre_answering_global_template_and_backs_it_up ... FAILED`
+
+With the pre-Answering template restored, the on-disk fixture equals `get_default_agent_template()`, so `sync_one_template` takes the `AlreadyCurrent` branch (`seeded_context_templates.rs:1308-1310`): 0 replacements, no backup, and the file still lacks `## Answering`. Grinch measured exactly this panic on the round-1 patch (`seeded_context_templates.rs:2545:9`, left 0 right 1). A compile error, a different panic, or a pass invalidates the control: the pinned text is what separates a real control from a broken build. This is equivalent to the issue's "same test on `f9ee9f6`": `f9ee9f6` and `329ab94e` hold byte-identical templates (section 1). After the restore, re-run 7.1 to confirm green.
 
 ### 7.3 Acceptance mapping
 
@@ -444,9 +546,11 @@ Expected on the stashed run: FAIL. With the literal reverted, the on-disk fixtur
 | A rendered replica `CLAUDE.md`/`AGENTS.md` contains the section; a rendered Root context does not | `materialized_replica_context_carries_answering_section` and `root_runtime_prologue_omits_answering_section` |
 | `cargo test` green | 7.1 |
 
+The size-budget rung (4.6) is a repository gate, not an issue criterion: its proof is the V6 oracle in 4.6 plus the green `summarized_default_context_meets_size_budget` run in 7.1.
+
 ## 8. Commit and handoff
 
-- Implementation commit (by the implementer, on `feature/2031-seed-answering-section`): `feat(#2031): seed the Answering section into the project global context template` - both source files from 4.6 in one commit, then run 7.1 and 7.2.
+- Implementation commit (by the implementer, on `feature/2031-seed-answering-section`): `feat(#2031): seed the Answering section into the project global context template` - both source files from 4.7 in one commit (template, const, arm, all tests including the 4.6 rung), then run 7.1 and 7.2. 7.2 restores the file from HEAD, so it works after the commit and never depends on uncommitted changes.
 - This plan's own commit: `docs(plan): #2031 seed the Answering section into the project global context template`; `plans/` is gitignored, so stage with `git add -f plans/2031-seed-answering-section.md`, push the branch, and confirm `git ls-remote --heads origin feature/2031-seed-answering-section` reports a SHA other than `329ab94e`.
 - Rollback: revert the implementation commit. The template returns to 559 bytes; the next scan repairs project files back to the previous default with a backup. The frozen const and recognizer arm are inert for the rolled-back state (the const would no longer be a predecessor, but it stays recognized, which is harmless).
 
