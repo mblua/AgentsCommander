@@ -412,6 +412,41 @@ You are in AgentsCommander, a terminal session manager coordinating multiple AI 
 {{INTER_AGENT_MESSAGING}}
 "#;
 
+/// #2031: the global context template as shipped through `329ab94e`, the
+/// generation every existing project file and every existing standalone app-config
+/// file holds. The Answering seed turns it into a generated predecessor: it is the
+/// fixture for the scan replacement test, and it MUST stay recognized by the
+/// standalone #979 classifier so retirement still deletes our own bytes instead of
+/// reclassifying them as custom. Never edit.
+/// Provenance: the 329ab94e blob, `session_context.rs` lines 2679-2705; value
+/// 559 bytes sha256 EE456D60802157ECC8A5F5C5C97522442276524E1F4979481326A80CC6EC5F09;
+/// pinned by `global_before_answering_snapshot_is_byte_exact`.
+const GLOBAL_CONTEXT_TEMPLATE_BEFORE_ANSWERING_SECTION: &str = r#"# AgentsCommander Context
+
+You are in AgentsCommander, a terminal session manager coordinating multiple AI agents.
+
+## Core Concepts
+
+- **Team**: the logical capability and organization. It defines membership, who coordinates, and which repos are available.
+- **Room**: a runtime replica of a team for a specific task. It contains replica agents and `repo-*` working repos.
+
+{{WRITE_RESTRICTIONS}}
+
+{{DELEGATED_TASK_REPORTING}}
+
+{{SKILLS_SECTION}}
+
+{{AGENT_REPOS}}
+
+{{CLI_CONTEXT}}
+
+{{HOST_PLATFORM_RULES}}
+
+{{SESSION_CREDENTIALS}}
+
+{{INTER_AGENT_MESSAGING}}
+"#;
+
 /// #1614 D8a: the `coordinator` seeded context template exactly as it
 /// shipped through base commit d7008b34, frozen for the same reason as the
 /// global one above. Never edit.
@@ -750,6 +785,7 @@ fn actionable_project_spec_by_filename(
 /// change project behavior.
 fn is_known_generated_standalone_global_template(content: &str) -> bool {
     content == crate::config::session_context::get_default_agent_template()
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_ANSWERING_SECTION
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
@@ -3199,6 +3235,154 @@ mod tests {
             crate::config::session_context::get_default_agent_template(),
             "the v5 placeholder insertion must differ from its frozen v4 operand"
         );
+    }
+
+    #[test]
+    fn global_before_answering_snapshot_is_byte_exact() {
+        assert_eq!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ANSWERING_SECTION.len(),
+            559,
+            "frozen pre-Answering global snapshot must be the 329ab94e bytes"
+        );
+        assert_eq!(
+            hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_ANSWERING_SECTION),
+            "ee456d60802157ecc8a5f5c5c97522442276524e1f4979481326a80cc6ec5f09",
+            "frozen pre-Answering snapshot changed; it must stay byte-identical to what shipped"
+        );
+        assert!(
+            !GLOBAL_CONTEXT_TEMPLATE_BEFORE_ANSWERING_SECTION.contains("## Answering"),
+            "control: the frozen predecessor must not already carry the section"
+        );
+    }
+
+    #[test]
+    fn frozen_pre_answering_global_template_is_recognized() {
+        assert!(is_known_generated_standalone_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ANSWERING_SECTION
+        ));
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ANSWERING_SECTION,
+            crate::config::session_context::get_default_agent_template(),
+            "the Answering seed must actually change the global default or the freeze is pointless"
+        );
+        assert!(
+            crate::config::session_context::get_default_agent_template().contains("## Answering")
+        );
+    }
+
+    #[test]
+    fn scan_replaces_pre_answering_global_template_and_backs_it_up() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ANSWERING_SECTION,
+        )
+        .expect("write pristine pre-Answering global");
+
+        let replacements =
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("scan pre-Answering global");
+        assert_eq!(
+            replacements.len(),
+            1,
+            "with no state entry the replacement is notified"
+        );
+        let current = crate::config::session_context::get_default_agent_template();
+        let content = std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+            .expect("read repaired global");
+        assert_eq!(content, current);
+        assert_eq!(content.matches("## Answering").count(), 1);
+        let backups = backup_files(&ac_root);
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(
+            std::fs::read_to_string(&backups[0]).expect("read backup"),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ANSWERING_SECTION,
+            "the backup must hold the pre-run bytes"
+        );
+        assert!(
+            scan_project_context_template_updates(temp.path(), &ac_root)
+                .expect("scan updates")
+                .is_empty(),
+            "a distribution-owned template never yields a pending update"
+        );
+        let state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+                .expect("read seeded state"),
+        )
+        .expect("parse seeded state");
+        assert_eq!(
+            state["templates"]["global"]["currentVersion"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            state["templates"]["global"]["lastSeededSha256"],
+            hash_text(current)
+        );
+        assert!(
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("second scan")
+                .is_empty()
+        );
+        assert_eq!(backup_files(&ac_root).len(), 1, "and no new backup");
+    }
+
+    #[test]
+    fn scan_replaces_pre_answering_global_template_silently_with_trusted_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ANSWERING_SECTION,
+        )
+        .expect("write pristine pre-Answering global");
+        let mut state = SeededContextTemplateState::default();
+        state.templates.insert(
+            "global".to_string(),
+            SeededContextTemplateEntry {
+                template_id: "global".to_string(),
+                current_version: None,
+                last_seeded_sha256: Some(hash_text(
+                    GLOBAL_CONTEXT_TEMPLATE_BEFORE_ANSWERING_SECTION,
+                )),
+                last_observed_sha256: None,
+                ignored_default_sha256: None,
+                ignored_observed_sha256: None,
+            },
+        );
+        persist_state(&ac_root, &state).expect("persist trusted pre-Answering state");
+
+        let replacements =
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("scan pre-Answering global");
+        assert!(
+            replacements.is_empty(),
+            "a trusted entry naming these exact bytes makes the repair silent"
+        );
+        let current = crate::config::session_context::get_default_agent_template();
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read repaired global"),
+            current
+        );
+        assert_eq!(backup_files(&ac_root).len(), 1, "silent is still backed up");
+        let state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+                .expect("read seeded state"),
+        )
+        .expect("parse seeded state");
+        assert_eq!(
+            state["templates"]["global"]["lastSeededSha256"],
+            hash_text(current)
+        );
+        assert!(
+            scan_project_context_template_replacements_for_test(temp.path(), &ac_root)
+                .expect("second scan")
+                .is_empty()
+        );
+        assert_eq!(backup_files(&ac_root).len(), 1, "and no new backup");
     }
 
     #[test]

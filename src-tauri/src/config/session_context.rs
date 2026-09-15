@@ -2701,6 +2701,12 @@ You are in AgentsCommander, a terminal session manager coordinating multiple AI 
 {{SESSION_CREDENTIALS}}
 
 {{INTER_AGENT_MESSAGING}}
+
+## Answering
+
+Draft, count words, then rewrite to half or fewer; report both counts. Paths, commands, digests, figures, and quoted evidence are exempt: not counted, not cut. Never cut a fact to reach half; stop at the smallest size that keeps every fact and say so.
+
+Use plain, easy language.
 "#
 }
 
@@ -5222,6 +5228,27 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         assert!(template.ends_with('\n'));
     }
 
+    /// #2031: the shipped default carries the Answering rule exactly once, after
+    /// the messaging token, byte-for-byte, with no U+2014.
+    #[test]
+    fn default_agent_template_carries_answering_section_once_after_messaging() {
+        const SECTION: &str = "## Answering\n\nDraft, count words, then rewrite to half or fewer; report both counts. Paths, commands, digests, figures, and quoted evidence are exempt: not counted, not cut. Never cut a fact to reach half; stop at the smallest size that keeps every fact and say so.\n\nUse plain, easy language.";
+        let template = get_default_agent_template();
+        assert_eq!(template.matches(SECTION).count(), 1, "{template}");
+        let messaging = template
+            .find("{{INTER_AGENT_MESSAGING}}")
+            .expect("messaging token");
+        let answering = template.find(SECTION).expect("answering section");
+        assert!(
+            messaging < answering,
+            "## Answering must follow {{INTER_AGENT_MESSAGING}}"
+        );
+        assert!(
+            !template.contains('\u{2014}'),
+            "the default template must stay em-dash-free"
+        );
+    }
+
     #[test]
     fn summarized_fine_placeholder_fixture_preserves_order_and_boundaries() {
         let fixture = SUMMARIZED_FINE_PLACEHOLDER_FIXTURE;
@@ -7060,6 +7087,35 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains("repo-demo"));
         assert!(out.contains("You are the Root Agent."));
         assert!(!out.contains("You are working inside a room replica."));
+    }
+
+    /// #2031 negative case: the canonical Root Agent never reads the global
+    /// template, so its code-owned prologue must not carry the Answering section.
+    #[test]
+    fn root_runtime_prologue_omits_answering_section() {
+        let out = render_root_runtime_prologue_inner(
+            "C:/fake/ac-root-agent",
+            &no_skill_section(),
+            Path::new("C:/fake/ac-root-agent"),
+            None,
+            None,
+            true,
+        );
+        assert_eq!(count_section_headings(&out, "## Answering"), 0, "{out}");
+        assert!(!out.contains("Report both counts"), "{out}");
+        // Control: `default_context` renders a replica through a different
+        // function (`render_default_agent_context`) and does carry the section,
+        // so the zero above is the Root path, not a broken renderer.
+        let replica = default_context(
+            "C:/fake/room-1-ac-dev-team-v4/__agent_ac-dev-rust-v4",
+            None,
+            &no_skill_section(),
+        );
+        assert_eq!(
+            count_section_headings(&replica, "## Answering"),
+            1,
+            "{replica}"
+        );
     }
 
     #[test]
@@ -9298,6 +9354,35 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let off_content = std::fs::read_to_string(&off).expect("read OFF context");
         assert!(!off_content.contains("## Self-Maintenance"));
         assert!(!off_content.contains("max 240 char forgotten summary"));
+    }
+
+    /// #2031: a rendered replica context file carries the Answering section once.
+    #[test]
+    fn materialized_replica_context_carries_answering_section() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        let cwd = path_string(&matrix_root);
+        for filename in ["CLAUDE.md", "AGENTS.md"] {
+            let path = materialize_agent_context_file_with_filename(
+                &cwd,
+                filename,
+                &[],
+                false,
+                false,
+                None,
+            )
+            .expect("materialize")
+            .expect("context path");
+            let content = std::fs::read_to_string(&path).expect("read context");
+            assert_eq!(
+                count_section_headings(&content, "## Answering"),
+                1,
+                "{filename}: {content}"
+            );
+            assert!(content.contains("Use plain, easy language."), "{filename}");
+        }
     }
 
     #[test]
@@ -13030,6 +13115,24 @@ mod token_accounting {
         const V5_FULL_WG_PROFILE_BYTES: usize = 10_977;
         const V5_MAX_TOUCHED_OWNERS_BYTES: usize = 8_717;
         const V5_MAX_FULL_WG_PROFILE_BYTES: usize = 10_220;
+        // #2031 V6 generation: the Answering section is TEMPLATE BODY text, so it
+        // moves the full WG profile only. The five touched owners are summed from
+        // the dynamic blocks (write restrictions + messaging + CLI + credentials +
+        // delegated reporting), which this change does not touch, so their V5
+        // constants and gates stay exactly where they are.
+        //
+        // The delta is measured INSIDE this test against the frozen pre-Answering
+        // template size (559, pinned by
+        // `seeded_context_templates::tests::global_before_answering_snapshot_is_byte_exact`),
+        // so a later text edit cannot ride silently under the ceiling.
+        const V6_PRE_TEMPLATE_BYTES: usize = 559;
+        const V6_DELTA_BYTES: usize = 294;
+        const V6_FULL_WG_PROFILE_BYTES: usize = 11_271;
+        const V6_MAX_FULL_WG_PROFILE_BYTES: usize = 10_514;
+        // The pre-#1795 fixture renders no shared-location entries, so its full
+        // profile is the V4-shaped render plus the V6 template delta.
+        const V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES: usize =
+            V4_MAX_FULL_WG_PROFILE_BYTES + V6_DELTA_BYTES;
 
         let skills = synthetic_replica_skills_section();
         let values = super::default_context_dynamic_values(
@@ -13101,8 +13204,8 @@ mod token_accounting {
             "pre-#1795 five touched owners are {pre_touched_owners} bytes against v4 ceiling {V4_MAX_TOUCHED_OWNERS_BYTES}"
         );
         assert!(
-            pre_full_wg.len() <= V4_MAX_FULL_WG_PROFILE_BYTES,
-            "pre-#1795 WG profile is {} bytes against v4 ceiling {V4_MAX_FULL_WG_PROFILE_BYTES}",
+            pre_full_wg.len() <= V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES,
+            "pre-#1795 WG profile is {} bytes against the V6 pre-#1795 ceiling {V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES}",
             pre_full_wg.len()
         );
 
@@ -13128,6 +13231,23 @@ mod token_accounting {
         );
         assert_eq!(
             V5_FULL_WG_PROFILE_BYTES - V5_MAX_FULL_WG_PROFILE_BYTES,
+            REQUIRED_REDUCTION_BYTES
+        );
+        assert_eq!(
+            V6_DELTA_BYTES,
+            super::get_default_agent_template().len() - V6_PRE_TEMPLATE_BYTES,
+            "the V6 delta must be exactly the Answering template increase"
+        );
+        assert_eq!(
+            V6_FULL_WG_PROFILE_BYTES,
+            V5_FULL_WG_PROFILE_BYTES + V6_DELTA_BYTES
+        );
+        assert_eq!(
+            V6_MAX_FULL_WG_PROFILE_BYTES,
+            V5_MAX_FULL_WG_PROFILE_BYTES + V6_DELTA_BYTES
+        );
+        assert_eq!(
+            V6_FULL_WG_PROFILE_BYTES - V6_MAX_FULL_WG_PROFILE_BYTES,
             REQUIRED_REDUCTION_BYTES
         );
 
@@ -13215,14 +13335,14 @@ mod token_accounting {
             V5_TOUCHED_OWNERS_BYTES - touched_owners
         );
         assert!(
-            full_wg.len() <= V5_MAX_FULL_WG_PROFILE_BYTES,
-            "WG profile is {} bytes; v5 baseline {V5_FULL_WG_PROFILE_BYTES}, ceiling {V5_MAX_FULL_WG_PROFILE_BYTES}",
+            full_wg.len() <= V6_MAX_FULL_WG_PROFILE_BYTES,
+            "WG profile is {} bytes; v6 baseline {V6_FULL_WG_PROFILE_BYTES}, ceiling {V6_MAX_FULL_WG_PROFILE_BYTES}",
             full_wg.len()
         );
         assert!(
-            V5_FULL_WG_PROFILE_BYTES - full_wg.len() >= REQUIRED_REDUCTION_BYTES,
+            V6_FULL_WG_PROFILE_BYTES - full_wg.len() >= REQUIRED_REDUCTION_BYTES,
             "WG reduction is only {} bytes",
-            V5_FULL_WG_PROFILE_BYTES - full_wg.len()
+            V6_FULL_WG_PROFILE_BYTES - full_wg.len()
         );
     }
 
