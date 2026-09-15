@@ -329,39 +329,16 @@ pub(crate) enum WriteProbeOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AdjacentFallbackDiagnostic {
-    pub(crate) candidate: PathBuf,
-    pub(crate) selected_home: Option<PathBuf>,
-    pub(crate) failure: WriteProbeFailure,
-}
-
-impl fmt::Display for AdjacentFallbackDiagnostic {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.selected_home {
-            Some(selected_home) => write!(
-                formatter,
-                "configuration directory \"{}\" was conclusively unwritable; using \"{}\" instead: {}",
-                self.candidate.display(),
-                selected_home.display(),
-                self.failure.reason()
-            ),
-            None => write!(
-                formatter,
-                "configuration directory \"{}\" was conclusively unwritable and no home directory was available: {}",
-                self.candidate.display(),
-                self.failure.reason()
-            ),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConfigStartupError {
     AdjacentSelectionBlocked {
         config_dir: PathBuf,
         marker_path: Option<PathBuf>,
         reason: String,
     },
+    /// #1930: a suffixed executable's unmarked adjacent directory is
+    /// conclusively unwritable. There is no HOME fallback, so startup stops and
+    /// the message names both remedies.
+    AdjacentDirectoryUnwritable { config_dir: PathBuf, reason: String },
 }
 
 impl fmt::Display for ConfigStartupError {
@@ -393,6 +370,21 @@ impl fmt::Display for ConfigStartupError {
                     )?;
                 }
                 Ok(())
+            }
+            Self::AdjacentDirectoryUnwritable { config_dir, reason } => {
+                write!(
+                    formatter,
+                    "AgentsCommander cannot start because it cannot write its configuration directory \"{}\" next to the executable: {}",
+                    config_dir.display(),
+                    reason
+                )?;
+                if !reason.ends_with('.') {
+                    write!(formatter, ".")?;
+                }
+                write!(
+                    formatter,
+                    " Move the executable to a writable folder, or set AGENTSCOMMANDER_CONFIG_DIR to a writable directory, and restart."
+                )
             }
         }
     }
@@ -644,9 +636,9 @@ pub(crate) struct InstanceLocation {
     /// stem has no underscore suffix selects the canonical
     /// `$HOME/.agentscommander` (#1868) and never an adjacent directory; a
     /// suffixed executable takes the portable `<exe-parent>/.<exe-stem>` form
-    /// with its marker/write table, falling back to
-    /// `$HOME/<profile::config_dir_name()>`. `None` only when every source is
-    /// unavailable (no override, no adjacent selection, and no home directory).
+    /// with its marker/write table and never a HOME directory (#1930). `None`
+    /// only when no override applies, the executable is unsuffixed or
+    /// unavailable, and no home directory exists.
     pub config_dir: Option<PathBuf>,
     /// Local agent directory stem derived from the running executable
     /// (`current_exe().file_stem()`), falling back to `"agentscommander"`. This
@@ -662,7 +654,6 @@ pub(crate) struct InstanceLocation {
     /// and never consults the process CWD.
     pub instance_base: Option<PathBuf>,
     startup_error: Option<ConfigStartupError>,
-    fallback_diagnostic: Option<AdjacentFallbackDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -700,25 +691,20 @@ fn override_location(raw: &str, local_dir_stem: String) -> InstanceLocation {
         local_dir_stem,
         instance_base,
         startup_error: None,
-        fallback_diagnostic: None,
     }
 }
 
-/// The HOME location: `$HOME/<fallback_config_dir_name>` with no instance
-/// base, no startup error and no fallback diagnostic; `None` when no home
-/// directory is available. Shared by the #1868 unsuffixed route and the
-/// existing no-executable fallback.
-fn home_location(
-    home_dir: Option<PathBuf>,
-    fallback_config_dir_name: &str,
-    local_dir_stem: String,
-) -> InstanceLocation {
+/// The HOME location: `$HOME/<profile::config_dir_name()>` with no instance
+/// base and no startup error; `None` when no home directory is available.
+/// Reached only by an executable without an underscore suffix (#1868) or an
+/// unavailable `current_exe()`. A suffixed path always has a parent and a
+/// stem, so a suffixed executable never reaches it (#1930).
+fn home_location(home_dir: Option<PathBuf>, local_dir_stem: String) -> InstanceLocation {
     InstanceLocation {
-        config_dir: home_dir.map(|home| home.join(fallback_config_dir_name)),
+        config_dir: home_dir.map(|home| home.join(profile::config_dir_name())),
         local_dir_stem,
         instance_base: None,
         startup_error: None,
-        fallback_diagnostic: None,
     }
 }
 
@@ -738,7 +724,6 @@ fn blocked_adjacent_location(
         local_dir_stem,
         instance_base: paths.instance_base,
         startup_error: Some(startup_error),
-        fallback_diagnostic: None,
     }
 }
 
@@ -751,21 +736,21 @@ fn blocked_adjacent_location(
 ///   relative override selects the config directory verbatim but reports NO
 ///   portable base (never absolutized through CWD).
 /// - `current_exe_result`: the outcome of `std::env::current_exe()`.
-/// - `home_dir`: `dirs::home_dir()` for the HOME locations.
-/// - `fallback_config_dir_name`: the HOME directory name derived by
-///   `profile::config_dir_name_for_executable` from the same executable.
+/// - `home_dir`: `dirs::home_dir()` for the HOME location.
 ///
 /// #1868: after the overrides, an executable without an underscore suffix
 /// returns the HOME location immediately. It ignores BUILD_PROFILE, install
 /// location, the portable marker and whatever probe outcomes were supplied;
 /// no startup error and no fallback diagnostic can arise on that route. Only
 /// suffixed executables reach the adjacent marker/write table.
+///
+/// #1930: that table never selects HOME. A conclusively unwritable unmarked
+/// candidate becomes `ConfigStartupError::AdjacentDirectoryUnwritable`.
 pub(crate) fn resolve_instance_location(
     public_override: Option<String>,
     test_override: Option<String>,
     current_exe_result: Result<PathBuf, std::io::Error>,
     home_dir: Option<PathBuf>,
-    fallback_config_dir_name: &str,
     marker_probe: MarkerProbeOutcome,
     write_probe: WriteProbeOutcome,
 ) -> InstanceLocation {
@@ -794,7 +779,7 @@ pub(crate) fn resolve_instance_location(
         .ok()
         .filter(|path| profile::binary_suffix_from_path(path).is_some());
     let Some(paths) = suffixed_executable.and_then(|path| adjacent_paths(path)) else {
-        return home_location(home_dir, fallback_config_dir_name, local_dir_stem);
+        return home_location(home_dir, local_dir_stem);
     };
 
     match marker_probe {
@@ -810,7 +795,6 @@ pub(crate) fn resolve_instance_location(
                 local_dir_stem,
                 instance_base: paths.instance_base,
                 startup_error: None,
-                fallback_diagnostic: None,
             },
             WriteProbeOutcome::Failed(failure) => blocked_adjacent_location(
                 paths.clone(),
@@ -831,23 +815,20 @@ pub(crate) fn resolve_instance_location(
                 local_dir_stem,
                 instance_base: paths.instance_base,
                 startup_error: None,
-                fallback_diagnostic: None,
             },
             WriteProbeOutcome::Failed(failure)
                 if failure.class == ProbeFailureClass::ConclusiveUnwritable =>
             {
-                let selected_home = home_dir.map(|home| home.join(fallback_config_dir_name));
-                let fallback_diagnostic = AdjacentFallbackDiagnostic {
-                    candidate: paths.config_dir,
-                    selected_home: selected_home.clone(),
-                    failure,
+                // #1930: a suffixed executable never falls back to HOME.
+                let startup_error = ConfigStartupError::AdjacentDirectoryUnwritable {
+                    config_dir: paths.config_dir.clone(),
+                    reason: failure.reason(),
                 };
                 InstanceLocation {
-                    config_dir: selected_home,
+                    config_dir: Some(paths.config_dir),
                     local_dir_stem,
-                    instance_base: None,
-                    startup_error: None,
-                    fallback_diagnostic: Some(fallback_diagnostic),
+                    instance_base: paths.instance_base,
+                    startup_error: Some(startup_error),
                 }
             }
             WriteProbeOutcome::Failed(failure) => {
@@ -885,7 +866,6 @@ fn resolve_instance_location_with_probes<MarkerProbe, WriteProbe>(
     test_override: Option<String>,
     current_exe_result: Result<PathBuf, std::io::Error>,
     home_dir: Option<PathBuf>,
-    fallback_config_dir_name: &str,
     mut marker_probe: MarkerProbe,
     mut write_probe: WriteProbe,
 ) -> InstanceLocation
@@ -925,7 +905,6 @@ where
         test_override,
         current_exe_result,
         home_dir,
-        fallback_config_dir_name,
         marker_outcome,
         write_outcome,
     )
@@ -943,16 +922,12 @@ fn instance_location() -> &'static InstanceLocation {
         let test_override: Option<String> = None;
         let current_exe_result = std::env::current_exe();
         let home_dir = dirs::home_dir();
-        let fallback_config_dir_name = profile::config_dir_name_for_executable(
-            current_exe_result.as_ref().ok().map(PathBuf::as_path),
-        );
 
         resolve_instance_location_with_probes(
             public_override,
             test_override,
             current_exe_result,
             home_dir,
-            fallback_config_dir_name,
             probe_portable_marker,
             probe_candidate_write,
         )
@@ -974,7 +949,7 @@ pub fn agent_local_dir_name() -> String {
 /// Unsuffixed executable (e.g. `agentscommander.exe`): `$HOME/.agentscommander` (#1868).
 /// Suffixed executable: portable `<binary_parent_dir>/.<binary_file_stem>/`,
 /// e.g. `C:\tools\agentscommander_standalone.exe` → `C:\tools\.agentscommander_standalone\`,
-/// falling back to `$HOME/<profile::config_dir_name()>`.
+/// and never a HOME directory (#1930).
 /// Cached via the shared [`InstanceLocation`] — resolved once at first call.
 pub fn config_dir() -> Option<PathBuf> {
     instance_location().config_dir.clone()
@@ -989,10 +964,6 @@ pub(crate) fn instance_base() -> Option<PathBuf> {
 
 pub(crate) fn config_startup_error() -> Option<ConfigStartupError> {
     instance_location().startup_error.clone()
-}
-
-pub(crate) fn adjacent_fallback_diagnostic() -> Option<AdjacentFallbackDiagnostic> {
-    instance_location().fallback_diagnostic.clone()
 }
 
 #[cfg(test)]
@@ -1036,13 +1007,6 @@ mod tests {
 
     fn canonical_home(home: &Path) -> PathBuf {
         home.join(".agentscommander")
-    }
-
-    /// The HOME name production derives for this executable outcome.
-    fn production_config_dir_name(current_exe_result: &Result<PathBuf, Error>) -> &'static str {
-        profile::config_dir_name_for_executable(
-            current_exe_result.as_ref().ok().map(PathBuf::as_path),
-        )
     }
 
     fn marker_failure() -> ProbeFailure {
@@ -1090,7 +1054,6 @@ mod tests {
             None,
             Ok(absolute_executable()),
             Some(PathBuf::from("/home/u")),
-            profile::config_dir_name(),
             MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
@@ -1116,7 +1079,6 @@ mod tests {
             None,
             Ok(exe),
             Some(PathBuf::from("/home/u")),
-            profile::config_dir_name(),
             MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
@@ -1147,7 +1109,6 @@ mod tests {
             Some(override_dir.to_string()),
             Ok(exe),
             Some(PathBuf::from("/home/u")),
-            profile::config_dir_name(),
             MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
@@ -1169,7 +1130,6 @@ mod tests {
             Some("relative/.acdir".to_string()),
             exe_err(),
             Some(PathBuf::from("/home/u")),
-            profile::config_dir_name(),
             MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
@@ -1193,7 +1153,6 @@ mod tests {
             Some("   ".to_string()),
             Ok(exe),
             Some(PathBuf::from("/home/u")),
-            profile::config_dir_name(),
             MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
@@ -1216,7 +1175,6 @@ mod tests {
             None,
             Ok(PathBuf::from("bin/agentscommander_portable")),
             Some(PathBuf::from("/home/u")),
-            profile::config_dir_name(),
             MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
@@ -1244,7 +1202,6 @@ mod tests {
             None,
             Ok(root),
             Some(PathBuf::from("/home/u")),
-            profile::config_dir_name(),
             MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
@@ -1260,7 +1217,6 @@ mod tests {
             None,
             exe_err(),
             Some(PathBuf::from("/home/u")),
-            profile::config_dir_name(),
             MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
@@ -1277,7 +1233,6 @@ mod tests {
             None,
             exe_err(),
             None,
-            profile::config_dir_name(),
             MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
@@ -1306,7 +1261,6 @@ mod tests {
             Some("debug-canary".to_string()),
             Ok(absolute_executable()),
             Some(PathBuf::from("/home/u")),
-            profile::config_dir_name(),
             MarkerProbeOutcome::Indeterminate(marker_failure),
             WriteProbeOutcome::Failed(failed_write(
                 RetryPlatform::Other,
@@ -1319,7 +1273,6 @@ mod tests {
 
         assert_eq!(loc.config_dir.as_deref(), Some(Path::new(public)));
         assert!(loc.startup_error.is_none());
-        assert!(loc.fallback_diagnostic.is_none());
     }
 
     #[test]
@@ -1329,7 +1282,6 @@ mod tests {
             Some("\t".to_string()),
             Ok(absolute_executable()),
             Some(PathBuf::from("/home/u")),
-            profile::config_dir_name(),
             MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
@@ -1345,7 +1297,6 @@ mod tests {
             None,
             Ok(absolute_executable()),
             Some(PathBuf::from("/home/u")),
-            profile::config_dir_name(),
             MarkerProbeOutcome::Present,
             WriteProbeOutcome::Success,
         );
@@ -1365,7 +1316,6 @@ mod tests {
                 None,
                 Ok(absolute_executable()),
                 Some(PathBuf::from("/home/u")),
-                profile::config_dir_name(),
                 MarkerProbeOutcome::Present,
                 WriteProbeOutcome::Failed(failed_write(
                     RetryPlatform::Other,
@@ -1378,14 +1328,13 @@ mod tests {
 
             assert_eq!(loc.config_dir, Some(expected_adjacent()));
             assert!(loc.startup_error.is_some());
-            assert!(loc.fallback_diagnostic.is_none());
             let message = loc.startup_error.unwrap().to_string();
             assert!(message.contains(&expected_marker().display().to_string()));
         }
     }
 
     #[test]
-    fn issue_1577_unmarked_conclusive_failure_falls_home_with_diagnostic() {
+    fn issue_1930_unmarked_conclusive_failure_refuses_and_never_selects_home() {
         let failure = failed_write(
             RetryPlatform::Other,
             ProbeOperation::CreateConfigurationDirectory,
@@ -1393,29 +1342,44 @@ mod tests {
             Error::new(ErrorKind::PermissionDenied, "permission denied"),
             1,
         );
-        let home = PathBuf::from("/home/u");
-        let expected_home = home.join(".injected-profile");
+        for home in [Some("/home/u"), None] {
+            let loc = resolve_instance_location(
+                None,
+                None,
+                Ok(absolute_executable()),
+                home.map(PathBuf::from),
+                MarkerProbeOutcome::Absent,
+                WriteProbeOutcome::Failed(failure.clone()),
+            );
+            assert_eq!(loc.config_dir, Some(expected_adjacent()));
+            assert_eq!(
+                loc.instance_base,
+                expected_adjacent().parent().map(Path::to_path_buf)
+            );
+            assert_eq!(
+                loc.startup_error,
+                Some(ConfigStartupError::AdjacentDirectoryUnwritable {
+                    config_dir: expected_adjacent(),
+                    reason: failure.reason(),
+                })
+            );
+        }
+        // A bare suffixed name still has a parent (the empty path), so no suffixed
+        // executable reaches HOME through a missing parent or stem.
         let loc = resolve_instance_location(
             None,
             None,
-            Ok(absolute_executable()),
-            Some(home),
-            ".injected-profile",
+            Ok(PathBuf::from("agentscommander_bare")),
+            Some(PathBuf::from("/home/u")),
             MarkerProbeOutcome::Absent,
-            WriteProbeOutcome::Failed(failure.clone()),
+            WriteProbeOutcome::Failed(failure),
         );
-
-        assert_eq!(loc.config_dir, Some(expected_home.clone()));
+        assert_eq!(loc.config_dir, Some(PathBuf::from(".agentscommander_bare")));
         assert_eq!(loc.instance_base, None);
-        assert!(loc.startup_error.is_none());
-        assert_eq!(
-            loc.fallback_diagnostic,
-            Some(AdjacentFallbackDiagnostic {
-                candidate: expected_adjacent(),
-                selected_home: Some(expected_home),
-                failure,
-            })
-        );
+        assert!(matches!(
+            loc.startup_error,
+            Some(ConfigStartupError::AdjacentDirectoryUnwritable { .. })
+        ));
     }
 
     #[test]
@@ -1425,7 +1389,6 @@ mod tests {
             None,
             Ok(absolute_executable()),
             Some(PathBuf::from("/home/u")),
-            ".injected-profile",
             MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Failed(failed_write(
                 RetryPlatform::Other,
@@ -1438,36 +1401,11 @@ mod tests {
 
         assert_eq!(loc.config_dir, Some(expected_adjacent()));
         assert!(loc.startup_error.is_some());
-        assert!(loc.fallback_diagnostic.is_none());
         assert!(!loc
             .startup_error
             .unwrap()
             .to_string()
             .contains(&PathBuf::from("/home/u").display().to_string()));
-    }
-
-    #[test]
-    fn issue_1577_conclusive_failure_without_home_preserves_tier_six() {
-        let loc = resolve_instance_location(
-            None,
-            None,
-            Ok(absolute_executable()),
-            None,
-            ".injected-profile",
-            MarkerProbeOutcome::Absent,
-            WriteProbeOutcome::Failed(failed_write(
-                RetryPlatform::Other,
-                ProbeOperation::CreateConfigurationDirectory,
-                expected_adjacent(),
-                Error::new(ErrorKind::PermissionDenied, "denied"),
-                1,
-            )),
-        );
-
-        assert_eq!(loc.config_dir, None);
-        assert_eq!(loc.instance_base, None);
-        assert!(loc.startup_error.is_none());
-        assert!(loc.fallback_diagnostic.is_some());
     }
 
     #[test]
@@ -1478,7 +1416,6 @@ mod tests {
                 None,
                 Ok(absolute_executable()),
                 Some(PathBuf::from("/home/u")),
-                ".injected-profile",
                 MarkerProbeOutcome::Absent,
                 WriteProbeOutcome::Success,
             )
@@ -1645,19 +1582,21 @@ mod tests {
             failure.error,
             failure.attempts,
         );
-        let expected_home = PathBuf::from(r"C:\Users\tester\.agentscommander-new");
         let loc = resolve_instance_location(
             None,
             None,
             Ok(absolute_executable()),
             Some(PathBuf::from(r"C:\Users\tester")),
-            ".agentscommander-new",
             MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Failed(write_failure),
         );
         assert_eq!(calls, 6);
         assert_eq!(sleeps, vec![15, 30, 60, 120, 240]);
-        assert_eq!(loc.config_dir, Some(expected_home));
+        assert_eq!(loc.config_dir, Some(expected_adjacent()));
+        assert!(matches!(
+            loc.startup_error,
+            Some(ConfigStartupError::AdjacentDirectoryUnwritable { .. })
+        ));
     }
 
     #[cfg(windows)]
@@ -1805,15 +1744,15 @@ mod tests {
             None,
             Ok(absolute_executable()),
             Some(PathBuf::from("/home/u")),
-            ".injected-profile",
             MarkerProbeOutcome::Indeterminate(marker_failure),
             WriteProbeOutcome::NotRun,
         );
 
         assert_eq!(loc.config_dir, Some(expected_adjacent()));
-        assert!(loc.fallback_diagnostic.is_none());
         let error = loc.startup_error.expect("broken marker must hard-fail");
-        let ConfigStartupError::AdjacentSelectionBlocked { marker_path, .. } = error;
+        let ConfigStartupError::AdjacentSelectionBlocked { marker_path, .. } = error else {
+            panic!("a broken marker must report AdjacentSelectionBlocked");
+        };
         assert_eq!(marker_path, Some(expected_marker()));
     }
 
@@ -1847,12 +1786,10 @@ mod tests {
             None,
             Ok(executable),
             Some(PathBuf::from("/home/u")),
-            ".injected-profile",
             MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Failed(failure),
         );
         assert!(loc.startup_error.is_some());
-        assert!(loc.fallback_diagnostic.is_none());
     }
 
     #[test]
@@ -2040,23 +1977,33 @@ mod tests {
             )
         );
 
-        let warning = AdjacentFallbackDiagnostic {
-            candidate: candidate.clone(),
-            selected_home: Some(PathBuf::from("home/.agentscommander-new")),
-            failure: failed_write(
+        let error = ConfigStartupError::AdjacentDirectoryUnwritable {
+            config_dir: candidate.clone(),
+            reason: failed_write(
                 RetryPlatform::Other,
                 ProbeOperation::CreateConfigurationDirectory,
                 candidate.clone(),
                 Error::new(ErrorKind::PermissionDenied, "permission denied"),
                 1,
-            ),
+            )
+            .reason(),
         };
         assert_eq!(
-            warning.to_string(),
+            error.to_string(),
             format!(
-                "configuration directory \"{}\" was conclusively unwritable; using \"{}\" instead: write probe could not create configuration directory \"{}\" after 1 attempt(s): permission denied",
+                "AgentsCommander cannot start because it cannot write its configuration directory \"{}\" next to the executable: write probe could not create configuration directory \"{}\" after 1 attempt(s): permission denied. Move the executable to a writable folder, or set AGENTSCOMMANDER_CONFIG_DIR to a writable directory, and restart.",
                 candidate.display(),
-                Path::new("home/.agentscommander-new").display(),
+                candidate.display()
+            )
+        );
+        let error = ConfigStartupError::AdjacentDirectoryUnwritable {
+            config_dir: candidate.clone(),
+            reason: "denied.".to_string(),
+        };
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "AgentsCommander cannot start because it cannot write its configuration directory \"{}\" next to the executable: denied. Move the executable to a writable folder, or set AGENTSCOMMANDER_CONFIG_DIR to a writable directory, and restart.",
                 candidate.display()
             )
         );
@@ -2124,14 +2071,11 @@ mod tests {
                             Some(path) => Ok(path.clone()),
                             None => exe_err(),
                         };
-                        let name = production_config_dir_name(&current_exe_result);
-                        assert_eq!(name, ".agentscommander");
                         let loc = resolve_instance_location(
                             None,
                             None,
                             current_exe_result,
                             home.clone(),
-                            name,
                             marker.clone(),
                             write.clone(),
                         );
@@ -2145,7 +2089,6 @@ mod tests {
                         );
                         assert_eq!(loc.instance_base, None, "{context}");
                         assert!(loc.startup_error.is_none(), "{context}");
-                        assert!(loc.fallback_diagnostic.is_none(), "{context}");
                         assert_eq!(loc.local_dir_stem, *stem, "{context}");
                     }
                 }
@@ -2166,14 +2109,12 @@ mod tests {
             "/debug/.override"
         };
         let home = PathBuf::from("/home/u");
-        let name = production_config_dir_name(&Ok(unsuffixed_executable()));
 
         let loc = resolve_instance_location(
             Some(public.to_string()),
             Some(debug.to_string()),
             Ok(unsuffixed_executable()),
             Some(home.clone()),
-            name,
             MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
@@ -2190,7 +2131,6 @@ mod tests {
             Some(debug.to_string()),
             Ok(unsuffixed_executable()),
             Some(home.clone()),
-            name,
             MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
@@ -2202,7 +2142,6 @@ mod tests {
             Some("relative/.override".to_string()),
             Ok(unsuffixed_executable()),
             Some(home.clone()),
-            name,
             MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
@@ -2217,14 +2156,12 @@ mod tests {
             Some("\t".to_string()),
             Ok(unsuffixed_executable()),
             Some(home.clone()),
-            name,
             MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
         assert_eq!(loc.config_dir, Some(canonical_home(&home)));
         assert_eq!(loc.instance_base, None);
         assert!(loc.startup_error.is_none());
-        assert!(loc.fallback_diagnostic.is_none());
     }
 
     fn never_marker(_: &Path) -> MarkerProbeOutcome {
@@ -2249,20 +2186,17 @@ mod tests {
             Ok(PathBuf::from("bin/agentscommander")),
             exe_err(),
         ] {
-            let name = production_config_dir_name(&executable);
             let loc = resolve_instance_location_with_probes(
                 None,
                 None,
                 executable,
                 Some(home.clone()),
-                name,
                 never_marker,
                 never_write,
             );
             assert_eq!(loc.config_dir, Some(canonical_home(&home)));
             assert_eq!(loc.instance_base, None);
             assert!(loc.startup_error.is_none());
-            assert!(loc.fallback_diagnostic.is_none());
         }
 
         let loc = resolve_instance_location_with_probes(
@@ -2270,7 +2204,6 @@ mod tests {
             None,
             Ok(absolute_executable()),
             Some(home.clone()),
-            profile::config_dir_name(),
             never_marker,
             never_write,
         );
@@ -2281,7 +2214,6 @@ mod tests {
             Some(public.to_string()),
             Ok(absolute_executable()),
             Some(home),
-            profile::config_dir_name(),
             never_marker,
             never_write,
         );
@@ -2306,7 +2238,6 @@ mod tests {
                     None,
                     Ok(absolute_executable()),
                     home,
-                    ".injected-profile",
                     |path: &Path| {
                         self.calls.borrow_mut().push(("marker", path.to_path_buf()));
                         marker.clone()
@@ -2339,7 +2270,6 @@ mod tests {
         assert_eq!(probes.calls(), both);
         assert_eq!(loc.config_dir, Some(expected_adjacent()));
         assert!(loc.startup_error.is_none());
-        assert!(loc.fallback_diagnostic.is_none());
 
         let loc = probes.run(
             MarkerProbeOutcome::Present,
@@ -2380,7 +2310,10 @@ mod tests {
         );
         assert_eq!(loc.config_dir, Some(expected_adjacent()));
         let ConfigStartupError::AdjacentSelectionBlocked { marker_path, .. } =
-            loc.startup_error.expect("indeterminate marker is hard");
+            loc.startup_error.expect("indeterminate marker is hard")
+        else {
+            panic!("an indeterminate marker must report AdjacentSelectionBlocked");
+        };
         assert_eq!(marker_path, Some(expected_marker()));
 
         let conclusive = failed_write(
@@ -2396,15 +2329,12 @@ mod tests {
             Some(home.clone()),
         );
         assert_eq!(probes.calls(), both);
-        assert_eq!(loc.config_dir, Some(home.join(".injected-profile")));
-        assert_eq!(loc.instance_base, None);
-        assert!(loc.startup_error.is_none());
+        assert_eq!(loc.config_dir, Some(expected_adjacent()));
         assert_eq!(
-            loc.fallback_diagnostic,
-            Some(AdjacentFallbackDiagnostic {
-                candidate: expected_adjacent(),
-                selected_home: Some(home.join(".injected-profile")),
-                failure: conclusive,
+            loc.startup_error,
+            Some(ConfigStartupError::AdjacentDirectoryUnwritable {
+                config_dir: expected_adjacent(),
+                reason: conclusive.reason(),
             })
         );
 
@@ -2422,6 +2352,5 @@ mod tests {
         assert_eq!(probes.calls(), both);
         assert_eq!(loc.config_dir, Some(expected_adjacent()));
         assert!(loc.startup_error.is_some());
-        assert!(loc.fallback_diagnostic.is_none());
     }
 }
