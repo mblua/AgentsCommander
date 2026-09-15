@@ -3,13 +3,27 @@ const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { resolveBinPath } = require('./resolve-bin');
 
-const binName = os.platform() === 'win32' ? 'agentscommander.exe' : 'agentscommander';
-const binPath = path.join(__dirname, 'bin', binName);
+const binDir = path.join(__dirname, 'bin');
+
+const IGNORE_SCRIPTS_HINT =
+  'Hint: if npm install ran with --ignore-scripts, reinstall without that flag, or run: npm rebuild -g @mblua/agentscommander';
+
+let binPath;
+try {
+  binPath = resolveBinPath(os.platform(), binDir);
+} catch (err) {
+  console.error(`Error: ${err.message}`);
+  console.error('Please ensure the package was installed correctly.');
+  console.error(IGNORE_SCRIPTS_HINT);
+  process.exit(1);
+}
 
 if (!fs.existsSync(binPath)) {
   console.error(`Error: Cannot find AgentsCommander executable at ${binPath}`);
   console.error('Please ensure the package was installed correctly.');
+  console.error(IGNORE_SCRIPTS_HINT);
   process.exit(1);
 }
 

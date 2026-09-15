@@ -4,6 +4,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 const { execSync } = require('child_process');
+const { assertExecutable } = require('./resolve-bin');
 
 const VERSION = "0.32.0"; // Must match package.json
 const OWNER = 'mblua';
@@ -132,6 +133,7 @@ async function main() {
         if (fs.existsSync(extractTmpDir)) fs.rmSync(extractTmpDir, { recursive: true, force: true });
       }
       fs.unlinkSync(tmpPath);
+      assertExecutable('darwin', binDir);
     } else {
       const finalBinPath = path.join(binDir, platform === 'win32' ? 'agentscommander.exe' : 'agentscommander');
       if (platform !== 'win32') {
