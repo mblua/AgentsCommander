@@ -1,8 +1,8 @@
 // Shared, platform-aware locator for the AgentsCommander executable inside the
 // installed package. run.js (launch) and install.js (post-extraction validation)
 // both use it so the two files agree on one on-disk contract. Issue #2016.
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // A Tauri Info.plist states CFBundleExecutable as a single <key>/<string> pair.
 // A bounded regex reads it without adding a plist parser to the published package.
