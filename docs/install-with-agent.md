@@ -13,7 +13,7 @@ An artifact on a GitHub release proves that the build exists. It does not make t
 | macOS | Any | Supported via npm only, with very low test coverage; errors are expected | Yes, through npm, after a warning and explicit confirmation |
 | Any other OS or architecture | Any | Unsupported | No; stop without substitution, emulation, or fallback |
 
-Linux does not currently include every Windows capability. Verified Windows-only features include global-hotkey screenshot capture, native window listing and capture, the control-plane window-screenshot route, and detection of a running GUI before CLI configuration writes. See [Screenshot capture](features/screenshot-capture.md), [Window capture](features/window-capture.md), and the [CLI reference](reference/cli.md#coding-agent).
+Linux does not currently include every Windows capability. Verified Windows-only features include native window listing and capture (the `window-list` and `window-screenshot` verbs and the control-plane window-screenshot route), and detection of a running GUI before CLI configuration writes. Screenshot capture works on Windows and Linux/X11 only: not in a Wayland session, and not on macOS. See [Screenshot capture](features/screenshot-capture.md), [Window capture](features/window-capture.md), and the [CLI reference](reference/cli.md#coding-agent).
 
 ## Use only pinned official evidence
 
@@ -65,7 +65,7 @@ Before downloading, creating a directory, installing, overwriting, changing `PAT
 4. Resolve and report the pinned guide commit and the exact selected stable release tag and URL. On Windows or Linux, also report the exact mapped asset name and URL and the exact matching record from that release's `SHASUMS256.txt`. On macOS, report the npm package version and the macOS `.app.tar.gz` bundle it installs; there is no mapped asset, and the npm installer verifies that bundle against the same release's `SHASUMS256.txt`.
 5. Apply #1118 to the existing and selected versions and report the data-preservation, backup, and upgrade/uninstall requirements. Stop if canonical guidance is insufficient or ambiguous.
 6. Report the exact destination, every command you plan to run, files or directories you plan to create or overwrite, privilege level, `PATH` or system-wide effects, configuration-preservation or migration plan, validation commands, and rollback steps.
-7. Explain that current Windows artifacts may be unsigned and that checksum verification is not publisher-compromise protection.
+7. Explain that current Windows artifacts and the macOS `.app` bundle may be unsigned, and that checksum verification, including the npm installer's, is not publisher-compromise protection.
 8. Wait for clear approval of that plan.
 
 Missing, ambiguous, or conflicting evidence is a stop condition. Do not guess.
@@ -79,7 +79,7 @@ Approval of the basic plan does not authorize any of these actions. Ask separate
 - overwriting an executable, installation directory, or configuration;
 - running a Windows artifact whose Authenticode status is not `Valid`;
 - continuing on Linux after the support warning; or
-- installing on macOS after the very-low-testing warning.
+- installing on macOS after the very-low-testing and unsigned-bundle warnings.
 
 Prefer a user-writable destination and the least privilege that completes the approved plan. Protect existing data and verify the required backup under #1118 before an update or uninstall. When updating an existing executable, keep a restorable copy until validation succeeds.
 
@@ -87,11 +87,11 @@ Prefer a user-writable destination and the least privilege that completes the ap
 
 After approval:
 
-1. Download the exact asset and `SHASUMS256.txt` from the same stable release into the approved staging directory. Use HTTPS. A normal GitHub-controlled release-asset redirect is allowed; a third-party mirror is not.
-2. Require exactly one checksum record whose filename equals the selected asset name.
-3. Compute the asset's SHA-256 digest and compare the complete 64-character value. On a missing, duplicate, malformed, or mismatched record, do not run the asset; report the failure and remove only the unverified files created by this attempt.
-4. Inspect Windows Authenticode status. A checksum match does not turn `NotSigned` into `Valid`; obtain the separate unsigned-software consent before launch.
-5. Run only the approved commands. For the Windows raw asset, verify it before renaming it to `agentscommander.exe` in the approved destination. For Linux, follow the selected route below; package inspection must precede installation and its resolved package name must be approved. For macOS, run the approved `npm install -g @mblua/agentscommander` and nothing else.
+1. **Windows or Linux:** download the exact asset and `SHASUMS256.txt` from the same stable release into the approved staging directory. Use HTTPS. A normal GitHub-controlled release-asset redirect is allowed; a third-party mirror is not. **macOS:** download nothing by hand; the approved npm command downloads the macOS `.app.tar.gz` bundle and `SHASUMS256.txt` from the matching release and verifies the bundle against that checksum file.
+2. **Windows or Linux:** require exactly one checksum record whose filename equals the selected asset name.
+3. **Windows or Linux:** compute the asset's SHA-256 digest and compare the complete 64-character value. On a missing, duplicate, malformed, or mismatched record, do not run the asset; report the failure and remove only the unverified files created by this attempt. On macOS, the npm installer fails closed on a missing record or mismatch; report that failure and stop.
+4. On Windows, inspect Authenticode status: a checksum match does not turn `NotSigned` into `Valid`. On macOS, the installed `.app` bundle is unsigned too. Obtain the separate unsigned-software consent for either host before launch.
+5. Run only the approved commands. For the Windows raw asset, verify it before renaming it to `agentscommander.exe` in the approved destination. For Linux, follow the selected route below; package inspection must precede installation and its resolved package name must be approved. For macOS, run the approved `npm install -g @mblua/agentscommander` and nothing else; that command performs the download and checksum verification described above.
 6. Validate the installed executable's exact path with `--help`, then re-check the route-specific version/provenance evidence against the approved release and report the observed output and final locations. Do not claim success from a download alone.
 7. If validation fails, execute only the approved rollback: for DEB/RPM, use only the approved package rollback below; for a file-only fresh install, remove only the newly installed file; for a file-only update, restore the approved previous executable; for a macOS npm install, remove only the npm package with `npm uninstall -g @mblua/agentscommander`. Preserve user state under #1118.
 
