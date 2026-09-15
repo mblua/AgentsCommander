@@ -7,12 +7,13 @@ import { projectStore } from "../stores/project";
 import { projectCollapseStore } from "../stores/project-collapse";
 import { railCollapseStore } from "../stores/rail-collapse";
 import {
-  MAX_GROUP_MATCH_ID_LENGTH,
-  compileGroupRegex,
-  groupMatchId,
+  compileWorkgroupGroups,
+  groupMatchesWorkgroup,
+  isUngroupedWorkgroup,
   nonStopDisplayName,
   nonStopMatchesWorkgroup,
   workgroupGroupsStore,
+  type CompiledWorkgroupGroup,
   type WorkgroupGroupSelection,
 } from "../stores/workgroup-groups";
 import {
@@ -73,13 +74,6 @@ function wgNumber(name: string): number {
 
 function wgTooltipLabel(wgName: string): string {
   return entityShortLabel(wgName) ?? wgName;
-}
-
-function groupMatches(group: WorkgroupGroup, wg: AcWorkgroup): boolean {
-  const id = groupMatchId(wg);
-  if (id.length > MAX_GROUP_MATCH_ID_LENGTH) return false;
-  const regex = compileGroupRegex(group);
-  return !!regex?.test(id);
 }
 
 function tooltipFor(folderName: string, workgroups: AcWorkgroup[]): string {
@@ -157,9 +151,10 @@ function groupButtonFor(
   project: ProjectState,
   group: WorkgroupGroup,
   groupIndex: number | null,
-  reorderable: boolean
+  reorderable: boolean,
+  compiled: readonly CompiledWorkgroupGroup[]
 ): GroupButton {
-  const workgroups = project.workgroups.filter((wg) => groupMatches(group, wg));
+  const workgroups = project.workgroups.filter((wg) => groupMatchesWorkgroup(compiled, group.id, wg));
   return {
     key: group.id,
     ...buttonContent(group.name, workgroups),
@@ -318,6 +313,7 @@ const FavoritesRailSection: Component<{
   const entries = createMemo<FavoriteEntry[]>(() =>
     props.projects.flatMap((project) => {
       const config = workgroupGroupsStore.config(project.path);
+      const compiled = compileWorkgroupGroups(config.groups);
       const result: FavoriteEntry[] = [];
       const nonStop = config.nonStop;
       // (#1257 D3) `show` is part of the condition on purpose. The rail only draws
@@ -337,7 +333,7 @@ const FavoritesRailSection: Component<{
             kind: "group",
             project,
             group,
-            button: groupButtonFor(project, group, null, false),
+            button: groupButtonFor(project, group, null, false, compiled),
           });
         }
       }
@@ -403,9 +399,10 @@ const ProjectRailSection: Component<{
 
   const config = () => workgroupGroupsStore.config(props.project.path);
   const collapsed = () => railCollapseStore.isProjectCollapsed(props.project.path);
+  const compiledGroups = createMemo(() => compileWorkgroupGroups(config().groups));
   const ungroupedWorkgroups = createMemo(() =>
-    props.project.workgroups.filter(
-      (wg) => !config().groups.some((group) => groupMatches(group, wg))
+    props.project.workgroups.filter((wg) =>
+      isUngroupedWorkgroup(compiledGroups(), config().nonStop, wg)
     )
   );
   const buttons = createMemo<GroupButton[]>(() => {
@@ -442,7 +439,7 @@ const ProjectRailSection: Component<{
       result.push(nonStopButtonFor(props.project, nonStop));
     }
     for (const [groupIndex, group] of config().groups.entries()) {
-      result.push(groupButtonFor(props.project, group, groupIndex, true));
+      result.push(groupButtonFor(props.project, group, groupIndex, true, compiledGroups()));
     }
     return result;
   });
