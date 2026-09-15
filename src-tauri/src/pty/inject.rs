@@ -112,6 +112,10 @@ enum PtyInjectionProfile {
     Established,
     Cursor,
     Pi,
+    /// Exact-stem `hermes`, `opencode`, and `grok` CLIs: canonical delayed
+    /// submit sequence, but no clear/compact, maintenance, or handoff
+    /// capabilities.
+    ExplicitSubmit,
     Unsupported,
 }
 
@@ -123,6 +127,9 @@ fn shell_file_stem(shell: &str) -> String {
         .to_lowercase()
 }
 
+/// Classify a direct shell from its trimmed file stem. `claude*`/`codex*` use
+/// prefix matching; `agy`/`antigravity`, `agent`, `pi`, and the exact-stem
+/// `hermes`/`opencode`/`grok` use exact matching.
 fn pty_injection_profile(shell: &str) -> PtyInjectionProfile {
     let stem = shell_file_stem(shell);
     if stem.starts_with("claude")
@@ -134,6 +141,8 @@ fn pty_injection_profile(shell: &str) -> PtyInjectionProfile {
         PtyInjectionProfile::Cursor
     } else if stem == "pi" {
         PtyInjectionProfile::Pi
+    } else if matches!(stem.as_str(), "hermes" | "opencode" | "grok") {
+        PtyInjectionProfile::ExplicitSubmit
     } else {
         PtyInjectionProfile::Unsupported
     }
@@ -160,9 +169,10 @@ impl LogicalPtyCommand {
 }
 
 /// Returns true when the direct shell command uses the canonical delayed Enter
-/// sequence for pasted text blocks. Classification is lexical: it uses only the
-/// trimmed shell file stem and does not inspect shell arguments or wrapper
-/// contents.
+/// sequence for pasted text blocks: Claude, Codex, Antigravity, Cursor `agent`,
+/// and the exact-stem `pi`, `hermes`, `opencode`, and `grok` CLIs.
+/// Classification is lexical: it uses only the trimmed shell file stem and does
+/// not inspect shell arguments or wrapper contents.
 pub(crate) fn needs_explicit_enter(shell: &str) -> bool {
     !matches!(
         pty_injection_profile(shell),
@@ -237,10 +247,11 @@ pub async fn submit_exact_agent_input_with_permit(
 
 /// Inject a text block into a session's PTY stdin.
 ///
-/// Direct Claude, Codex, Antigravity, Cursor agent, and exact-stem Pi shells receive
-/// `\r` twice, at 1500 ms and 2000 ms after the text write, as a reliability
-/// measure against Enter not registering on the first attempt. Plain shells do
-/// not receive an added Enter.
+/// Direct Claude, Codex, Antigravity, Cursor agent, and the exact-stem Pi,
+/// Hermes, OpenCode, and Grok Build shells receive `\r` twice, at 1500 ms and
+/// 2000 ms after the text write, as a reliability measure against Enter not
+/// registering on the first attempt. Plain shells do not receive an added
+/// Enter.
 ///
 /// This is the ONLY function that should be used for text-block injection.
 /// Direct keystrokes from xterm.js bypass this and call PtyManager::write()
@@ -513,6 +524,48 @@ mod tests {
             "C:\\tools\\agy.cmd",
             "antigravity",
             "agent.exe",
+            "hermes",
+            "hermes.exe",
+            "hermes.cmd",
+            "hermes.ps1",
+            "HERMES",
+            "  hermes  ",
+            "/usr/local/bin/hermes",
+            "opencode",
+            "opencode.exe",
+            "opencode.cmd",
+            "opencode.ps1",
+            "OPENCODE",
+            "  opencode  ",
+            "/usr/local/bin/opencode",
+            "grok",
+            "grok.exe",
+            "grok.cmd",
+            "grok.ps1",
+            "GROK",
+            "  grok  ",
+            "/usr/local/bin/grok",
+        ] {
+            assert!(needs_explicit_enter(shell), "shell={shell:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_submit_windows_native_paths() {
+        // `shell_file_stem` relies on `std::path::Path::file_stem`, which does
+        // not treat `\` as a separator off Windows, so these native path shapes
+        // are asserted only where that behaviour holds.
+        for shell in [
+            r"C:\Tools\hermes.exe",
+            r"\\server\share\hermes.cmd",
+            r"\\?\C:\Tools\hermes.exe",
+            r"C:\Tools\opencode.exe",
+            r"\\server\share\opencode.cmd",
+            r"\\?\C:\Tools\opencode.exe",
+            r"C:\Tools\grok.exe",
+            r"\\server\share\grok.cmd",
+            r"\\?\C:\Tools\grok.exe",
         ] {
             assert!(needs_explicit_enter(shell), "shell={shell:?}");
         }
@@ -753,6 +806,15 @@ mod tests {
         let valid = supported_session();
         assert!(validate_supported_agent_session(&valid, valid.id).is_ok());
 
+        for shell in ["hermes", "opencode", "grok"] {
+            let mut widened = supported_session();
+            widened.shell = shell.to_string();
+            assert!(
+                validate_supported_agent_session(&widened, widened.id).is_ok(),
+                "shell={shell:?}"
+            );
+        }
+
         let mut root = supported_session();
         root.is_root_agent = true;
         assert!(validate_supported_agent_session(&root, root.id).is_err());
@@ -803,6 +865,51 @@ mod tests {
             );
         }
 
+        let explicit_submit_positive = [
+            "hermes",
+            "Hermes",
+            "hermes.exe",
+            "HERMES.CMD",
+            "hermes.ps1",
+            "opencode",
+            "OpenCode",
+            "opencode.exe",
+            "OpenCode.CMD",
+            "opencode.ps1",
+            "grok",
+            "GROK",
+            "grok.exe",
+            "Grok.CMD",
+            "grok.ps1",
+            "  grok  ",
+            "/usr/local/bin/hermes",
+            "/usr/local/bin/opencode",
+        ];
+        for shell in explicit_submit_positive {
+            assert!(
+                needs_explicit_enter(shell),
+                "ExplicitSubmit positive: {shell:?}"
+            );
+            assert_eq!(
+                resolve_logical_command_text(shell, LogicalPtyCommand::Clear),
+                None,
+                "ExplicitSubmit clear remains unsupported: {shell:?}"
+            );
+            assert_eq!(
+                resolve_logical_command_text(shell, LogicalPtyCommand::Compact),
+                None,
+                "ExplicitSubmit compact remains unsupported: {shell:?}"
+            );
+            assert!(
+                !supports_auto_self_maintenance(shell),
+                "ExplicitSubmit maintenance stays off: {shell:?}"
+            );
+            assert!(
+                !supports_self_handoff_switch(shell),
+                "ExplicitSubmit switch stays off: {shell:?}"
+            );
+        }
+
         let unsupported = [
             "pip",
             "pipx",
@@ -811,6 +918,15 @@ mod tests {
             "pi-agent",
             "pi2",
             "pi-claude",
+            "hermes-wrapper",
+            "hermes-cli",
+            "my-hermes",
+            "opencode-proxy",
+            "opencode2",
+            "opencode-tui",
+            "grok-build",
+            "grokx",
+            "grok-cli",
             r"C:\pi\runner.exe",
             "agy-proxy",
             "agyctl",
@@ -977,6 +1093,73 @@ mod tests {
 
         assert_eq!(err, format!("Session not found: {id}"));
         assert!(backend.writes.lock().unwrap().is_empty());
+    }
+
+    async fn recorded_injection_writes_for_shell(shell: &str) -> Vec<Vec<u8>> {
+        let session_manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = session_manager
+            .read()
+            .await
+            .create_session(
+                shell.to_string(),
+                Vec::new(),
+                "C:\\test".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let id = session.id;
+        let backend = Arc::new(RecordingBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(id, SessionBackendKind::LocalProcess);
+        let app = tauri::test::mock_builder()
+            .manage(session_manager)
+            .manage(pty)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        inject_text_into_session(app.handle(), id, "arbitrary payload")
+            .await
+            .unwrap();
+
+        let all_writes = backend.writes.lock().unwrap().clone();
+        all_writes
+            .into_iter()
+            .filter(|(write_id, _)| *write_id == id)
+            .map(|(_, bytes)| bytes)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn explicit_submit_stems_write_text_then_two_enters() {
+        let (hermes, opencode, grok) = tokio::join!(
+            recorded_injection_writes_for_shell("hermes"),
+            recorded_injection_writes_for_shell("opencode"),
+            recorded_injection_writes_for_shell("grok"),
+        );
+        for (shell, writes) in [("hermes", hermes), ("opencode", opencode), ("grok", grok)] {
+            assert_eq!(
+                writes,
+                vec![
+                    b"arbitrary payload".to_vec(),
+                    b"\r".to_vec(),
+                    b"\r".to_vec()
+                ],
+                "shell={shell}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_stem_writes_text_without_enter() {
+        let writes = recorded_injection_writes_for_shell("muse").await;
+        assert_eq!(writes, vec![b"arbitrary payload".to_vec()]);
     }
 
     #[tokio::test]

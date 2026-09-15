@@ -91,7 +91,8 @@ pub(crate) const BUILTIN_AGENT_SUPPORT: &[(&str, bool)] = &[
     ("pi", true),
     ("opencode", true),
     ("antigravity", true),
-    ("muse", true),
+    ("grok", true),
+    ("muse", false),
 ];
 
 /// Unique-suffix counter for the seed temp file (mirrors the pattern in
@@ -4004,10 +4005,10 @@ mod tests {
     use super::*;
 
     /// (key, label, description, color, command, instructionsFilename, seed dest)
-    /// for the eight current presets. The embedded default must match these
+    /// for the nine current presets. The embedded default must match these
     /// values. The frontend keeps a parallel `FALLBACK_CODING_AGENTS` test (E7).
     #[allow(clippy::type_complexity)]
-    const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, Option<&str>, Option<&str>); 8] = [
+    const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, Option<&str>, Option<&str>); 9] = [
         (
             "claude",
             "Claude Code",
@@ -4072,6 +4073,15 @@ mod tests {
             None,
         ),
         (
+            "grok",
+            "Grok Build",
+            "Coding agent Grok Build",
+            "#64748b",
+            "grok",
+            Some("AGENTS.md"),
+            None,
+        ),
+        (
             "muse",
             "Muse Code",
             "Meta terminal coding agent (beta; macOS/Linux host only)",
@@ -4090,10 +4100,12 @@ mod tests {
         tempfile::tempdir().expect("tempdir")
     }
 
-    /// #1912 - support-override test tables: all 8 rows spelled out, in the
+    /// #1912 - support-override test tables: all 9 rows spelled out, in the
     /// shipped order, exactly one `false` each. Reaching the PRODUCTION
     /// wrappers through `with_builtin_agent_support_for_test` is the point: the
     /// controls below prove behavior on the real call chain, not on copies.
+    /// `TABLE_MUSE_OFF` mirrors the shipped table (#1999 disables muse); the
+    /// all-enabled control drives the opposite direction.
     const TABLE_MUSE_OFF: &[(&str, bool)] = &[
         ("claude", true),
         ("codex", true),
@@ -4102,6 +4114,7 @@ mod tests {
         ("pi", true),
         ("opencode", true),
         ("antigravity", true),
+        ("grok", true),
         ("muse", false),
     ];
     const TABLE_CLAUDE_OFF: &[(&str, bool)] = &[
@@ -4112,11 +4125,23 @@ mod tests {
         ("pi", true),
         ("opencode", true),
         ("antigravity", true),
+        ("grok", true),
+        ("muse", true),
+    ];
+    const TABLE_ALL_ENABLED: &[(&str, bool)] = &[
+        ("claude", true),
+        ("codex", true),
+        ("hermes", true),
+        ("cursor", true),
+        ("pi", true),
+        ("opencode", true),
+        ("antigravity", true),
+        ("grok", true),
         ("muse", true),
     ];
 
     #[test]
-    fn embedded_default_parses_with_eight_agents_in_order() {
+    fn embedded_default_parses_with_nine_agents_in_order() {
         let catalog = embedded_default_catalog();
         assert_eq!(catalog.schema_version, CATALOG_SCHEMA_VERSION);
         let keys: Vec<&str> = catalog.agents.iter().map(|a| a.key.as_str()).collect();
@@ -4130,10 +4155,11 @@ mod tests {
                 "pi",
                 "opencode",
                 "antigravity",
+                "grok",
                 "muse"
             ]
         );
-        // Muse is last, immediately after Antigravity.
+        // Muse stays last, now immediately preceded by Grok.
         let last = catalog.agents.last().unwrap();
         assert_eq!(last.key, "muse");
         assert_eq!(last.command, "muse");
@@ -4154,7 +4180,7 @@ mod tests {
             assert_eq!(def.command, command);
             assert_eq!(def.instructions_filename.as_deref(), filename);
             // #769 P2: Claude/Codex/OpenCode ship an active configSeed; the other
-            // five ship none (no master, no re-seed button).
+            // six ship none (no master, no re-seed button).
             match seed_dest {
                 Some(dest) => {
                     let cs = def
@@ -4204,7 +4230,7 @@ mod tests {
                 .iter()
                 .filter(|def| def.config_seed.is_none())
                 .count(),
-            5
+            6
         );
     }
 
@@ -5225,10 +5251,10 @@ mod tests {
     #[test]
     fn embedded_default_ships_update_commands_for_all_but_cursor_and_muse() {
         // #1318/#1325/#1546 drift guard: claude, pi, codex, hermes, opencode,
-        // and antigravity ship the update command; cursor and Muse ship none; every
-        // entry defaults autoUpdate to false.
+        // and antigravity ship the update command; cursor, grok and Muse ship
+        // none; every entry defaults autoUpdate to false.
         let catalog = embedded_default_catalog();
-        assert_eq!(catalog.agents.len(), 8);
+        assert_eq!(catalog.agents.len(), 9);
         for def in &catalog.agents {
             assert!(
                 !def.auto_update,
@@ -5244,7 +5270,7 @@ mod tests {
                 }
                 "opencode" => assert_eq!(def.update_commands, vec!["opencode upgrade".to_string()]),
                 "antigravity" => assert_eq!(def.update_commands, vec!["agy update".to_string()]),
-                "cursor" | "muse" => assert!(
+                "cursor" | "grok" | "muse" => assert!(
                     def.update_commands.is_empty(),
                     "{} must ship no update command",
                     def.key
@@ -5275,32 +5301,39 @@ mod tests {
     }
 
     #[test]
-    fn builtin_agent_support_ships_every_row_enabled() {
-        // R2: shipped state is all-true; the flip-time follow-up edits this test.
-        assert!(
-            BUILTIN_AGENT_SUPPORT.iter().all(|(_, on)| *on),
-            "every row must ship enabled"
-        );
+    fn builtin_agent_support_ships_only_muse_disabled() {
+        // R2: #1999 flips muse off; every other row still ships enabled.
+        let disabled: Vec<&str> = BUILTIN_AGENT_SUPPORT
+            .iter()
+            .filter(|(_, on)| !*on)
+            .map(|(key, _)| *key)
+            .collect();
+        assert_eq!(disabled, ["muse"], "only muse ships disabled");
     }
 
     #[test]
     fn support_override_scopes_to_closure_and_restores_shipped_table() {
-        // R3: the override reaches load_catalog and restores the shipped table.
+        // R3: the override reaches ensure_seeded + load_catalog and restores the
+        // shipped table.
         let dir = seed_dir();
         ensure_seeded(dir.path(), None);
         let before = load_catalog(dir.path()).expect("seeded catalog");
         assert_eq!(before.len(), 8);
-        assert!(before.iter().any(|a| a.key == "muse"));
+        assert_no_key(&before, "muse");
 
-        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+        with_builtin_agent_support_for_test(TABLE_ALL_ENABLED, || {
+            assert!(
+                ensure_seeded(dir.path(), None).is_some(),
+                "the table is part of the managed revision"
+            );
             let inside = load_catalog(dir.path()).expect("seeded catalog");
-            assert_eq!(inside.len(), 7);
-            assert_no_key(&inside, "muse");
+            assert_eq!(inside.len(), 9);
+            assert!(inside.iter().any(|a| a.key == "muse"));
         });
 
         let after = load_catalog(dir.path()).expect("seeded catalog");
         assert_eq!(after.len(), 8);
-        assert!(after.iter().any(|a| a.key == "muse"));
+        assert_no_key(&after, "muse");
     }
 
     #[test]
@@ -5312,7 +5345,7 @@ mod tests {
             let dir = seed_dir();
             ensure_seeded(dir.path(), None);
             let agents = load_catalog(dir.path()).expect("seeded catalog");
-            assert_eq!(agents.len(), 7);
+            assert_eq!(agents.len(), 8);
             assert_no_key(&agents, "muse");
             assert_eq!(agents[0].key, "claude");
 
@@ -5337,13 +5370,16 @@ mod tests {
             {"key":"mine","label":"Mine","description":"d","color":"#111","command":"muse","envs":[],"isolatedHome":false,"removable":true}
         ]"##;
 
-        // Control: no override -> duplicate key dedups first-wins, custom key kept.
-        let dir = seed_dir();
-        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
-        std::fs::write(manifest_path(dir.path()), manifest_json(agents)).unwrap();
-        let loaded = load_catalog(dir.path()).expect("persisted catalog");
-        assert_eq!(keys_of(&loaded), ["muse", "mine"]);
-        assert_eq!(loaded[0].label, "First");
+        // Control: the all-enabled table keeps muse -> duplicate key dedups
+        // first-wins, custom key kept.
+        with_builtin_agent_support_for_test(TABLE_ALL_ENABLED, || {
+            let dir = seed_dir();
+            std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+            std::fs::write(manifest_path(dir.path()), manifest_json(agents)).unwrap();
+            let loaded = load_catalog(dir.path()).expect("persisted catalog");
+            assert_eq!(keys_of(&loaded), ["muse", "mine"]);
+            assert_eq!(loaded[0].label, "First");
+        });
 
         with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
             let dir = seed_dir();
@@ -5414,14 +5450,23 @@ mod tests {
     #[test]
     fn managed_catalog_fresh_base_bytes_carry_only_enabled_rows() {
         // The fresh managed base carries the enabled shipped rows plus the
-        // ownership marker; an all-enabled control seeds all 8 and a false row
-        // seeds 7 while the read gate hides the key.
+        // ownership marker: the shipped table seeds the enabled 8 (grok in,
+        // muse out) and its mirror override seeds the same 8 while the read
+        // gate hides the key.
         let dir = seed_dir();
         assert!(ensure_seeded(dir.path(), None).is_some());
         let bytes = std::fs::read(manifest_path(dir.path())).unwrap();
         let base: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(base["agents"].as_array().unwrap().len(), 8);
         assert_eq!(base["managed"]["owner"], "agentscommander");
+        assert!(
+            base["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|agent| agent["key"] == "grok"),
+            "the fresh base publishes grok"
+        );
 
         with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
             let dir = seed_dir();
@@ -5438,9 +5483,9 @@ mod tests {
             let catalog: CodingAgentCatalog =
                 serde_json::from_slice(&bytes).expect("seeded manifest parses");
             assert_eq!(catalog.schema_version, CATALOG_SCHEMA_VERSION);
-            assert_eq!(catalog.agents.len(), 7);
+            assert_eq!(catalog.agents.len(), 8);
             let loaded = load_catalog(dir.path()).expect("seeded catalog");
-            assert_eq!(loaded.len(), 7);
+            assert_eq!(loaded.len(), 8);
             assert_no_key(&loaded, "muse");
         });
     }
@@ -5473,35 +5518,38 @@ mod tests {
 
     #[test]
     fn managed_catalog_false_row_is_part_of_the_revision_and_refreshes_only_the_base() {
-        // #1968: the support table is part of the managed revision, so a false
-        // row refreshes the BASE to the enabled shipped set; the user-owned
-        // local layer is never touched and the key stays hidden either way.
+        // #1968/#1999: the shipped false muse row is part of the managed
+        // revision, so a base seeded all-enabled refreshes to the enabled
+        // shipped set; the user-owned local layer is never touched and the key
+        // stays hidden either way.
         let dir = seed_dir();
-        ensure_seeded(dir.path(), None);
-        let seeded = std::fs::read(manifest_path(dir.path())).unwrap();
-        assert_eq!(base_json(dir.path())["agents"].as_array().unwrap().len(), 8);
+        let seeded = with_builtin_agent_support_for_test(TABLE_ALL_ENABLED, || {
+            ensure_seeded(dir.path(), None);
+            assert_eq!(base_json(dir.path())["agents"].as_array().unwrap().len(), 9);
+            std::fs::read(manifest_path(dir.path())).unwrap()
+        });
         let local_before = std::fs::read(local_catalog_path(dir.path())).unwrap();
 
-        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
-            assert!(
-                ensure_seeded(dir.path(), None).is_some(),
-                "a support-gate change is part of the managed revision"
-            );
-            assert_ne!(std::fs::read(manifest_path(dir.path())).unwrap(), seeded);
-            assert_eq!(base_json(dir.path())["agents"].as_array().unwrap().len(), 7);
-            assert_eq!(
-                std::fs::read(local_catalog_path(dir.path())).unwrap(),
-                local_before,
-                "the user-owned local layer is never touched by a refresh"
-            );
-            let loaded = load_catalog(dir.path()).expect("seeded catalog");
-            assert_eq!(loaded.len(), 7);
-            assert_no_key(&loaded, "muse");
-        });
+        assert!(
+            ensure_seeded(dir.path(), None).is_some(),
+            "a support-gate change is part of the managed revision"
+        );
+        assert_ne!(std::fs::read(manifest_path(dir.path())).unwrap(), seeded);
+        assert_eq!(base_json(dir.path())["agents"].as_array().unwrap().len(), 8);
+        assert_eq!(
+            std::fs::read(local_catalog_path(dir.path())).unwrap(),
+            local_before,
+            "the user-owned local layer is never touched by a refresh"
+        );
+        let loaded = load_catalog(dir.path()).expect("seeded catalog");
+        assert_eq!(loaded.len(), 8);
+        assert_no_key(&loaded, "muse");
 
-        // Back under the shipped table the base returns byte-for-byte.
-        assert!(ensure_seeded(dir.path(), None).is_some());
-        assert_eq!(std::fs::read(manifest_path(dir.path())).unwrap(), seeded);
+        // Back under the all-enabled table the base returns byte-for-byte.
+        with_builtin_agent_support_for_test(TABLE_ALL_ENABLED, || {
+            assert!(ensure_seeded(dir.path(), None).is_some());
+            assert_eq!(std::fs::read(manifest_path(dir.path())).unwrap(), seeded);
+        });
     }
 
     #[test]
@@ -5730,9 +5778,9 @@ mod tests {
                 let catalog: CodingAgentCatalog =
                     serde_json::from_slice(&bytes).expect("seeded manifest parses");
                 assert_eq!(catalog.schema_version, CATALOG_SCHEMA_VERSION);
-                assert_eq!(catalog.agents.len(), 7, "{shape}: 7 agents seeded");
+                assert_eq!(catalog.agents.len(), 8, "{shape}: 8 agents seeded");
                 let loaded = load_catalog(project.path()).expect("persisted catalog");
-                assert_eq!(loaded.len(), 7);
+                assert_eq!(loaded.len(), 8);
                 assert_no_key(&loaded, "muse");
                 assert_eq!(loaded[0].key, "claude");
             });
@@ -6629,18 +6677,18 @@ mod tests {
         let full_bytes = std::fs::read(manifest_path(dir.path())).unwrap();
         assert_eq!(base_json(dir.path())["agents"].as_array().unwrap().len(), 8);
 
-        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+        with_builtin_agent_support_for_test(TABLE_ALL_ENABLED, || {
             assert!(
                 ensure_seeded(dir.path(), None).is_some(),
                 "a support-gate change is part of the managed revision"
             );
             let base = base_json(dir.path());
-            assert_eq!(base["agents"].as_array().unwrap().len(), 7);
+            assert_eq!(base["agents"].as_array().unwrap().len(), 9);
             assert_eq!(
                 base["managed"]["revision"],
                 managed_content_sha256(&supported_shipped_definitions())
             );
-            assert_eq!(load_catalog(dir.path()).unwrap().len(), 7);
+            assert_eq!(load_catalog(dir.path()).unwrap().len(), 9);
         });
 
         // Back under the shipped table the revision changes again and the base
@@ -6824,14 +6872,14 @@ mod tests {
             dir.path(),
             r##"{"schemaVersion":1,"agents":[
                 {"key":"zeta","label":"Zeta","description":"d","color":"#111","command":"zeta","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false},
-                {"key":"muse","remove":true}
+                {"key":"grok","remove":true}
             ],"order":["zeta","claude"]}"##,
         );
         let loaded = load_catalog(dir.path()).unwrap();
         let keys = keys_of(&loaded);
         assert_eq!(keys[0], "zeta", "listed survivors come first in order");
         assert_eq!(keys[1], "claude");
-        assert!(!keys.contains(&"muse"), "the tombstone removes the key");
+        assert!(!keys.contains(&"grok"), "the tombstone removes the key");
         assert_eq!(keys.len(), 8, "8 shipped - 1 removed + 1 added");
     }
 
@@ -6925,19 +6973,19 @@ mod tests {
     #[test]
     fn managed_catalog_local_removability_is_evaluated_against_the_base() {
         let dir = seed_dir();
-        let mut muse = shipped_def_json(&["muse"]).remove(0);
-        muse["removable"] = serde_json::json!(false);
-        write_managed_base(dir.path(), &[muse], "stale", true);
+        let mut grok = shipped_def_json(&["grok"]).remove(0);
+        grok["removable"] = serde_json::json!(false);
+        write_managed_base(dir.path(), &[grok], "stale", true);
         write_local(
             dir.path(),
-            r##"{"schemaVersion":1,"agents":[{"key":"muse","remove":true}]}"##,
+            r##"{"schemaVersion":1,"agents":[{"key":"grok","remove":true}]}"##,
         );
         let report = load_catalog_report(dir.path());
         assert!(report
             .warnings
             .iter()
             .any(|warning| warning.code == "localInvalid"));
-        assert!(report.catalog.iter().any(|d| d.key == "muse"));
+        assert!(report.catalog.iter().any(|d| d.key == "grok"));
     }
 
     #[test]
@@ -7410,10 +7458,10 @@ mod tests {
                 .unwrap()
                 .len(),
             8,
-            "the journal saved the full-table base"
+            "the journal saved the enabled shipped base"
         );
 
-        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+        with_builtin_agent_support_for_test(TABLE_ALL_ENABLED, || {
             assert!(
                 ensure_seeded(dir.path(), None).is_some(),
                 "the journal saved base is completed first"
@@ -7421,8 +7469,16 @@ mod tests {
             let base = base_json(dir.path());
             assert_eq!(
                 base["agents"].as_array().unwrap().len(),
-                7,
+                9,
                 "then the normal verified refresh runs under the same lock"
+            );
+            assert!(
+                base["agents"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|agent| agent["key"] == "muse"),
+                "the all-enabled refresh publishes muse"
             );
             assert_eq!(
                 base["managed"]["revision"],
@@ -7671,7 +7727,7 @@ mod tests {
 
     #[test]
     fn managed_catalog_stale_revision_warning_uses_the_exact_context_reason() {
-        let agents = shipped_def_json(&["claude", "muse"]);
+        let agents = shipped_def_json(&["claude", "grok"]);
 
         // Direct: the public report wrapper keeps the neutral wording.
         let direct = seed_dir();
