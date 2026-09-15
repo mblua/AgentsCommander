@@ -14,9 +14,9 @@ The npm website's **Install** sidebar shows the generic local-install command. F
 
 ## Choosing the npm route
 
-For developers who deliberately choose the secondary npm route, this page defines the supported hosts, install command, verification signal, and configuration precaution.
+For developers who install through npm, this page defines the supported hosts, install command, verification signal, and configuration precaution.
 
-npm is not the recommended first install. Start with the reviewable [Coding Agent installation contract](https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md), which detects the host, selects an approved stable-release asset, verifies its checksum, and waits for approval.
+On Windows and Linux, npm is not the recommended first install: start with the reviewable [Coding Agent installation contract](https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md), which detects the host, selects an approved stable-release asset, verifies its checksum, and waits for approval. On macOS, npm is the only supported route.
 
 ## Platform boundary
 
@@ -25,11 +25,11 @@ Use this package only on these documented combinations:
 | Host | Native architecture | Status |
 |---|---|---|
 | Windows 10 version 1809 or newer, or Windows 11 | x86_64 / AMD64 | Fully supported |
-| Linux | x86_64 / AMD64 | Partial and in progress; continue only after acknowledging the limitation |
-| macOS | Any | Not supported; do not install through npm |
+| Linux | x86_64 / AMD64 | Supported with medium test coverage; some turbulence is expected. Continue after acknowledging the limitation. |
+| macOS | Any | Supported via npm only, with very low test coverage; errors are expected. |
 | Any other OS or architecture | Any | Unsupported; do not substitute an asset or use emulation |
 
-The current npm installer does not enforce this complete allowlist: its asset mapping treats architectures other than `arm64` as `x86_64`. An asset selection or download is not a support promise. Follow the canonical [platform gates](https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md#support-gates).
+The current npm installer does not enforce this complete allowlist: its asset mapping treats architectures other than `arm64` as `x86_64`, so an x64 Node on an arm64 Mac installs the x86_64 bundle. An asset selection or download is not a support promise. Follow the canonical [platform gates](https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md#support-gates).
 
 ## Requirements
 
