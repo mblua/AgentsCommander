@@ -166,7 +166,8 @@ function replicaScopeContext(wg: AcWorkgroup, replica: AcAgentReplica): AgentPic
   };
 }
 
-/** #1943 - KEEP chip title. Reads the SAVED pair, never the session's
+/** #1943 - lock chip label: the tooltip and, since #2030 made the chip
+ *  icon-only, the accessible name. Reads the SAVED pair, never the session's
  *  launch-time pair, and falls back to the stored identifier when the provider
  *  is no longer configured instead of dropping the fact. */
 function selectionLockChipTitle(replica: AcAgentReplica, settings: AppSettings | null): string {
@@ -2416,6 +2417,9 @@ const ProjectPanel: Component = () => {
             `replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
           const lockChipTestId = () =>
             `replica.lockChip.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
+          // #2030 - the chip is icon-only, so its tooltip and its accessible name
+          // come from the same accessor; the glyph itself is aria-hidden.
+          const lockChipLabel = () => selectionLockChipTitle(replica, settingsStore.current);
           const liveAgentLabel = () => resolveReplicaAgentLabel(session(), replica);
           const profileBadge = () => resolveReplicaProfileBadge(session(), replica);
           const ctxVisible = () =>
@@ -2568,17 +2572,20 @@ const ProjectPanel: Component = () => {
                   <Show when={profileBadge()}>
                     {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
                   </Show>
-                  {/* #1943 - KEEP chip for a locked replica. Only an established
-                      `locked` state renders it, so an unknown or invalid state is
-                      never drawn as unlocked. The same helper covers every
-                      renderReplicaItem call site (workgroups, selected, quick). */}
+                  {/* #1943 - lock chip for a locked replica; icon-only since #2030.
+                      Only an established `locked` state renders it, so an unknown
+                      or invalid state is never drawn as unlocked. The same helper
+                      covers every renderReplicaItem call site (workgroups,
+                      selected, quick). */}
                   <Show when={replica.selectionState === "locked"}>
                     <span
                       class="selection-lock-chip"
-                      title={selectionLockChipTitle(replica, settingsStore.current)}
+                      role="img"
+                      aria-label={lockChipLabel()}
+                      title={lockChipLabel()}
                       data-ac-testid={lockChipTestId()}
                     >
-                      <LockIcon />KEEP
+                      <LockIcon />
                     </span>
                   </Show>
                   <Show when={ctxVisible()}>
