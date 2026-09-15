@@ -245,11 +245,12 @@ describe("ProjectPanel replica chip strip order (#1730)", () => {
     expect(row.querySelector(".session-item-bridge-icon")).toBeNull();
   });
 
-  // #1943 - the KEEP chip: one more child than the unlocked row above, inserted
-  // right after the profile badge, with every later badge pushed back one slot
-  // and keeping its relative order. The chip strip IS the row's only identity,
-  // so a silent insertion here would be invisible to typecheck and to CI.
-  it("inserts the KEEP chip at index 7 on a locked row and shifts the later badges", async () => {
+  // #1943 - the lock chip (icon-only since #2030): one more child than the
+  // unlocked row above, inserted right after the profile badge, with every later
+  // badge pushed back one slot and keeping its relative order. The chip strip IS
+  // the row's only identity, so a silent insertion here would be invisible to
+  // typecheck and to CI.
+  it("inserts the icon-only lock chip at index 7 on a locked row and shifts the later badges", async () => {
     sessionsStore.setSessionContext(coordSessionId, 42);
     rendered = await mountProject(
       [
@@ -276,12 +277,20 @@ describe("ProjectPanel replica chip strip order (#1730)", () => {
 
     const chips = strip.querySelectorAll<HTMLElement>(".selection-lock-chip");
     expect(chips).toHaveLength(1);
-    expect(chips[0].textContent?.replace(/\s+/g, "")).toBe("KEEP");
+    // #2030 - icon only: no text node and a single child, so no label can wrap
+    // or widen the chip. The padlock is still announced: the svg is hidden and
+    // the chip carries the name.
+    expect(chips[0].textContent?.replace(/\s+/g, "")).toBe("");
+    expect(chips[0].children).toHaveLength(1);
+    expect(chips[0].querySelector("svg")).not.toBeNull();
+    expect(chips[0].querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    expect(chips[0].getAttribute("role")).toBe("img");
     // The title names the SAVED pair, resolved through the configured label -
-    // never the session's launch-time pair.
+    // never the session's launch-time pair - and the accessible name repeats it.
     expect(chips[0].getAttribute("title")).toBe(
       "Protected from bulk changes · Codex · Profile B",
     );
+    expect(chips[0].getAttribute("aria-label")).toBe(chips[0].getAttribute("title"));
     expect(children[7].getAttribute("data-ac-testid")).toBe(
       `replica.lockChip.quick.${automationIdPart(wgName)}.${automationIdPart(coordName)}`,
     );
@@ -312,7 +321,7 @@ describe("ProjectPanel replica chip strip order (#1730)", () => {
 
   // An unknown or invalid protection state is never drawn, and never drawn as
   // "unlocked" either: absence of a chip is the only honest rendering.
-  it("draws no KEEP chip, and no unlocked claim, for a state this build does not know", async () => {
+  it("draws no lock chip, and no unlocked claim, for a state this build does not know", async () => {
     rendered = await mountProject(
       [
         {
@@ -330,7 +339,6 @@ describe("ProjectPanel replica chip strip order (#1730)", () => {
 
     const strip = stripOf(rendered.root, "workgroups", peerName);
     expect(strip.querySelector(".selection-lock-chip")).toBeNull();
-    expect(strip.textContent).not.toContain("KEEP");
     expect(strip.querySelector("[title*='unlocked']")).toBeNull();
     expect(strip.querySelector("[title*='Unlocked']")).toBeNull();
   });
