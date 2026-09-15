@@ -5,10 +5,10 @@
 When installing through npm, use `-g` so the `agentscommander` command is available from any directory:
 
 ```bash
-npm install -g @mblua/agentscommander@<version>
+npm install -g @mblua/agentscommander@latest
 ```
 
-Replace `<version>` with the exact version selected using [Resolve versions and preserve configuration](#resolve-versions-and-preserve-configuration), then follow [Install and validate](#install-and-validate). Check the supported platforms and requirements below before installing.
+This installs the current `latest` release. Before installing, follow [Resolve versions and preserve configuration](#resolve-versions-and-preserve-configuration), then [Install and validate](#install-and-validate). Check the supported platforms and requirements below before installing.
 
 The npm website's **Install** sidebar shows the generic local-install command. For the recommended global npm installation, include `-g` as shown above.
 
@@ -41,7 +41,7 @@ AgentsCommander does not install or authenticate Coding Agent CLIs for you.
 
 ## Resolve versions and preserve configuration
 
-Before an install, update, or uninstall, resolve and report the exact existing package and binary versions, then the exact registry release selected for comparison. For an install or update, that selected release must also be the version you install; for an uninstall, report that no replacement will be installed.
+Before an install, update, or uninstall, resolve and report the exact existing package and binary versions, then the current `latest` registry release. For an install or update, that `latest` release is the version you install; for an uninstall, report that no replacement will be installed.
 
 ```bash
 npm list -g @mblua/agentscommander --depth=0
@@ -53,13 +53,13 @@ npm view @mblua/agentscommander@latest version
 
 The existing binary's exact resolver determines what must be preserved. The selected package's exact release tag determines post-install behavior. Verify both against the corresponding `v<version>` source tag; do not use `main` as evidence for a published npm package.
 
-### npm `0.32.0`
+### npm `0.33.0`
 
-`0.32.0` is the release described by this package. Its installer downloads the `v0.32.0` native release asset, verifies it against `SHASUMS256.txt`, and renames it to the unsuffixed executable in the package's `bin/` directory. The launcher spawns that binary and injects no configuration override.
+`0.33.0` is the release described by this package. Its installer downloads the `v0.33.0` native release asset and verifies it against `SHASUMS256.txt`. On Windows and Linux it renames the asset to the unsuffixed executable in the package's `bin/` directory. On macOS it downloads the `agentscommander-mac-<arch>.app.tar.gz` bundle, extracts the single `.app` directory into `bin/`, and validates the executable named by the bundle's `CFBundleExecutable`. The launcher spawns that executable and injects no configuration override.
 
-The `v0.32.0` native resolver selects a non-blank `AGENTSCOMMANDER_CONFIG_DIR` value verbatim when present. Otherwise, the normal unsuffixed npm executable selects the user's home directory plus `.agentscommander`, independently of its install location and build profile. It does not inspect an adjacent `portable.txt` marker or probe an adjacent configuration directory on this route. Suffixed executables retain their separate instance-location rules.
+The `v0.33.0` native resolver selects a non-blank `AGENTSCOMMANDER_CONFIG_DIR` value verbatim when present. Otherwise, the normal unsuffixed npm executable selects the user's home directory plus `.agentscommander`, independently of its install location and build profile. It does not inspect an adjacent `portable.txt` marker or probe an adjacent configuration directory on this route. Suffixed executables use their adjacent `.agentscommander_<suffix>` directory and refuse to start when it is not writable.
 
-**This changes the default location from npm `0.31.0` and `0.30.5`.** Those versions normally selected `.agentscommander` beside the native executable under `@mblua/agentscommander/bin/` when that location was writable, with their documented home fallback and refusal rules. Version `0.32.0` does not discover, copy, move or migrate any old configuration automatically. Before updating, identify and back up the old version's active configuration. If you intend to keep using that directory, set `AGENTSCOMMANDER_CONFIG_DIR` to its verified path; otherwise arrange the intended configuration at the new home location separately.
+**Version `0.33.0` keeps the `0.32.0` default location.** Versions `0.31.0` and `0.30.5` normally selected `.agentscommander` beside the native executable under `@mblua/agentscommander/bin/` when that location was writable, with their documented home fallback and refusal rules. Neither `0.32.0` nor `0.33.0` discovers, copies, moves or migrates any old configuration automatically. Before updating from `0.31.0` or older, identify and back up the old version's active configuration. If you intend to keep using that directory, set `AGENTSCOMMANDER_CONFIG_DIR` to its verified path; otherwise arrange the intended configuration at the new home location separately. Version `0.33.0` also drops the legacy pre-v2 `codingAgentProfiles` settings migration.
 
 The older npm `0.30.3` resolver immediately selected an executable-adjacent directory when the parent and stem were available and did not support the configuration override or portable-marker/write-probe rules. npm never published `0.30.4`; that number exists only as a GitHub release. For other versions, inspect `src-tauri/src/config/mod.rs`, `src-tauri/src/config/profile.rs`, `npm/run.js`, and `npm/install.js` at the exact `v<version>` tag.
 
@@ -70,10 +70,10 @@ Copy the complete persistent configuration directory to a user-controlled backup
 ## Install and validate
 
 ```bash
-npm install -g @mblua/agentscommander@<version>
+npm install -g @mblua/agentscommander@latest
 ```
 
-Replace `<version>` with the exact version already inspected and approved; do not leave the install unpinned after resolving `latest`. The command exits 0 on success. The package's install script downloads that package version's raw asset and `SHASUMS256.txt` from `mblua/AgentsCommander`, computes SHA-256, and fails the install on a missing record or mismatch. This does not protect against compromise of the publisher or repository account because the asset and checksum share that trust boundary.
+The command installs the current `latest` release and exits 0 on success. The package's install script downloads that package version's raw asset and `SHASUMS256.txt` from `mblua/AgentsCommander`, computes SHA-256, and fails the install on a missing record or mismatch. This does not protect against compromise of the publisher or repository account because the asset and checksum share that trust boundary.
 
 Validate the installed command:
 
@@ -82,7 +82,7 @@ npm list -g @mblua/agentscommander --depth=0
 agentscommander --help
 ```
 
-Both commands must exit 0. Confirm that `npm list` and the installed `package.json` report the approved package version; re-check the installed scripts, native path, and checksum correlation described above. `--help` must print the AgentsCommander command help, and on `0.31.0` or newer `agentscommander --version` must print the same version `npm list` reports. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
+Both commands must exit 0. Confirm that `npm list` and the installed `package.json` report the `latest` version that `npm view @mblua/agentscommander@latest version` returned; re-check the installed scripts, native path, and checksum correlation described above. `--help` must print the AgentsCommander command help, and on `0.31.0` or newer `agentscommander --version` must print the same version `npm list` reports. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
 
 ## Uninstall
 
