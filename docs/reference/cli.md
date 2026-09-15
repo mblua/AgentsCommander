@@ -630,7 +630,7 @@ Subcommands:
 | `update --id <id>` | writes | `{ "ok": true, "op": "update", "agent": { ... } }` |
 | `remove --id <id>` | writes | `{ "ok": true, "op": "remove", "id": "<id>" }` |
 
-`catalog` reads the persisted project catalog, or the read-only instance catalog in no-project mode; it never seeds, migrates or writes. Stdout is a single JSON array; report warnings print to stderr; when no readable catalog exists the verb exits 1 with the unavailability code, path and reason and prints no array. See [Coding agents § Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration).
+`catalog` reads the persisted project catalog, or the instance catalog in no-project mode (initialized at app startup when no project is registered); it never seeds, migrates or writes. Stdout is a single JSON array; report warnings print to stderr; when no readable catalog exists the verb exits 1 with the unavailability code, path and reason and prints no array. See [Coding agents § Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration).
 
 `add` / `update` flags:
 
