@@ -717,7 +717,7 @@ jobs:
       #
       # Do NOT move this to a Windows runner, a DrvFs path (/mnt/<drive>), or a
       # bind mount from a Windows host. There, chmod 0555 is silently ignored,
-      # stat reports 777, the write succeeds, the fallback never fires, and the
+      # stat reports 777, the write succeeds, the refusal never happens, and the
       # test reports ok while proving nothing.
       #
       # Only this one test runs here, by name. The suite runs on the Windows
@@ -728,7 +728,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TEST='tests::issue_1577_linux_unmarked_adjacent_unwritable_falls_back_to_home'
+          TEST='tests::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start'
 
           cargo test --lib "$TEST" -- --exact --test-threads=1 --nocapture 2>&1 | tee test-1577.log
 

@@ -2482,9 +2482,6 @@ pub fn run(
     // for the rationale. Idempotent, so a hypothetical second call (or the
     // CLI path having already run in this process) is a no-op.
     crate::logging::init_logger();
-    if let Some(diagnostic) = config::adjacent_fallback_diagnostic() {
-        log::warn!("[config_dir] {diagnostic}");
-    }
 
     // Generate master token — printed to stdout and persisted to master-token.txt for CLI use
     let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
@@ -2510,7 +2507,17 @@ pub fn run(
     // migrations. The per-project steady-state pre-check keeps the common
     // already-seeded case lock-free.
     let settings = config::settings::load_settings_for_cli();
-    for root in config::coding_agents_catalog::registered_project_roots(&settings) {
+    let registered_roots = config::coding_agents_catalog::registered_project_roots(&settings);
+    if registered_roots.is_empty() {
+        // #2021: with no registered project, initialize or refresh the instance
+        // catalog at <config_dir>/coding-agents so the Welcome surface lists
+        // the built-in agents on first run. Fail-soft: log-only, never aborts
+        // boot.
+        if let Some(dir) = config::config_dir() {
+            config::coding_agents_catalog::ensure_seeded_instance(&dir);
+        }
+    }
+    for root in registered_roots {
         config::coding_agents_catalog::ensure_seeded_for_project(&root);
     }
 
@@ -4257,7 +4264,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn issue_1577_linux_unmarked_adjacent_unwritable_falls_back_to_home() {
+    fn issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start() {
         use std::fs::OpenOptions;
         use std::os::unix::fs::PermissionsExt;
         use std::process::{Command, Stdio};
@@ -4266,42 +4273,40 @@ mod tests {
 
         const CHILD_SENTINEL: &str = "AGENTSCOMMANDER_ISSUE_1577_CHILD";
         const TEST_NAME: &str =
-            "tests::issue_1577_linux_unmarked_adjacent_unwritable_falls_back_to_home";
-        const INSTANCE_ID: &str = "00000000-0000-4000-8000-000000001577";
+            "tests::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start";
 
         if std::env::var_os(CHILD_SENTINEL).is_some() {
             let executable = std::env::current_exe().unwrap();
             let case_root = executable.parent().unwrap();
             let adjacent = case_root.join(".agentscommander_issue1577_linux_subprocess");
-            let selected_home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
-                .join(".agentscommander-new");
 
-            let observed = crate::config::config_dir().expect("child config root");
-            assert_eq!(observed, selected_home);
-            let (outbox_path, _) = prepare_app_outbox(&observed, INSTANCE_ID).unwrap();
-            assert_eq!(
-                outbox_path,
-                selected_home
-                    .join("instances")
-                    .join(INSTANCE_ID)
-                    .join("outbox")
+            assert_eq!(crate::config::config_dir(), Some(adjacent.clone()));
+            let Some(crate::config::ConfigStartupError::AdjacentDirectoryUnwritable {
+                config_dir,
+                reason,
+            }) = crate::config::config_startup_error()
+            else {
+                panic!("an unwritable unmarked adjacent directory must refuse startup");
+            };
+            assert_eq!(config_dir, adjacent);
+            let reason_prefix = format!(
+                "write probe could not create configuration directory \"{}\" after 1 attempt(s): ",
+                adjacent.display()
             );
-
-            let diagnostic =
-                crate::config::adjacent_fallback_diagnostic().expect("child fallback diagnostic");
-            assert_eq!(diagnostic.candidate, adjacent);
-            assert_eq!(diagnostic.selected_home, Some(selected_home));
-            assert_eq!(
-                diagnostic.failure.primary.operation,
-                crate::config::ProbeOperation::CreateConfigurationDirectory
+            assert!(
+                reason.starts_with(&reason_prefix),
+                "unexpected reason: {reason}"
             );
-            assert_eq!(diagnostic.failure.primary.attempts, 1);
+            let refusal = crate::preflight_config_startup().expect_err("startup must be refused");
             assert_eq!(
-                diagnostic.failure.primary.kind,
-                Some(std::io::ErrorKind::PermissionDenied)
+                refusal.to_string(),
+                format!(
+                    "AgentsCommander cannot start because it cannot write its configuration directory \"{}\" next to the executable: {}{} Move the executable to a writable folder, or set AGENTSCOMMANDER_CONFIG_DIR to a writable directory, and restart.",
+                    adjacent.display(),
+                    reason,
+                    if reason.ends_with('.') { "" } else { "." }
+                )
             );
-            assert!(diagnostic.failure.probe_path.is_none());
-            assert!(!diagnostic.failure.probe_may_remain);
             return;
         }
 
@@ -4313,7 +4318,6 @@ mod tests {
         let copied_executable = case_root.join("agentscommander_issue1577_linux_subprocess");
         let adjacent = case_root.join(".agentscommander_issue1577_linux_subprocess");
         let marker = case_root.join("portable.txt");
-        let selected_home = home_root.join(".agentscommander-new");
 
         let body = (|| -> Result<(), String> {
             let source_executable =
@@ -4469,48 +4473,15 @@ mod tests {
                 }
             }
 
-            let outbox = selected_home
-                .join("instances")
-                .join(INSTANCE_ID)
-                .join("outbox");
-            if !outbox.is_dir() {
-                return Err(format!("expected outbox missing: {}", outbox.display()));
-            }
-            let config_entries: Vec<_> = std::fs::read_dir(&selected_home)
-                .map_err(|error| format!("read selected home failed: {error}"))?
+            let home_entries: Vec<_> = std::fs::read_dir(&home_root)
+                .map_err(|error| format!("read home failed: {error}"))?
                 .map(|entry| entry.map(|entry| entry.file_name()))
                 .collect::<Result<_, _>>()
-                .map_err(|error| format!("read selected-home entry failed: {error}"))?;
-            if config_entries != [std::ffi::OsString::from("instances")] {
+                .map_err(|error| format!("read home entry failed: {error}"))?;
+            if !home_entries.is_empty() {
                 return Err(format!(
-                    "unexpected home config entries: {config_entries:?}"
+                    "a suffixed build wrote into HOME: {home_entries:?}"
                 ));
-            }
-            let instance_entries: Vec<_> = std::fs::read_dir(selected_home.join("instances"))
-                .map_err(|error| format!("read instances failed: {error}"))?
-                .map(|entry| entry.map(|entry| entry.file_name()))
-                .collect::<Result<_, _>>()
-                .map_err(|error| format!("read instance entry failed: {error}"))?;
-            if instance_entries != [std::ffi::OsString::from(INSTANCE_ID)] {
-                return Err(format!("unexpected instance entries: {instance_entries:?}"));
-            }
-            let instance_children: Vec<_> =
-                std::fs::read_dir(selected_home.join("instances").join(INSTANCE_ID))
-                    .map_err(|error| format!("read fixed instance failed: {error}"))?
-                    .map(|entry| entry.map(|entry| entry.file_name()))
-                    .collect::<Result<_, _>>()
-                    .map_err(|error| format!("read fixed-instance entry failed: {error}"))?;
-            if instance_children != [std::ffi::OsString::from("outbox")] {
-                return Err(format!(
-                    "unexpected fixed-instance entries: {instance_children:?}"
-                ));
-            }
-            if std::fs::read_dir(&outbox)
-                .map_err(|error| format!("read outbox failed: {error}"))?
-                .next()
-                .is_some()
-            {
-                return Err(format!("outbox was not empty: {}", outbox.display()));
             }
             if adjacent.exists() || marker.exists() {
                 return Err(format!(
