@@ -9460,7 +9460,6 @@ html.light-theme .onboarding-card.selected {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  row-gap: 4px;
   gap: var(--spacing-xs);
 }
 
