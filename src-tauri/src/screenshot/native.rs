@@ -1,11 +1,11 @@
-//! #714 Native screenshot runtime (Windows / Linux-X11).
+//! #714 Native screenshot runtime (Windows / Linux-X11 / macOS).
 //!
-//! Compiled on Windows and Linux/X11. Owns every native dependency for the
-//! feature: `xcap` desktop capture, `image` crop/encode, the clipboard plugin,
-//! the global-shortcut plugin, overlay window creation, and the capture
+//! Compiled on Windows, Linux/X11 and macOS. Owns every native dependency for
+//! the feature: `xcap` desktop capture, `image` crop/encode, the clipboard
+//! plugin, the global-shortcut plugin, overlay window creation, and the capture
 //! lifecycle state machine. Only the #1285 window-capture region stays
-//! Windows-only. The macOS-and-everything-else sibling (`super::unsupported`)
-//! mirrors this public surface without any native screenshot crates.
+//! Windows-only. The every-other-target sibling (`super::unsupported`) mirrors
+//! this public surface without any native screenshot crates.
 //!
 //! Cleanup invariant: Rust owns overlay teardown. Every terminal path (confirm
 //! success/failure, explicit cancel, overlay build failure, stale overlay IPC,
@@ -304,6 +304,35 @@ pub fn classify_display_server(env: &DisplayEnvSnapshot) -> LinuxDisplayServer {
     LinuxDisplayServer::X11
 }
 
+// ── macOS Screen Recording permission (#2079) ──────────────────────────────
+
+/// The refusal message when macOS has not granted Screen Recording.
+#[cfg(target_os = "macos")]
+pub const MACOS_SCREEN_RECORDING_REQUIRED: &str = "Screenshot capture needs the Screen Recording permission. Allow AgentsCommander in System Settings > Privacy & Security > Screen Recording, then quit and reopen AgentsCommander.";
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+/// Refuse to capture when macOS has not granted Screen Recording. Without the
+/// permission xcap's `CGWindowListCreateImage` succeeds but returns
+/// wallpaper-only pixels (no other apps' windows), so capturing without this
+/// check fails silently; the grant takes effect only after the app restarts,
+/// which the refusal message tells the user to do.
+#[cfg(target_os = "macos")]
+fn ensure_macos_screen_capture_access() -> Result<(), String> {
+    // SAFETY: argument-less CoreGraphics queries (macOS 10.15+), thread-safe.
+    if unsafe { CGPreflightScreenCaptureAccess() } {
+        return Ok(());
+    }
+    // Registers the app in the Screen Recording list; prompts only the first time.
+    let _ = unsafe { CGRequestScreenCaptureAccess() };
+    Err(MACOS_SCREEN_RECORDING_REQUIRED.to_string())
+}
+
 // ── Hotkey registration ────────────────────────────────────────────────────
 
 fn parsed_to_shortcut(parsed: &ParsedHotkey) -> Result<Shortcut, String> {
@@ -463,16 +492,18 @@ pub fn begin_capture_from_hotkey(app: AppHandle) {
         match begin_capture(app.clone()).await {
             Ok(BeginOutcome::Started) => {}
             Ok(BeginOutcome::Busy(cancellable)) => {
-                // Cancelling on a repeat press is Linux-specific: Escape reaches
-                // the overlay only if the WM granted keyboard focus, and Mutter
-                // declined `focused(true)` in 4 of 6 spike runs (E5a). A
-                // fullscreen, always-on-top, decorationless, skip-taskbar
-                // overlay across every monitor that cannot be dismissed is the
-                // worst failure available, and the global grab is ours and
+                // Cancelling on a repeat press is Linux- and macOS-specific:
+                // Escape reaches the overlay only if the WM granted keyboard
+                // focus, and Mutter declined `focused(true)` in 4 of 6 spike
+                // runs (E5a); macOS activates apps cooperatively, so overlay
+                // focus is not guaranteed there either. A fullscreen,
+                // always-on-top, decorationless, skip-taskbar overlay across
+                // every monitor that cannot be dismissed is the worst failure
+                // available, and the global grab is ours and
                 // focus-independent. Accepted cost: an accidental double-tap
                 // cancels instead of being ignored (epic R4). Windows keeps
                 // today's silent no-op.
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 if let Some(id) = cancellable {
                     let state = app.state::<ScreenshotCaptureState>();
                     let _ = clear_capture_and_destroy_overlays(
@@ -485,10 +516,11 @@ pub fn begin_capture_from_hotkey(app: AppHandle) {
                 } else {
                     log::debug!("[screenshot] hotkey ignored: nothing this press may cancel");
                 }
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 {
                     // Bind the payload so it is not `unused` under
-                    // `cargo clippy --all-targets -- -D warnings` off Linux.
+                    // `cargo clippy --all-targets -- -D warnings` off Linux
+                    // and macOS.
                     let _ = cancellable;
                     log::debug!("[screenshot] hotkey ignored: a capture is already in progress");
                 }
@@ -1099,6 +1131,8 @@ mod window_screenshot_tests {
 /// All `xcap` getters are fallible and re-query the OS, so each is read once.
 async fn capture_all_monitors() -> Result<Vec<CapturedMonitor>, String> {
     tokio::task::spawn_blocking(|| -> Result<Vec<CapturedMonitor>, String> {
+        #[cfg(target_os = "macos")]
+        ensure_macos_screen_capture_access()?;
         let monitors = xcap::Monitor::all().map_err(|e| format!("xcap monitor enumeration failed: {e}"))?;
         let mut captured = Vec::with_capacity(monitors.len());
         for (idx, monitor) in monitors.iter().enumerate() {
@@ -1162,6 +1196,37 @@ struct OverlayPlacement {
     scale_factor: f64,
 }
 
+/// xcap monitor origins are physical pixels on Windows and Linux, and logical
+/// points (`CGDisplayBounds`) on macOS.
+const XCAP_ORIGIN_IS_LOGICAL: bool = cfg!(target_os = "macos");
+
+fn xcap_origin_in_physical(
+    x: i32,
+    y: i32,
+    scale_factor: f64,
+    origin_is_logical: bool,
+) -> (i32, i32) {
+    if !origin_is_logical || scale_factor <= 0.0 {
+        return (x, y);
+    }
+    (
+        (x as f64 * scale_factor).round() as i32,
+        (y as f64 * scale_factor).round() as i32,
+    )
+}
+
+/// tao reports macOS monitor sizes at scale x real pixels; the captured
+/// bitmap is authoritative there. Identity elsewhere.
+const PLACEMENT_SIZE_FROM_BITMAP: bool = cfg!(target_os = "macos");
+
+fn placement_size(tauri: (u32, u32), bitmap: (u32, u32), size_from_bitmap: bool) -> (u32, u32) {
+    if size_from_bitmap {
+        bitmap
+    } else {
+        tauri
+    }
+}
+
 /// Decide where each overlay goes. Prefer Tauri's own monitor geometry (physical
 /// position/size + per-monitor scale) matched to the xcap monitor by name, then
 /// by nearest origin; fall back to the xcap geometry if no Tauri monitor matches.
@@ -1179,9 +1244,28 @@ fn build_placements(
                 .map(|tm| {
                     let pos = tm.position();
                     let size = tm.size();
-                    (pos.x, pos.y, size.width, size.height, tm.scale_factor())
+                    let (width, height) = placement_size(
+                        (size.width, size.height),
+                        (m.width, m.height),
+                        PLACEMENT_SIZE_FROM_BITMAP,
+                    );
+                    #[cfg(target_os = "macos")]
+                    log::info!(
+                        "[screenshot] monitor {} tauri raw position=({},{}) size={}x{} scale={}",
+                        m.monitor_id,
+                        pos.x,
+                        pos.y,
+                        size.width,
+                        size.height,
+                        tm.scale_factor()
+                    );
+                    (pos.x, pos.y, width, height, tm.scale_factor())
                 })
-                .unwrap_or((m.x, m.y, m.width, m.height, m.scale_factor));
+                .unwrap_or_else(|| {
+                    let (x, y) =
+                        xcap_origin_in_physical(m.x, m.y, m.scale_factor, XCAP_ORIGIN_IS_LOGICAL);
+                    (x, y, m.width, m.height, m.scale_factor)
+                });
             if width != m.width || height != m.height {
                 log::warn!(
                     "[screenshot] monitor {} placement size {}x{} differs from captured bitmap {}x{}; using placement for window, bitmap for crop",
@@ -1212,10 +1296,16 @@ fn match_tauri_monitor<'a>(
     {
         return Some(by_name);
     }
+    let (cx, cy) = xcap_origin_in_physical(
+        captured.x,
+        captured.y,
+        captured.scale_factor,
+        XCAP_ORIGIN_IS_LOGICAL,
+    );
     tauri_monitors.iter().min_by_key(|tm| {
         let pos = tm.position();
-        let dx = (pos.x - captured.x).unsigned_abs() as u64;
-        let dy = (pos.y - captured.y).unsigned_abs() as u64;
+        let dx = (pos.x - cx).unsigned_abs() as u64;
+        let dy = (pos.y - cy).unsigned_abs() as u64;
         dx + dy
     })
 }
@@ -1234,7 +1324,8 @@ fn overlay_label(capture_id: Uuid, monitor_id: u32) -> String {
 /// fullscreen escapes the struts. `resizable(false)` silently blocks fullscreen
 /// by setting `min == max` size hints while Tauri still returns `Ok(())`.
 /// `resizable(true)` + `set_fullscreen(true)` measured `2560x1440+0+0`, Δ = 0 on
-/// all four values.
+/// all four values. macOS takes this same `not(linux)` arm (it uses the Windows
+/// traits), because native fullscreen there would open a new Space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct OverlayWindowTraits {
     resizable: bool,
@@ -1280,10 +1371,15 @@ fn open_overlay_windows(
             "index.html?window=screenshot-overlay&captureId={capture_id}&monitorId={}",
             p.monitor_id
         );
-        let window = WebviewWindowBuilder::new(app, &p.label, WebviewUrl::App(url.into()))
+        let builder = WebviewWindowBuilder::new(app, &p.label, WebviewUrl::App(url.into()))
             .title("Screenshot Capture")
-            .decorations(false)
-            .transparent(true)
+            .decorations(false);
+        // Tauri gates `transparent` behind `macos-private-api` on macOS; the
+        // overlay paints an opaque frozen image, so transparency is unnecessary
+        // there.
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.transparent(true);
+        let window = builder
             .always_on_top(true)
             .skip_taskbar(true)
             .resizable(traits.resizable)
@@ -2257,6 +2353,45 @@ mod tests {
             fullscreen: cfg!(target_os = "linux"),
         };
         assert_eq!(overlay_window_traits(), expected);
+    }
+
+    #[test]
+    fn xcap_origin_conversion_is_identity_unless_logical() {
+        assert_eq!(xcap_origin_in_physical(-1920, 0, 2.0, false), (-1920, 0));
+        assert_eq!(
+            xcap_origin_in_physical(1440, -900, 2.0, true),
+            (2880, -1800)
+        );
+        assert_eq!(xcap_origin_in_physical(1512, 0, 1.5, true), (2268, 0));
+        assert_eq!(xcap_origin_in_physical(7, 7, 0.0, true), (7, 7));
+        assert_eq!(XCAP_ORIGIN_IS_LOGICAL, cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn placement_size_uses_bitmap_only_when_flagged() {
+        assert_eq!(
+            placement_size((5760, 3600), (2880, 1800), true),
+            (2880, 1800)
+        );
+        assert_eq!(
+            placement_size((1920, 1080), (1920, 1080), false),
+            (1920, 1080)
+        );
+        assert_eq!(
+            placement_size((5760, 3600), (2880, 1800), false),
+            (5760, 3600)
+        );
+        assert_eq!(PLACEMENT_SIZE_FROM_BITMAP, cfg!(target_os = "macos"));
+    }
+
+    /// Link proof for the CoreGraphics gate; `CGRequestScreenCaptureAccess` is
+    /// never called from tests (it would prompt).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_screen_recording_gate() {
+        assert!(MACOS_SCREEN_RECORDING_REQUIRED.contains("Screen Recording"));
+        assert!(MACOS_SCREEN_RECORDING_REQUIRED.contains("System Settings"));
+        let _ = unsafe { CGPreflightScreenCaptureAccess() };
     }
 
     #[cfg(target_os = "linux")]

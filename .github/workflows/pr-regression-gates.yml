@@ -789,10 +789,12 @@ jobs:
         run: |
           set -euo pipefail
           FILTER='screenshot::native::tests::'
-          # 19 pre-existing + overlay_window_traits_match_target + the two
-          # Linux-gated tests. LINUX count (Windows runs 20); update it in the
+          # 19 pre-existing + overlay_window_traits_match_target +
+          # xcap_origin_conversion_is_identity_unless_logical +
+          # placement_size_uses_bitmap_only_when_flagged + the two Linux-gated
+          # tests. LINUX count (Windows runs 22, macOS 23); update it in the
           # same commit that adds or removes a test in that module.
-          EXPECTED=22
+          EXPECTED=24
           cargo test --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-1842.log
 
           # Three guards, matching the #1577 step, none redundant:
@@ -1650,6 +1652,42 @@ jobs:
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
+
+      # IS #2079: compiling is not running. Without this step the macOS leg
+      # never executes the screenshot module, so the CoreGraphics link proof
+      # and the permission-gate assertions would be missing evidence.
+      - name: cargo test (IS #2079 screenshot module on macOS)
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          FILTER='screenshot::native::tests::'
+          # 19 pre-existing + overlay_window_traits_match_target +
+          # xcap_origin_conversion_is_identity_unless_logical +
+          # placement_size_uses_bitmap_only_when_flagged + the macOS-gated test.
+          # MACOS count (Windows runs 22, Linux 24); update it in the same
+          # commit that adds or removes a test in that module.
+          EXPECTED=23
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2079.log
+
+          # Three guards, matching the #1842 step, none redundant:
+          #   1. The exit code, via `set -o pipefail` (LOAD-BEARING through the
+          #      `tee`), catches a test that ran and FAILED.
+          #   2. The sentinel grep is the POSITIVE CONTROL: a filter matching
+          #      nothing exits 0 and prints "0 passed", so green alone proves
+          #      nothing. macos_screen_recording_gate is macOS-gated and cannot
+          #      exist unless mod.rs really compiled `native` on macOS.
+          #   3. The anchored count is the MUTATION PROBE: gating a test out
+          #      moves the number.
+          grep -qF 'screenshot::native::tests::macos_screen_recording_gate' test-2079.log || {
+            echo "::error::the macOS-only sentinel test never ran. screenshot::native is not compiling on macOS, or the test was renamed, and this step was testing nothing."
+            exit 1
+          }
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2079.log || {
+            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER} on macOS; the count changed or the filter matched something else."
+            exit 1
+          }
 
       # IS #1938: cross-process local-config write-lock proof. pipefail catches a
       # failing test, the identifier greps catch a filter that selected nothing
