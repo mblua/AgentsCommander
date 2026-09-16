@@ -2,7 +2,7 @@
 
 For developers who want distinct AgentsCommander configurations on the same machine — for example a `prod` config and a `team-a` config side by side.
 
-Configuration resolution is version-specific. This page separates the published `v0.30.3` behavior from the newer resolver on `main`. The `main` resolver is unpublished as of `v0.30.3`; do not attribute it to a release unless that exact release tag contains it.
+Configuration resolution is version-specific. This page separates the published `v0.30.3` behavior from the newer resolver in `v0.33.0` and `main`. `v0.33.0` is the first release that contains that resolver; do not attribute it to any other release unless that exact release tag contains it.
 
 ## Config directory rule
 
@@ -19,17 +19,17 @@ Release builds of `v0.30.3` do not read `AGENTSCOMMANDER_CONFIG_DIR`. They do no
 
 For a `v0.30.3` AppImage, the native executable is inside the temporary, read-only AppImage mount. The resolver therefore selects a directory inside that mount; it does not select a persistent directory beside the external `.AppImage` file or fall back to `$HOME`. Writes can fail, and the selected mount path disappears after unmounting.
 
-### Unpublished `main` resolver
+### `v0.33.0` and `main` resolver
 
 The newer resolver in `main` adds this precedence, but it is not `v0.30.3` behavior:
 
 1. A nonblank `AGENTSCOMMANDER_CONFIG_DIR` selects its original value verbatim and skips marker and write probes. An empty or whitespace-only value is ignored; prefer an absolute value so the selected path is unambiguous.
-2. Without the override, AC derives the adjacent candidate and inspects `portable.txt` beside the native executable.
-   - **Marker present:** a successful write probe selects the adjacent candidate. Any write-probe failure, or an indeterminate marker state, stops startup. There is no home fallback.
-   - **Marker absent:** a successful write probe selects the adjacent candidate. A conclusively unwritable candidate selects the home fallback. An indeterminate write failure stops startup rather than guessing.
-3. If the runtime cannot derive a usable executable parent and stem, AC uses the home fallback when one is available.
+2. Without the override, an executable without an underscore suffix, such as `agentscommander.exe`, uses `$HOME/.agentscommander`. It skips `portable.txt`, the adjacent candidate and both probes. If the runtime cannot report a usable executable name, AC treats it the same way.
+3. An executable with an underscore suffix, `agentscommander_<suffix>.exe`, derives the adjacent candidate `<native-executable-folder>/.agentscommander_<suffix>` and inspects `portable.txt` beside the native executable. It never uses `$HOME`.
+   - **Marker present:** a successful write probe selects the adjacent candidate. Any write-probe failure, or an indeterminate marker state, stops startup, and the message tells you to set `AGENTSCOMMANDER_CONFIG_DIR` to a writable directory.
+   - **Marker absent:** a successful write probe selects the adjacent candidate. A conclusively unwritable candidate stops startup with `AgentsCommander cannot start because it cannot write its configuration directory "<candidate>" next to the executable: <reason>. Move the executable to a writable folder, or set AGENTSCOMMANDER_CONFIG_DIR to a writable directory, and restart.` An indeterminate write failure stops startup rather than guessing, and the message tells you to set `AGENTSCOMMANDER_CONFIG_DIR` to a writable directory.
 
-For the normal production identity, this `main` fallback is `$HOME/.agentscommander-new`; the `dev` identity uses `$HOME/.agentscommander-new-dev`. A marker cannot override the public environment variable because the override is evaluated first.
+A marker cannot override the public environment variable because the override is evaluated first.
 
 ### Any other release
 
@@ -44,6 +44,24 @@ C:\work\agentscommander_team-a.exe    ->  C:\work\.agentscommander_team-a\
 ```
 
 The selected directory contains `settings.json`, `sessions.json`, the web token, conversation logs, and other machine-local application state. Two copies have separate application state only when they select different configuration directories. Project-scoped team state remains in each project's shared `.ac/` tree.
+
+### Settings left by published releases
+
+Neither `v0.33.0` nor a `main` build moves, copies, merges or deletes an older configuration folder; each reads a folder only when its own rule selects it. `v0.32.0`, including npm `0.32.0`, already used `$HOME/.agentscommander` for `agentscommander.exe`; `v0.33.0`, including npm `0.33.0`, and `main` use the same folder, so those settings carry over. After you switch from an older release such as `v0.31.0`, AC can open with empty settings while your old settings are still on disk. Close every AgentsCommander window, then look for `settings.json` in these folders:
+
+- `.agentscommander` next to `agentscommander.exe`. `v0.30.3`, `v0.30.5` and `v0.31.0` chose this folder first. For an npm install it is `@mblua/agentscommander/bin/.agentscommander` under the folder that `npm root -g` prints.
+- `$HOME/.agentscommander-new`. `v0.30.5` and `v0.31.0` used it when there was no `portable.txt` and the executable's folder could not be written, for `agentscommander.exe` and for every renamed copy except `agentscommander_dev.exe`. `v0.32.0` used it the same way, but only for renamed copies other than `agentscommander_dev.exe`. `v0.30.3` used it only when the executable's path could not be derived.
+- `$HOME/.agentscommander-new-dev`. `agentscommander_dev.exe` from `v0.30.5`, `v0.31.0` or `v0.32.0` used it when there was no `portable.txt` and its folder could not be written.
+- `.agentscommander_<suffix>` next to `agentscommander_<suffix>.exe`. `v0.33.0` and `main` still use this folder, so a renamed copy in a writable folder keeps its settings.
+
+For any other release, inspect its exact tag as described above. To reuse old settings, move or rename the folder that holds them so that it ends up where `v0.33.0` and `main` look:
+
+- For `agentscommander.exe`, the folder must become `$HOME/.agentscommander`.
+- For `agentscommander_<suffix>.exe`, the folder must sit next to that executable and be named `.agentscommander_<suffix>`.
+
+If a folder with the target name already exists, AC never merges the two; decide which one to keep before you move anything.
+
+Before you run an npm update or uninstall, back up the active configuration directory, as the [npm guide](../../npm/README.md) requires. For npm `0.30.3`, `0.30.5` and `0.31.0` it is normally `bin/.agentscommander` inside the package folder; for npm `0.32.0` and `0.33.0` it is normally `$HOME/.agentscommander`. `settings.json` holds API keys and bot tokens, so keep every copy private.
 
 ## Instance labels via underscore suffix
 
@@ -70,7 +88,7 @@ Unknown suffixes get a deterministic port in the 9880–9899 range based on a ha
 2. Copy it to a user-writable folder and rename it with an underscore suffix, such as `agentscommander_myteam.exe`.
 3. Apply the rule for that exact version:
    - For `v0.30.3`, run the renamed native executable. It selects the adjacent directory immediately; `portable.txt` and `AGENTSCOMMANDER_CONFIG_DIR` have no release-build effect.
-   - For a development build using the unpublished `main` resolver, confirm that no nonblank public override is present, then create an empty regular `portable.txt` beside the executable. If selection fails, move the tree to a writable location; do not remove the marker merely to obtain a home fallback.
+   - For `v0.33.0` or a development build from `main`, confirm that no nonblank public override is present, then create an empty regular `portable.txt` beside the executable. If selection fails, move the tree to a writable location or set `AGENTSCOMMANDER_CONFIG_DIR`; a suffixed executable on `v0.33.0` or `main` has no home fallback.
    - For any other release, inspect its exact tag before proceeding.
 4. Confirm the selected directory from runtime evidence before treating the copy as isolated.
 
@@ -87,7 +105,7 @@ Under the `main` resolver, one marker can serve multiple binaries in a folder. U
 Every project registration has a canonical absolute path and may have a companion path relative to the selected instance base:
 
 - an absolute executable with a selected adjacent configuration uses the native executable's directory as the base;
-- under the unpublished `main` resolver, an absolute `AGENTSCOMMANDER_CONFIG_DIR` uses the override directory's parent as the base; and
+- under the `v0.33.0` and `main` resolver, an absolute `AGENTSCOMMANDER_CONFIG_DIR` uses the override directory's parent as the base; and
 - the home fallback, a relative `main` override, or another degraded location has no instance base, so project registrations remain absolute-only and their relative companions are `null` or unavailable.
 
 `v0.30.3` release builds have no public override. Their normal native-binary case uses the adjacent executable directory as the base; their home fallback has no base.
@@ -120,7 +138,7 @@ If you need hard isolation, run AC inside a VM or container.
 
 ## Cleaning up an instance
 
-Close the instance, record its exact version, confirm the selected path under that version's rule, and back up anything you need. Then delete only that binary and exact configuration directory. Delete a shared `portable.txt` marker only when a verified resolver used it and no remaining binary relies on it. If an unpublished-`main` build selected an override or any version selected a home fallback, preserve that directory separately; never delete a guessed candidate.
+Close the instance, record its exact version, confirm the selected path under that version's rule, and back up anything you need. Then delete only that binary and exact configuration directory. Delete a shared `portable.txt` marker only when a verified resolver used it and no remaining binary relies on it. If a `v0.33.0` or `main` build selected an override or any version selected a home fallback, preserve that directory separately; never delete a guessed candidate.
 
 For a `v0.30.3` AppImage update or uninstall, stop before mutation if the selected candidate is in the mounted read-only AppDir, any existing application state is found, more than one plausible candidate exists, or any selection evidence is ambiguous. The mounted candidate is not a persistent directory that can be safely preserved or removed. Report the blocker instead of inventing an external-file or home-directory path.
 

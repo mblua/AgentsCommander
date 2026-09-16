@@ -60,7 +60,7 @@ cargo test --test cli_test_reset long_path_target_deletes_only_allowed_directori
 Manual fallback if the automated test prints a skip:
 
 1. Create `$Root` and `$Outside` as described above.
-2. Build or locate `target\debug\agentscommander-new.exe`.
+2. Build or locate `target\debug\agentscommander.exe`.
 3. Create a deep binary parent:
 
 ```powershell
@@ -68,7 +68,7 @@ $Base = $Root
 1..10 | ForEach-Object { $Base = Join-Path $Base ("long-segment-{0:D2}-abcdef" -f $_) }
 New-Item -ItemType Directory -Path $Base | Out-Null
 $Bin = Join-Path $Base "agentscommander_testeable.exe"
-Copy-Item -LiteralPath "target\debug\agentscommander-new.exe" -Destination $Bin
+Copy-Item -LiteralPath "target\debug\agentscommander.exe" -Destination $Bin
 ```
 
 4. Create only the allowed reset candidates and one sibling that must survive:
@@ -110,7 +110,7 @@ Manual fallback if the automated test prints a skip:
 
 ```powershell
 $Bin = Join-Path $Root "agentscommander_testeable.exe"
-Copy-Item -LiteralPath "target\debug\agentscommander-new.exe" -Destination $Bin
+Copy-Item -LiteralPath "target\debug\agentscommander.exe" -Destination $Bin
 ```
 
 3. Create the target, candidate junction, and second allowed candidate:
@@ -151,12 +151,12 @@ cargo test --test cli_workgroup_team workgroup_remove_deletes_long_path_tree -- 
 Manual fallback if the automated test prints a skip:
 
 1. Create `$Root` and `$Outside` as described above.
-2. Copy `target\debug\agentscommander-new.exe` into `$Root` and configure the copied binary:
+2. Copy `target\debug\agentscommander.exe` into `$Root` as `agentscommander_fsregression.exe` and configure the copied binary:
 
 ```powershell
-$Bin = Join-Path $Root "agentscommander-new.exe"
-Copy-Item -LiteralPath "target\debug\agentscommander-new.exe" -Destination $Bin
-$ConfigDir = Join-Path $Root ".agentscommander-new"
+$Bin = Join-Path $Root "agentscommander_fsregression.exe"
+Copy-Item -LiteralPath "target\debug\agentscommander.exe" -Destination $Bin
+$ConfigDir = Join-Path $Root ".agentscommander_fsregression"
 New-Item -ItemType Directory -Path $ConfigDir | Out-Null
 @{
   defaultShell = "powershell.exe"
@@ -210,12 +210,12 @@ cargo test --test cli_workgroup_team workgroup_remove_refuses_reparse_root -- --
 Manual fallback if the automated test prints a skip:
 
 1. Create `$Root` and `$Outside` as described above.
-2. Copy `target\debug\agentscommander-new.exe` into `$Root` and configure the copied binary:
+2. Copy `target\debug\agentscommander.exe` into `$Root` as `agentscommander_fsregression.exe` and configure the copied binary:
 
 ```powershell
-$Bin = Join-Path $Root "agentscommander-new.exe"
-Copy-Item -LiteralPath "target\debug\agentscommander-new.exe" -Destination $Bin
-$ConfigDir = Join-Path $Root ".agentscommander-new"
+$Bin = Join-Path $Root "agentscommander_fsregression.exe"
+Copy-Item -LiteralPath "target\debug\agentscommander.exe" -Destination $Bin
+$ConfigDir = Join-Path $Root ".agentscommander_fsregression"
 New-Item -ItemType Directory -Path $ConfigDir | Out-Null
 @{
   defaultShell = "powershell.exe"
