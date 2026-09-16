@@ -6,8 +6,9 @@ const os = require('os');
 const { execSync } = require('child_process');
 const { assertExecutable } = require('./resolve-bin');
 const { createStartMenuShortcut } = require('./windows-shortcut');
+const { createLaunchpadAlias } = require('./macos-alias');
 
-const VERSION = "0.33.0"; // Must match package.json
+const VERSION = "0.34.0"; // Must match package.json
 const OWNER = 'mblua';
 const REPO = 'AgentsCommander';
 
@@ -134,7 +135,18 @@ async function main() {
         if (fs.existsSync(extractTmpDir)) fs.rmSync(extractTmpDir, { recursive: true, force: true });
       }
       fs.unlinkSync(tmpPath);
-      assertExecutable('darwin', binDir);
+      const macBinPath = assertExecutable('darwin', binDir);
+      // <bundle>.app/Contents/MacOS/<exe> -> <bundle>.app
+      const bundlePath = path.dirname(path.dirname(path.dirname(macBinPath)));
+      try {
+        const alias = createLaunchpadAlias(bundlePath, { platform });
+        if (alias.created) {
+          console.log(`Launchpad alias created: ${alias.path}`);
+          console.log('The app bundle is not signed, so macOS may block the first launch. Do not bypass Gatekeeper: report the block at https://github.com/mblua/AgentsCommander/issues');
+        }
+      } catch (err) {
+        console.warn(`Warning: Launchpad alias not created: ${err.message}`);
+      }
     } else {
       const finalBinPath = path.join(binDir, platform === 'win32' ? 'agentscommander.exe' : 'agentscommander');
       if (platform !== 'win32') {

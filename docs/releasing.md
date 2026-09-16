@@ -59,7 +59,7 @@ containing eight values:
 | `npm/package.json` | npm wrapper `version` |
 | `npm/install.js` | `VERSION` constant |
 | `src-tauri/Cargo.toml` | `[package]` version |
-| `Cargo.lock` | internal `agentscommander-new` crate version |
+| `Cargo.lock` | internal `agentscommander` crate version |
 | `src-tauri/tauri.conf.json` | `version` |
 
 Move the prepared Unreleased body into the new root changelog section, leaving a
@@ -112,8 +112,9 @@ truthful in release notes.
 
 Build output does not define support tiers. Follow the
 [canonical platform contract](install-with-agent.md#support-gates):
-documented Windows x86_64 is fully supported, Linux x86_64 is partial/in progress,
-and macOS is not supported yet. Every matrix row uses
+documented Windows x86_64 is fully supported, Linux x86_64 is supported with
+medium test coverage, and macOS is supported via npm with very low test
+coverage. Every matrix row uses
 `src-tauri/tauri.prod.conf.json`; macOS additionally selects its target.
 
 ## 5. Verify GitHub, npm and installation

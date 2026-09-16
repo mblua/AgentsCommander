@@ -10,10 +10,13 @@ For developers editing `settings.json` by hand, or scripting AgentsCommander con
 |---|---|---|
 | `v0.30.3`, executable parent and stem available for `C:\tools\agentscommander.exe` | `C:\tools\.agentscommander\` | `C:\tools\.agentscommander\settings.json` |
 | `v0.30.3`, executable parent or stem unavailable, normal production identity | `$HOME/.agentscommander-new` | `$HOME/.agentscommander-new/settings.json` |
-| Unpublished `main`, nonblank `AGENTSCOMMANDER_CONFIG_DIR` | Override value, verbatim | `<override>/settings.json` |
-| Unpublished `main`, unmarked adjacent candidate conclusively unwritable, normal production identity | `$HOME/.agentscommander-new` | `$HOME/.agentscommander-new/settings.json` |
+| `v0.33.0` and `main`, nonblank `AGENTSCOMMANDER_CONFIG_DIR` | Override value, verbatim | `<override>/settings.json` |
+| `v0.33.0` and `main`, executable without an underscore suffix (for example `agentscommander.exe`), no override | `$HOME/.agentscommander` | `$HOME/.agentscommander/settings.json` |
+| `v0.33.0` and `main`, `agentscommander_<suffix>.exe`, no override, adjacent folder writable | `<executable folder>/.agentscommander_<suffix>` | `<executable folder>/.agentscommander_<suffix>/settings.json` |
 
-Published `v0.30.3` has no public override, marker, or writability probe; it does not fall back because a derivable adjacent path is read-only. The public override and `portable.txt` behavior belong to the newer unpublished `main` resolver until an exact later tag is verified to contain them. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the complete versioned contract.
+Published `v0.30.3` has no public override, marker, or writability probe; it does not fall back because a derivable adjacent path is read-only. The public override and `portable.txt` behavior are in `v0.33.0` and `main`; before relying on them for any other release, verify that exact release tag. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the complete versioned contract.
+
+On `v0.33.0` and `main`, `agentscommander_<suffix>.exe` never uses `$HOME`. If its adjacent folder cannot be written, it does not start. Without `portable.txt`, a conclusively unwritable folder gives a message that tells you to move the executable to a writable folder or set `AGENTSCOMMANDER_CONFIG_DIR`; with `portable.txt`, or when the write result is indeterminate, the message tells you to set `AGENTSCOMMANDER_CONFIG_DIR`. Neither a `v0.33.0` nor a `main` build moves, copies or merges settings from an older folder; each reads a folder only when its own rule selects it. To find and reuse them, see [Settings left by published releases](../features/portable-instances.md#settings-left-by-published-releases).
 
 ## Editing rules
 
@@ -22,6 +25,20 @@ Published `v0.30.3` has no public override, marker, or writability probe; it doe
 - If you edit `settings.json` **while the app is running**, your changes may be clobbered by the next in-memory save. For manual-only fields such as `specBoardEnabled`, edit while AC is closed, or reload settings before using any Settings save path.
 - `terminalSnapshotsEnabled` is security-sensitive. AgentsCommander's own writers serialize through a file lock and only the dedicated Settings compare-and-set action can change it. An out-of-process editor that ignores that lock remains last-writer authority.
 - AC tolerates unknown fields (`serde` skips them) so adding a field will not break an older binary, but the older binary will not honor it.
+
+## Recovering a previous version
+
+AgentsCommander keeps a bounded history of previous `settings.json` versions beside the live file: `settings.backup.1.json` through `settings.backup.5.json`. Slot 1 is the version the most recent save replaced; slot 5 is the oldest kept. A save that produces bytes identical to the file already on disk does not rotate, so repeated no-op saves do not evict real history.
+
+Recovery is a manual copy: while AgentsCommander is closed, copy the slot you want over `settings.json`. The slots hold the same secrets as `settings.json`, so treat them with the same care.
+
+> A slot is written without a temp-and-rename, so a crash during rotation can leave
+> `settings.backup.1.json` truncated. AgentsCommander does not report a truncated
+> `settings.json` as an error: it logs the parse failure and starts from default
+> settings, so a bad copy looks like a silently reset configuration, not a failure.
+> Before starting AgentsCommander, confirm the file you copied is complete and valid
+> JSON. If slot 1 is short or does not parse, use `settings.backup.2.json`, which holds
+> the generation before it.
 
 ## Example
 
@@ -184,7 +201,7 @@ See [Terminal snapshots](../features/terminal-snapshots.md) for authorization, c
 
 ### Projects
 
-Each registered project is stored as a canonical absolute path and may also have a portable companion relative to the selected instance base. For an adjacent configuration that base is the native executable's directory. Under the unpublished `main` resolver, an absolute public config override uses the override directory's parent; published `v0.30.3` has no such override. A home fallback or `main` relative override has no base. The three absolute fields and their three companions are index-aligned.
+Each registered project is stored as a canonical absolute path and may also have a portable companion relative to the selected instance base. For an adjacent configuration that base is the native executable's directory. Under the `v0.33.0` and `main` resolver, an absolute public config override uses the override directory's parent; published `v0.30.3` has no such override. A home fallback or `main` relative override has no base. The three absolute fields and their three companions are index-aligned.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
