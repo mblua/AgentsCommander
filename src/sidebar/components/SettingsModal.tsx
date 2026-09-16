@@ -64,7 +64,9 @@ import {
   nextAvailableProfileLetter,
   parseArgvText,
   profileBadgeKind,
+  profileCellHoldsData,
   profileEnvOrigin,
+  profileSlotHolders,
   resolveProfileLabel,
   resolveProfilePreview,
   shouldMaskEnvValue,
@@ -1378,8 +1380,37 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
   };
 
+  const slotHolderIds = (letter: string): string[] =>
+    settings.data
+      ? profileSlotHolders(
+          settings.data.codingAgentProfiles,
+          letter,
+          settings.data.agents.map((a) => a.id),
+        )
+      : [];
+
+  const slotHolderNames = (letter: string): string => {
+    const held = new Set(slotHolderIds(letter));
+    return (settings.data?.agents ?? [])
+      .filter((a) => held.has(a.id))
+      .map((a) => a.label || a.id)
+      .join(", ");
+  };
+
+  const agentHoldsSlot = (agentId: string, letter: string): boolean =>
+    settings.data
+      ? profileCellHoldsData(
+          settings.data.codingAgentProfiles.profilesByAgent[agentId]?.[letter],
+        ) ||
+        (settings.data.codingAgentProfiles.profileLabelsByAgent[agentId]?.[letter] ?? "")
+          .trim() !== ""
+      : false;
+
   const removeProfileLetter = (letter: string) => {
     if (!settings.data || letter === "A") return;
+    // #2057 (D1/D8) - the guard is a runtime invariant, not just a disabled
+    // attribute: a slot still held by a live coding agent is never deleted.
+    if (slotHolderIds(letter).length > 0) return;
     setDraftDirty(true);
     setSettings(
       "data",
@@ -1403,6 +1434,34 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
     setProfileCellEnvRows(produce((draft) => {
       for (const key of Object.keys(draft)) if (key.endsWith(suffix)) delete draft[key];
+    }));
+  };
+
+  // #2057 (D5) - empties this one agent's cell and label for `letter` so the
+  // blocked slot delete has a path to become unblocked. Deletes the exact
+  // per-agent key in the local stores, never the whole-letter sweep.
+  const clearProfileCell = (agentId: string, letter: string) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    setSettings(
+      "data",
+      "codingAgentProfiles",
+      produce((profiles) => {
+        const cells = profiles.profilesByAgent[agentId];
+        if (cells) delete cells[letter];
+        const labels = profiles.profileLabelsByAgent[agentId];
+        if (labels) delete labels[letter];
+      }),
+    );
+    const key = profileCellKey(agentId, letter);
+    setProfileCellText(produce((draft) => {
+      delete draft[key];
+    }));
+    setProfileCellErrors(produce((draft) => {
+      delete draft[key];
+    }));
+    setProfileCellEnvRows(produce((draft) => {
+      delete draft[key];
     }));
   };
 
@@ -3725,16 +3784,45 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <div class="settings-profile-card-footer">
               {/* #538: per-cell "Delete cell" removed — cells are never deleted
                   individually. Slot-level "Delete Profile" (drops the letter from
-                  every agent; A is immutable) stays so added letters stay removable. */}
+                  every agent; A is immutable) stays so added letters stay removable.
+                  #2057: the slot delete is now guarded against slots still held by a
+                  live coding agent, and a per-agent "Clear in this agent" affordance
+                  is reinstated so the notice has a way to unblock the slot. */}
+              <button
+                class="settings-profile-cell-btn settings-profile-clear-cell"
+                onClick={() => clearProfileCell(agent.id, letter)}
+                disabled={!agentHoldsSlot(agent.id, letter)}
+                data-ac-state={agentHoldsSlot(agent.id, letter) ? "enabled" : "empty"}
+                data-ac-testid={`${cardId}.clearCell`}
+                data-ac-role="button"
+                title={`Empty the ${letter} profile for this coding agent only`}
+              >
+                Clear in this agent
+              </button>
               <button
                 class="settings-profile-cell-btn settings-profile-delete-profile"
                 onClick={() => removeProfileLetter(letter)}
-                title={`Delete the entire ${letter} profile slot from all coding agents`}
+                disabled={slotHolderIds(letter).length > 0}
+                data-ac-state={slotHolderIds(letter).length > 0 ? "blocked" : "enabled"}
+                title={
+                  slotHolderIds(letter).length > 0
+                    ? "Empty this profile in every coding agent before deleting the slot"
+                    : `Delete the entire ${letter} profile slot from all coding agents`
+                }
                 data-ac-testid={`${cardId}.deleteProfile`}
                 data-ac-role="button"
               >
                 Delete Profile
               </button>
+              <Show when={slotHolderIds(letter).length > 0}>
+                <div
+                  class="settings-profile-delete-blocked"
+                  data-ac-testid={`${cardId}.deleteProfile.blocked`}
+                  data-ac-role="status"
+                >
+                  {`Still configured in: ${slotHolderNames(letter)}. Empty this profile in every coding agent before deleting the slot.`}
+                </div>
+              </Show>
             </div>
           </Show>
         </Show>

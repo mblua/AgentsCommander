@@ -18,9 +18,11 @@ import {
   parseArgvText,
   profileBadgeKind,
   profileCellCommandText,
+  profileCellHoldsData,
   profileConfiguredElsewhere,
   profileDisplayLabel,
   profileEnvOrigin,
+  profileSlotHolders,
   resolveProfileLabel,
   resolveProfilePreview,
   sessionProfileBadge,
@@ -556,5 +558,56 @@ describe("profile-utils, Room replicas (#1614 F2/F3)", () => {
       "C:/repo/.ac/_agent_dev-rust",
     );
     expect(deriveMatrixRoot("C:/repo/.ac/roomy-7/__agent_dev-rust")).toBeNull();
+  });
+});
+
+// #2057 - slot-delete guard helpers: D1 (what "holds" a slot) and D2 (live
+// agents only; result order is liveAgentIds order, i.e. settings.data.agents).
+describe("profileSlotHolders and profileCellHoldsData (#2057 slot-delete guard)", () => {
+  function slotFixtures(): CodingAgentProfilesConfig {
+    return {
+      schemaVersion: 2,
+      profileSlots: { A: { label: "" }, B: { label: "fast" } },
+      defaultProfileByAgent: {},
+      profilesByAgent: {
+        // Deliberately not in liveAgentIds order: the result must follow it.
+        zeta: { B: { enabled: true, command: "", env: {}, notes: "" } },
+        ghost: { B: { enabled: true, command: "ghost --profile fast", env: {}, notes: "" } },
+        alpha: { B: { enabled: false, command: "", env: {}, notes: "" } },
+      },
+      profileLabelsByAgent: { beta: { B: "fast" }, gamma: { B: "   " } },
+    };
+  }
+
+  it("profileCellHoldsData: any user data holds the slot, enabled or not", () => {
+    expect(profileCellHoldsData({ enabled: true, command: "", env: {}, notes: "" })).toBe(true);
+    expect(
+      profileCellHoldsData({ enabled: false, command: "codex --profile fast", env: {}, notes: "" }),
+    ).toBe(true);
+    expect(
+      profileCellHoldsData({ enabled: false, command: "", env: { TOKEN: "x" }, notes: "" }),
+    ).toBe(true);
+    expect(
+      profileCellHoldsData({ enabled: false, command: "", env: {}, notes: "keep me" }),
+    ).toBe(true);
+    expect(profileCellHoldsData(null)).toBe(false);
+    expect(profileCellHoldsData(undefined)).toBe(false);
+    expect(
+      profileCellHoldsData({ enabled: false, command: "   ", env: {}, notes: "  " }),
+    ).toBe(false);
+  });
+
+  it("profileSlotHolders: empty slot, live-only ids and liveAgentIds order", () => {
+    const profiles = slotFixtures();
+    const liveAgentIds = ["alpha", "beta", "gamma", "zeta"] as const;
+    expect(profileSlotHolders(profiles, "C", liveAgentIds)).toEqual([]);
+    expect(profileSlotHolders(profiles, "B", liveAgentIds)).toEqual(["beta", "zeta"]);
+    // beta is held by its own non-blank label; gamma's "   " label is not data.
+    expect(profileSlotHolders(profiles, "B", ["beta"])).toEqual(["beta"]);
+    expect(profileSlotHolders(profiles, "B", ["gamma"])).toEqual([]);
+    // Live order, not profilesByAgent key order (zeta precedes alpha there).
+    expect(profileSlotHolders(profiles, "B", ["zeta", "beta"])).toEqual(["zeta", "beta"]);
+    // ghost is fully configured but not live (D2).
+    expect(profileSlotHolders(profiles, "B", liveAgentIds)).not.toContain("ghost");
   });
 });

@@ -2338,6 +2338,22 @@ html.light-theme .settings-api-client-warning {
   color: var(--status-exited);
 }
 
+/* #2057 (D5) - "Clear in this agent": per-agent clear reinstated after #538
+   removed the per-cell delete. It wears .settings-profile-cell-btn for its
+   visual weight; this hook keeps the per-agent role addressable. */
+.settings-profile-clear-cell {
+  color: var(--sidebar-fg-dim);
+}
+
+/* #2057 (D4) - blocked slot delete: the notice names the holders and sits on
+   its own line below the footer buttons. Typography matches
+   .settings-profile-cell-error; the colour stays neutral, not an error. */
+.settings-profile-delete-blocked {
+  flex: 1 0 100%;
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
 .settings-profile-add {
   align-self: flex-start;
 }
