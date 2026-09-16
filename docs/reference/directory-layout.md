@@ -80,6 +80,7 @@ This deployment's selected machine-local application state. Never commit or shar
 |---|---|---|
 | `settings.json` | Per-instance settings | `config/settings.rs` |
 | `settings.json.lock` | Write lock for settings writers | `config/local_config_io.rs` |
+| `settings.backup.1.json` .. `settings.backup.5.json` | Bounded history of previous `settings.json` versions; slot 1 is the version the most recent save replaced, slot 5 the oldest kept. Written only when a save actually changed the file. | `config/settings.rs` |
 | `settings.pre-384-v1.json` | Pre-v384 settings backup taken during the settings migration | `config/settings.rs` |
 | `settings-blocking-menus.json` | Blocking-menu patterns AC ships; rewritten at start when the content differs from the binary's | `config/settings.rs` |
 | `settings-blocking-menus.local.json` | User-owned blocking-menu patterns; read at start, written by AC only when the #1905 migration succeeds (once on a normal upgrade, or when a later retry succeeds after an earlier failure; never overwriting an existing entry) | `config/settings.rs` |

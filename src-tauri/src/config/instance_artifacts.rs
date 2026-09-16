@@ -170,6 +170,12 @@ pub(crate) const SETTINGS_LOCK_FILE_NAME: &str = "settings.json.lock";
 /// composed by their own migrations, so this glob is registry-owned and no
 /// writer imports it.
 pub(crate) const SETTINGS_MIGRATION_BACKUP_GLOB: &str = "settings.pre-*.json";
+/// #2058 - the bounded rotation of previous `settings.json` generations. Slot 1
+/// is the version the most recent save replaced. The writer composes the index
+/// at runtime, so the glob is the only tie between the rule and the artifact.
+pub(crate) const SETTINGS_BACKUP_PREFIX: &str = "settings.backup.";
+pub(crate) const SETTINGS_BACKUP_SUFFIX: &str = ".json";
+pub(crate) const SETTINGS_BACKUP_ROTATION_GLOB: &str = "settings.backup.*.json";
 pub(crate) const TELEGRAM_BRIDGE_LOG_FILE_NAME: &str = "telegram-bridge.log";
 pub(crate) const UI_AUTOMATION_DIR_NAME: &str = "ui-automation";
 pub(crate) const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.root-agent.md";
@@ -574,6 +580,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: downloaded blocking-menu patterns; replaced by the next accepted download",
     },
     InstanceArtifact {
+        name: SETTINGS_BACKUP_ROTATION_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: rotated previous generations of the application settings; the same runtime artifact under a numeric slot",
+    },
+    InstanceArtifact {
         name: "settings.json",
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
@@ -951,6 +963,14 @@ mod tests {
         assert_eq!(
             GLOBAL_CONTEXT_RETIRED_BACKUP_GLOB,
             format!("{GLOBAL_CONTEXT_TEMPLATE_FILENAME}.retired-*.bak")
+        );
+    }
+
+    #[test]
+    fn settings_backup_rotation_glob_derives_from_its_composition_constants() {
+        assert_eq!(
+            SETTINGS_BACKUP_ROTATION_GLOB,
+            format!("{SETTINGS_BACKUP_PREFIX}*{SETTINGS_BACKUP_SUFFIX}")
         );
     }
 

@@ -9,7 +9,8 @@ use tokio::sync::RwLock;
 
 use crate::config::instance_artifacts::{
     BLOCKING_MENUS_LOCAL_FILE_NAME, BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME,
-    BLOCKING_MENUS_REMOTE_FILE_NAME, BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
+    BLOCKING_MENUS_REMOTE_FILE_NAME, BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_BACKUP_PREFIX,
+    SETTINGS_BACKUP_SUFFIX, SETTINGS_LOCK_FILE_NAME,
 };
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
@@ -2631,6 +2632,124 @@ fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> Result<(), S
     Ok(())
 }
 
+/// #2058 - number of previous `settings.json` generations kept beside the live
+/// file. Slot 1 is the version the most recent save replaced, slot
+/// `SETTINGS_BACKUP_KEEP` the oldest kept; the next rotation drops it.
+const SETTINGS_BACKUP_KEEP: u32 = 5;
+
+fn settings_backup_path(settings_path: &Path, index: u32) -> PathBuf {
+    settings_path.with_file_name(format!(
+        "{SETTINGS_BACKUP_PREFIX}{index}{SETTINGS_BACKUP_SUFFIX}"
+    ))
+}
+
+/// #2058 - archive `previous` (the bytes a just-completed save replaced) into
+/// slot 1, shifting the older slots down and dropping slot
+/// `SETTINGS_BACKUP_KEEP`.
+///
+/// Best effort by design: the caller's save has already succeeded on disk, so a
+/// rotation failure is logged and never propagated. Runs with
+/// `settings.json.lock` held by the caller, and never touches
+/// `settings.pre-*.json`, `settings.local.json`, the lock file or a write
+/// temporary. Deliberate local mirror of
+/// `sessions_persistence::rotate_orphan_archive`.
+fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
+    use std::io::Write as _;
+    // D8: a non-regular slot is a user-placed symlink or directory; never follow
+    // or clobber it.
+    for index in 1..=SETTINGS_BACKUP_KEEP {
+        let slot = settings_backup_path(settings_path, index);
+        match std::fs::symlink_metadata(&slot) {
+            Ok(metadata) => {
+                if !metadata.is_file() {
+                    log::warn!(
+                        "[settings] #2058 aborting backup rotation: slot {:?} is not a regular file",
+                        slot
+                    );
+                    return;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                log::warn!(
+                    "[settings] #2058 aborting backup rotation: stat of slot {:?} failed: {}",
+                    slot,
+                    error
+                );
+                return;
+            }
+        }
+    }
+
+    // Shift the older slots down; the last rename drops the oldest generation.
+    for index in (1..SETTINGS_BACKUP_KEEP).rev() {
+        let from = settings_backup_path(settings_path, index);
+        let to = settings_backup_path(settings_path, index + 1);
+        match std::fs::symlink_metadata(&from) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                log::warn!(
+                    "[settings] #2058 aborting backup rotation: stat of slot {:?} failed: {}",
+                    from,
+                    error
+                );
+                return;
+            }
+        }
+        if let Err(error) = std::fs::rename(&from, &to) {
+            log::warn!(
+                "[settings] #2058 aborting backup rotation: rename {:?} -> {:?} failed: {}",
+                from,
+                to,
+                error
+            );
+            return;
+        }
+    }
+
+    // Write the just-replaced bytes into slot 1.
+    let slot_one = settings_backup_path(settings_path, 1);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    match options.open(&slot_one) {
+        Ok(mut file) => {
+            if let Err(error) = file.write_all(previous) {
+                log::warn!(
+                    "[settings] #2058 aborting backup rotation: write to slot {:?} failed: {}",
+                    slot_one,
+                    error
+                );
+                return;
+            }
+        }
+        Err(error) => {
+            log::warn!(
+                "[settings] #2058 aborting backup rotation: open of slot {:?} failed: {}",
+                slot_one,
+                error
+            );
+            return;
+        }
+    }
+
+    log::info!(
+        "[settings] #2058 archived the replaced settings to {:?}",
+        slot_one
+    );
+}
+
 /// CLI-only variant of `load_settings`. Reads disk and applies the same
 /// in-memory migrations as `load_settings`, but does NOT auto-generate or
 /// persist a `root_token`. Used by CLI verbs that mutate settings
@@ -4442,6 +4561,9 @@ fn save_settings_value(
     )
 }
 
+/// Locked half of the project-aware writer. Assumes `settings.json.lock` is
+/// already held by the caller (both production entry points acquire it before
+/// reaching here), and performs #2058 backup rotation after a successful write.
 fn save_settings_value_locked(
     settings: &AppSettings,
     path: &Path,
@@ -4474,6 +4596,9 @@ fn save_settings_value_locked(
             }
         }
     }
+    // #2058: the exact bytes this save is about to replace, captured before the
+    // tuple is reduced to its object half.
+    let previous_contents: Option<String> = disk_read.as_ref().map(|(_, c)| c.clone());
     let disk = disk_read.map(|(map, _)| map);
     let state = hidden_state_for_write(settings);
 
@@ -4618,7 +4743,12 @@ fn save_settings_value_locked(
     // repair, so the eligible branches above never fire for it; its groups are
     // written verbatim from the live settings/disk, matching pre-#1077 behavior.
     let value = Value::Object(out);
-    write_value_atomic(&value, path)?;
+    let written_bytes = write_value_atomic(&value, path)?;
+    if let Some(previous) = previous_contents {
+        if previous.as_bytes() != written_bytes.as_slice() {
+            rotate_settings_backups(path, previous.as_bytes());
+        }
+    }
 
     let mut written_value = value;
     // #1737: disk holds the base, memory holds the effective value. Without this the
@@ -5144,8 +5274,10 @@ pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
 
 /// #1077: atomic tmp+rename writer over an already-built JSON `Value`. Shared by
 /// the raw and the project-aware writers. Preserves the #774 unique-temp +
-/// `rename_with_retry` behavior; still not fsynced.
-fn write_value_atomic(value: &Value, path: &Path) -> Result<(), SettingsSaveError> {
+/// `rename_with_retry` behavior. The temp IS fsynced
+/// (`temporary.sync_all()`), and the parent directory is fsynced on unix after
+/// the rename. The caller owns #2058 backup rotation of the returned bytes.
+fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSaveError> {
     use std::io::Write as _;
 
     let dir = path.parent().ok_or_else(|| {
@@ -5356,7 +5488,7 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<(), SettingsSaveErro
     result?;
 
     log::debug!("Saved settings to {:?}", path);
-    Ok(())
+    Ok(json)
 }
 
 #[cfg(windows)]
@@ -5495,7 +5627,7 @@ fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), Sett
             SettingsSaveLegacyOutward::Serialize(outward),
         )
     })?;
-    write_value_atomic(&value, path)
+    write_value_atomic(&value, path).map(|_| ())
 }
 
 pub type SettingsState = Arc<RwLock<AppSettings>>;
@@ -5513,6 +5645,281 @@ mod tests {
                 "unexpected settings temp file: {name}"
             );
         }
+    }
+
+    /// #2058 - put `settings` on disk in exactly the bytes a production save
+    /// produces, and return them. The file is absent beforehand, so D3's
+    /// `disk_read == None` arm skips rotation and no slot exists on return.
+    fn seed_settings_with_production_bytes(
+        path: &std::path::Path,
+        settings: &super::AppSettings,
+    ) -> Vec<u8> {
+        super::save_settings_to_path_preserving_project_paths(settings, path).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        assert!(
+            !path.with_file_name("settings.backup.1.json").exists(),
+            "seeding must not rotate"
+        );
+        bytes
+    }
+
+    fn assert_no_backup_slots(path: &std::path::Path) {
+        for slot in 1..=super::SETTINGS_BACKUP_KEEP {
+            assert!(
+                !path
+                    .with_file_name(format!("settings.backup.{slot}.json"))
+                    .exists(),
+                "settings.backup.{slot}.json must not exist"
+            );
+        }
+    }
+
+    #[test]
+    fn issue_2058_save_archives_the_replaced_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = super::AppSettings {
+            root_token: Some("a".to_string()),
+            ..super::AppSettings::default()
+        };
+        let seed = seed_settings_with_production_bytes(&path, &a);
+        let b = super::AppSettings {
+            root_token: Some("b".to_string()),
+            ..super::AppSettings::default()
+        };
+        super::save_settings_to_path_preserving_project_paths(&b, &path).unwrap();
+        assert_eq!(
+            std::fs::read(path.with_file_name("settings.backup.1.json")).unwrap(),
+            seed,
+            "slot 1 holds the replaced bytes A"
+        );
+        assert_ne!(
+            std::fs::read(&path).unwrap(),
+            seed,
+            "settings.json holds the new bytes"
+        );
+        assert!(
+            !path.with_file_name("settings.backup.2.json").exists(),
+            "slot 2 must not exist after a single rotation"
+        );
+    }
+
+    #[test]
+    fn issue_2058_first_save_with_no_existing_file_writes_no_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = super::AppSettings {
+            root_token: Some("a".to_string()),
+            ..super::AppSettings::default()
+        };
+        super::save_settings_to_path_preserving_project_paths(&a, &path).unwrap();
+        assert_no_backup_slots(&path);
+        // Positive control: a second save with a different value creates slot 1.
+        let first_bytes = std::fs::read(&path).unwrap();
+        let b = super::AppSettings {
+            root_token: Some("b".to_string()),
+            ..super::AppSettings::default()
+        };
+        super::save_settings_to_path_preserving_project_paths(&b, &path).unwrap();
+        assert_eq!(
+            std::fs::read(path.with_file_name("settings.backup.1.json")).unwrap(),
+            first_bytes,
+            "positive control: slot 1 holds the first save's bytes"
+        );
+    }
+
+    #[test]
+    fn issue_2058_identical_save_does_not_rotate() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = super::AppSettings {
+            root_token: Some("a".to_string()),
+            ..super::AppSettings::default()
+        };
+        let seed = seed_settings_with_production_bytes(&path, &a);
+        // Save the same settings value again: bytes equal, D3 skips rotation.
+        super::save_settings_to_path_preserving_project_paths(&a, &path).unwrap();
+        assert_no_backup_slots(&path);
+        // Positive control: a third save with a changed value creates slot 1.
+        let c = super::AppSettings {
+            root_token: Some("c".to_string()),
+            ..super::AppSettings::default()
+        };
+        super::save_settings_to_path_preserving_project_paths(&c, &path).unwrap();
+        assert_eq!(
+            std::fs::read(path.with_file_name("settings.backup.1.json")).unwrap(),
+            seed,
+            "positive control: slot 1 holds exactly A"
+        );
+    }
+
+    #[test]
+    fn issue_2058_keeps_five_generations_and_drops_the_oldest() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let mut written: Vec<Vec<u8>> = Vec::new();
+        for n in 0..7u32 {
+            let settings = super::AppSettings {
+                root_token: Some(format!("v{n}")),
+                ..super::AppSettings::default()
+            };
+            super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            written.push(std::fs::read(&path).unwrap());
+        }
+        // Slots 1..=5 hold the written bytes of v5, v4, v3, v2, v1.
+        for (slot, n) in (1..=5u32).zip((1..=5u32).rev()) {
+            assert_eq!(
+                std::fs::read(super::settings_backup_path(&path, slot)).unwrap(),
+                written[n as usize],
+                "slot {slot} must hold the written bytes of v{n}"
+            );
+        }
+        assert!(
+            !path.with_file_name("settings.backup.6.json").exists(),
+            "slot 6 must not exist"
+        );
+        for slot in 1..=5u32 {
+            assert_ne!(
+                std::fs::read(super::settings_backup_path(&path, slot)).unwrap(),
+                written[0],
+                "no slot may hold v0's bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn issue_2058_non_regular_slot_aborts_rotation() {
+        // A non-regular slot 1 (a directory) aborts rotation (D8) without
+        // fataling the save (D7).
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = super::AppSettings {
+            root_token: Some("a".to_string()),
+            ..super::AppSettings::default()
+        };
+        let seed = seed_settings_with_production_bytes(&path, &a);
+        std::fs::create_dir(path.with_file_name("settings.backup.1.json")).unwrap();
+        let b = super::AppSettings {
+            root_token: Some("b".to_string()),
+            ..super::AppSettings::default()
+        };
+        super::save_settings_to_path_preserving_project_paths(&b, &path).unwrap();
+        let slot_one = path.with_file_name("settings.backup.1.json");
+        assert!(slot_one.is_dir(), "slot 1 is still a directory");
+        assert!(
+            slot_one.read_dir().unwrap().next().is_none(),
+            "slot 1 is empty"
+        );
+        assert_ne!(
+            std::fs::read(&path).unwrap(),
+            seed,
+            "settings.json holds B's bytes"
+        );
+        assert!(
+            !path.with_file_name("settings.backup.2.json").exists(),
+            "slot 2 must not exist"
+        );
+        // Positive control: the same sequence without the directory creates slot 1.
+        let ctrl_temp = tempfile::tempdir().unwrap();
+        let ctrl_path = ctrl_temp.path().join("settings.json");
+        let ctrl_seed = seed_settings_with_production_bytes(&ctrl_path, &a);
+        super::save_settings_to_path_preserving_project_paths(&b, &ctrl_path).unwrap();
+        assert_eq!(
+            std::fs::read(ctrl_path.with_file_name("settings.backup.1.json")).unwrap(),
+            ctrl_seed,
+            "positive control: slot 1 holds A"
+        );
+    }
+
+    #[test]
+    fn issue_2058_rotation_write_failure_is_not_fatal() {
+        let temp = tempfile::tempdir().unwrap();
+        let absent = temp.path().join("absent-dir").join("settings.json");
+        super::rotate_settings_backups(&absent, b"previous");
+        assert!(
+            !temp.path().join("absent-dir").exists(),
+            "the absent parent directory was never created"
+        );
+    }
+
+    #[test]
+    fn issue_2058_rotation_leaves_the_pre_384_backup_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let legacy = LEGACY_PROFILES_SETTINGS_FIXTURE;
+        std::fs::write(&path, legacy).unwrap();
+        let b = super::AppSettings {
+            root_token: Some("b".to_string()),
+            ..super::AppSettings::default()
+        };
+        super::save_settings_to_path_preserving_project_paths(&b, &path).unwrap();
+        let b_bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path.with_file_name("settings.pre-384-v1.json")).unwrap(),
+            legacy,
+            "pre-384 backup holds the legacy bytes"
+        );
+        assert_eq!(
+            std::fs::read(path.with_file_name("settings.backup.1.json")).unwrap(),
+            legacy.as_bytes(),
+            "slot 1 holds the legacy bytes"
+        );
+        assert_ne!(
+            std::fs::read_to_string(&path).unwrap(),
+            legacy,
+            "settings.json holds B's bytes, not the legacy"
+        );
+        // Third save with a different value C.
+        let c = super::AppSettings {
+            root_token: Some("c".to_string()),
+            ..super::AppSettings::default()
+        };
+        super::save_settings_to_path_preserving_project_paths(&c, &path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path.with_file_name("settings.pre-384-v1.json")).unwrap(),
+            legacy,
+            "pre-384 backup is still byte-identical to legacy"
+        );
+        assert_eq!(
+            std::fs::read(path.with_file_name("settings.backup.1.json")).unwrap(),
+            b_bytes,
+            "slot 1 now holds B's bytes"
+        );
+        assert_eq!(
+            std::fs::read(path.with_file_name("settings.backup.2.json")).unwrap(),
+            legacy.as_bytes(),
+            "slot 2 holds the legacy bytes"
+        );
+    }
+
+    #[test]
+    fn issue_2058_rotation_creates_exactly_one_new_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = super::AppSettings {
+            root_token: Some("a".to_string()),
+            ..super::AppSettings::default()
+        };
+        seed_settings_with_production_bytes(&path, &a);
+        let before: std::collections::HashSet<String> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        let b = super::AppSettings {
+            root_token: Some("b".to_string()),
+            ..super::AppSettings::default()
+        };
+        super::save_settings_to_path_preserving_project_paths(&b, &path).unwrap();
+        let after: std::collections::HashSet<String> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        let added: Vec<&String> = after.difference(&before).collect();
+        let removed: Vec<&String> = before.difference(&after).collect();
+        assert_eq!(added.len(), 1, "exactly one file added: {added:?}");
+        assert_eq!(added[0].as_str(), "settings.backup.1.json");
+        assert!(removed.is_empty(), "no file removed: {removed:?}");
+        assert_no_issue_1330_temp_files(temp.path());
     }
 
     struct SettingsSaveDiagnosticCaptureGuard {

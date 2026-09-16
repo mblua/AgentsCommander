@@ -1076,6 +1076,9 @@ mod tests {
             "pty-input-locks/operation-1.lock",
             "session-requests/create-1.json",
             "sessions.json",
+            // #2058: the first and last rotation slots, the `SETTINGS_BACKUP_KEEP` edge.
+            "settings.backup.1.json",
+            "settings.backup.5.json",
             "settings.json",
             "settings.json.lock",
             "settings-blocking-menus.json",
