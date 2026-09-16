@@ -106,7 +106,7 @@ A project-level agent, one `_agent_<name>/` directory under `.ac/`, shown in the
 
 ## Portable instance
 
-A renamed raw executable (with an `_<suffix>` such as `agentscommander_team-a.exe`) verified to select a distinct adjacent config directory, plus its own mutex and web port. Published `v0.30.3` selects adjacency without consulting `portable.txt`; the newer unpublished `main` resolver can use the marker to fail closed. Project `.ac/` state is still shared when two instances register the same project.
+A renamed raw executable (with an `_<suffix>` such as `agentscommander_team-a.exe`) verified to select a distinct adjacent config directory, plus its own mutex and web port. Published `v0.30.3` selects adjacency without a public override; `v0.33.0` and later resolvers add it and refuse startup when a suffixed executable's adjacent directory cannot be written. Project `.ac/` state is still shared when two instances register the same project.
 
 ## Privileged PTY input
 
