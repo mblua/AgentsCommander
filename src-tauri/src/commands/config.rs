@@ -1789,10 +1789,6 @@ fn validate_profile_assignment_confirmation(
     provided: Option<&str>,
     fingerprint: &str,
 ) -> Result<(), String> {
-    let stale = || {
-        "stalePreview: Target selection changed. Rerun preview before applying profile selection."
-            .to_string()
-    };
     match provided {
         Some(value) if value == fingerprint => Ok(()),
         // #1941 - the legacy deliberate replica assignment keeps working without
@@ -1800,7 +1796,16 @@ fn validate_profile_assignment_confirmation(
         None if *scope == ProfileAssignmentScope::Replica && mode == AssignmentMode::Ordinary => {
             Ok(())
         }
-        _ => Err(stale()),
+        // #2051 - no fingerprint at all is a client contract failure, not a
+        // target change: never report it as a stale preview.
+        None => Err(
+            "confirmationMissing: This operation requires the preview confirmation, and none was sent. Nothing was written."
+                .to_string(),
+        ),
+        Some(_) => Err(
+            "stalePreview: Target selection changed. Rerun preview before applying profile selection."
+                .to_string(),
+        ),
     }
 }
 
@@ -5985,7 +5990,9 @@ mod tests {
                 "current-fp",
             )
             .unwrap_err();
-            assert!(err.contains("Target selection changed"), "{err}");
+            // #2051 - a missing fingerprint is a contract failure, not a change.
+            assert!(err.contains("confirmationMissing"), "{err}");
+            assert!(!err.contains("Target selection changed"), "{err}");
 
             let stale = profile_assignment_request(scope, Some("old-fp"), None);
             let err = super::validate_profile_assignment_confirmation(
@@ -5997,6 +6004,36 @@ mod tests {
             .unwrap_err();
             assert!(err.contains("Target selection changed"), "{err}");
         }
+    }
+
+    #[test]
+    fn replica_assign_and_lock_confirmation_shapes() {
+        let validate = |mode: super::AssignmentMode, provided: Option<&str>| {
+            super::validate_profile_assignment_confirmation(
+                &super::ProfileAssignmentScope::Replica,
+                mode,
+                provided,
+                "fp-replica",
+            )
+        };
+
+        // (a) the preview's own fingerprint is accepted...
+        assert_eq!(
+            validate(super::AssignmentMode::AssignAndLock, Some("fp-replica")),
+            Ok(())
+        );
+        // (b) ...while NO fingerprint at all is a contract failure, never stale.
+        let err = validate(super::AssignmentMode::AssignAndLock, None).unwrap_err();
+        assert!(err.contains("confirmationMissing"), "{err}");
+        assert!(!err.contains("Target selection changed"), "{err}");
+        // (c) a provided, non-matching value is stale.
+        let err = validate(super::AssignmentMode::AssignAndLock, Some("old-fp")).unwrap_err();
+        assert!(err.contains("stalePreview"), "{err}");
+        // (d) the legacy replica ordinary path still accepts no fingerprint (D2).
+        assert_eq!(validate(super::AssignmentMode::Ordinary, None), Ok(()));
+        // (e) even ordinary is stale when a provided value does not match.
+        let err = validate(super::AssignmentMode::Ordinary, Some("old-fp")).unwrap_err();
+        assert!(err.contains("stalePreview"), "{err}");
     }
 
     #[test]
@@ -7975,6 +8012,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn issue_2051_selection_api_replica_lock_changed_target_is_stale_without_writes() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+
+        // 1. approve the replica + lock pair on this state.
+        let preview = api_preview(
+            &settings,
+            &replica,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::AssignAndLock,
+        )
+        .await;
+
+        // 2. the stored pair changes after the preview.
+        let mut value: Value =
+            serde_json::from_slice(&config_bytes(&replica)).expect("parse config");
+        value["tooling"]["profile"] = json!("C");
+        std::fs::write(
+            replica.join("config.json"),
+            serde_json::to_vec(&value).expect("serialize"),
+        )
+        .expect("rewrite config");
+        let changed_bytes = config_bytes(&replica);
+
+        // 3. the stale approval is rejected before any write.
+        let error = api_apply(
+            &settings,
+            &replica,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::AssignAndLock,
+            None,
+            Some(&preview.target_fingerprint),
+        )
+        .await
+        .expect_err("a changed target must stale");
+        assert!(error.contains("stalePreview"), "{error}");
+        assert_eq!(config_bytes(&replica), changed_bytes, "no write on stale");
+        assert!(!sidecar_path(&replica).exists(), "no sidecar on stale");
+        let saved: Value = serde_json::from_slice(&config_bytes(&replica)).expect("parse config");
+        assert_ne!(
+            saved["tooling"]["selectionLocked"],
+            json!(true),
+            "no lock on stale"
+        );
+
+        // 4. control: a fresh preview over the changed target still applies, so
+        // step 3 rejected because of the change, not because lock is broken.
+        let fresh = api_preview(
+            &settings,
+            &replica,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::AssignAndLock,
+        )
+        .await;
+        let result = api_apply(
+            &settings,
+            &replica,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::AssignAndLock,
+            None,
+            Some(&fresh.target_fingerprint),
+        )
+        .await
+        .expect("a fresh preview applies");
+        assert_eq!(result.updated_count, 1);
+        assert_eq!(
+            result.newly_protected_paths,
+            vec![result.updated_replica_paths[0].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_2051_selection_api_replica_lock_missing_fingerprint_is_not_stale() {
+        let fixture = selection_api_fixture();
+        let replica = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            unlocked_tooling("A", "agent-0"),
+        );
+        let settings = state_for(selection_api_settings(&fixture));
+        let before = config_bytes(&replica);
+
+        let error = api_apply(
+            &settings,
+            &replica,
+            super::ProfileAssignmentScope::Replica,
+            super::AssignmentMode::AssignAndLock,
+            None,
+            None,
+        )
+        .await
+        .expect_err("a lock apply without a fingerprint must be refused");
+
+        // #2051 - nothing was sent is a client contract failure, never a
+        // target change: the message must not blame a stale preview.
+        assert!(error.contains("confirmationMissing"), "{error}");
+        assert!(!error.contains("Target selection changed"), "{error}");
+        assert_eq!(
+            config_bytes(&replica),
+            before,
+            "no write on a missing fingerprint"
+        );
+        assert!(!sidecar_path(&replica).exists(), "no sidecar on rejection");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&config_bytes(&replica)).expect("parse config");
+        assert_ne!(
+            saved["tooling"]["selectionLocked"],
+            json!(true),
+            "no lock written"
+        );
+    }
+
+    #[tokio::test]
     async fn issue_2010_selection_api_replica_locked_same_pair_keeps_lock() {
         for mode in [
             super::AssignmentMode::Ordinary,
@@ -8168,7 +8325,9 @@ mod tests {
         )
         .await
         .expect_err("a force decision still needs the reviewed fingerprint");
-        assert!(error.contains("stalePreview"), "{error}");
+        // #2051 - a missing fingerprint is reported as missing, never stale.
+        assert!(error.contains("confirmationMissing"), "{error}");
+        assert!(!error.contains("Target selection changed"), "{error}");
         assert_eq!(config_bytes(&anchor), bytes_before);
         assert_eq!(config_bytes(&second), second_bytes);
         assert!(!sidecar_path(&anchor).exists());

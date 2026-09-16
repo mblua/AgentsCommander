@@ -42,7 +42,7 @@ Workflow:
 3. Each reviewer pulls the diff (`gh pr diff`), reads it in its own terminal, and writes a markdown review to messaging.
 4. You read both reviews side by side. Different model, different lens — disagreements are the interesting cases.
 
-## 3. Autonomous refactor crew
+## 3. Autonomous refactor Team
 
 **Setup**: A long-running orchestrator splits a multi-file refactor across worker agents and rebases their branches as they finish.
 
