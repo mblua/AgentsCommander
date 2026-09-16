@@ -4,7 +4,7 @@ Status: READY_FOR_IMPLEMENTATION
 
 - Issue: https://github.com/mblua/AgentsCommander/issues/2075 (OPEN): "ci(security): cargo build --release in pr-regression-gates without --locked (Sonar S8549)". Sonar issue `AaCI_U_rCXUCLYag_fqs`.
 - Repo: `repo-AgentsCommander`; branch `fix/2075-cargo-build-locked`.
-- Code base frozen at authoring (2026-09-16 UTC): remote `main` = `5203c4e3b0b5909fdc12337194c886b1514966c3`. Plan-only revisions on the branch: `2bd02887` (initial), `d6fe03f8` (inventory completed), this revision (user widened scope from 1 to 13 lines). Line numbers refer to the base SHA; re-anchor on quoted text if they drift.
+- Code base frozen at authoring (2026-09-16 UTC): remote `main` = `5203c4e3b0b5909fdc12337194c886b1514966c3`. Plan-only revisions on the branch: `2bd02887` (initial), `d6fe03f8` (inventory completed), `20a607bb` (scope widened to 13 lines), this revision (Grinch r3: acceptance and verification reconciled, real clippy evidence). Line numbers refer to the base SHA; re-anchor on quoted text if they drift.
 - Class: Lite (band 1-25). Owner `ac-dev-rust-v4`; reviewer Grinch; coordinator `ac-tech-lead-v4`.
 - 2 modified files, 13 content lines, plus this plan: `.github/workflows/pr-regression-gates.yml` (10 lines), `.github/workflows/cache-warm.yml` (3 lines). No Rust, frontend, dependency, `Cargo.lock`, `Cargo.toml`, rust-cache-config or release-workflow change.
 - Root `.gitignore:11` ignores `/plans/`; commit this plan with `git add -f plans/2075-cargo-build-locked.md`.
@@ -71,6 +71,7 @@ Simulated at this revision: applying exactly these replacements to the base file
 - Lockfile current, commands run from `src-tauri`:
   - `cargo metadata --locked --format-version 1` -> exit 0, 1.57 s, empty stderr.
   - `cargo check --locked --all-targets` -> exit 0, 1 m 16 s.
+  - `cargo clippy --locked --workspace --all-targets -- -D warnings` -> exit 0, 1 m 42 s (the exact post-fix command of `:92`/`:688` and `cache-warm.yml:65`, deny-warnings included).
   - `cargo test --locked --lib --bins --tests --no-run` -> exit 0, 3 m 4 s.
   - `cargo build --release --bins --locked` -> exit 0, 4 m 33 s (the exact post-fix command of `:1515`).
   - `git status --porcelain -- Cargo.lock` empty after all of them.
@@ -90,7 +91,7 @@ Simulated at this revision: applying exactly these replacements to the base file
 - `rust-regression-linux` (ubuntu-latest), `:684/688/733/796`: same push run; `:733`/`:796` must still carry intact `"$TEST"`/`"$FILTER"` and their grep guards must still pass.
 - `rust-linux-release-parity` (ubuntu-22.04), `:1515`: same push run; step "cargo build --release (links the binary release.yml ships)" green.
 - `rust-regression-macos` (macos-latest), `:1648/1652`: same push run.
-- `cache-warm.yml` triggers only on `push` to `main`, nightly cron or `workflow_dispatch`. Dispatch it against the branch: `gh workflow run cache-warm.yml --ref fix/2075-cargo-build-locked`. Because `warm-debug`'s three steps are guarded by cache-hit != true, a warm `gate-debug` entry makes them skip; the dispatch then verifies the key match through `verify-debug-cache` rather than executing the changed lines, and the identical commands already run in `rust-regression` on every push. The cold path executes on the next cache-key change or eviction — the first post-merge `main` push or nightly. If a pre-merge cold-path execution is required, it needs a cache-key change, which this plan must not make; that is a coordinator decision.
+- `cache-warm.yml` triggers only on `push` to `main`, nightly cron or `workflow_dispatch`; the implementation dispatches it on the branch (`gh workflow run cache-warm.yml --ref fix/2075-cargo-build-locked`) and that run must be green. The changed `warm-debug` steps are guarded by `if: steps.cache.outputs.cache-hit != 'true'`, and this plan changes no key input, so with an existing `gate-debug` entry a dispatch, a post-merge `main` push and a nightly run all restore the cache and skip them. The changed commands are exercised two ways: the identical commands run unconditionally in `rust-regression` (`:88`/`:92`/`:96`) on every push and PR, and the `warm-debug` copies execute only after a cache-key input changes (lockfile/manifest/toolchain/`env-vars`/`shared-key`) or the `gate-debug` entry is evicted. The dispatch's own contribution is the key check: `verify-debug-cache` must still find the exact entry.
 - Sonar `AaCI_U_rCXUCLYag_fqs` closes after merge to `main` and the next Sonar analysis (not part of these workflows).
 
 ## 8. Acceptance
@@ -105,7 +106,7 @@ Simulated at this revision: applying exactly these replacements to the base file
 1. Apply §4 (13 lines, 2 files); run the §5 checks locally.
 2. `git add .github/workflows/pr-regression-gates.yml .github/workflows/cache-warm.yml && git add -f plans/2075-cargo-build-locked.md`
 3. Commit `ci(2075): use --locked for every cargo invocation in workflows`; push to `fix/2075-cargo-build-locked`.
-4. Watch the push run; dispatch `cache-warm` on the branch if the coordinator wants the key check pre-merge.
+4. Watch the push run and dispatch `cache-warm` on the branch (`gh workflow run cache-warm.yml --ref fix/2075-cargo-build-locked`); both must be green (§8.2, §8.3).
 5. Report run URLs, the dispatch result and raw step outputs to the coordinator. No push to `main`, no merge.
 
 ## 10. Risks
