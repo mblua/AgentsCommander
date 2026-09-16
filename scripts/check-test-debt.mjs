@@ -304,7 +304,7 @@ function scanRustFile(root, filePath) {
   const modules = moduleRanges(masked);
   const findings = [];
   const warnings = [];
-  const fnRe = /((?:\s*#\s*\[[^\]]*\]\s*)*)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>)?\s*\(/g;
+  const fnRe = /((?:\s*#\s*\[[^\]]*\]\s*(?:#\s*\[[^\]]*\]\s*)*)?)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>\s*)?\(/g;
   let match;
 
   while ((match = fnRe.exec(masked)) !== null) {
