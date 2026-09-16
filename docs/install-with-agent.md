@@ -9,11 +9,11 @@ An artifact on a GitHub release proves that the build exists. It does not make t
 | Host | Native architecture | Support tier | Normal installation |
 |---|---|---|---|
 | Windows 10 version 1809 or newer, or Windows 11 | x86_64 / AMD64 | Fully supported; primary development and release-validation platform | Yes |
-| Linux | x86_64 / AMD64 | Partial and in progress; broader distribution and feature coverage is incomplete | Only after a warning and explicit confirmation |
-| macOS | Any | Not supported yet because maintainer and test capacity is insufficient | No; stop unless the user explicitly chooses the tester/contributor path |
+| Linux | x86_64 / AMD64 | Supported with medium test coverage; some turbulence is expected | Only after a warning and explicit confirmation |
+| macOS | Any | Supported via npm only, with very low test coverage; errors are expected | Yes, through npm, after a warning and explicit confirmation |
 | Any other OS or architecture | Any | Unsupported | No; stop without substitution, emulation, or fallback |
 
-Linux does not currently include every Windows capability. Verified Windows-only features include global-hotkey screenshot capture, native window listing and capture, the control-plane window-screenshot route, and detection of a running GUI before CLI configuration writes. See [Screenshot capture](features/screenshot-capture.md), [Window capture](features/window-capture.md), and the [CLI reference](reference/cli.md#coding-agent).
+Linux does not currently include every Windows capability. Verified Windows-only features include native window listing and capture (the `window-list` and `window-screenshot` verbs and the control-plane window-screenshot route), and detection of a running GUI before CLI configuration writes. Screenshot capture works on Windows and Linux/X11 only: not in a Wayland session, and not on macOS. See [Screenshot capture](features/screenshot-capture.md), [Window capture](features/window-capture.md), and the [CLI reference](reference/cli.md#coding-agent).
 
 ## Use only pinned official evidence
 
@@ -37,13 +37,13 @@ For a release tagged `v<version>`, these are the only assets mapped for this wor
 | Linux x86_64, Fedora/RHEL family | `Agents.Commander-<version>-1.x86_64.rpm` | Use `dnf` after checksum verification and separate elevation/system-wide consent |
 | Linux x86_64, other distributions | `Agents.Commander_<version>_amd64.AppImage` | Continue only after the Linux support warning and explicit confirmation |
 
-`<version>` is the stable tag without its leading `v`. Match an asset name exactly; a wildcard match is not approval. Do not select `.dmg`, `testeable`, packaged archives, source archives, raw Linux/macOS binaries, or another release asset for this workflow.
+`<version>` is the stable tag without its leading `v`. Match an asset name exactly; a wildcard match is not approval. Do not select `.dmg`, `testeable`, packaged archives, source archives, raw Linux/macOS binaries, or another release asset for this workflow. macOS has no mapped asset here: its only supported route is npm, installed after the warning and explicit confirmation below.
 
 ## Select the Linux route
 
 On an authorized host, read `/etc/os-release` as data without executing it. Report `ID` and `ID_LIKE`. Use `ID` first: `debian` or `ubuntu` selects DEB; `fedora` or `rhel` selects RPM. For derivatives without a directly mapped `ID`, use recognized whitespace-separated `ID_LIKE` family tokens: `debian`/`ubuntu` selects DEB and `fedora`/`rhel` selects RPM. If neither identifies a mapped family, select AppImage. Conflicting family evidence, including an `ID` from one mapped family and `ID_LIKE` from the other, stops for clarification. If distribution information is missing or ambiguous, stop rather than guess.
 
-Every route requires native x86_64/AMD64, the Linux partial/in-progress warning, and explicit confirmation. If the selected exact asset is absent from the independently resolved stable release, stop; do not switch formats. Check that the selected route's required tools (`apt` and `dpkg-deb`, or `dnf` and `rpm`) are available; otherwise report the missing dependency and stop. Do not install tools or repair dependencies automatically.
+Every route requires native x86_64/AMD64, the Linux support warning, and explicit confirmation. If the selected exact asset is absent from the independently resolved stable release, stop; do not switch formats. Check that the selected route's required tools (`apt` and `dpkg-deb`, or `dnf` and `rpm`) are available; otherwise report the missing dependency and stop. Do not install tools or repair dependencies automatically.
 
 ## Storage, backup, and upgrades
 
@@ -59,13 +59,13 @@ Before an update or uninstall, identify and protect existing data under #1118, m
 
 Before downloading, creating a directory, installing, overwriting, changing `PATH`, or launching an artifact:
 
-1. Detect and report the OS name and version, native CPU architecture, and process architecture if it differs. On Linux, report the distribution evidence and select the route above.
+1. Detect and report the OS name and version, native CPU architecture, and process architecture if it differs. On Linux, report the distribution evidence and select the route above. On macOS, also report the Node architecture that will run the npm installer.
 2. Look for an existing AgentsCommander command, executable, package, and installation directory without performing a broad or destructive filesystem scan. Establish and report the exact existing binary version and provenance with the route-specific evidence above before planning changes. Stop an update or uninstall if that evidence is unavailable, conflicting, or ambiguous.
-3. Apply the support table above. Stop on an unsupported combination. On Linux, explain the partial tier and wait for explicit confirmation before continuing. On macOS, stop the normal install and offer only the tester/contributor path below.
-4. Resolve and report the pinned guide commit, exact selected stable release tag and URL, exact mapped asset name and URL, and the exact matching record from that release's `SHASUMS256.txt`.
+3. Apply the support table above. Stop on an unsupported combination. On Linux, explain the tier and its medium test coverage, then wait for explicit confirmation before continuing. On macOS, state that it is supported through npm only, that test coverage is very low, and that errors are expected, then wait for explicit confirmation before installing through npm. Do not attempt any other macOS route; a Gatekeeper block is a stop condition to report, never a bypass.
+4. Resolve and report the pinned guide commit and the exact selected stable release tag and URL. On Windows or Linux, also report the exact mapped asset name and URL and the exact matching record from that release's `SHASUMS256.txt`. On macOS, report the npm package version and the macOS `.app.tar.gz` bundle it installs; there is no mapped asset, and the npm installer verifies that bundle against the same release's `SHASUMS256.txt`.
 5. Apply #1118 to the existing and selected versions and report the data-preservation, backup, and upgrade/uninstall requirements. Stop if canonical guidance is insufficient or ambiguous.
 6. Report the exact destination, every command you plan to run, files or directories you plan to create or overwrite, privilege level, `PATH` or system-wide effects, configuration-preservation or migration plan, validation commands, and rollback steps.
-7. Explain that current Windows artifacts may be unsigned and that checksum verification is not publisher-compromise protection.
+7. Explain that current Windows artifacts and the macOS `.app` bundle may be unsigned, and that checksum verification, including the npm installer's, is not publisher-compromise protection.
 8. Wait for clear approval of that plan.
 
 Missing, ambiguous, or conflicting evidence is a stop condition. Do not guess.
@@ -78,8 +78,8 @@ Approval of the basic plan does not authorize any of these actions. Ask separate
 - a system-wide install or any `PATH` change;
 - overwriting an executable, installation directory, or configuration;
 - running a Windows artifact whose Authenticode status is not `Valid`;
-- continuing on Linux after the partial-support warning; or
-- entering the macOS tester/contributor path.
+- continuing on Linux after the support warning; or
+- installing on macOS after the very-low-testing and unsigned-bundle warnings.
 
 Prefer a user-writable destination and the least privilege that completes the approved plan. Protect existing data and verify the required backup under #1118 before an update or uninstall. When updating an existing executable, keep a restorable copy until validation succeeds.
 
@@ -87,15 +87,15 @@ Prefer a user-writable destination and the least privilege that completes the ap
 
 After approval:
 
-1. Download the exact asset and `SHASUMS256.txt` from the same stable release into the approved staging directory. Use HTTPS. A normal GitHub-controlled release-asset redirect is allowed; a third-party mirror is not.
-2. Require exactly one checksum record whose filename equals the selected asset name.
-3. Compute the asset's SHA-256 digest and compare the complete 64-character value. On a missing, duplicate, malformed, or mismatched record, do not run the asset; report the failure and remove only the unverified files created by this attempt.
-4. Inspect Windows Authenticode status. A checksum match does not turn `NotSigned` into `Valid`; obtain the separate unsigned-software consent before launch.
-5. Run only the approved commands. For the Windows raw asset, verify it before renaming it to `agentscommander.exe` in the approved destination. For Linux, follow the selected route below; package inspection must precede installation and its resolved package name must be approved.
+1. **Windows or Linux:** download the exact asset and `SHASUMS256.txt` from the same stable release into the approved staging directory. Use HTTPS. A normal GitHub-controlled release-asset redirect is allowed; a third-party mirror is not. **macOS:** download nothing by hand; the approved npm command downloads the macOS `.app.tar.gz` bundle and `SHASUMS256.txt` from the matching release and verifies the bundle against that checksum file.
+2. **Windows or Linux:** require exactly one checksum record whose filename equals the selected asset name.
+3. **Windows or Linux:** compute the asset's SHA-256 digest and compare the complete 64-character value. On a missing, duplicate, malformed, or mismatched record, do not run the asset; report the failure and remove only the unverified files created by this attempt. On macOS, the npm installer fails closed on a missing record or mismatch; report that failure and stop.
+4. On Windows, inspect Authenticode status: a checksum match does not turn `NotSigned` into `Valid`. On macOS, the installed `.app` bundle is unsigned too. Obtain the separate unsigned-software consent for either host before launch.
+5. Run only the approved commands. For the Windows raw asset, verify it before renaming it to `agentscommander.exe` in the approved destination. For Linux, follow the selected route below; package inspection must precede installation and its resolved package name must be approved. For macOS, run the approved `npm install -g @mblua/agentscommander` and nothing else; that command performs the download and checksum verification described above.
 6. Validate the installed executable's exact path with `--help`, then re-check the route-specific version/provenance evidence against the approved release and report the observed output and final locations. Do not claim success from a download alone.
-7. If validation fails, execute only the approved rollback: for DEB/RPM, use only the approved package rollback below; for a file-only fresh install, remove only the newly installed file; for a file-only update, restore the approved previous executable. Preserve user state under #1118.
+7. If validation fails, execute only the approved rollback: for DEB/RPM, use only the approved package rollback below; for a file-only fresh install, remove only the newly installed file; for a file-only update, restore the approved previous executable; for a macOS npm install, remove only the npm package with `npm uninstall -g @mblua/agentscommander`. Preserve user state under #1118.
 
-Never bypass SmartScreen, Gatekeeper, an execution policy, certificate checks, or another security control silently. Never elevate automatically, use `curl | shell`, use a mirror, build from source as a fallback, use emulation or a substitute asset, fall back to npm, or install or authenticate a Coding Agent CLI.
+Never bypass SmartScreen, Gatekeeper, an execution policy, certificate checks, or another security control silently. Never elevate automatically, use `curl | shell`, use a mirror, build from source as a fallback, use emulation or a substitute asset, fall back to npm on Windows or Linux, or install or authenticate a Coding Agent CLI.
 
 ## Install and remove the selected Linux asset
 
@@ -176,14 +176,13 @@ The release checksum detects corruption or a file that differs from the checksum
 Manual installation is secondary to the reviewed Coding Agent plan:
 
 - On supported Windows x86_64, download one mapped Windows asset and `SHASUMS256.txt` from the same [stable release](https://github.com/mblua/AgentsCommander/releases/latest), verify it, then follow the handling rule above. The setup installer can be removed through **Windows Settings > Apps > Installed apps > Agents Commander > Uninstall**. Identify the exact existing version and follow #1118 for preservation, backup, updates, and uninstall-state handling; stop if its guidance is insufficient.
-- On Linux x86_64, acknowledge the partial support tier, select DEB/RPM/AppImage using the distribution rules above, and verify the selected exact asset. Follow [the route-specific installation and removal steps](#install-and-remove-the-selected-linux-asset), including separate elevation/system-wide consent for packages and #1118 preservation requirements.
-- npm remains available only as a secondary route for Windows x86_64 and Linux x86_64. It is not the recommended first install and must not be an automatic fallback. Read the [npm package boundary](../npm/README.md) before using it; [#1118 owns its storage and upgrade contract](https://github.com/mblua/AgentsCommander/issues/1118). Stop an existing-install change if that guidance is insufficient.
+- On Linux x86_64, acknowledge the supported tier and its medium test coverage, select DEB/RPM/AppImage using the distribution rules above, and verify the selected exact asset. Follow [the route-specific installation and removal steps](#install-and-remove-the-selected-linux-asset), including separate elevation/system-wide consent for packages and #1118 preservation requirements.
+- On macOS, npm is the only supported route. Acknowledge the very-low-testing tier, then run `npm install -g @mblua/agentscommander` and do not bypass Gatekeeper. Read the [npm package boundary](../npm/README.md) before using it.
+- On Windows x86_64 and Linux x86_64, npm remains a secondary route. It is not the recommended first install and must not be an automatic fallback. Read the [npm package boundary](../npm/README.md) before using it; [#1118 owns its storage and upgrade contract](https://github.com/mblua/AgentsCommander/issues/1118). Stop an existing-install change if that guidance is insufficient.
 
 ## Help extend Linux and macOS support
 
-Linux and macOS developers can help turn reproducible gaps into fixes. macOS remains unsupported: choose this path only as a tester or contributor, not as a normal installation.
-
-Open a [GitHub issue](https://github.com/mblua/AgentsCommander/issues) with this report:
+Linux and macOS are supported and lightly tested: Linux has medium test coverage, macOS very low. Reproducible reports are how those gaps get fixed. Open a [GitHub issue](https://github.com/mblua/AgentsCommander/issues) with this report:
 
 ```text
 OS and version:

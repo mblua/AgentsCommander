@@ -161,7 +161,7 @@ keep the word.
 | Each agent gets a real PTY. You watch every step in xterm.js. | Seamless step-by-step visibility into your agentic workflows. |
 | Agents coordinate by writing markdown files to each other — files you can `cat`, `git diff`, and audit. | Unleash next-gen multi-agent collaboration with our magical coordination layer. |
 | Pick Claude Code for the architect role, Codex for the dev role. No vendor lock-in. | Cutting-edge cross-model orchestration empowers you to choose. |
-| Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported. Linux support is partial; macOS is not supported yet. | Blazing-fast cross-platform support out of the box. |
+| Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported. Linux is supported with medium test coverage — expect some turbulence. macOS is supported through npm with very low test coverage — expect errors, and send them our way. | Blazing-fast cross-platform support out of the box. |
 
 ### Tone tells
 
@@ -171,8 +171,9 @@ keep the word.
   We name the product.
 - Numbers beat adjectives. "Windows 10 version 1809 or newer on x86_64/AMD64"
   beats "broad Windows support."
-- Footguns and support tiers in the open. Say that Linux support is partial
-  and macOS is not supported yet, then give testers a reproducible report path.
+- Footguns and support tiers in the open. Say that Linux has medium test
+  coverage and macOS very low, name npm as the only macOS route, then give
+  testers a reproducible report path.
 
 ---
 
