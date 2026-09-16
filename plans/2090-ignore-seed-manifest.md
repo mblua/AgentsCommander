@@ -7,7 +7,7 @@ Repository: `repo-AgentsCommander`
 Base: `main` = `5203c4e3b0b5909fdc12337194c886b1514966c3`; branch `fix/2090-ignore-seed-manifest` (local HEAD = `origin` = `5203c4e3b0b5909fdc12337194c886b1514966c3`, clean tree)
 Band: Lite 1-25 (issue score 19; Grinch reviews the plan). Author: `ac-dev-rust-v4`.
 Task class: an existing `.ac/.gitignore` block migration in one writer function, its unit tests, and one docs page. No IPC, no frontend, no manifest writer, no persistence-format change.
-Revision: round 1.
+Revision: round 2 (`194cefca` got CHANGES_REQUIRED): qualify the churn sentence for an already-tracked manifest (5.3 d), migrate `docs/features/seed-manifest.md:144` (5.3 e), and add `docs/glossary.md:25,173` to the reported stale passages (sections 2 and 9). Plan only, no code.
 
 ## 1. Objective and evidence
 
@@ -26,7 +26,7 @@ Discovery method: codebase-memory graph on this working copy at `5203c4e3` (`ind
 | Git currently does NOT ignore the manifest, root or nested | `seed_manifest_gitignore_rules_are_anchored_to_ac_root`, `ac_discovery.rs:5077-5124`, negation assertion at `:5118` |
 | Two Stage E tests build on the negation | comment `ac_discovery.rs:5126-5130` plus `stage_e_parent_gitignore_excluding_ac_hides_manifest_despite_negation` (`:5132`); `stage_e_later_user_rule_and_excludes_win_over_managed_negation` (`:5173`, part (a) `:5175-5214`) |
 | Replica rows are already retired | `ManifestFileKind::ReplicaConfigFile` (`config/seed_manifest.rs:365`) is not canonical output (`:383`); module doc `:8-14`; regression test `config_seed_exact_publish_preserves_report_without_creating_manifest` (`config/config_seed.rs:1414-1436`) |
-| Docs describe the retired un-ignore and the retired replica rows | `docs/features/seed-manifest.md:4, 14, 21-23, 32, 54-61, 122-129, 161-168, 178-184, 212-213` |
+| Docs describe the retired un-ignore, the committed-manifest assumption and the retired replica rows | `docs/features/seed-manifest.md:4, 14, 21-23, 32, 54-61, 122-129, 144, 161-168, 178-184, 212-213`; `docs/glossary.md:25, 173` |
 | Measured Git semantics (scratch repo, `git 2.x`) | `.ac/.gitignore` `/seed-manifest.toml` wins at the root and does not match `.ac/nested/seed-manifest.toml`; a later `!/seed-manifest.toml` in the same file re-includes the manifest (`check-ignore --quiet` exit 1; `-v --non-matching` names the negation); a parent `.gitignore` `/.ac/` hides the manifest and `check-ignore -v` names the parent rule |
 | Nothing else writes or asserts the negation | `git grep -l -F -e 'seed-manifest.toml'` outside `docs/releases`: the only negation/assertion sites are `ac_discovery.rs` and the docs listed above; no `.snap`, TS, TSX or resource fixture carries it |
 
@@ -36,7 +36,7 @@ Nothing in this change touches the manifest writer, its schema, `coverage`, or t
 
 In scope: the `ensure_ac_root_gitignore` writer and its unit tests in `src-tauri/src/commands/ac_discovery.rs`, plus the Git behavior and replica-row corrections in `docs/features/seed-manifest.md`. Every behavior below is proven by a test in section 5.2.
 
-Out of scope: the manifest writer and the feature (#2091); untracking a manifest already in a Git index (AC must not run `git rm`; documentation tells the user); any other doc page. Three other pages carry claims this change or #1480 made stale and are **reported, not edited**, because issue #2090 scopes docs to `docs/features/seed-manifest.md`: `docs/reference/directory-layout.md:55` ("un-ignores `seed-manifest.toml`"), `:124` (replica config folders "rows under `config:<dest>` scopes"), `docs/features/config-seed.md:133-136` ("A **successful** config-seed publication is recorded...") and `:175` ("where successful replica publications are recorded"). The coordinator can open a follow-up.
+Out of scope: the manifest writer and the feature (#2091); untracking a manifest already in a Git index (AC must not run `git rm`; documentation tells the user); any other doc page. Three other files carry six stale passages that this change or #1480 made stale and are **reported, not edited**, because issue #2090 scopes docs to `docs/features/seed-manifest.md`: `docs/reference/directory-layout.md:55` ("un-ignores `seed-manifest.toml`") and `:124` (replica config folders "rows under `config:<dest>` scopes"), `docs/features/config-seed.md:133-136` ("A **successful** config-seed publication is recorded...") and `:175` ("where successful replica publications are recorded"), and `docs/glossary.md:25` (`seed-manifest.toml` listed as versioned `.ac` content) and `:173` ("a git-diffable text file"). The coordinator can open a follow-up.
 
 ## 3. Cause
 
@@ -521,10 +521,25 @@ when the published bytes are identical (see [Time semantics](#time-semantics)).
 That is the accepted product cost of recording real publication time; AC does not
 suppress the timestamp, compare content, or truncate the row list to reduce churn.
 The manifest is ignored by Git by default (see [Git behavior](#git-behavior)), so
-this churn no longer appears in your diffs.
+this churn stops appearing in your diffs once the manifest is untracked; a
+manifest AC creates is never tracked.
 ```
 
-*(e) The config install-and-restore bullet. Replace lines 161-168 with:*
+*(e) "Lifecycle removal". Replace line 144*
+
+```markdown
+- **Cloning or copying a project** preserves the committed manifest byte-for-byte.
+```
+
+*with*
+
+```markdown
+- **Cloning or copying a project** preserves an existing manifest byte-for-byte.
+```
+
+The two lines after that bullet (`AC does not invent a new owner...` and `next real publication.`) stay unchanged.
+
+*(f) The config install-and-restore bullet. Replace lines 161-168 with:*
 
 ```markdown
 - **Config install-and-restore failure.** Config seed renames the old destination
@@ -535,7 +550,7 @@ this churn no longer appears in your diffs.
   next canonical write or explicit lifecycle event.
 ```
 
-*(f) "Git behavior". Replace lines 178-184 with:*
+*(g) "Git behavior". Replace lines 178-184 with:*
 
 ```markdown
 ## Git behavior
@@ -553,7 +568,7 @@ existing `.ac/.gitignore` that still carries the retired `!/seed-manifest.toml`
 block is migrated in place by the next project registration or discovery.
 ```
 
-*(g) "See also". Replace lines 212-213 with:*
+*(h) "See also". Replace lines 212-213 with:*
 
 ```markdown
 - [Config seed](config-seed.md) - the replica config publications, which no
@@ -563,7 +578,7 @@ block is migrated in place by the next project registration or discovery.
 ### 5.4 Files touched by the implementation
 
 - `src-tauri/src/commands/ac_discovery.rs` - constants, both reconciliation branches, the new migration helper (5.1), the two test edits and two test renames (5.2 a-d), four new tests (5.2 e).
-- `docs/features/seed-manifest.md` - the seven passages in 5.3.
+- `docs/features/seed-manifest.md` - the eight passages in 5.3.
 - No other source, test, doc, config or frontend file.
 
 ## 6. Behavior and edge cases
@@ -669,6 +684,6 @@ Run `ensure_ac_root_gitignore_includes_delete_sentinels_on_create` and `seed_man
 
 - This plan's own commit: `docs(plan): #2090 ignore seed-manifest in the project .ac/.gitignore`. `plans/` is gitignored (`.gitignore` line 11 `/plans/`), so stage with `git add -f plans/2090-ignore-seed-manifest.md`; push the branch and confirm `git ls-remote --heads origin fix/2090-ignore-seed-manifest` reports a SHA other than `5203c4e3b0b5909fdc12337194c886b1514966c3`.
 - Implementation commit (only after Grinch approves and the coordinator starts it): `fix(#2090): ignore seed-manifest.toml in the project .ac/.gitignore` - the two files of 5.4 in one commit, then 8.1 and 8.2. Rollback: revert that commit; the writer returns to the un-ignore block and migrated `.ac/.gitignore` files keep their new rule until the next reconciliation with reverted code, which restores nothing automatically (the old bytes are not stored). No data is lost either way: the manifest file itself is never written by this change.
-- Out of scope and reported to the coordinator, not implemented here: the three stale passages in 5.3's siblings (`docs/reference/directory-layout.md:55,124`; `docs/features/config-seed.md:133-136,175`) and every item under #2091.
+- Out of scope and reported to the coordinator, not implemented here: the six stale passages in other docs (`docs/reference/directory-layout.md:55,124`; `docs/features/config-seed.md:133-136,175`; `docs/glossary.md:25,173`) and every item under #2091.
 
 Status: READY_FOR_IMPLEMENTATION
