@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import ProjectPanel from "./ProjectPanel";
-import type { BlockerReport } from "../../shared/types";
+import type { AcDiscoveryResult, BlockerReport } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   click,
@@ -18,7 +18,9 @@ import { projectStore } from "../stores/project";
 const projectPath = "C:\\Project";
 const workgroupPath = `${projectPath}\\.ac\\wg-1-dev-team`;
 
-function initialDiscovery() {
+const emptyDiscovery = () => discovery({ teams: [], workgroups: [], agents: [] });
+
+function initialDiscovery(): AcDiscoveryResult {
   return discovery({
     agents: [],
     teams: [
@@ -94,6 +96,31 @@ function findWorkgroupHeader(root: ParentNode): Element {
   return header;
 }
 
+function renderPanel(
+  fake: FakeTransport,
+  discoverResult: () => AcDiscoveryResult
+): ReturnType<typeof renderWithFakeTransport> {
+  fake.resolve("new_project", {
+    path: projectPath,
+    registered: true,
+    created: false,
+  });
+  fake.onInvoke("discover_project", discoverResult);
+  return renderWithFakeTransport(() => <ProjectPanel />, fake);
+}
+
+/** Loads the project and clicks through to the delete-room confirmation. */
+async function openDeleteRoomModal(
+  rendered: ReturnType<typeof renderWithFakeTransport>
+): Promise<void> {
+  await projectStore.createAndLoad(projectPath);
+  await waitFor(() => expect(rendered.root.textContent).toContain("wg-1-dev-team"));
+  contextMenu(findWorkgroupHeader(rendered.root));
+  await waitFor(() => expect(document.body.textContent).toContain("Delete Room"));
+  click(findButton("Delete Room"));
+  await waitFor(() => expect(document.body.textContent).toContain("This action cannot be undone"));
+}
+
 describe("ProjectPanel workgroup delete diagnostics workflow", () => {
   let cleanupDom: (() => void) | null = null;
 
@@ -113,14 +140,6 @@ describe("ProjectPanel workgroup delete diagnostics workflow", () => {
     const fake = new FakeTransport();
     let deleteAttempts = 0;
 
-    fake.resolve("new_project", {
-      path: projectPath,
-      registered: true,
-      created: false,
-    });
-    fake.onInvoke("discover_project", () =>
-      deleteAttempts > 1 ? discovery({ teams: [], workgroups: [], agents: [] }) : initialDiscovery()
-    );
     fake.onInvoke("delete_workgroup", () => {
       deleteAttempts += 1;
       if (deleteAttempts === 1) {
@@ -129,16 +148,11 @@ describe("ProjectPanel workgroup delete diagnostics workflow", () => {
       return undefined;
     });
 
-    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    const rendered = renderPanel(fake, () =>
+      deleteAttempts > 1 ? emptyDiscovery() : initialDiscovery()
+    );
     try {
-      await projectStore.createAndLoad(projectPath);
-      await waitFor(() => expect(rendered.root.textContent).toContain("wg-1-dev-team"));
-
-      contextMenu(findWorkgroupHeader(rendered.root));
-      await waitFor(() => expect(document.body.textContent).toContain("Delete Room"));
-      click(findButton("Delete Room"));
-
-      await waitFor(() => expect(document.body.textContent).toContain("This action cannot be undone"));
+      await openDeleteRoomModal(rendered);
       click(findButton("Delete"));
 
       await waitFor(() => expect(fake.callsFor("delete_workgroup")).toHaveLength(1));
@@ -171,14 +185,6 @@ describe("ProjectPanel workgroup delete diagnostics workflow", () => {
     const fake = new FakeTransport();
     let deleteAttempts = 0;
 
-    fake.resolve("new_project", {
-      path: projectPath,
-      registered: true,
-      created: false,
-    });
-    fake.onInvoke("discover_project", () =>
-      deleteAttempts > 1 ? discovery({ teams: [], workgroups: [], agents: [] }) : initialDiscovery()
-    );
     fake.onInvoke("delete_workgroup", () => {
       deleteAttempts += 1;
       if (deleteAttempts === 1) {
@@ -187,16 +193,11 @@ describe("ProjectPanel workgroup delete diagnostics workflow", () => {
       return undefined;
     });
 
-    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    const rendered = renderPanel(fake, () =>
+      deleteAttempts > 1 ? emptyDiscovery() : initialDiscovery()
+    );
     try {
-      await projectStore.createAndLoad(projectPath);
-      await waitFor(() => expect(rendered.root.textContent).toContain("wg-1-dev-team"));
-
-      contextMenu(findWorkgroupHeader(rendered.root));
-      await waitFor(() => expect(document.body.textContent).toContain("Delete Room"));
-      click(findButton("Delete Room"));
-
-      await waitFor(() => expect(document.body.textContent).toContain("This action cannot be undone"));
+      await openDeleteRoomModal(rendered);
       click(findButton("Delete"));
 
       await waitFor(() => expect(document.body.textContent).toContain("repo has uncommitted changes"));
@@ -221,27 +222,13 @@ describe("ProjectPanel workgroup delete diagnostics workflow", () => {
 
   it("shows the raw delete error for a generic failure and no blocker panel", async () => {
     const fake = new FakeTransport();
-
-    fake.resolve("new_project", {
-      path: projectPath,
-      registered: true,
-      created: false,
-    });
-    fake.resolve("discover_project", initialDiscovery());
     fake.onInvoke("delete_workgroup", () => {
       throw new Error("backend exploded");
     });
 
-    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    const rendered = renderPanel(fake, initialDiscovery);
     try {
-      await projectStore.createAndLoad(projectPath);
-      await waitFor(() => expect(rendered.root.textContent).toContain("wg-1-dev-team"));
-
-      contextMenu(findWorkgroupHeader(rendered.root));
-      await waitFor(() => expect(document.body.textContent).toContain("Delete Room"));
-      click(findButton("Delete Room"));
-
-      await waitFor(() => expect(document.body.textContent).toContain("This action cannot be undone"));
+      await openDeleteRoomModal(rendered);
       click(findButton("Delete"));
 
       await waitFor(() => expect(document.body.textContent).toContain("backend exploded"));
@@ -257,27 +244,13 @@ describe("ProjectPanel workgroup delete diagnostics workflow", () => {
 
   it("shows the unparsable blocker-report error for a malformed BLOCKERS payload", async () => {
     const fake = new FakeTransport();
-
-    fake.resolve("new_project", {
-      path: projectPath,
-      registered: true,
-      created: false,
-    });
-    fake.resolve("discover_project", initialDiscovery());
     fake.onInvoke("delete_workgroup", () => {
       throw "BLOCKERS:not-json";
     });
 
-    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    const rendered = renderPanel(fake, initialDiscovery);
     try {
-      await projectStore.createAndLoad(projectPath);
-      await waitFor(() => expect(rendered.root.textContent).toContain("wg-1-dev-team"));
-
-      contextMenu(findWorkgroupHeader(rendered.root));
-      await waitFor(() => expect(document.body.textContent).toContain("Delete Room"));
-      click(findButton("Delete Room"));
-
-      await waitFor(() => expect(document.body.textContent).toContain("This action cannot be undone"));
+      await openDeleteRoomModal(rendered);
       click(findButton("Delete"));
 
       await waitFor(() =>
