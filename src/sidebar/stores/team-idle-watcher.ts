@@ -5,6 +5,7 @@ import { playTeamIdleBeep } from "../../shared/sound";
 import { settingsStore } from "../../shared/stores/settings";
 import { sessionsStore } from "./sessions";
 import { projectStore } from "./project";
+import type { ProjectState } from "./project";
 
 export const GRACE_MS = 4000;
 
@@ -61,6 +62,94 @@ function isBusy(session: Session): boolean {
   return !session.waitingForInput;
 }
 
+function registerSessionsForProjects(
+  projects: readonly ProjectState[],
+  sessionToWg: Map<string, string>,
+  findSessionByName: (name: string) => Session | undefined,
+): void {
+  for (const project of projects) {
+    for (const wg of project.workgroups) {
+      for (const replica of wg.agents) {
+        const session = findSessionByName(`${wg.name}/${replica.name}`);
+        if (session && !sessionToWg.has(session.id)) {
+          sessionToWg.set(session.id, wg.path);
+        }
+      }
+    }
+  }
+}
+
+function collectBusyByWg(
+  sessionToWg: ReadonlyMap<string, string>,
+  sessionsById: ReadonlyMap<string, Session>,
+): Map<string, Map<string, boolean>> {
+  const currentByWg = new Map<string, Map<string, boolean>>();
+  for (const [sessionId, wgPath] of sessionToWg) {
+    const session = sessionsById.get(sessionId);
+    if (!session) continue;
+    if (isExited(session.status)) continue;
+    let inner = currentByWg.get(wgPath);
+    if (!inner) {
+      inner = new Map<string, boolean>();
+      currentByWg.set(wgPath, inner);
+    }
+    inner.set(sessionId, isBusy(session));
+  }
+  return currentByWg;
+}
+
+export function hasBusyToIdleTransition(
+  previousBusy: ReadonlyMap<string, boolean>,
+  currentBusy: ReadonlyMap<string, boolean>,
+): boolean {
+  for (const [sessionId, wasBusy] of previousBusy) {
+    if (!wasBusy) continue;
+    if (currentBusy.get(sessionId) === false) return true;
+  }
+  return false;
+}
+
+export function allSessionsIdle(currentBusy: ReadonlyMap<string, boolean>): boolean {
+  if (currentBusy.size === 0) return false;
+  for (const isBusyNow of currentBusy.values()) {
+    if (isBusyNow) return false;
+  }
+  return true;
+}
+
+export function beepIdleTransitions(
+  currentByWg: ReadonlyMap<string, ReadonlyMap<string, boolean>>,
+  previousByWg: ReadonlyMap<string, ReadonlyMap<string, boolean>>,
+  focusedWg: string | null,
+  graceUntil: ReadonlyMap<string, number>,
+  now: number,
+): void {
+  for (const [wgPath, currentBusy] of currentByWg) {
+    const previousBusy = previousByWg.get(wgPath);
+    if (!previousBusy) continue;
+    if (!hasBusyToIdleTransition(previousBusy, currentBusy)) continue;
+    if (!allSessionsIdle(currentBusy)) continue;
+    if (shouldSuppressBeep(wgPath, focusedWg, graceUntil, now)) continue;
+    void playTeamIdleBeep();
+  }
+}
+
+export function pruneExpiredGrace(graceUntil: Map<string, number>, now: number): void {
+  for (const [wgPath, until] of graceUntil) {
+    if (now >= until) graceUntil.delete(wgPath);
+  }
+}
+
+function replacePreviousByWg(
+  previousByWg: Map<string, Map<string, boolean>>,
+  currentByWg: ReadonlyMap<string, ReadonlyMap<string, boolean>>,
+): void {
+  previousByWg.clear();
+  for (const [wgPath, perSession] of currentByWg) {
+    previousByWg.set(wgPath, new Map(perSession));
+  }
+}
+
 export function startTeamIdleWatcher(): () => void {
   return createRoot((dispose) => {
     const sessionToWg = new Map<string, string>();
@@ -93,43 +182,21 @@ export function startTeamIdleWatcher(): () => void {
       const activeId = sessionsStore.activeId;
       const hasOsFocus = osFocused();
 
-      for (const project of projects) {
-        for (const wg of project.workgroups) {
-          for (const replica of wg.agents) {
-            const session = sessionsStore.findSessionByName(
-              `${wg.name}/${replica.name}`,
-            );
-            if (session && !sessionToWg.has(session.id)) {
-              sessionToWg.set(session.id, wg.path);
-            }
-          }
-        }
-      }
+      registerSessionsForProjects(projects, sessionToWg, (name) =>
+        sessionsStore.findSessionByName(name),
+      );
 
       const sessionsById = new Map<string, Session>();
       for (const s of sessions) sessionsById.set(s.id, s);
 
-      const currentByWg = new Map<string, Map<string, boolean>>();
-      for (const [sessionId, wgPath] of sessionToWg) {
-        const session = sessionsById.get(sessionId);
-        if (!session) continue;
-        if (isExited(session.status)) continue;
-        let inner = currentByWg.get(wgPath);
-        if (!inner) {
-          inner = new Map<string, boolean>();
-          currentByWg.set(wgPath, inner);
-        }
-        inner.set(sessionId, isBusy(session));
-      }
+      const currentByWg = collectBusyByWg(sessionToWg, sessionsById);
 
       const focusedWg =
         hasOsFocus && activeId ? sessionToWg.get(activeId) ?? null : null;
 
       if (!initialized) {
         initialized = true;
-        for (const [wgPath, perSession] of currentByWg) {
-          previousByWg.set(wgPath, new Map(perSession));
-        }
+        replacePreviousByWg(previousByWg, currentByWg);
         return;
       }
 
@@ -143,46 +210,11 @@ export function startTeamIdleWatcher(): () => void {
 
       if (enabled) {
         const now = Date.now();
-        for (const [wgPath, currentBusy] of currentByWg) {
-          const previousBusy = previousByWg.get(wgPath);
-          if (!previousBusy) continue;
-
-          let hadTransition = false;
-          for (const [sessionId, wasBusy] of previousBusy) {
-            if (!wasBusy) continue;
-            const isBusyNow = currentBusy.get(sessionId);
-            if (isBusyNow === false) {
-              hadTransition = true;
-              break;
-            }
-          }
-          if (!hadTransition) continue;
-
-          let allIdle = currentBusy.size > 0;
-          if (allIdle) {
-            for (const isBusyNow of currentBusy.values()) {
-              if (isBusyNow) {
-                allIdle = false;
-                break;
-              }
-            }
-          }
-          if (!allIdle) continue;
-
-          if (shouldSuppressBeep(wgPath, focusedWg, graceUntil, now)) continue;
-
-          void playTeamIdleBeep();
-        }
-
-        for (const [wgPath, until] of graceUntil) {
-          if (now >= until) graceUntil.delete(wgPath);
-        }
+        beepIdleTransitions(currentByWg, previousByWg, focusedWg, graceUntil, now);
+        pruneExpiredGrace(graceUntil, now);
       }
 
-      previousByWg.clear();
-      for (const [wgPath, perSession] of currentByWg) {
-        previousByWg.set(wgPath, new Map(perSession));
-      }
+      replacePreviousByWg(previousByWg, currentByWg);
     });
 
     return () => {
