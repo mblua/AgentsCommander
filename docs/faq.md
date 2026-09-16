@@ -44,7 +44,7 @@ It is the role-template browser shown when you create a new agent. AC can downlo
 
 ## Does AC work on macOS?
 
-macOS is not supported yet because maintainer and test capacity is insufficient. A release artifact is not a support promise, so a normal install stops on macOS. Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported; Linux x86_64/AMD64 support is partial and in progress. See the [platform contract](install-with-agent.md#support-gates). If you deliberately test Linux or macOS, use the [reproducible report template](install-with-agent.md#help-extend-linux-and-macos-support) or follow [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+macOS is supported through npm only, with very low test coverage, so errors are expected. Install it with `npm install -g @mblua/agentscommander`; other macOS artifacts on a release are not a supported route. Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported; Linux x86_64/AMD64 is supported with medium test coverage, so expect some turbulence. See the [platform contract](install-with-agent.md#support-gates). If you hit a reproducible gap on either platform, use the [reproducible report template](install-with-agent.md#help-extend-linux-and-macos-support) or follow [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ## Is it free?
 

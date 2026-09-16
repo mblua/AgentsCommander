@@ -5140,25 +5140,27 @@ mod tests {
         // The Settings re-seed button must keep working on pre-migration
         // installs with zero registered projects: no primary root -> the legacy
         // `<config_dir>/coding-agents/_seed/<dest>` masters are the target.
-        let Some(config_dir) = crate::config::config_dir() else {
-            return;
-        };
+        //
+        // #2001: this fixture dir stands in for the per-binary `config_dir()`.
+        // This test is the ONLY writer of the real `<config_dir>/coding-agents`
+        // tree, and separate test processes share that path; an in-process lock
+        // cannot serialize processes, so the real path is never resolved here.
+        let config_dir = seed_dir();
         let legacy_master = config_dir
+            .path()
             .join("coding-agents")
             .join("_seed")
             .join(".claude");
-        let _ = std::fs::remove_dir_all(config_dir.join("coding-agents"));
         std::fs::create_dir_all(&legacy_master).unwrap();
         std::fs::write(legacy_master.join("marker"), b"x").unwrap();
 
-        let result = reseed_master_for_command(&config_dir, "claude");
+        let result = reseed_master_for_command(config_dir.path(), "claude");
         assert!(result.is_ok(), "legacy reseed works: {result:?}");
         let m = master("claude");
         assert_eq!(
             std::fs::read(legacy_master.join(m.files[0].rel_path)).unwrap(),
             m.files[0].bytes
         );
-        let _ = std::fs::remove_dir_all(config_dir.join("coding-agents"));
     }
 
     #[test]

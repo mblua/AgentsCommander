@@ -4,7 +4,7 @@ For developers hitting an error. Skim the headings for the symptom that matches 
 
 ## Installation
 
-Start with the [installation support gates](install-with-agent.md#support-gates). Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported. Linux x86_64/AMD64 is partial and requires an explicit warning and confirmation. macOS is not a normal install target yet.
+Start with the [installation support gates](install-with-agent.md#support-gates). Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported. Linux x86_64/AMD64 is supported with medium test coverage and requires an explicit warning and confirmation. macOS is supported via npm only, with very low test coverage, so expect errors.
 
 ### Windows: SmartScreen blocks the installer
 
@@ -19,7 +19,7 @@ Until Windows signing is active, `Status` may read `NotSigned`. Ask separately b
 
 ### Linux: `.AppImage` will not execute
 
-Linux x86_64/AMD64 support is partial and in progress. Continue only after acknowledging that tier and verifying `Agents.Commander_<version>_amd64.AppImage` against the same release's `SHASUMS256.txt`.
+Linux x86_64/AMD64 is supported with medium test coverage, so expect some turbulence. Continue only after acknowledging that tier and verifying `Agents.Commander_<version>_amd64.AppImage` against the same release's `SHASUMS256.txt`.
 
 ```bash
 asset='Agents.Commander_<version>_amd64.AppImage'
@@ -29,11 +29,17 @@ chmod +x "$asset"
 
 `chmod` exits 0 without output; the next command launches the verified AppImage. If it fails with `error while loading shared libraries: libwebkit2gtk-4.1.so.0`, stop and identify the WebKitGTK 4.1 runtime package for that exact distribution and version. Linux package names vary. A Coding Agent must report the package source and exact command, then ask separately before elevation or a system package change.
 
-### macOS: installation stops
+### macOS: install or launch fails
 
-macOS is not supported yet because maintainer and test capacity is insufficient. A `.dmg` or other artifact on a release does not make macOS supported. Do not bypass Gatekeeper as part of a normal installation.
+macOS is supported via npm only, with very low test coverage, so errors are expected. Install it after the platform warning with:
 
-If you deliberately choose the tester/contributor path, use the [reproducible platform report template](install-with-agent.md#help-extend-linux-and-macos-support) and follow [`CONTRIBUTING.md`](../CONTRIBUTING.md). That choice is separate from normal install approval.
+```bash
+npm install -g @mblua/agentscommander
+```
+
+A `.dmg` or other artifact on a release is not a supported macOS route, and do not bypass Gatekeeper as part of a normal installation.
+
+If the install or launch fails, file a [reproducible platform report](install-with-agent.md#help-extend-linux-and-macos-support) with your macOS version, native architecture, Node architecture (`node -p process.arch`), AgentsCommander version, exact steps, expected result, actual result, and sanitized logs. Contributors can follow [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ## Coding-agent detection
 
