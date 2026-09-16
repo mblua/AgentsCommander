@@ -5027,19 +5027,19 @@ html.light-theme .settings-hint-error {
   color: var(--sidebar-fg-dim);
 }
 
-/* ── #1943 selection lock: KEEP chip, lock bar, conflict review ──
+/* ── #1943 selection lock: lock chip, lock bar, conflict review ──
    Ported from the approved v3 stylistic reference
    (.ac/plans/issue_1937/prototypes/index-v3.html, section "Candado de
    selección"). Amber marks protection everywhere; green marks the eligible
    set. Nothing here changes an unrelated theme or class. */
 
-/* The sidebar KEEP chip: only a locked replica renders it. */
+/* The sidebar lock chip: only a locked replica renders it. Icon-only since
+   #2030, so the label's gap and padding are gone. */
 .selection-lock-chip {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
   height: 16px;
-  padding: 0 5px;
+  padding: 0 3px;
   border-radius: 3px;
   border: 1px solid rgba(227, 179, 65, 0.55);
   background: rgba(227, 179, 65, 0.14);
@@ -5778,6 +5778,27 @@ html.light-theme .settings-hint-error {
 
   .agent-picker-actions .modal-btn {
     flex: 1 1 220px;
+  }
+}
+
+/* ── #2038: the two right-hand columns of the Coding Agent profile modal scroll
+   independently. Above the 900px stacking breakpoint the wrapper only lays the
+   columns out: its single row is the frame height (scroll range 0), each column
+   panel is its own scroll area, and the comparison-table row keeps the 220px floor
+   of the table's own clamp(220px, 42vh, 420px) so a short frame scrolls column 3
+   instead of squeezing the rows out of view. The @media (max-width: 900px)
+   single-column block above is deliberately untouched. */
+@media (min-width: 901px) {
+  .agent-profile-assignment-scroll {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .agent-profile-assignment-scroll > .agent-profile-panel {
+    overflow-y: auto;
+  }
+
+  .agent-projection-panel {
+    grid-template-rows: auto auto minmax(220px, 1fr) auto;
   }
 }
 

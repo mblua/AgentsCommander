@@ -84,6 +84,10 @@ agentscommander --help
 
 Both commands must exit 0. Confirm that `npm list` and the installed `package.json` report the `latest` version that `npm view @mblua/agentscommander@latest version` returned; re-check the installed scripts, native path, and checksum correlation described above. `--help` must print the AgentsCommander command help, and on `0.31.0` or newer `agentscommander --version` must print the same version `npm list` reports. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
 
+### Windows Start Menu shortcut
+
+On Windows, a global install also creates a per-user Start Menu shortcut named **AgentsCommander**, with the app icon, at `%APPDATA%\Microsoft\Windows\Start Menu\Programs\AgentsCommander.lnk`. It opens the installed `bin\agentscommander.exe`. A local install (without `-g`) creates no shortcut. To skip it, set `AGENTSCOMMANDER_NO_SHORTCUT=1` before installing. If the shortcut cannot be created, the install prints a warning and still succeeds. Installing again replaces the same shortcut.
+
 ## Uninstall
 
 Identify, back up, and verify the version-selected configuration as described above, then run:
@@ -92,6 +96,10 @@ Identify, back up, and verify the version-selected configuration as described ab
 npm uninstall -g @mblua/agentscommander
 ```
 
-Success exits 0. Restore a previous version or remove the saved configuration only as a separate, deliberate action.
+Success exits 0. npm does not run uninstall scripts, so on Windows delete the Start Menu shortcut by hand:
+
+```powershell
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentsCommander.lnk"
+``` Restore a previous version or remove the saved configuration only as a separate, deliberate action.
 
 For stable-release downloads and rollback rules, use the [manual alternatives](https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md#manual-alternatives).
