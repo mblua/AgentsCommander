@@ -805,10 +805,57 @@ enum CoordinatorJob {
 }
 
 struct CoordinatorEnvelope {
-    job: CoordinatorJob,
+    // #1580: admission and critical key are declared before `job` so an envelope
+    // dropped without execution frees both before `job` drops the caller's sender.
     _admission: OwnedSemaphorePermit,
-    _create_ticket: Option<OwnedSemaphorePermit>,
     _critical_admission: Option<CriticalAdmissionGuard>,
+    job: CoordinatorJob,
+    _create_ticket: Option<OwnedSemaphorePermit>,
+}
+
+/// #1580: the guards an executing envelope still owns after its job moved out.
+struct EnvelopeHold {
+    admission: Option<OwnedSemaphorePermit>,
+    critical_admission: Option<CriticalAdmissionGuard>,
+    _create_ticket: Option<OwnedSemaphorePermit>,
+}
+
+impl CoordinatorEnvelope {
+    fn into_parts(self) -> (CoordinatorJob, EnvelopeHold) {
+        let CoordinatorEnvelope {
+            _admission: admission,
+            _critical_admission: critical_admission,
+            job,
+            _create_ticket: create_ticket,
+        } = self;
+        (
+            job,
+            EnvelopeHold {
+                admission: Some(admission),
+                critical_admission,
+                _create_ticket: create_ticket,
+            },
+        )
+    }
+}
+
+impl EnvelopeHold {
+    /// Capacity first, then the dedup key. Runs before every completion send.
+    /// The create ticket is not released here; it drops with the hold.
+    fn release(&mut self) {
+        drop(self.admission.take());
+        drop(self.critical_admission.take());
+    }
+
+    fn is_released(&self) -> bool {
+        self.admission.is_none() && self.critical_admission.is_none()
+    }
+
+    /// Releases, then sends. Use only for a completion send.
+    fn respond<T>(&mut self, response: oneshot::Sender<T>, value: T) -> Result<(), T> {
+        self.release();
+        response.send(value)
+    }
 }
 
 struct CoordinatorInner {
@@ -2060,11 +2107,15 @@ async fn drain_after_shutdown<R: Runtime>(
     receiver: &mut mpsc::Receiver<CoordinatorEnvelope>,
 ) {
     while let Some(envelope) = receiver.recv().await {
-        match envelope.job {
+        let (job, mut hold) = envelope.into_parts();
+        match job {
             CoordinatorJob::FinalizeCreate { request, response } => {
                 execute_rollback_create(transaction, request.binding).await;
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!(
@@ -2075,74 +2126,102 @@ async fn drain_after_shutdown<R: Runtime>(
             }
             CoordinatorJob::RollbackCreate { binding } => {
                 execute_rollback_create(transaction, binding).await;
+                hold.release();
             }
             CoordinatorJob::Transition { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued transition caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Snapshot { response } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued snapshot caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RouteLoss { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued route-loss caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Destroy { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued destroy caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RestartLifecycle { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued restart caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RootLifecycle { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued Root caller dropped during shutdown");
                 }
             }
             CoordinatorJob::ResourceKill { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued resource-kill caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Detach { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued detach caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Attach { response, .. } => {
-                if response
-                    .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
+                if hold
+                    .respond(
+                        response,
+                        Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    )
                     .is_err()
                 {
                     log::debug!("[selection] queued attach caller dropped during shutdown");
@@ -2152,8 +2231,13 @@ async fn drain_after_shutdown<R: Runtime>(
                 if started.send(()).is_err() {
                     log::debug!("[selection] restore submitter dropped during shutdown");
                 }
+                hold.release();
             }
         }
+        debug_assert!(
+            hold.is_released(),
+            "#1580: a coordinator job arm finished without releasing admission and critical key"
+        );
     }
 }
 
@@ -2161,23 +2245,24 @@ async fn execute_envelope<R: Runtime>(
     transaction: &SelectionTransaction<R>,
     envelope: CoordinatorEnvelope,
 ) {
-    match envelope.job {
+    let (job, mut hold) = envelope.into_parts();
+    match job {
         CoordinatorJob::Transition { request, response } => {
             let result = execute_transition(transaction, request).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!("[selection] transition caller dropped before result delivery");
             }
         }
         CoordinatorJob::Snapshot { response } => {
             let snapshot = transaction.manager().await.selection_payload().await;
-            if response.send(Ok(snapshot)).is_err() {
+            if hold.respond(response, Ok(snapshot)).is_err() {
                 log::debug!("[selection] snapshot caller dropped before result delivery");
             }
         }
         CoordinatorJob::FinalizeCreate { request, response } => {
             let session_id = request.binding.session_id();
             let result = execute_finalize_create(transaction, request).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!(
                     "[selection] create finalizer caller dropped before result delivery session={}",
                     session_id
@@ -2186,6 +2271,7 @@ async fn execute_envelope<R: Runtime>(
         }
         CoordinatorJob::RollbackCreate { binding } => {
             execute_rollback_create(transaction, binding).await;
+            hold.release();
         }
         CoordinatorJob::RouteLoss {
             session_id,
@@ -2193,7 +2279,7 @@ async fn execute_envelope<R: Runtime>(
             response,
         } => {
             let result = execute_route_loss(transaction, session_id, exit_code).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!(
                     "[selection] route-loss caller dropped before result delivery session={}",
                     session_id
@@ -2203,21 +2289,21 @@ async fn execute_envelope<R: Runtime>(
         CoordinatorJob::Destroy { request, response } => {
             let result =
                 crate::commands::session::execute_destroy_transaction(transaction, request).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!("[selection] destroy caller dropped before result delivery");
             }
         }
         CoordinatorJob::RestartLifecycle { request, response } => {
             let result =
                 crate::commands::session::execute_restart_transaction(transaction, request).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!("[selection] restart caller dropped before result delivery");
             }
         }
         CoordinatorJob::RootLifecycle { request, response } => {
             let result =
                 crate::commands::session::execute_root_transaction(transaction, request).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!("[selection] Root caller dropped before result delivery");
             }
         }
@@ -2232,7 +2318,7 @@ async fn execute_envelope<R: Runtime>(
                 intent,
             )
             .await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!(
                     "[selection] resource-kill caller dropped before result delivery session={}",
                     session_id
@@ -2252,7 +2338,7 @@ async fn execute_envelope<R: Runtime>(
                 suppress_selection,
             )
             .await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!(
                     "[selection] detach caller dropped before result delivery session={}",
                     session_id
@@ -2265,7 +2351,7 @@ async fn execute_envelope<R: Runtime>(
         } => {
             let result =
                 crate::commands::window::execute_attach_transaction(transaction, session_id).await;
-            if response.send(result).is_err() {
+            if hold.respond(response, result).is_err() {
                 log::debug!(
                     "[selection] attach caller dropped before result delivery session={}",
                     session_id
@@ -2279,8 +2365,13 @@ async fn execute_envelope<R: Runtime>(
             if release.await.is_err() {
                 log::warn!("[selection] restore barrier released by dropped owner");
             }
+            hold.release();
         }
     }
+    debug_assert!(
+        hold.is_released(),
+        "#1580: a coordinator job arm finished without releasing admission and critical key"
+    );
 }
 
 async fn execute_transition<R: Runtime>(
@@ -3326,7 +3417,7 @@ mod tests {
             .expect("fresh same-kind submission succeeds"),
             CriticalAdmissionOutcome::Completed(())
         );
-        // Completed reports the operation result; the admission guard drops afterwards.
+        // #1580 releases the key before Completed; this bounded wait is kept unchanged.
         tokio::time::timeout(Duration::from_secs(1), async {
             while coordinator.critical_key_registered_for_test(session.id, kind) {
                 tokio::task::yield_now().await;
@@ -3335,6 +3426,207 @@ mod tests {
         .await
         .expect("fresh probe releases its critical admission key");
         assert!(!coordinator.critical_key_registered_for_test(session.id, kind));
+        coordinator.close_and_join().await;
+    }
+
+    // #1580 deterministic ordering detector. The worker needs `critical_keys` to free
+    // the key; the test holds it. "All admission permits returned" happens after the
+    // send before the fix, and before the (blocked) send after it.
+    async fn assert_critical_completion_observed_after_release(shutdown_first: bool) {
+        use crate::pty::backend::SessionBackendKind;
+        use std::future::Future;
+        use std::task::{Context, Waker};
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/critical-release-order".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create critical-release-order fixture");
+        let token = CancellationToken::new();
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), token.clone());
+        let app = tauri::test::mock_builder()
+            .manage(manager)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build critical-release-order app");
+        coordinator
+            .start(app.handle().clone())
+            .expect("start critical-release-order coordinator");
+        let barrier = coordinator
+            .submit_restore_first()
+            .await
+            .expect("restore barrier holds the worker");
+
+        let kind = CriticalAdmissionKind::RouteLoss;
+        let mut probe = std::pin::pin!(coordinator.critical_probe_for_test(session.id, kind));
+        let mut cx = Context::from_waker(Waker::noop());
+        // Queue capacity drops only in the poll that also sends the envelope.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                assert!(
+                    probe.as_mut().poll(&mut cx).is_pending(),
+                    "probe cannot complete while the barrier holds the worker"
+                );
+                if coordinator.inner.sender.capacity() == COORDINATOR_QUEUE_CAPACITY - 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("probe queues its envelope behind the barrier");
+        assert!(coordinator.critical_key_registered_for_test(session.id, kind));
+        assert_eq!(
+            coordinator.inner.admission.available_permits(),
+            COORDINATOR_ADMISSION_CAPACITY - 2
+        );
+        if shutdown_first {
+            token.cancel();
+        }
+
+        // Lexical scope, no `.await` inside: clippy::await_holding_lock, and the
+        // worker needs this lock. Do not replace the scope with `drop(keys)`.
+        {
+            let keys = coordinator.inner.critical_keys.lock().unwrap();
+            assert!(keys.contains(&CriticalAdmissionKey {
+                session_id: session.id,
+                kind,
+            }));
+            barrier.finish();
+            let anchor = Instant::now();
+            while coordinator.inner.admission.available_permits() != COORDINATOR_ADMISSION_CAPACITY
+            {
+                assert!(
+                    anchor.elapsed() < Duration::from_secs(10),
+                    "#1580: worker did not return admission before releasing the critical key"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(
+                probe.as_mut().poll(&mut cx).is_pending(),
+                "#1580: completion was observable while the critical key was still registered"
+            );
+        }
+
+        let result = tokio::time::timeout(Duration::from_secs(5), probe.as_mut())
+            .await
+            .expect("probe completes once the key lock is free");
+        assert!(!coordinator.critical_key_registered_for_test(session.id, kind));
+        assert_eq!(
+            coordinator.inner.admission.available_permits(),
+            COORDINATOR_ADMISSION_CAPACITY
+        );
+        if shutdown_first {
+            assert_eq!(
+                result,
+                Err(SelectionCoordinatorError::Unavailable.to_string())
+            );
+        } else {
+            assert_eq!(result, Ok(CriticalAdmissionOutcome::Completed(())));
+        }
+        coordinator.close_and_join().await;
+    }
+
+    #[tokio::test]
+    async fn critical_success_is_observed_only_after_admission_and_key_release() {
+        assert_critical_completion_observed_after_release(false).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_drained_critical_failure_is_observed_only_after_admission_and_key_release() {
+        assert_critical_completion_observed_after_release(true).await;
+    }
+
+    #[tokio::test]
+    async fn disposed_envelope_releases_admission_and_critical_key_before_closing_response() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(manager, CancellationToken::new());
+        let key = CriticalAdmissionKey {
+            session_id: Uuid::new_v4(),
+            kind: CriticalAdmissionKind::BackgroundCleanup,
+        };
+        assert!(coordinator.inner.critical_keys.lock().unwrap().insert(key));
+        let admission = Arc::clone(&coordinator.inner.admission)
+            .try_acquire_owned()
+            .expect("acquire admission for disposal fixture");
+        let (response, mut receiver) = oneshot::channel();
+        let envelope = CoordinatorEnvelope {
+            _admission: admission,
+            _critical_admission: Some(CriticalAdmissionGuard::new(&coordinator.inner, key)),
+            job: CoordinatorJob::Snapshot { response },
+            _create_ticket: None,
+        };
+
+        // Lexical scope; the disposer thread blocks on this lock at the key.
+        let disposer =
+            {
+                let keys = coordinator.inner.critical_keys.lock().unwrap();
+                let disposer = std::thread::spawn(move || drop(envelope));
+                let anchor = Instant::now();
+                while coordinator.inner.admission.available_permits()
+                    != COORDINATOR_ADMISSION_CAPACITY
+                {
+                    assert!(
+                        anchor.elapsed() < Duration::from_secs(10),
+                        "#1580: disposed envelope did not return admission first"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert!(
+                matches!(receiver.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+                "#1580: disposal closed the caller's response before releasing the critical key"
+            );
+                assert!(keys.contains(&key));
+                disposer
+            };
+        disposer.join().expect("join envelope disposer");
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(!coordinator.critical_key_registered_for_test(key.session_id, key.kind));
+    }
+
+    #[tokio::test]
+    async fn restore_barrier_start_acknowledgement_keeps_admission_until_release() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(manager)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build restore admission test app");
+        coordinator
+            .start(app.handle().clone())
+            .expect("start selection coordinator");
+
+        let guard = coordinator
+            .submit_restore_first()
+            .await
+            .expect("submit first restore job");
+        assert_eq!(
+            coordinator.inner.admission.available_permits(),
+            COORDINATOR_ADMISSION_CAPACITY - 1,
+            "RestoreBarrier start acknowledgement is not completion; admission stays held"
+        );
+        guard.finish();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while coordinator.inner.admission.available_permits() != COORDINATOR_ADMISSION_CAPACITY
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("restore barrier returns admission after release");
         coordinator.close_and_join().await;
     }
 
