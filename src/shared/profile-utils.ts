@@ -183,6 +183,38 @@ export function profileConfiguredElsewhere(
   );
 }
 
+/**
+ * #2057 (D1) - a cell "holds" a profile slot when deleting that slot would
+ * destroy something the user entered: an enabled cell changes launch behaviour
+ * even with an empty command (see cellForLetter), and a disabled cell can still
+ * carry a command, env or notes. A disabled, fully empty cell does not hold it.
+ */
+export function profileCellHoldsData(cell: ProfileCellConfig | null | undefined): boolean {
+  if (!cell) return false;
+  if (cell.enabled) return true;
+  if ((cell.command ?? "").trim() !== "") return true;
+  if (Object.keys(cell.env ?? {}).length > 0) return true;
+  return (cell.notes ?? "").trim() !== "";
+}
+
+/**
+ * #2057 (D1/D2) - ids of the live coding agents that hold `letter`, in
+ * `liveAgentIds` order (`settings.data.agents` order). Ids absent from
+ * `liveAgentIds` are dead data with no UI that could clear them, so they are
+ * not holders and the slot stays deletable; the slot delete removes them.
+ */
+export function profileSlotHolders(
+  profiles: CodingAgentProfilesConfig,
+  letter: string,
+  liveAgentIds: readonly string[],
+): string[] {
+  return liveAgentIds.filter(
+    (id) =>
+      profileCellHoldsData(profiles.profilesByAgent[id]?.[letter]) ||
+      (profiles.profileLabelsByAgent[id]?.[letter] ?? "").trim() !== "",
+  );
+}
+
 export function profileBadgeKind(
   profiles: CodingAgentProfilesConfig,
   agentId: string,
