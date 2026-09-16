@@ -805,7 +805,7 @@ jobs:
           #      nothing. linux_display_server_classification is Linux-gated and
           #      cannot exist unless mod.rs really compiled `native` on Linux.
           #      Not redundant with 3: a sentinel renamed, or moved out of the
-          #      filter, with the count left at 22 keeps guards 1 and 3 green
+          #      filter, with the count left at 24 keeps guards 1 and 3 green
           #      and only this grep red -- that is probe P1, measured. The
           #      other way mod.rs can lose `native` on Linux, narrowing its
           #      cfg, never reaches this line: the crate stops compiling, cargo

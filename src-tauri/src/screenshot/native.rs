@@ -1349,7 +1349,8 @@ const fn overlay_window_traits() -> OverlayWindowTraits {
     }
 }
 
-/// Build one transparent, always-on-top overlay per monitor. Mirrors the
+/// Build one always-on-top overlay per monitor. Transparency is applied off
+/// macOS only (the frozen overlay image is opaque). Mirrors the
 /// Resource Monitor builder (`commands::window`): logical inner size/position from
 /// the monitor scale, corrected to physical bounds post-build. On any failure the
 /// caller clears state and destroys already-created overlays.
