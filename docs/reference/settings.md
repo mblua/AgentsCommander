@@ -26,6 +26,20 @@ On `v0.33.0` and `main`, `agentscommander_<suffix>.exe` never uses `$HOME`. If i
 - `terminalSnapshotsEnabled` is security-sensitive. AgentsCommander's own writers serialize through a file lock and only the dedicated Settings compare-and-set action can change it. An out-of-process editor that ignores that lock remains last-writer authority.
 - AC tolerates unknown fields (`serde` skips them) so adding a field will not break an older binary, but the older binary will not honor it.
 
+## Recovering a previous version
+
+AgentsCommander keeps a bounded history of previous `settings.json` versions beside the live file: `settings.backup.1.json` through `settings.backup.5.json`. Slot 1 is the version the most recent save replaced; slot 5 is the oldest kept. A save that produces bytes identical to the file already on disk does not rotate, so repeated no-op saves do not evict real history.
+
+Recovery is a manual copy: while AgentsCommander is closed, copy the slot you want over `settings.json`. The slots hold the same secrets as `settings.json`, so treat them with the same care.
+
+> A slot is written without a temp-and-rename, so a crash during rotation can leave
+> `settings.backup.1.json` truncated. AgentsCommander does not report a truncated
+> `settings.json` as an error: it logs the parse failure and starts from default
+> settings, so a bad copy looks like a silently reset configuration, not a failure.
+> Before starting AgentsCommander, confirm the file you copied is complete and valid
+> JSON. If slot 1 is short or does not parse, use `settings.backup.2.json`, which holds
+> the generation before it.
+
 ## Example
 
 A minimal `settings.json`:
