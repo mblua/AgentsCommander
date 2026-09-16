@@ -85,15 +85,15 @@ jobs:
 
       - name: cargo check
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
 
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --lib --bins --tests
+        run: cargo test --locked --lib --bins --tests
 
       # IS #1850: ordinary Windows runs prove the copy-and-run mechanism and
       # refusal safety only. Refusal safety and the mechanism control moved off
@@ -681,11 +681,11 @@ jobs:
 
       - name: cargo check
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
 
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # IS #1938: cross-process local-config write-lock proof. pipefail catches a
       # failing test, the identifier greps catch a filter that selected nothing
@@ -730,7 +730,7 @@ jobs:
           set -euo pipefail
           TEST='tests::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start'
 
-          cargo test --lib "$TEST" -- --exact --test-threads=1 --nocapture 2>&1 | tee test-1577.log
+          cargo test --locked --lib "$TEST" -- --exact --test-threads=1 --nocapture 2>&1 | tee test-1577.log
 
           # Three independent guards, and none is redundant:
           #
@@ -793,7 +793,7 @@ jobs:
           # Linux-gated tests. LINUX count (Windows runs 20); update it in the
           # same commit that adds or removes a test in that module.
           EXPECTED=22
-          cargo test --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-1842.log
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-1842.log
 
           # Three guards, matching the #1577 step, none redundant:
           #   1. The exit code, via `set -o pipefail` (LOAD-BEARING through the
@@ -1512,7 +1512,7 @@ jobs:
 
       - name: cargo build --release (links the binary release.yml ships)
         working-directory: src-tauri
-        run: cargo build --release --bins
+        run: cargo build --locked --release --bins
 
       # The linker proved the -l flags resolve at BUILD time. This proves the
       # same libraries resolve at LOAD time on this runner, which is what
@@ -1645,11 +1645,11 @@ jobs:
 
       - name: cargo check
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
 
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       # IS #1938: cross-process local-config write-lock proof. pipefail catches a
       # failing test, the identifier greps catch a filter that selected nothing
