@@ -1,259 +1,454 @@
-# Plan #2088: remove the exponential-backtracking regex in `scripts/check-test-debt.mjs`
+# Plan #2088 (round 2): replace the super-linear `fnRe` with a linear scanner in `scripts/check-test-debt.mjs`
 
 Status: READY_FOR_IMPLEMENTATION
 
-- Issue: https://github.com/mblua/AgentsCommander/issues/2088 — Sonar key `AaBBZr7CbbRnCQnTRHkL`,
-  rule `javascript:S5852`, VULNERABILITY / CRITICAL / `SECURITY:HIGH`.
+- Issue: https://github.com/mblua/AgentsCommander/issues/2088. PR: https://github.com/mblua/AgentsCommander/pull/2099
+  (open; do not merge). SonarCloud on the PR, line 307:
+  - `javascript:S8786` key `AaCqh-uoqWlJPkFQ9mDs` — non-exponential (super-linear) backtracking;
+  - `javascript:S5843` key `AaCqh-uoqWlJPkFQ9mDt` — regex complexity 49 > 20;
+  - `javascript:S5852` is already clear from round 1. Gate: `new_maintainability_rating` 5 vs threshold 1.
 - Repo `repo-AgentsCommander`; branch `fix/2088-sonar-regex-backtracking`; base (frozen at authoring,
-  2026-09-16 UTC): `5203c4e3b0b5909fdc12337194c886b1514966c3` = local HEAD = remote branch head
-  (`git ls-remote origin refs/heads/fix/2088-sonar-regex-backtracking`), tracked tree clean. Every
-  line number below refers to that SHA; if a quoted line no longer matches, re-anchor on the quoted
-  text, never on the number.
-- Class: Lite (band 1-25), Express: one source file, one line, mechanical regex replacement, no
-  test-file change, no dependency, no IPC, no product code. Owner `ac-dev-rust-v4`; coordinator
-  `ac-tech-lead-v4`.
+  2026-09-16 UTC): `8a2f81f7f726d4ec282cd46bde149c06ba9e3048` = local HEAD = remote branch head.
+  Tracked tree clean. Every line number below refers to that SHA; if a quoted line no longer matches,
+  re-anchor on the quoted text, never on the number.
+- Class: **Lite** (round 1 was Express). One source file and one function's matcher, but the change is
+  structural: the whole-match regex is replaced by a linear scanner plus five helpers (+87/-8 lines in
+  one file), and `scanRustFile`'s observable behavior is proven by a differential harness. No test
+  file, no dependency, no IPC, no product code. Band 1-25 unchanged; owner `ac-dev-rust-v4`,
+  coordinator `ac-tech-lead-v4`; grinch reviews the proofs below.
 - Canonical plan: this file. Root `.gitignore` ignores `/plans/`, so commit with
   `git add -f plans/2088-sonar-regex-backtracking.md`.
 
 ## 1. Objective
 
-Replace the single regular expression `fnRe` at `scripts/check-test-debt.mjs:307` with a
-behaviorally identical pattern that no longer backtracks exponentially, so Sonar S5852
-`AaBBZr7CbbRnCQnTRHkL` clears while the test-debt report stays byte-identical.
+Delete the single (round-1) regex `fnRe` at `scripts/check-test-debt.mjs:307` and scan the same
+language with linear JavaScript, so `javascript:S8786` and `javascript:S5843` clear on PR #2099
+(gate green), `javascript:S5852` stays clear, runtime is linear on adversarial inputs, and
+`npm run test:debt` output stays byte-identical.
 
-## 2. Verified cause
+## 2. Round-2 verified cause
 
-Symbol: `fnRe` inside `scanRustFile` (`scripts/check-test-debt.mjs:307`), matched against the
-masked source (`masked = maskCommentsAndStrings(source, { singleQuote: false })`, `:301`).
-
-Before (exact, line 307):
+`fnRe` (exact literal, base line 307):
 
 ```js
-  const fnRe = /((?:\s*#\s*\[[^\]]*\]\s*)*)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>)?\s*\(/g;
+const fnRe = /((?:\s*#\s*\[[^\]]*\]\s*(?:#\s*\[[^\]]*\]\s*)*)?)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>\s*)?\(/g;
 ```
 
-Cause: in the repeated group `(?:\s*#\s*\[[^\]]*\]\s*)*` every iteration both starts and ends with
-`\s*`, and the group is followed by another `\s*`. For each whitespace gap between two attributes
-(`]`…`#`) the trailing `\s*` of the previous iteration and the leading `\s*` of the next can each
-take part of the same gap, so a run of g attributes has ~2^g parses. On input with many attributes
-and no `fn` — the scanner is fed arbitrary file bytes — the failing match explores all of them.
+`scslre` on that literal (the library Sonar uses for both rules, pinned 0.3.0) reports four
+non-exponential causes and no exponential one:
 
-Measured at planning time against the base file, with the candidate literal substituted in a
-scratch copy (Node v22.23.2, Linux x86-64, min of 3 runs, input `("#[x] " x N) + "y"`):
-
-| N | old `fnRe` | new `fnRe` | ratio |
+| type | char | start quant | end quant |
 |---|---|---|---|
-| 22 | 143.8 ms | 0.012 ms | 11,655x |
-| 24 | 579.2 ms | 0.014 ms | 42,755x |
-| 26 | 2312.1 ms | 0.014 ms | 159,632x |
+| Trade | `' '` | `\s*@21-24` (inside the attribute group) | `\s*@49-52` (outer) |
+| Trade | `' '` | `\s*@41-44` (group trailing) | `\s*@49-52` (outer) |
+| Move | `' '` | — | `\s*@4-7` (group leading) |
+| Move | `' '` | — | `\s*@49-52` (outer) |
 
-Old grows ~4x per +2 attributes (exponential); new is flat.
+`slow-regex` is silent (no exponential report) and `regex-complexity` returns 49. Sonar's `S8786`
+fires on exactly this shape (`hasNonExponential && !hasExponential`); `S5843` fires above 20. A
+regex-only fix cannot satisfy both, measured with the same local judge:
+
+| candidate | scslre | complexity |
+|---|---|---|
+| `((?:\s*#\s*\[[^\]]*\]\s*(?:#\s*\[[^\]]*\]\s*)*)?)` (attribute prefix alone) | `Move` | 22 |
+| `(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>\s*)?\(` (header, no attributes) | clean | 26 |
+| `(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)` (stops before `(`) | clean | 19 |
+
+Reason: any pattern that can begin a match with an unbounded whitespace/attribute quantifier yields
+a `Move` report (the unanchored retry), and the attribute grammar alone costs 22 > 20. The matcher
+therefore has to leave the regex engine.
 
 ## 3. In scope / out of scope
 
-In scope: exactly one line, `scripts/check-test-debt.mjs:307`.
+In scope: exactly `scripts/check-test-debt.mjs` — the `scanRustFile` matcher and five new helper
+functions (section 4). The deleted literal is the only removed line group.
 
-Out of scope (binding):
-
-- Every other regex and function in the script: `maskSource`/`maskCommentsAndStrings`,
-  `findMatchingBrace`, `moduleRanges`, the frontend scanners, the allowlist loader, `printReport`.
-- `test-debt.allowlist.json` (must not change), `package.json`, any test file, any workflow.
-- The engine's unanchored scan retries: the fix removes the exponential per attempt; V8 still
-  retries each start offset, so a hypothetical file made only of `#[x] ` repeats and no `fn`
-  remains polynomial in file size (the V8 instrument of AC3b already trips at N≥500 for the
-  fixed pattern). That is pre-existing, is not the S5852 exponential finding, and changing it would
-  alter match boundaries and captures. Accepted boundary; probe sizes are chosen below it.
-- The report format, categories, ids and allowlist semantics: preserved by construction (section 4)
-  and proven by AC2.
+Out of scope (binding): every other regex and function in the file (including `S5843` on line 287,
+which is pre-existing, untouched, and not on the PR); `test-debt.allowlist.json`, `package.json`,
+`plans/` (except this file), any test file, any workflow. The report format, categories, ids,
+allowlist semantics and `--self-test` fixtures are preserved by construction (section 5) and proven
+by AC1/AC2/AC7.
 
 ## 4. Decided solution (exact change; nothing is left to the implementer)
 
-After (exact, replaces line 307; no other edit):
+Insert the five helpers after `hasExecutableRustBody` (after base line 297) and before
+`function scanRustFile` (base line 299):
+
+```js
+function rustAttributeEnd(source, index) {
+  if (source[index] !== '#') return -1;
+  const open = skipWhitespace(source, index + 1);
+  if (source[open] !== '[') return -1;
+  const close = source.indexOf(']', open + 1);
+  return close === -1 ? -1 : close + 1;
+}
+
+function rustPubBodyEnd(source, index) {
+  if (!source.startsWith('pub', index)) return -1;
+  let after = index + 3;
+  const open = skipWhitespace(source, after);
+  if (source[open] === '(') {
+    const close = source.indexOf(')', open + 1);
+    if (close !== -1) after = close + 1;
+  }
+  const body = skipWhitespace(source, after);
+  return body > after ? body : -1;
+}
+
+function rustFnHeaderAt(source, index) {
+  const pubBody = rustPubBodyEnd(source, index);
+  if (pubBody !== -1) {
+    const header = rustFnTailAt(source, pubBody);
+    if (header !== null) return header;
+  }
+  return rustFnTailAt(source, index);
+}
+
+function rustFnTailAt(source, start) {
+  let cursor = start;
+  if (source.startsWith('async', cursor)) {
+    const afterAsync = skipWhitespace(source, cursor + 5);
+    if (afterAsync > cursor + 5) cursor = afterAsync;
+  }
+  if (!source.startsWith('fn', cursor)) return null;
+  const nameStart = skipWhitespace(source, cursor + 2);
+  if (nameStart === cursor + 2) return null;
+  if (!/[A-Za-z_]/.test(source[nameStart] ?? '')) return null;
+  let nameEnd = nameStart + 1;
+  while (isIdentifierChar(source[nameEnd])) nameEnd += 1;
+  let open = skipWhitespace(source, nameEnd);
+  if (source[open] === '<') {
+    let close = open + 1;
+    while (close < source.length && source[close] !== '>' && source[close] !== '{' && source[close] !== '}') close += 1;
+    if (source[close] !== '>') return null;
+    open = skipWhitespace(source, close + 1);
+  }
+  if (source[open] !== '(') return null;
+  return { name: source.slice(nameStart, nameEnd), end: open + 1 };
+}
+
+function rustStepAt(source, cursor, runStart, runHasAttr) {
+  const ch = source[cursor];
+  if (/\s/.test(ch)) {
+    return { next: cursor + 1, runStart: runStart === -1 ? cursor : runStart, runHasAttr };
+  }
+  if (ch === '#') {
+    const attrEnd = rustAttributeEnd(source, cursor);
+    if (attrEnd === -1) return { next: cursor + 1, runStart: -1, runHasAttr: false };
+    return { next: attrEnd, runStart: runStart === -1 ? cursor : runStart, runHasAttr: true };
+  }
+  const header = rustFnHeaderAt(source, cursor);
+  if (header === null) return { next: cursor + 1, runStart: -1, runHasAttr: false };
+  const index = runStart === -1 ? cursor : runStart;
+  const attrs = runHasAttr ? source.slice(index, cursor) : '';
+  return { match: { index, attrs, end: header.end, name: header.name }, next: header.end, runStart: -1, runHasAttr: false };
+}
+
+function* rustFnMatches(source) {
+  let cursor = 0;
+  let runStart = -1;
+  let runHasAttr = false;
+  while (cursor < source.length) {
+    const step = rustStepAt(source, cursor, runStart, runHasAttr);
+    if (step.match) yield step.match;
+    cursor = step.next;
+    runStart = step.runStart;
+    runHasAttr = step.runHasAttr;
+  }
+}
+```
+
+Then replace exactly these lines of `scanRustFile` (base lines 307-315):
 
 ```js
   const fnRe = /((?:\s*#\s*\[[^\]]*\]\s*(?:#\s*\[[^\]]*\]\s*)*)?)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>\s*)?\(/g;
-```
+  let match;
 
-Diff:
+  while ((match = fnRe.exec(masked)) !== null) {
+    const attrs = match[1] || '';```
 
-```diff
--  const fnRe = /((?:\s*#\s*\[[^\]]*\]\s*)*)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>)?\s*\(/g;
-+  const fnRe = /((?:\s*#\s*\[[^\]]*\]\s*(?:#\s*\[[^\]]*\]\s*)*)?)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>\s*)?\(/g;
-```
+with:
 
-Both edits are required in the same one-line replacement:
+```js
+  for (const match of rustFnMatches(masked)) {
+    const attrs = match.attrs;```
 
-- **D1 — attribute run unrolled.** `(?:\s*#\s*\[[^\]]*\]\s*)*` becomes
-  `(?:\s*#\s*\[[^\]]*\]\s*(?:#\s*\[[^\]]*\]\s*)*)?`. The first attribute keeps its leading `\s*`;
-  every later attribute starts directly at `#`, so the whitespace before it can only be consumed by
-  the previous attribute's trailing `\s*`. The outer `(?:...)?` keeps the group participating when
-  there is no attribute, so `match[1]` stays `''` exactly as today. No iteration of a repeat
-  contains a quantifier that can also match the next iteration's first token.
-- **D2 — generic-list whitespace merged.** `\s*(?:<[^>{}]*>)?\s*\(` becomes
-  `\s*(?:<[^>{}]*>\s*)?\(`, removing the remaining pair of adjacent whitespace quantifiers. Same
-  language, same greedy end: with generics, the optional branch owns the whitespace after `>`;
-  without generics the first `\s*` already consumed all whitespace before `(`.
+No other edit. Decision notes:
 
-Capture groups stay 1 and 2 with the same text; no group is added, removed or renumbered.
-`match.index`, `match[0]`, `fnRe.lastIndex`, `match[0].lastIndexOf('fn ')` and the downstream
-`attrs` test (`:310`, `:324`), `fnStart` (`:311`), `lineOf(source, match.index)` (`:314`) are
-unchanged.
+- D1 — attributes are consumed whole by `rustAttributeEnd` (`#\s*\[[^\]]*\]`), so `fn` text inside an
+  attribute's `[^\]]*` content is skipped instead of matched; the forward run state
+  (`runStart`/`runHasAttr`) replaces the greedy prefix capture.
+- D2 — `rustStepAt` is a separate function only to keep every new function's cognitive complexity
+  ≤ 15 (the SonarJS judge rates the inline loop 28; with the split, all five helpers are clean).
+- D3 — `rustPubBodyEnd`/`rustFnTailAt` mirror the old modifier grammar exactly, including the
+  `pub (crate)` whitespace, the `pub` fall-through to `async`/`fn`, and the `<[^>{}]*>` generics that
+  stop at `>`/`{`/`}`.
+- D4 — the loop yields the same four values the body uses: `index`, `end`, `attrs`, `name`; the body
+  keeps its formulas (`fnStart = index + slice(index, end).lastIndexOf('fn ')`, body search from
+  `end`, `lineOf(source, index)`).
 
-No alternative remains open: this exact literal is the change. In particular, a lazy variant,
-`possessive`/atomic-group emulation, or dropping the leading whitespace from group 1 would either
-keep the ambiguity, change `match[1]`, or shift `match.index` and therefore the reported line
-numbers (the whitespace run can start on the line *before* the attribute, which is existing
-behavior the report depends on).
+Rejected alternatives (no open decision): a lazy/possessive regex or atomic-group emulation keeps
+`Move`/complexity and changes captures; matching `fn` first and reconstructing the prefix backwards
+reorders matches for `fn` text inside attribute content (verified counterexample:
+`#[x(fn b()] fn a(`).
 
-## 5. Equivalence evidence
+## 5. Why this is equivalent (argument + evidence)
 
-Structural argument:
+Old match records are `(index, end, attrs, name)`: the greedy regex starts at the beginning of the
+absorbable run (whitespace and complete attributes) and ends after `(`; downstream code uses only
+`attrs` (filter `/#\s*\[\s*test\b/`), `name`, `index`, `end` (via `fnStart`, `lineOf`, body search).
+The new scanner reproduces every old record whose `attrs` passes that filter, exactly; the only
+records it drops are old intermediate matches of `fn` text inside a complete `#[...]` attribute
+(e.g. `#[x(fn b()] ...`), whose capture is whitespace-only and therefore can never pass the filter;
+the new scanner never adds a record. So findings, warnings, ids, lines and allowlist comparison are
+identical.
 
-- Both patterns accept the same prefix language `{ W0 A1 W1 ... Ak Wk }`, where `Ai` is
-  `#\s*\[[^\]]*\]` and `Wi` is whitespace, followed by the same keyword/generic/`(` tail.
-- Both loops are greedy and `fn` cannot start with `#` or whitespace, so the first successful parse
-  uses the maximal attribute count and puts all trailing whitespace inside group 1; the internal
-  split of each gap does not change the captured text.
-- `\s*\s*` was never able to change the matched text, only the number of paths tried; D2 removes the
-  paths.
+Planning-time evidence (all scratch only, never committed):
 
-Planning-time differential runs (old literal vs new literal, scratch only, no repo file):
-
-| Corpus | Volume | Differing match lists |
+| Harness | Volume | Result |
 |---|---|---|
-| Masked sources exactly as `scanRustFile` feeds them (all `.rs` + `.test.ts`/`.test.tsx` under `src-tauri/src`, `src-tauri/tests`, `src`) | 431 files, 12,375 `fn` matches | 0 |
-| Raw repo files (`.rs`, `.ts`, `.tsx`, `.md`) | 825 files | 0 |
-| Exhaustive all strings, length ≤ 5, over `[space \n \t # [ ] a f n ( ) < > p u b s y c]` | 2,613,660 strings | 0 |
-| Randomized token fuzz (`#[test]`, `pub`, `async`, `<T>`, whitespace, comments, quotes, braces, …) | 200,000 strings | 0 |
+| Full `scanRustFile` output, old vs new | exhaustive A8 = `' # [ ] f n ( )'` len ≤ 8: 19,173,961 strings | 0 failures |
+| Full `scanRustFile` output, old vs new | exhaustive A20 len ≤ 5: 3,368,421 strings | 0 failures |
+| Full `scanRustFile` output, old vs new | token fuzz 200,000 + structured fuzz 200,000 | 0 failures |
+| Full `scanRustFile` output, old vs new | repo corpus 922 files raw + 922 masked (`.rs .ts .tsx .md .json .yml .yaml .html .css .mjs .js`) | 0 failures |
+| Record-level (filtered) | 6,065,166 strings | filtered mismatches 0; new-only 0; old-only 224, all `attrs` never matching the filter |
+| CLI `npm run test:debt` stdout/stderr/exit | repo | byte-identical; `check-test-debt self-test passed` |
 
-Every compared match included `index`, `end`, `match[0]`, `match[1]`, `match[2]`.
-
-Edge cases, all identical in both literals (raw input; the scanner masks comments/strings first):
-
-| Case | Result (both) |
-|---|---|
-| `fn foo(`, `\n\n    fn foo(`, `pub fn foo(`, `pub(crate) async fn foo<T>(`, `fn foo<T>(` | match, `match[1] = ''`, name `foo` |
-| `#[test]\nfn foo(`, `#[a] #[b]    \n   fn foo(`, `#[a]#[b]\nfn foo(`, `#[a]#[b]fn foo(`, `#[test]fn foo(`, `#[]\nfn foo(`, `\r\n    #[test]\r\nfn foo(` | match; `match[1]` is the whole leading-whitespace + attribute run incl. gaps |
-| `\n    #[test]\nfn foo(` | `match.index = 0` (start of the whitespace run, often the previous line) — unchanged |
-| `#[a] # not-attr\nfn foo(` | no attribute captured; match starts at the whitespace before `fn` (`match[1] = ''`) |
-| `#[test]` alone, `fnfoo(`, `fn foo /*c*/ (` | no match |
+Edge cases proven equal in the same sweep: `pub (crate)   async  fn f<T>(`, `#[a]#[b]fn f(`,
+`# [test]`, `#[x(fn b()] fn a(`, `#[cfg(#[test fn b()] fn c(`, `fn foo<fn bar>(`,
+`pub(crate)async fn`, `fn` inside comments (masked), unterminated attributes, and every record whose
+`attrs` matches `/#\s*\[\s*test\b/`.
 
 ## 6. Verification (objective acceptance criteria)
 
-All commands from the repo root, on branch `fix/2088-sonar-regex-backtracking` at base `5203c4e3`
-plus the one-line change.
+Run every command from the repo root (`REPO="$(pwd)"`). Scratch artifacts live in the replica-local
+scratch dir (allowed zone, never committed):
+
+```bash
+SCRATCH="$AGENTSCOMMANDER_ROOT/scratch/2088-proof"
+mkdir -p "$SCRATCH/sonar" "$SCRATCH/perf/src-tauri/src"
+cp scripts/check-test-debt.mjs "$SCRATCH/base.mjs"
+printf '{ "version": 1, "entries": [] }\n' > "$SCRATCH/perf/test-debt.allowlist.json"
+```
 
 **AC1 — self-test.** `npm run test:debt:self` prints `check-test-debt self-test passed` and exits 0.
 
-**AC2 — report identity.** Capture BEFORE on the untouched base, apply the change, capture AFTER:
+**AC2 — report identity.** Capture BEFORE on the untouched base, apply section 4, capture AFTER:
 
 ```bash
-npm run --silent test:debt > /tmp/2088-debt-before.out 2> /tmp/2088-debt-before.err; echo $? > /tmp/2088-debt-before.code
-# apply the one-line replacement (section 4)
-npm run --silent test:debt > /tmp/2088-debt-after.out  2> /tmp/2088-debt-after.err;  echo $? > /tmp/2088-debt-after.code
-cmp /tmp/2088-debt-before.out /tmp/2088-debt-after.out && \
-cmp /tmp/2088-debt-before.err /tmp/2088-debt-after.err && \
-cmp /tmp/2088-debt-before.code /tmp/2088-debt-after.code && echo IDENTICAL
+npm run --silent test:debt > "$SCRATCH/debt-before.out" 2> "$SCRATCH/debt-before.err"; echo $? > "$SCRATCH/debt-before.code"
+# apply section 4
+npm run --silent test:debt > "$SCRATCH/debt-after.out"  2> "$SCRATCH/debt-after.err";  echo $? > "$SCRATCH/debt-after.code"
+cmp "$SCRATCH/debt-before.out" "$SCRATCH/debt-after.out" && cmp "$SCRATCH/debt-before.err" "$SCRATCH/debt-after.err" \
+  && cmp "$SCRATCH/debt-before.code" "$SCRATCH/debt-after.code" && echo IDENTICAL
 npm run test:debt; echo "npm exit=$?"
 ```
 
-Expected: `IDENTICAL`; `npm exit=0`; 34 stdout lines with
-`Ignored Rust tests: 24 discovered, 24 allowlisted, 0 unallowlisted`,
+Expected: `IDENTICAL`; `npm exit=0`; 34 stdout lines incl. `Ignored Rust tests: 24 discovered, 24 allowlisted, 0 unallowlisted`,
 `Placeholder tests: 7 discovered, 7 allowlisted, 0 unallowlisted`,
 `Skipped frontend tests: 0 discovered, 0 allowlisted, 0 unallowlisted`.
-If BEFORE was not captured in time, reconstruct it without touching the worktree (verified at
-planning time to equal `npm run --silent test:debt` on the base file):
+
+**AC3-AC5 — the three Sonar rules, local judge (same engine as SonarCloud).**
 
 ```bash
-git show 5203c4e3:scripts/check-test-debt.mjs > /tmp/2088-check-test-debt-before.mjs
-node /tmp/2088-check-test-debt-before.mjs --root "$PWD" > /tmp/2088-debt-before.out 2> /tmp/2088-debt-before.err
+cd "$SCRATCH/sonar" && npm init -y >/dev/null
+npm i --no-save eslint@9.39.1 eslint-plugin-sonarjs@4.2.1 scslre@0.3.0 @eslint-community/regexpp@4.12.2
+cp "$SCRATCH/base.mjs" base.mjs && cp "$REPO/scripts/check-test-debt.mjs" head.mjs
 ```
 
-**AC3 — no exponential backtracking.**
-
-AC3a, timing probe. Write the two literals below to `/tmp/2088-redos-probe.mjs` (outside the repo;
-do not commit it) and run `node /tmp/2088-redos-probe.mjs`:
+Calibration (why this judge is admissible): on the untouched base it reports exactly
+`regex-complexity 287 (23)`, `super-linear-regex 307`, `regex-complexity 307 (49)` — matching the
+SonarCloud PR keys and the main-branch line 287. `$SCRATCH/sonar/sonar-check.mjs`:
 
 ```js
-const OLD = /((?:\s*#\s*\[[^\]]*\]\s*)*)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>)?\s*\(/g;
-const NEW = /((?:\s*#\s*\[[^\]]*\]\s*(?:#\s*\[[^\]]*\]\s*)*)?)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>\s*)?\(/g;
-function timeOne(re, input) {
-  re.lastIndex = 0;
-  const t0 = process.hrtime.bigint();
-  const m = re.exec(input);
-  return { ms: Number(process.hrtime.bigint() - t0) / 1e6, matched: m !== null };
+import fs from 'node:fs';
+import { Linter } from 'eslint';
+import plugin from 'eslint-plugin-sonarjs';
+
+const linter = new Linter({ configType: 'flat' });
+const config = {
+  plugins: { sonarjs: plugin },
+  rules: {
+    'sonarjs/regex-complexity': 'error',
+    'sonarjs/slow-regex': 'error',
+    'sonarjs/super-linear-regex': 'error',
+  },
+};
+for (const file of process.argv.slice(2)) {
+  const messages = linter.verify(fs.readFileSync(file, 'utf8'), config);
+  console.log(`=== ${file}: ${messages.length} ===`);
+  for (const m of messages) console.log(`  ${m.ruleId} line ${m.line}:${m.column} ${m.message}`);
 }
-for (const n of [22, 24, 26]) {
-  const input = '#[x] '.repeat(n) + 'y';
-  for (const re of [OLD, NEW]) timeOne(re, input); // warm up
-  let oldMin = Infinity, newMin = Infinity;
-  for (let i = 0; i < 3; i += 1) {
-    oldMin = Math.min(oldMin, timeOne(OLD, input).ms);
-    newMin = Math.min(newMin, timeOne(NEW, input).ms);
+```
+
+Run `node sonar-check.mjs base.mjs head.mjs` from `$SCRATCH/sonar`. AC3 (S5852): no `slow-regex`
+report on the changed file, and `scslre` returns zero reports for every regex literal in the changed
+code (verified above: `/\s/`, `/[A-Za-z_]/`, and the untouched `/#\s*\[\s*test\b/` all `[]`).
+AC4 (S8786): base has `super-linear-regex` at 307; changed file has none. AC5 (S5843): changed file
+has exactly one report — `regex-complexity 287 (23)`, pre-existing and not in the PR; no changed line
+has a regex literal above 20. Direct `scslre` cross-check (write as `$SCRATCH/sonar/scslre-literals.mjs`):
+
+```js
+import { analyse } from 'scslre';
+for (const source of ['\\s', '[A-Za-z_]']) console.log(source, analyse({ source, flags: '' }).reports);
+```
+
+**AC6 — linear runtime (the concern behind S8786).** `$SCRATCH/bench.mjs` (scratch only; run with
+cwd `$SCRATCH`):
+
+```js
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+
+const [, , script, kind, ...sizes] = process.argv;
+const file = './perf/src-tauri/src/pathological.rs';
+for (const n of sizes.map(Number)) {
+  fs.writeFileSync(file, (kind === 'attr' ? '#[x] ' : ' ').repeat(n) + 'y');
+  const start = process.hrtime.bigint();
+  execFileSync('node', [script, '--root', './perf'], { stdio: 'ignore' });
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  console.log(`${kind} N=${n} ${ms.toFixed(1)}ms`);
+}
+```
+
+```bash
+cd "$SCRATCH"
+node bench.mjs base.mjs attr 2000 4000 8000 16000 32000
+node bench.mjs "$REPO/scripts/check-test-debt.mjs" attr 2000 4000 8000 16000 32000 64000 128000 256000
+node bench.mjs base.mjs ws 2000 4000 8000 16000 32000
+node bench.mjs "$REPO/scripts/check-test-debt.mjs" ws 2000 4000 8000 16000 32000 64000 128000 256000
+```
+
+Planning-time (Node v22.23.2) `attr` input: base 89.6 / 275.7 / 1044.4 / 4141.0 / 16318.7 ms at
+2k/4k/8k/16k/32k (≈4x per doubling, quadratic); new 27.7 / 30.0 / 36.3 / 75.5 / 94.2 / 107.1 /
+165.7 / 284.3 ms at 2k..256k (linear). `ws` input: base 21.7 / 32.8 / 57.6 / 159.5 / 577.6 ms; new
+21.4 / 22.3 / 24.6 / 35.6 / 31.7 / 44.6 / 61.9 / 95.0 ms to 256k. `'fn ' * 100000 + 'y'` (300 KB):
+base 105.4 ms, new 115.6 ms. Pass condition: new grows linearly with N (no ~4x per doubling) and
+stays under 400 ms at 256k.
+
+**AC7 — equivalence harness (reproduces section 5).** Build the two libs from the base snapshot and
+the changed file:
+
+```bash
+sed '/^try {$/,$d' "$SCRATCH/base.mjs" > "$SCRATCH/old-lib.mjs"
+printf 'export { scanRustFile, scanFrontendFile, scan, maskComments, maskCommentsAndStrings, lineOf, skipWhitespace };\n' >> "$SCRATCH/old-lib.mjs"
+sed '/^try {$/,$d' "$REPO/scripts/check-test-debt.mjs" > "$SCRATCH/new-lib.mjs"
+printf 'export { scanRustFile, scanFrontendFile, scan, maskComments, maskCommentsAndStrings, lineOf, skipWhitespace, rustFnHeaderAt, rustAttributeEnd, rustStepAt, rustFnMatches };\n' >> "$SCRATCH/new-lib.mjs"
+```
+
+`$SCRATCH/equiv.mjs` (scratch only; run with cwd `$SCRATCH`):
+
+```js
+import fs from 'node:fs';
+import * as oldLib from './old-lib.mjs';
+import * as newLib from './new-lib.mjs';
+
+const realRead = fs.readFileSync;
+let source = '';
+fs.readFileSync = (p, ...rest) => (p === '/fake/x.rs' ? source : realRead(p, ...rest));
+
+let tested = 0;
+function check(text) {
+  source = text;
+  tested += 1;
+  const a = JSON.stringify(oldLib.scanRustFile('/fake', '/fake/x.rs'));
+  const b = JSON.stringify(newLib.scanRustFile('/fake', '/fake/x.rs'));
+  if (a !== b) {
+    console.log('MISMATCH', JSON.stringify(text));
+    console.log('old', a);
+    console.log('new', b);
+    process.exit(1);
   }
-  console.log(`${n}\told=${oldMin.toFixed(1)}ms\tnew=${newMin.toFixed(3)}ms\tratio=${Math.round(oldMin / newMin)}x`);
 }
+
+function exhaustive(alphabet, maxLen) {
+  const n = alphabet.length;
+  const idx = new Array(maxLen).fill(0);
+  for (let len = 0; len <= maxLen; len += 1) {
+    idx.fill(0);
+    for (;;) {
+      let s = '';
+      for (let i = 0; i < len; i += 1) s += alphabet[idx[i]];
+      check(s);
+      let pos = len - 1;
+      while (pos >= 0) {
+        idx[pos] += 1;
+        if (idx[pos] < n) break;
+        idx[pos] = 0;
+        pos -= 1;
+      }
+      if (pos < 0) break;
+    }
+  }
+}
+
+let seed = 123456789;
+const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+function fuzz(tokens, iterations, maxTokens) {
+  for (let i = 0; i < iterations; i += 1) {
+    const count = 1 + Math.floor(rnd() * maxTokens);
+    let s = '';
+    for (let j = 0; j < count; j += 1) s += tokens[Math.floor(rnd() * tokens.length)];
+    check(s);
+  }
+}
+
+exhaustive([' ', '#', '[', ']', 'f', 'n', '(', ')'], 8);
+exhaustive([' ', '\n', '#', '[', ']', 'f', 'n', 'p', 'u', 'b', 'a', 's', 'y', 'c', '(', ')', '<', '>', '_', '{'], 5);
+fuzz(['#[', ']', ' ', '\n', '\t', 'fn ', 'fn', 'foo(', 'pub', 'pub ', 'pub(crate) ', 'async ', 'async', '#[test]', 'x', '(', ')', '<T>', '<', '>', '{', '}', '_', '#[a]#[b]'], 200000, 10);
+fuzz(['#[test]\n', '#[ignore]\n', '#[cfg(test)]\n', '#[tokio::test]\n', 'fn ', 'foo', 'bar', '(', ')', ' { ', '}', '\n', 'pub ', 'async ', 'pub(crate) ', ' ', '  ', '\n\n', '<T>', '', 'x', '_9', 'fn ', '#[', ']', '[x', '] ', 'fn x('], 200000, 14);
+console.log(`tested=${tested} failures=0`);
 ```
 
-Pass condition: new < 50 ms at every N and old > 100 ms at N=26, ratio > 1000x at N=26, and old
-grows ~4x per +2 while new stays flat. Planning-time result:
-`22 old=143.8 new=0.012 (11,655x)`, `24 old=579.2 new=0.014 (42,755x)`,
-`26 old=2312.1 new=0.014 (159,632x)`.
+Run `cd "$SCRATCH" && node equiv.mjs`. Pass condition: `tested=22942382 failures=0`
+(19,173,961 + 3,368,421 + 200,000 + 200,000). Also run the repo corpus comparison (922 files raw +
+922 masked, `JSON.stringify` per file) and `node scripts/check-test-debt.mjs` vs
+`node "$SCRATCH/base.mjs"` output (`cmp`).
 
-AC3b, threshold instrument (timing-independent pass/fail). V8 counts backtracks and abandons the
-backtracking engine above a threshold; the trace line goes to stderr. Old must fall back, new must
-not:
+**AC8 — footprint.**
 
 ```bash
-node --enable-experimental-regexp-engine-on-excessive-backtracks \
-     --regexp-backtracks-before-fallback=100000 --trace-experimental-regexp-engine -e '
-const re = /((?:\s*#\s*\[[^\]]*\]\s*)*)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>)?\s*\(/g;
-console.log("result:", re.exec("#[x] ".repeat(26) + "y") === null ? "null" : "match");
-' 2>&1
-
-node --enable-experimental-regexp-engine-on-excessive-backtracks \
-     --regexp-backtracks-before-fallback=100000 --trace-experimental-regexp-engine -e '
-const re = /((?:\s*#\s*\[[^\]]*\]\s*(?:#\s*\[[^\]]*\]\s*)*)?)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>\s*)?\(/g;
-console.log("result:", re.exec("#[x] ".repeat(26) + "y") === null ? "null" : "match");
-' 2>&1
-```
-
-Expected: first command prints `Experimental execution (oneshot) of regexp …` plus `result: null`
-(>100,000 backtracks); second prints only `result: null` (no fallback). Verified at planning time.
-
-**AC4 — footprint.** After the change:
-
-```bash
-git diff --stat        # 1 file changed, 1 insertion(+), 1 deletion(-)
+git diff --stat        # 1 file changed, 87 insertions(+), 8 deletions(-)
 git diff --name-only   # scripts/check-test-debt.mjs
 git diff --check       # no output
-git status --porcelain # no source changes; the plan stays ignored by /plans/ until force-added
+git status --porcelain # only the plan (force-added) and no source changes
 ```
 
-No test file, allowlist, `package.json` or workflow is touched.
+**AC9 — SonarCloud final (the actual judge).** After the implementation commit is pushed:
+
+```bash
+curl -s "https://sonarcloud.io/api/qualitygates/project_status?projectKey=mblua_AgentsCommander&pullRequest=2099"
+curl -s "https://sonarcloud.io/api/issues/search?componentKeys=mblua_AgentsCommander&pullRequest=2099&resolved=false"
+```
+
+Pass condition: `"status":"OK"` (new maintainability rating 1) and the issues search shows neither
+`AaCqh-uoqWlJPkFQ9mDs` nor `AaCqh-uoqWlJPkFQ9mDt` (expected `total: 0`).
 
 ## 7. Risks and rollback
 
-- Blast radius: the developer debt report only. A wrong match would change findings/ids/lines, but
-  the report is allowlisted exactly and AC2 pins it byte-for-byte; AC1 covers the fixtures.
+- Blast radius: the developer debt report only. A wrong matcher would change findings/ids/lines, but
+  AC2 pins the report byte-for-byte and AC7 sweeps ~23M inputs plus the repo corpus.
+- New-code smells: the five helpers are each below the SonarJS thresholds (cognitive ≤ 15; no regex
+  literal above complexity 20; no `slow-regex`/`super-linear-regex` report). The only remaining file
+  issues are pre-existing and untouched (line 287 `S5843`, line 299 `S3776` on the base).
 - No product, IPC, persistence, release or CI-contract change; the script has no dependencies.
-- Revert is a single-line revert of one commit. No migration, no rollout.
+- Revert is one commit; no migration, no rollout.
 
 ## 8. Implementation order
 
-1. Capture the BEFORE report (AC2).
-2. Apply the exact one-line replacement from section 4.
-3. Run AC1, AC2, AC3a, AC3b and AC4; keep the raw outputs.
-4. Commit the source line as `fix(2088): remove exponential-backtracking fn regex in test-debt scan`
+1. Snapshot the base script and capture the BEFORE report (AC2); build the scratch judge (AC3-AC5).
+2. Apply exactly section 4.
+3. Run AC1, AC2, AC3-AC5, AC6, AC7, AC8; keep raw outputs.
+4. Commit the source as `fix(2088): replace the super-linear fnRe with a linear test-debt scanner`
    plus the plan (`git add -f plans/2088-sonar-regex-backtracking.md`); push the branch.
-   No PR/review ceremony is in scope for this Express band unless the coordinator asks.
-5. Reply to `ac-tech-lead-v4` with the plan path, commit SHA, the raw AC1-AC4 evidence, and the
-   Express confirmation (one file, one line, no test-file change).
+5. Poll AC9 until SonarCloud re-analyses the PR; keep the API JSON as evidence.
+6. Reply to `ac-tech-lead-v4` with plan path, commit SHA, Express/Lite, AC1-AC9 evidence and the
+   SonarCloud gate JSON.
 
 ## Plan Contract
 
-No TBD, no open decision, no competing alternative: the exact before/after literals in section 4 are
-the sole change. The single touched symbol is `fnRe` in `scanRustFile`, `scripts/check-test-debt.mjs`
-line 307 at base `5203c4e3`. The single changed file is `scripts/check-test-debt.mjs`. Every
-acceptance criterion is a command with an objective pass condition (section 6). The only new file is
-this plan; the implementation diff is one line.
+No TBD, no open decision, no competing alternative: section 4 is the sole change. The single changed
+file is `scripts/check-test-debt.mjs`; the matcher moves from regex to code, with the same findings
+and warnings. Every acceptance criterion is a command with an objective pass condition; AC9 is the
+external judge. The only new file is this plan. Round-1's V8 timing/backtrack probe is obsolete and is
+replaced by AC6 (linear scaling) and AC3-AC5 (the pinned SonarJS/scslre judge).
