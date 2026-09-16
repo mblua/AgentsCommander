@@ -638,7 +638,7 @@ graph TD
 
 ## 8. Persistence: Files on Disk
 
-The current `main` source selects the application config directory once at runtime: a nonblank public override wins; otherwise an executable without an underscore suffix uses `$HOME/.agentscommander`, and an executable with an underscore suffix uses only its successfully probed adjacent candidate, never the home directory. Without `portable.txt`, a conclusively unwritable candidate stops startup with a message that says to move the executable to a writable folder or set `AGENTSCOMMANDER_CONFIG_DIR`; with `portable.txt` any write failure stops startup, and indeterminate probes stop startup in both cases, with a message that says to set `AGENTSCOMMANDER_CONFIG_DIR`. `v0.33.0` is the first release with this resolver. `v0.30.3` immediately selects a derivable adjacent path and has none of those public override, marker, or probe branches. A renamed binary is isolated only when its exact version selects a distinct path. See [Directory layout](directory-layout.md#the-config-dir-selection-rule) for the full versioned contract.
+The current `main` source selects the application config directory once at runtime: a nonblank public override wins; otherwise an executable without an underscore suffix uses `$HOME/.agentscommander`, and an executable with an underscore suffix uses only its successfully probed adjacent candidate, never the home directory. A conclusively unwritable candidate stops startup with a message that says to move the executable to a writable folder or set `AGENTSCOMMANDER_CONFIG_DIR`; an indeterminate write result also stops startup, with a message that says to set `AGENTSCOMMANDER_CONFIG_DIR`. `v0.33.0` is the first release with this resolver. `v0.30.3` immediately selects a derivable adjacent path and has none of those public override, marker, or probe branches. A renamed binary is isolated only when its exact version selects a distinct path. See [Directory layout](directory-layout.md#the-config-dir-selection-rule) for the full versioned contract.
 
 ```mermaid
 graph TD
@@ -759,7 +759,7 @@ graph TD
 | `phone/messaging.rs` | Message pump and delivery |
 | `phone/consumption.rs` | Message consumption tracking |
 | `phone/terminal_snapshot.rs` | Snapshot request/response plumbing |
-| `config/mod.rs` | `config_dir()`: current `main` override, adjacent-candidate, marker, write-probe, and home-fallback resolution; inspect release tags for shipped behavior |
+| `config/mod.rs` | `config_dir()`: current `main` override, adjacent-candidate, write-probe, and home-fallback resolution; inspect release tags for shipped behavior |
 | `config/settings.rs` | `AppSettings`, `AgentConfig`, load/save JSON |
 | `config/teams.rs` | Team discovery, FQNs, routing rules |
 | `config/projects.rs` | Dual-path project registry |
