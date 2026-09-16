@@ -218,4 +218,76 @@ describe("ProjectPanel workgroup delete diagnostics workflow", () => {
       rendered.cleanup();
     }
   });
+
+  it("shows the raw delete error for a generic failure and no blocker panel", async () => {
+    const fake = new FakeTransport();
+
+    fake.resolve("new_project", {
+      path: projectPath,
+      registered: true,
+      created: false,
+    });
+    fake.resolve("discover_project", initialDiscovery());
+    fake.onInvoke("delete_workgroup", () => {
+      throw new Error("backend exploded");
+    });
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("wg-1-dev-team"));
+
+      contextMenu(findWorkgroupHeader(rendered.root));
+      await waitFor(() => expect(document.body.textContent).toContain("Delete Room"));
+      click(findButton("Delete Room"));
+
+      await waitFor(() => expect(document.body.textContent).toContain("This action cannot be undone"));
+      click(findButton("Delete"));
+
+      await waitFor(() => expect(document.body.textContent).toContain("backend exploded"));
+      expect(document.body.textContent).not.toContain("Windows reported the room is locked");
+      const retry = Array.from(document.body.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent?.trim() === "Retry"
+      );
+      expect(retry).toBeUndefined();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("shows the unparsable blocker-report error for a malformed BLOCKERS payload", async () => {
+    const fake = new FakeTransport();
+
+    fake.resolve("new_project", {
+      path: projectPath,
+      registered: true,
+      created: false,
+    });
+    fake.resolve("discover_project", initialDiscovery());
+    fake.onInvoke("delete_workgroup", () => {
+      throw "BLOCKERS:not-json";
+    });
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("wg-1-dev-team"));
+
+      contextMenu(findWorkgroupHeader(rendered.root));
+      await waitFor(() => expect(document.body.textContent).toContain("Delete Room"));
+      click(findButton("Delete Room"));
+
+      await waitFor(() => expect(document.body.textContent).toContain("This action cannot be undone"));
+      click(findButton("Delete"));
+
+      await waitFor(() =>
+        expect(document.body.textContent).toContain(
+          "Room is locked, but the blocker report could not be parsed. Try again."
+        )
+      );
+      expect(document.body.textContent).not.toContain("Windows reported the room is locked");
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });
