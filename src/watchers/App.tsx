@@ -22,6 +22,7 @@ import {
 import { isTauri } from "../shared/platform";
 import { settingsStore } from "../shared/stores/settings";
 import { formatClockTime } from "../shared/time-format";
+import { compareCodeUnits } from "../shared/string-order";
 import type { UnlistenFn } from "../shared/transport";
 import type { Session, WatcherActivitySnapshot, WindowGeometry } from "../shared/types";
 import {
@@ -326,7 +327,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
   const truncated = createMemo(() => anyTruncated(snapshots()));
   const missedFrames = createMemo(() => totalPossiblyMissedFrames(snapshots()));
 
-  const watcherOptions = createMemo(() => distinct(rows().map((r) => r.watcherId)).sort());
+  const watcherOptions = createMemo(() => distinct(rows().map((r) => r.watcherId)).sort(compareCodeUnits));
   const agentOptions = createMemo(() => {
     const seen = new Map<string, string>();
     for (const row of rows()) {
@@ -339,7 +340,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
       rows()
         .map((r) => r.workgroup)
         .filter((wg): wg is string => !!wg)
-    ).sort()
+    ).sort(compareCodeUnits)
   );
   // A label the user wrote can repeat while an id cannot, so a duplicate gets a short id
   // suffix rather than two chips that read the same.

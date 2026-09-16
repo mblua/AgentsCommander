@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 import { SettingsAPI } from "../../shared/ipc";
 import type { AppSettings } from "../../shared/types";
+import { compareCodeUnits } from "../../shared/string-order";
 
 
 const [collapsedProjects, setCollapsedProjects] = createSignal<Record<string, boolean>>({});
@@ -16,7 +17,7 @@ function snapshot(): { collapsedProjects: string[]; favoritesCollapsed: boolean 
   return {
     collapsedProjects: Object.keys(map)
       .filter((k) => map[k])
-      .sort(),
+      .sort(compareCodeUnits),
     favoritesCollapsed: favoritesCollapsed(),
   };
 }
