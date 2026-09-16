@@ -4,7 +4,8 @@ Status: READY_FOR_IMPLEMENTATION
 
 - Issue: https://github.com/mblua/AgentsCommander/issues/2075 (OPEN): "ci(security): cargo build --release in pr-regression-gates without --locked (Sonar S8549)". Sonar issue `AaCI_U_rCXUCLYag_fqs`.
 - Repo: `repo-AgentsCommander`; branch `fix/2075-cargo-build-locked`.
-- Base frozen at authoring (2026-09-16 UTC): HEAD = remote branch head = remote `main` = `5203c4e3b0b5909fdc12337194c886b1514966c3`; tracked tree clean. Line numbers below refer to that SHA; if a quoted line stops matching, re-anchor on the quoted text, never on the number.
+- Code base frozen at authoring (2026-09-16 UTC): remote `main` = `5203c4e3b0b5909fdc12337194c886b1514966c3`; branch `fix/2075-cargo-build-locked` adds this plan only (first review at `2bd02887`). Line numbers below refer to the base SHA; if a quoted line stops matching, re-anchor on the quoted text, never on the number.
+- Amended after Grinch CHANGES_REQUIRED on `2bd02887`: §2 inventory made complete, §7 grep added. The §4 edit and §3 scope are unchanged.
 - Class: Lite (band 1-25). Owner `ac-dev-rust-v4`; reviewer Grinch; coordinator `ac-tech-lead-v4`.
 - 1 modified file, 0 added, 0 removed: `.github/workflows/pr-regression-gates.yml` (one content line), plus this plan.
 - Root `.gitignore:11` ignores `/plans/`; commit this plan with `git add -f plans/2075-cargo-build-locked.md`.
@@ -25,9 +26,12 @@ The step at `.github/workflows/pr-regression-gates.yml:1513-1515` (job `rust-lin
 
 Without `--locked`, cargo may re-resolve versions from the manifests instead of failing on a stale lockfile. `Cargo.lock` is tracked at the workspace root; there is no `src-tauri/Cargo.lock`.
 
-- This is the only `cargo build` invocation in `.github/workflows/`; every other match is a comment (`pr-regression-gates.yml:1358`, `:1545`). It is also the only compile-and-link step in the release-parity path without the flag.
-- `--locked` is already used by the `cargo test` steps at `pr-regression-gates.yml:108,134,354,700,835,1051,2240,2243`.
-- Observed but NOT part of #2075: `cargo check`/`clippy`/`test` steps that also omit `--locked` — `pr-regression-gates.yml:88,92,96,684,688,1648,1652`; `cache-warm.yml:60,65,70`. Reported to the coordinator for a separate decision; Sonar flagged only line 1515.
+- This is the only `cargo build` invocation in `.github/workflows/`; every other `cargo build` match is a comment (`:1358`, `:1545`). It is also the only compile-and-link step in the release-parity path without the flag.
+- Complete lock inventory, re-grepped at commit `2bd02887` over every line containing `cargo` in `.github/workflows/` (only two files contain any; no line ends in a backslash continuation, so a line scan cannot miss an invocation). "Unlocked" means no `--locked`/`--frozen`; "locked" otherwise.
+  - Unlocked — `pr-regression-gates.yml`: `:88` `cargo check --all-targets`, `:92` `cargo clippy --workspace --all-targets -- -D warnings`, `:96` `cargo test --lib --bins --tests`, `:684` `cargo check --all-targets`, `:688` `cargo clippy --workspace --all-targets -- -D warnings`, `:733` `cargo test --lib "$TEST" ...`, `:796` `cargo test --lib "$FILTER" ...`, `:1515` `cargo build --release --bins` (the line #2075 fixes), `:1648` `cargo check --all-targets`, `:1652` `cargo clippy --all-targets -- -D warnings`; `cache-warm.yml`: `:60` `cargo check --all-targets`, `:65` `cargo clippy --workspace --all-targets -- -D warnings`, `:70` `cargo test --lib --bins --tests --no-run`. 13 in total.
+  - Locked — `pr-regression-gates.yml`: `:108`, `:134`, `:333` (`cargo metadata --locked --no-deps`, JS probe), `:354`, `:700`, `:835`, `:1030` (metadata probe), `:1051`, `:1336`, `:1664`, `:1687`, `:1882` (metadata probe), `:1903`, `:2184`, `:2240`, `:2243`, plus the PowerShell matrix invocations `:2355` and `:2374`, whose argument arrays at `:2351` and `:2370` begin `test --locked`.
+  - Lock flag not applicable — `:329`, `:1026`, `:1878` (`cargo --version` probes in the JS helper) and `:2213` `cargo fmt --all -- --check` (formats only, resolves no dependencies).
+- The 12 unlocked invocations other than `:1515` are out of #2075's scope: the issue names only line 1515, and §3 changes only that line. They are recorded so follow-up work is deliberate; Sonar flagged only line 1515.
 
 ## 3. Scope
 
@@ -83,6 +87,12 @@ YAML sanity from the repo root:
 
 ```
 python -c "import yaml;yaml.safe_load(open('.github/workflows/pr-regression-gates.yml',encoding='utf-8'))"
+```
+
+Exact post-edit line (must print `1515`):
+
+```
+grep -n 'run: cargo build --locked --release --bins' .github/workflows/pr-regression-gates.yml
 ```
 
 ## 8. Implementation order
