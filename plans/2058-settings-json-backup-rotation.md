@@ -111,8 +111,13 @@ worst case is a history one generation shallower; and a temp + rename here would
 second `settings.json`-adjacent transient name that D11 and the #1330 residue test would
 then have to account for. The cost of the alternative exceeds its value for a best-effort
 recovery aid. This is a decided tradeoff, not an omission; do not re-litigate it without
-new evidence that a truncated slot 1 can mislead a recovering user. The docs section of
-4.5 tells the user to try slot 2 if slot 1 does not parse.
+new evidence that a truncated slot 1 can mislead a recovering user. The mitigation is
+documentation, and it is now written into 4.5 verbatim: a truncated slot copied over
+`settings.json` does NOT surface a parse error. `load_settings` logs the parse failure and
+falls back to `default_settings_with_overlay` (`settings.rs:2500-2504`, and the same arm for
+an unreadable file at `:2576-2581`), so the user silently gets a reset configuration. 4.5
+therefore tells the user to check the copied file before starting AC, and to try slot 2 if
+slot 1 is short or does not parse.
 
 **D10 - Concurrency.** Rotation runs with `settings.json.lock` held, because both
 production entry points acquire it before reaching `save_settings_value_locked`. No new
@@ -264,14 +269,23 @@ already held by the caller and that it performs backup rotation after a successf
 ### 4.3 `src-tauri/src/config/instance_gitignore.rs`
 
 Test fixture only; production rules are derived. In `required_paths` (`:1001-1097`), add
-the two edge fixtures in the list's existing byte order, immediately before the
-`"settings.json",` entry (`:1079`):
+the two edge fixtures immediately before the `"settings.json",` entry (`:1079`):
 
 ```rust
             // #2058: the first and last rotation slots, the `SETTINGS_BACKUP_KEEP` edge.
             "settings.backup.1.json",
             "settings.backup.5.json",
 ```
+
+Round-2 wording correction: this list is NOT byte-sorted, so "the list's existing byte
+order" was the wrong justification for a placement that is nonetheless correct. The list
+is grouped by artifact family and the groups are not ordered against each other
+(`"settings.json.lock"` at `:1080` precedes `"settings-blocking-menus.json"` at `:1081`,
+and `"Context.AgentsCommander.local.md"` sits inside the `settings.*` block at `:1087`).
+Nothing asserts an order over this array; the byte-sort rule at
+`instance_artifacts.rs:725-737` binds the REGISTRY rows of section 4.1, not this fixture
+list. The two fixtures go immediately before `"settings.json"` because that keeps the
+rotation slots next to the live file they archive. Any position in the array passes.
 
 ### 4.4 `docs/reference/directory-layout.md`
 
@@ -288,6 +302,16 @@ Add a `## Recovering a previous version` section immediately after `## Editing r
 (after `:24`), stating: the five slots, that slot 1 is the newest previous version, that
 identical saves do not rotate, that recovery is a manual copy over `settings.json` while
 AC is closed, and that the slots hold the same secrets as `settings.json`.
+
+The section MUST also carry this warning, in these words or closer to the code (D9):
+
+> A slot is written without a temp-and-rename, so a crash during rotation can leave
+> `settings.backup.1.json` truncated. AgentsCommander does not report a truncated
+> `settings.json` as an error: it logs the parse failure and starts from default
+> settings, so a bad copy looks like a silently reset configuration, not a failure.
+> Before starting AgentsCommander, confirm the file you copied is complete and valid
+> JSON. If slot 1 is short or does not parse, use `settings.backup.2.json`, which holds
+> the generation before it.
 
 ## 5. Tests (all new, all in the modules above)
 
@@ -320,9 +344,8 @@ fn seed_settings_with_production_bytes(
 ```
 
 The returned `Vec<u8>` is the pinned seed `A`. Tests 1, 3, 5a and 7 use it. Test 6 is the
-deliberate exception: it needs a legacy-shaped file, so it seeds with
-`save_settings_to_path` on purpose, and the byte difference that causes is exactly what
-that test asserts.
+deliberate exception and does NOT use `save_settings_to_path` either; see test 6 for the
+raw pre-v2 seed it requires and why.
 
 1. `issue_2058_save_archives_the_replaced_bytes` - seed `A` via the helper, save a
    different value `B`; `settings.backup.1.json` bytes equal `A` exactly, `settings.json`
@@ -354,16 +377,47 @@ that test asserts.
      Killed by **M-D8**. Claim: D8's abort, and D7's non-fatality for that abort. It
      claims nothing about a rename or a write failure.
    - b. `issue_2058_rotation_write_failure_is_not_fatal` - a direct in-module call,
-     `rotate_settings_backups(&temp.path().join("absent-dir").join("settings.json"),
-     b"previous")`. The parent directory does not exist, so step 1 finds no slot, step 2
+     `super::rotate_settings_backups(&temp.path().join("absent-dir").join("settings.json"),
+     b"previous")`. The `super::` path is mandatory, not stylistic: the test module's
+     import at `settings.rs:6904` is an explicit `use super::{...}` list, not a glob, and
+     section 4.2 does not add the new function to it. A child module may reach an
+     ancestor's private item, so the visibility is fine; the path still has to be written.
+     Do NOT extend that import list instead: `super::` at the single call site is the
+     smaller change. The parent directory does not exist, so step 1 finds no slot, step 2
      renames nothing, and step 3's `OpenOptions` open fails. Assert: the call returns
      normally (a panic fails the test, which is the only assertion a `()` return admits)
      and `absent-dir` still does not exist. Killed by **M-D7**, which turns that arm into
      an `expect` and panics. Claim: D7's step-3 arm only.
-6. `issue_2058_rotation_leaves_the_pre_384_backup_alone` - seed a legacy-shaped
-   `settings.json` with `save_settings_to_path`, save; `settings.pre-384-v1.json` and
-   `settings.backup.1.json` both equal the original bytes, and a second save does not
-   change `settings.pre-384-v1.json`. Killed by **R**.
+6. `issue_2058_rotation_leaves_the_pre_384_backup_alone` - the seed is **raw pre-v2 JSON
+   written with `std::fs::write`**, not any `AppSettings` writer:
+
+   ```rust
+   let legacy = br#"{"codingAgentProfiles":{"letters":{}}}"#;
+   std::fs::write(&path, legacy).unwrap();
+   ```
+
+   Round-2 correction, verified in the tree. `save_settings_to_path` (`:5487`) serializes
+   the current `AppSettings`, and `legacy_profiles_shape_present` (`:1828-1862`) returns
+   true only for a `codingAgentProfiles` object carrying `letters`, `matrix` or
+   `agentDefaults`, a `schemaVersion` below 2, a `profileSlots` entry with `name`, or a
+   `profilesByAgent` cell with `argv` or `args`. The current struct emits none of those,
+   so a struct-written seed never trips the `:4462` pre-384 path this test exists to
+   cover, and the test would pass vacuously. `letters` is the cheapest trigger
+   (`:1832-1836`).
+
+   Then save a value `B` through `save_settings_to_path_preserving_project_paths`. `B`'s
+   production bytes cannot equal the 38-byte raw seed, so D3 does not skip. Assert after
+   that first save: `settings.pre-384-v1.json` bytes equal `legacy` exactly,
+   `settings.backup.1.json` bytes equal `legacy` exactly, and `settings.json` holds `B`'s
+   bytes. Then save a THIRD, **different** value `C` (it must differ from `B`, or D3 skips
+   and the second half asserts nothing): `settings.pre-384-v1.json` is still
+   byte-identical to `legacy`, `settings.backup.1.json` now holds `B`'s bytes, and
+   `settings.backup.2.json` holds `legacy`. Killed by **R**.
+
+   If the minimal seed is rejected by `read_disk_object_and_contents_for_write_typed`
+   (`:4082-4130` accepts any JSON object, so it should not be), extend the seed object
+   with the three primary project fields a production file carries and keep every
+   assertion above unchanged. The seed must stay raw bytes and must keep `letters`.
 7. `issue_2058_rotation_creates_exactly_one_new_file` - seed `A` via the helper, snapshot
    the directory entry-name set, save `B`, snapshot again. Assert the added set is exactly
    `{"settings.backup.1.json"}` and the removed set is empty, then call the existing
@@ -523,11 +577,39 @@ imposed.
 
 ### 8.1 Kill protocol (binding; one named run per test)
 
-Two tree states are used. **R** = revert: the production hunks of section 4.2 are dropped
-(the `rotate_settings_backups` call site, the `previous_contents` capture, the two new
-functions and the const), leaving a tree that never rotates. **M-x** = the single named
-mutation below, applied to the otherwise complete implementation. Every run is
-`cargo test --lib issue_2058` from `<repo>/src-tauri`, with output captured.
+Two tree states are used.
+
+**R** = revert, and it is **narrow by necessity**. R drops exactly two things from an
+otherwise complete implementation:
+
+- the section 4.2 call-site block at `settings.rs:4621`, restored to the single original
+  line `write_value_atomic(&value, path)?;` (the `Vec<u8>` return is discarded, so no
+  binding is left unused);
+- the `previous_contents` capture inserted before `:4477`.
+
+R **keeps** `SETTINGS_BACKUP_KEEP`, `settings_backup_path`, `rotate_settings_backups`, the
+`write_value_atomic` signature change, the `:5498` call-site edit, and every section 4.1,
+4.3 and docs hunk. Round-2 correction: an R that also deleted the two functions and the
+const would NOT compile, because test 5b calls `super::rotate_settings_backups` directly.
+A compile error is not a test failure, so that wider R would have produced no evidence at
+all for tests 1, 6 and 7. The narrow R compiles, `rotate_settings_backups` stays live
+through test 5b so no `dead_code` warning appears, and the tree simply never rotates.
+
+Evidence the narrow R produces, per test it kills:
+
+- test 1: no save reaches rotation, so `settings.backup.1.json` does not exist and the
+  first assertion fails on a missing file.
+- test 6: the same, on the `settings.backup.1.json` assertion after the first save. Its
+  `settings.pre-384-v1.json` assertions still pass under R, which is correct: those cover
+  the untouched `:4462` path, and the slot assertion is the one carrying this test's
+  claim.
+- test 7: the added-entry set is empty instead of `{"settings.backup.1.json"}`, so the
+  exact-set assertion fails.
+- test 5b passes under R by construction. R is not its killer; **M-D7** is.
+
+**M-x** = the single named mutation below, applied to the otherwise complete
+implementation. Every run is `cargo test --lib issue_2058` from `<repo>/src-tauri`, with
+output captured.
 
 | Test | Killing run | The exact mutation |
 |---|---|---|
