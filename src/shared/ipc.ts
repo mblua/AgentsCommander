@@ -120,7 +120,7 @@ export interface SessionRepoInput {
 }
 
 function createDefaultTransport(): Transport {
-  return isTauri ? new TauriTransport() : new WsTransport();
+  return isTauri ? TauriTransport.create() : new WsTransport();
 }
 
 let defaultTransport: Transport | null = null;
