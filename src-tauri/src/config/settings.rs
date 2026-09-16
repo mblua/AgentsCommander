@@ -585,6 +585,46 @@ pub struct AppSettings {
     /// on a large workgroup set the round duration dominates and this never fires.
     #[serde(default = "default_git_sweep_min_interval_secs")]
     pub git_sweep_min_interval_secs: u64,
+    /// #2064 - whether the remote activity sweeper asks GitHub whether CI is
+    /// running on each room repo's exact HEAD. Default on. Read at startup, to
+    /// decide whether the sweeper thread exists at all, and once per round
+    /// otherwise. Changing it needs a RESTART, because nothing reloads the
+    /// in-memory settings state from disk. No UI: hand-edited settings.json.
+    #[serde(default = "default_ci_activity_enabled")]
+    pub ci_activity_enabled: bool,
+    /// #2064 - whether a CI state transition may inject a notice into the room's
+    /// orchestrator (Phase B). Subordinate to `ci_activity_enabled`: colour
+    /// without interruption must be expressible, because the chip is passive and
+    /// an injected notice consumes an agent's context mid-task. Read once per
+    /// round; changing it needs a RESTART. No UI.
+    #[serde(default = "default_ci_activity_notify_orchestrator")]
+    pub ci_activity_notify_orchestrator: bool,
+    /// #2064 - whether the sweeper asks whether the repository's default branch
+    /// contains commits this checkout does not. A SIBLING of
+    /// `ci_activity_enabled`, not a child: two questions, two cadences, two
+    /// failure modes, and a user who wants one without the other. Read once per
+    /// round; changing it needs a RESTART. No UI.
+    #[serde(default = "default_branch_staleness_enabled")]
+    pub branch_staleness_enabled: bool,
+    /// #2064 - whether a `BranchStale` transition may inject a notice into the
+    /// room's orchestrator (Phase B). Subordinate to
+    /// `branch_staleness_enabled`, for the same context-budget reason as
+    /// `ci_activity_notify_orchestrator`. Read once per round; changing it needs
+    /// a RESTART. No UI.
+    #[serde(default = "default_branch_staleness_notify_orchestrator")]
+    pub branch_staleness_notify_orchestrator: bool,
+    /// #2064 - seconds between CI questions for a key that is not currently
+    /// running. Read once per round and clamped to 10..=3600 at the read site,
+    /// which keeps the app from rewriting the user's hand-edited settings.json;
+    /// changing it needs a RESTART. Keys whose last confirmed state is `Running`
+    /// use the fixed 10s cadence instead: `Finished` is the transition that
+    /// actually unblocks an agent. No UI.
+    #[serde(default = "default_ci_sweep_min_interval_secs")]
+    pub ci_sweep_min_interval_secs: u64,
+    /// #2064 - seconds between staleness questions. Read once per round and
+    /// clamped to 10..=3600 at the read site; changing it needs a RESTART. No UI.
+    #[serde(default = "default_branch_staleness_interval_secs")]
+    pub branch_staleness_interval_secs: u64,
     #[serde(default = "default_resource_monitor_enabled")]
     pub resource_monitor_enabled: bool,
     #[serde(default = "default_max_concurrent_agent_processes")]
@@ -891,6 +931,30 @@ fn default_git_sweep_min_interval_secs() -> u64 {
     10
 }
 
+fn default_ci_activity_enabled() -> bool {
+    true
+}
+
+fn default_ci_activity_notify_orchestrator() -> bool {
+    true
+}
+
+fn default_branch_staleness_enabled() -> bool {
+    true
+}
+
+fn default_branch_staleness_notify_orchestrator() -> bool {
+    true
+}
+
+fn default_ci_sweep_min_interval_secs() -> u64 {
+    30
+}
+
+fn default_branch_staleness_interval_secs() -> u64 {
+    300
+}
+
 fn default_resource_monitor_enabled() -> bool {
     true
 }
@@ -1006,6 +1070,12 @@ impl Default for AppSettings {
             spec_board_enabled: false,
             git_sweep_concurrency: default_git_sweep_concurrency(),
             git_sweep_min_interval_secs: default_git_sweep_min_interval_secs(),
+            ci_activity_enabled: default_ci_activity_enabled(),
+            ci_activity_notify_orchestrator: default_ci_activity_notify_orchestrator(),
+            branch_staleness_enabled: default_branch_staleness_enabled(),
+            branch_staleness_notify_orchestrator: default_branch_staleness_notify_orchestrator(),
+            ci_sweep_min_interval_secs: default_ci_sweep_min_interval_secs(),
+            branch_staleness_interval_secs: default_branch_staleness_interval_secs(),
             resource_monitor_enabled: default_resource_monitor_enabled(),
             max_concurrent_agent_processes: default_max_concurrent_agent_processes(),
             resource_watchdog_action: default_resource_watchdog_action(),
@@ -10510,6 +10580,12 @@ mod tests {
   "autoGenerateTaskTitle": true,
   "autoSelfClearByAgent": {},
   "autoSelfClearEnabled": true,
+  "branchStalenessEnabled": true,
+  "branchStalenessIntervalSecs": 300,
+  "branchStalenessNotifyOrchestrator": true,
+  "ciActivityEnabled": true,
+  "ciActivityNotifyOrchestrator": true,
+  "ciSweepMinIntervalSecs": 30,
   "codingAgentProfiles": {
     "defaultProfileByAgent": {},
     "profileLabelsByAgent": {},
@@ -12968,5 +13044,67 @@ mod tests {
             assert!(!independent.npm_update_notifications_enabled);
             assert!(independent.remote_blocking_menus_enabled);
         }
+    }
+
+    /// #2064 - the six remote-activity dials are additive: an older settings.json
+    /// without them must deserialize to the documented defaults, and a serialized
+    /// default must carry all six keys (guarding against an accidental
+    /// `skip_serializing_if`).
+    #[test]
+    fn remote_activity_dials_round_trip_through_serde() {
+        const KEYS: [&str; 6] = [
+            "ciActivityEnabled",
+            "ciActivityNotifyOrchestrator",
+            "branchStalenessEnabled",
+            "branchStalenessNotifyOrchestrator",
+            "ciSweepMinIntervalSecs",
+            "branchStalenessIntervalSecs",
+        ];
+
+        let defaults = AppSettings::default();
+        let value = serde_json::to_value(&defaults).expect("serialize default AppSettings");
+        for key in KEYS {
+            assert!(
+                value.get(key).is_some(),
+                "{key} must be serialized, never skipped"
+            );
+        }
+
+        let mut stripped = value.clone();
+        let object = stripped.as_object_mut().expect("settings object");
+        for key in KEYS {
+            object.remove(key);
+        }
+        let back: AppSettings =
+            serde_json::from_value(stripped).expect("deserialize without the six keys");
+        assert!(back.ci_activity_enabled);
+        assert!(back.ci_activity_notify_orchestrator);
+        assert!(back.branch_staleness_enabled);
+        assert!(back.branch_staleness_notify_orchestrator);
+        assert_eq!(back.ci_sweep_min_interval_secs, 30);
+        assert_eq!(back.branch_staleness_interval_secs, 300);
+
+        let round_trip: AppSettings = serde_json::from_value(value).expect("round trip");
+        assert_eq!(round_trip.ci_activity_enabled, defaults.ci_activity_enabled);
+        assert_eq!(
+            round_trip.ci_activity_notify_orchestrator,
+            defaults.ci_activity_notify_orchestrator
+        );
+        assert_eq!(
+            round_trip.branch_staleness_enabled,
+            defaults.branch_staleness_enabled
+        );
+        assert_eq!(
+            round_trip.branch_staleness_notify_orchestrator,
+            defaults.branch_staleness_notify_orchestrator
+        );
+        assert_eq!(
+            round_trip.ci_sweep_min_interval_secs,
+            defaults.ci_sweep_min_interval_secs
+        );
+        assert_eq!(
+            round_trip.branch_staleness_interval_secs,
+            defaults.branch_staleness_interval_secs
+        );
     }
 }

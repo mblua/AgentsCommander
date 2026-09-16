@@ -2893,6 +2893,31 @@ pub fn run(
             );
             git_sweeper.start(shutdown_for_setup.clone());
 
+            // #2064 - the remote activity producer: asks GitHub, through `gh`,
+            // whether CI runs on each room repo's exact HEAD and whether the
+            // default branch is ahead. Beside `GitSweeper` for the same reason it
+            // sits there: it mutates no session metadata, it only publishes into
+            // process-local maps. The transition stream has NO consumer in Phase A,
+            // so the receiver is dropped explicitly and the channel stays closed;
+            // Phase B hands it to `session::remote_alerts` instead.
+            let (remote_sweeper, remote_transitions) =
+                crate::pty::remote_watcher::RemoteSweeper::new(
+                    app.state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                        .inner()
+                        .clone(),
+                    app.state::<SettingsState>().inner().clone(),
+                    Box::new({
+                        let app_for_remote_activity = app.handle().clone();
+                        move |payload: &crate::pty::remote_watcher::RemoteActivityPayload| {
+                            let _ = app_for_remote_activity
+                                .emit("ac_remote_activity_updated", payload);
+                        }
+                    }),
+                    crate::pty::remote_watcher::RemoteSweeper::production_seams(),
+                );
+            let _ = remote_sweeper.start(shutdown_for_setup.clone());
+            drop(remote_transitions);
+
             // PtyManager needs GitWatcher for cleanup on session kill
             let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
                 output_senders_for_pty,
