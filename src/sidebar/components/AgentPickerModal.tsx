@@ -479,6 +479,12 @@ const AgentPickerModal: Component<{
       });
   });
 
+  /** #2051 - a replica apply never restarts through this toggle (#537, the
+   *  post-assign prompt owns it), so the replica preview must hash the same
+   *  `false` the apply sends. Bulk scopes keep the toggle. */
+  const selectionRestart = (scope: ProfileAssignmentScope) =>
+    scope === "replica" ? false : restartSessions();
+
   const runScopePreview = (scope: ProfileAssignmentScope, agentId: string, profile: string) => {
     const target = targetReplicaPath();
     if (!target || !isWgReplica()) return;
@@ -490,7 +496,7 @@ const AgentPickerModal: Component<{
       codingAgentId: agentId,
       profile,
       scope,
-      restartSessions: restartSessions(),
+      restartSessions: selectionRestart(scope),
       assignmentMode: assignmentMode(),
     })
       .then((result) => {
@@ -645,7 +651,14 @@ const AgentPickerModal: Component<{
     // demoted to an ordinary assignment, which would change the chosen policy.
     if (assignmentMode() === "assignAndLock" && !lockStateUsable()) return false;
     const scope = selectedScope();
-    if (scope === "replica") return !isRedundantReplicaSelection();
+    if (scope === "replica") {
+      // #2051 - the fingerprint IS that confirmation, so the lock button waits
+      // for its own preview exactly like the bulk scopes below.
+      if (assignmentMode() === "assignAndLock" && (scopePreviewBusy() || !scopePreview())) {
+        return false;
+      }
+      return !isRedundantReplicaSelection();
+    }
     if (!isWgReplica()) return false;
     if (scopePreviewBusy() || !scopePreview()) return false;
     if (scope === "workgroup" || scope === "kind") return dangerArmed();
@@ -976,16 +989,22 @@ const AgentPickerModal: Component<{
     const requested = requestedProfileForSelection();
     const effective = effectivePreview().effectiveProfile;
     const target = targetReplicaPath();
-    const restart = scope === "replica" ? false : restartSessions();
+    const restart = selectionRestart(scope);
     // Each reviewed policy carries its OWN backend-issued fingerprint; the
     // no-conflict path uses the preview's direct fingerprint.
     const reviewedFingerprint = decision
       ? conflictProjection(decision)?.fingerprint ?? null
       : null;
+    // #2051 - "This replica + lock" is confirmed by the replica-scope preview's
+    // own fingerprint; the legacy replica ordinary apply deliberately sends none
+    // (the backend still accepts a missing fingerprint for replica + ordinary).
+    const previewFingerprint = scopePreview()?.targetFingerprint ?? null;
     const confirmedFingerprint =
       scope === "replica"
-        ? null
-        : reviewedFingerprint ?? scopePreview()?.targetFingerprint ?? null;
+        ? mode === "assignAndLock"
+          ? previewFingerprint
+          : null
+        : reviewedFingerprint ?? previewFingerprint;
     try {
       let updatedCount: number | undefined;
       let restartedCount: number | undefined;
@@ -1032,7 +1051,11 @@ const AgentPickerModal: Component<{
       setError(message);
       showToast(message);
       setConflictDecision(null);
-      if (scope !== "replica" && target && isWgReplica()) {
+      // #2051 - a rejected replica + lock needs the same fresh review the bulk
+      // scopes get; the old fingerprint must never be replayed. Replica ordinary
+      // keeps today's behavior.
+      const needsFreshReview = scope !== "replica" || mode === "assignAndLock";
+      if (needsFreshReview && target && isWgReplica()) {
         setDangerArmed(false);
         setScopePreviews((prev) => ({ ...prev, [scope]: null }));
         runScopePreview(scope, agent.id, selectedProfile());
