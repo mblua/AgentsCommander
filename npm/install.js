@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const os = require('os');
 const { execSync } = require('child_process');
 const { assertExecutable } = require('./resolve-bin');
+const { createStartMenuShortcut } = require('./windows-shortcut');
 
 const VERSION = "0.33.0"; // Must match package.json
 const OWNER = 'mblua';
@@ -140,8 +141,16 @@ async function main() {
         fs.chmodSync(tmpPath, 0o755);
       }
       fs.renameSync(tmpPath, finalBinPath);
+      if (platform === 'win32') {
+        try {
+          const shortcut = createStartMenuShortcut(finalBinPath);
+          if (shortcut.created) console.log(`Start Menu shortcut created: ${shortcut.path}`);
+        } catch (err) {
+          console.warn(`Warning: Start Menu shortcut not created: ${err.message}`);
+        }
+      }
     }
-    
+
     fs.unlinkSync(shasumTmpPath);
     console.log('Installation completed successfully.');
   } catch (err) {
