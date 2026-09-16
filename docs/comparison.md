@@ -47,7 +47,7 @@ AutoGen (and the community fork AG2) is Microsoft's multi-agent conversational f
 CrewAI defines role-based agent teams with hierarchical processes — in Python.
 
 **Where AC wins**:
-- Starts with a reviewable [Coding Agent installation plan](install-with-agent.md); manual stable-release assets and npm remain secondary routes for documented host combinations.
+- Starts with a reviewable [Coding Agent installation plan](install-with-agent.md); manual stable-release assets remain a secondary route, and npm is the only macOS route plus a secondary route on Windows and Linux.
 - No `pip install`, no config-by-code, no rewriting your tools as CrewAI primitives.
 
 **Where CrewAI wins**:
@@ -82,7 +82,7 @@ AC runs Claude Code as a session inside it. So the question is: should you launc
 
 ## Honest concessions
 
-- **Windows support is narrower than the build matrix.** Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported and remain the primary development and release-validation targets. Linux x86_64/AMD64 support is partial and in progress; global-hotkey screenshots, native window capture, and some CLI/GUI coordination are Windows-only. macOS is not supported yet because maintainer and test capacity is insufficient. An available release artifact does not change these tiers; see the [platform contract](install-with-agent.md#support-gates).
+- **Windows support is narrower than the build matrix.** Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported and remain the primary development and release-validation targets. Linux x86_64/AMD64 is supported with medium test coverage, so expect some turbulence; native window capture and detection of a running GUI before CLI configuration writes are Windows-only, and screenshot capture works on Windows and Linux/X11 only. macOS is supported via npm only, with very low test coverage, so expect errors. An available release artifact does not change these tiers; see the [platform contract](install-with-agent.md#support-gates).
 - **You bring the coding agents.** AC does not ship Claude Code, Codex, Antigravity, or Pi. Install whichever you want; AC detects supported commands.
 - **Single-agent flows are not the sweet spot.** If you only run one agent, you are paying for a Tauri shell. The value is multi-agent coordination.
 

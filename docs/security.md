@@ -148,11 +148,11 @@ Import-Module (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsof
 Get-AuthenticodeSignature -LiteralPath ".\Agents.Commander_<version>_x64-setup.exe"
 ```
 
-Linux and macOS builds are not signed today. Build availability does not change the [platform support tiers](install-with-agent.md#support-gates); macOS is not supported yet.
+Linux and macOS builds are not signed today, including the macOS `.app` bundle that npm installs. Build availability does not change the [platform support tiers](install-with-agent.md#support-gates); macOS is supported via npm with very low test coverage, so expect errors and report them instead of bypassing Gatekeeper.
 
 ## Known gaps
 
-- **macOS support and code signing** are not yet in place. Use the explicit [tester/contributor path](install-with-agent.md#help-extend-linux-and-macos-support), not a normal install.
+- **macOS code signing** is not in place: the `.app` bundle is unsigned. macOS is supported via npm with very low test coverage; send reproducible errors through the [platform report](install-with-agent.md#help-extend-linux-and-macos-support) instead of bypassing Gatekeeper.
 - **Windows code signing** is pending SignPath setup and approval ([#717](https://github.com/mblua/AgentsCommander/issues/717)).
 - **`--root` is unverified** at the CLI boundary. A malicious local process with shell access can spoof its own root. Mitigated by the daemon-side per-session token check, but not eliminated.
 - **No sandbox between agents.** Two agents in the same room share filesystem access. If you need hard isolation, run each agent in its own VM or container.
