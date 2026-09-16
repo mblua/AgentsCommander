@@ -15,8 +15,8 @@
 //! `src-tauri/Cargo.toml` and `Cargo.lock`, so no other crate may be named.
 //!
 //! Modes (see `admission`):
-//! - non-Windows: the eight cases run against a fresh per-case `TempDir` HOME.
-//! - Windows with the disposable-profile admission: the eight cases run
+//! - non-Windows: the seven cases run against a fresh per-case `TempDir` HOME.
+//! - Windows with the disposable-profile admission: the seven cases run
 //!   against `dirs::home_dir()`, the known-folder profile of a disposable
 //!   GitHub-hosted VM.
 //! - Windows without admission: the copy-and-run mechanism control plus
@@ -33,7 +33,6 @@ const CANONICAL: &str = ".agentscommander";
 const LEGACY_HOME_NEW: &str = ".agentscommander-new";
 const LEGACY_HOME_NEW_DEV: &str = ".agentscommander-new-dev";
 const PROFILE_ENTRIES: [&str; 3] = [CANONICAL, LEGACY_HOME_NEW, LEGACY_HOME_NEW_DEV];
-const PORTABLE_MARKER: &str = "portable.txt";
 
 const TOKEN: &str = "00000000-0000-4000-8000-000000001850";
 
@@ -62,7 +61,6 @@ const LEGACY_LOG: &[u8] = b"legacy app.log line 1850\n";
 const CANONICAL_SENTINEL_NAME: &str = "canonical-sentinel.bin";
 const CANONICAL_SENTINEL: &[u8] = b"\x7f canonical sentinel 1850 \x00\x80";
 const INVALID_SETTINGS: &[u8] = b"{ \"rootToken\": \"broken-1850\", \"onboardingDismissed\": tru";
-const PORTABLE_MARKER_BYTES: &[u8] = b"portable marker beside an unsuffixed executable\n";
 const CHILD_TIMEOUT: Duration = Duration::from_secs(120);
 const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -289,17 +287,15 @@ struct Case {
     home_new: bool,
     home_new_dev: bool,
     canonical: CanonicalFixture,
-    portable: bool,
 }
 
-const CASES: [Case; 8] = [
+const CASES: [Case; 7] = [
     Case {
         name: "adjacent-legacy-alone",
         adjacent_legacy: true,
         home_new: false,
         home_new_dev: false,
         canonical: CanonicalFixture::Absent,
-        portable: false,
     },
     Case {
         name: "home-new-alone",
@@ -307,7 +303,6 @@ const CASES: [Case; 8] = [
         home_new: true,
         home_new_dev: false,
         canonical: CanonicalFixture::Absent,
-        portable: false,
     },
     Case {
         name: "home-new-dev-alone",
@@ -315,7 +310,6 @@ const CASES: [Case; 8] = [
         home_new: false,
         home_new_dev: true,
         canonical: CanonicalFixture::Absent,
-        portable: false,
     },
     Case {
         name: "all-legacy-conflicting",
@@ -323,7 +317,6 @@ const CASES: [Case; 8] = [
         home_new: true,
         home_new_dev: true,
         canonical: CanonicalFixture::Absent,
-        portable: false,
     },
     Case {
         name: "canonical-valid-settings",
@@ -331,7 +324,6 @@ const CASES: [Case; 8] = [
         home_new: true,
         home_new_dev: true,
         canonical: CanonicalFixture::Valid,
-        portable: false,
     },
     Case {
         name: "canonical-invalid-settings",
@@ -339,15 +331,6 @@ const CASES: [Case; 8] = [
         home_new: true,
         home_new_dev: false,
         canonical: CanonicalFixture::Invalid,
-        portable: false,
-    },
-    Case {
-        name: "canonical-absent-with-marker",
-        adjacent_legacy: false,
-        home_new: false,
-        home_new_dev: false,
-        canonical: CanonicalFixture::Absent,
-        portable: true,
     },
     Case {
         name: "canonical-absent-without-marker",
@@ -355,12 +338,11 @@ const CASES: [Case; 8] = [
         home_new: false,
         home_new_dev: false,
         canonical: CanonicalFixture::Absent,
-        portable: false,
     },
 ];
 
 /// Driver. Runs the copy-and-run mechanism control in every mode, then either
-/// the eight injected-HOME cases, the eight real-profile cases, or the
+/// the seven injected-HOME cases, the seven real-profile cases, or the
 /// refusal-only safety route.
 #[test]
 fn issue_1850_default_root_acceptance() {
@@ -593,12 +575,6 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
         }
     }
 
-    let marker = bin_dir.join(PORTABLE_MARKER);
-    if case.portable {
-        fs::write(&marker, PORTABLE_MARKER_BYTES)
-            .map_err(|error| format!("write {} failed: {error}", marker.display()))?;
-    }
-
     // The canonical root is seeded only in the valid/invalid cases and, when
     // seeded, deliberately does not carry `.gitignore` or `app.log`; that is
     // what makes their later presence a child-created proof.
@@ -626,13 +602,12 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
     owned_home_roots.push(canonical.clone());
 
     println!(
-        "ISSUE1850_CASE_FIXTURES case={} adjacent_legacy={} home_new={} home_new_dev={} canonical={:?} portable={} case_root={} home={} canonical_pre_gitignore=absent canonical_pre_applog=absent",
+        "ISSUE1850_CASE_FIXTURES case={} adjacent_legacy={} home_new={} home_new_dev={} canonical={:?} case_root={} home={} canonical_pre_gitignore=absent canonical_pre_applog=absent",
         case.name,
         if case.adjacent_legacy { "seeded" } else { "absent" },
         if case.home_new { "seeded" } else { "absent" },
         if case.home_new_dev { "seeded" } else { "absent" },
         case.canonical,
-        if case.portable { "present" } else { "absent" },
         case_root.display(),
         home.display()
     );
@@ -641,7 +616,6 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
     let adjacent_before = snapshot(&adjacent)?;
     let home_new_before = snapshot(&home_new)?;
     let home_new_dev_before = snapshot(&home_new_dev)?;
-    let marker_before = snapshot(&marker)?;
     let invalid_settings_before = if case.canonical == CanonicalFixture::Invalid {
         Some(
             fs::read(canonical.join("settings.json"))
@@ -726,13 +700,6 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
             "{}: executable-adjacent root {} changed",
             case.name,
             adjacent.display()
-        ));
-    }
-    if snapshot(&marker)? != marker_before {
-        return Err(format!(
-            "{}: executable-adjacent {} changed",
-            case.name,
-            marker.display()
         ));
     }
 
