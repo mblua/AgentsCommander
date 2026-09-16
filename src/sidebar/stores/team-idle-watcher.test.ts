@@ -365,11 +365,20 @@ describe("startTeamIdleWatcher wiring (#2109)", () => {
       await settingsStore.load();
       sessionsStore.setSessions([session()]);
 
+      // A focused WG on the seed tick: with the init early return dropped,
+      // clearing activeId arms a grace window that then swallows (b)'s beep.
+      sessionsStore.setVisibleActiveIdForTests("session-1");
+
       dispose = startTeamIdleWatcher();
 
       // (a) the first tick only seeds the snapshot and never beeps.
       await hop();
       expect(beepSpy).not.toHaveBeenCalled();
+
+      // Clearing focus must not arm grace: `previousFocusedWg` is still null
+      // because the seed tick returned before `updateGraceOnFocusChange`.
+      sessionsStore.setVisibleActiveIdForTests(null);
+      await hop();
 
       // (b) a busy→idle transition beeps once.
       sessionsStore.setSessionWaiting("session-1", true);
