@@ -13,6 +13,7 @@
     "run.js",
     "install.js",
     "resolve-bin.js",
+    "macos-alias.js",
     "windows-shortcut.js"
   ],
   "engines": {
