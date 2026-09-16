@@ -1541,6 +1541,24 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             }
         };
 
+        // #1115 - resolve the exported local root before any permit, pending row or
+        // clock mutation, so a non-Unicode root fails with zero launch residue.
+        // Container transport discards extra_env (container_backend `extra_env: _`)
+        // and maps its own local dir, so only host local PTYs resolve it.
+        let credential_local_dir = if agent_id.is_some()
+            && resolved_spawn
+                .as_ref()
+                .map(|spawn| SessionBackendKind::from(&spawn.backend))
+                .unwrap_or_default()
+                == SessionBackendKind::LocalProcess
+        {
+            Some(crate::pty::credentials::resolve_local_dir(
+                crate::config::config_dir().as_deref(),
+            )?)
+        } else {
+            None
+        };
+
         // Recompute is_coordinator from the current team snapshot. One source of truth:
         // every caller of create_session_inner gets the same computation.
         let teams = tokio::task::spawn_blocking(crate::config::teams::discover_teams)
@@ -2245,10 +2263,11 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             .map_err(|error| error.to_string())?;
         session.effective_shell_args = Some(effective);
 
-        let extra_env = if agent_id.is_some() {
-            crate::pty::credentials::build_credentials_env(&session.token, &cwd)
-        } else {
-            Vec::new()
+        let extra_env = match credential_local_dir {
+            Some(local_dir) => {
+                crate::pty::credentials::build_credentials_env(&session.token, &cwd, local_dir)
+            }
+            None => Vec::new(),
         };
         let mut configured_env: Vec<(String, String)> = resolved_spawn
             .as_ref()
@@ -8530,6 +8549,99 @@ mod tests {
         assert!(
             drop_mark < spawn_error,
             "spawn mark must drop immediately after spawn returns"
+        );
+    }
+
+    // #1115 - the exported AGENTSCOMMANDER_LOCAL_DIR must be resolved before
+    // permit reservation, the pending row, or any clock mutation, so a
+    // non-Unicode root fails with zero launch residue (plan section 2.2 F1).
+    #[test]
+    fn create_session_resolves_local_dir_before_launch_residue() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let normalized = production.split_whitespace().collect::<String>();
+
+        let resolve = normalized
+            .find("crate::pty::credentials::resolve_local_dir(")
+            .expect("local dir resolution in create_session_inner");
+        assert_eq!(
+            normalized
+                .matches("crate::pty::credentials::resolve_local_dir(")
+                .count(),
+            1,
+            "local dir resolution must occur exactly once"
+        );
+        let permit = normalized
+            .find("resource_monitor.try_reserve_agent_slot(")
+            .expect("permit reservation");
+        let spawn_mark = normalized.find("letspawn_mark={").expect("spawn mark");
+        let pending_create = normalized
+            .find("letpending_result=")
+            .expect("pending-session creation");
+        assert!(
+            resolve < permit,
+            "local dir must resolve before permit reservation"
+        );
+        assert!(
+            resolve < spawn_mark,
+            "local dir must resolve before the spawn mark"
+        );
+        assert!(
+            resolve < pending_create,
+            "local dir must resolve before pending-session creation"
+        );
+
+        let extra_env_call = normalized
+            .find("build_credentials_env(&session.token,&cwd,local_dir)")
+            .expect("extra_env build call");
+        let after_call = &normalized
+            [extra_env_call + "build_credentials_env(&session.token,&cwd,local_dir)".len()..];
+        assert!(
+            !after_call.starts_with('?'),
+            "extra_env build must be infallible after permit reservation"
+        );
+        assert!(
+            normalized.contains("None=>Vec::new()"),
+            "non-agent or container launches must keep an empty extra_env"
+        );
+        assert!(
+            normalized.contains("==SessionBackendKind::LocalProcess"),
+            "resolution must be gated to host local PTYs"
+        );
+        assert_eq!(
+            normalized
+                .matches("letcredential_local_dir=ifagent_id.is_some()&&")
+                .count(),
+            1,
+            "the agent gate must be pinned"
+        );
+        assert!(
+            normalized.contains("resolve_local_dir(crate::config::config_dir().as_deref(),)?"),
+            "resolver argument and fallible operator must be pinned"
+        );
+
+        let credentials_source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/pty/credentials.rs"
+        ))
+        .expect("read credentials.rs");
+        let credentials_production = credentials_source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production credentials source");
+        let credentials_normalized = credentials_production
+            .split_whitespace()
+            .collect::<String>();
+        assert!(
+            credentials_normalized.contains("|message|log::warn!(\"{message}\")"),
+            "production warning sink must log"
         );
     }
 
