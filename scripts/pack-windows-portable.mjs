@@ -26,8 +26,9 @@ import { dirname, join, resolve } from 'node:path';
 const __filename = fileURLToPath(import.meta.url);
 const ROOT       = resolve(dirname(__filename), '..');
 
-const TEMPLATE      = join(ROOT, 'packaging', 'windows', 'PORTABLE.txt');
+const TEMPLATE      = join(ROOT, 'packaging', 'windows', 'README.txt');
 const CANONICAL_EXE = 'agentscommander.exe';
+const README_NAME   = 'README.txt';
 // Files copied verbatim from the repo root into the zip.
 const EXTRA_FILES   = ['LICENSE', 'THIRD_PARTY_NOTICES.md'];
 const VERSION_RE    = /^\d+\.\d+\.\d+$/;
@@ -102,9 +103,9 @@ for (const name of EXTRA_FILES) {
 
 if (!existsSync(TEMPLATE)) die(`Missing template: ${TEMPLATE}`);
 const readme = readFileSync(TEMPLATE, 'utf8').replaceAll('{{VERSION}}', args.version);
-if (readme.includes('{{')) die('PORTABLE.txt still contains an unresolved placeholder after rendering.');
+if (readme.includes('{{')) die(`${README_NAME} still contains an unresolved placeholder after rendering.`);
 // CRLF so the file reads correctly in every Windows text editor.
-writeFileSync(join(stageDir, 'PORTABLE.txt'), readme.replace(/\r?\n/g, '\r\n'), 'utf8');
+writeFileSync(join(stageDir, README_NAME), readme.replace(/\r?\n/g, '\r\n'), 'utf8');
 
 rmSync(outPath, { force: true });
 const shell = zipDirectory(stageDir, outPath);
@@ -114,4 +115,4 @@ if (!existsSync(outPath)) die(`${shell} reported success but ${outPath} does not
 
 const bytes = statSync(outPath).size;
 console.log(`[pack-portable] wrote ${outPath} (${bytes} bytes) using ${shell}`);
-console.log(`[pack-portable] contents: ${CANONICAL_EXE}, ${EXTRA_FILES.join(', ')}, PORTABLE.txt`);
+console.log(`[pack-portable] contents: ${CANONICAL_EXE}, ${EXTRA_FILES.join(', ')}, ${README_NAME}`);
