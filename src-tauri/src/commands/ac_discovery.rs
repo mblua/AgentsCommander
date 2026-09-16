@@ -1552,12 +1552,11 @@ pub async fn check_project_path(path: String) -> Result<bool, String> {
 pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
     let gitignore_path = ac_root.join(".gitignore");
     const PROJECT_SETTINGS_GITIGNORE_PATTERN: &str = "/project-settings.json";
-    const SEED_MANIFEST_GITIGNORE_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n\n# AgentsCommander: keep the seed publication manifest reviewable.\n!/seed-manifest.toml\n";
-    const SEED_MANIFEST_PATTERNS: [&str; 3] = [
-        "/.seed-manifest.lock",
-        "/.seed-manifest.*.tmp",
-        "!/seed-manifest.toml",
-    ];
+    const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n";
+    const SEED_MANIFEST_MANIFEST_BLOCK: &str = "# AgentsCommander: exclude the seed publication manifest from Git tracking.\n/seed-manifest.toml\n";
+    const SEED_MANIFEST_COORDINATION_PATTERNS: [&str; 2] =
+        ["/.seed-manifest.lock", "/.seed-manifest.*.tmp"];
+    const SEED_MANIFEST_MANIFEST_PATTERN: &str = "/seed-manifest.toml";
 
     // Each entry: (pattern, comment explaining why)
     let required_entries: &[(&str, &str)] = &[
@@ -1679,6 +1678,7 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
     if gitignore_path.exists() {
         let content = std::fs::read_to_string(&gitignore_path)
             .map_err(|e| format!("Failed to read Project AC Root .gitignore: {}", e))?;
+        let (content, migrated) = migrate_legacy_seed_manifest_gitignore(content);
 
         let mut additions = String::new();
         for (pattern, comment) in required_entries {
@@ -1693,15 +1693,22 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
                 additions.push_str(&format!("\n{}\n{}\n", comment, pattern));
             }
         }
-        if !SEED_MANIFEST_PATTERNS
+        if !SEED_MANIFEST_COORDINATION_PATTERNS
             .iter()
             .all(|pattern| content.lines().any(|line| line.trim() == *pattern))
         {
             additions.push('\n');
-            additions.push_str(SEED_MANIFEST_GITIGNORE_BLOCK);
+            additions.push_str(SEED_MANIFEST_COORDINATION_BLOCK);
+        }
+        if !content
+            .lines()
+            .any(|line| line.trim() == SEED_MANIFEST_MANIFEST_PATTERN)
+        {
+            additions.push('\n');
+            additions.push_str(SEED_MANIFEST_MANIFEST_BLOCK);
         }
 
-        if !additions.is_empty() {
+        if migrated || !additions.is_empty() {
             let separator = if content.ends_with('\n') { "" } else { "\n" };
             std::fs::write(
                 &gitignore_path,
@@ -1714,12 +1721,60 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
         for (pattern, comment) in required_entries {
             content.push_str(&format!("{}\n{}\n\n", comment, pattern));
         }
-        content.push_str(SEED_MANIFEST_GITIGNORE_BLOCK);
+        content.push_str(SEED_MANIFEST_COORDINATION_BLOCK);
+        content.push('\n');
+        content.push_str(SEED_MANIFEST_MANIFEST_BLOCK);
         std::fs::write(&gitignore_path, content)
             .map_err(|e| format!("Failed to create Project AC Root .gitignore: {}", e))?;
     }
 
     Ok(())
+}
+
+/// #2090 - migrate the retired `!/seed-manifest.toml` un-ignore pair written by
+/// older builds. Only the two AC-managed lines (the retired comment directly
+/// above the negation and, when the managed block wrote one, the blank line
+/// before that comment) are removed; a bare `!/seed-manifest.toml` without the
+/// retired comment is user intent and is preserved. Every other byte, including
+/// CRLF and a missing final newline, is preserved; the flag is false when
+/// nothing changed.
+fn migrate_legacy_seed_manifest_gitignore(content: String) -> (String, bool) {
+    const LEGACY_COMMENT: &str =
+        "# AgentsCommander: keep the seed publication manifest reviewable.";
+    const LEGACY_NEGATION: &str = "!/seed-manifest.toml";
+
+    let lines: Vec<&str> = content.split_inclusive('\n').collect();
+    let mut removed = vec![false; lines.len()];
+    let mut changed = false;
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim() != LEGACY_NEGATION {
+            continue;
+        }
+        let Some(previous) = index.checked_sub(1) else {
+            continue;
+        };
+        if lines[previous].trim() != LEGACY_COMMENT {
+            continue;
+        }
+        removed[previous] = true;
+        removed[index] = true;
+        if let Some(blank) = previous.checked_sub(1) {
+            if lines[blank].trim().is_empty() {
+                removed[blank] = true;
+            }
+        }
+        changed = true;
+    }
+    if !changed {
+        return (content, false);
+    }
+    let migrated: String = lines
+        .iter()
+        .zip(&removed)
+        .filter(|(_, drop)| !**drop)
+        .map(|(line, _)| *line)
+        .collect();
+    (migrated, true)
 }
 
 /// Create a canonical .ac/ directory inside the given path.
@@ -4785,8 +4840,8 @@ mod tests {
             "/.seed-manifest.lock\n",
             "/.seed-manifest.*.tmp\n",
             "\n",
-            "# AgentsCommander: keep the seed publication manifest reviewable.\n",
-            "!/seed-manifest.toml\n"
+            "# AgentsCommander: exclude the seed publication manifest from Git tracking.\n",
+            "/seed-manifest.toml\n"
         )));
     }
 
@@ -5115,7 +5170,7 @@ mod tests {
         assert!(ignored(
             ".ac/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp"
         ));
-        assert!(!ignored(".ac/seed-manifest.toml"));
+        assert!(ignored(".ac/seed-manifest.toml"));
         assert!(!ignored(".ac/nested/.seed-manifest.lock"));
         assert!(!ignored(
             ".ac/nested/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp"
@@ -5123,13 +5178,176 @@ mod tests {
         assert!(!ignored(".ac/nested/seed-manifest.toml"));
     }
 
-    // Stage E (#1064) Git-visibility conformance (plan section 10.5 items 3-4,
-    // section 7.3). AC's `!/seed-manifest.toml` negation keeps the manifest
-    // reviewable under AC's own managed rules, but it cannot re-include the file
-    // when a parent directory is excluded, and a later user rule in the same
-    // `.ac/.gitignore` still wins. AC documents but does not override these.
+    /// #2090 - an existing `.ac/.gitignore` carrying the retired
+    /// `!/seed-manifest.toml` pair must lose the pair, keep every other byte and
+    /// gain the ignore rule exactly once. A bare user negation is not removed
+    /// (covered separately).
     #[test]
-    fn stage_e_parent_gitignore_excluding_ac_hides_manifest_despite_negation() {
+    fn ensure_ac_root_gitignore_migrates_the_legacy_seed_manifest_block() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+        let gitignore_path = ac_root.join(".gitignore");
+        const USER_RULE: &str = "# user rule\n!important.txt\n";
+        let legacy = format!(
+            "{USER_RULE}{}",
+            concat!(
+                "# AgentsCommander: exclude seed-manifest coordination files.\n",
+                "/.seed-manifest.lock\n",
+                "/.seed-manifest.*.tmp\n",
+                "\n",
+                "# AgentsCommander: keep the seed publication manifest reviewable.\n",
+                "!/seed-manifest.toml\n"
+            )
+        );
+        std::fs::write(&gitignore_path, &legacy).expect("seed legacy .gitignore");
+
+        ensure_ac_root_gitignore(&ac_root).expect("migrate legacy .gitignore");
+
+        let content = std::fs::read_to_string(&gitignore_path).expect("read .gitignore");
+        assert!(
+            content.starts_with(USER_RULE),
+            "user content must survive byte for byte, got {content:?}"
+        );
+        assert!(
+            !content.contains("!/seed-manifest.toml"),
+            "the retired negation must be removed"
+        );
+        assert!(
+            !content.contains("# AgentsCommander: keep the seed publication manifest reviewable."),
+            "the retired comment must be removed"
+        );
+        for pattern in [
+            "/.seed-manifest.lock",
+            "/.seed-manifest.*.tmp",
+            "/seed-manifest.toml",
+        ] {
+            assert_eq!(
+                content
+                    .lines()
+                    .filter(|line| line.trim() == pattern)
+                    .count(),
+                1,
+                "the migrated .gitignore must carry {pattern} exactly once"
+            );
+        }
+
+        // Idempotent: a second ensure appends nothing.
+        let before = content;
+        ensure_ac_root_gitignore(&ac_root).expect("second ensure");
+        assert_eq!(
+            std::fs::read_to_string(&gitignore_path).expect("re-read"),
+            before,
+            "a second call must be a no-op"
+        );
+    }
+
+    /// #2090 - the exact bytes an older build wrote must migrate to exactly the
+    /// bytes a fresh root gets, with no duplicated coordination rules and no
+    /// leftover blank line.
+    #[test]
+    fn ensure_ac_root_gitignore_migrated_root_matches_a_fresh_root() {
+        const NEW_MANIFEST_BLOCK: &str = concat!(
+            "# AgentsCommander: exclude the seed publication manifest from Git tracking.\n",
+            "/seed-manifest.toml\n"
+        );
+        const LEGACY_MANIFEST_BLOCK: &str = concat!(
+            "# AgentsCommander: keep the seed publication manifest reviewable.\n",
+            "!/seed-manifest.toml\n"
+        );
+
+        let fresh = tempfile::tempdir().expect("tempdir");
+        let fresh_ac = fresh.path().join(".ac");
+        std::fs::create_dir(&fresh_ac).expect("create .ac");
+        ensure_ac_root_gitignore(&fresh_ac).expect("ensure fresh .gitignore");
+        let expected =
+            std::fs::read_to_string(fresh_ac.join(".gitignore")).expect("read fresh .gitignore");
+
+        let old = tempfile::tempdir().expect("tempdir");
+        let old_ac = old.path().join(".ac");
+        std::fs::create_dir(&old_ac).expect("create .ac");
+        let legacy_content = expected.replace(NEW_MANIFEST_BLOCK, LEGACY_MANIFEST_BLOCK);
+        assert!(
+            legacy_content.contains("!/seed-manifest.toml"),
+            "the fixture must carry the retired negation"
+        );
+        std::fs::write(old_ac.join(".gitignore"), &legacy_content).expect("seed legacy .gitignore");
+
+        ensure_ac_root_gitignore(&old_ac).expect("migrate legacy .gitignore");
+
+        assert_eq!(
+            std::fs::read_to_string(old_ac.join(".gitignore")).expect("read migrated .gitignore"),
+            expected,
+            "migrating a prior-build .gitignore must reproduce a fresh root byte for byte"
+        );
+    }
+
+    /// #2090 - a `!/seed-manifest.toml` line without the retired AC comment is
+    /// user intent; reconciliation must not remove it.
+    #[test]
+    fn ensure_ac_root_gitignore_preserves_a_bare_user_seed_manifest_negation() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+        let gitignore_path = ac_root.join(".gitignore");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure .gitignore");
+        let mut content = std::fs::read_to_string(&gitignore_path).expect("read .gitignore");
+        content.push_str("\n# user rule\n!/seed-manifest.toml\n");
+        std::fs::write(&gitignore_path, &content).expect("append user negation");
+
+        ensure_ac_root_gitignore(&ac_root).expect("ensure again");
+
+        assert_eq!(
+            std::fs::read_to_string(&gitignore_path).expect("re-read"),
+            content,
+            "a bare user negation must survive reconciliation byte for byte"
+        );
+    }
+
+    /// #2090 - the retired pair is matched on trimmed lines, so a `.gitignore`
+    /// converted to CRLF by Git or an editor is migrated too.
+    #[test]
+    fn ensure_ac_root_gitignore_migrates_a_crlf_legacy_seed_manifest_block() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+        let gitignore_path = ac_root.join(".gitignore");
+        const USER_RULE: &str = "# user rule\r\n";
+        let legacy = concat!(
+            "# user rule\r\n",
+            "# AgentsCommander: keep the seed publication manifest reviewable.\r\n",
+            "!/seed-manifest.toml\r\n"
+        );
+        std::fs::write(&gitignore_path, legacy).expect("seed CRLF legacy .gitignore");
+
+        ensure_ac_root_gitignore(&ac_root).expect("migrate legacy .gitignore");
+
+        let content = std::fs::read_to_string(&gitignore_path).expect("read .gitignore");
+        assert!(
+            content.starts_with(USER_RULE),
+            "the user rule must survive byte for byte, got {content:?}"
+        );
+        assert!(
+            !content.contains("!/seed-manifest.toml"),
+            "the CRLF negation must be removed"
+        );
+        assert_eq!(
+            content
+                .lines()
+                .filter(|line| line.trim() == "/seed-manifest.toml")
+                .count(),
+            1,
+            "the CRLF file must gain the manifest ignore rule exactly once"
+        );
+    }
+
+    // Stage E (#1064) Git-visibility conformance (plan section 10.5 items 3-4,
+    // section 7.3). AC's managed `.ac/.gitignore` ignores the manifest, but a
+    // parent rule that excludes the `.ac/` directory still wins: Git does not
+    // descend into an excluded directory. AC documents but does not override
+    // this.
+    #[test]
+    fn stage_e_parent_gitignore_excluding_ac_hides_manifest() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("project");
         let ac_root = project.join(".ac");
@@ -5170,18 +5388,18 @@ mod tests {
     }
 
     #[test]
-    fn stage_e_later_user_rule_and_excludes_win_over_managed_negation() {
-        // (a) A later user rule in the SAME .ac/.gitignore re-hides the manifest.
+    fn stage_e_later_user_rule_and_excludes_win_over_managed_rules() {
+        // (a) A later user negation in the SAME .ac/.gitignore re-includes the manifest.
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let project = tmp.path().join("project");
             let ac_root = project.join(".ac");
             std::fs::create_dir_all(&ac_root).expect("create .ac");
             ensure_ac_root_gitignore(&ac_root).expect("ensure .gitignore");
-            // Append a later user rule (never reordered by AC).
+            // Append a later user negation (never reordered by AC).
             let mut content =
                 std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
-            content.push_str("\n# user rule\n/seed-manifest.toml\n");
+            content.push_str("\n# user rule\n!/seed-manifest.toml\n");
             std::fs::write(ac_root.join(".gitignore"), content).expect("append user rule");
             std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
 
@@ -5195,6 +5413,7 @@ mod tests {
                 .args([
                     "check-ignore",
                     "-v",
+                    "--non-matching",
                     "--no-index",
                     "--",
                     ".ac/seed-manifest.toml",
@@ -5204,12 +5423,28 @@ mod tests {
                 .expect("check-ignore");
             assert!(
                 verbose.status.success(),
-                "a later same-file user rule must re-hide the manifest"
+                "check-ignore -v --non-matching must name the winning rule"
             );
             let line = String::from_utf8(verbose.stdout).expect("utf8");
             assert!(
-                line.contains(".ac/.gitignore") && line.contains("/seed-manifest.toml"),
-                "check-ignore -v must name the later user rule, got {line:?}"
+                line.contains(".ac/.gitignore") && line.contains("!/seed-manifest.toml"),
+                "a later same-file user negation must re-include the manifest, got {line:?}"
+            );
+            let ignored = std::process::Command::new("git")
+                .args([
+                    "check-ignore",
+                    "--quiet",
+                    "--no-index",
+                    "--",
+                    ".ac/seed-manifest.toml",
+                ])
+                .current_dir(&project)
+                .status()
+                .expect("check-ignore");
+            assert!(
+                !ignored.success(),
+                "the manifest must not be ignored after the user negation, got exit {:?}",
+                ignored.code()
             );
         }
 
