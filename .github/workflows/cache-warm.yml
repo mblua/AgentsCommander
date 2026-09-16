@@ -57,17 +57,17 @@ jobs:
       - name: cargo check
         if: steps.cache.outputs.cache-hit != 'true'
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
 
       - name: cargo clippy
         if: steps.cache.outputs.cache-hit != 'true'
         working-directory: src-tauri
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: cargo test (compile only)
         if: steps.cache.outputs.cache-hit != 'true'
         working-directory: src-tauri
-        run: cargo test --lib --bins --tests --no-run
+        run: cargo test --locked --lib --bins --tests --no-run
 
   warm-release:
     name: warm-release
