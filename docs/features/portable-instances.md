@@ -23,13 +23,13 @@ For a `v0.30.3` AppImage, the native executable is inside the temporary, read-on
 
 The newer resolver in `main` adds this precedence, but it is not `v0.30.3` behavior:
 
-1. A nonblank `AGENTSCOMMANDER_CONFIG_DIR` selects its original value verbatim and skips marker and write probes. An empty or whitespace-only value is ignored; prefer an absolute value so the selected path is unambiguous.
-2. Without the override, an executable without an underscore suffix, such as `agentscommander.exe`, uses `$HOME/.agentscommander`. It skips `portable.txt`, the adjacent candidate and both probes. If the runtime cannot report a usable executable name, AC treats it the same way.
-3. An executable with an underscore suffix, `agentscommander_<suffix>.exe`, derives the adjacent candidate `<native-executable-folder>/.agentscommander_<suffix>` and inspects `portable.txt` beside the native executable. It never uses `$HOME`.
-   - **Marker present:** a successful write probe selects the adjacent candidate. Any write-probe failure, or an indeterminate marker state, stops startup, and the message tells you to set `AGENTSCOMMANDER_CONFIG_DIR` to a writable directory.
-   - **Marker absent:** a successful write probe selects the adjacent candidate. A conclusively unwritable candidate stops startup with `AgentsCommander cannot start because it cannot write its configuration directory "<candidate>" next to the executable: <reason>. Move the executable to a writable folder, or set AGENTSCOMMANDER_CONFIG_DIR to a writable directory, and restart.` An indeterminate write failure stops startup rather than guessing, and the message tells you to set `AGENTSCOMMANDER_CONFIG_DIR` to a writable directory.
+1. A nonblank `AGENTSCOMMANDER_CONFIG_DIR` selects its original value verbatim and skips the adjacent candidate and its write probe. An empty or whitespace-only value is ignored; prefer an absolute value so the selected path is unambiguous.
+2. Without the override, an executable without an underscore suffix, such as `agentscommander.exe`, uses `$HOME/.agentscommander`. It skips the adjacent candidate and its write probe. If the runtime cannot report a usable executable name, AC treats it the same way.
+3. An executable with an underscore suffix, `agentscommander_<suffix>.exe`, derives the adjacent candidate `<native-executable-folder>/.agentscommander_<suffix>` and probes its writability once. It never uses `$HOME`.
+   - **Writable candidate:** a successful write probe selects the adjacent candidate.
+   - **Conclusively unwritable candidate:** startup stops with `AgentsCommander cannot start because it cannot write its configuration directory "<candidate>" next to the executable: <reason>. Move the executable to a writable folder, or set AGENTSCOMMANDER_CONFIG_DIR to a writable directory, and restart.`
+   - **Indeterminate write result:** startup stops rather than guessing, and the message tells you to set `AGENTSCOMMANDER_CONFIG_DIR` to a writable directory.
 
-A marker cannot override the public environment variable because the override is evaluated first.
 
 ### Any other release
 
@@ -88,11 +88,11 @@ Unknown suffixes get a deterministic port in the 9880–9899 range based on a ha
 2. Copy it to a user-writable folder and rename it with an underscore suffix, such as `agentscommander_myteam.exe`.
 3. Apply the rule for that exact version:
    - For `v0.30.3`, run the renamed native executable. It selects the adjacent directory immediately; `portable.txt` and `AGENTSCOMMANDER_CONFIG_DIR` have no release-build effect.
-   - For `v0.33.0` or a development build from `main`, confirm that no nonblank public override is present, then create an empty regular `portable.txt` beside the executable. If selection fails, move the tree to a writable location or set `AGENTSCOMMANDER_CONFIG_DIR`; a suffixed executable on `v0.33.0` or `main` has no home fallback.
+   - For `v0.33.0` or a development build from `main`, confirm that no nonblank public override is present. If selection fails, move the tree to a writable location or set `AGENTSCOMMANDER_CONFIG_DIR`; a suffixed executable on `v0.33.0` or `main` has no home fallback.
    - For any other release, inspect its exact tag before proceeding.
 4. Confirm the selected directory from runtime evidence before treating the copy as isolated.
 
-Under the `main` resolver, one marker can serve multiple binaries in a folder. Under either verified resolver, each binary derives its adjacent candidate from its own file stem. Distinct selected directories isolate settings, sessions, logs, and tokens; the suffix separately determines the mutex and port.
+Under either verified resolver, each binary derives its adjacent candidate from its own file stem. Distinct selected directories isolate settings, sessions, logs, and tokens; the suffix separately determines the mutex and port.
 
 ## Why you might want this
 
