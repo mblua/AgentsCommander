@@ -63,6 +63,7 @@ import NewLoopModal from "./NewLoopModal";
 import EditLoopModal from "./EditLoopModal";
 import AgentPickerModal, { type AgentPickerScopeContext, LockIcon } from "./AgentPickerModal";
 import RestartPromptModal from "./RestartPromptModal";
+import AgentMatrixNoticeModal from "./AgentMatrixNoticeModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
 import DetachIcon from "./DetachIcon";
@@ -87,10 +88,11 @@ import {
   workgroupIsWorking,
 } from "./workgroup-session";
 import {
-  MAX_GROUP_MATCH_ID_LENGTH,
   DEFAULT_NON_STOP_NAME,
   compileGroupRegex,
-  groupMatchId,
+  compileWorkgroupGroups,
+  groupMatchesWorkgroup,
+  isUngroupedWorkgroup,
   nonStopMatchesWorkgroup,
   removeExactGroupToken,
   workgroupGroupsStore,
@@ -164,7 +166,8 @@ function replicaScopeContext(wg: AcWorkgroup, replica: AcAgentReplica): AgentPic
   };
 }
 
-/** #1943 - KEEP chip title. Reads the SAVED pair, never the session's
+/** #1943 - lock chip label: the tooltip and, since #2030 made the chip
+ *  icon-only, the accessible name. Reads the SAVED pair, never the session's
  *  launch-time pair, and falls back to the stored identifier when the provider
  *  is no longer configured instead of dropping the fact. */
 function selectionLockChipTitle(replica: AcAgentReplica, settings: AppSettings | null): string {
@@ -423,6 +426,7 @@ const ProjectPanel: Component = () => {
   });
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
+  const [agentMatrixNotice, setAgentMatrixNotice] = createSignal<{ name: string; path: string } | null>(null);
   const [collapsedByKey, setCollapsedByKey] = createSignal<Record<string, boolean>>({});
   const isPanelCollapsed = (key: string, defaultCollapsed = false) =>
     collapsedByKey()[key] ?? defaultCollapsed;
@@ -629,27 +633,9 @@ const ProjectPanel: Component = () => {
     });
   };
 
-  const handleAgentClick = async (agent: { name: string; path: string; preferredAgentId?: string }) => {
-    const existing = sessionsStore.findSessionByName(agent.name);
-    if (existing) {
-      await SessionAPI.switch(existing.id);
-      if (isTauri) {
-        const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-        const detachedLabel = `terminal-${existing.id.replace(/-/g, "")}`;
-        const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
-        if (!detachedWin) {
-          await WindowAPI.ensureTerminal();
-        }
-      }
-      return;
-    }
-
-    setPendingLaunch({
-      path: agent.path,
-      sessionName: agent.name,
-      gitRepos: [],
-      currentAgentId: agent.preferredAgentId,
-    });
+  /** #2046 - an Agent Matrix row is not launchable: a left click only explains it. */
+  const handleAgentClick = (agent: { name: string; path: string }) => {
+    setAgentMatrixNotice({ name: agent.name, path: agent.path });
   };
 
   return (
@@ -1104,33 +1090,17 @@ const ProjectPanel: Component = () => {
         };
         const groupsConfig = () => workgroupGroupsStore.config(proj.path);
         const selectedGroup = () => workgroupGroupsStore.selection(proj.path);
-        const compiledGroups = createMemo(() =>
-          groupsConfig().groups.map((group) => ({ group, regex: compileGroupRegex(group) }))
-        );
-        const canTestGroupMatchId = (wg: AcWorkgroup) =>
-          groupMatchId(wg).length <= MAX_GROUP_MATCH_ID_LENGTH;
-        const groupMatchesWorkgroup = (wg: AcWorkgroup, groupId: string) => {
-          if (!canTestGroupMatchId(wg)) return false;
-          const compiled = compiledGroups().find((entry) => entry.group.id === groupId);
-          return !!compiled?.regex?.test(groupMatchId(wg));
-        };
-        const workgroupMatchesAnyGroup = (wg: AcWorkgroup) => {
-          const nonStop = groupsConfig().nonStop;
-          return (
-            (canTestGroupMatchId(wg) &&
-              compiledGroups().some((entry) => entry.regex?.test(groupMatchId(wg)))) ||
-            (!!nonStop && nonStopMatchesWorkgroup(nonStop, wg))
-          );
-        };
+        const compiledGroups = createMemo(() => compileWorkgroupGroups(groupsConfig().groups));
         const groupPredicate = (wg: AcWorkgroup) => {
           const selected = selectedGroup();
           if (selected.kind === "all") return true;
-          if (selected.kind === "ungrouped") return !workgroupMatchesAnyGroup(wg);
+          if (selected.kind === "ungrouped")
+            return isUngroupedWorkgroup(compiledGroups(), groupsConfig().nonStop, wg);
           if (selected.kind === "nonstop") {
             const ns = groupsConfig().nonStop;
             return !!ns && nonStopMatchesWorkgroup(ns, wg);
           }
-          return groupMatchesWorkgroup(wg, selected.id);
+          return groupMatchesWorkgroup(compiledGroups(), selected.id, wg);
         };
         const groupVisibleWorkgroups = createMemo(() => proj.workgroups.filter(groupPredicate));
         const filteredWorkgroups = createMemo(() => {
@@ -1576,7 +1546,7 @@ const ProjectPanel: Component = () => {
         };
 
         const groupAlreadyMatches = (wg: AcWorkgroup, groupId: string) =>
-          groupMatchesWorkgroup(wg, groupId);
+          groupMatchesWorkgroup(compiledGroups(), groupId, wg);
 
         const toggleExistingGroup = async (wg: AcWorkgroup, groupId: string) => {
           setGroupMenuError("");
@@ -2447,6 +2417,9 @@ const ProjectPanel: Component = () => {
             `replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
           const lockChipTestId = () =>
             `replica.lockChip.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
+          // #2030 - the chip is icon-only, so its tooltip and its accessible name
+          // come from the same accessor; the glyph itself is aria-hidden.
+          const lockChipLabel = () => selectionLockChipTitle(replica, settingsStore.current);
           const liveAgentLabel = () => resolveReplicaAgentLabel(session(), replica);
           const profileBadge = () => resolveReplicaProfileBadge(session(), replica);
           const ctxVisible = () =>
@@ -2599,17 +2572,20 @@ const ProjectPanel: Component = () => {
                   <Show when={profileBadge()}>
                     {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
                   </Show>
-                  {/* #1943 - KEEP chip for a locked replica. Only an established
-                      `locked` state renders it, so an unknown or invalid state is
-                      never drawn as unlocked. The same helper covers every
-                      renderReplicaItem call site (workgroups, selected, quick). */}
+                  {/* #1943 - lock chip for a locked replica; icon-only since #2030.
+                      Only an established `locked` state renders it, so an unknown
+                      or invalid state is never drawn as unlocked. The same helper
+                      covers every renderReplicaItem call site (workgroups,
+                      selected, quick). */}
                   <Show when={replica.selectionState === "locked"}>
                     <span
                       class="selection-lock-chip"
-                      title={selectionLockChipTitle(replica, settingsStore.current)}
+                      role="img"
+                      aria-label={lockChipLabel()}
+                      title={lockChipLabel()}
                       data-ac-testid={lockChipTestId()}
                     >
-                      <LockIcon />KEEP
+                      <LockIcon />
                     </span>
                   </Show>
                   <Show when={ctxVisible()}>
@@ -4577,6 +4553,20 @@ const ProjectPanel: Component = () => {
             setPendingLaunch(null);
           }}
           onClose={() => setPendingLaunch(null)}
+        />
+      </Portal>
+    )}
+
+    {/* #2046: an Agent Matrix row is not launchable. Rendered at the stable
+        ProjectPanel root (outside the projects <For>, like pendingLaunch and the
+        restart prompt) so a discovery refresh that re-creates the row cannot
+        unmount the notice mid-read. */}
+    {agentMatrixNotice() && (
+      <Portal>
+        <AgentMatrixNoticeModal
+          name={agentMatrixNotice()!.name}
+          path={agentMatrixNotice()!.path}
+          onClose={() => setAgentMatrixNotice(null)}
         />
       </Portal>
     )}

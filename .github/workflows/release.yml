@@ -2795,21 +2795,45 @@ jobs:
               env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG -u NPM_TOKEN -u NPM_AGENTSCOMMANDER -u NPM_ID_TOKEN -u SIGSTORE_ID_TOKEN npm --userconfig "$TOKENLESS_NPMRC" publish --access public --provenance --registry "$REGISTRY_URL"
             )
           fi
+          # Right after a publish the registry propagates in pieces: the version
+          # document can return 200 before its attestations and signatures appear,
+          # and the packument can still report the previous dist-tags.latest.
+          # Wait for all of them within one bounded window instead of failing on
+          # the first read.
+          metadata_ready=false
           for attempt in $(seq 1 30); do
             status="$(curl --silent --show-error --output "$work_dir/version-metadata.json" --write-out '%{http_code}' "$metadata_url")"
             if [ "$status" = 200 ]; then
-              break
-            fi
-            if [ "$status" != 404 ]; then
+              if node -e '
+                const dist = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).dist || {};
+                process.exit(dist.attestations && Array.isArray(dist.signatures) && dist.signatures.length > 0 ? 0 : 1);
+              ' "$work_dir/version-metadata.json"; then
+                metadata_ready=true
+                break
+              fi
+            elif [ "$status" != 404 ]; then
               cat "$work_dir/version-metadata.json"
               echo "::error::registry returned HTTP $status while waiting for $package_name@$VERSION"
               exit 1
             fi
             sleep 2
           done
-          test "$status" = 200
-          latest="$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" view "$package_name" dist-tags.latest --registry "$REGISTRY_URL")"
-          test "$latest" = "$VERSION"
+          if [ "$metadata_ready" != true ]; then
+            echo "::error::$package_name@$VERSION metadata with attestations and signatures did not appear in the registry (last HTTP $status)"
+            exit 1
+          fi
+          latest=""
+          for attempt in $(seq 1 30); do
+            latest="$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" view "$package_name" dist-tags.latest --registry "$REGISTRY_URL" || true)"
+            if [ "$latest" = "$VERSION" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "$latest" != "$VERSION" ]; then
+            echo "::error::registry dist-tags.latest for $package_name is '$latest', expected $VERSION"
+            exit 1
+          fi
           registry_tarball_url="$(node - "$work_dir/version-metadata.json" "$local_tarball" "$package_name" "$VERSION" <<'NODE'
           const assert = require('node:assert/strict');
           const crypto = require('node:crypto');

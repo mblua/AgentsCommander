@@ -5,10 +5,10 @@
 When installing through npm, use `-g` so the `agentscommander` command is available from any directory:
 
 ```bash
-npm install -g @mblua/agentscommander@<version>
+npm install -g @mblua/agentscommander@latest
 ```
 
-Replace `<version>` with the exact version selected using [Resolve versions and preserve configuration](#resolve-versions-and-preserve-configuration), then follow [Install and validate](#install-and-validate). Check the supported platforms and requirements below before installing.
+This installs the current `latest` release. Before installing, follow [Resolve versions and preserve configuration](#resolve-versions-and-preserve-configuration), then [Install and validate](#install-and-validate). Check the supported platforms and requirements below before installing.
 
 The npm website's **Install** sidebar shows the generic local-install command. For the recommended global npm installation, include `-g` as shown above.
 
@@ -41,7 +41,7 @@ AgentsCommander does not install or authenticate Coding Agent CLIs for you.
 
 ## Resolve versions and preserve configuration
 
-Before an install, update, or uninstall, resolve and report the exact existing package and binary versions, then the exact registry release selected for comparison. For an install or update, that selected release must also be the version you install; for an uninstall, report that no replacement will be installed.
+Before an install, update, or uninstall, resolve and report the exact existing package and binary versions, then the current `latest` registry release. For an install or update, that `latest` release is the version you install; for an uninstall, report that no replacement will be installed.
 
 ```bash
 npm list -g @mblua/agentscommander --depth=0
@@ -70,10 +70,10 @@ Copy the complete persistent configuration directory to a user-controlled backup
 ## Install and validate
 
 ```bash
-npm install -g @mblua/agentscommander@<version>
+npm install -g @mblua/agentscommander@latest
 ```
 
-Replace `<version>` with the exact version already inspected and approved; do not leave the install unpinned after resolving `latest`. The command exits 0 on success. The package's install script downloads that package version's raw asset and `SHASUMS256.txt` from `mblua/AgentsCommander`, computes SHA-256, and fails the install on a missing record or mismatch. This does not protect against compromise of the publisher or repository account because the asset and checksum share that trust boundary.
+The command installs the current `latest` release and exits 0 on success. The package's install script downloads that package version's raw asset and `SHASUMS256.txt` from `mblua/AgentsCommander`, computes SHA-256, and fails the install on a missing record or mismatch. This does not protect against compromise of the publisher or repository account because the asset and checksum share that trust boundary.
 
 Validate the installed command:
 
@@ -82,7 +82,11 @@ npm list -g @mblua/agentscommander --depth=0
 agentscommander --help
 ```
 
-Both commands must exit 0. Confirm that `npm list` and the installed `package.json` report the approved package version; re-check the installed scripts, native path, and checksum correlation described above. `--help` must print the AgentsCommander command help, and on `0.31.0` or newer `agentscommander --version` must print the same version `npm list` reports. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
+Both commands must exit 0. Confirm that `npm list` and the installed `package.json` report the `latest` version that `npm view @mblua/agentscommander@latest version` returned; re-check the installed scripts, native path, and checksum correlation described above. `--help` must print the AgentsCommander command help, and on `0.31.0` or newer `agentscommander --version` must print the same version `npm list` reports. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
+
+### Windows Start Menu shortcut
+
+On Windows, a global install also creates a per-user Start Menu shortcut named **AgentsCommander**, with the app icon, at `%APPDATA%\Microsoft\Windows\Start Menu\Programs\AgentsCommander.lnk`. It opens the installed `bin\agentscommander.exe`. A local install (without `-g`) creates no shortcut. To skip it, set `AGENTSCOMMANDER_NO_SHORTCUT=1` before installing. If the shortcut cannot be created, the install prints a warning and still succeeds. Installing again replaces the same shortcut.
 
 ## Uninstall
 
@@ -92,6 +96,10 @@ Identify, back up, and verify the version-selected configuration as described ab
 npm uninstall -g @mblua/agentscommander
 ```
 
-Success exits 0. Restore a previous version or remove the saved configuration only as a separate, deliberate action.
+Success exits 0. npm does not run uninstall scripts, so on Windows delete the Start Menu shortcut by hand:
+
+```powershell
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentsCommander.lnk"
+``` Restore a previous version or remove the saved configuration only as a separate, deliberate action.
 
 For stable-release downloads and rollback rules, use the [manual alternatives](https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md#manual-alternatives).

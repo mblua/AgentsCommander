@@ -1486,6 +1486,140 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
+    it("sends the replica preview fingerprint for This replica + lock (#2051)", async () => {
+      const { dispose, onSelect } = renderLockPicker();
+      await settle();
+
+      clickRadio("agentPicker.scope.lock.replica");
+      await settle();
+      target<HTMLButtonElement>("agentPicker.apply").click();
+      await settle();
+
+      // #2051 - the replica preview IS the confirmation: echoing its own
+      // fingerprint is what makes the one-step lock apply possible.
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: "replica",
+          assignmentMode: "assignAndLock",
+          restartSessions: false,
+          confirmedTargetFingerprint: "fp-replica",
+        }),
+      );
+      expect(onSelect).toHaveBeenCalled();
+
+      dispose();
+    });
+
+    it("blocks This replica + lock until the replica preview is loaded (#2051)", async () => {
+      let resolveReplica: (value: PreviewCodingAgentProfileSelectionResult) => void = () => {};
+      mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation(
+        (req: { scope: string }) => {
+          if (req.scope === "replica") {
+            return new Promise<PreviewCodingAgentProfileSelectionResult>((resolve) => {
+              resolveReplica = resolve;
+            });
+          }
+          return Promise.resolve(previewResult({ scope: "kind", targetFingerprint: "fp-kind" }));
+        },
+      );
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      clickRadio("agentPicker.scope.lock.replica");
+      await settle();
+
+      // #2051 - the fingerprint is the confirmation, so the button cannot be
+      // clicked before the preview that mints it has landed.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+      expect(text("agentPicker.previewBusy")).toContain("Loading targets");
+
+      resolveReplica(previewResult({ scope: "replica", targetFingerprint: "fp-replica-fresh" }));
+      await settle();
+
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      dispose();
+    });
+
+    it("re-previews replica scope after a rejected replica + lock apply (#2051)", async () => {
+      const staleFingerprintMessage =
+        "stalePreview: Target selection changed. Rerun preview before applying profile selection.";
+      mockSettingsApi.applyCodingAgentProfileSelection.mockRejectedValue(
+        new Error(staleFingerprintMessage),
+      );
+      const { dispose, onSelect } = renderLockPicker();
+      await settle();
+
+      clickRadio("agentPicker.scope.lock.replica");
+      await settle();
+
+      mockSettingsApi.previewCodingAgentProfileSelection.mockClear();
+      target<HTMLButtonElement>("agentPicker.apply").click();
+      await settle();
+
+      // #2051 - a rejected fingerprint is never replayed: the replica preview is
+      // refreshed (D5) so the next click carries the current value.
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(text("agentPicker.toast")).toContain(staleFingerprintMessage);
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledTimes(1);
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: "replica", assignmentMode: "assignAndLock" }),
+      );
+
+      dispose();
+    });
+
+    it("hashes the replica preview with the restart value the apply sends (#2051)", async () => {
+      const calls: Array<{ scope: string; restartSessions?: boolean }> = [];
+      const basePreview =
+        mockSettingsApi.previewCodingAgentProfileSelection.getMockImplementation();
+      mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation(
+        (req: { scope: string; restartSessions?: boolean }) => {
+          calls.push({ scope: req.scope, restartSessions: req.restartSessions });
+          if (req.scope === "replica") {
+            // Mimic the backend: the restart flag is part of the hashed tuple.
+            return Promise.resolve(
+              previewResult({
+                scope: "replica",
+                targetFingerprint: req.restartSessions ? "fp-replica-restart" : "fp-replica",
+              }),
+            );
+          }
+          return basePreview?.(req) ?? Promise.resolve(previewResult({ scope: "kind" }));
+        },
+      );
+      const { dispose } = renderLockPicker();
+      await settle();
+
+      // A restart choice made on a bulk scope must not leak into the replica
+      // hash once the hidden toggle survives the switch.
+      clickRadio("agentPicker.scope.kind");
+      await settle();
+      target<HTMLInputElement>("agentPicker.restartToggle").click();
+      await settle();
+      clickRadio("agentPicker.scope.lock.replica");
+      await settle();
+
+      const replicaCalls = calls.filter((call) => call.scope === "replica");
+      expect(replicaCalls.length).toBeGreaterThan(0);
+      for (const call of replicaCalls) {
+        expect(call.restartSessions).toBe(false);
+      }
+
+      target<HTMLButtonElement>("agentPicker.apply").click();
+      await settle();
+
+      expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: "replica",
+          restartSessions: false,
+          confirmedTargetFingerprint: "fp-replica",
+        }),
+      );
+
+      dispose();
+    });
+
     it("opens an accessible review for a conflicting bulk lock and sends nothing on Cancel", async () => {
       const { dispose, onSelect } = renderLockPicker();
       await settle();

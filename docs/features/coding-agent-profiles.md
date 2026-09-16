@@ -80,7 +80,7 @@ AC picks the requested letter from the first source that has one, highest priori
 
 Tier 1 outranks tier 2 on purpose: a profile you deliberately assigned to a replica should survive future launches, so it beats an ephemeral letter picked for a single launch. The one exception is the dispatch-time request (tier 0): a `send --profile` letter is the orchestrator's explicit per-wake choice and outranks the replica pin for that spawn only — it is never written back, so the pin survives for every other launch.
 
-> **No per-agent "default" button.** Neither the origin default (tier 3, the per-agent-matrix `tooling.defaultProfile`) nor tier 4 (`defaultProfileByAgent` in `settings.json`) has a UI control. Tier 3 is set only by hand-editing the matrix `config.json` or by inheritance; tier 4 only by an inherited or migrated config or by hand-editing `settings.json`. The closest thing to a default in the UI is an instance override (tier 1), assigned through the launch picker as described below.
+> **No per-agent "default" button.** Neither the origin default (tier 3, the per-agent-matrix `tooling.defaultProfile`) nor tier 4 (`defaultProfileByAgent` in `settings.json`) has a UI control. Tier 3 is set only by hand-editing the matrix `config.json` or by inheritance; tier 4 only by an inherited config or by hand-editing `settings.json`. The closest thing to a default in the UI is an instance override (tier 1), assigned through the launch picker as described below.
 
 ### Step 2: walk down to the nearest enabled cell
 
@@ -147,7 +147,7 @@ Profiles live in two places: the global `settings.json` (the matrix and defaults
 | Instance override (tier 1) | replica `__agent_<name>/config.json` | `tooling.profile` (legacy `tooling.instanceProfileOverride`) |
 | Drift fingerprint | replica/matrix `config.json` | `tooling.profileContentHash` |
 
-The full `codingAgentProfiles` schema (including `schemaVersion`) is in the [settings reference](../reference/settings.md#coding-agent-profiles). The matrix uses schema version 2; a version-1 config is upgraded and persisted on load, after a one-time v1 backup.
+The full `codingAgentProfiles` schema (including `schemaVersion`) is in the [settings reference](../reference/settings.md#coding-agent-profiles). The matrix uses schema version 2; older pre-v2 profile fields are no longer read: they are ignored. Before any save drops them, AC keeps the original once as `settings.pre-384-v1.json` and writes settings without them; the `open-project` and `new-project` CLI commands keep them and write no backup.
 
 **Dispatch a profile per wake.** `send --mode wake --profile <A-Z>` applies the letter to the coding agent the wake spawns or respawns (see [cli.md](../reference/cli.md) `send`). The letter is a dispatch-time request: it wins over a pinned replica profile for that spawn, is never written to `tooling.profile`/`currentCodingAgent`/`lastCodingAgent`, and the receipt reports the effective letter and any cell fallback (`fallbackApplied`). There is still no `profile` subcommand; everything else about profiles is configured in Settings or by editing `settings.json` and the per-agent `config.json` files.
 
