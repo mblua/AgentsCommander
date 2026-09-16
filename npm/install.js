@@ -8,7 +8,7 @@ const { assertExecutable } = require('./resolve-bin');
 const { createStartMenuShortcut } = require('./windows-shortcut');
 const { createLaunchpadAlias } = require('./macos-alias');
 
-const VERSION = "0.33.0"; // Must match package.json
+const VERSION = "0.34.0"; // Must match package.json
 const OWNER = 'mblua';
 const REPO = 'AgentsCommander';
 
