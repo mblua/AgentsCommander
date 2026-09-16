@@ -13,12 +13,16 @@ SonarCloud key `AaBBZrdibbRnCQnTRHWm`, rule `typescript:S7059`: `src/shared/tran
 - `init()` body untouched; it still never rejects.
 
 ## Decided solution
-Static factory; constructor stays synchronous and empty of async work.
+Static factory; constructor stays synchronous; its body holds only an explanatory comment (avoids `typescript:S1186`).
 
 ```ts
 private ready!: Promise<void>;
 
-private constructor() {}
+private constructor() {
+  // Use TauriTransport.create(): init() must start eagerly, in the same
+  // synchronous step that hands out the instance (#1363), and async work
+  // does not belong in a constructor (Sonar S7059).
+}
 
 static create(): TauriTransport {
   const transport = new TauriTransport();
@@ -32,7 +36,7 @@ static create(): TauriTransport {
 Rejected: field initializer `private ready = this.init()` (same async-in-construction semantics, only hides it from the rule); lazy `ready` getter (breaks #1363 eager start).
 
 ## Files / symbols
-1. `src/shared/transport-tauri.ts` — `TauriTransport`: add `static create()`, make constructor private and empty, `ready` gets definite-assignment `!`.
+1. `src/shared/transport-tauri.ts` — `TauriTransport`: add `static create()`, make constructor private with only the explanatory comment block (an empty body could trigger Sonar `typescript:S1186`), `ready` gets definite-assignment `!`.
 2. `src/shared/ipc.ts:123` — `createDefaultTransport`: `new TauriTransport()` -> `TauriTransport.create()`.
 3. `src/shared/transport-tauri.test.ts:54,67,85` — `new TauriTransport()` -> `TauriTransport.create()`.
 
@@ -50,5 +54,5 @@ No other references (`grep -rn TauriTransport src`).
 
 ## Acceptance criteria
 - No `new TauriTransport()` left in `src/`.
-- Constructor contains no async call; SonarCloud no longer reports S7059 on `transport-tauri.ts` (issue `AaBBZrdibbRnCQnTRHWm` closed on the PR analysis) and no new issue is introduced.
+- Constructor contains no async call and is not empty (no S1186); SonarCloud no longer reports S7059 on `transport-tauri.ts` (issue `AaBBZrdibbRnCQnTRHWm` closed on the PR analysis) and no new issue is introduced.
 - Typecheck and tests green; no runtime behavior change.
