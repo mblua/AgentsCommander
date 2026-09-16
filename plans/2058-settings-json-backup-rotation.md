@@ -36,7 +36,7 @@ setting to configure retention; restoring a backup from inside the app.
 | Its two call sites | `settings.rs:4621` (production) and `settings.rs:5498` |
 | `save_settings_to_path` (the `:5498` caller) is `#[cfg(test)]` | `settings.rs:5486-5498` |
 | So the ONLY production write site is `settings.rs:4621`, inside `save_settings_value_locked` | `settings.rs:4445-4621` |
-| Production callers of `save_settings_value_locked`, both holding `SettingsFileLock` | `settings.rs:4436` (via `save_settings_value`) and `settings.rs:4872` (compare-and-set, guard alive at `:4922`) |
+| Production callers of `save_settings_value_locked`, both holding `SettingsFileLock` | `settings.rs:4436` acquires the lock and `:4437-4442` is the call; and `:4872` (compare-and-set, guard alive at `:4922`) |
 | `save_settings_value_locked` already reads the previous file's exact bytes, unconditionally, under the lock | `settings.rs:4456` to `read_disk_object_and_contents_for_write_typed` (`:4082`) |
 | That read returns `Ok(None)` when absent and `Err` on non-object / invalid JSON, aborting the save | `settings.rs:4086-4130` |
 | `write_value_atomic` already verified the directory chain, the target identity and the post-write bytes before returning `Ok` | `settings.rs:5167-5350` |
@@ -99,10 +99,20 @@ a recovery aid whose source is the file that was just replaced.
 it; if it exists and is not a regular file, log `warn!` and return without writing.
 Reason: never follow a symlink or clobber a directory a user placed there.
 
-**D9 - Permissions.** On unix the slot file is created with mode `0o600` and
-`O_NOFOLLOW`; on Windows with `FILE_FLAG_OPEN_REPARSE_POINT`. Same posture as the live
+**D9 - Permissions, and the accepted truncation window.** On unix the slot file is
+created with mode `0o600` and `O_NOFOLLOW`; on Windows with
+`FILE_FLAG_OPEN_REPARSE_POINT`. Same permission and no-follow posture as the live
 `settings.json` (`settings.rs:5236-5244`, `:5309-5319`), because a slot holds the same
-secrets.
+secrets. It deliberately does NOT copy the live writer's temp + fsync + rename dance, so
+a crash mid-write can leave slot 1 truncated. **That window is accepted on purpose**, for
+three reasons: the live `settings.json` is already durable on disk before rotation starts
+(D1), so no user data is at risk; slot 2 still holds the generation before it, so the
+worst case is a history one generation shallower; and a temp + rename here would add a
+second `settings.json`-adjacent transient name that D11 and the #1330 residue test would
+then have to account for. The cost of the alternative exceeds its value for a best-effort
+recovery aid. This is a decided tradeoff, not an omission; do not re-litigate it without
+new evidence that a truncated slot 1 can mislead a recovering user. The docs section of
+4.5 tells the user to try slot 2 if slot 1 does not parse.
 
 **D10 - Concurrency.** Rotation runs with `settings.json.lock` held, because both
 production entry points acquire it before reaching `save_settings_value_locked`. No new
@@ -282,29 +292,89 @@ AC is closed, and that the slots hold the same secrets as `settings.json`.
 ## 5. Tests (all new, all in the modules above)
 
 In `settings.rs` `mod tests` (`:5504`), each on a `tempfile::TempDir`, driving the real
-production entry point `save_settings_to_path_preserving_project_paths`:
+production entry point `save_settings_to_path_preserving_project_paths`.
 
-1. `issue_2058_save_archives_the_replaced_bytes` - seed `settings.json` with A, save B;
-   `settings.backup.1.json` bytes equal A's bytes exactly; no `settings.backup.2.json`.
-   Fails before the change because no slot exists.
+**Shared seeding helper (binding).** `save_settings_to_path` (`:5487`) is a raw
+`#[cfg(test)]` writer that emits a legacy-shaped file, so its bytes do NOT equal what a
+production save writes. Seeding with it would make the first production save differ from
+disk, create slot 1, and so fail a CORRECT implementation of tests 3, 5a and 7. Every
+test that needs a "`settings.json` already on disk in production form" precondition
+therefore seeds through this helper:
+
+```rust
+/// #2058 - put `settings` on disk in exactly the bytes a production save
+/// produces, and return them. The file is absent beforehand, so D3's
+/// `disk_read == None` arm skips rotation and no slot exists on return.
+fn seed_settings_with_production_bytes(
+    path: &std::path::Path,
+    settings: &super::AppSettings,
+) -> Vec<u8> {
+    super::save_settings_to_path_preserving_project_paths(settings, path).unwrap();
+    let bytes = std::fs::read(path).unwrap();
+    assert!(
+        !path.with_file_name("settings.backup.1.json").exists(),
+        "seeding must not rotate"
+    );
+    bytes
+}
+```
+
+The returned `Vec<u8>` is the pinned seed `A`. Tests 1, 3, 5a and 7 use it. Test 6 is the
+deliberate exception: it needs a legacy-shaped file, so it seeds with
+`save_settings_to_path` on purpose, and the byte difference that causes is exactly what
+that test asserts.
+
+1. `issue_2058_save_archives_the_replaced_bytes` - seed `A` via the helper, save a
+   different value `B`; `settings.backup.1.json` bytes equal `A` exactly, `settings.json`
+   equals the new bytes, and `settings.backup.2.json` does not exist. Killed by **R**.
 2. `issue_2058_first_save_with_no_existing_file_writes_no_backup` - absent
    `settings.json`, one save; no `settings.backup.*.json` exists.
-3. `issue_2058_identical_save_does_not_rotate` - seed A, save A twice; no slot exists,
-   because nothing was ever replaced. Fails if D3's equality check is dropped.
-4. `issue_2058_keeps_five_generations_and_drops_the_oldest` - six saves with six distinct
-   values; slots 1..=5 exist, `settings.backup.6.json` does not, slot 1 holds the fifth
-   value, slot 5 holds the first. Fails for the right reason if `SETTINGS_BACKUP_KEEP`
-   or the shift direction changes.
-5. `issue_2058_rotation_failure_does_not_fail_the_save` - `std::fs::create_dir` at
-   `settings.backup.1.json`, then save; the save returns `Ok`, `settings.json` holds the
-   new bytes, and the directory is untouched. Covers D7 and D8 with no production seam.
+   **Positive control, same test:** a second save with a different value must then create
+   `settings.backup.1.json` holding the first save's bytes. The control proves the harness
+   really reaches rotation, so the first assertion's emptiness means "skipped", not
+   "never ran". Killed by **M-D3-NONE**, which archives empty bytes on the first save.
+3. `issue_2058_identical_save_does_not_rotate` - seed `A` via the helper, then save the
+   same settings value again; no `settings.backup.*.json` exists.
+   **Positive control, same test:** a third save with a changed value must create
+   `settings.backup.1.json` holding exactly `A`. Killed by **M-D3-EQ**.
+4. `issue_2058_keeps_five_generations_and_drops_the_oldest` - seven saves with seven
+   distinct values `v0..v6` on an initially empty directory. `v0` creates the file and
+   rotates nothing; `v1..=v5` fill the slots; `v6` evicts `v0`'s bytes. Assert: slots
+   1..=5 exist and hold the written bytes of `v5, v4, v3, v2, v1` in that order,
+   `settings.backup.6.json` does not exist, and no slot holds `v0`'s bytes. Killed by
+   **M-KEEP** and by **M-SHIFT**.
+5. Round 1's test 5 is split, because one test could not reach both arms it claimed.
+   - a. `issue_2058_non_regular_slot_aborts_rotation` - seed `A` via the helper (without
+     the seed, D3 skips rotation and the test proves nothing about D8), then
+     `std::fs::create_dir` at `settings.backup.1.json`, then save a different value `B`.
+     Assert: the save returns `Ok`, `settings.json` holds `B`'s bytes, the slot-1 path is
+     still a directory and still empty, and `settings.backup.2.json` does not exist.
+     **Positive control, same test:** run the identical seed-and-save sequence in a second
+     `TempDir` with no directory in the way, and assert slot 1 is created holding `A`.
+     Killed by **M-D8**. Claim: D8's abort, and D7's non-fatality for that abort. It
+     claims nothing about a rename or a write failure.
+   - b. `issue_2058_rotation_write_failure_is_not_fatal` - a direct in-module call,
+     `rotate_settings_backups(&temp.path().join("absent-dir").join("settings.json"),
+     b"previous")`. The parent directory does not exist, so step 1 finds no slot, step 2
+     renames nothing, and step 3's `OpenOptions` open fails. Assert: the call returns
+     normally (a panic fails the test, which is the only assertion a `()` return admits)
+     and `absent-dir` still does not exist. Killed by **M-D7**, which turns that arm into
+     an `expect` and panics. Claim: D7's step-3 arm only.
 6. `issue_2058_rotation_leaves_the_pre_384_backup_alone` - seed a legacy-shaped
-   `settings.json`, save; `settings.pre-384-v1.json` and `settings.backup.1.json` both
-   equal the original bytes, and a second save does not change
-   `settings.pre-384-v1.json`.
-7. `issue_2058_rotation_leaves_no_temp_residue` - after a rotating save, call the
-   existing `assert_no_issue_1330_temp_files` (`:5506`) and additionally assert no
-   created file name starts with `settings.json.`. Pins D5's collision-freedom.
+   `settings.json` with `save_settings_to_path`, save; `settings.pre-384-v1.json` and
+   `settings.backup.1.json` both equal the original bytes, and a second save does not
+   change `settings.pre-384-v1.json`. Killed by **R**.
+7. `issue_2058_rotation_creates_exactly_one_new_file` - seed `A` via the helper, snapshot
+   the directory entry-name set, save `B`, snapshot again. Assert the added set is exactly
+   `{"settings.backup.1.json"}` and the removed set is empty, then call the existing
+   `assert_no_issue_1330_temp_files` (`:5506`).
+   This replaces round 1's "no created file name starts with `settings.json.`", which was
+   FALSE as written: `SettingsFileLock::acquire` opens `settings.json.lock` with
+   `create(true)` (`settings.rs:4222-4224`) and `Drop` only calls `unlock_settings_file`
+   and never removes it (`:4350-4353`), so the lock file is a legitimately created
+   `settings.json.`-prefixed name. Snapshotting AFTER the seeding save puts the lock file
+   in the "before" set, so it drops out of the diff. The exact-set assertion is itself the
+   positive control: an empty added set fails it. Killed by **R**.
 
 In `instance_artifacts.rs`: the derivation test in section 4.1. The existing
 `ignore_rows_are_unique_and_byte_sorted_by_name` and
@@ -329,11 +399,18 @@ can cross an SCC boundary.
 Acceptance criterion the reviewer runs (clean tree, base SHA versus branch head):
 
 ```
-node "D:\0_repos\AgentsCommander_iac\.ac\room-21-ac-dev-team-v4\repo-personal\ObsidianVault\Coding Agents\IA-Programming\rust\01-rust_module-dependency-cycles.mjs" src-tauri --emit-graph pre.json --quiet
-node "D:\0_repos\AgentsCommander_iac\.ac\room-21-ac-dev-team-v4\repo-personal\ObsidianVault\Coding Agents\IA-Programming\rust\01-rust_module-dependency-cycles.mjs" src-tauri --emit-graph post.json --quiet
-node scripts/02-module-arc-record.mjs --graph post.json --out src-tauri/module-arcs.txt
+mkdir -p "D:\0_repos\AgentsCommander_iac\.ac\room-21-ac-dev-team-v4\room-shared\2058-cycle"
+node "D:\0_repos\AgentsCommander_iac\.ac\room-21-ac-dev-team-v4\repo-personal\ObsidianVault\Coding Agents\IA-Programming\rust\01-rust_module-dependency-cycles.mjs" src-tauri --emit-graph "D:\0_repos\AgentsCommander_iac\.ac\room-21-ac-dev-team-v4\room-shared\2058-cycle\pre.json" --quiet
+node "D:\0_repos\AgentsCommander_iac\.ac\room-21-ac-dev-team-v4\repo-personal\ObsidianVault\Coding Agents\IA-Programming\rust\01-rust_module-dependency-cycles.mjs" src-tauri --emit-graph "D:\0_repos\AgentsCommander_iac\.ac\room-21-ac-dev-team-v4\room-shared\2058-cycle\post.json" --quiet
+node scripts/02-module-arc-record.mjs --graph "D:\0_repos\AgentsCommander_iac\.ac\room-21-ac-dev-team-v4\room-shared\2058-cycle\post.json" --out src-tauri/module-arcs.txt
 git status --porcelain -- src-tauri/module-arcs.txt
 ```
+
+The two graph files go to `room-shared\2058-cycle\`, **outside the repository working
+tree**. Round 1 emitted them cwd-relative, which breaks Gate 5 and AC 6: `.gitignore`
+line 34 is `/graph.json` and there is no row for `pre.json` or `post.json`, so
+`git status --porcelain` would list two untracked files. Adding `.gitignore` rows instead
+is rejected, because it would widen the frozen five-file path set for a scratch artifact.
 
 Green iff `cyclicSccs` is equal pre/post, every cyclic SCC member set is identical
 set-to-set, zero new `from -> to` pairs exist at all, and the last command prints
@@ -390,7 +467,7 @@ nothing is written to the developer's real config directory.
 |---|---|---|
 | `src-tauri/src/config/instance_artifacts.rs` | 3 consts, 1 registry row, 1 test | New ignored artifact declared; byte-sort position is pinned by an existing test |
 | `src-tauri/src/config/instance_gitignore.rs` | 2 fixture strings | Test-only; production rules are derived from the registry |
-| `src-tauri/src/config/settings.rs` | 1 const, 2 fns, 1 signature change, 2 call-site edits, 1 capture, 3 doc comments, 7 tests | The only behavior change; every production settings write now archives the bytes it replaced |
+| `src-tauri/src/config/settings.rs` | 1 const, 2 fns, 1 signature change, 2 call-site edits, 1 capture, 3 doc comments, 1 test helper, 8 tests | The only behavior change; every production settings write now archives the bytes it replaced |
 | `docs/reference/directory-layout.md` | 1 table row | Inventory now matches the writers |
 | `docs/reference/settings.md` | 1 section | Tells a user how to recover |
 
@@ -413,17 +490,23 @@ A timed-out or failed run is reported as a failure. No custom runner is created,
 process-group owner or descendant-pipe detector is required.
 
 **Gate 8 - evidence discipline.** The zero states bind explicitly: test 2 asserts the
-empty backup set, test 3 asserts the absent first slot, and the cycle criterion asserts
-an empty `git status` line plus a zero new-arc set. No generic hostile-host or
-full-byte-domain suite is imposed.
+empty backup set, test 3 asserts the absent first slot, test 7 asserts the exact created
+set, and the cycle criterion asserts an empty `git status` line plus a zero new-arc set.
+Every one of these absence assertions is paired with either a positive control in the
+same test or a named mutation in section 8.1, because an absence that a broken tree also
+satisfies is not evidence. No generic hostile-host or full-byte-domain suite is
+imposed.
 
 ## 8. Acceptance criteria
 
 1. `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
    `cargo test --lib --bins --tests` and `npm run test:debt` all exit 0 on the branch
    head.
-2. All seven `issue_2058_*` tests exist, and each fails on a tree with the production
-   change reverted; the implementer records the reverted-run failure names.
+2. All eight `issue_2058_*` tests exist, and each one is shown to fail by the run named
+   for it in the kill protocol of section 8.1. The implementer records, per test, the
+   command run, the tree state, and the captured failure output. A test is NOT accepted
+   on a "reverted tree" run alone: section 8.1 is the binding protocol, because four of
+   these tests assert an absence that a never-rotating tree also satisfies.
 3. `settings.backup.1.json` through `settings.backup.5.json` are the only new files a
    save can create in the config directory; rotation changes no byte of
    `settings.pre-*.json`, `settings.local.json`, `settings.json.lock` or
@@ -433,9 +516,38 @@ full-byte-domain suite is imposed.
    returns 0 for both fixtures.
 5. The cycle criterion in section 6 is green, with `src-tauri/module-arcs.txt`
    byte-identical.
-6. `git status --porcelain` lists only the five files in Gate 5.
+6. `git status --porcelain` lists only the five files in Gate 5. The section 6 scratch
+   files are written outside the repository, so they cannot appear here.
 7. Every triggered and configured-required check passes on the exact PR-head SHA.
 8. The PR closes #2058 and no other issue.
+
+### 8.1 Kill protocol (binding; one named run per test)
+
+Two tree states are used. **R** = revert: the production hunks of section 4.2 are dropped
+(the `rotate_settings_backups` call site, the `previous_contents` capture, the two new
+functions and the const), leaving a tree that never rotates. **M-x** = the single named
+mutation below, applied to the otherwise complete implementation. Every run is
+`cargo test --lib issue_2058` from `<repo>/src-tauri`, with output captured.
+
+| Test | Killing run | The exact mutation |
+|---|---|---|
+| 1 `..._save_archives_the_replaced_bytes` | **R** | - |
+| 2 `..._first_save_with_no_existing_file_writes_no_backup` | **M-D3-NONE** | at the new `:4621` site, replace `if let Some(previous) = previous_contents { ... }` with an unconditional `rotate_settings_backups(path, previous_contents.unwrap_or_default().as_bytes());` |
+| 3 `..._identical_save_does_not_rotate` | **M-D3-EQ** | at the same site, delete the `if previous.as_bytes() != written_bytes.as_slice()` condition, keeping its body |
+| 4 `..._keeps_five_generations_and_drops_the_oldest` | **M-KEEP** and **M-SHIFT** | (a) `SETTINGS_BACKUP_KEEP: u32 = 4`; (b) step 2's range `(1..SETTINGS_BACKUP_KEEP).rev()` becomes `1..SETTINGS_BACKUP_KEEP`, ascending, which smears one generation over every slot |
+| 5a `..._non_regular_slot_aborts_rotation` | **M-D8** | delete step 1 of `rotate_settings_backups` entirely, that is the `symlink_metadata` / `!is_file()` loop |
+| 5b `..._rotation_write_failure_is_not_fatal` | **M-D7** | step 3's `Err` arm becomes `.expect("slot write")` instead of `log::warn!` and return |
+| 6 `..._rotation_leaves_the_pre_384_backup_alone` | **R** | - |
+| 7 `..._rotation_creates_exactly_one_new_file` | **R** | - |
+
+Tests 2, 3, 5a and 7 additionally carry a **positive control** inside the same test
+function, so a harness that silently never reaches a save cannot make them pass
+vacuously. Each control is stated with its test in section 5. Both **M-KEEP** and
+**M-SHIFT** must be run for test 4, separately.
+
+A mutated run is discarded afterwards: `git checkout -- src-tauri/src/config/settings.rs`
+per Gate 6, then `cargo test --lib issue_2058` must be green again before the next
+mutation. Each restored-green run is recorded too.
 
 ## 9. Preserve list (must not change)
 
