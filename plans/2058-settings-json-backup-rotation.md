@@ -85,8 +85,13 @@ kept. Reason for this stem rather than `settings.json.<N>`: it admits the narrow
 it keeps the `.json` extension so a user can open a slot directly.
 
 **D6 - Retention = 5.** `SETTINGS_BACKUP_KEEP: u32 = 5`. Bounds worst-case disk at five
-times the live file (hard-capped at 16 MiB each by `settings.rs:5220`), and covers a
-burst of mis-clicks inside one session, which is the #2057 scenario.
+times the live file, and covers a burst of mis-clicks inside one session, which is the
+#2057 scenario. Round-4 narrowing: the 16 MiB cap at `settings.rs:5220` is a check on the
+serialized output AC is about to write, not on what rotation reads, so it bounds a slot
+only for a `settings.json` AC itself wrote. The read side is an unbounded
+`read_to_string` at `:4086`, so a hand-placed oversized file is copied at its real size.
+That is accepted: rotation copies the bytes already on disk, so it can add at most five
+times a size the user themselves chose.
 
 **D7 - Failure behavior: best effort, never fatal.** Any rotation failure logs at
 `warn!` and returns; the save still reports success, because the user's bytes are
@@ -114,8 +119,8 @@ recovery aid. This is a decided tradeoff, not an omission; do not re-litigate it
 new evidence that a truncated slot 1 can mislead a recovering user. The mitigation is
 documentation, and it is now written into 4.5 verbatim: a truncated slot copied over
 `settings.json` does NOT surface a parse error. `load_settings` logs the parse failure and
-falls back to `default_settings_with_overlay` (`settings.rs:2500-2504`, and the same arm for
-an unreadable file at `:2576-2581`), so the user silently gets a reset configuration. 4.5
+falls back to `default_settings_with_overlay` (`settings.rs:2501-2504`, and the same arm for
+an unreadable file at `:2507-2510`), so the user silently gets a reset configuration. 4.5
 therefore tells the user to check the copied file before starting AC, and to try slot 2 if
 slot 1 is short or does not parse.
 
@@ -389,35 +394,57 @@ raw pre-v2 seed it requires and why.
      and `absent-dir` still does not exist. Killed by **M-D7**, which turns that arm into
      an `expect` and panics. Claim: D7's step-3 arm only.
 6. `issue_2058_rotation_leaves_the_pre_384_backup_alone` - the seed is **raw pre-v2 JSON
-   written with `std::fs::write`**, not any `AppSettings` writer:
+   written with `std::fs::write`**, not any `AppSettings` writer. Use the existing
+   fixture; do NOT hand-build a seed:
 
    ```rust
-   let legacy = br#"{"codingAgentProfiles":{"letters":{}}}"#;
+   let legacy = LEGACY_PROFILES_SETTINGS_FIXTURE;
    std::fs::write(&path, legacy).unwrap();
    ```
 
-   Round-2 correction, verified in the tree. `save_settings_to_path` (`:5487`) serializes
-   the current `AppSettings`, and `legacy_profiles_shape_present` (`:1828-1862`) returns
-   true only for a `codingAgentProfiles` object carrying `letters`, `matrix` or
-   `agentDefaults`, a `schemaVersion` below 2, a `profileSlots` entry with `name`, or a
-   `profilesByAgent` cell with `argv` or `args`. The current struct emits none of those,
-   so a struct-written seed never trips the `:4462` pre-384 path this test exists to
-   cover, and the test would pass vacuously. `letters` is the cheapest trigger
-   (`:1832-1836`).
+   `LEGACY_PROFILES_SETTINGS_FIXTURE` is the `r##"..."##` const at `settings.rs:7148-7172`
+   (doc comment `:7146-7147`), in the same `mod tests` as this test, so it is in scope with
+   no import. Its bytes carry `defaultShell`, `defaultShellArgs`, `rootToken`, one complete
+   `agents` entry, and `codingAgentProfiles` with `schemaVersion: 1`, `letters.A.name` and
+   `matrix.codex.A`.
+
+   Round-4 correction, verified in the tree. The round-3 seed
+   `{"codingAgentProfiles":{"letters":{}}}` could never reach an assertion. The disk gate at
+   `:4456` calls `read_disk_object_and_contents_for_write_typed`, which calls
+   `validate_non_project_settings` at `:4117`; that deserializes the probe as `AppSettings`
+   at `:4159`, and `default_shell` (`:318`), `default_shell_args` (`:319`) and `agents`
+   (`:321`) carry no `#[serde(default)]` under the plain `#[derive(Deserialize)]` at
+   `:314-316`. The minimal seed supplies none of the three, so the save of `B` returns
+   `Err`, writes nothing, and the test panics on `.unwrap()` in both trees. Two round-3
+   premises were wrong and are deleted, not patched: `:4082-4130` does NOT accept any JSON
+   object, and adding `projectPath` / `projectPaths` / `archived` fixes nothing because
+   `validate_non_project_settings` injects all three itself at `:4152-4154` before
+   deserializing.
+
+   The fixture is proven against this exact gate, not merely assumed to pass it:
+   `preserve_save_backs_up_legacy_disk_before_dropping_it` (`:7210`) writes these same bytes
+   at `:7214` and then calls `save_settings_to_path_preserving_project_paths(&settings,
+   &path).unwrap()` at `:7219`, green in the current tree. Reusing it also stops the seed
+   drifting away from what the pre-384 path accepts.
+
+   The seed must stay raw bytes and must keep `letters`, which is the `:1832-1836` trigger.
+   Its extra `matrix` key is harmless: `legacy_profiles_shape_present` (`:1828-1862`) is a
+   disjunction, so a second trigger changes no outcome, and **no assertion in this test
+   depends on the seed carrying only `letters`** - every one compares whole-file bytes
+   against `legacy` itself, so any valid superset works unchanged. A struct-written seed
+   still will not do: `save_settings_to_path` (`:5487`) serializes the current
+   `AppSettings`, which emits none of the shapes `:1828-1862` looks for, so it would never
+   trip the `:4462` pre-384 path and the test would pass vacuously.
 
    Then save a value `B` through `save_settings_to_path_preserving_project_paths`. `B`'s
-   production bytes cannot equal the 38-byte raw seed, so D3 does not skip. Assert after
-   that first save: `settings.pre-384-v1.json` bytes equal `legacy` exactly,
-   `settings.backup.1.json` bytes equal `legacy` exactly, and `settings.json` holds `B`'s
-   bytes. Then save a THIRD, **different** value `C` (it must differ from `B`, or D3 skips
-   and the second half asserts nothing): `settings.pre-384-v1.json` is still
-   byte-identical to `legacy`, `settings.backup.1.json` now holds `B`'s bytes, and
-   `settings.backup.2.json` holds `legacy`. Killed by **R**.
-
-   If the minimal seed is rejected by `read_disk_object_and_contents_for_write_typed`
-   (`:4082-4130` accepts any JSON object, so it should not be), extend the seed object
-   with the three primary project fields a production file carries and keep every
-   assertion above unchanged. The seed must stay raw bytes and must keep `letters`.
+   production bytes are single-line serializer output and cannot equal the fixture's
+   multi-line raw bytes, so D3 does not skip. Assert after that first save:
+   `settings.pre-384-v1.json` bytes equal `legacy` exactly, `settings.backup.1.json` bytes
+   equal `legacy` exactly, and `settings.json` holds `B`'s bytes. Then save a THIRD,
+   **different** value `C` (it must differ from `B`, or D3 skips and the second half asserts
+   nothing): `settings.pre-384-v1.json` is still byte-identical to `legacy`,
+   `settings.backup.1.json` now holds `B`'s bytes, and `settings.backup.2.json` holds
+   `legacy`. Killed by **R**.
 7. `issue_2058_rotation_creates_exactly_one_new_file` - seed `A` via the helper, snapshot
    the directory entry-name set, save `B`, snapshot again. Assert the added set is exactly
    `{"settings.backup.1.json"}` and the removed set is empty, then call the existing
