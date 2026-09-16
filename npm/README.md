@@ -88,6 +88,14 @@ Both commands must exit 0. Confirm that `npm list` and the installed `package.js
 
 On Windows, a global install also creates a per-user Start Menu shortcut named **AgentsCommander**, with the app icon, at `%APPDATA%\Microsoft\Windows\Start Menu\Programs\AgentsCommander.lnk`. It opens the installed `bin\agentscommander.exe`. A local install (without `-g`) creates no shortcut. To skip it, set `AGENTSCOMMANDER_NO_SHORTCUT=1` before installing. If the shortcut cannot be created, the install prints a warning and still succeeds. Installing again replaces the same shortcut.
 
+### macOS Launchpad and Spotlight
+
+On macOS, a global install also creates a symlink named **AgentsCommander.app** at `~/Applications/AgentsCommander.app`, pointing at the `.app` bundle that the installer extracted into the package's `bin/` directory. `~/Applications` is user-owned, so this needs no administrator password and no `sudo`; `/Applications` is not used because writing there needs elevation. Launchpad and Spotlight index `~/Applications`, so after the install the app is searchable, launchable, and can be pinned to the Dock with its own icon.
+
+A local install (without `-g`) creates nothing. To skip the symlink, set `AGENTSCOMMANDER_NO_SHORTCUT=1` before installing, the same opt-out Windows uses. If the symlink cannot be created, the install prints a warning and still succeeds. Installing again replaces the same symlink, so there is never more than one entry; if a real application already occupies that name, the installer leaves it alone and warns.
+
+The bundle is **not signed**. macOS Gatekeeper may block the first launch even though the icon is visible. The installer does not strip the quarantine attribute and does not call `xattr`, `spctl`, or `codesign`, and you should not either: report the block at the [issue tracker](https://github.com/mblua/AgentsCommander/issues) instead of bypassing Gatekeeper.
+
 ## Uninstall
 
 Identify, back up, and verify the version-selected configuration as described above, then run:
@@ -96,10 +104,20 @@ Identify, back up, and verify the version-selected configuration as described ab
 npm uninstall -g @mblua/agentscommander
 ```
 
-Success exits 0. npm does not run uninstall scripts, so on Windows delete the Start Menu shortcut by hand:
+Success exits 0. npm does not run uninstall scripts, so the Start Menu shortcut and the `~/Applications` symlink survive the uninstall and must be deleted by hand.
+
+On Windows:
 
 ```powershell
 Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentsCommander.lnk"
-``` Restore a previous version or remove the saved configuration only as a separate, deliberate action.
+```
+
+On macOS:
+
+```bash
+rm ~/Applications/AgentsCommander.app
+```
+
+`rm` without `-r` is deliberate: the entry is a symlink, so this removes the link and never the bundle it points at. If `rm` reports that it is a directory, stop: something other than the installer's symlink is at that path. Restore a previous version or remove the saved configuration only as a separate, deliberate action.
 
 For stable-release downloads and rollback rules, use the [manual alternatives](https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md#manual-alternatives).
