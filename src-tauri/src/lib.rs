@@ -4317,7 +4317,6 @@ mod tests {
         let original_mode = std::fs::metadata(&case_root).unwrap().permissions().mode();
         let copied_executable = case_root.join("agentscommander_issue1577_linux_subprocess");
         let adjacent = case_root.join(".agentscommander_issue1577_linux_subprocess");
-        let marker = case_root.join("portable.txt");
 
         let body = (|| -> Result<(), String> {
             let source_executable =
@@ -4336,12 +4335,8 @@ mod tests {
             std::fs::set_permissions(&copied_executable, executable_permissions)
                 .map_err(|error| format!("set executable mode failed: {error}"))?;
 
-            if marker.exists() || adjacent.exists() {
-                return Err(format!(
-                    "fixture not fresh marker={} adjacent={}",
-                    marker.display(),
-                    adjacent.display()
-                ));
+            if adjacent.exists() {
+                return Err(format!("fixture not fresh adjacent={}", adjacent.display()));
             }
 
             let mut read_only_permissions = std::fs::metadata(&case_root)
@@ -4483,11 +4478,10 @@ mod tests {
                     "a suffixed build wrote into HOME: {home_entries:?}"
                 ));
             }
-            if adjacent.exists() || marker.exists() {
+            if adjacent.exists() {
                 return Err(format!(
-                    "adjacent state appeared adjacent={} marker={}",
-                    adjacent.display(),
-                    marker.display()
+                    "adjacent state appeared adjacent={}",
+                    adjacent.display()
                 ));
             }
             let case_entries: Vec<_> = std::fs::read_dir(&case_root)

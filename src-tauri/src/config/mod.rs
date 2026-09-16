@@ -33,7 +33,7 @@ pub(crate) mod shared_locations;
 pub mod teams;
 
 use std::fmt;
-use std::fs::{self, File, Metadata, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -159,9 +159,6 @@ fn classify_io_error_for_platform(platform: RetryPlatform, error: &io::Error) ->
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProbeOperation {
-    MarkerEntryMetadata,
-    MarkerTargetMetadata,
-    UnsupportedMarkerEntry,
     CreateConfigurationDirectory,
     CreateProbeFile,
     WriteProbeFile,
@@ -197,34 +194,8 @@ impl ProbeFailure {
         }
     }
 
-    fn unsupported_marker(affected_path: PathBuf) -> Self {
-        Self {
-            operation: ProbeOperation::UnsupportedMarkerEntry,
-            affected_path,
-            attempts: 1,
-            kind: None,
-            raw_os_error: None,
-            os_reason: "filesystem metadata reported an unsupported portable marker entry type"
-                .to_string(),
-            class: ProbeFailureClass::Indeterminate,
-        }
-    }
-
     pub(crate) fn reason(&self) -> String {
         match self.operation {
-            ProbeOperation::MarkerEntryMetadata => format!(
-                "could not inspect portable marker entry metadata \"{}\" after {} attempt(s): {}",
-                self.affected_path.display(),
-                self.attempts,
-                self.os_reason
-            ),
-            ProbeOperation::MarkerTargetMetadata => format!(
-                "could not resolve portable marker symlink target metadata \"{}\" after {} attempt(s): {}",
-                self.affected_path.display(),
-                self.attempts,
-                self.os_reason
-            ),
-            ProbeOperation::UnsupportedMarkerEntry => self.os_reason.clone(),
             ProbeOperation::CreateConfigurationDirectory => format!(
                 "write probe could not create configuration directory \"{}\" after {} attempt(s): {}",
                 self.affected_path.display(),
@@ -251,14 +222,6 @@ impl ProbeFailure {
             ),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum MarkerProbeOutcome {
-    NotRun,
-    Absent,
-    Present,
-    Indeterminate(ProbeFailure),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,11 +293,11 @@ pub(crate) enum WriteProbeOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConfigStartupError {
-    AdjacentSelectionBlocked {
-        config_dir: PathBuf,
-        marker_path: Option<PathBuf>,
-        reason: String,
-    },
+    /// #1577: an executable-adjacent configuration directory could not be
+    /// selected because the write probe gave an indeterminate result (or did not
+    /// run). #1930: a suffixed executable never falls back to HOME, so startup
+    /// stops and the message names the only remedy.
+    AdjacentSelectionBlocked { config_dir: PathBuf, reason: String },
     /// #1930: a suffixed executable's unmarked adjacent directory is
     /// conclusively unwritable. There is no HOME fallback, so startup stops and
     /// the message names both remedies.
@@ -344,11 +307,7 @@ pub(crate) enum ConfigStartupError {
 impl fmt::Display for ConfigStartupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AdjacentSelectionBlocked {
-                config_dir,
-                marker_path,
-                reason,
-            } => {
+            Self::AdjacentSelectionBlocked { config_dir, reason } => {
                 write!(
                     formatter,
                     "AgentsCommander cannot start because configuration directory \"{}\" could not be safely selected: {}",
@@ -361,15 +320,7 @@ impl fmt::Display for ConfigStartupError {
                 write!(
                     formatter,
                     " Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart."
-                )?;
-                if let Some(marker_path) = marker_path {
-                    write!(
-                        formatter,
-                        " Portable marker path: \"{}\".",
-                        marker_path.display()
-                    )?;
-                }
-                Ok(())
+                )
             }
             Self::AdjacentDirectoryUnwritable { config_dir, reason } => {
                 write!(
@@ -391,97 +342,6 @@ impl fmt::Display for ConfigStartupError {
 }
 
 impl std::error::Error for ConfigStartupError {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MarkerEntryKind {
-    File,
-    Directory,
-    Symlink,
-    Unsupported,
-}
-
-fn marker_entry_kind(metadata: &Metadata) -> MarkerEntryKind {
-    let file_type = metadata.file_type();
-    if file_type.is_file() {
-        MarkerEntryKind::File
-    } else if file_type.is_dir() {
-        MarkerEntryKind::Directory
-    } else if file_type.is_symlink() {
-        MarkerEntryKind::Symlink
-    } else {
-        MarkerEntryKind::Unsupported
-    }
-}
-
-fn probe_portable_marker_with<EntryMetadata, TargetMetadata, Sleep>(
-    platform: RetryPlatform,
-    marker_path: &Path,
-    mut entry_metadata: EntryMetadata,
-    mut target_metadata: TargetMetadata,
-    mut sleep: Sleep,
-) -> MarkerProbeOutcome
-where
-    EntryMetadata: FnMut(&Path) -> io::Result<MarkerEntryKind>,
-    TargetMetadata: FnMut(&Path) -> io::Result<MarkerEntryKind>,
-    Sleep: FnMut(Duration),
-{
-    let entry = retry_transient_io_with_platform(
-        platform,
-        || entry_metadata(marker_path),
-        &mut sleep,
-        |_, _, _, _| {},
-    );
-    let entry = match entry {
-        Ok(entry) => entry,
-        Err(failure) if failure.error.kind() == io::ErrorKind::NotFound => {
-            return MarkerProbeOutcome::Absent;
-        }
-        Err(failure) => {
-            return MarkerProbeOutcome::Indeterminate(ProbeFailure::from_retry(
-                platform,
-                ProbeOperation::MarkerEntryMetadata,
-                marker_path.to_path_buf(),
-                failure,
-            ));
-        }
-    };
-
-    match entry {
-        MarkerEntryKind::File | MarkerEntryKind::Directory => MarkerProbeOutcome::Present,
-        MarkerEntryKind::Unsupported => MarkerProbeOutcome::Indeterminate(
-            ProbeFailure::unsupported_marker(marker_path.to_path_buf()),
-        ),
-        MarkerEntryKind::Symlink => match retry_transient_io_with_platform(
-            platform,
-            || target_metadata(marker_path),
-            &mut sleep,
-            |_, _, _, _| {},
-        ) {
-            Ok(MarkerEntryKind::File | MarkerEntryKind::Directory) => MarkerProbeOutcome::Present,
-            Ok(MarkerEntryKind::Symlink | MarkerEntryKind::Unsupported) => {
-                MarkerProbeOutcome::Indeterminate(ProbeFailure::unsupported_marker(
-                    marker_path.to_path_buf(),
-                ))
-            }
-            Err(failure) => MarkerProbeOutcome::Indeterminate(ProbeFailure::from_retry(
-                platform,
-                ProbeOperation::MarkerTargetMetadata,
-                marker_path.to_path_buf(),
-                failure,
-            )),
-        },
-    }
-}
-
-fn probe_portable_marker(marker_path: &Path) -> MarkerProbeOutcome {
-    probe_portable_marker_with(
-        RetryPlatform::current(),
-        marker_path,
-        |path| fs::symlink_metadata(path).map(|metadata| marker_entry_kind(&metadata)),
-        |path| fs::metadata(path).map(|metadata| marker_entry_kind(&metadata)),
-        std::thread::sleep,
-    )
-}
 
 #[allow(clippy::too_many_arguments)]
 fn probe_candidate_write_with<Handle, CreateDirectory, CreateFile, WriteFile, RemoveFile, Sleep>(
@@ -636,7 +496,7 @@ pub(crate) struct InstanceLocation {
     /// stem has no underscore suffix selects the canonical
     /// `$HOME/.agentscommander` (#1868) and never an adjacent directory; a
     /// suffixed executable takes the portable `<exe-parent>/.<exe-stem>` form
-    /// with its marker/write table and never a HOME directory (#1930). `None`
+    /// with its write-probe table and never a HOME directory (#1930). `None`
     /// only when no override applies, the executable is unsuffixed or
     /// unavailable, and no home directory exists.
     pub config_dir: Option<PathBuf>,
@@ -659,7 +519,6 @@ pub(crate) struct InstanceLocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AdjacentPaths {
     config_dir: PathBuf,
-    marker_path: PathBuf,
     instance_base: Option<PathBuf>,
 }
 
@@ -668,7 +527,6 @@ fn adjacent_paths(executable: &Path) -> Option<AdjacentPaths> {
     let stem = executable.file_stem()?;
     Some(AdjacentPaths {
         config_dir: parent.join(format!(".{}", stem.to_string_lossy())),
-        marker_path: parent.join("portable.txt"),
         instance_base: parent.is_absolute().then(|| parent.to_path_buf()),
     })
 }
@@ -711,12 +569,10 @@ fn home_location(home_dir: Option<PathBuf>, local_dir_stem: String) -> InstanceL
 fn blocked_adjacent_location(
     paths: AdjacentPaths,
     local_dir_stem: String,
-    marker_path: Option<PathBuf>,
     reason: String,
 ) -> InstanceLocation {
     let startup_error = ConfigStartupError::AdjacentSelectionBlocked {
         config_dir: paths.config_dir.clone(),
-        marker_path,
         reason,
     };
     InstanceLocation {
@@ -740,18 +596,18 @@ fn blocked_adjacent_location(
 ///
 /// #1868: after the overrides, an executable without an underscore suffix
 /// returns the HOME location immediately. It ignores BUILD_PROFILE, install
-/// location, the portable marker and whatever probe outcomes were supplied;
-/// no startup error and no fallback diagnostic can arise on that route. Only
-/// suffixed executables reach the adjacent marker/write table.
+/// location and whatever probe outcomes were supplied; no startup error and no
+/// fallback diagnostic can arise on that route. Only suffixed executables reach
+/// the adjacent write-probe table.
 ///
-/// #1930: that table never selects HOME. A conclusively unwritable unmarked
-/// candidate becomes `ConfigStartupError::AdjacentDirectoryUnwritable`.
+/// #1930: that table never selects HOME. A conclusively unwritable candidate
+/// becomes `ConfigStartupError::AdjacentDirectoryUnwritable`; an indeterminate
+/// write result keeps `ConfigStartupError::AdjacentSelectionBlocked`.
 pub(crate) fn resolve_instance_location(
     public_override: Option<String>,
     test_override: Option<String>,
     current_exe_result: Result<PathBuf, std::io::Error>,
     home_dir: Option<PathBuf>,
-    marker_probe: MarkerProbeOutcome,
     write_probe: WriteProbeOutcome,
 ) -> InstanceLocation {
     // Local agent dir stem: from the running executable only. Independent of the
@@ -782,95 +638,58 @@ pub(crate) fn resolve_instance_location(
         return home_location(home_dir, local_dir_stem);
     };
 
-    match marker_probe {
-        MarkerProbeOutcome::Indeterminate(failure) => blocked_adjacent_location(
-            paths.clone(),
+    // #1868/#1930: the adjacent table runs the write probe and never HOME.
+    match write_probe {
+        WriteProbeOutcome::Success => InstanceLocation {
+            config_dir: Some(paths.config_dir),
             local_dir_stem,
-            Some(paths.marker_path.clone()),
-            failure.reason(),
-        ),
-        MarkerProbeOutcome::Present => match write_probe {
-            WriteProbeOutcome::Success => InstanceLocation {
+            instance_base: paths.instance_base,
+            startup_error: None,
+        },
+        WriteProbeOutcome::Failed(failure)
+            if failure.class == ProbeFailureClass::ConclusiveUnwritable =>
+        {
+            // #1930: a suffixed executable never falls back to HOME.
+            let startup_error = ConfigStartupError::AdjacentDirectoryUnwritable {
+                config_dir: paths.config_dir.clone(),
+                reason: failure.reason(),
+            };
+            InstanceLocation {
                 config_dir: Some(paths.config_dir),
                 local_dir_stem,
                 instance_base: paths.instance_base,
-                startup_error: None,
-            },
-            WriteProbeOutcome::Failed(failure) => blocked_adjacent_location(
-                paths.clone(),
-                local_dir_stem,
-                Some(paths.marker_path.clone()),
-                failure.reason(),
-            ),
-            WriteProbeOutcome::NotRun => blocked_adjacent_location(
-                paths.clone(),
-                local_dir_stem,
-                Some(paths.marker_path.clone()),
-                "write probe was not run for a portable configuration directory".to_string(),
-            ),
-        },
-        MarkerProbeOutcome::Absent => match write_probe {
-            WriteProbeOutcome::Success => InstanceLocation {
-                config_dir: Some(paths.config_dir),
-                local_dir_stem,
-                instance_base: paths.instance_base,
-                startup_error: None,
-            },
-            WriteProbeOutcome::Failed(failure)
-                if failure.class == ProbeFailureClass::ConclusiveUnwritable =>
-            {
-                // #1930: a suffixed executable never falls back to HOME.
-                let startup_error = ConfigStartupError::AdjacentDirectoryUnwritable {
-                    config_dir: paths.config_dir.clone(),
-                    reason: failure.reason(),
-                };
-                InstanceLocation {
-                    config_dir: Some(paths.config_dir),
-                    local_dir_stem,
-                    instance_base: paths.instance_base,
-                    startup_error: Some(startup_error),
-                }
+                startup_error: Some(startup_error),
             }
-            WriteProbeOutcome::Failed(failure) => {
-                blocked_adjacent_location(paths, local_dir_stem, None, failure.reason())
-            }
-            WriteProbeOutcome::NotRun => blocked_adjacent_location(
-                paths,
-                local_dir_stem,
-                None,
-                "write probe was not run for an unmarked configuration directory".to_string(),
-            ),
-        },
-        MarkerProbeOutcome::NotRun => blocked_adjacent_location(
+        }
+        WriteProbeOutcome::Failed(failure) => {
+            blocked_adjacent_location(paths, local_dir_stem, failure.reason())
+        }
+        WriteProbeOutcome::NotRun => blocked_adjacent_location(
             paths,
             local_dir_stem,
-            None,
-            "portable marker probe was not run for an executable-adjacent configuration directory"
-                .to_string(),
+            "write probe was not run for a portable configuration directory".to_string(),
         ),
     }
 }
 
 /// #1868: the lazy production orchestration behind [`instance_location`].
-/// Decides whether the adjacent probes run at all, runs them in the existing
-/// order (marker first; write only after a conclusive `Present`/`Absent`
-/// marker) and hands the collected outcomes to [`resolve_instance_location`].
+/// Decides whether the adjacent probe runs at all, runs the write probe only
+/// when a suffixed executable has an adjacent candidate, and hands the outcome
+/// to [`resolve_instance_location`].
 ///
 /// An effective override or an executable without an underscore suffix never
-/// constructs the adjacent candidate and never invokes either probe; both
-/// outcomes stay `NotRun`. The probes are closures so tests can drive this
-/// exact production path with counting or panicking probes and no filesystem.
-/// It keeps no state and abstracts no I/O of its own.
-fn resolve_instance_location_with_probes<MarkerProbe, WriteProbe>(
+/// constructs the adjacent candidate and never invokes the probe; its outcome
+/// stays `NotRun`. The probe is a closure so tests can drive this exact
+/// production path with a counting or panicking probe and no filesystem. It
+/// keeps no state and abstracts no I/O of its own.
+fn resolve_instance_location_with_probes<WriteProbe>(
     public_override: Option<String>,
     test_override: Option<String>,
     current_exe_result: Result<PathBuf, std::io::Error>,
     home_dir: Option<PathBuf>,
-    mut marker_probe: MarkerProbe,
     mut write_probe: WriteProbe,
 ) -> InstanceLocation
 where
-    MarkerProbe: FnMut(&Path) -> MarkerProbeOutcome,
     WriteProbe: FnMut(&Path) -> WriteProbeOutcome,
 {
     let override_selected = nonblank_override(public_override.as_ref()).is_some()
@@ -884,20 +703,9 @@ where
             .filter(|path| profile::binary_suffix_from_path(path).is_some())
             .and_then(|path| adjacent_paths(path))
     };
-    let (marker_outcome, write_outcome) = match adjacent {
-        None => (MarkerProbeOutcome::NotRun, WriteProbeOutcome::NotRun),
-        Some(adjacent) => {
-            let marker_outcome = marker_probe(&adjacent.marker_path);
-            let write_outcome = match marker_outcome {
-                MarkerProbeOutcome::Present | MarkerProbeOutcome::Absent => {
-                    write_probe(&adjacent.config_dir)
-                }
-                MarkerProbeOutcome::NotRun | MarkerProbeOutcome::Indeterminate(_) => {
-                    WriteProbeOutcome::NotRun
-                }
-            };
-            (marker_outcome, write_outcome)
-        }
+    let write_outcome = match adjacent {
+        None => WriteProbeOutcome::NotRun,
+        Some(adjacent) => write_probe(&adjacent.config_dir),
     };
 
     resolve_instance_location(
@@ -905,7 +713,6 @@ where
         test_override,
         current_exe_result,
         home_dir,
-        marker_outcome,
         write_outcome,
     )
 }
@@ -928,7 +735,6 @@ fn instance_location() -> &'static InstanceLocation {
             test_override,
             current_exe_result,
             home_dir,
-            probe_portable_marker,
             probe_candidate_write,
         )
     })
@@ -978,7 +784,7 @@ mod tests {
     }
 
     /// A SUFFIXED absolute executable: the only kind that still reaches the
-    /// adjacent marker/write table after #1868. Its complete stem names the
+    /// adjacent write-probe table after #1868. Its complete stem names the
     /// adjacent directory.
     fn absolute_executable() -> PathBuf {
         if cfg!(windows) {
@@ -1009,26 +815,6 @@ mod tests {
         home.join(".agentscommander")
     }
 
-    fn marker_failure() -> ProbeFailure {
-        ProbeFailure::from_retry(
-            RetryPlatform::Other,
-            ProbeOperation::MarkerEntryMetadata,
-            expected_marker(),
-            RetriedIoError {
-                error: Error::other("marker failed"),
-                attempts: 1,
-            },
-        )
-    }
-
-    fn expected_marker() -> PathBuf {
-        if cfg!(windows) {
-            PathBuf::from(r"C:\bundle\portable.txt")
-        } else {
-            PathBuf::from("/opt/bundle/portable.txt")
-        }
-    }
-
     fn failed_write(
         platform: RetryPlatform,
         operation: ProbeOperation,
@@ -1054,7 +840,6 @@ mod tests {
             None,
             Ok(absolute_executable()),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
         let expected_base = if cfg!(windows) {
@@ -1079,7 +864,6 @@ mod tests {
             None,
             Ok(exe),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
         let expected_config = if cfg!(windows) {
@@ -1109,7 +893,6 @@ mod tests {
             Some(override_dir.to_string()),
             Ok(exe),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
         assert_eq!(loc.config_dir.as_deref(), Some(Path::new(override_dir)));
@@ -1130,7 +913,6 @@ mod tests {
             Some("relative/.acdir".to_string()),
             exe_err(),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
         assert_eq!(
@@ -1153,7 +935,6 @@ mod tests {
             Some("   ".to_string()),
             Ok(exe),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
         // Falls through to the portable executable-derived config (suffixed
@@ -1175,7 +956,6 @@ mod tests {
             None,
             Ok(PathBuf::from("bin/agentscommander_portable")),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
         assert_eq!(
@@ -1202,7 +982,6 @@ mod tests {
             None,
             Ok(root),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
         let expected = PathBuf::from("/home/u").join(profile::config_dir_name());
@@ -1217,7 +996,6 @@ mod tests {
             None,
             exe_err(),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
         let expected = PathBuf::from("/home/u").join(profile::config_dir_name());
@@ -1228,14 +1006,7 @@ mod tests {
 
     #[test]
     fn current_exe_failure_and_no_home_yields_none_config() {
-        let loc = resolve_instance_location(
-            None,
-            None,
-            exe_err(),
-            None,
-            MarkerProbeOutcome::NotRun,
-            WriteProbeOutcome::NotRun,
-        );
+        let loc = resolve_instance_location(None, None, exe_err(), None, WriteProbeOutcome::NotRun);
         assert_eq!(loc.config_dir, None);
         assert_eq!(loc.instance_base, None);
     }
@@ -1247,21 +1018,11 @@ mod tests {
         } else {
             "/public config"
         };
-        let marker_failure = ProbeFailure::from_retry(
-            RetryPlatform::Other,
-            ProbeOperation::MarkerEntryMetadata,
-            expected_marker(),
-            RetriedIoError {
-                error: Error::other("marker failed"),
-                attempts: 1,
-            },
-        );
         let loc = resolve_instance_location(
             Some(public.to_string()),
             Some("debug-canary".to_string()),
             Ok(absolute_executable()),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::Indeterminate(marker_failure),
             WriteProbeOutcome::Failed(failed_write(
                 RetryPlatform::Other,
                 ProbeOperation::CreateConfigurationDirectory,
@@ -1282,55 +1043,11 @@ mod tests {
             Some("\t".to_string()),
             Ok(absolute_executable()),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
 
         assert_eq!(loc.config_dir, Some(expected_adjacent()));
         assert!(loc.startup_error.is_none());
-    }
-
-    #[test]
-    fn issue_1577_marker_present_success_selects_adjacent() {
-        let loc = resolve_instance_location(
-            None,
-            None,
-            Ok(absolute_executable()),
-            Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::Present,
-            WriteProbeOutcome::Success,
-        );
-
-        assert_eq!(loc.config_dir, Some(expected_adjacent()));
-        assert!(loc.startup_error.is_none());
-    }
-
-    #[test]
-    fn issue_1577_marker_present_any_write_failure_is_hard() {
-        for error in [
-            Error::new(ErrorKind::PermissionDenied, "denied"),
-            Error::other("unknown"),
-        ] {
-            let loc = resolve_instance_location(
-                None,
-                None,
-                Ok(absolute_executable()),
-                Some(PathBuf::from("/home/u")),
-                MarkerProbeOutcome::Present,
-                WriteProbeOutcome::Failed(failed_write(
-                    RetryPlatform::Other,
-                    ProbeOperation::CreateConfigurationDirectory,
-                    expected_adjacent(),
-                    error,
-                    1,
-                )),
-            );
-
-            assert_eq!(loc.config_dir, Some(expected_adjacent()));
-            assert!(loc.startup_error.is_some());
-            let message = loc.startup_error.unwrap().to_string();
-            assert!(message.contains(&expected_marker().display().to_string()));
-        }
     }
 
     #[test]
@@ -1348,7 +1065,6 @@ mod tests {
                 None,
                 Ok(absolute_executable()),
                 home.map(PathBuf::from),
-                MarkerProbeOutcome::Absent,
                 WriteProbeOutcome::Failed(failure.clone()),
             );
             assert_eq!(loc.config_dir, Some(expected_adjacent()));
@@ -1371,7 +1087,6 @@ mod tests {
             None,
             Ok(PathBuf::from("agentscommander_bare")),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Failed(failure),
         );
         assert_eq!(loc.config_dir, Some(PathBuf::from(".agentscommander_bare")));
@@ -1384,23 +1099,29 @@ mod tests {
 
     #[test]
     fn issue_1577_unmarked_indeterminate_failure_never_relocates() {
+        let failure = failed_write(
+            RetryPlatform::Other,
+            ProbeOperation::CreateProbeFile,
+            expected_adjacent().join("probe.tmp"),
+            Error::new(ErrorKind::AlreadyExists, "collision"),
+            1,
+        );
         let loc = resolve_instance_location(
             None,
             None,
             Ok(absolute_executable()),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::Absent,
-            WriteProbeOutcome::Failed(failed_write(
-                RetryPlatform::Other,
-                ProbeOperation::CreateProbeFile,
-                expected_adjacent().join("probe.tmp"),
-                Error::new(ErrorKind::AlreadyExists, "collision"),
-                1,
-            )),
+            WriteProbeOutcome::Failed(failure.clone()),
         );
 
         assert_eq!(loc.config_dir, Some(expected_adjacent()));
-        assert!(loc.startup_error.is_some());
+        assert_eq!(
+            loc.startup_error,
+            Some(ConfigStartupError::AdjacentSelectionBlocked {
+                config_dir: expected_adjacent(),
+                reason: failure.reason(),
+            })
+        );
         assert!(!loc
             .startup_error
             .unwrap()
@@ -1416,7 +1137,6 @@ mod tests {
                 None,
                 Ok(absolute_executable()),
                 Some(PathBuf::from("/home/u")),
-                MarkerProbeOutcome::Absent,
                 WriteProbeOutcome::Success,
             )
         };
@@ -1587,7 +1307,6 @@ mod tests {
             None,
             Ok(absolute_executable()),
             Some(PathBuf::from(r"C:\Users\tester")),
-            MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Failed(write_failure),
         );
         assert_eq!(calls, 6);
@@ -1623,140 +1342,6 @@ mod tests {
     }
 
     #[test]
-    fn issue_1577_marker_absent_files_directories_and_symlinks() {
-        let marker = Path::new("portable.txt");
-        assert_eq!(
-            probe_portable_marker_with(
-                RetryPlatform::Other,
-                marker,
-                |_| Err(Error::new(ErrorKind::NotFound, "missing")),
-                |_| unreachable!(),
-                |_| {}
-            ),
-            MarkerProbeOutcome::Absent
-        );
-        for entry in [MarkerEntryKind::File, MarkerEntryKind::Directory] {
-            assert_eq!(
-                probe_portable_marker_with(
-                    RetryPlatform::Other,
-                    marker,
-                    |_| Ok(entry),
-                    |_| unreachable!(),
-                    |_| {}
-                ),
-                MarkerProbeOutcome::Present
-            );
-        }
-        for target in [MarkerEntryKind::File, MarkerEntryKind::Directory] {
-            assert_eq!(
-                probe_portable_marker_with(
-                    RetryPlatform::Other,
-                    marker,
-                    |_| Ok(MarkerEntryKind::Symlink),
-                    |_| Ok(target),
-                    |_| {}
-                ),
-                MarkerProbeOutcome::Present
-            );
-        }
-    }
-
-    #[test]
-    fn issue_1577_real_marker_contents_are_never_interpreted() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let marker = temp.path().join("portable.txt");
-        std::fs::write(&marker, []).unwrap();
-        assert_eq!(probe_portable_marker(&marker), MarkerProbeOutcome::Present);
-        std::fs::write(&marker, b"arbitrary contents").unwrap();
-        assert_eq!(probe_portable_marker(&marker), MarkerProbeOutcome::Present);
-        std::fs::remove_file(&marker).unwrap();
-        std::fs::create_dir(&marker).unwrap();
-        assert_eq!(probe_portable_marker(&marker), MarkerProbeOutcome::Present);
-    }
-
-    #[test]
-    fn issue_1577_marker_metadata_retries_windows_sharing_violation() {
-        let mut calls = 0;
-        let mut sleeps = Vec::new();
-        let outcome = probe_portable_marker_with(
-            RetryPlatform::Windows,
-            Path::new("portable.txt"),
-            |_| {
-                calls += 1;
-                if calls == 1 {
-                    Err(Error::from_raw_os_error(32))
-                } else {
-                    Ok(MarkerEntryKind::File)
-                }
-            },
-            |_| unreachable!(),
-            |delay| sleeps.push(delay.as_millis() as u64),
-        );
-        assert_eq!(outcome, MarkerProbeOutcome::Present);
-        assert_eq!(calls, 2);
-        assert_eq!(sleeps, vec![15]);
-    }
-
-    #[test]
-    fn issue_1577_marker_metadata_permission_and_unsupported_are_indeterminate() {
-        let marker = Path::new("portable.txt");
-        let outcome = probe_portable_marker_with(
-            RetryPlatform::Other,
-            marker,
-            |_| Err(Error::new(ErrorKind::PermissionDenied, "denied")),
-            |_| unreachable!(),
-            |_| {},
-        );
-        let MarkerProbeOutcome::Indeterminate(failure) = outcome else {
-            panic!("expected indeterminate metadata error");
-        };
-        assert_eq!(failure.operation, ProbeOperation::MarkerEntryMetadata);
-        assert_eq!(failure.attempts, 1);
-        assert_eq!(failure.kind, Some(ErrorKind::PermissionDenied));
-
-        let outcome = probe_portable_marker_with(
-            RetryPlatform::Other,
-            marker,
-            |_| Ok(MarkerEntryKind::Unsupported),
-            |_| unreachable!(),
-            |_| {},
-        );
-        let MarkerProbeOutcome::Indeterminate(failure) = outcome else {
-            panic!("expected unsupported marker to be indeterminate");
-        };
-        assert_eq!(failure.operation, ProbeOperation::UnsupportedMarkerEntry);
-    }
-
-    #[test]
-    fn broken_marker_link_is_indeterminate_and_never_falls_home() {
-        let marker_failure = match probe_portable_marker_with(
-            RetryPlatform::Other,
-            &expected_marker(),
-            |_| Ok(MarkerEntryKind::Symlink),
-            |_| Err(Error::new(ErrorKind::NotFound, "missing target")),
-            |_| {},
-        ) {
-            MarkerProbeOutcome::Indeterminate(failure) => failure,
-            other => panic!("expected indeterminate broken marker, got {other:?}"),
-        };
-        let loc = resolve_instance_location(
-            None,
-            None,
-            Ok(absolute_executable()),
-            Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::Indeterminate(marker_failure),
-            WriteProbeOutcome::NotRun,
-        );
-
-        assert_eq!(loc.config_dir, Some(expected_adjacent()));
-        let error = loc.startup_error.expect("broken marker must hard-fail");
-        let ConfigStartupError::AdjacentSelectionBlocked { marker_path, .. } = error else {
-            panic!("a broken marker must report AdjacentSelectionBlocked");
-        };
-        assert_eq!(marker_path, Some(expected_marker()));
-    }
-
-    #[test]
     fn issue_1577_real_write_probe_keeps_directory_and_leaves_no_probe_file() {
         let temp = tempfile::TempDir::new().unwrap();
         let existing = temp.path().join("existing");
@@ -1786,10 +1371,19 @@ mod tests {
             None,
             Ok(executable),
             Some(PathBuf::from("/home/u")),
-            MarkerProbeOutcome::Absent,
-            WriteProbeOutcome::Failed(failure),
+            WriteProbeOutcome::Failed(failure.clone()),
         );
-        assert!(loc.startup_error.is_some());
+        assert_eq!(
+            loc.config_dir,
+            Some(temp.path().join(".agentscommander_issue1577"))
+        );
+        assert_eq!(
+            loc.startup_error,
+            Some(ConfigStartupError::AdjacentSelectionBlocked {
+                config_dir: temp.path().join(".agentscommander_issue1577"),
+                reason: failure.reason(),
+            })
+        );
     }
 
     #[test]
@@ -1901,7 +1495,6 @@ mod tests {
     #[test]
     fn issue_1577_startup_and_diagnostic_formatters_are_exact() {
         let candidate = PathBuf::from("bin/.agentscommander");
-        let marker = PathBuf::from("bin/portable.txt");
         let probe = PathBuf::from("bin/.agentscommander/probe.tmp");
         let primary = ProbeFailure::from_retry(
             RetryPlatform::Other,
@@ -1932,48 +1525,16 @@ mod tests {
             )
         );
 
-        let present_error = ConfigStartupError::AdjacentSelectionBlocked {
+        let blocked_error = ConfigStartupError::AdjacentSelectionBlocked {
             config_dir: candidate.clone(),
-            marker_path: Some(marker.clone()),
             reason: write_failure.reason(),
         };
         assert_eq!(
-            present_error.to_string(),
+            blocked_error.to_string(),
             format!(
-                "AgentsCommander cannot start because configuration directory \"{}\" could not be safely selected: {} Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart. Portable marker path: \"{}\".",
+                "AgentsCommander cannot start because configuration directory \"{}\" could not be safely selected: {} Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.",
                 candidate.display(),
-                write_failure.reason(),
-                marker.display()
-            )
-        );
-
-        let marker_failure = ProbeFailure::from_retry(
-            RetryPlatform::Other,
-            ProbeOperation::MarkerTargetMetadata,
-            marker.clone(),
-            RetriedIoError {
-                error: Error::new(ErrorKind::NotFound, "missing target"),
-                attempts: 1,
-            },
-        );
-        assert_eq!(
-            marker_failure.reason(),
-            format!(
-                "could not resolve portable marker symlink target metadata \"{}\" after 1 attempt(s): missing target",
-                marker.display()
-            )
-        );
-
-        let unmarked_error = ConfigStartupError::AdjacentSelectionBlocked {
-            config_dir: candidate.clone(),
-            marker_path: None,
-            reason: "unknown filesystem state".to_string(),
-        };
-        assert_eq!(
-            unmarked_error.to_string(),
-            format!(
-                "AgentsCommander cannot start because configuration directory \"{}\" could not be safely selected: unknown filesystem state. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.",
-                candidate.display()
+                write_failure.reason()
             )
         );
 
@@ -2054,43 +1615,30 @@ mod tests {
                 )),
             ]
         };
-        let marker_outcomes = || {
-            [
-                MarkerProbeOutcome::NotRun,
-                MarkerProbeOutcome::Absent,
-                MarkerProbeOutcome::Present,
-                MarkerProbeOutcome::Indeterminate(marker_failure()),
-            ]
-        };
-
         for (executable, stem) in &executables {
-            for marker in marker_outcomes() {
-                for write in write_outcomes() {
-                    for home in [Some(home.clone()), None] {
-                        let current_exe_result = match executable {
-                            Some(path) => Ok(path.clone()),
-                            None => exe_err(),
-                        };
-                        let loc = resolve_instance_location(
-                            None,
-                            None,
-                            current_exe_result,
-                            home.clone(),
-                            marker.clone(),
-                            write.clone(),
-                        );
-                        let context = format!(
-                            "executable={executable:?} marker={marker:?} write={write:?} home={home:?}"
-                        );
-                        assert_eq!(
-                            loc.config_dir,
-                            home.as_deref().map(canonical_home),
-                            "{context}"
-                        );
-                        assert_eq!(loc.instance_base, None, "{context}");
-                        assert!(loc.startup_error.is_none(), "{context}");
-                        assert_eq!(loc.local_dir_stem, *stem, "{context}");
-                    }
+            for write in write_outcomes() {
+                for home in [Some(home.clone()), None] {
+                    let current_exe_result = match executable {
+                        Some(path) => Ok(path.clone()),
+                        None => exe_err(),
+                    };
+                    let loc = resolve_instance_location(
+                        None,
+                        None,
+                        current_exe_result,
+                        home.clone(),
+                        write.clone(),
+                    );
+                    let context =
+                        format!("executable={executable:?} write={write:?} home={home:?}");
+                    assert_eq!(
+                        loc.config_dir,
+                        home.as_deref().map(canonical_home),
+                        "{context}"
+                    );
+                    assert_eq!(loc.instance_base, None, "{context}");
+                    assert!(loc.startup_error.is_none(), "{context}");
+                    assert_eq!(loc.local_dir_stem, *stem, "{context}");
                 }
             }
         }
@@ -2115,7 +1663,6 @@ mod tests {
             Some(debug.to_string()),
             Ok(unsuffixed_executable()),
             Some(home.clone()),
-            MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
         assert_eq!(loc.config_dir.as_deref(), Some(Path::new(public)));
@@ -2131,7 +1678,6 @@ mod tests {
             Some(debug.to_string()),
             Ok(unsuffixed_executable()),
             Some(home.clone()),
-            MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
         assert_eq!(loc.config_dir.as_deref(), Some(Path::new(debug)));
@@ -2142,7 +1688,6 @@ mod tests {
             Some("relative/.override".to_string()),
             Ok(unsuffixed_executable()),
             Some(home.clone()),
-            MarkerProbeOutcome::NotRun,
             WriteProbeOutcome::NotRun,
         );
         assert_eq!(
@@ -2156,16 +1701,11 @@ mod tests {
             Some("\t".to_string()),
             Ok(unsuffixed_executable()),
             Some(home.clone()),
-            MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Success,
         );
         assert_eq!(loc.config_dir, Some(canonical_home(&home)));
         assert_eq!(loc.instance_base, None);
         assert!(loc.startup_error.is_none());
-    }
-
-    fn never_marker(_: &Path) -> MarkerProbeOutcome {
-        panic!("marker probe must not run on this route");
     }
 
     fn never_write(_: &Path) -> WriteProbeOutcome {
@@ -2191,7 +1731,6 @@ mod tests {
                 None,
                 executable,
                 Some(home.clone()),
-                never_marker,
                 never_write,
             );
             assert_eq!(loc.config_dir, Some(canonical_home(&home)));
@@ -2204,7 +1743,6 @@ mod tests {
             None,
             Ok(absolute_executable()),
             Some(home.clone()),
-            never_marker,
             never_write,
         );
         assert_eq!(loc.config_dir.as_deref(), Some(Path::new(public)));
@@ -2214,24 +1752,18 @@ mod tests {
             Some(public.to_string()),
             Ok(absolute_executable()),
             Some(home),
-            never_marker,
             never_write,
         );
         assert_eq!(loc.config_dir.as_deref(), Some(Path::new(public)));
     }
 
     #[test]
-    fn issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once() {
+    fn issue_1850_lazy_helper_probes_suffixed_routes_write_once() {
         struct Probes {
-            calls: std::cell::RefCell<Vec<(&'static str, PathBuf)>>,
+            calls: std::cell::RefCell<Vec<PathBuf>>,
         }
         impl Probes {
-            fn run(
-                &self,
-                marker: MarkerProbeOutcome,
-                write: WriteProbeOutcome,
-                home: Option<PathBuf>,
-            ) -> InstanceLocation {
+            fn run(&self, write: WriteProbeOutcome, home: Option<PathBuf>) -> InstanceLocation {
                 self.calls.borrow_mut().clear();
                 resolve_instance_location_with_probes(
                     None,
@@ -2239,16 +1771,12 @@ mod tests {
                     Ok(absolute_executable()),
                     home,
                     |path: &Path| {
-                        self.calls.borrow_mut().push(("marker", path.to_path_buf()));
-                        marker.clone()
-                    },
-                    |path: &Path| {
-                        self.calls.borrow_mut().push(("write", path.to_path_buf()));
+                        self.calls.borrow_mut().push(path.to_path_buf());
                         write.clone()
                     },
                 )
             }
-            fn calls(&self) -> Vec<(&'static str, PathBuf)> {
+            fn calls(&self) -> Vec<PathBuf> {
                 self.calls.borrow().clone()
             }
         }
@@ -2256,65 +1784,12 @@ mod tests {
             calls: std::cell::RefCell::new(Vec::new()),
         };
         let home = PathBuf::from("/home/u");
-        let both = vec![
-            ("marker", expected_marker()),
-            ("write", expected_adjacent()),
-        ];
-        let marker_only = vec![("marker", expected_marker())];
+        let write_once = vec![expected_adjacent()];
 
-        let loc = probes.run(
-            MarkerProbeOutcome::Absent,
-            WriteProbeOutcome::Success,
-            Some(home.clone()),
-        );
-        assert_eq!(probes.calls(), both);
+        let loc = probes.run(WriteProbeOutcome::Success, Some(home.clone()));
+        assert_eq!(probes.calls(), write_once);
         assert_eq!(loc.config_dir, Some(expected_adjacent()));
         assert!(loc.startup_error.is_none());
-
-        let loc = probes.run(
-            MarkerProbeOutcome::Present,
-            WriteProbeOutcome::Success,
-            Some(home.clone()),
-        );
-        assert_eq!(probes.calls(), both);
-        assert_eq!(loc.config_dir, Some(expected_adjacent()));
-        assert!(loc.startup_error.is_none());
-
-        let loc = probes.run(
-            MarkerProbeOutcome::Present,
-            WriteProbeOutcome::Failed(failed_write(
-                RetryPlatform::Other,
-                ProbeOperation::CreateConfigurationDirectory,
-                expected_adjacent(),
-                Error::new(ErrorKind::PermissionDenied, "denied"),
-                1,
-            )),
-            Some(home.clone()),
-        );
-        assert_eq!(probes.calls(), both);
-        assert_eq!(loc.config_dir, Some(expected_adjacent()));
-        let error = loc.startup_error.expect("marked unwritable is hard");
-        assert!(error
-            .to_string()
-            .contains(&expected_marker().display().to_string()));
-
-        let loc = probes.run(
-            MarkerProbeOutcome::Indeterminate(marker_failure()),
-            WriteProbeOutcome::Success,
-            Some(home.clone()),
-        );
-        assert_eq!(
-            probes.calls(),
-            marker_only,
-            "no write after an indeterminate marker"
-        );
-        assert_eq!(loc.config_dir, Some(expected_adjacent()));
-        let ConfigStartupError::AdjacentSelectionBlocked { marker_path, .. } =
-            loc.startup_error.expect("indeterminate marker is hard")
-        else {
-            panic!("an indeterminate marker must report AdjacentSelectionBlocked");
-        };
-        assert_eq!(marker_path, Some(expected_marker()));
 
         let conclusive = failed_write(
             RetryPlatform::Other,
@@ -2324,11 +1799,10 @@ mod tests {
             1,
         );
         let loc = probes.run(
-            MarkerProbeOutcome::Absent,
             WriteProbeOutcome::Failed(conclusive.clone()),
             Some(home.clone()),
         );
-        assert_eq!(probes.calls(), both);
+        assert_eq!(probes.calls(), write_once);
         assert_eq!(loc.config_dir, Some(expected_adjacent()));
         assert_eq!(
             loc.startup_error,
@@ -2338,19 +1812,22 @@ mod tests {
             })
         );
 
-        let loc = probes.run(
-            MarkerProbeOutcome::Absent,
-            WriteProbeOutcome::Failed(failed_write(
-                RetryPlatform::Other,
-                ProbeOperation::CreateProbeFile,
-                expected_adjacent().join("probe.tmp"),
-                Error::new(ErrorKind::AlreadyExists, "collision"),
-                1,
-            )),
-            Some(home),
+        let indeterminate = failed_write(
+            RetryPlatform::Other,
+            ProbeOperation::CreateProbeFile,
+            expected_adjacent().join("probe.tmp"),
+            Error::new(ErrorKind::AlreadyExists, "collision"),
+            1,
         );
-        assert_eq!(probes.calls(), both);
+        let loc = probes.run(WriteProbeOutcome::Failed(indeterminate.clone()), Some(home));
+        assert_eq!(probes.calls(), write_once);
         assert_eq!(loc.config_dir, Some(expected_adjacent()));
-        assert!(loc.startup_error.is_some());
+        assert_eq!(
+            loc.startup_error,
+            Some(ConfigStartupError::AdjacentSelectionBlocked {
+                config_dir: expected_adjacent(),
+                reason: indeterminate.reason(),
+            })
+        );
     }
 }
