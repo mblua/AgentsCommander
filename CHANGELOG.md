@@ -6,6 +6,29 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- **`settings.json` saves keep a bounded backup history.** Every successful save archives the bytes it replaced into five rotating slots, `settings.backup.1.json` through `settings.backup.5.json`, beside `settings.json` in the same configuration directory. Slot 1 holds the version the most recent save replaced; slot 5 is the oldest kept. ([#2058](https://github.com/mblua/AgentsCommander/issues/2058))
+- **A global npm install on Windows creates a per-user Start Menu shortcut.** `AgentsCommander.lnk` targets the installed executable and uses its icon. It is skipped for local installs and when `AGENTSCOMMANDER_NO_SHORTCUT=1` is set, never fails the install, and must be removed by hand because npm runs no uninstall scripts. ([#2053](https://github.com/mblua/AgentsCommander/issues/2053))
+- **A global npm install on macOS makes the app reachable from Launchpad and Spotlight** through a `~/Applications/AgentsCommander.app` alias to the extracted bundle. It needs no elevation, is skipped for local installs and with `AGENTSCOMMANDER_NO_SHORTCUT=1`, leaves an unrelated application of the same name untouched, and never fails the install. ([#2065](https://github.com/mblua/AgentsCommander/issues/2065))
+- **The project global context template seeds an Answering section.** The previous template is recognized and replaced with a backup on scan, so generated standalone templates stay retirable. ([#2031](https://github.com/mblua/AgentsCommander/issues/2031))
+
+### Changed
+
+- **Left click on an offline Agent Matrix row no longer opens the session launch flow.** It shows a notice explaining that replicas, not the matrix, are what gets launched, and that the matrix folder is available from the row's right-click menu. ([#2046](https://github.com/mblua/AgentsCommander/issues/2046))
+- **The sidebar lock chip shows only the lock icon**, without the KEEP label. ([#2030](https://github.com/mblua/AgentsCommander/issues/2030))
+- **The Coding Agent profile modal scrolls its Profile and Same Profile columns independently.** ([#2038](https://github.com/mblua/AgentsCommander/issues/2038))
+- **Documentation updates**: the configuration-directory guides, the macOS and Linux support tiers, the deprecation of the legacy `codingAgentProfiles` settings, the OCA-008 tombstones for enabled Grok and disabled Muse, and Team wording in the use-case recipes. ([#1936](https://github.com/mblua/AgentsCommander/issues/1936), [#2017](https://github.com/mblua/AgentsCommander/issues/2017), [#2019](https://github.com/mblua/AgentsCommander/issues/2019), [#2009](https://github.com/mblua/AgentsCommander/issues/2009), [#2032](https://github.com/mblua/AgentsCommander/issues/2032))
+
+### Fixed
+
+- **A distinct submission is no longer silently deduplicated** when a critical-admission key outlives the completion the caller observes. ([#1580](https://github.com/mblua/AgentsCommander/issues/1580))
+- **Assign-and-lock on a replica no longer fails with `stalePreview`.** ([#2051](https://github.com/mblua/AgentsCommander/issues/2051))
+- **Delete Profile no longer removes configured profiles from other coding agents.** ([#2057](https://github.com/mblua/AgentsCommander/issues/2057))
+- **The sidebar Ungrouped counter agrees with the Ungrouped panel list.** ([#2036](https://github.com/mblua/AgentsCommander/issues/2036))
+- **npm publication no longer fails right after a successful publish** when the registry's `latest` dist-tag lags. ([#2042](https://github.com/mblua/AgentsCommander/issues/2042))
+- **Reseed tests are deterministic under concurrent same-binary runs.** ([#2001](https://github.com/mblua/AgentsCommander/issues/2001))
+- **CI uploads artifacts with a Node 24 release of `actions/upload-artifact`.** ([#2040](https://github.com/mblua/AgentsCommander/issues/2040))
 ## 0.33.0
 
 ### Added
