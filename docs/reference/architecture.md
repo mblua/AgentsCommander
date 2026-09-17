@@ -732,6 +732,7 @@ graph TD
 | `session/profile.rs` | Coding-agent profile resolution per session |
 | `session/auto_close.rs` | Idle auto-close clock |
 | `session/context_alerts.rs`, `session/warnings.rs` | Context alerts, session warnings |
+| `session/remote_alerts.rs` | Resolves the room orchestrator and delivers remote-activity notices into it; delivery lives here, beside `session/context_alerts.rs`, deliberately not in `pty/` |
 | `session/purge_guard.rs` | `purge-room` busy gate |
 | `pty/manager.rs` | `PtyManager`: spawn, read loop, write, resize, kill |
 | `pty/backend.rs` | Local vs container transport selection |
@@ -741,6 +742,7 @@ graph TD
 | `pty/container_credentials.rs`, `container_tokens.rs`, `container_paths.rs`, `container_repos.rs` | Container credential/token/path/repo plumbing |
 | `pty/idle_detector.rs` | 2.5s silence detection (default), idle/busy events |
 | `pty/git_watcher.rs` | 5s branch polling via `git rev-parse` |
+| `pty/remote_watcher.rs` | Remote-activity sweeper: produces and emits per-repo CI and branch-staleness state |
 | `pty/inject.rs` | Logical clear and exact PTY input injection |
 | `pty/job.rs`, `pty/spawn_diagnostics.rs` | Spawn orchestration and diagnostics |
 | `pty/output.rs` | PTY output dispatch |
