@@ -1,6 +1,6 @@
-//! #714 macOS-and-everything-else screenshot stub.
+//! #714 screenshot stub for every target other than Windows, Linux and macOS.
 //!
-//! Compiled on every target that is neither Windows nor Linux/X11. It uses NO
+//! Compiled on every target other than Windows, Linux and macOS. It uses NO
 //! native screenshot crates (`xcap`, `image`, clipboard, global shortcut). It
 //! mirrors the public surface of `super::native` so the command layer and
 //! `lib.rs` wiring are identical across targets: every capture path reports an
@@ -13,7 +13,7 @@ use super::{
     ScreenshotSelection,
 };
 
-const UNSUPPORTED: &str = "Screenshot capture is not available on this platform; it is supported on Windows and on Linux/X11";
+const UNSUPPORTED: &str = "Screenshot capture is not available on this platform; it is supported on Windows, macOS and Linux/X11";
 
 /// The non-Windows lifecycle can never leave `Idle`, but the variant must exist
 /// so the `ScreenshotCaptureState` alias and `lib.rs` (`...::Idle`) compile.
