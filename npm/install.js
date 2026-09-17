@@ -7,6 +7,7 @@ const { execSync } = require('child_process');
 const { assertExecutable } = require('./resolve-bin');
 const { createStartMenuShortcut } = require('./windows-shortcut');
 const { createLaunchpadAlias } = require('./macos-alias');
+const { createDesktopEntry } = require('./linux-desktop-entry');
 
 const VERSION = "0.34.0"; // Must match package.json
 const OWNER = 'mblua';
@@ -159,6 +160,14 @@ async function main() {
           if (shortcut.created) console.log(`Start Menu shortcut created: ${shortcut.path}`);
         } catch (err) {
           console.warn(`Warning: Start Menu shortcut not created: ${err.message}`);
+        }
+      }
+      if (platform === 'linux') {
+        try {
+          const entry = createDesktopEntry(finalBinPath, { platform });
+          if (entry.created) console.log(`Application menu entry created: ${entry.path}`);
+        } catch (err) {
+          console.warn(`Warning: application menu entry not created: ${err.message}`);
         }
       }
     }
