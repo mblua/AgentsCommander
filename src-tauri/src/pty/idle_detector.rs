@@ -1491,8 +1491,24 @@ mod tests {
         assert!(fx.silence_age() < Duration::from_secs(1));
     }
 
-    /// T4 - the byte limit is inclusive: 1023 B stays pending, a single 1024 B
-    /// chunk confirms immediately.
+    /// T3b - the discard boundary: a gap of EXACTLY `burst_window` must not
+    /// discard (the gap test is strictly greater), so the second chunk
+    /// confirms on the elapsed-window leg. Kills `>` -> `>=` on that test.
+    #[test]
+    fn t3b_exact_window_gap_is_not_a_discard() {
+        let fx = BurstFixture::new();
+        fx.record(10, true, fx.t0);
+        assert!(fx.pending());
+        fx.record(10, true, fx.t0 + Duration::from_secs(3));
+        assert_eq!(fx.busy(), 1, "a 3 s gap is not a discard");
+        assert!(!fx.pending());
+        assert!(fx.silence_age() < Duration::from_secs(1));
+    }
+
+    /// T4 - the byte limit is inclusive: 1023 B stays pending, 1024 B confirms
+    /// immediately, and 1024 B reached ACROSS chunks confirms too. The last
+    /// leg kills `>=` -> `>` on the accumulated total (T2 reaches 1034, never
+    /// 1024 exactly).
     #[test]
     fn t4_burst_byte_limit_is_inclusive() {
         let fx = BurstFixture::new();
@@ -1504,6 +1520,14 @@ mod tests {
         fx.record(1024, true, fx.t0);
         assert_eq!(fx.busy(), 1);
         assert!(!fx.pending());
+
+        let fx = BurstFixture::new();
+        fx.record(1023, true, fx.t0);
+        assert_eq!(fx.busy(), 0);
+        fx.record(1, true, fx.t0 + Duration::from_secs(1));
+        assert_eq!(fx.busy(), 1, "1023 B + 1 B reaches the limit exactly");
+        assert!(!fx.pending());
+        assert!(fx.silence_age() < Duration::from_secs(1));
     }
 
     /// T5 - a candidate discarded by the gap never counts, and the same shape
