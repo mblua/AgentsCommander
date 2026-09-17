@@ -293,6 +293,27 @@ fn replica_within_room(room_dir: &Path, replica_dir: &Path) -> bool {
     replica.parent() == Some(room.as_path())
 }
 
+/// The FQN, spelled from the CANONICAL directory names.
+///
+/// The target constructor accepts an FQN only if it equals the one it rebuilds
+/// from the canonical replica, and that rebuild uses the on-disk case. The
+/// resolver, by contrast, spells the project and the room with whatever case the
+/// caller passed, so a settings file or a discovery scan that spells a room
+/// `Room-26-...` would produce an FQN the constructor refuses and every notice
+/// for that room would be dropped. Both sides describe the same replica: the
+/// canonical replica directory this FQN is built from is the one the resolver
+/// selected by identity, and containment has already proved it is a child of
+/// this room.
+fn canonical_fqn(canonical_room: &Path, canonical_replica: &Path) -> Option<String> {
+    let agent = canonical_replica
+        .file_name()?
+        .to_str()?
+        .strip_prefix("__agent_")?;
+    let room = canonical_room.file_name()?.to_str()?;
+    let project = canonical_room.parent()?.parent()?.file_name()?.to_str()?;
+    Some(format!("{project}:{room}/{agent}"))
+}
+
 /// One warn per room for the conditions that repeat every round: the sweeper
 /// ticks every ten seconds, so an unconfigured room would otherwise fill the log.
 fn warn_room_once(warned: &Mutex<HashSet<String>>, room: &Path, message: String) {
@@ -337,11 +358,39 @@ fn resolve_orchestrator_blocking(
         );
         return None;
     }
-    let fqn = format!(
-        "{}:{}/{}",
-        resolved.project, resolved.wg_name, resolved.agent_name
-    );
-    let canonical = real_canonical_dir(&resolved.replica_dir)?;
+    let Some(canonical_room) = real_canonical_dir(room_dir) else {
+        warn_room_once(
+            warned,
+            room_dir,
+            format!(
+                "[remote-alerts] room {} cannot be canonicalized; notice dropped",
+                room_dir.display()
+            ),
+        );
+        return None;
+    };
+    let Some(canonical) = real_canonical_dir(&resolved.replica_dir) else {
+        warn_room_once(
+            warned,
+            room_dir,
+            format!(
+                "[remote-alerts] orchestrator replica {} cannot be canonicalized; notice dropped",
+                resolved.replica_dir.display()
+            ),
+        );
+        return None;
+    };
+    let Some(fqn) = canonical_fqn(&canonical_room, &canonical) else {
+        warn_room_once(
+            warned,
+            room_dir,
+            format!(
+                "[remote-alerts] orchestrator replica {} is not named as a room replica; notice dropped",
+                canonical.display()
+            ),
+        );
+        return None;
+    };
     match InternalSystemTarget::for_context_alert(fqn, canonical) {
         Ok(target) => Some(target),
         Err(reason) => {
@@ -1112,10 +1161,27 @@ mod tests {
                 replica_within_room(&shouted, &resolved.replica_dir),
                 "a case variant resolves to a replica this room contains"
             );
-            // The delivery half is NOT asserted for the case variant: the target
-            // constructor matches the FQN against the canonical replica's own
-            // components, case included, so a shouted spelling is refused there.
-            // That refusal is upstream of containment and predates this phase.
+            // The delivery half IS asserted: the notice is addressed by the
+            // canonical spelling, so a settings file or a discovery scan that
+            // spells the room with different case does not lose every notice.
+            let ports = Arc::new(ResolvingPorts::default());
+            let mut state = RemoteAlertState::new(ports.clone());
+            state
+                .handle(
+                    transition(TransitionKind::CiStarted, &shouted, "repo-a"),
+                    Instant::now(),
+                )
+                .await;
+            let delivered = ports.deliveries();
+            assert_eq!(
+                delivered.len(),
+                1,
+                "a differently-cased path is the same room and must deliver"
+            );
+            assert_eq!(
+                delivered[0].target_fqn, "project-a:wg-2-dev-team/coordinator",
+                "the FQN is spelled from the canonical directory names"
+            );
         }
     }
 
