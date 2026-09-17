@@ -82,7 +82,7 @@ AC runs Claude Code as a session inside it. So the question is: should you launc
 
 ## Honest concessions
 
-- **Windows support is narrower than the build matrix.** Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported and remain the primary development and release-validation targets. Linux x86_64/AMD64 is supported with medium test coverage, so expect some turbulence; native window capture and detection of a running GUI before CLI configuration writes are Windows-only, and screenshot capture works on Windows and Linux/X11 only. macOS is supported via npm only, with very low test coverage, so expect errors. An available release artifact does not change these tiers; see the [platform contract](install-with-agent.md#support-gates).
+- **Windows support is narrower than the build matrix.** Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported and remain the primary development and release-validation targets. Linux x86_64/AMD64 is supported with medium test coverage, so expect some turbulence; native window capture and detection of a running GUI before CLI configuration writes are Windows-only, and screenshot capture works on Windows, macOS and Linux/X11. macOS is supported via npm only, with very low test coverage, so expect errors. An available release artifact does not change these tiers; see the [platform contract](install-with-agent.md#support-gates).
 - **You bring the coding agents.** AC does not ship Claude Code, Codex, Antigravity, or Pi. Install whichever you want; AC detects supported commands.
 - **Single-agent flows are not the sweet spot.** If you only run one agent, you are paying for a Tauri shell. The value is multi-agent coordination.
 

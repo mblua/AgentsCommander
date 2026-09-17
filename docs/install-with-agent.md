@@ -13,7 +13,7 @@ An artifact on a GitHub release proves that the build exists. It does not make t
 | macOS | Any | Supported via npm only, with very low test coverage; errors are expected | Yes, through npm, after a warning and explicit confirmation |
 | Any other OS or architecture | Any | Unsupported | No; stop without substitution, emulation, or fallback |
 
-Linux does not currently include every Windows capability. Verified Windows-only features include native window listing and capture (the `window-list` and `window-screenshot` verbs and the control-plane window-screenshot route), and detection of a running GUI before CLI configuration writes. Screenshot capture works on Windows and Linux/X11 only: not in a Wayland session, and not on macOS. See [Screenshot capture](features/screenshot-capture.md), [Window capture](features/window-capture.md), and the [CLI reference](reference/cli.md#coding-agent).
+Linux does not currently include every Windows capability. Verified Windows-only features include native window listing and capture (the `window-list` and `window-screenshot` verbs and the control-plane window-screenshot route), and detection of a running GUI before CLI configuration writes. Screenshot capture works on Windows, macOS and Linux/X11, but not in a Wayland session. See [Screenshot capture](features/screenshot-capture.md), [Window capture](features/window-capture.md), and the [CLI reference](reference/cli.md#coding-agent).
 
 ## Use only pinned official evidence
 
