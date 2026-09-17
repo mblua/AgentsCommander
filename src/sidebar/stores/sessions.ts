@@ -711,7 +711,7 @@ export const sessionsStore = {
     try {
       const current = await SettingsAPI.get();
       await SettingsAPI.update({ ...current, coordSortByActivity: next });
-      void settingsStore.refresh();
+      settingsStore.refresh();
     } catch (e) {
       console.error("[coord-sort] Failed to persist coordSortByActivity:", e);
       setState("coordSortByActivity", !next);
