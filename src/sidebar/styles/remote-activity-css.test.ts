@@ -7,22 +7,18 @@ import { describe, expect, it } from "vitest";
 // not substitute `var()`, so a computed `box-shadow` stays raw, and both computed
 // backgrounds of these rules read rgba(0, 0, 0, 0) no matter what the file says.
 // A round-2 version of these three tests used `getComputedStyle` and none of them
-// could fail. Five precedents live in this directory; the shape copied is
-// `coord-quick-access-css.test.ts` — rule bodies by anchored selector, declarations
-// split on `;`, and every extraction helper THROWS when it matches nothing, so a
-// zero match can never pass.
+// could fail. Five precedents live in this directory; the shape borrowed from
+// `coord-quick-access-css.test.ts` is that every extraction helper THROWS when it
+// matches nothing, so a zero match can never pass.
 //
 // CRLF: the working tree checks out CRLF (`.gitattributes` leaves `sidebar.css`
 // unspecified and `core.autocrlf=true` on this host), which is the hazard
 // `working-tint-css.test.ts:11-21` describes — a CRLF-sensitive regex silently
 // matches nothing and the test passes vacuously. This file chooses normalization
-// instead: the text is normalized ONCE, below, and every literal here is LF.
-// Test 14 asserts `CSS` carries no `\r` after that, so both checkouts compare the
-// same bytes.
-const CSS = readFileSync(new URL("./sidebar.css", import.meta.url), "utf8").replace(
-  /\r\n/g,
-  "\n"
-);
+// instead: the text is normalized ONCE, right here, and every literal below is LF.
+const CSS_PATH = new URL("./sidebar.css", import.meta.url);
+const RAW_CSS = readFileSync(CSS_PATH, "utf8");
+const CSS = RAW_CSS.split("\r\n").join("\n");
 
 /** Comment spans blanked, length and line breaks preserved: the #2064 comment above
  *  the rules names `ci-running` and `stale` in prose, and an unstripped scan would
@@ -87,15 +83,22 @@ function ruleFor(selector: string): CssRule {
   return hits[0];
 }
 
-function declarations(body: string): Array<[string, string]> {
-  return body
-    .split(";")
-    .map((d) => d.trim())
-    .filter((d) => d.includes(":"))
-    .map((d) => [
-      d.slice(0, d.indexOf(":")).trim(),
-      d.slice(d.indexOf(":") + 1).trim().replace(/\s+/g, " "),
-    ]);
+/** Every declaration in a body, in source order, values whitespace-collapsed, custom
+ *  properties included. A regex walk over the declaration grammar rather than a
+ *  `split(";")` chain, and it THROWS on a body that declares nothing: a
+ *  mis-extracted body must not be able to make a "no offenders" assertion vacuous. */
+function declarationsOf(body: string): Array<{ name: string; value: string }> {
+  const found: Array<{ name: string; value: string }> = [];
+  const pattern = /(?:^|;)\s*(-{0,2}[A-Za-z][A-Za-z0-9-]*)\s*:\s*([^;]+)/g;
+  let match: RegExpExecArray | null = pattern.exec(body);
+  while (match !== null) {
+    found.push({ name: match[1], value: match[2].trim().replace(/\s+/g, " ") });
+    match = pattern.exec(body);
+  }
+  if (found.length === 0) {
+    throw new Error(`no declarations found in ${JSON.stringify(body)}`);
+  }
+  return found;
 }
 
 /** A layout-occupying declaration would move the multi-repo row: `box-shadow` never
@@ -121,8 +124,8 @@ describe("#2064 remote-activity chip markers (bytes on disk)", () => {
     ]);
 
     const offenders = rules.flatMap((rule) =>
-      declarations(rule.body)
-        .map(([name]) => name)
+      declarationsOf(rule.body)
+        .map((declaration) => declaration.name)
         .filter((name) => LAYOUT_OCCUPYING.test(name))
         .map((name) => `${rule.selector} -> ${name}`)
     );
@@ -134,8 +137,8 @@ describe("#2064 remote-activity chip markers (bytes on disk)", () => {
     // `background: rgba(234, 179, 8, 0.20)` goes red here, and while this is green
     // no text contrast ratio can have moved, because neither marker composites.
     const offenders = chipSignalRules().flatMap((rule) =>
-      declarations(rule.body)
-        .map(([name]) => name)
+      declarationsOf(rule.body)
+        .map((declaration) => declaration.name)
         .filter((name) => name.startsWith("background"))
         .map((name) => `${rule.selector} -> ${name}`)
     );
@@ -152,9 +155,9 @@ describe("#2064 remote-activity chip markers (bytes on disk)", () => {
     expect(CSS.includes("\r")).toBe(false);
 
     const boxShadows = chipSignalRules().flatMap((rule) =>
-      declarations(rule.body)
-        .filter(([name]) => name === "box-shadow")
-        .map(([, value]) => ({ selector: rule.selector, value }))
+      declarationsOf(rule.body)
+        .filter((declaration) => declaration.name === "box-shadow")
+        .map((declaration) => ({ selector: rule.selector, value: declaration.value }))
     );
     // Exactly ONE declaration, in the composed rule: two competing `box-shadow`
     // declarations would silently drop the stale bar or the ring for a repo that is

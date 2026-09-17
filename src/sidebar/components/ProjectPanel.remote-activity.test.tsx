@@ -3,17 +3,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import ProjectPanel from "./ProjectPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
-  baseSettings,
-  discovery,
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
   waitFor,
 } from "../../shared/testing/ui-harness";
+import { baseSettings, discovery } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { replicaVolatileStore } from "../stores/replica-volatile";
 import { remoteActivityByPath, remoteActivityStore } from "../stores/remote-activity";
-import type { CiState, RemoteActivityUpdate, StalenessState } from "../../shared/types";
+import type { CiState, StalenessState } from "../../shared/types";
 
 // #2064 Phase C — the CI ring and the stale bar on the orchestrator repo chip.
 //
@@ -24,42 +23,51 @@ import type { CiState, RemoteActivityUpdate, StalenessState } from "../../shared
 // stylesheet and a class-only assertion stays green against a rule that does not
 // exist.
 //
-// Test 15 at the bottom is the only one in this repo that fails when the feature is
-// wired to NOTHING: tests 8-14 set the store directly, so they would all stay green
-// with no listener registered at all.
+// The last case is the only one in the repo that fails when the feature is wired to
+// NOTHING: the store cases above it set the store directly, so they would all stay
+// green with no listener registered at all. It is not optional.
 //
-// The rows are DORMANT — nothing here creates a session — which matches Phase A,
-// which polls every replica whether or not a session exists.
+// The row is DORMANT — nothing here creates a session — which matches Phase A, which
+// polls every replica whether or not a session exists.
 
-const projectPath = "C:\\Project";
-const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
-const coordPath = `${workgroupPath}\\__agent_dev-webpage-ui`;
-const REPO_A = `${workgroupPath}\\repo-AgentsCommander`;
+/** One dormant coordinator row, described once. */
+const ROW = {
+  project: "C:\\Project",
+  workgroup: "wg-2-dev-team",
+  replica: "dev-webpage-ui",
+  repo: "repo-AgentsCommander",
+} as const;
 
-/** The coordinator row also renders in the quick-access strip; tests target the
- *  workgroup-tree copy explicitly rather than counting badges document-wide. */
-const TREE = "workgroups";
+const WG_DIR = `${ROW.project}\\.ac\\${ROW.workgroup}`;
+const REPO_PATH = `${WG_DIR}\\${ROW.repo}`;
+const REPLICA_PATH = `${WG_DIR}\\__agent_${ROW.replica}`;
+const CHIP_LABEL = ROW.repo.replace(/^repo-/, "");
 
-/** The badge's own data-ac-testid: replica.repoBadge.<ctx>.<wg>.<replica>.<i>.<label> */
-function badgeIn(root: Element, ctx: string, index: number, label: string): HTMLElement | null {
-  return root.querySelector<HTMLElement>(
-    `[data-ac-testid="replica.repoBadge.${ctx}.wg-2-dev-team.dev-webpage-ui.${index}.${label}"]`
-  );
+type Panel = ReturnType<typeof renderWithFakeTransport>;
+
+let panel: Panel | null = null;
+
+/** Releases the mounted panel without unmounting the DOM stubs: test 15 needs the
+ *  unmount and the stub teardown as separate steps, and the teardown order below
+ *  depends on the panel going first. */
+function closePanel(): void {
+  panel?.cleanup();
+  panel = null;
 }
 
-function repoDiscovery(repoPaths: string[]) {
+function rowDiscovery() {
   return discovery({
     workgroups: [
       {
-        name: "wg-2-dev-team",
-        path: workgroupPath,
+        name: ROW.workgroup,
+        path: WG_DIR,
         task: null,
         taskTitle: "Remote activity",
         agents: [
           {
-            name: "dev-webpage-ui",
-            path: coordPath,
-            repoPaths,
+            name: ROW.replica,
+            path: REPLICA_PATH,
+            repoPaths: [REPO_PATH],
             isCoordinator: true,
           },
         ],
@@ -68,194 +76,163 @@ function repoDiscovery(repoPaths: string[]) {
   });
 }
 
-async function renderDormantRepoRow(fake: FakeTransport, repoPaths: string[]) {
-  fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+/** Mounts the real panel against the fake backend and waits for the chip. */
+async function openPanel(): Promise<FakeTransport> {
+  const fake = new FakeTransport();
+  fake.resolve("new_project", { path: ROW.project, registered: true, created: false });
   fake.resolve("get_settings", baseSettings());
-  fake.resolve("discover_project", repoDiscovery(repoPaths));
-
-  const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
-  await projectStore.createAndLoad(projectPath);
-  await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
-  return rendered;
+  fake.resolve("discover_project", rowDiscovery());
+  panel = renderWithFakeTransport(() => <ProjectPanel />, fake);
+  await projectStore.createAndLoad(ROW.project);
+  await waitFor(() => expect(chipCopies().length).toBeGreaterThan(0));
+  return fake;
 }
 
-/** Exactly what the event carries: four parallel vectors, one entry per repo. */
-function applyActivity(
-  repoPaths: string[],
-  ciStates: CiState[],
-  stalenessStates: StalenessState[],
-  behindBy: (number | null)[]
-): void {
-  const update: RemoteActivityUpdate = { repoPaths, ciStates, stalenessStates, behindBy };
-  remoteActivityStore.applyRemoteActivityUpdate(update);
+/** Every rendered copy of the repo chip. A coordinator row is drawn twice — the
+ *  workgroup tree and the quick-access strip — through one renderReplicaItem, so
+ *  asserting on ALL copies is the stronger claim, not a wider net. */
+function chipCopies(): HTMLElement[] {
+  const root = panel?.root;
+  if (!root) throw new Error("openPanel() has not run");
+  return Array.from(root.querySelectorAll<HTMLElement>('[data-ac-testid*=".repoBadge."]')).filter(
+    (el) => el.getAttribute("data-ac-testid")!.endsWith(`.${CHIP_LABEL}`)
+  );
+}
+
+/** The chip's class and title, with the rendered copies cross-checked against each
+ *  other: a refactor that repaints one copy and leaves the other stale fails here,
+ *  and so does an assertion over an empty (never-rendered) set. */
+function chipState(): { className: string; title: string } {
+  const copies = chipCopies();
+  const classes = new Set(copies.map((el) => el.className));
+  const titles = new Set(copies.map((el) => el.title));
+  if (copies.length === 0 || classes.size !== 1 || titles.size !== 1) {
+    throw new Error(
+      `unusable chip set: ${copies.length} copies, classes [${[...classes].join(" | ")}], titles [${[...titles].join(" | ")}]`
+    );
+  }
+  return { className: [...classes][0], title: [...titles][0] };
+}
+
+/** One repo's published answer, exactly as the event carries it. */
+function publish(ci: CiState, staleness: StalenessState, behindBy: number | null = null): void {
+  remoteActivityStore.applyRemoteActivityUpdate({
+    repoPaths: [REPO_PATH],
+    ciStates: [ci],
+    stalenessStates: [staleness],
+    behindBy: [behindBy],
+  });
+}
+
+/** Marks the repo dirty through the channel #1028 owns, which this phase must not
+ *  disturb: the two signals have to be additive. */
+function markDirty(): void {
+  replicaVolatileStore.applyDiscoveryBranchUpdate(REPLICA_PATH, "main", [REPO_PATH], ["main"], [
+    true,
+  ]);
 }
 
 describe("ProjectPanel remote-activity chip (#2064 Phase C)", () => {
-  let cleanupDom: (() => void) | null = null;
+  let stubs: (() => void) | null = null;
 
   beforeEach(() => {
-    cleanupDom = installBrowserDomStubs();
+    stubs = installBrowserDomStubs();
     resetUiStoresForTests();
   });
 
   afterEach(() => {
-    cleanupDom?.();
-    cleanupDom = null;
+    closePanel();
+    stubs?.();
+    stubs = null;
     resetUiStoresForTests();
     document.body.replaceChildren();
   });
 
   it("class_is_untouched_when_the_store_is_empty", async () => {
-    const fake = new FakeTransport();
-    const rendered = await renderDormantRepoRow(fake, [REPO_A]);
-    try {
-      await waitFor(() =>
-        expect(badgeIn(rendered.root, TREE, 0, "AgentsCommander")).not.toBeNull()
-      );
-      const badge = badgeIn(rendered.root, TREE, 0, "AgentsCommander")!;
-      // No event has landed: no class, no suffix, and no entry invented for it. This
-      // is also the shape a user without `gh`, or with the feature off, keeps.
-      expect(badge.className).toBe("ac-discovery-badge branch");
-      expect(badge.title).toBe(`${REPO_A} (status unknown)`);
-      expect(Object.keys(remoteActivityByPath)).toHaveLength(0);
-    } finally {
-      rendered.cleanup();
-    }
+    await openPanel();
+
+    // No event has landed: no class, no suffix, and no entry invented for it. This
+    // is also the shape a user without `gh`, or with the feature off, keeps.
+    expect(chipState().className).toBe("ac-discovery-badge branch");
+    expect(chipState().title).toBe(`${REPO_PATH} (status unknown)`);
+    expect(Object.keys(remoteActivityByPath)).toHaveLength(0);
   });
 
   it("ci_running_adds_only_the_ci_running_class", async () => {
-    const fake = new FakeTransport();
-    const rendered = await renderDormantRepoRow(fake, [REPO_A]);
-    try {
-      await waitFor(() =>
-        expect(badgeIn(rendered.root, TREE, 0, "AgentsCommander")).not.toBeNull()
-      );
+    await openPanel();
+    publish("running", "current");
 
-      applyActivity([REPO_A], ["running"], ["current"], [null]);
+    await waitFor(() =>
+      expect(chipState().className).toBe("ac-discovery-badge branch ci-running")
+    );
+    expect(chipState().title).toBe(`${REPO_PATH} (status unknown) - CI running`);
 
-      await waitFor(() => {
-        const badge = badgeIn(rendered.root, TREE, 0, "AgentsCommander")!;
-        expect(badge.className).toBe("ac-discovery-badge branch ci-running");
-        expect(badge.title).toBe(`${REPO_A} (status unknown) - CI running`);
-      });
-
-      // The dirty channel is untouched by this phase and keeps its own class: the
-      // combination has to be `dirty ci-running`, in that order.
-      replicaVolatileStore.applyDiscoveryBranchUpdate(coordPath, "main", [REPO_A], ["main"], [
-        true,
-      ]);
-
-      await waitFor(() => {
-        const badge = badgeIn(rendered.root, TREE, 0, "AgentsCommander")!;
-        expect(badge.className).toBe("ac-discovery-badge branch dirty ci-running");
-        expect(badge.title).toBe(
-          `${REPO_A} (local work not confirmed by cached origin tracking) - CI running`
-        );
-      });
-    } finally {
-      rendered.cleanup();
-    }
+    // The dirty channel keeps its own class: the combination is `dirty ci-running`,
+    // in that order.
+    markDirty();
+    await waitFor(() =>
+      expect(chipState().className).toBe("ac-discovery-badge branch dirty ci-running")
+    );
+    expect(chipState().title).toBe(
+      `${REPO_PATH} (local work not confirmed by cached origin tracking) - CI running`
+    );
   });
 
   it("stale_adds_only_the_stale_class", async () => {
-    const fake = new FakeTransport();
-    const rendered = await renderDormantRepoRow(fake, [REPO_A]);
-    try {
-      await waitFor(() =>
-        expect(badgeIn(rendered.root, TREE, 0, "AgentsCommander")).not.toBeNull()
-      );
+    await openPanel();
+    publish("unknown", "stale", 4);
 
-      applyActivity([REPO_A], ["unknown"], ["stale"], [4]);
+    await waitFor(() => expect(chipState().className).toBe("ac-discovery-badge branch stale"));
+    expect(chipState().title).toBe(`${REPO_PATH} (status unknown) - base is 4 commits ahead`);
 
-      await waitFor(() => {
-        const badge = badgeIn(rendered.root, TREE, 0, "AgentsCommander")!;
-        expect(badge.className).toBe("ac-discovery-badge branch stale");
-        expect(badge.title).toBe(`${REPO_A} (status unknown) - base is 4 commits ahead`);
-      });
-
-      // Both markers at once, plus dirty: the fixed order is dirty, ci-running, stale.
-      replicaVolatileStore.applyDiscoveryBranchUpdate(coordPath, "main", [REPO_A], ["main"], [
-        true,
-      ]);
-      applyActivity([REPO_A], ["running"], ["stale"], [4]);
-
-      await waitFor(() => {
-        const badge = badgeIn(rendered.root, TREE, 0, "AgentsCommander")!;
-        expect(badge.className).toBe("ac-discovery-badge branch dirty ci-running stale");
-      });
-    } finally {
-      rendered.cleanup();
-    }
+    // Both markers at once, plus dirty: the fixed order is dirty, ci-running, stale.
+    markDirty();
+    publish("running", "stale", 4);
+    await waitFor(() =>
+      expect(chipState().className).toBe("ac-discovery-badge branch dirty ci-running stale")
+    );
   });
 
   it("idle_and_current_and_unknown_add_no_class", async () => {
-    const fake = new FakeTransport();
-    const rendered = await renderDormantRepoRow(fake, [REPO_A]);
-    try {
-      await waitFor(() =>
-        expect(badgeIn(rendered.root, TREE, 0, "AgentsCommander")).not.toBeNull()
-      );
+    await openPanel();
 
-      // idle/current: the honest "checked, nothing happening" state.
-      applyActivity([REPO_A], ["idle"], ["current"], [null]);
-      await waitFor(() => {
-        const badge = badgeIn(rendered.root, TREE, 0, "AgentsCommander")!;
-        expect(badge.className).toBe("ac-discovery-badge branch");
-        expect(badge.title).toBe(`${REPO_A} (status unknown) - no CI activity for this commit`);
-      });
+    // idle/current: the honest "checked, nothing happening" state.
+    publish("idle", "current");
+    await waitFor(() =>
+      expect(chipState().title).toBe(
+        `${REPO_PATH} (status unknown) - no CI activity for this commit`
+      )
+    );
+    expect(chipState().className).toBe("ac-discovery-badge branch");
 
-      // unknown/unknown: no `gh`, feature off, or not swept yet. Silent on purpose.
-      applyActivity([REPO_A], ["unknown"], ["unknown"], [null]);
-      await waitFor(() => {
-        const badge = badgeIn(rendered.root, TREE, 0, "AgentsCommander")!;
-        expect(badge.className).toBe("ac-discovery-badge branch");
-        expect(badge.title).toBe(`${REPO_A} (status unknown)`);
-      });
-    } finally {
-      rendered.cleanup();
-    }
+    // unknown/unknown: no `gh`, feature off, or not swept yet. Silent on purpose.
+    publish("unknown", "unknown");
+    await waitFor(() => expect(chipState().className).toBe("ac-discovery-badge branch"));
+    expect(chipState().title).toBe(`${REPO_PATH} (status unknown)`);
   });
 
-  // The wiring test. Tests 8-14 above set the store directly and would ALL stay green
-  // with no listener at all; this is the one that fails when the feature is connected
-  // to nothing. FakeTransport, not an ipc spy, because `fake.listens` records the
-  // registration and `emitFromBackend` drives the real callback.
   it("the_listener_is_registered_and_released", async () => {
-    const fake = new FakeTransport();
-    const rendered = await renderDormantRepoRow(fake, [REPO_A]);
-    try {
-      await waitFor(() =>
-        expect(fake.listensFor("ac_remote_activity_updated")).toHaveLength(1)
-      );
-      expect(badgeIn(rendered.root, TREE, 0, "AgentsCommander")).not.toBeNull();
+    const fake = await openPanel();
+    await waitFor(() => expect(fake.listensFor("ac_remote_activity_updated")).toHaveLength(1));
 
-      fake.emitFromBackend("ac_remote_activity_updated", {
-        repoPaths: [REPO_A],
-        ciStates: ["running"],
-        stalenessStates: ["current"],
-        behindBy: [null],
-      });
+    const payload = {
+      repoPaths: [REPO_PATH],
+      ciStates: ["running"] as CiState[],
+      stalenessStates: ["current"] as StalenessState[],
+      behindBy: [null],
+    };
 
-      // Repaint half: a listener that is registered but inert fails here.
-      await waitFor(() =>
-        expect(badgeIn(rendered.root, TREE, 0, "AgentsCommander")!.className).toBe(
-          "ac-discovery-badge branch ci-running"
-        )
-      );
-    } finally {
-      rendered.cleanup();
-    }
+    // Repaint half: a listener that is registered but inert fails here.
+    fake.emitFromBackend("ac_remote_activity_updated", payload);
+    await waitFor(() =>
+      expect(chipState().className).toBe("ac-discovery-badge branch ci-running")
+    );
 
     // Release half. `fake.listens` records registrations and never releases, so the
     // unmount is pinned by BEHAVIOUR instead: with the component gone, the same
     // payload must reach nothing. A leaked listener repopulates the map here.
-    remoteActivityStore.clearAll();
-    fake.emitFromBackend("ac_remote_activity_updated", {
-      repoPaths: [REPO_A],
-      ciStates: ["running"],
-      stalenessStates: ["current"],
-      behindBy: [null],
-    });
+    closePanel();
+    remoteActivityStore.clearAll();    fake.emitFromBackend("ac_remote_activity_updated", payload);
     expect(Object.keys(remoteActivityByPath)).toHaveLength(0);
   });
 });
