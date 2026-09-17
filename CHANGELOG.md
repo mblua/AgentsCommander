@@ -6,6 +6,23 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- **Room repositories show remote CI and branch staleness.** When the GitHub CLI (`gh`) is available, a background sweeper checks whether CI is running on each room repository's exact HEAD and whether its default branch has commits the branch lacks. The repo chip shows a yellow ring while CI runs and an orange left bar when the branch is stale; an unknown state changes nothing, and without `gh` the feature stays inert. ([#2064](https://github.com/mblua/AgentsCommander/issues/2064), [#2082](https://github.com/mblua/AgentsCommander/issues/2082), [#2084](https://github.com/mblua/AgentsCommander/issues/2084))
+- **The room orchestrator receives remote-activity notices** when CI starts, when CI finishes and when the branch goes stale, with editable message texts. ([#2083](https://github.com/mblua/AgentsCommander/issues/2083))
+- **Screenshot capture works on macOS**, with a Screen Recording permission check at capture time and Retina-aware overlay sizing. Real-Mac acceptance is still pending. ([#2086](https://github.com/mblua/AgentsCommander/issues/2086))
+- **A global npm install on Linux creates a desktop menu entry.** `agentscommander.desktop` is written under `$XDG_DATA_HOME/applications` (or `~/.local/share/applications`) with the packaged icon. It is skipped for local installs and with `AGENTSCOMMANDER_NO_SHORTCUT=1`, never fails the install, and must be removed by hand. ([#2066](https://github.com/mblua/AgentsCommander/issues/2066))
+
+### Removed
+
+- **The `portable.txt` marker no longer affects configuration selection.** Unsuffixed executables use `$HOME/.agentscommander`; suffixed executables use their adjacent `.agentscommander_<suffix>` directory and refuse to start when it is not writable. `AGENTSCOMMANDER_CONFIG_DIR` still wins. ([#1932](https://github.com/mblua/AgentsCommander/issues/1932))
+
+### Fixed
+
+- **TASK.md lock acquisition retries transient Windows access-denied and sharing-violation errors** under its existing deadline instead of failing. ([#1579](https://github.com/mblua/AgentsCommander/issues/1579))
+- **Container shutdown workers are reclaimed after a shutdown overruns its deadline** instead of leaking. ([#1581](https://github.com/mblua/AgentsCommander/issues/1581))
+- **CI runs every cargo invocation with `--locked`**, and several static-analysis findings were cleared without behavior changes. ([#2075](https://github.com/mblua/AgentsCommander/issues/2075), [#2088](https://github.com/mblua/AgentsCommander/issues/2088), [#2095](https://github.com/mblua/AgentsCommander/issues/2095), [#2102](https://github.com/mblua/AgentsCommander/issues/2102), [#2107](https://github.com/mblua/AgentsCommander/issues/2107), [#2109](https://github.com/mblua/AgentsCommander/issues/2109))
+- A regression test now guards Delete Profile against deleting a held slot. ([#2061](https://github.com/mblua/AgentsCommander/issues/2061))
 ## 0.34.0
 
 ### Added
