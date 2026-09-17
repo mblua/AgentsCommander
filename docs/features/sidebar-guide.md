@@ -115,6 +115,49 @@ The badge's tooltip carries the repository's source path plus its status. When t
 
 The panel updates from the `ac_discovery_branch_updated` event, so a branch you switch in a terminal appears here without a refresh.
 
+### The CI and branch-staleness signals
+
+Two markers can appear on a repo chip. Neither changes the chip's background.
+
+A **thin yellow ring** around the chip means at least one GitHub Actions run on the exact commit the repository sits on is not `completed`. AC never reads a run's `conclusion`, so the ring says nothing about pass or fail.
+
+An **orange bar on the chip's left edge** means the repository's default branch holds at least one commit this `HEAD` does not, that is, `behind_by > 0`. A branch cut from the tip is ahead, not stale.
+
+No marker means unknown, idle or current. AC does not put "we have no answer" and "the answer is nothing to report" in different colours, so the tooltip carries the difference: it appends `CI running`, `no CI activity for this commit`, or `base is N commits ahead` when it has an answer.
+
+Known limits, so a missing marker does not puzzle you:
+
+| Situation | CI | Staleness |
+|---|---|---|
+| `HEAD` not pushed | idle | unknown |
+| Detached `HEAD`, or a state with no branch name | unknown | unknown |
+| Remote is not GitHub, or `origin` is missing | unknown | unknown |
+| No `gh` on `PATH` | unknown | unknown |
+| `gh` present but not authenticated | unknown | unknown |
+
+### Notices injected into the orchestrator
+
+AC can inject four notices into the **room orchestrator's** terminal, not into every member's. Each substitutes these tokens:
+
+| Message id | Tokens |
+|---|---|
+| `ci-started` | `%REPO%`, `%BRANCH%`, `%SHA%`, `%AT%` |
+| `ci-finished` | `%REPO%`, `%BRANCH%`, `%SHA%`, `%AT%` |
+| `branch-stale` | `%REPO%`, `%BRANCH%`, `%BASE%`, `%BEHIND%`, `%AT%` |
+| `notice-blind-gap` | `%GAP%`, `%SINCE%` |
+
+`notice-blind-gap` is a suffix, not a notice of its own: AC appends it to the other three when it could not reach GitHub for more than five minutes before the notice. Editing it once therefore changes every notice.
+
+`ci-finished` says nothing about pass or fail, because AC never reads a run's `conclusion`.
+
+The notices are operator-editable in `injected-messages.toml`, exactly like `context-alert`. To restore one to the shipped default:
+
+```bash
+agentscommander injected-messages reseed --id ci-finished
+```
+
+See [CLI reference](../reference/cli.md#injected-messages) for `--all` and the backup it writes first.
+
 ## Zoom
 
 The zoom control sits in the titlebar as a group labelled `UI zoom`: a `Zoom out` button, the current percentage, and a `Zoom in` button. Steps are 10 percentage points, and the range runs from **50% to 300%**. Each button disables at its end of the range.
@@ -127,8 +170,14 @@ The value persists per window. `mainZoom`, `terminalZoom`, `sidebarZoom` and `gu
 |---|---|
 | `gitSweepConcurrency` | How many repositories the git sweeper inspects at once. `1` by default, clamped to 1 through 4. |
 | `gitSweepMinIntervalSecs` | Lower bound in seconds on one sweeper round. `10` by default, clamped to 1 through 3600. |
+| `ciActivityEnabled` | Whether the remote-activity sweeper asks GitHub whether a run on each repo's exact `HEAD` is unfinished. `true` by default. |
+| `ciActivityNotifyOrchestrator` | Whether a CI state change injects a notice into the room orchestrator. `true` by default. |
+| `branchStalenessEnabled` | Whether the sweeper asks whether the default branch holds commits this checkout does not. `true` by default. |
+| `branchStalenessNotifyOrchestrator` | Whether a staleness answer injects a notice into the room orchestrator. `true` by default. |
+| `ciSweepMinIntervalSecs` | Seconds between CI questions for a key that is not running. `30` by default, clamped to 10 through 3600. |
+| `branchStalenessIntervalSecs` | Seconds between staleness questions. `300` by default, clamped to 10 through 3600. |
 
-See [Settings reference](../reference/settings.md#git-status-sweeper) for both, including why raising the concurrency is rarely the fix.
+See [Settings reference](../reference/settings.md#git-status-sweeper) for the full section, including why raising the concurrency is rarely the fix.
 
 ## Troubleshooting
 

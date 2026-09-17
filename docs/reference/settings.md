@@ -260,10 +260,22 @@ See [Resource monitor](../features/resource-monitor.md).
 |---|---|---|---|
 | `gitSweepConcurrency` | number | `1` | How many repositories the global git sweeper inspects at once. Clamped to `1..=4` when read. `1` is strictly sequential, which is what bounds concurrent `git.exe`; raise it to `2` only if one slow repository is delaying the others. |
 | `gitSweepMinIntervalSecs` | number | `10` | Lower bound, in seconds, on one sweeper round. Clamped to `1..=3600` when read; `0` is raised to `1`. The effective period is `max(this, round duration)`, so on a large room set the round duration dominates and this never fires. |
+| `ciActivityEnabled` | bool | `true` | Whether the remote-activity sweeper asks GitHub whether a run on each room repository's exact `HEAD` is unfinished. No clamp. Read at startup to decide whether the sweeper thread exists at all, and once per round otherwise. Needs a **restart**. |
+| `ciActivityNotifyOrchestrator` | bool | `true` | Whether a CI state change may inject a notice into the room's orchestrator. No clamp. Needs a **restart**. |
+| `branchStalenessEnabled` | bool | `true` | Whether the sweeper asks whether the repository's default branch holds commits this checkout does not. No clamp. Read once per round. Needs a **restart**. |
+| `branchStalenessNotifyOrchestrator` | bool | `true` | Whether a staleness answer may inject a notice into the room's orchestrator. No clamp. Needs a **restart**. |
+| `ciSweepMinIntervalSecs` | number | `30` | Seconds between CI questions for a key that is not running. Clamped to `10..=3600` when read. A key whose last confirmed state is `Running` uses a fixed `10`-second cadence instead, because `Finished` is the transition that unblocks an agent. Needs a **restart**. |
+| `branchStalenessIntervalSecs` | number | `300` | Seconds between staleness questions. Clamped to `10..=3600` when read. Needs a **restart**. |
 
 See [Sidebar guide](../features/sidebar-guide.md).
 
-Both are manual-only (no UI) and are read from the in-memory settings, so an edit takes effect on the next **restart**.
+The remote-activity feature ships on. With no `gh` on `PATH` it costs one `PATH` read at startup and nothing else: no `gh` process, no network, and a sidebar identical to before.
+
+The chip colour and the notice have separate switches, because they have different costs: the colour is passive, while the notice is injected into a working agent's terminal and consumes its context.
+
+`branchStalenessEnabled` is a sibling of `ciActivityEnabled`, not a child, so you can ask either question without the other. With both `enabled` dials off, no sweeper thread starts at all.
+
+The two `gitSweep*` dials are manual-only (no UI) and are read from the in-memory settings, so an edit takes effect on the next **restart**.
 
 ### Window & UI
 
