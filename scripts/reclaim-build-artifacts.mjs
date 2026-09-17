@@ -49,6 +49,7 @@ const REPO_ROOT  = resolve(dirname(__filename), '..');
 // Artifact locations to reclaim, relative to a repo root. Basename must be `target`
 // so the final-segment guard below can double-check every candidate before deletion.
 const ARTIFACT_RELS = ['target', join('src-tauri', 'target')];
+const byCodeUnit = (a, b) => Number(a > b) - Number(a < b);
 
 function parseArgs(argv) {
   const roots = [];
@@ -250,7 +251,7 @@ function main() {
   }
 
   const results = [];
-  for (const rr of [...repoRoots].sort()) {
+  for (const rr of [...repoRoots].sort(byCodeUnit)) {
     let repoRootReal;
     try {
       repoRootReal = realpathSync(rr);
@@ -291,7 +292,7 @@ function main() {
     console.log(JSON.stringify(
       {
         mode: apply ? 'apply' : 'dry-run',
-        repoRoots: [...repoRoots].sort(),
+        repoRoots: [...repoRoots].sort(byCodeUnit),
         totalBytes,
         totalHuman: humanBytes(totalBytes),
         results,

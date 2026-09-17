@@ -1,4 +1,5 @@
 import { commandExecutableBasename } from "../../shared/profile-utils";
+import { compareCodeUnits } from "../../shared/string-order";
 import type {
   AgentConfig,
   WatcherAgentDraftEntry,
@@ -201,7 +202,7 @@ export function distinctCommandStems(agents: readonly AgentConfig[]): string[] {
     const stem = commandExecutableBasename(agent.command);
     if (stem) stems.add(stem);
   }
-  return [...stems].sort();
+  return [...stems].sort(compareCodeUnits);
 }
 
 /**
@@ -243,7 +244,7 @@ export function renameWatcherEntry(
 export function sortedWatcherIds(
   watchers: Readonly<Record<string, WatcherEntry>> | undefined
 ): string[] {
-  return Object.keys(watchers ?? {}).sort();
+  return Object.keys(watchers ?? {}).sort(compareCodeUnits);
 }
 
 /**

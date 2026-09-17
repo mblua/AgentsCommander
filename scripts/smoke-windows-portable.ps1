@@ -141,7 +141,7 @@ Write-Host ""
 Expand-Archive -LiteralPath $Zip -DestinationPath $work -Force
 
 Write-Host "Contents"
-$expected = @('agentscommander.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'PORTABLE.txt')
+$expected = @('agentscommander.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.txt')
 $actual   = Get-ChildItem -LiteralPath $work | Select-Object -ExpandProperty Name | Sort-Object
 $inventoryOk = $true
 foreach ($name in $expected) {
@@ -177,13 +177,13 @@ if ($exePresent) {
     $versionOk = $false
 }
 
-$readme = Join-Path $work 'PORTABLE.txt'
+$readme = Join-Path $work 'README.txt'
 if (Test-Path -LiteralPath $readme -PathType Leaf) {
     $text = Get-Content -LiteralPath $readme -Raw
     $namesVersion = $text -match [regex]::Escape($ExpectedVersion)
-    Assert-That $namesVersion "PORTABLE.txt names version $ExpectedVersion"
+    Assert-That $namesVersion "README.txt names version $ExpectedVersion"
     $noPlaceholder = -not ($text -match '\{\{')
-    Assert-That $noPlaceholder "PORTABLE.txt has no unresolved placeholder"
+    Assert-That $noPlaceholder "README.txt has no unresolved placeholder"
     $versionOk = $versionOk -and $namesVersion -and $noPlaceholder
 } else {
     $versionOk = $false

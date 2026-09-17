@@ -85,15 +85,15 @@ jobs:
 
       - name: cargo check
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
 
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --lib --bins --tests
+        run: cargo test --locked --lib --bins --tests
 
       # IS #1850: ordinary Windows runs prove the copy-and-run mechanism and
       # refusal safety only. Refusal safety and the mechanism control moved off
@@ -138,7 +138,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_write_once'; do
             grep -qF "test ${name} ..." test-1850-debug.log || {
               echo "::error::${name} never ran in the focused #1850 debug run; it was renamed, moved, or gated out."
               exit 1
@@ -599,7 +599,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_write_once'; do
             grep -qF "test ${name} ..." test-1850-release.log || {
               echo "::error::${name} never ran in the focused #1850 release run; it was renamed, moved, or gated out."
               exit 1
@@ -681,11 +681,11 @@ jobs:
 
       - name: cargo check
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
 
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # IS #1938: cross-process local-config write-lock proof. pipefail catches a
       # failing test, the identifier greps catch a filter that selected nothing
@@ -730,7 +730,7 @@ jobs:
           set -euo pipefail
           TEST='tests::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start'
 
-          cargo test --lib "$TEST" -- --exact --test-threads=1 --nocapture 2>&1 | tee test-1577.log
+          cargo test --locked --lib "$TEST" -- --exact --test-threads=1 --nocapture 2>&1 | tee test-1577.log
 
           # Three independent guards, and none is redundant:
           #
@@ -793,7 +793,7 @@ jobs:
           # Linux-gated tests. LINUX count (Windows runs 20); update it in the
           # same commit that adds or removes a test in that module.
           EXPECTED=22
-          cargo test --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-1842.log
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-1842.log
 
           # Three guards, matching the #1577 step, none redundant:
           #   1. The exit code, via `set -o pipefail` (LOAD-BEARING through the
@@ -839,7 +839,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_write_once'; do
             grep -qF "test ${name} ..." test-1850-debug.log || {
               echo "::error::${name} never ran in the focused #1850 debug run; it was renamed, moved, or gated out."
               exit 1
@@ -1296,7 +1296,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_write_once'; do
             grep -qF "test ${name} ..." test-1850-release.log || {
               echo "::error::${name} never ran in the focused #1850 release run; it was renamed, moved, or gated out."
               exit 1
@@ -1322,7 +1322,7 @@ jobs:
           include-hidden-files: false
 
       # IS #1850: the debug acceptance target on a native Linux filesystem. The
-      # copied product binary must select the injected HOME, run all eight
+      # copied product binary must select the injected HOME, run all seven
       # cases, and materialise app.log/.gitignore only under
       # <home>/.agentscommander. Release behaviour of this route differs only
       # by the debug-only override being compiled out, which the Windows
@@ -1339,11 +1339,11 @@ jobs:
           done
           grep -qE '^ISSUE1850_MECHANISM_OK' test-1850-default-root.log || { echo "::error::copied-binary mechanism control did not report success"; exit 1; }
           for case in adjacent-legacy-alone home-new-alone home-new-dev-alone all-legacy-conflicting \
-                      canonical-valid-settings canonical-invalid-settings canonical-absent-with-marker canonical-absent-without-marker; do
+                      canonical-valid-settings canonical-invalid-settings canonical-absent-without-marker; do
             grep -qE "^ISSUE1850_CASE_OK case=${case}$" test-1850-default-root.log || { echo "::error::missing case record ${case}"; exit 1; }
           done
-          test "$(grep -oE '^ISSUE1850_CASE_OK case=[^ ]+$' test-1850-default-root.log | sort -u | wc -l)" -eq 8 || { echo "::error::expected 8 unique case records"; exit 1; }
-          grep -qE '^ISSUE1850_DEFAULT_ROOT_PROOF_OK cases=8$' test-1850-default-root.log || { echo "::error::final proof record missing"; exit 1; }
+          test "$(grep -oE '^ISSUE1850_CASE_OK case=[^ ]+$' test-1850-default-root.log | sort -u | wc -l)" -eq 7 || { echo "::error::expected 7 unique case records"; exit 1; }
+          grep -qE '^ISSUE1850_DEFAULT_ROOT_PROOF_OK cases=7$' test-1850-default-root.log || { echo "::error::final proof record missing"; exit 1; }
           grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-default-root.log || { echo "::error::expected exactly two passing tests"; exit 1; }
           grep -qE '^ISSUE1850_REFUSAL_ONLY' test-1850-default-root.log && { echo "::error::refusal-only route taken on a non-Windows leg"; exit 1; } || true
 
@@ -1512,7 +1512,7 @@ jobs:
 
       - name: cargo build --release (links the binary release.yml ships)
         working-directory: src-tauri
-        run: cargo build --release --bins
+        run: cargo build --locked --release --bins
 
       # The linker proved the -l flags resolve at BUILD time. This proves the
       # same libraries resolve at LOAD time on this runner, which is what
@@ -1645,11 +1645,11 @@ jobs:
 
       - name: cargo check
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
 
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       # IS #1938: cross-process local-config write-lock proof. pipefail catches a
       # failing test, the identifier greps catch a filter that selected nothing
@@ -1691,7 +1691,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_write_once'; do
             grep -qF "test ${name} ..." test-1850-debug.log || {
               echo "::error::${name} never ran in the focused #1850 debug run; it was renamed, moved, or gated out."
               exit 1
@@ -2148,7 +2148,7 @@ jobs:
             'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
             'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
             'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_marker_first_then_write_once'; do
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_write_once'; do
             grep -qF "test ${name} ..." test-1850-release.log || {
               echo "::error::${name} never ran in the focused #1850 release run; it was renamed, moved, or gated out."
               exit 1
@@ -2187,11 +2187,11 @@ jobs:
           done
           grep -qE '^ISSUE1850_MECHANISM_OK' test-1850-default-root.log || { echo "::error::copied-binary mechanism control did not report success"; exit 1; }
           for case in adjacent-legacy-alone home-new-alone home-new-dev-alone all-legacy-conflicting \
-                      canonical-valid-settings canonical-invalid-settings canonical-absent-with-marker canonical-absent-without-marker; do
+                      canonical-valid-settings canonical-invalid-settings canonical-absent-without-marker; do
             grep -qE "^ISSUE1850_CASE_OK case=${case}$" test-1850-default-root.log || { echo "::error::missing case record ${case}"; exit 1; }
           done
-          test "$(grep -oE '^ISSUE1850_CASE_OK case=[^ ]+$' test-1850-default-root.log | sort -u | wc -l)" -eq 8 || { echo "::error::expected 8 unique case records"; exit 1; }
-          grep -qE '^ISSUE1850_DEFAULT_ROOT_PROOF_OK cases=8$' test-1850-default-root.log || { echo "::error::final proof record missing"; exit 1; }
+          test "$(grep -oE '^ISSUE1850_CASE_OK case=[^ ]+$' test-1850-default-root.log | sort -u | wc -l)" -eq 7 || { echo "::error::expected 7 unique case records"; exit 1; }
+          grep -qE '^ISSUE1850_DEFAULT_ROOT_PROOF_OK cases=7$' test-1850-default-root.log || { echo "::error::final proof record missing"; exit 1; }
           grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-default-root.log || { echo "::error::expected exactly two passing tests"; exit 1; }
           grep -qE '^ISSUE1850_REFUSAL_ONLY' test-1850-default-root.log && { echo "::error::refusal-only route taken on a non-Windows leg"; exit 1; } || true
 
@@ -2297,7 +2297,7 @@ jobs:
   # that sets the cfg(test)-only admission marker; the test additionally
   # requires GITHUB_ACTIONS=true, RUNNER_ENVIRONMENT=github-hosted and a
   # known-folder HOME equal to the inherited USERPROFILE, refuses if any
-  # `.agentscommander*` profile entry pre-exists, and runs all eight cases
+  # `.agentscommander*` profile entry pre-exists, and runs all seven cases
   # serially with per-case inventories and cleanup. Ordinary Windows runs
   # (rust-regression) take the refusal-only safety route instead.
   issue-1850-windows-profile:
@@ -2355,7 +2355,7 @@ jobs:
           & cargo @cargoArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: "IS #1850 real-profile eight-case proof (${{ matrix.mode }})"
+      - name: "IS #1850 real-profile seven-case proof (${{ matrix.mode }})"
         shell: pwsh
         timeout-minutes: 20
         env:
@@ -2394,7 +2394,6 @@ jobs:
             'all-legacy-conflicting',
             'canonical-valid-settings',
             'canonical-invalid-settings',
-            'canonical-absent-with-marker',
             'canonical-absent-without-marker'
           )
           foreach ($case in $cases) {
@@ -2402,11 +2401,11 @@ jobs:
             if ($text -notmatch $pattern) { Fail "missing case-success record for $case" }
           }
           $unique = @([regex]::Matches($text, '(?m)^ISSUE1850_CASE_OK case=(\S+)\s*$') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
-          if ($unique.Count -ne 8) { Fail "expected 8 unique case-success records, found $($unique.Count)" }
-          if ($text -notmatch '(?m)^ISSUE1850_WINDOWS_PROFILE_PROOF_OK cases=8\s*$') { Fail 'the final profile-proof record is missing' }
+          if ($unique.Count -ne 7) { Fail "expected 7 unique case-success records, found $($unique.Count)" }
+          if ($text -notmatch '(?m)^ISSUE1850_WINDOWS_PROFILE_PROOF_OK cases=7\s*$') { Fail 'the final profile-proof record is missing' }
           if ($text -notmatch '(?m)^test result: ok\. 2 passed; 0 failed') { Fail 'expected exactly two passing tests' }
           if ($text -match 'ISSUE1850_REFUSAL_ONLY') { Fail 'a refusal-only record is present; the real-profile route was not taken' }
-          Write-Host "IS #1850 ($mode): real-profile proof verified, 8 cases"
+          Write-Host "IS #1850 ($mode): real-profile proof verified, 7 cases"
 
       - name: "Upload IS #1850 profile-proof logs"
         if: always()

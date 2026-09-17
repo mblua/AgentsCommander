@@ -14,7 +14,9 @@
     "install.js",
     "resolve-bin.js",
     "macos-alias.js",
-    "windows-shortcut.js"
+    "windows-shortcut.js",
+    "linux-desktop-entry.js",
+    "icon.png"
   ],
   "engines": {
     "node": ">=18.0.0"
