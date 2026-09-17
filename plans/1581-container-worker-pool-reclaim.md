@@ -60,13 +60,14 @@ The drain loop (`:1066-1088`) and the snapshot (`:1090-1162`) stay unchanged. Th
 - In `ensure_workers` (spawn loop `:989-1031`), before each `spawn`: `state.worker_count += 1` under the state lock. On `spawn` `Err`: `-= 1`. The injected `fail_worker_spawn` break (`:990-1007`) happens before the increment.
 - Remove the overwrite at `:1033-1037`. The return value stays `workers.len()`, and its callers are unchanged.
 - The worker exit path keeps its decrement (`:1279-1287`).
-- Wherever a join returns `Err` (a panicked thread that never decremented: `:973`, `:1095`, `:1240`, and the new reap in §3.4), decrement with the existing underflow guard and log.
+- Where a join of a `self.workers` handle returns `Err` (a panicked thread that never decremented: `:973`, `:1095`, `:1240`, and the §3.4 step 2 helper), decrement with the existing underflow guard and log.
+- The §3.4 step 1 reap joins handles from the process-global static (`:1210`). Those may belong to earlier dropped registries, so a join `Err` there only logs. It never touches `worker_count`. A decrement there could undercount live workers and make `drained` (`:1078`) or `has_owned_work_until` (`:917`) report a false terminal.
 
 ### 3.4 Drop
 
 After the existing block (`:1218-1230`), replace the drain-to-static loop (`:1231-1248`) with:
 
-1. Take the static lock. Join and remove every handle in it that `is_finished()`. This is the reap of leftovers from earlier drops.
+1. Take the static lock. Join and remove every handle in it that `is_finished()`. This is the reap of leftovers from earlier drops. A join `Err` here logs only (§3.3).
 2. Until `grace = Instant::now() + CONTAINER_SHUTDOWN_DROP_GRACE` (new const, 1 s, the same value as the `:1217` request): join finished handles from `self.workers`. Read `busy = state.active.len() - state.active_fallbacks` under the state lock (`lock_mutex_until(grace)`, stop if `None`). Stop when the remaining handles are `<= busy`. Otherwise sleep `CONTAINER_SHUTDOWN_POLL`.
 3. Push the remaining handles into the static and log how many.
 
@@ -79,12 +80,13 @@ Drop is bounded by the grace period. It never waits on a busy worker. Idle worke
 - `session/selection.rs` (including the retained `spawn_blocking` task at `:2848-2858`) and the test wait/assert mismatch (#1582).
 - `ensure_workers` still ignores `terminating`. Reopening an epoch still works as before.
 - A worker blocked inside a work item past its deadline stays retained. This is bounded by the work's own cooperative `control`, not by this pool.
+- Trade-off: work that arrives after the deadline lands in `retained` (§3.2). Session close (`session/selection.rs:2836`) calls only `seal_and_drain_shutdown_work_blocking` and never reopens an epoch, so it reports that work as retained and does not run it. Only the global sweep (`lib.rs:4087`, `stop_all_started_containers_blocking`) reopens and runs it. This is the pre-fix behaviour for post-deadline work; the fix does not add a reopen to session close.
 
 ## 4. Tests (all in `container_backend.rs` `mod tests`, `:3539`)
 
 Every wait is bounded (`recv_timeout` / poll with a 5 s cap). The registry stays alive until the final assertion.
 
-- **T1 drain overrun, busy worker (primary detector).** `Arc<Registry>`. Producer `spawn_owned` blocks on a release channel. Wait for the "started" signal. `seal_and_drain_until(now + 100 ms)`: assert `!report.terminal`. Release the work. Poll `worker_count() == 0` for up to 5 s, then `snapshot() == (true, 0, 0)`. Before the fix: stays at 4 for the whole 5 s, deterministic red (nothing can set `terminating` while the registry lives and no drain runs). After the fix: 0.
+- **T1 drain overrun, busy worker (primary detector).** `Arc<Registry>`. Producer `spawn_owned` blocks on a release channel. Wait for the "started" signal. `seal_and_drain_until(now + 100 ms)`: assert `!report.terminal`. Release the work. Poll `worker_count() == 0` for up to 5 s. Drop the producer (its guard and join the owned work) so `active_producers == 0`, then assert `snapshot() == (true, 0, 0)`. Before the fix: stays at 4 for the whole 5 s, deterministic red (nothing can set `terminating` while the registry lives and no drain runs). After the fix: 0.
 - **T2 state lock held across the deadline (residual detector).** Spawn workers with a quick work item and wait until `snapshot().2 == 0`. The test thread takes `registry.shared.state` lock. Another thread runs `seal_and_drain_until(now + 50 ms)`. Join it and assert `!terminal`, then release the lock. Poll `worker_count() == 0` for up to 5 s. Before the fix: red (the `begin_shutdown` lock fails, nothing marks termination). After the fix: green (the notify at `:1043` plus the control deadline).
 - **T3 sweep epoch overrun.** After T1-style exhaustion (or on a fresh registry with `begin_shutdown`): `start_global_sweep_epoch(now + 100 ms)`, `spawn_global_sweep_owned_with_control` blocking work, `seal_and_drain_until` with the same deadline, assert `!terminal`, release, poll count `== 0`. Covers `sweep_deadline`. Before the fix: red.
 - **T4 epoch reopen still runs work (regression guard).** After an overrun in which workers exited: `start_global_sweep_epoch(now + 1 s)`, a quick sweep work item that sets a flag, `seal_and_drain_until(same)`: assert `terminal`, the flag is set, and the count `== 0`. Proves `sweep_deadline` keeps expired control deadlines from killing the new epoch.
@@ -112,7 +114,7 @@ If `container_backend.rs` or `container_runtime.rs` changed since `ca6744ae`, re
 Validation (cwd `src-tauri`, toolchain = CI's stable, `--locked`):
 - V1 `cargo fmt --all -- --check` scoped: `git diff --name-only` must list only `src-tauri/src/pty/container_backend.rs` and `plans/1581-container-worker-pool-reclaim.md`.
 - V2 `cargo clippy --locked --workspace --all-targets -- -D warnings`.
-- V3 pre-fix proof: add T1, T2 and T3 first, run `cargo test --locked --lib pty::container_backend::tests::<name>`, and record red output for each (the 5 s poll panics). Then apply §3 and record green. Commit tests and fix together. Paste the red and green excerpts into the PR body for grinch.
+- V3 pre-fix proof: add T1, T2 and T3 first, run `cargo test --locked --lib pty::container_backend::tests::<name>`, and record red output for each (the 5 s poll panics). Then apply §3 and record green. Positive control (differential): on the pre-fix tree, remove only the `:1033-1037` overwrite and re-run T1-T3; they must stay red, proving the overwrite removal alone cannot decrement and the §3.2 worker exit is what turns them green. Record that output too, then restore. Commit tests and fix together. Paste the red and green excerpts into the PR body for grinch.
 - V4 census: `git grep -n "request_shutdown(" src-tauri/src` and confirm each call on `shared.control` notifies `work_available` (§3.2 rule 4). `git grep -n "worker_count" src-tauri/src/pty/container_backend.rs` shows no assignment other than `+= 1` / `-= 1`.
 - V5 `cargo test --locked --lib pty::container_backend::tests` and `cargo test --locked --lib session::selection::tests` 20 times in a loop (bounded by `timeout 1800`). Report the failure count. Green here is supporting evidence only, not proof (issue: 240 runs did not reproduce these names).
 - V6 `cargo test --locked --lib --bins --tests` once (matches the CI step `pr-regression-gates.yml:94-96`).
