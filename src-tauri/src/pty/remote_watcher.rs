@@ -359,9 +359,25 @@ fn failure_kind(output: &GhCallOutput) -> FailureKind {
     }
 }
 
+type CompareAnswer = Result<(StalenessState, Option<u32>, bool), FailureKind>;
+
+/// The CI answer for one branch: the filtered state plus whether that branch
+/// has any run at all, which the identical-to-default rule reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CiAnswer {
+    state: CiState,
+    branch_has_runs: bool,
+}
+
 /// `rows < total_count` means the page cannot answer the question. `total_count`
-/// is a completeness proof, not a heuristic.
-fn parse_ci_response(body: &str) -> Result<CiState, FailureKind> {
+/// is a completeness proof, not a heuristic, and it is checked against EVERY row
+/// before the branch filter: a short page must read `Incomplete`, never a
+/// confident answer built from the rows that happened to fit.
+///
+/// Only rows whose `head_branch` equals `branch` exactly (byte equality: `main`
+/// matches neither `main-2` nor `origin/main`) count. A row with a missing or
+/// null `head_branch` is dropped.
+fn parse_ci_response(body: &str, branch: &str) -> Result<CiAnswer, FailureKind> {
     let value: serde_json::Value = serde_json::from_str(body).map_err(|_| FailureKind::Other)?;
     let total_count = value
         .get("total_count")
@@ -374,20 +390,29 @@ fn parse_ci_response(body: &str) -> Result<CiState, FailureKind> {
     if (rows.len() as u64) < total_count {
         return Err(FailureKind::Incomplete);
     }
+    let kept: Vec<&serde_json::Value> = rows
+        .iter()
+        .filter(|row| row.get("head_branch").and_then(serde_json::Value::as_str) == Some(branch))
+        .collect();
     // `status != "completed"` is a one-value blacklist on purpose: a future GitHub
     // status counts as running, which is the correct bias, because a whitelist
     // would go silently dark.
-    let running = rows
+    let running = kept
         .iter()
         .any(|row| row.get("status").and_then(serde_json::Value::as_str) != Some("completed"));
-    Ok(if running {
-        CiState::Running
-    } else {
-        CiState::Idle
+    Ok(CiAnswer {
+        state: if running {
+            CiState::Running
+        } else {
+            CiState::Idle
+        },
+        branch_has_runs: !kept.is_empty(),
     })
 }
 
-fn parse_compare_response(body: &str) -> Result<(StalenessState, Option<u32>), FailureKind> {
+/// The staleness mapping is unchanged; the extra flag reports whether GitHub
+/// said `identical`, which is the same statement the CI suppression rule needs.
+fn parse_compare_response(body: &str) -> CompareAnswer {
     let value: serde_json::Value = serde_json::from_str(body).map_err(|_| FailureKind::Other)?;
     let status = value
         .get("status")
@@ -397,10 +422,11 @@ fn parse_compare_response(body: &str) -> Result<(StalenessState, Option<u32>), F
         .get("behind_by")
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u32::try_from(value).ok());
+    let identical = status == "identical";
     match (status, behind_by) {
-        ("identical" | "ahead", Some(0)) => Ok((StalenessState::Current, None)),
+        ("identical" | "ahead", Some(0)) => Ok((StalenessState::Current, None, identical)),
         ("behind" | "diverged", Some(behind)) if behind > 0 => {
-            Ok((StalenessState::Stale, Some(behind)))
+            Ok((StalenessState::Stale, Some(behind), identical))
         }
         _ => Err(FailureKind::Other),
     }
@@ -491,11 +517,14 @@ enum Axis {
     Staleness,
 }
 
-/// The query unit: one network call per distinct `(nwo, head_sha)` per axis.
+/// The query unit: one network call per distinct `(nwo, head_sha, branch)` per
+/// axis. The branch belongs to the identity because one commit can carry runs
+/// from several branches, and only the repo's current branch may answer.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct QueryKey {
     nwo: String,
     sha40: String,
+    branch: String,
 }
 
 struct CiAxis {
@@ -581,7 +610,10 @@ struct KeyPlan {
 #[derive(Default)]
 struct KeyOutcome {
     ci: Option<Result<CiState, FailureKind>>,
-    staleness: Option<Result<(StalenessState, Option<u32>), FailureKind>>,
+    /// Set when the CI answer was suppressed by the identical-to-default rule.
+    /// Carried beside `ci` because `CiState` has no `Suppressed` value.
+    ci_suppressed: bool,
+    staleness: Option<CompareAnswer>,
 }
 
 struct RoundCtx<'a> {
@@ -790,7 +822,7 @@ impl RemoteSweeper {
 
         let mut groups: BTreeMap<QueryKey, Vec<usize>> = BTreeMap::new();
         for (index, fact) in facts.iter().enumerate() {
-            let (Some(nwo), Some(head_sha), Some(_branch)) =
+            let (Some(nwo), Some(head_sha), Some(branch)) =
                 (&fact.nwo, &fact.head_sha, &fact.branch)
             else {
                 continue;
@@ -799,6 +831,7 @@ impl RemoteSweeper {
                 .entry(QueryKey {
                     nwo: nwo.clone(),
                     sha40: head_sha.clone(),
+                    branch: branch.clone(),
                 })
                 .or_default()
                 .push(index);
@@ -828,13 +861,14 @@ impl RemoteSweeper {
             }
         }
 
-        // The label chain runs ONLY on the staleness path, once per distinct nwo,
-        // and is cached for the process lifetime.
+        // The label chain runs on either axis, once per distinct nwo, and is
+        // cached for the process lifetime: CI needs the name to decide the
+        // identical-to-default suppression, staleness to render `%BASE%`.
         let mut pending_base: Vec<(String, String)> = Vec::new();
         if gh_path.is_some() {
             let state = self.lock_state();
             for (key, plan) in &plans {
-                if !plan.staleness
+                if !(plan.ci || plan.staleness)
                     || state.base_branches.contains_key(&key.nwo)
                     || pending_base.iter().any(|(nwo, _)| nwo == &key.nwo)
                 {
@@ -859,13 +893,31 @@ impl RemoteSweeper {
                 .filter(|(_, plan)| plan.ci || plan.staleness)
                 .cloned()
                 .collect();
+            let defaults: HashMap<String, Option<String>> = {
+                let state = self.lock_state();
+                query_keys
+                    .iter()
+                    .map(|(key, _)| {
+                        (
+                            key.nwo.clone(),
+                            state
+                                .base_branches
+                                .get(&key.nwo)
+                                .filter(|label| label.as_str() != DEFAULT_BRANCH_LABEL)
+                                .cloned(),
+                        )
+                    })
+                    .collect()
+            };
             let spawner = Arc::clone(&self.spawner);
             let gh = gh.to_path_buf();
             outcomes = futures::stream::iter(query_keys.into_iter().map(|(key, plan)| {
                 let spawner = Arc::clone(&spawner);
                 let gh = gh.clone();
+                let default_branch = defaults.get(&key.nwo).cloned().flatten();
                 async move {
-                    let outcome = query_key(&spawner, &gh, &key, plan).await;
+                    let outcome =
+                        query_key(&spawner, &gh, &key, plan, default_branch.as_deref()).await;
                     (key, outcome)
                 }
             }))
@@ -883,12 +935,13 @@ impl RemoteSweeper {
         };
         for (key, outcome) in outcomes {
             let indices = groups.get(&key).map(Vec::as_slice).unwrap_or(&[]);
-            self.apply_ci(&key, outcome.ci, indices, &ctx);
+            self.apply_ci(&key, outcome.ci, outcome.ci_suppressed, indices, &ctx);
             self.apply_staleness(&key, outcome.staleness, indices, &ctx);
         }
 
-        // Retire keys no path maps to any more: a local commit moves `head_sha`,
-        // the new key starts at `Unknown`, and the old key must not linger.
+        // Retire keys no path maps to any more: a local commit moves `head_sha`
+        // (or the branch changes on the same commit), the new key starts at
+        // `Unknown`, and the old key must not linger.
         self.lock_state()
             .keys
             .retain(|key, _| groups.contains_key(key));
@@ -1066,6 +1119,7 @@ impl RemoteSweeper {
         &self,
         key: &QueryKey,
         result: Option<Result<CiState, FailureKind>>,
+        suppressed: bool,
         indices: &[usize],
         ctx: &RoundCtx<'_>,
     ) {
@@ -1077,6 +1131,16 @@ impl RemoteSweeper {
         let base = ci_base_interval(entry.ci.confirmed, ctx.ci_dial);
 
         match result {
+            Ok(_) if suppressed => {
+                // A suppressed answer has no edge into or out of it: `confirmed =
+                // None` breaks the transition chain both ways, like a fresh key.
+                entry.ci.chip = CiState::Idle;
+                entry.ci.confirmed = None;
+                entry.ci.last_confirmed_at = Some(ctx.wall);
+                entry.ci.failure_interval = None;
+                entry.ci.next_due = Some(ctx.now + ci_base_interval(None, ctx.ci_dial));
+                drop(state);
+            }
             Ok(answer) => {
                 let prior_confirmed = entry.ci.confirmed;
                 let prior_last = entry.ci.last_confirmed_at;
@@ -1122,7 +1186,7 @@ impl RemoteSweeper {
     fn apply_staleness(
         &self,
         key: &QueryKey,
-        result: Option<Result<(StalenessState, Option<u32>), FailureKind>>,
+        result: Option<CompareAnswer>,
         indices: &[usize],
         ctx: &RoundCtx<'_>,
     ) {
@@ -1139,7 +1203,7 @@ impl RemoteSweeper {
         let base = ctx.staleness_dial;
 
         match result {
-            Ok((answer, behind_by)) => {
+            Ok((answer, behind_by, _identical)) => {
                 let prior_confirmed = entry.staleness.confirmed;
                 let prior_last = entry.staleness.last_confirmed_at;
                 entry.staleness.chip = answer;
@@ -1247,13 +1311,14 @@ impl RemoteSweeper {
 }
 
 fn activity_for(state: &SweeperState, fact: &PathFacts) -> RemoteActivity {
-    let (Some(nwo), Some(head_sha), Some(_branch)) = (&fact.nwo, &fact.head_sha, &fact.branch)
+    let (Some(nwo), Some(head_sha), Some(branch)) = (&fact.nwo, &fact.head_sha, &fact.branch)
     else {
         return RemoteActivity::unknown();
     };
     let key = QueryKey {
         nwo: nwo.clone(),
         sha40: head_sha.clone(),
+        branch: branch.clone(),
     };
     match state.keys.get(&key) {
         Some(entry) => RemoteActivity {
@@ -1280,24 +1345,17 @@ fn room_map() -> HashMap<String, Vec<String>> {
     map
 }
 
-async fn query_key(spawner: &GhSpawner, gh: &Path, key: &QueryKey, plan: KeyPlan) -> KeyOutcome {
+async fn query_key(
+    spawner: &GhSpawner,
+    gh: &Path,
+    key: &QueryKey,
+    plan: KeyPlan,
+    default_branch: Option<&str>,
+) -> KeyOutcome {
     let mut outcome = KeyOutcome::default();
 
-    if plan.ci {
-        outcome.ci = Some(
-            match build_gh_command_spec(
-                gh,
-                GhQuery::Ci {
-                    nwo: &key.nwo,
-                    sha40: &key.sha40,
-                },
-            ) {
-                Ok(spec) => run_query(spawner, spec, parse_ci_response).await,
-                Err(_) => Err(FailureKind::Other),
-            },
-        );
-    }
-
+    // The compare runs FIRST when the staleness axis also needs it, so the
+    // identical-to-default decision below reuses this round's one call.
     if plan.staleness {
         outcome.staleness = Some(
             match build_gh_command_spec(
@@ -1313,14 +1371,66 @@ async fn query_key(spawner: &GhSpawner, gh: &Path, key: &QueryKey, plan: KeyPlan
         );
     }
 
+    if plan.ci {
+        let ci = match build_gh_command_spec(
+            gh,
+            GhQuery::Ci {
+                nwo: &key.nwo,
+                sha40: &key.sha40,
+            },
+        ) {
+            Ok(spec) => {
+                let branch = key.branch.clone();
+                run_query(spawner, spec, |body| parse_ci_response(body, &branch)).await
+            }
+            Err(_) => Err(FailureKind::Other),
+        };
+        outcome.ci = Some(match ci {
+            // Only a non-default branch that HAS runs needs the identity
+            // question; a branch with no runs answers `Idle` without it, and the
+            // default branch is never suppressed.
+            Ok(answer)
+                if answer.branch_has_runs
+                    && default_branch.is_some_and(|default| key.branch != default) =>
+            {
+                let compare = match &outcome.staleness {
+                    Some(result) => *result,
+                    None => match build_gh_command_spec(
+                        gh,
+                        GhQuery::Compare {
+                            nwo: &key.nwo,
+                            sha40: &key.sha40,
+                        },
+                    ) {
+                        Ok(spec) => run_query(spawner, spec, parse_compare_response).await,
+                        Err(_) => Err(FailureKind::Other),
+                    },
+                };
+                match compare {
+                    Ok((_, _, true)) => {
+                        outcome.ci_suppressed = true;
+                        Ok(CiState::Idle)
+                    }
+                    Ok((_, _, false)) => Ok(answer.state),
+                    Err(kind) => Err(kind),
+                }
+            }
+            Ok(answer) => Ok(answer.state),
+            Err(kind) => Err(kind),
+        });
+    }
+
     outcome
 }
 
-async fn run_query<T>(
+async fn run_query<T, P>(
     spawner: &GhSpawner,
     spec: GhCommandSpec,
-    parse: fn(&str) -> Result<T, FailureKind>,
-) -> Result<T, FailureKind> {
+    parse: P,
+) -> Result<T, FailureKind>
+where
+    P: FnOnce(&str) -> Result<T, FailureKind>,
+{
     match (spawner)(spec).await {
         Ok(output) if output.success => parse(&output.stdout),
         Ok(output) => Err(failure_kind(&output)),
@@ -1396,9 +1506,19 @@ mod tests {
     fn ci_body_with_total(statuses: &[&str], total: u64) -> String {
         let rows: Vec<serde_json::Value> = statuses
             .iter()
-            .map(|status| serde_json::json!({ "status": status }))
+            .map(|status| serde_json::json!({ "head_branch": "main", "status": status }))
             .collect();
         serde_json::json!({ "total_count": total, "workflow_runs": rows }).to_string()
+    }
+
+    /// Mixed-branch rows, so a test can replay one commit carrying runs for two
+    /// branches. `total_count` matches the row count, as GitHub reports it.
+    fn ci_rows(rows: &[(&str, &str)]) -> String {
+        let values: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(branch, status)| serde_json::json!({ "head_branch": branch, "status": status }))
+            .collect();
+        serde_json::json!({ "total_count": values.len(), "workflow_runs": values }).to_string()
     }
 
     fn compare_body(status: &str, behind_by: u64) -> String {
@@ -1756,49 +1876,121 @@ mod tests {
     #[test]
     fn ci_running_when_any_row_is_not_completed() {
         assert_eq!(
-            parse_ci_response(&ci_body(&["completed", "in_progress"])),
-            Ok(CiState::Running)
+            parse_ci_response(&ci_body(&["completed", "in_progress"]), "main"),
+            Ok(CiAnswer {
+                state: CiState::Running,
+                branch_has_runs: true,
+            })
         );
         assert_eq!(
-            parse_ci_response(&ci_body(&["queued"])),
-            Ok(CiState::Running),
+            parse_ci_response(&ci_body(&["queued"]), "main"),
+            Ok(CiAnswer {
+                state: CiState::Running,
+                branch_has_runs: true,
+            }),
             "an unknown future status counts as running, never as idle"
         );
     }
 
     #[test]
     fn ci_idle_when_every_row_is_completed() {
-        assert_eq!(parse_ci_response(&ci_body(&[])), Ok(CiState::Idle));
         assert_eq!(
-            parse_ci_response(&ci_body(&["completed", "completed"])),
-            Ok(CiState::Idle)
+            parse_ci_response(&ci_body(&[]), "main"),
+            Ok(CiAnswer {
+                state: CiState::Idle,
+                branch_has_runs: false,
+            })
+        );
+        assert_eq!(
+            parse_ci_response(&ci_body(&["completed", "completed"]), "main"),
+            Ok(CiAnswer {
+                state: CiState::Idle,
+                branch_has_runs: true,
+            })
         );
     }
 
     #[test]
     fn ci_incomplete_page_is_unknown_not_idle() {
         let body = ci_body_with_total(&["completed"; 99], 240);
-        assert_eq!(parse_ci_response(&body), Err(FailureKind::Incomplete));
+        assert_eq!(
+            parse_ci_response(&body, "main"),
+            Err(FailureKind::Incomplete)
+        );
+    }
+
+    #[test]
+    fn rows_without_a_branch_are_dropped_and_the_page_stays_complete() {
+        let body = serde_json::json!({
+            "total_count": 2,
+            "workflow_runs": [
+                { "status": "in_progress" },
+                { "head_branch": "main", "status": "completed" },
+            ],
+        })
+        .to_string();
+        assert_eq!(
+            parse_ci_response(&body, "main"),
+            Ok(CiAnswer {
+                state: CiState::Idle,
+                branch_has_runs: true,
+            }),
+            "a row with no head_branch cannot answer for any branch"
+        );
+
+        let short_page = serde_json::json!({
+            "total_count": 5,
+            "workflow_runs": [{ "head_branch": "main", "status": "completed" }],
+        })
+        .to_string();
+        assert_eq!(
+            parse_ci_response(&short_page, "main"),
+            Err(FailureKind::Incomplete),
+            "the missing rows might be other branches, so the page cannot answer"
+        );
+    }
+
+    #[test]
+    fn branch_filter_is_exact_match() {
+        let body = ci_rows(&[
+            ("main-2", "in_progress"),
+            ("origin/main", "in_progress"),
+            ("main", "completed"),
+        ]);
+        assert_eq!(
+            parse_ci_response(&body, "main"),
+            Ok(CiAnswer {
+                state: CiState::Idle,
+                branch_has_runs: true,
+            })
+        );
+        assert_eq!(
+            parse_ci_response(&body, "main-2"),
+            Ok(CiAnswer {
+                state: CiState::Running,
+                branch_has_runs: true,
+            })
+        );
     }
 
     #[test]
     fn compare_status_table_maps_to_staleness() {
         assert_eq!(
             parse_compare_response(&compare_body("identical", 0)),
-            Ok((StalenessState::Current, None))
+            Ok((StalenessState::Current, None, true))
         );
         assert_eq!(
             parse_compare_response(&compare_body("ahead", 0)),
-            Ok((StalenessState::Current, None)),
+            Ok((StalenessState::Current, None, false)),
             "ahead with behind_by 0 is not stale"
         );
         assert_eq!(
             parse_compare_response(&compare_body("behind", 3)),
-            Ok((StalenessState::Stale, Some(3)))
+            Ok((StalenessState::Stale, Some(3), false))
         );
         assert_eq!(
             parse_compare_response(&compare_body("diverged", 7)),
-            Ok((StalenessState::Stale, Some(7)))
+            Ok((StalenessState::Stale, Some(7), false))
         );
     }
 
@@ -1943,6 +2135,318 @@ mod tests {
                 "no edge out of Unknown exists"
             );
         }
+    }
+
+    // --- the #2126 incident: runs on a different branch must not count ---
+
+    #[tokio::test]
+    async fn ci_counts_only_runs_on_the_current_branch() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.ci.push_back(Ok(ok_output(&ci_rows(&[
+                ("fix/2124-ignore-short-idle-bursts", "in_progress"),
+                ("fix/2124-ignore-short-idle-bursts", "in_progress"),
+                ("main", "completed"),
+            ]))));
+        }
+
+        harness.round(Instant::now(), Local::now()).await;
+
+        assert_eq!(
+            harness.snapshot().get(&repo).expect("entry").ci,
+            CiState::Idle,
+            "only the run on the repo's current branch counts"
+        );
+    }
+
+    #[tokio::test]
+    async fn incident_replay_identical_branch_and_default_get_no_notice() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let default_repo = harness.repo("repo-a");
+        let feature_repo = harness.repo("repo-b");
+        crate::pty::git_watcher::publish_git_status(
+            &feature_repo,
+            Some(crate::pty::git_watcher::GitStatus {
+                branch: Some("fix/2124-ignore-short-idle-bursts".to_string()),
+                dirty: false,
+            }),
+        );
+        harness.set_work(&[default_repo.clone(), feature_repo.clone()]);
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            let round_one = ci_rows(&[
+                ("fix/2124-ignore-short-idle-bursts", "in_progress"),
+                ("fix/2124-ignore-short-idle-bursts", "in_progress"),
+                ("main", "completed"),
+            ]);
+            let round_two = ci_rows(&[
+                ("fix/2124-ignore-short-idle-bursts", "completed"),
+                ("fix/2124-ignore-short-idle-bursts", "completed"),
+                ("main", "completed"),
+            ]);
+            // Both keys poll every round and the queue is drained in call order,
+            // so both orders must see that round's body.
+            for body in [&round_one, &round_two, &round_one, &round_two] {
+                gh.ci.push_back(Ok(ok_output(body)));
+            }
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        let round_one_feature = harness
+            .snapshot()
+            .get(&feature_repo)
+            .expect("feature repo")
+            .ci;
+        let round_one_default = harness
+            .snapshot()
+            .get(&default_repo)
+            .expect("default repo")
+            .ci;
+
+        tick(&mut now, &mut wall, 60);
+        harness.round(now, wall).await;
+
+        let transitions = harness.drain_transitions();
+        assert_eq!(
+            transitions.len(),
+            0,
+            "the incident emitted CiFinished to both rooms"
+        );
+        let snapshot = harness.snapshot();
+        assert_eq!(
+            round_one_feature,
+            CiState::Idle,
+            "round 1: the feature branch is identical to the default branch"
+        );
+        assert_eq!(round_one_default, CiState::Idle);
+        assert_eq!(
+            snapshot.get(&feature_repo).expect("feature repo").ci,
+            CiState::Idle
+        );
+        assert_eq!(
+            snapshot.get(&default_repo).expect("default repo").ci,
+            CiState::Idle
+        );
+    }
+
+    #[tokio::test]
+    async fn non_identical_branch_notifies_only_its_own_rooms() {
+        let _guard = round_test_lock().await;
+        let settings = AppSettings {
+            branch_staleness_enabled: false,
+            ..AppSettings::default()
+        };
+        let harness = Harness::new(settings);
+        let default_repo = harness.repo("repo-a");
+        let feature_repo = harness.repo("repo-b");
+        crate::pty::git_watcher::publish_git_status(
+            &feature_repo,
+            Some(crate::pty::git_watcher::GitStatus {
+                branch: Some("fix/2124-ignore-short-idle-bursts".to_string()),
+                dirty: false,
+            }),
+        );
+        harness.set_work(&[default_repo.clone(), feature_repo.clone()]);
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            for _ in 0..3 {
+                gh.compare
+                    .push_back(Ok(ok_output(&compare_body("ahead", 0))));
+            }
+            let bodies = [
+                ci_rows(&[("fix/2124-ignore-short-idle-bursts", "completed")]),
+                ci_rows(&[("fix/2124-ignore-short-idle-bursts", "in_progress")]),
+                ci_rows(&[("fix/2124-ignore-short-idle-bursts", "completed")]),
+            ];
+            for body in bodies {
+                gh.ci.push_back(Ok(ok_output(&body)));
+                gh.ci.push_back(Ok(ok_output(&body)));
+            }
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        for _ in 0..3 {
+            harness.round(now, wall).await;
+            tick(&mut now, &mut wall, 60);
+        }
+
+        let transitions = harness.drain_transitions();
+        assert_eq!(transitions.len(), 2);
+        assert_eq!(transitions[0].kind, TransitionKind::CiStarted);
+        assert_eq!(transitions[0].repo_path, feature_repo);
+        assert_eq!(transitions[1].kind, TransitionKind::CiFinished);
+        assert_eq!(transitions[1].repo_path, feature_repo);
+        assert_eq!(
+            harness
+                .gh
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .count("/compare/"),
+            3,
+            "one identity compare per round for the non-default branch, none for the default one"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_branch_is_never_suppressed() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.ci.push_back(Ok(ok_output(&ci_body(&[]))));
+            gh.ci.push_back(Ok(ok_output(&ci_body(&["in_progress"]))));
+            gh.ci.push_back(Ok(ok_output(&ci_body(&[]))));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        for _ in 0..3 {
+            harness.round(now, wall).await;
+            tick(&mut now, &mut wall, 60);
+        }
+
+        let transitions = harness.drain_transitions();
+        assert_eq!(transitions.len(), 2);
+        assert_eq!(transitions[0].kind, TransitionKind::CiStarted);
+        assert_eq!(transitions[1].kind, TransitionKind::CiFinished);
+        assert_eq!(
+            harness
+                .gh
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .count("/compare/"),
+            1,
+            "one staleness compare in round 1; the default branch adds none"
+        );
+    }
+
+    #[tokio::test]
+    async fn unresolved_default_branch_does_not_suppress() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        crate::pty::git_watcher::publish_git_status(
+            &repo,
+            Some(crate::pty::git_watcher::GitStatus {
+                branch: Some("fix/x".to_string()),
+                dirty: false,
+            }),
+        );
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            // No repo_info answer is queued and no symbolic-ref answer is queued,
+            // so the label stays unresolved and rule 2 cannot be decided.
+            gh.ci
+                .push_back(Ok(ok_output(&ci_rows(&[("fix/x", "completed")]))));
+            gh.ci
+                .push_back(Ok(ok_output(&ci_rows(&[("fix/x", "in_progress")]))));
+            gh.ci
+                .push_back(Ok(ok_output(&ci_rows(&[("fix/x", "completed")]))));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        for _ in 0..3 {
+            harness.round(now, wall).await;
+            tick(&mut now, &mut wall, 60);
+        }
+
+        let transitions = harness.drain_transitions();
+        assert_eq!(
+            transitions.len(),
+            2,
+            "an unresolved default branch cannot suppress"
+        );
+        assert_eq!(transitions[0].kind, TransitionKind::CiStarted);
+        assert_eq!(transitions[1].kind, TransitionKind::CiFinished);
+    }
+
+    #[tokio::test]
+    async fn identity_compare_failure_is_unknown() {
+        let _guard = round_test_lock().await;
+        let settings = AppSettings {
+            branch_staleness_enabled: false,
+            ..AppSettings::default()
+        };
+        let harness = Harness::new(settings);
+        let repo = harness.repo("repo-a");
+        crate::pty::git_watcher::publish_git_status(
+            &repo,
+            Some(crate::pty::git_watcher::GitStatus {
+                branch: Some("fix/x".to_string()),
+                dirty: false,
+            }),
+        );
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.ci
+                .push_back(Ok(ok_output(&ci_rows(&[("fix/x", "in_progress")]))));
+            gh.compare.push_back(Err(FailureKind::Other));
+        }
+
+        harness.round(Instant::now(), Local::now()).await;
+
+        assert_eq!(
+            harness.snapshot().get(&repo).expect("entry").ci,
+            CiState::Unknown,
+            "a failed identity compare is Unknown, never a silent suppression"
+        );
+    }
+
+    #[tokio::test]
+    async fn branch_change_on_same_commit_retires_the_key_without_a_transition() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.ci
+                .push_back(Ok(ok_output(&ci_rows(&[("main", "in_progress")]))));
+            gh.ci
+                .push_back(Ok(ok_output(&ci_rows(&[("fix/x", "completed")]))));
+        }
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        crate::pty::git_watcher::publish_git_status(
+            &repo,
+            Some(crate::pty::git_watcher::GitStatus {
+                branch: Some("fix/x".to_string()),
+                dirty: false,
+            }),
+        );
+        tick(&mut now, &mut wall, 60);
+        harness.round(now, wall).await;
+
+        assert!(
+            harness.drain_transitions().is_empty(),
+            "a branch change on the same commit is a new key, not an edge"
+        );
+        assert_eq!(
+            harness.snapshot().get(&repo).expect("entry").ci,
+            CiState::Idle
+        );
     }
 
     #[tokio::test]
@@ -2292,6 +2796,7 @@ mod tests {
         let key = QueryKey {
             nwo: "mblua/AgentsCommander".to_string(),
             sha40: sha_of('a'),
+            branch: "main".to_string(),
         };
         let due_at = harness
             .sweeper
@@ -2710,8 +3215,8 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .count_repo_info(),
-            0,
-            "the CI axis never spends a call on a label it does not render"
+            1,
+            "the label is resolved once per nwo: CI needs it to decide suppression"
         );
     }
 
