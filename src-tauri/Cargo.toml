@@ -45,8 +45,9 @@ if-addrs = "0.15"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# #714 Native screenshot capture is Windows-only for this issue. Non-Windows
-# builds compile through the `screenshot::unsupported` stub and never link these.
+# #714 Native screenshot capture on Windows lives in this table. Linux (#1842)
+# and macOS (#2079) have their own tables below; every other target compiles the
+# `screenshot::unsupported` stub and never links these.
 [target.'cfg(windows)'.dependencies]
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-clipboard-manager = "2.3.2"
@@ -73,12 +74,17 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 # #1842 Linux/X11 screenshot capture. A byte-copy of the four screenshot lines
-# above, so Cargo resolves identical versions and features for both targets.
-# NOT moved into [dependencies]: that would link xcap and both plugins into the
-# macOS build, which links none today. A byte-identical macOS dependency set is
-# the cheapest "macOS did not regress" proof and keeps unsupported.rs's "NO
-# native screenshot crates" claim true. windows-sys stays Windows-only.
+# above, so Cargo resolves identical versions and features for all targets.
+# NOT moved into [dependencies]: macOS has its own byte-copy table below
+# (#2079). windows-sys stays Windows-only.
 [target.'cfg(target_os = "linux")'.dependencies]
+tauri-plugin-global-shortcut = "2.3.2"
+tauri-plugin-clipboard-manager = "2.3.2"
+xcap = "0.9.6"
+image = "0.25.10"
+
+# #2079 macOS screenshot capture. A byte copy of the Linux table above.
+[target.'cfg(target_os = "macos")'.dependencies]
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-clipboard-manager = "2.3.2"
 xcap = "0.9.6"

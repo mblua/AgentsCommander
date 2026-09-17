@@ -27,6 +27,7 @@ agentscommander_lib -> agentscommander_lib::pty::idle_detector
 agentscommander_lib -> agentscommander_lib::pty::input_activity
 agentscommander_lib -> agentscommander_lib::pty::manager
 agentscommander_lib -> agentscommander_lib::pty::menu_guard
+agentscommander_lib -> agentscommander_lib::pty::remote_watcher
 agentscommander_lib -> agentscommander_lib::pty::terminal_snapshot
 agentscommander_lib -> agentscommander_lib::pty::watchers
 agentscommander_lib -> agentscommander_lib::pty::watchers::history
@@ -35,6 +36,7 @@ agentscommander_lib -> agentscommander_lib::session::auto_close
 agentscommander_lib -> agentscommander_lib::session::context_alerts
 agentscommander_lib -> agentscommander_lib::session::manager
 agentscommander_lib -> agentscommander_lib::session::purge_guard
+agentscommander_lib -> agentscommander_lib::session::remote_alerts
 agentscommander_lib -> agentscommander_lib::session::selection
 agentscommander_lib -> agentscommander_lib::session::session
 agentscommander_lib -> agentscommander_lib::session::warnings
@@ -903,6 +905,12 @@ agentscommander_lib::pty::output -> agentscommander_lib::pty::watchers
 agentscommander_lib::pty::output -> agentscommander_lib::session::profile
 agentscommander_lib::pty::output -> agentscommander_lib::telegram::manager
 agentscommander_lib::pty::output -> agentscommander_lib::web::broadcast
+agentscommander_lib::pty::remote_watcher -> agentscommander_lib::config::sessions_persistence
+agentscommander_lib::pty::remote_watcher -> agentscommander_lib::config::settings
+agentscommander_lib::pty::remote_watcher -> agentscommander_lib::pty::credentials
+agentscommander_lib::pty::remote_watcher -> agentscommander_lib::pty::git_watcher
+agentscommander_lib::pty::remote_watcher -> agentscommander_lib::session::manager
+agentscommander_lib::pty::remote_watcher -> agentscommander_lib::shutdown
 agentscommander_lib::pty::spawn_diagnostics -> agentscommander_lib::session::profile
 agentscommander_lib::pty::spawn_diagnostics -> agentscommander_lib::telegram::redact
 agentscommander_lib::pty::terminal_snapshot -> agentscommander_lib
@@ -977,6 +985,10 @@ agentscommander_lib::session::manager -> agentscommander_lib::pty::manager
 agentscommander_lib::session::manager -> agentscommander_lib::session::profile
 agentscommander_lib::session::manager -> agentscommander_lib::session::selection
 agentscommander_lib::session::manager -> agentscommander_lib::session::session
+agentscommander_lib::session::remote_alerts -> agentscommander_lib::config::settings
+agentscommander_lib::session::remote_alerts -> agentscommander_lib::config::teams
+agentscommander_lib::session::remote_alerts -> agentscommander_lib::phone::mailbox
+agentscommander_lib::session::remote_alerts -> agentscommander_lib::pty::remote_watcher
 agentscommander_lib::session::selection -> agentscommander_lib
 agentscommander_lib::session::selection -> agentscommander_lib::commands::resource_monitor
 agentscommander_lib::session::selection -> agentscommander_lib::commands::session
