@@ -121,6 +121,20 @@ async function openDeleteRoomModal(
   await waitFor(() => expect(document.body.textContent).toContain("This action cannot be undone"));
 }
 
+/** Fails the first delete with a valid BLOCKERS payload, waits for the blocker panel, then clicks Retry. */
+async function retryAfterFirstBlockerFailure(
+  rendered: ReturnType<typeof renderWithFakeTransport>,
+  fake: FakeTransport
+): Promise<void> {
+  await openDeleteRoomModal(rendered);
+  click(findButton("Delete"));
+  await waitFor(() =>
+    expect(document.body.textContent).toContain("Windows reported the room is locked.")
+  );
+  click(findButton("Retry"));
+  await waitFor(() => expect(fake.callsFor("delete_workgroup")).toHaveLength(2));
+}
+
 describe("ProjectPanel workgroup delete diagnostics workflow", () => {
   let cleanupDom: (() => void) | null = null;
 
@@ -259,6 +273,119 @@ describe("ProjectPanel workgroup delete diagnostics workflow", () => {
         )
       );
       expect(document.body.textContent).not.toContain("Windows reported the room is locked");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("renders the second blocker report when retry fails with a different report", async () => {
+    const fake = new FakeTransport();
+    const secondReport: BlockerReport = {
+      ...blockerReport,
+      rawOsError: "access denied",
+      liveSessions: [
+        {
+          sessionId: "session-2",
+          agentName: "dev-rust",
+          cwd: `${workgroupPath}\\__agent_dev-rust`,
+        },
+      ],
+    };
+    let deleteAttempts = 0;
+    fake.onInvoke("delete_workgroup", () => {
+      deleteAttempts += 1;
+      if (deleteAttempts === 1) {
+        throw `BLOCKERS:${JSON.stringify(blockerReport)}`;
+      }
+      throw `BLOCKERS:${JSON.stringify(secondReport)}`;
+    });
+
+    const rendered = renderPanel(fake, initialDiscovery);
+    try {
+      await retryAfterFirstBlockerFailure(rendered, fake);
+
+      await waitFor(() => expect(document.body.textContent).toContain("dev-rust"));
+      expect(document.body.textContent).not.toContain("dev-webpage-ui");
+      expect(document.querySelector(".new-agent-error")).toBeNull();
+      expect(document.querySelector(".new-agent-input")).toBeNull();
+      expect(findButton("Retry").disabled).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("clears the blocker panel and shows the retry parse error for a malformed BLOCKERS payload", async () => {
+    const fake = new FakeTransport();
+    let deleteAttempts = 0;
+    fake.onInvoke("delete_workgroup", () => {
+      deleteAttempts += 1;
+      if (deleteAttempts === 1) {
+        throw `BLOCKERS:${JSON.stringify(blockerReport)}`;
+      }
+      throw "BLOCKERS:not-json";
+    });
+
+    const rendered = renderPanel(fake, initialDiscovery);
+    try {
+      await retryAfterFirstBlockerFailure(rendered, fake);
+
+      await waitFor(() =>
+        expect(document.body.textContent).toContain(
+          "Room is still locked, but the blocker report could not be parsed. Try again."
+        )
+      );
+      expect(document.body.textContent).not.toContain("Windows reported the room is locked.");
+      expect(document.body.textContent).not.toContain("Retrying");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("clears the blocker panel and asks for dirty-repo confirmation when retry fails with DIRTY_REPOS", async () => {
+    const fake = new FakeTransport();
+    let deleteAttempts = 0;
+    fake.onInvoke("delete_workgroup", () => {
+      deleteAttempts += 1;
+      if (deleteAttempts === 1) {
+        throw `BLOCKERS:${JSON.stringify(blockerReport)}`;
+      }
+      throw "DIRTY_REPOS:repo has uncommitted changes on retry";
+    });
+
+    const rendered = renderPanel(fake, initialDiscovery);
+    try {
+      await retryAfterFirstBlockerFailure(rendered, fake);
+
+      await waitFor(() =>
+        expect(document.body.textContent).toContain("repo has uncommitted changes on retry")
+      );
+      expect(document.querySelector(".new-agent-input")).not.toBeNull();
+      expect(document.body.textContent).not.toContain("Windows reported the room is locked.");
+      expect(document.body.textContent).not.toContain("Retrying");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("clears the blocker panel and shows the plain error when retry fails generically", async () => {
+    const fake = new FakeTransport();
+    let deleteAttempts = 0;
+    fake.onInvoke("delete_workgroup", () => {
+      deleteAttempts += 1;
+      if (deleteAttempts === 1) {
+        throw `BLOCKERS:${JSON.stringify(blockerReport)}`;
+      }
+      throw new Error("retry exploded");
+    });
+
+    const rendered = renderPanel(fake, initialDiscovery);
+    try {
+      await retryAfterFirstBlockerFailure(rendered, fake);
+
+      await waitFor(() => expect(document.body.textContent).toContain("retry exploded"));
+      expect(document.body.textContent).not.toContain("Windows reported the room is locked.");
+      expect(document.body.textContent).not.toContain("Retrying");
+      expect(document.querySelector(".new-agent-input")).toBeNull();
     } finally {
       rendered.cleanup();
     }
