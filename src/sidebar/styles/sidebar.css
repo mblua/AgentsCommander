@@ -6847,16 +6847,49 @@ html.light-theme .settings-hint-error {
    `--status-exited` reuses the app's existing alarm red (#ff3b5c dark / #dc2626
    light), no new hex.
 
-   Contrast, re-measured for this change (WCAG 2.x, #ff3b5c over the badge's own
-   rgba(139,92,246,0.15) composited on each real row background): 4.97:1 base,
-   4.57:1 hover, 4.35:1 active. The active row is under the 4.5:1 AA floor for text
-   this size — but `.coord-idle.red`, a red badge ALREADY SHIPPING on this same row,
-   measures 4.89 / 4.51 / 4.32 by the identical method, so the dirty badge is equal
+   Contrast, re-measured after 44cbf641 (that commit moved `--sidebar-active` from
+   #161628 to #222227, which invalidated this comment's earlier figures): WCAG 2.x,
+   #ff3b5c over the badge's own rgba(139,92,246,0.15), composited in sRGB on each
+   real row background with UNROUNDED channels: 4.96:1 base, 4.56:1 hover, 3.86:1
+   active. The active row is under the 4.5:1 AA floor for text this size — but
+   `.coord-idle.red`, a red badge ALREADY SHIPPING on this same row, measures
+   4.89 / 4.52 / 3.83 by the identical method, so the dirty badge is equal
    or better in every state and introduces no new contrast debt. Raising the floor
    for both is a separate concern, and light-theme `.branch` is worse still (no
    light override exists) — see the issue's out-of-scope list. */
 .ac-discovery-badge.branch.dirty {
   color: var(--status-exited);
+}
+
+/* #2064 - one box-shadow, two independently-set layers. Each state rule sets only
+   its own custom property, so `ci-running` and `stale` compose instead of
+   overwriting each other; the var() fallbacks render the single-class cases. A
+   third signal is one more variable and one more rule, not a combinatorial set.
+
+   Neither layer is a `background`, so neither composites under the chip text and
+   neither can move a text contrast ratio. That is the point: the fill candidate
+   measured 3.96 / 3.60 / 2.98 against today's 4.96 / 4.56 / 3.86 (WCAG 2.x,
+   #ff3b5c over rgba(139,92,246,0.15) composited in sRGB on #0a0a0f / #12121e /
+   #222227, dark theme, `.working` wash excluded) and was rejected.
+
+   Non-text contrast (WCAG 1.4.11, 3:1 floor), each marker against the chip
+   background it sits on, same three rows: the CI ring 6.81 / 6.33 / 5.48, the
+   stale bar, opaque #f97316, 6.16 / 5.66 / 4.79. Both clear the floor on every row.
+   Ratios use unrounded composited channels.
+
+   Three-class specificity (0,3,0), matching `.branch.dirty`, so source order is
+   not what carries them. */
+.ac-discovery-badge.branch.ci-running,
+.ac-discovery-badge.branch.stale {
+  box-shadow: var(--ac-badge-ci-shadow, 0 0 #0000), var(--ac-badge-stale-shadow, 0 0 #0000);
+}
+
+.ac-discovery-badge.branch.ci-running {
+  --ac-badge-ci-shadow: inset 0 0 0 1px rgba(234, 179, 8, 0.85);
+}
+
+.ac-discovery-badge.branch.stale {
+  --ac-badge-stale-shadow: inset 3px 0 0 var(--status-blocked);
 }
 
 .ac-discovery-badge.agent {

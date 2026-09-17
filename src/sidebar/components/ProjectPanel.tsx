@@ -1,7 +1,7 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport, AppSettings } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged } from "../../shared/ipc";
+import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, onRemoteActivityUpdated } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import {
   pendingCoordinatorClose,
@@ -32,6 +32,7 @@ import {
   effectiveRepoDirtyByPath,
   replicaVolatileStore,
 } from "../stores/replica-volatile";
+import { remoteActivityStore } from "../stores/remote-activity";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
 import {
   projectCollapseStore,
@@ -392,11 +393,26 @@ function runningCoordinatorPeers(wg: AcWorkgroup, replica: AcAgentReplica): AcAg
   );
 }
 
+/** #2064 — the additive CI and staleness classes for one repo chip, in the fixed
+ *  order `ci-running` then `stale` so the className string is deterministic and
+ *  assertable. `unknown`, `idle` and `current` carry NO class: a user without `gh`,
+ *  or with the feature off, sees exactly today's UI, and a marker for "we do not
+ *  know" would be permanent noise on most rows. The distinction lives in the
+ *  tooltip, not in colour. */
+function remoteActivityClasses(sourcePath: string): string {
+  const activity = remoteActivityStore.forPath(sourcePath);
+  if (!activity) return "";
+  return `${activity.ci === "running" ? " ci-running" : ""}${
+    activity.staleness === "stale" ? " stale" : ""
+  }`;
+}
+
 const ProjectPanel: Component = () => {
   let unlistenBranch: (() => void) | null = null;
   let unlistenClock: (() => void) | null = null;
   let unlistenAutoClose: (() => void) | null = null;
   let unlistenManualClose: (() => void) | null = null;
+  let unlistenRemoteActivity: (() => void) | null = null;
   onCleanup(registerCoordinatorCloseModalHost());
   onMount(async () => {
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
@@ -417,12 +433,24 @@ const ProjectPanel: Component = () => {
     unlistenManualClose = await onCoordinatorManualCloseChanged((data) => {
       replicaVolatileStore.setManuallyClosedAt(data.replicaPath, data.manuallyClosedAt);
     });
+    // #2064 — the fifth listener, same shape as the four above. A registration
+    // failure is caught ONCE per mount (a remount is new information) and leaves
+    // the handle null, so the chip degrades to today's UI instead of failing the
+    // mount. Section 7's last row is that degradation.
+    try {
+      unlistenRemoteActivity = await onRemoteActivityUpdated((data) => {
+        remoteActivityStore.applyRemoteActivityUpdate(data);
+      });
+    } catch (error) {
+      console.warn("[ProjectPanel] failed to register the remote-activity listener:", error);
+    }
   });
   onCleanup(() => {
     unlistenBranch?.();
     unlistenClock?.();
     unlistenAutoClose?.();
     unlistenManualClose?.();
+    unlistenRemoteActivity?.();
   });
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
@@ -2631,8 +2659,8 @@ const ProjectPanel: Component = () => {
                     <For each={repoBadges()}>
                       {(repo, index) => (
                         <span
-                          class={`ac-discovery-badge branch${repo.dirty === true ? " dirty" : ""}`}
-                          title={formatReplicaRepoBadgeTitle(repo)}
+                          class={`ac-discovery-badge branch${repo.dirty === true ? " dirty" : ""}${remoteActivityClasses(repo.sourcePath)}`}
+                          title={formatReplicaRepoBadgeTitle(repo, remoteActivityStore.forPath(repo.sourcePath))}
                           data-ac-testid={repoBadgeTestId(repo.label, index())}
                         >
                           {formatReplicaRepoBadgeLabel(repo)}
