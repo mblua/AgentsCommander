@@ -5,6 +5,7 @@
 - Planning evidence frozen at: `ca6744ae` (all line numbers below)
 - Round 4. Score 39, Lite band. `PARTITION: 1 phase`. Class: design-bearing. Owner: dev-rust.
 - Task class: routine application code. Threat model: none elevated. Enhanced controls: none apply (no release, signing, migration, security boundary or custom runner).
+- Status: READY_FOR_IMPLEMENTATION
 - Unqualified `:NNNN` means `src-tauri/src/pty/container_backend.rs`. Other files are named.
 
 ## 1. Problem (verified at ca6744ae)
