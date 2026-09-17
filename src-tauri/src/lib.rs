@@ -2750,13 +2750,13 @@ pub fn run(
     let message_store_state = crate::api::message_store::MessageStoreState::initialize();
     let pty_target_gate_state = message_store_state.target_gate_state();
 
-    // #714/#1842 clipboard + global-shortcut plugins are referenced ONLY on
-    // Windows and Linux so non-Linux, non-Windows (macOS) release builds never
-    // link them. The rest of the builder chain is shared. This predicate must
-    // match `Cargo.toml` and `screenshot/mod.rs`.
+    // #714/#1842/#2079 clipboard + global-shortcut plugins are referenced ONLY
+    // on Windows, Linux and macOS; every other target never links them. The
+    // rest of the builder chain is shared. This predicate must match
+    // `Cargo.toml` and `screenshot/mod.rs`.
     let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
 
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     let builder = builder
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
