@@ -1263,6 +1263,21 @@ impl ContainerShutdownWorkRegistry {
             state.queued.len() + state.retained.len() + state.active.len(),
         )
     }
+
+    #[cfg(test)]
+    fn observation(&self) -> (bool, usize, usize, usize) {
+        let state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        (
+            state.phase.is_sealed(),
+            state.active_producers,
+            state.queued.len() + state.retained.len() + state.active.len(),
+            state.worker_count,
+        )
+    }
 }
 
 static PROCESS_RETAINED_CONTAINER_WORKERS: OnceLock<Mutex<Vec<std::thread::JoinHandle<()>>>> =
@@ -3209,6 +3224,11 @@ impl ContainerTransportBackend {
     #[cfg(test)]
     pub(crate) fn shutdown_work_state_for_test(&self) -> (bool, usize, usize) {
         self.shutdown_work.snapshot()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shutdown_observation_for_test(&self) -> (bool, usize, usize, usize) {
+        self.shutdown_work.observation()
     }
 
     #[cfg(test)]
