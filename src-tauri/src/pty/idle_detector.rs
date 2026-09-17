@@ -16,11 +16,23 @@ const HEARTBEAT_TICKS: u64 = 120;
 
 type Callback = Arc<dyn Fn(Uuid) + Send + Sync>;
 
+/// #2124 - one session's unconfirmed output burst: when it opened, when its
+/// last chunk arrived, how many bytes it accumulated (printable or not) and
+/// whether any of them was printable.
+#[derive(Debug, Clone, Copy)]
+struct PendingBurst {
+    start: Instant,
+    last: Instant,
+    bytes: u64,
+    printable: bool,
+}
+
 pub struct IdleDetector {
     activity: Arc<Mutex<HashMap<Uuid, Instant>>>,
     /// #552 auto-close silence clock. SEPARATE from `activity` (which drives the
-    /// #260 idle dot). Reset by ANY PTY output (printable OR escape-only), user
-    /// input, and inter-agent delivery. Never read by the idle-dot watcher, so
+    /// #260 idle dot). Reset by user input, inter-agent delivery and PTY output
+    /// that the #2124 burst filter counts; a short burst after long silence is
+    /// ignored instead of resetting it. Never read by the idle-dot watcher, so
     /// it cannot mask #260 idle detection.
     silence: Arc<Mutex<HashMap<Uuid, Instant>>>,
     /// (#580) Per-session "alive since" clock: the `Instant` the PTY was
@@ -44,6 +56,12 @@ pub struct IdleDetector {
     /// Per-session idle tuning, populated by `register_session` at PTY spawn.
     /// A session missing here falls back to `IdleTuning::DEFAULT`.
     tuning: Arc<Mutex<HashMap<Uuid, IdleTuning>>>,
+    /// #2124 - pending short-burst candidates (see `record_output_at`): one
+    /// entry per session whose latest output chunk opened a burst that is not
+    /// yet confirmed as real work. Taken alone, never nested inside another
+    /// detector lock, and always released before `touch_silence` or
+    /// `record_activity_with_bytes` runs.
+    burst: Arc<Mutex<HashMap<Uuid, PendingBurst>>>,
     on_idle: Callback,
     on_busy: Callback,
 }
@@ -126,6 +144,7 @@ impl IdleDetector {
             resize_grace: Arc::new(Mutex::new(HashMap::new())),
             control_write: Arc::new(Mutex::new(HashMap::new())),
             tuning: Arc::new(Mutex::new(HashMap::new())),
+            burst: Arc::new(Mutex::new(HashMap::new())),
             on_idle: Arc::new(on_idle),
             on_busy: Arc::new(on_busy),
         })
@@ -181,6 +200,132 @@ impl IdleDetector {
             .lock()
             .unwrap()
             .insert(session_id, Instant::now());
+    }
+
+    /// #2124 - record one PTY output chunk (printable or escape-only),
+    /// applying the session's idle-burst filter. See `record_output_at`.
+    pub fn record_output(&self, session_id: Uuid, byte_count: usize, printable: bool) {
+        self.record_output_at(session_id, byte_count, printable, Instant::now());
+    }
+
+    /// #2124 - the injectable core of [`record_output`].
+    ///
+    /// A short periodic burst after long silence (a status-line repaint) must
+    /// neither reset the auto-close silence clock nor reopen the #260 busy
+    /// period. So a chunk that finds `burst_prior_silence` of silence opens a
+    /// PENDING burst instead of counting, and nothing is touched while one is
+    /// pending. The burst is confirmed - and only then counted, with its TOTAL
+    /// byte count - when it reaches `burst_max_bytes` or spans `burst_window`; a
+    /// burst whose next chunk arrives more than `burst_window` after its last is
+    /// discarded as short. Input and inter-agent delivery still touch
+    /// `silence`, so a pending candidate that finds a fresh clock is dropped and
+    /// the current chunk counts immediately (its bytes are not added to the
+    /// candidate's). Order: filter-off, gap discard, fresh-clock drop,
+    /// accumulate/confirm, then open-or-count.
+    pub(crate) fn record_output_at(
+        &self,
+        session_id: Uuid,
+        byte_count: usize,
+        printable: bool,
+        now: Instant,
+    ) {
+        let tuning = self
+            .tuning
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session_id)
+            .copied()
+            .unwrap_or(IdleTuning::DEFAULT);
+        // 1. Filter off for this session: the exact pre-#2124 behavior.
+        if tuning.burst_max_bytes == 0 || tuning.burst_window.is_zero() {
+            self.touch_silence(session_id);
+            if printable {
+                self.record_activity_with_bytes(session_id, byte_count);
+            }
+            return;
+        }
+
+        let sid = &session_id.to_string()[..8];
+        let silence_age = self.silence_age_at(session_id, now);
+        let mut counts_now = false;
+        let mut confirmed: Option<(u64, bool)> = None;
+        {
+            let mut bursts = self.burst.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(pending) = bursts.get_mut(&session_id) {
+                if now.saturating_duration_since(pending.last) > tuning.burst_window {
+                    // 2. The gap closed the window: the candidate was a short
+                    //    burst. Discard it and evaluate this chunk as fresh.
+                    log::debug!(
+                        "[idle] BURST IGNORED {} ({} bytes, {}ms)",
+                        sid,
+                        pending.bytes,
+                        now.saturating_duration_since(pending.start).as_millis()
+                    );
+                    bursts.remove(&session_id);
+                } else if silence_age < tuning.burst_prior_silence {
+                    // 3a. Input or delivery touched the clock under the
+                    //     candidate: it is not a burst, and this chunk counts.
+                    bursts.remove(&session_id);
+                    counts_now = true;
+                } else {
+                    // 3. Still inside the window: accumulate, then confirm on
+                    //    bytes or on total elapsed window.
+                    pending.bytes += byte_count as u64;
+                    pending.last = now;
+                    pending.printable |= printable;
+                    if pending.bytes >= tuning.burst_max_bytes
+                        || now.saturating_duration_since(pending.start) >= tuning.burst_window
+                    {
+                        confirmed = Some((pending.bytes, pending.printable));
+                        bursts.remove(&session_id);
+                    }
+                }
+            }
+            // 4. No pending candidate. A chunk that finds real silence opens
+            //    one; a single chunk at or over the byte limit confirms at once
+            //    (the elapsed-window leg cannot fire on the chunk that opens it).
+            if confirmed.is_none() && !counts_now && !bursts.contains_key(&session_id) {
+                if silence_age < tuning.burst_prior_silence {
+                    counts_now = true;
+                } else if byte_count as u64 >= tuning.burst_max_bytes {
+                    confirmed = Some((byte_count as u64, printable));
+                } else {
+                    bursts.insert(
+                        session_id,
+                        PendingBurst {
+                            start: now,
+                            last: now,
+                            bytes: byte_count as u64,
+                            printable,
+                        },
+                    );
+                }
+            }
+        }
+
+        if counts_now {
+            self.touch_silence(session_id);
+            if printable {
+                self.record_activity_with_bytes(session_id, byte_count);
+            }
+        } else if let Some((bytes, saw_printable)) = confirmed {
+            log::debug!("[idle] BURST CONFIRMED {} ({} bytes)", sid, bytes);
+            self.touch_silence(session_id);
+            if saw_printable {
+                self.record_activity_with_bytes(session_id, bytes as usize);
+            }
+        }
+    }
+
+    /// #2124 - silence age against an injected instant. An untracked session
+    /// (or a stamp newer than `now`) reads as zero prior silence: count now.
+    fn silence_age_at(&self, session_id: Uuid, now: Instant) -> Duration {
+        self.silence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session_id)
+            .and_then(|&stamp| now.checked_duration_since(stamp))
+            .unwrap_or(Duration::ZERO)
     }
 
     /// Record PTY activity (with byte count for diagnostics).
@@ -526,6 +671,10 @@ impl IdleDetector {
         self.idle_set.lock().unwrap().remove(&session_id);
         self.resize_grace.lock().unwrap().remove(&session_id);
         self.control_write
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
+        self.burst
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&session_id);
@@ -1218,5 +1367,235 @@ mod tests {
             detector.control_write_age(id).is_none(),
             "remove_session must drop the control-write mark"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // #2124 - the idle-burst filter (T1-T8, T11, T13 of the plan).
+    // -----------------------------------------------------------------
+
+    /// The common fixture: a detector whose `on_busy` counts calls, one session
+    /// registered with the shipped burst tuning, 30 minutes of accumulated
+    /// silence and the #260 busy state standing, so any count must clear it.
+    struct BurstFixture {
+        detector: Arc<IdleDetector>,
+        id: Uuid,
+        busy_calls: Arc<std::sync::atomic::AtomicUsize>,
+        t0: Instant,
+    }
+
+    impl BurstFixture {
+        fn new() -> Self {
+            let busy_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let busy_calls_cb = Arc::clone(&busy_calls);
+            let detector = IdleDetector::new(
+                |_| {},
+                move |_| {
+                    busy_calls_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            );
+            let id = Uuid::new_v4();
+            detector.register_session(
+                id,
+                IdleTuning {
+                    burst_max_bytes: 1024,
+                    burst_window: Duration::from_secs(3),
+                    burst_prior_silence: Duration::from_secs(60),
+                    ..IdleTuning::DEFAULT
+                },
+            );
+            detector.set_auto_close_ages_for_test(
+                id,
+                Duration::from_secs(30 * 60),
+                Duration::from_secs(31 * 60),
+            );
+            detector.set_pty_input_ready_for_test(id);
+            Self {
+                detector,
+                id,
+                busy_calls,
+                t0: Instant::now(),
+            }
+        }
+
+        fn busy(&self) -> usize {
+            self.busy_calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn record(&self, bytes: usize, printable: bool, at: Instant) {
+            self.detector
+                .record_output_at(self.id, bytes, printable, at);
+        }
+
+        fn silence_age(&self) -> Duration {
+            self.detector.silence_age(self.id).expect("tracked silence")
+        }
+
+        fn pending(&self) -> bool {
+            self.detector
+                .burst
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&self.id)
+        }
+    }
+
+    /// T1 - the reported bug: a periodic status-line burst (64 B printable +
+    /// 31 B escape-only, 296 ms apart) after 30 minutes of silence must not
+    /// reopen the busy period nor reset the auto-close clock.
+    #[test]
+    fn t1_periodic_short_burst_is_ignored() {
+        let fx = BurstFixture::new();
+        fx.record(64, true, fx.t0);
+        fx.record(31, false, fx.t0 + Duration::from_millis(296));
+        assert_eq!(fx.busy(), 0, "a status-line burst must not fire on_busy");
+        assert!(
+            fx.silence_age() >= Duration::from_secs(30 * 60),
+            "the auto-close clock must not move"
+        );
+        assert!(
+            fx.detector.idle_set.lock().unwrap().contains(&fx.id),
+            "the session must stay in the idle set"
+        );
+    }
+
+    /// T2 - positive control: sustained work (250 x 47 B printable, 24 ms
+    /// apart) confirms the burst; the count lands exactly on the 22nd chunk
+    /// (1024 B / 47 B) and the session leaves the idle set.
+    #[test]
+    fn t2_sustained_work_confirms_the_burst() {
+        let fx = BurstFixture::new();
+        for chunk in 0..250u32 {
+            fx.record(
+                47,
+                true,
+                fx.t0 + Duration::from_millis(24 * u64::from(chunk)),
+            );
+            let expected = usize::from(chunk >= 21);
+            assert_eq!(fx.busy(), expected, "chunk {chunk}");
+        }
+        assert!(fx.silence_age() < Duration::from_secs(1));
+        assert!(!fx.detector.idle_set.lock().unwrap().contains(&fx.id));
+    }
+
+    /// T3 - the time leg: sub-threshold chunks every second confirm when the
+    /// pending burst reaches `burst_window`, not before.
+    #[test]
+    fn t3_burst_confirms_on_the_elapsed_window() {
+        let fx = BurstFixture::new();
+        for second in 0..3u64 {
+            fx.record(10, true, fx.t0 + Duration::from_secs(second));
+            assert_eq!(fx.busy(), 0, "t0+{second}s is still inside the window");
+        }
+        fx.record(10, true, fx.t0 + Duration::from_secs(3));
+        assert_eq!(fx.busy(), 1, "the window leg confirms at t0+3s");
+        assert!(fx.silence_age() < Duration::from_secs(1));
+    }
+
+    /// T4 - the byte limit is inclusive: 1023 B stays pending, a single 1024 B
+    /// chunk confirms immediately.
+    #[test]
+    fn t4_burst_byte_limit_is_inclusive() {
+        let fx = BurstFixture::new();
+        fx.record(1023, true, fx.t0);
+        assert_eq!(fx.busy(), 0);
+        assert!(fx.pending(), "1023 B is below the limit and stays pending");
+
+        let fx = BurstFixture::new();
+        fx.record(1024, true, fx.t0);
+        assert_eq!(fx.busy(), 1);
+        assert!(!fx.pending());
+    }
+
+    /// T5 - a candidate discarded by the gap never counts, and the same shape
+    /// much later still does not.
+    #[test]
+    fn t5_burst_expires_on_gap_and_stays_ignored() {
+        let fx = BurstFixture::new();
+        fx.record(95, true, fx.t0);
+        fx.record(95, true, fx.t0 + Duration::from_millis(3500));
+        assert_eq!(fx.busy(), 0);
+        assert!(fx.silence_age() >= Duration::from_secs(30 * 60));
+
+        let late = fx.t0 + Duration::from_secs(30 * 60);
+        fx.record(95, true, late);
+        fx.record(95, true, late + Duration::from_millis(296));
+        assert_eq!(fx.busy(), 0, "the periodic pattern never confirms");
+        assert!(fx.silence_age() >= Duration::from_secs(30 * 60));
+    }
+
+    /// T6 - a short prior silence (input, delivery) counts immediately.
+    #[test]
+    fn t6_short_prior_silence_counts_immediately() {
+        let fx = BurstFixture::new();
+        fx.detector.touch_silence(fx.id);
+        fx.record(5, true, Instant::now() + Duration::from_millis(10));
+        assert_eq!(fx.busy(), 1);
+        assert!(!fx.pending());
+    }
+
+    /// T7 - a session with the filter disabled keeps the exact old behavior.
+    #[test]
+    fn t7_disabled_filter_counts_every_chunk() {
+        let busy_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let busy_calls_cb = Arc::clone(&busy_calls);
+        let detector = IdleDetector::new(
+            |_| {},
+            move |_| {
+                busy_calls_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+        );
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+        detector.set_auto_close_ages_for_test(
+            id,
+            Duration::from_secs(30 * 60),
+            Duration::from_secs(31 * 60),
+        );
+        detector.set_pty_input_ready_for_test(id);
+
+        detector.record_output_at(id, 5, true, Instant::now());
+        assert_eq!(busy_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(detector.silence_age(id).unwrap() < Duration::from_secs(1));
+        assert!(detector.burst.lock().unwrap().is_empty());
+    }
+
+    /// T8 - a large escape-only chunk confirms by bytes but records no
+    /// printable activity: the silence clock resets, the idle dot does not.
+    #[test]
+    fn t8_large_escape_only_chunk_confirms_without_busy() {
+        let fx = BurstFixture::new();
+        fx.record(2000, false, fx.t0);
+        assert_eq!(
+            fx.busy(),
+            0,
+            "escape-only output must not flip the idle dot"
+        );
+        assert!(fx.silence_age() < Duration::from_secs(1));
+        assert!(!fx.pending());
+    }
+
+    /// T11 - `remove_session` drops the pending candidate.
+    #[test]
+    fn t11_remove_session_clears_the_pending_burst() {
+        let fx = BurstFixture::new();
+        fx.record(95, true, fx.t0);
+        assert!(fx.pending());
+        fx.detector.remove_session(fx.id);
+        assert!(!fx.pending(), "no candidate may survive its session");
+    }
+
+    /// T13 - a candidate that finds a freshly touched clock (input or a
+    /// delivered message during the candidate) is dropped, and this chunk
+    /// counts immediately without the candidate's bytes.
+    #[test]
+    fn t13_candidate_is_dropped_when_the_clock_moves_under_it() {
+        let fx = BurstFixture::new();
+        fx.record(64, true, fx.t0);
+        assert!(fx.pending());
+        fx.detector.touch_silence(fx.id);
+        fx.record(5, true, Instant::now() + Duration::from_secs(1));
+        assert_eq!(fx.busy(), 1);
+        assert!(fx.silence_age() < Duration::from_secs(1));
+        assert!(!fx.pending());
     }
 }

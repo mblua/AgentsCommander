@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::config::agent_config::{self, AgentLocalConfig};
+use crate::config::coding_agents_catalog::{command_executable_basename, CodingAgentDefinition};
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
@@ -26,7 +27,10 @@ use crate::resource_monitor::{
 use crate::session::manager::{
     CommitDecision, LifecycleMutations, PendingCreateBinding, SessionManager,
 };
-use crate::session::profile::{locate_pi_command, CodingAgentKind, PiInsertionPoint};
+use crate::session::profile::{
+    idle_tuning_for, idle_tuning_for_launch, locate_pi_command, CodingAgentKind, IdleTuning,
+    PiInsertionPoint,
+};
 use crate::session::selection::{
     CriticalAdmissionOutcome, SelectionCause, SelectionCoordinator, SelectionRequest,
     SelectionSource, SelectionTransaction, TrustedCreateIntent, TrustedRestartIntent,
@@ -2394,6 +2398,34 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         }
 
         let viewport = viewport.unwrap_or(PtyViewport::DEFAULT);
+        // #2124 - the idle tuning this launch hands the detector: the agent kind
+        // plus the EFFECTIVE catalog entry matched to the configured command.
+        // One settings snapshot, released before the blocking filesystem read;
+        // no lock is held across that I/O.
+        let launch_idle_tuning = {
+            let settings_state = app.state::<SettingsState>();
+            let snapshot = settings_state.read().await.clone();
+            let requested_agent_id = agent_id.clone();
+            match tokio::task::spawn_blocking(move || {
+                let catalog =
+                    crate::config::coding_agents_catalog::load_catalog_for_settings(&snapshot)
+                        .unwrap_or_default();
+                resolve_launch_idle_tuning(
+                    &snapshot,
+                    requested_agent_id.as_deref(),
+                    agent_kind,
+                    &catalog,
+                )
+            })
+            .await
+            {
+                Ok(tuning) => tuning,
+                Err(error) => {
+                    log::warn!("[idle] launch idle tuning resolution failed: {error}");
+                    idle_tuning_for(agent_kind)
+                }
+            }
+        };
         let spawn_spec = BackendSpawnSpec {
             id,
             agent_id: agent_id.clone(),
@@ -2427,7 +2459,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             env_remove_keys,
             env_unset,
             extra_env,
-            idle_tuning: crate::session::profile::idle_tuning_for(agent_kind),
+            idle_tuning: launch_idle_tuning,
             output_target: PtyOutputTarget::from_app_handle(app.clone()),
             resource_registration,
             logical_resource_slot,
@@ -2688,6 +2720,37 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         }
     }
     result
+}
+
+fn resolve_launch_idle_tuning(
+    settings: &AppSettings,
+    agent_id: Option<&str>,
+    agent_kind: Option<CodingAgentKind>,
+    catalog: &[CodingAgentDefinition],
+) -> IdleTuning {
+    let Some(command) = agent_id
+        .and_then(|id| settings.agents.iter().find(|agent| agent.id == id))
+        .map(|agent| agent.command.as_str())
+    else {
+        return idle_tuning_for_launch(agent_kind, None);
+    };
+    let matched = catalog
+        .iter()
+        .find(|definition| definition.command == command)
+        .or_else(|| {
+            let basename = command_executable_basename(command);
+            basename.as_deref().and_then(|basename| {
+                catalog.iter().find(|definition| {
+                    command_executable_basename(&definition.command).as_deref() == Some(basename)
+                })
+            })
+        });
+    idle_tuning_for_launch(
+        agent_kind,
+        matched
+            .and_then(|definition| definition.idle_burst.as_ref())
+            .map(|burst| (burst.max_bytes, burst.max_secs, burst.prior_silence_secs)),
+    )
 }
 
 fn resolve_launch_auto_self_clear(
@@ -5280,10 +5343,12 @@ mod tests {
         partition_restart_resume_ready, pi_has_explicit_session_control,
         pi_is_non_conversation_invocation, resolve_actual_agent, resolve_agent_command,
         resolve_agent_from_shell, resolve_claude_projects_dir, resolve_launch_auto_self_clear,
-        resolve_restart_selected_agent_id, resolve_root_agent_command, restart_resume_prompt_for,
-        restart_resume_session_is_ready, resume_probe_target_for_config_dir,
-        should_inject_continue, CreateSelectionIntent, ExistingRootAction, RestartResumeTarget,
+        resolve_launch_idle_tuning, resolve_restart_selected_agent_id, resolve_root_agent_command,
+        restart_resume_prompt_for, restart_resume_session_is_ready,
+        resume_probe_target_for_config_dir, should_inject_continue, CreateSelectionIntent,
+        ExistingRootAction, RestartResumeTarget,
     };
+    use crate::config::coding_agents_catalog::CodingAgentDefinition;
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::pty::backend::{PtyBackend, SessionBackendKind};
     use crate::pty::container_backend::container_child_env;
@@ -5392,6 +5457,167 @@ mod tests {
             ],
             ..AppSettings::default()
         }
+    }
+
+    /// #2124 T14 - the pure launch resolver: session -> effective catalog entry
+    /// correspondence, then the burst subfields with the profile defaults.
+    #[test]
+    fn resolve_launch_idle_tuning_matches_the_effective_catalog_entry() {
+        fn catalog_rows(rows: serde_json::Value) -> Vec<CodingAgentDefinition> {
+            serde_json::from_value(rows).expect("catalog rows")
+        }
+        fn claude_entry(idle_burst: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "key": "claude",
+                "label": "Claude Code",
+                "description": "d",
+                "color": "#111",
+                "command": "claude",
+                "envs": [],
+                "isolatedHome": false,
+                "removable": true,
+                "updateCommands": [],
+                "autoUpdate": false,
+                "idleBurst": idle_burst,
+            })
+        }
+
+        // A configured command with arguments matches by executable basename.
+        let mut settings = test_settings();
+        settings.agents[0].command = "claude --dangerously-skip-permissions".to_string();
+        let catalog = catalog_rows(serde_json::json!([claude_entry(
+            serde_json::json!({ "maxBytes": 2048 })
+        )]));
+        let resolved = resolve_launch_idle_tuning(
+            &settings,
+            Some("claude"),
+            Some(CodingAgentKind::Claude),
+            &catalog,
+        );
+        assert_eq!(resolved.burst_max_bytes, 2048);
+        assert_eq!(
+            resolved.burst_window,
+            Duration::from_secs(3),
+            "an absent maxSecs takes the default"
+        );
+        assert_eq!(resolved.burst_prior_silence, Duration::from_secs(60));
+        // The no-catalog tuning is the per-kind default (T10 pins it), and the
+        // burst subfields must not move `idle_threshold` or `resize_grace`.
+        let per_kind =
+            crate::session::profile::idle_tuning_for_launch(Some(CodingAgentKind::Claude), None);
+        assert_eq!(resolved.idle_threshold, per_kind.idle_threshold);
+        assert_eq!(resolved.resize_grace, per_kind.resize_grace);
+
+        // An entry with `idleBurst: null` leaves the filter off, exactly like
+        // the plain per-kind tuning.
+        let off = catalog_rows(serde_json::json!([claude_entry(serde_json::Value::Null)]));
+        let resolved = resolve_launch_idle_tuning(
+            &settings,
+            Some("claude"),
+            Some(CodingAgentKind::Claude),
+            &off,
+        );
+        assert_eq!(resolved, per_kind);
+
+        // No agent id, no configured agent, or no matching command: off.
+        for (agent_id, command) in [
+            (None, "claude"),
+            (Some("nope"), "claude"),
+            (Some("claude"), "mystery"),
+        ] {
+            let mut probe = test_settings();
+            probe.agents[0].command = command.to_string();
+            let resolved = resolve_launch_idle_tuning(
+                &probe,
+                agent_id,
+                Some(CodingAgentKind::Claude),
+                &catalog,
+            );
+            assert_eq!(resolved.burst_max_bytes, 0, "agent_id={agent_id:?}");
+            assert_eq!(resolved.burst_window, Duration::ZERO);
+        }
+
+        // Two entries share the basename; the second states the configured
+        // command identically and must win.
+        let catalog = catalog_rows(serde_json::json!([
+            claude_entry(serde_json::json!({ "maxBytes": 111 })),
+            {
+                "key": "claude-beta",
+                "label": "Claude beta",
+                "description": "d",
+                "color": "#222",
+                "command": "claude --dangerously-skip-permissions",
+                "envs": [],
+                "isolatedHome": false,
+                "removable": true,
+                "updateCommands": [],
+                "autoUpdate": false,
+                "idleBurst": { "maxBytes": 222 }
+            }
+        ]));
+        let resolved = resolve_launch_idle_tuning(
+            &settings,
+            Some("claude"),
+            Some(CodingAgentKind::Claude),
+            &catalog,
+        );
+        assert_eq!(resolved.burst_max_bytes, 222, "the identical command wins");
+    }
+
+    /// #2124 T15 - from the seeded files on disk to the resolved tuning: an
+    /// `agents.local.json` edit applies at the next spawn without touching
+    /// `settings.agents[]`.
+    #[test]
+    fn resolve_launch_idle_tuning_reads_the_effective_catalog_from_disk() {
+        use crate::config::coding_agents_catalog::{
+            ensure_seeded_for_project, load_catalog_for_settings,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        ensure_seeded_for_project(project);
+        let mut settings = test_settings();
+        settings.project_paths = vec![project.to_string_lossy().to_string()];
+        let resolve = || {
+            let catalog = load_catalog_for_settings(&settings).expect("seeded catalog");
+            resolve_launch_idle_tuning(
+                &settings,
+                Some("claude"),
+                Some(CodingAgentKind::Claude),
+                &catalog,
+            )
+        };
+
+        let resolved = resolve();
+        assert_eq!(resolved.burst_max_bytes, 1024);
+        assert_eq!(resolved.burst_window, Duration::from_secs(3));
+        assert_eq!(resolved.burst_prior_silence, Duration::from_secs(60));
+
+        let local = project
+            .join(".ac")
+            .join("coding-agents")
+            .join("agents.local.json");
+        std::fs::write(
+            &local,
+            r#"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxBytes":0}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve().burst_max_bytes,
+            0,
+            "a local edit applies to the next spawn"
+        );
+
+        std::fs::write(
+            &local,
+            r#"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxSecs":1.5}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve().burst_window, Duration::from_millis(1500));
+        assert_eq!(
+            settings.agents[0].command, "claude",
+            "settings.agents[] was never touched"
+        );
     }
 
     #[test]

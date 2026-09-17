@@ -4501,9 +4501,11 @@ mod tests {
         );
     }
 
-    /// `commands/session.rs` hands the PTY spawn `idle_tuning_for(agent_kind)`,
-    /// and the detector registers exactly that. The record must therefore report
-    /// the same threshold for every kind, not a hardcoded constant.
+    /// `commands/session.rs` hands the PTY spawn `resolve_launch_idle_tuning`,
+    /// whose `idle_threshold` is `idle_tuning_for(agent_kind)`'s (only the
+    /// #2124 burst subfields can differ), and the detector registers exactly
+    /// that. The record must therefore report the same threshold for every
+    /// kind, not a hardcoded constant.
     #[tokio::test]
     async fn idle_record_carries_the_same_threshold_the_detector_registered() {
         let manager = SessionManager::new();

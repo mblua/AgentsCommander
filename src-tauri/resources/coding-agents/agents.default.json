@@ -12,7 +12,8 @@
       "isolatedHome": false,
       "configSeed": { "enabled": true, "dest": ".claude" },
       "removable": true,
-      "updateCommands": ["claude --update"]
+      "updateCommands": ["claude --update"],
+      "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
       "key": "codex",
@@ -25,7 +26,8 @@
       "isolatedHome": false,
       "configSeed": { "enabled": true, "dest": ".codex" },
       "removable": true,
-      "updateCommands": ["codex update"]
+      "updateCommands": ["codex update"],
+      "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
       "key": "hermes",
@@ -37,7 +39,8 @@
       "envs": [],
       "isolatedHome": false,
       "removable": true,
-      "updateCommands": ["hermes update --yes"]
+      "updateCommands": ["hermes update --yes"],
+      "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
       "key": "cursor",
@@ -48,7 +51,8 @@
       "instructionsFilename": "AGENTS.md",
       "envs": [],
       "isolatedHome": false,
-      "removable": true
+      "removable": true,
+      "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
       "key": "pi",
@@ -60,7 +64,8 @@
       "envs": [],
       "isolatedHome": false,
       "removable": true,
-      "updateCommands": ["pi update"]
+      "updateCommands": ["pi update"],
+      "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
       "key": "opencode",
@@ -73,7 +78,8 @@
       "isolatedHome": false,
       "configSeed": { "enabled": true, "dest": ".opencode" },
       "removable": true,
-      "updateCommands": ["opencode upgrade"]
+      "updateCommands": ["opencode upgrade"],
+      "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
       "key": "antigravity",
@@ -85,7 +91,8 @@
       "envs": [],
       "isolatedHome": false,
       "removable": true,
-      "updateCommands": ["agy update"]
+      "updateCommands": ["agy update"],
+      "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
       "key": "grok",
@@ -96,7 +103,8 @@
       "instructionsFilename": "AGENTS.md",
       "envs": [],
       "isolatedHome": false,
-      "removable": true
+      "removable": true,
+      "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
       "key": "muse",
@@ -108,7 +116,8 @@
       "isolatedHome": false,
       "removable": true,
       "updateCommands": [],
-      "autoUpdate": false
+      "autoUpdate": false,
+      "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     }
   ]
 }

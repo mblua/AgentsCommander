@@ -428,6 +428,15 @@ export interface CodingAgentDefinition {
   updateCommands: string[];
   /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdateByCommand. Inert: the runtime reads only `AppSettings.agentAutoUpdateByCommand`. */
   autoUpdate: boolean;
+  /** #2124 - optional idle-burst filter for this agent's sessions. Catalog-only:
+   * it is never part of the `settings.agents[]` snapshot and is resolved from
+   * the effective catalog at every spawn. Absent or `null` leaves the filter
+   * off; an absent subfield takes AC's shipped default. */
+  idleBurst?: {
+    maxBytes?: number;
+    maxSecs?: number;
+    priorSilenceSecs?: number;
+  } | null;
 }
 
 export type CatalogDiagnostic = { code: string; path: string; reason: string };
