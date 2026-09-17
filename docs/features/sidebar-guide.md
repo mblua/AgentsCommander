@@ -119,7 +119,7 @@ The panel updates from the `ac_discovery_branch_updated` event, so a branch you 
 
 Two markers can appear on a repo chip. Neither changes the chip's background.
 
-A **thin yellow ring** around the chip means at least one GitHub Actions run on the exact commit the repository sits on is not `completed`. AC never reads a run's `conclusion`, so the ring says nothing about pass or fail.
+A **thin yellow ring** around the chip means at least one GitHub Actions run for the repository's current branch, on the exact commit it sits on, is not `completed`. A non-default branch that points at the default branch's tip never shows the ring. AC never reads a run's `conclusion`, so the ring says nothing about pass or fail.
 
 An **orange bar on the chip's left edge** means the repository's default branch holds at least one commit this `HEAD` does not, that is, `behind_by > 0`. A branch cut from the tip is ahead, not stale.
 
@@ -131,6 +131,7 @@ Known limits, so a missing marker does not puzzle you:
 |---|---|---|
 | `HEAD` not pushed | idle | unknown |
 | Detached `HEAD`, or a state with no branch name | unknown | unknown |
+| Local branch tracks a remote branch with a different name | idle | unaffected |
 | Remote is not GitHub, or `origin` is missing | unknown | unknown |
 | No `gh` on `PATH` | unknown | unknown |
 | `gh` present but not authenticated | unknown | unknown |
@@ -170,7 +171,7 @@ The value persists per window. `mainZoom`, `terminalZoom`, `sidebarZoom` and `gu
 |---|---|
 | `gitSweepConcurrency` | How many repositories the git sweeper inspects at once. `1` by default, clamped to 1 through 4. |
 | `gitSweepMinIntervalSecs` | Lower bound in seconds on one sweeper round. `10` by default, clamped to 1 through 3600. |
-| `ciActivityEnabled` | Whether the remote-activity sweeper asks GitHub whether a run on each repo's exact `HEAD` is unfinished. `true` by default. |
+| `ciActivityEnabled` | Whether the remote-activity sweeper asks GitHub whether a run for the repo's current branch at its exact `HEAD` is unfinished. A branch that is not the default branch but points at the default branch's tip reports no CI activity. `true` by default. |
 | `ciActivityNotifyOrchestrator` | Whether a CI state change injects a notice into the room orchestrator. `true` by default. |
 | `branchStalenessEnabled` | Whether the sweeper asks whether the default branch holds commits this checkout does not. `true` by default. |
 | `branchStalenessNotifyOrchestrator` | Whether a staleness answer injects a notice into the room orchestrator. `true` by default. |
