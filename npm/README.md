@@ -55,7 +55,7 @@ The existing binary's exact resolver determines what must be preserved. The sele
 
 ### npm `0.34.0`
 
-`0.34.0` is the release described by this package. Its installer downloads the `v0.34.0` native release asset and verifies it against `SHASUMS256.txt`. On Windows and Linux it renames the asset to the unsuffixed executable in the package's `bin/` directory. On macOS it downloads the `agentscommander-mac-<arch>.app.tar.gz` bundle, extracts the single `.app` directory into `bin/`, and validates the executable named by the bundle's `CFBundleExecutable`. The launcher spawns that executable and injects no configuration override. A global install also creates the desktop entry points described in [Windows Start Menu shortcut](#windows-start-menu-shortcut) and [macOS Launchpad and Spotlight](#macos-launchpad-and-spotlight).
+`0.34.0` is the release described by this package. Its installer downloads the `v0.34.0` native release asset and verifies it against `SHASUMS256.txt`. On Windows and Linux it renames the asset to the unsuffixed executable in the package's `bin/` directory. On macOS it downloads the `agentscommander-mac-<arch>.app.tar.gz` bundle, extracts the single `.app` directory into `bin/`, and validates the executable named by the bundle's `CFBundleExecutable`. The launcher spawns that executable and injects no configuration override. A global install also creates the desktop entry points described in [Windows Start Menu shortcut](#windows-start-menu-shortcut), [macOS Launchpad and Spotlight](#macos-launchpad-and-spotlight), and [Linux application menu](#linux-application-menu).
 
 The `v0.34.0` native resolver selects a non-blank `AGENTSCOMMANDER_CONFIG_DIR` value verbatim when present. Otherwise, the normal unsuffixed npm executable selects the user's home directory plus `.agentscommander`, independently of its install location and build profile. It does not probe an adjacent configuration directory on this route. Suffixed executables use their adjacent `.agentscommander_<suffix>` directory and refuse to start when it is not writable.
 
@@ -90,6 +90,12 @@ Both commands must exit 0. Confirm that `npm list` and the installed `package.js
 
 On Windows, a global install also creates a per-user Start Menu shortcut named **AgentsCommander**, with the app icon, at `%APPDATA%\Microsoft\Windows\Start Menu\Programs\AgentsCommander.lnk`. It opens the installed `bin\agentscommander.exe`. A local install (without `-g`) creates no shortcut. To skip it, set `AGENTSCOMMANDER_NO_SHORTCUT=1` before installing. If the shortcut cannot be created, the install prints a warning and still succeeds. Installing again replaces the same shortcut.
 
+### Linux application menu
+
+On Linux, a global install also writes a per-user desktop entry at `~/.local/share/applications/agentscommander.desktop`, or under `$XDG_DATA_HOME/applications` when `XDG_DATA_HOME` is set and not empty. It launches the installed `bin/agentscommander` and uses the `icon.png` shipped in the package, so AgentsCommander appears in the application menu and overview search and can be pinned to the dock. It needs no root; `/usr/share/applications` is not used.
+
+When `update-desktop-database` exists at `/usr/bin` or `/bin`, the installer runs it on that directory; when it is missing, nothing is reported, because most desktop environments pick the entry up without it. A local install (without `-g`) creates nothing. To skip the entry, set `AGENTSCOMMANDER_NO_SHORTCUT=1` before installing. If the entry cannot be written, the install prints a warning and still succeeds. Installing again overwrites the same file.
+
 ### macOS Launchpad and Spotlight
 
 On macOS, a global install also creates a symlink named **AgentsCommander.app** at `~/Applications/AgentsCommander.app`, pointing at the `.app` bundle that the installer extracted into the package's `bin/` directory. `~/Applications` is user-owned, so this needs no administrator password and no `sudo`; `/Applications` is not used because writing there needs elevation. Launchpad and Spotlight index `~/Applications`, so after the install the app is searchable, launchable, and can be pinned to the Dock with its own icon.
@@ -106,12 +112,18 @@ Identify, back up, and verify the version-selected configuration as described ab
 npm uninstall -g @mblua/agentscommander
 ```
 
-Success exits 0. npm does not run uninstall scripts, so the Start Menu shortcut and the `~/Applications` symlink survive the uninstall and must be deleted by hand.
+Success exits 0. npm does not run uninstall scripts, so the Start Menu shortcut, the Linux desktop entry, and the `~/Applications` symlink survive the uninstall and must be deleted by hand.
 
 On Windows:
 
 ```powershell
 Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentsCommander.lnk"
+```
+
+On Linux:
+
+```bash
+rm "${XDG_DATA_HOME:-$HOME/.local/share}/applications/agentscommander.desktop"
 ```
 
 On macOS:

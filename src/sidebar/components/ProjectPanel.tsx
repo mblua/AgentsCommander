@@ -858,6 +858,36 @@ const ProjectPanel: Component = () => {
           document.addEventListener("keydown", handleDeleteModalKeyDown);
           onCleanup(() => document.removeEventListener("keydown", handleDeleteModalKeyDown));
         });
+        const applyWgDeleteFailure = (e: any, forceDelete: boolean, myGen: number) => {
+          if (myGen !== retryGen) return;
+          console.error("delete_workgroup failed:", e);
+          const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
+          if (msg.startsWith("BLOCKERS:")) {
+            try {
+              const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
+              setWgBlockers(report);
+              setWgDirtyRepos(false);
+              setWgConfirmText("");
+              setWgDeleteError("");
+              setWgDeleteInProgress(false);
+              return;
+            } catch (parseErr) {
+              console.error("Failed to parse BLOCKERS: payload:", parseErr);
+              setWgDeleteError("Room is locked, but the blocker report could not be parsed. Try again.");
+              setWgDeleteInProgress(false);
+              return;
+            }
+          }
+          if (!forceDelete && msg.startsWith("DIRTY_REPOS:")) {
+            setWgDeleteError(msg.slice("DIRTY_REPOS:".length));
+            setWgDirtyRepos(true);
+            setWgConfirmText("");
+            setWgDeleteInProgress(false);
+            return;
+          }
+          setWgDeleteError(msg);
+          setWgDeleteInProgress(false);
+        };
         const retryWgDelete = async () => {
           if (wgRetryInProgress()) return;
           const wg = deletingWg();
@@ -4240,34 +4270,7 @@ const ProjectPanel: Component = () => {
                             await projectStore.reloadProject(proj.path);
                             if (myGen !== retryGen) return;
                           } catch (e: any) {
-                            if (myGen !== retryGen) return;
-                            console.error("delete_workgroup failed:", e);
-                            const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
-                            if (msg.startsWith("BLOCKERS:")) {
-                              try {
-                                const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
-                                setWgBlockers(report);
-                                setWgDirtyRepos(false);
-                                setWgConfirmText("");
-                                setWgDeleteError("");
-                                setWgDeleteInProgress(false);
-                                return;
-                              } catch (parseErr) {
-                                console.error("Failed to parse BLOCKERS: payload:", parseErr);
-                                setWgDeleteError("Room is locked, but the blocker report could not be parsed. Try again.");
-                                setWgDeleteInProgress(false);
-                                return;
-                              }
-                            }
-                            if (!forceDelete && msg.startsWith("DIRTY_REPOS:")) {
-                              setWgDeleteError(msg.slice("DIRTY_REPOS:".length));
-                              setWgDirtyRepos(true);
-                              setWgConfirmText("");
-                              setWgDeleteInProgress(false);
-                              return;
-                            }
-                            setWgDeleteError(msg);
-                            setWgDeleteInProgress(false);
+                            applyWgDeleteFailure(e, forceDelete, myGen);
                             return;
                           }
                           closeWgDeleteModal();
