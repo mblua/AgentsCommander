@@ -804,7 +804,7 @@ graph TD
 | `api/` | Control-plane API server: auth, audit, dispatcher, handlers, message store |
 | `loops/` | Loop scheduler, delivery, events, non-stop watchdog |
 | `resource_monitor/` | Process registry, watchdog, per-window reporting |
-| `screenshot/` | Screenshot capture (Windows, Linux/X11) |
+| `screenshot/` | Screenshot capture (Windows, macOS, Linux/X11) |
 | `voice/` | Voice transcription tracking |
 | `web/` | Embedded web server, WebSocket broadcast, embedded auth |
 | `network/` | Network helpers |
