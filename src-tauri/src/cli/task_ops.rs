@@ -423,6 +423,19 @@ pub(crate) struct LockGuard {
     path: PathBuf,
 }
 
+/// #1579: on Windows a contended `CREATE_NEW` can fail with ERROR_ACCESS_DENIED (5) while the
+/// holder's `remove_file` is in flight, or ERROR_SHARING_VIOLATION (32) while another process
+/// holds the file. Both are contention. Raw codes only on Windows: 5 is EIO and 32 is EPIPE on Unix.
+#[cfg(windows)]
+fn is_transient_lock_open_error(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(5) | Some(32))
+}
+
+#[cfg(not(windows))]
+fn is_transient_lock_open_error(_e: &std::io::Error) -> bool {
+    false
+}
+
 impl LockGuard {
     pub(crate) fn acquire(
         path: &Path,
@@ -430,6 +443,7 @@ impl LockGuard {
         stale_after: Duration,
     ) -> Result<Self, TaskOpError> {
         let start = Instant::now();
+        let mut saw_already_exists = false;
         loop {
             match OpenOptions::new().write(true).create_new(true).open(path) {
                 Ok(mut file) => {
@@ -445,6 +459,7 @@ impl LockGuard {
                     });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    saw_already_exists = true;
                     // Stale-lock recovery: kernel CREATE_NEW is the mutex —
                     // exactly one writer wins after the remove_file race.
                     if let Ok(meta) = std::fs::metadata(path) {
@@ -462,6 +477,19 @@ impl LockGuard {
                     }
                     if start.elapsed() >= timeout {
                         return Err(TaskOpError::LockTimeout);
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) if is_transient_lock_open_error(&e) => {
+                    // #1579: contention only if a holder was ever seen. A persistent 5/32 with no
+                    // AlreadyExists in this call (directory at the path, ACL denial, foreign holder)
+                    // is a real I/O failure and must not be reported as a timeout.
+                    if start.elapsed() >= timeout {
+                        return Err(if saw_already_exists {
+                            TaskOpError::LockTimeout
+                        } else {
+                            TaskOpError::LockIo(path.to_path_buf(), e)
+                        });
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
@@ -952,6 +980,104 @@ mod tests {
         assert!(lock_path.exists());
         drop(g);
         assert!(!lock_path.exists());
+    }
+
+    // ── #1579: transient Windows lock-open retry ────────────────────────
+
+    #[test]
+    fn issue_1579_transient_lock_open_error_classification() {
+        let on_windows = cfg!(windows);
+        assert_eq!(
+            is_transient_lock_open_error(&std::io::Error::from_raw_os_error(5)),
+            on_windows
+        );
+        assert_eq!(
+            is_transient_lock_open_error(&std::io::Error::from_raw_os_error(32)),
+            on_windows
+        );
+        assert!(!is_transient_lock_open_error(
+            &std::io::Error::from_raw_os_error(2)
+        ));
+        assert!(!is_transient_lock_open_error(
+            &std::io::Error::from_raw_os_error(303)
+        ));
+        assert!(!is_transient_lock_open_error(&std::io::Error::from(
+            std::io::ErrorKind::AlreadyExists
+        )));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn issue_1579_directory_at_lock_path_is_lock_io_after_deadline() {
+        let fix = FixtureRoot::new("task-1579-dir");
+        let lock_path = fix.path().join("TASK.md.lock");
+        std::fs::create_dir(&lock_path).unwrap();
+
+        let started = Instant::now();
+        let res = LockGuard::acquire(&lock_path, Duration::from_millis(300), LOCK_STALE_AFTER_5M);
+        let elapsed = started.elapsed();
+
+        match res {
+            Err(TaskOpError::LockIo(p, e)) => {
+                assert_eq!(p, lock_path);
+                assert_eq!(e.raw_os_error(), Some(5));
+            }
+            Err(other) => panic!("expected LockIo, got {other:?}"),
+            Ok(_) => panic!("expected LockIo, got Ok"),
+        }
+        assert!(
+            elapsed >= Duration::from_millis(300),
+            "retry must last to the deadline; elapsed {elapsed:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn issue_1579_acquire_retries_access_denied_race() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let fix = FixtureRoot::new("task-1579-race");
+        let lock_path = fix.path().join("TASK.md.lock");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut hammers = Vec::new();
+        for _ in 0..4 {
+            let p = lock_path.clone();
+            let stop = stop.clone();
+            hammers.push(thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    // A hammer removes only a file it created.
+                    if let Ok(f) = OpenOptions::new().write(true).create_new(true).open(&p) {
+                        drop(f);
+                        let _ = std::fs::remove_file(&p);
+                    }
+                }
+            }));
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut acquired = 0usize;
+        while Instant::now() < deadline {
+            match LockGuard::acquire(&lock_path, LOCK_TIMEOUT_5S, LOCK_STALE_AFTER_5M) {
+                Ok(g) => {
+                    drop(g);
+                    acquired += 1;
+                }
+                Err(e) => {
+                    stop.store(true, Ordering::Relaxed);
+                    for h in hammers {
+                        h.join().unwrap();
+                    }
+                    panic!("acquire failed after {acquired} successes: {e:?}");
+                }
+            }
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        for h in hammers {
+            h.join().unwrap();
+        }
+        assert!(acquired > 0, "no acquisition succeeded");
     }
 
     #[test]

@@ -128,7 +128,7 @@ function Set-Issue1577LogText {
     )
 }
 
-function Invoke-Issue1577MarkerGate {
+function Invoke-Issue1577AdjacentRefusalGate {
     param(
         [Parameter(Mandatory=$true)] [string]$BinaryPath,
         [Parameter(Mandatory=$true)] [string]$Token,
@@ -137,9 +137,9 @@ function Invoke-Issue1577MarkerGate {
     )
 
     $errors = New-Object System.Collections.Generic.List[string]
-    $caseLogDir = Join-Path $LogDir "issue-1577-marker-gate"
+    $caseLogDir = Join-Path $LogDir "issue-1577-adjacent-refusal"
     New-Item -ItemType Directory -Force -Path $caseLogDir | Out-Null
-    $fixtureRoot = Join-Path $Root "issue-1577-marker-$([guid]::NewGuid().ToString('N'))"
+    $fixtureRoot = Join-Path $Root "issue-1577-adjacent-$([guid]::NewGuid().ToString('N'))"
     $fixtureFull = [System.IO.Path]::GetFullPath($fixtureRoot)
     $allowedRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd([char[]]"\/") + [System.IO.Path]::DirectorySeparatorChar
     if (-not $fixtureFull.StartsWith($allowedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -150,8 +150,6 @@ function Invoke-Issue1577MarkerGate {
     $cliRoot = Join-Path $fixtureRoot "cli-root"
     $copiedBinary = Join-Path $binDir "agentscommander_issue1577_cli.exe"
     $candidate = Join-Path $binDir ".agentscommander_issue1577_cli"
-    $marker = Join-Path $binDir "portable.txt"
-    $junctionTarget = Join-Path $fixtureRoot "junction-target"
     $stdoutPath = Join-Path $caseLogDir "stdout.txt"
     $stderrPath = Join-Path $caseLogDir "stderr.txt"
     $baselinePath = Join-Path $caseLogDir "snapshot-before.json"
@@ -166,22 +164,13 @@ function Invoke-Issue1577MarkerGate {
     try {
         New-Item -ItemType Directory -Force -Path $binDir | Out-Null
         New-Item -ItemType Directory -Force -Path $cliRoot | Out-Null
-        New-Item -ItemType Directory -Force -Path $junctionTarget | Out-Null
         Copy-Item -LiteralPath $BinaryPath -Destination $copiedBinary
         if (Test-Path -LiteralPath $candidate) {
             throw "adjacent candidate was not fresh: $candidate"
         }
-        New-Item -ItemType Junction -Path $marker -Target $junctionTarget -ErrorAction Stop | Out-Null
-        Remove-Item -LiteralPath $junctionTarget -Force -ErrorAction Stop
-
-        $markerItem = Get-Item -Force -LiteralPath $marker -ErrorAction Stop
-        $markerIsReparse = (($markerItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
-        if (-not $markerIsReparse -or $markerItem.LinkType -ne "Junction") {
-            throw "portable marker is not the required junction/reparse entry: $marker"
-        }
-        if (Test-Path -LiteralPath $junctionTarget) {
-            throw "junction target still exists: $junctionTarget"
-        }
+        # A regular file at the adjacent candidate path makes create_dir_all fail
+        # with AlreadyExists (183): indeterminate, one attempt, no ACLs needed.
+        [System.IO.File]::WriteAllText($candidate, "not a directory")
 
         $snapshotRoots = @{ bin = $binDir; cliRoot = $cliRoot }
         $before = Get-Issue1577TreeSnapshot -Roots $snapshotRoots
@@ -243,14 +232,14 @@ function Invoke-Issue1577MarkerGate {
             $errors.Add("expected byte-empty stdout, got $stdoutBytes UTF-8 byte(s)") | Out-Null
         }
 
-        $nativeReason = ([System.ComponentModel.Win32Exception]::new(2)).Message.Trim()
+        $nativeReason = ([System.ComponentModel.Win32Exception]::new(183)).Message.Trim()
         if (-not $nativeReason.EndsWith(".")) {
             $nativeReason += "."
         }
-        $osReason = "$nativeReason (os error 2)"
-        $expectedStderr = "AgentsCommander cannot start because configuration directory `"$candidate`" could not be safely selected: could not resolve portable marker symlink target metadata `"$marker`" after 1 attempt(s): $osReason. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart. Portable marker path: `"$marker`".`n"
+        $osReason = "$nativeReason (os error 183)"
+        $expectedStderr = "AgentsCommander cannot start because configuration directory `"$candidate`" could not be safely selected: write probe could not create configuration directory `"$candidate`" after 1 attempt(s): $osReason. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.`n"
         if ($stderr -cne $expectedStderr) {
-            $errors.Add("stderr did not match the exact marker-indeterminate startup message") | Out-Null
+            $errors.Add("stderr did not match the exact adjacent-refusal startup message") | Out-Null
         }
         foreach ($forbidden in @("[log] file logging to", "[instance-gitignore]", "panicked at", "stack backtrace:", '"ok":', '"peers":')) {
             if ($stderr.Contains($forbidden)) {
@@ -263,8 +252,8 @@ function Invoke-Issue1577MarkerGate {
         if ($after -cne $before) {
             $errors.Add("bin/cli-root snapshot changed across the child invocation") | Out-Null
         }
-        if (Test-Path -LiteralPath $candidate) {
-            $errors.Add("adjacent candidate appeared: $candidate") | Out-Null
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            $errors.Add("candidate file changed type or disappeared: $candidate") | Out-Null
         }
         $criticalNames = @("app.log", ".gitignore", "master-token.txt", "web-token.txt", "daemon.pid", "settings.json", "app-outbox-path.txt")
         foreach ($criticalName in $criticalNames) {
@@ -302,7 +291,6 @@ function Invoke-Issue1577MarkerGate {
         stderrPath = $stderrPath
         snapshotBeforePath = $baselinePath
         snapshotAfterPath = $afterPath
-        markerPath = $marker
         candidatePath = $candidate
         cliRoot = $cliRoot
     }
@@ -480,13 +468,13 @@ foreach ($binary in $binaries) {
     }
 }
 
-$markerGate = Invoke-Issue1577MarkerGate -BinaryPath $binaries[0] -Token $Token -Root $Root -LogDir $LogDir
-$results.Add($markerGate) | Out-Null
-if ($markerGate.status -eq "passed") {
-    Write-Host "PASS: #1577 copied release CLI marker-indeterminate preflight" -ForegroundColor Green
+$adjacentGate = Invoke-Issue1577AdjacentRefusalGate -BinaryPath $binaries[0] -Token $Token -Root $Root -LogDir $LogDir
+$results.Add($adjacentGate) | Out-Null
+if ($adjacentGate.status -eq "passed") {
+    Write-Host "PASS: #1577 copied release CLI adjacent-refusal preflight" -ForegroundColor Green
     $passed++
 } else {
-    Write-Host "FAIL: #1577 copied release CLI marker-indeterminate preflight: $($markerGate.reason)" -ForegroundColor Red
+    Write-Host "FAIL: #1577 copied release CLI adjacent-refusal preflight: $($adjacentGate.reason)" -ForegroundColor Red
     $failed++
 }
 

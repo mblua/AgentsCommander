@@ -46,7 +46,7 @@ export function normalizeProfileLetter(value: string | null | undefined): string
 export function sortedProfileLetters(profiles: CodingAgentProfilesConfig): string[] {
   const letters = new Set(Object.keys(profiles.profileSlots).filter(isProfileLetter));
   letters.add("A");
-  return [...letters].sort();
+  return [...letters].sort((a, b) => Number(a > b) - Number(a < b));
 }
 
 export function resolveProfileLabel(

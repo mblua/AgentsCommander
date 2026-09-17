@@ -36,10 +36,18 @@ export class TauriTransport implements Transport {
    * lets the bundler split `@tauri-apps/api` out of the main chunk.
    */
   private currentWindowLabel: string | null = null;
-  private ready: Promise<void>;
+  private ready!: Promise<void>;
 
-  constructor() {
-    this.ready = this.init();
+  private constructor() {
+    // Use TauriTransport.create(): init() must start eagerly, in the same
+    // synchronous step that hands out the instance (#1363), and async work
+    // does not belong in a constructor (Sonar S7059).
+  }
+
+  static create(): TauriTransport {
+    const transport = new TauriTransport();
+    transport.ready = transport.init();
+    return transport;
   }
 
   private async init() {

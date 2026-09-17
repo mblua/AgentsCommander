@@ -4,6 +4,7 @@ import type { UnlistenFn } from "../../shared/transport";
 import type { ErrorLogEntry } from "../../shared/types";
 import { DebugAPI, onErrorLogEvent } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
+import { trapTabFocus } from "../../shared/focus-trap";
 import { errorModalStore } from "../stores/error-modal";
 
 function formatEntry(e: ErrorLogEntry): string {
@@ -47,21 +48,7 @@ const ErrorModal: Component = () => {
       }
       if (e.key === "Tab") {
         e.stopImmediatePropagation();
-        const focusables = [messageRef, copyBtnRef, dismissBtnRef].filter(
-          Boolean
-        ) as HTMLElement[];
-        if (focusables.length < 2) return;
-        const idx = focusables.indexOf(document.activeElement as HTMLElement);
-        if (idx === -1) {
-          e.preventDefault();
-          (e.shiftKey ? focusables[focusables.length - 1] : focusables[0]).focus();
-          return;
-        }
-        if (e.shiftKey) {
-          if (idx <= 0) { e.preventDefault(); focusables[focusables.length - 1].focus(); }
-        } else {
-          if (idx === focusables.length - 1) { e.preventDefault(); focusables[0].focus(); }
-        }
+        trapTabFocus(e, [messageRef, copyBtnRef, dismissBtnRef].filter(Boolean) as HTMLElement[]);
         return;
       }
       e.stopImmediatePropagation();

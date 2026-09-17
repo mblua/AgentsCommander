@@ -1,5 +1,6 @@
 import { Component, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
+import { trapTabFocus } from "../../shared/focus-trap";
 
 export interface QuitConfirmModalProps {
   detachedCount: number;
@@ -35,25 +36,7 @@ const QuitConfirmModal: Component<QuitConfirmModalProps> = (props) => {
         return;
       }
       if (e.key === "Tab") {
-        const focusables = [cancelBtnRef, quitBtnRef].filter(Boolean) as HTMLElement[];
-        if (focusables.length < 2) return;
-        const idx = focusables.indexOf(document.activeElement as HTMLElement);
-        if (idx === -1) {
-          e.preventDefault();
-          (e.shiftKey ? focusables[focusables.length - 1] : focusables[0]).focus();
-          return;
-        }
-        if (e.shiftKey) {
-          if (idx <= 0) {
-            e.preventDefault();
-            focusables[focusables.length - 1].focus();
-          }
-        } else {
-          if (idx === focusables.length - 1) {
-            e.preventDefault();
-            focusables[0].focus();
-          }
-        }
+        trapTabFocus(e, [cancelBtnRef, quitBtnRef].filter(Boolean) as HTMLElement[]);
       }
     };
 

@@ -51,7 +51,7 @@ describe("TauriTransport listener scoping (#1363)", () => {
   });
 
   it("turns scopeToCurrentWindow into this webview's label", async () => {
-    const transport = new TauriTransport();
+    const transport = TauriTransport.create();
 
     await transport.listen("pty_output", () => {}, { scopeToCurrentWindow: true });
 
@@ -64,7 +64,7 @@ describe("TauriTransport listener scoping (#1363)", () => {
   // no filter, and with no filter every handler matches whatever its target is
   // (`listener.rs:296-302`). Those listeners must stay unscoped.
   it("leaves an unscoped listener unscoped", async () => {
-    const transport = new TauriTransport();
+    const transport = TauriTransport.create();
 
     await transport.listen("session_created", () => {});
     await transport.listen("session_destroyed", () => {}, {});
@@ -82,7 +82,7 @@ describe("TauriTransport listener scoping (#1363)", () => {
   it("still registers, unscoped, when the label cannot be resolved", async () => {
     tauri.labelThrows = true;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const transport = new TauriTransport();
+    const transport = TauriTransport.create();
 
     await transport.listen("pty_output", () => {}, { scopeToCurrentWindow: true });
     // Not merely "listen worked": the rest of the transport is alive too.
