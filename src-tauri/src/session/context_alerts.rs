@@ -81,11 +81,18 @@ struct ReadyAttempt {
 }
 
 impl ReadyAttempt {
-    fn thresholds(&self) -> &[u8] {
+    /// A one-line re-export, so the `Option` the notice answers with is the
+    /// `Option` every reader here sees; this is why the change is a chain and not
+    /// a list of construction sites.
+    fn thresholds(&self) -> Option<&[u8]> {
         self.notice.thresholds()
     }
 }
 
+/// The ready arm carries the notice, which is the largest value this actor
+/// builds, and it is also the arm that is routinely constructed: boxing it would
+/// add an allocation to every attempt to buy nothing measurable.
+#[allow(clippy::large_enum_variant)]
 enum AttemptPreparation {
     Ready(ReadyAttempt),
     Cancel {
@@ -939,7 +946,13 @@ async fn dispatch_due_batch(
                 now,
             );
             let still_matches = state.batches.get(&generation).is_some_and(|current| {
-                current.thresholds == attempt.thresholds()
+                // Only a context alert ever reaches this actor, so the invariant
+                // is named rather than defaulted: a remote notice must never
+                // silently count as "no thresholds crossed".
+                let attempt_thresholds = attempt
+                    .thresholds()
+                    .expect("a context-alert attempt always carries thresholds");
+                current.thresholds == attempt_thresholds
                     && current.fingerprint == attempt.snapshot.fingerprint
             });
             if !still_matches {
@@ -1326,7 +1339,10 @@ impl ProductionContextAlertRuntime {
         let guard_app = self.app.clone();
         let guard_fingerprint = snapshot.fingerprint.clone();
         let guard_target = target.clone();
-        let guard_thresholds = notice.thresholds().to_vec();
+        let guard_thresholds = notice
+            .thresholds()
+            .expect("a context-alert notice always carries thresholds")
+            .to_vec();
         let guard_cancellation = cancellation.clone();
         let guard: InternalNoticeGuard = Arc::new(move || {
             validate_attempt_guard(
@@ -2830,6 +2846,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ready_attempt_thresholds_propagates_the_option() {
+        let fixture = identity_fixture().await;
+        let policy = match resolve_member_policy_blocking(&fixture.session) {
+            MemberPolicyResolution::Eligible(policy) => policy,
+            other => panic!("expected eligible resolution, got {other:?}"),
+        };
+        let (target, notice) =
+            prepare_internal_route_blocking(&policy.fingerprint, 80, &[50, 75]).unwrap();
+        let snapshot = AttemptSnapshot {
+            generation: 1,
+            session_id: policy.fingerprint.session_id,
+            fingerprint: policy.fingerprint.clone(),
+            observed: 80,
+            thresholds: vec![50, 75],
+            failure_count: 0,
+        };
+
+        let context_attempt = ReadyAttempt {
+            snapshot: snapshot.clone(),
+            current_policy: vec![50, 75],
+            target: target.clone(),
+            notice,
+            guard: Arc::new(|| Ok(())),
+            cancellation: CancellationToken::new(),
+        };
+        assert_eq!(context_attempt.thresholds(), Some(&[50u8, 75][..]));
+
+        let remote = InternalSystemNotice::for_remote_activity(
+            crate::phone::mailbox::RemoteNoticeKind::CiStarted,
+            "mblua/AgentsCommander".to_string(),
+            "main".to_string(),
+            "abcdef1".to_string(),
+            String::new(),
+            None,
+            "2026-09-15 23:18:43-03:00".to_string(),
+            None,
+        )
+        .expect("valid remote notice");
+        let remote_attempt = ReadyAttempt {
+            snapshot,
+            current_policy: vec![50, 75],
+            target,
+            notice: remote,
+            guard: Arc::new(|| Ok(())),
+            cancellation: CancellationToken::new(),
+        };
+        // The re-export must forward the `Option` rather than flatten it.
+        assert_eq!(remote_attempt.thresholds(), None);
+    }
+
+    #[tokio::test]
     async fn blocking_identity_resolution_classifies_valid_malformed_and_missing_policy() {
         let fixture = identity_fixture().await;
         let policy = match resolve_member_policy_blocking(&fixture.session) {
@@ -2845,7 +2912,12 @@ mod tests {
         let (target, notice) =
             prepare_internal_route_blocking(&policy.fingerprint, 80, &[50, 75]).unwrap();
         assert_eq!(target.fqn(), "project-a:wg-2-dev-team/coordinator");
-        assert_eq!(notice.thresholds(), &[50, 75]);
+        assert_eq!(
+            notice
+                .thresholds()
+                .expect("a context-alert notice always carries thresholds"),
+            &[50, 75]
+        );
 
         std::fs::write(&fixture.team_config, b"{partial").unwrap();
         match resolve_member_policy_blocking(&fixture.session) {
