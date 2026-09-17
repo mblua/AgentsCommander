@@ -1199,6 +1199,12 @@ impl RemoteSweeper {
             .get(&key.nwo)
             .cloned()
             .unwrap_or_else(|| DEFAULT_BRANCH_LABEL.to_string());
+        // #2131: a repo sitting on its own default branch has no branch of its
+        // own to rebase, so the notice is suppressed there while the chip keeps
+        // its orange bar. Fail open: the sentinel label means the default branch
+        // is unresolved, which is not an identity and never suppresses (the same
+        // rule #2126 applies to CI).
+        let on_default_branch = base_label != DEFAULT_BRANCH_LABEL && key.branch == base_label;
         let entry = state.keys.entry(key.clone()).or_default();
         let base = ctx.staleness_dial;
 
@@ -1218,7 +1224,7 @@ impl RemoteSweeper {
                     (prior_confirmed, answer),
                     (Some(StalenessState::Current), StalenessState::Stale)
                 );
-                if stale {
+                if stale && !on_default_branch {
                     self.fan_out(
                         key,
                         TransitionMeta {
@@ -2589,6 +2595,13 @@ mod tests {
         let _guard = round_test_lock().await;
         let harness = Harness::new(AppSettings::default());
         let repo = harness.repo("repo-a");
+        crate::pty::git_watcher::publish_git_status(
+            &repo,
+            Some(crate::pty::git_watcher::GitStatus {
+                branch: Some("fix/2131".to_string()),
+                dirty: false,
+            }),
+        );
         harness.set_work(&[repo]);
         {
             let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
@@ -2614,6 +2627,136 @@ mod tests {
         let transitions = harness.drain_transitions();
         assert_eq!(transitions.len(), 1);
         assert_eq!(transitions[0].kind, TransitionKind::BranchStale);
+        assert_eq!(transitions[0].behind_by, Some(4));
+    }
+
+    #[tokio::test]
+    async fn stale_on_default_branch_sends_no_notice_but_keeps_the_chip() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("identical", 0))));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 4))));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        drain(&harness);
+        tick(&mut now, &mut wall, 300);
+        harness.round(now, wall).await;
+
+        assert!(
+            harness.drain_transitions().is_empty(),
+            "the default branch has no branch of its own to rebase: no notice"
+        );
+        let snapshot = harness.snapshot();
+        let activity = snapshot.get(&repo).expect("entry");
+        assert_eq!(
+            activity.staleness,
+            StalenessState::Stale,
+            "the chip keeps its orange bar"
+        );
+        assert_eq!(activity.behind_by, Some(4));
+    }
+
+    #[tokio::test]
+    async fn stale_on_a_feature_branch_still_sends_the_notice() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        crate::pty::git_watcher::publish_git_status(
+            &repo,
+            Some(crate::pty::git_watcher::GitStatus {
+                branch: Some("fix/2131".to_string()),
+                dirty: false,
+            }),
+        );
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("identical", 0))));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 4))));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        drain(&harness);
+        tick(&mut now, &mut wall, 300);
+        harness.round(now, wall).await;
+
+        let transitions = harness.drain_transitions();
+        assert_eq!(transitions.len(), 1, "a feature branch still notifies");
+        assert_eq!(transitions[0].kind, TransitionKind::BranchStale);
+        assert_eq!(transitions[0].base_branch, "main");
+        assert_eq!(transitions[0].behind_by, Some(4));
+        assert_eq!(
+            harness.snapshot().get(&repo).expect("entry").staleness,
+            StalenessState::Stale
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_with_an_unresolved_default_branch_still_sends_the_notice() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        // Overwrite `Harness::repo`'s `main` with the sentinel literal itself: an
+        // unresolved base and a branch equal to that base are the one pair a bare
+        // `key.branch == base_label` comparison would suppress, so this test fails
+        // if `base_label != DEFAULT_BRANCH_LABEL &&` is removed. Production cannot
+        // reach this pair (git refnames forbid spaces), which is why publishing it
+        // is safe here and why the sentinel guard is the only thing under test.
+        crate::pty::git_watcher::publish_git_status(
+            &repo,
+            Some(crate::pty::git_watcher::GitStatus {
+                branch: Some(DEFAULT_BRANCH_LABEL.to_string()),
+                dirty: false,
+            }),
+        );
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            // No repo_info and no symbolic-ref answer is queued, so the default
+            // branch stays unresolved and the sentinel is the base label; the
+            // published branch equals that sentinel, so the sentinel guard is the
+            // only thing keeping the notice alive.
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("identical", 0))));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 4))));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        drain(&harness);
+        tick(&mut now, &mut wall, 300);
+        harness.round(now, wall).await;
+
+        let transitions = harness.drain_transitions();
+        assert_eq!(
+            transitions.len(),
+            1,
+            "an unresolved default branch cannot suppress"
+        );
+        assert_eq!(transitions[0].kind, TransitionKind::BranchStale);
+        assert_eq!(transitions[0].base_branch, DEFAULT_BRANCH_LABEL);
+        // Companion premise assertion: the branch this notice was produced for is
+        // the sentinel itself, so the test cannot pass on a live `main` by accident.
+        assert_eq!(transitions[0].branch, DEFAULT_BRANCH_LABEL);
         assert_eq!(transitions[0].behind_by, Some(4));
     }
 
@@ -3228,6 +3371,13 @@ mod tests {
         {
             let harness = Harness::new(AppSettings::default());
             let repo = harness.repo("repo-a");
+            crate::pty::git_watcher::publish_git_status(
+                &repo,
+                Some(crate::pty::git_watcher::GitStatus {
+                    branch: Some("fix/2131".to_string()),
+                    dirty: false,
+                }),
+            );
             harness.set_work(&[repo]);
             {
                 let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
