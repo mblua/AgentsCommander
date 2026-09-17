@@ -11,8 +11,10 @@ use uuid::Uuid;
 
 use crate::config::agent_config::AgentLocalConfig;
 use crate::config::injected_messages::{
-    render, CONTEXT_ALERT_MESSAGE_ID, TOKEN_MEMBER, TOKEN_OBSERVED, TOKEN_THRESHOLDS,
-    TOKEN_WORKGROUP,
+    render, BRANCH_STALE_MESSAGE_ID, CI_FINISHED_MESSAGE_ID, CI_STARTED_MESSAGE_ID,
+    CONTEXT_ALERT_MESSAGE_ID, MAX_RENDERED_BYTES, NOTICE_BLIND_GAP_MESSAGE_ID, TOKEN_AT,
+    TOKEN_BASE, TOKEN_BEHIND, TOKEN_BRANCH, TOKEN_GAP, TOKEN_MEMBER, TOKEN_OBSERVED, TOKEN_REPO,
+    TOKEN_SHA, TOKEN_SINCE, TOKEN_THRESHOLDS, TOKEN_WORKGROUP,
 };
 use crate::config::instance_artifacts::{
     PROJECT_REFRESH_REQUESTS_DIR_NAME, SESSION_REQUESTS_DIR_NAME,
@@ -159,13 +161,83 @@ impl InternalSystemTarget {
     }
 }
 
+/// The three remote-activity notices a validated [`InternalSystemNotice`] can
+/// carry. Defined HERE, beside the notice that carries it, and deliberately not
+/// `pty::remote_watcher::TransitionKind` (which would add
+/// `phone::mailbox -> pty::remote_watcher`) nor a type in `session::remote_alerts`
+/// (which would add `phone::mailbox -> session::remote_alerts`); either arc
+/// breaks the phase's dependency-cycle condition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteNoticeKind {
+    CiStarted,
+    CiFinished,
+    BranchStale,
+}
+
 /// Validated fixed facts rendered by the private system formatter.
+///
+/// Two variants, because the two notices carry different facts and a struct with
+/// every field optional would make "a CI notice has no thresholds" a runtime
+/// convention instead of a type. `for_context_alert` keeps its name, signature
+/// and error strings, which is what lets every existing construction site compile
+/// unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InternalSystemNotice {
-    member: String,
-    workgroup: String,
-    observed: u8,
-    thresholds: Vec<u8>,
+pub(crate) enum InternalSystemNotice {
+    ContextAlert {
+        member: String,
+        workgroup: String,
+        observed: u8,
+        thresholds: Vec<u8>,
+    },
+    RemoteActivity {
+        kind: RemoteNoticeKind,
+        repo_nwo: String,
+        branch: String,
+        sha7: String,
+        base_branch: String,
+        behind_by: Option<u32>,
+        at: String,
+        blind_gap: Option<(String, String)>,
+    },
+}
+
+/// An `nwo` shaped `owner/name`, each part non-empty and free of anything that
+/// is not a name character. The rendered `%REPO%` is pasted into `gh -R`, so a
+/// value that is merely printable is not enough.
+fn is_repo_nwo(value: &str) -> bool {
+    let mut parts = value.split('/');
+    let owner = parts.next().unwrap_or_default();
+    let name = parts.next().unwrap_or_default();
+    parts.next().is_none()
+        && !owner.is_empty()
+        && !name.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/'))
+}
+
+fn is_control_free(value: &str) -> bool {
+    !value.chars().any(char::is_control)
+}
+
+fn is_sha7(value: &str) -> bool {
+    value.len() == 7
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ('a'..='f').contains(&ch))
+}
+
+/// The same character-boundary walk as `config::injected_messages::sanitize`,
+/// re-applied to the CONCATENATION. `sanitize` caps each render on its own, so a
+/// base template and a blind-gap suffix can each pass the cap and violate it
+/// together. `str::floor_char_boundary` is unstable on the pinned toolchain.
+fn truncate_to_rendered_cap(mut rendered: String) -> String {
+    let mut end = MAX_RENDERED_BYTES.min(rendered.len());
+    while end > 0 && !rendered.is_char_boundary(end) {
+        end -= 1;
+    }
+    rendered.truncate(end);
+    rendered
 }
 
 impl InternalSystemNotice {
@@ -193,7 +265,7 @@ impl InternalSystemNotice {
                     .to_string(),
             );
         }
-        Ok(Self {
+        Ok(Self::ContextAlert {
             member,
             workgroup,
             observed,
@@ -201,37 +273,183 @@ impl InternalSystemNotice {
         })
     }
 
-    pub(crate) fn thresholds(&self) -> &[u8] {
-        &self.thresholds
+    /// The remote-activity constructor. `base_branch` is required and non-empty
+    /// for `BranchStale` (Phase A resolves the label; this phase only renders it)
+    /// and must be empty for the two CI kinds, and `behind_by` follows the same
+    /// rule, because a `%BEHIND%` that renders to nothing would silently produce
+    /// a wrong sentence rather than a missing one. Every violation is an `Err`,
+    /// never a silent default.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn for_remote_activity(
+        kind: RemoteNoticeKind,
+        repo_nwo: String,
+        branch: String,
+        sha7: String,
+        base_branch: String,
+        behind_by: Option<u32>,
+        at: String,
+        blind_gap: Option<(String, String)>,
+    ) -> Result<Self, String> {
+        if !is_repo_nwo(&repo_nwo) {
+            return Err(format!(
+                "Remote activity notice requires an owner/name repository, got '{repo_nwo}'"
+            ));
+        }
+        if branch.is_empty() || !is_control_free(&branch) {
+            return Err(
+                "Remote activity notice requires a non-empty branch without control characters"
+                    .to_string(),
+            );
+        }
+        if !is_sha7(&sha7) {
+            return Err(format!(
+                "Remote activity notice requires a 7-character lowercase hex commit, got '{sha7}'"
+            ));
+        }
+        if at.is_empty() {
+            return Err("Remote activity notice requires an observation timestamp".to_string());
+        }
+        let stale = kind == RemoteNoticeKind::BranchStale;
+        if stale && (base_branch.is_empty() || !is_control_free(&base_branch)) {
+            return Err(
+                "A branch-stale notice requires a non-empty default-branch label without control characters"
+                    .to_string(),
+            );
+        }
+        if !stale && !base_branch.is_empty() {
+            return Err("Only a branch-stale notice carries a default-branch label".to_string());
+        }
+        match (stale, behind_by) {
+            (true, Some(count)) if count > 0 => {}
+            (true, _) => {
+                return Err(
+                    "A branch-stale notice requires a commit count greater than zero".to_string(),
+                )
+            }
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err("Only a branch-stale notice carries a commit count".to_string())
+            }
+        }
+        Ok(Self::RemoteActivity {
+            kind,
+            repo_nwo,
+            branch,
+            sha7,
+            base_branch,
+            behind_by,
+            at,
+            blind_gap,
+        })
+    }
+
+    /// `Some` for a context alert, `None` for a remote-activity notice. An empty
+    /// slice would be a silent lie at a comparison site: a remote notice has no
+    /// thresholds at all, it does not have none crossed.
+    pub(crate) fn thresholds(&self) -> Option<&[u8]> {
+        match self {
+            Self::ContextAlert { thresholds, .. } => Some(thresholds),
+            Self::RemoteActivity { .. } => None,
+        }
     }
 
     /// #1157 - the wording now lives in the operator-editable injected-message
     /// registry. This function keeps its signature and its threshold formatting;
     /// the only embedded copy of the text is `DEFAULT_CONTEXT_ALERT_TEMPLATE`.
     fn line(&self) -> String {
-        let thresholds = self
-            .thresholds
-            .iter()
-            .map(|threshold| format!("{}%", threshold))
-            .collect::<Vec<_>>()
-            .join(", ");
-        // `values` borrows, so the observed percentage needs a binding that
-        // outlives the slice.
-        let observed = format!("{}%", self.observed);
-        render(
-            CONTEXT_ALERT_MESSAGE_ID,
-            &[
-                (TOKEN_MEMBER, self.member.as_str()),
-                (TOKEN_WORKGROUP, self.workgroup.as_str()),
-                (TOKEN_THRESHOLDS, thresholds.as_str()),
-                (TOKEN_OBSERVED, observed.as_str()),
-            ],
-        )
+        match self {
+            Self::ContextAlert {
+                member,
+                workgroup,
+                observed,
+                thresholds,
+            } => {
+                let thresholds = thresholds
+                    .iter()
+                    .map(|threshold| format!("{}%", threshold))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                // `values` borrows, so the observed percentage needs a binding that
+                // outlives the slice.
+                let observed = format!("{}%", observed);
+                render(
+                    CONTEXT_ALERT_MESSAGE_ID,
+                    &[
+                        (TOKEN_MEMBER, member.as_str()),
+                        (TOKEN_WORKGROUP, workgroup.as_str()),
+                        (TOKEN_THRESHOLDS, thresholds.as_str()),
+                        (TOKEN_OBSERVED, observed.as_str()),
+                    ],
+                )
+            }
+            Self::RemoteActivity {
+                kind,
+                repo_nwo,
+                branch,
+                sha7,
+                base_branch,
+                behind_by,
+                at,
+                blind_gap,
+            } => {
+                let behind = behind_by.map(|count| count.to_string());
+                let (id, values) = match kind {
+                    RemoteNoticeKind::CiStarted => (
+                        CI_STARTED_MESSAGE_ID,
+                        vec![
+                            (TOKEN_REPO, repo_nwo.as_str()),
+                            (TOKEN_BRANCH, branch.as_str()),
+                            (TOKEN_SHA, sha7.as_str()),
+                            (TOKEN_AT, at.as_str()),
+                        ],
+                    ),
+                    RemoteNoticeKind::CiFinished => (
+                        CI_FINISHED_MESSAGE_ID,
+                        vec![
+                            (TOKEN_REPO, repo_nwo.as_str()),
+                            (TOKEN_BRANCH, branch.as_str()),
+                            (TOKEN_SHA, sha7.as_str()),
+                            (TOKEN_AT, at.as_str()),
+                        ],
+                    ),
+                    RemoteNoticeKind::BranchStale => (
+                        BRANCH_STALE_MESSAGE_ID,
+                        vec![
+                            (TOKEN_REPO, repo_nwo.as_str()),
+                            (TOKEN_BRANCH, branch.as_str()),
+                            (TOKEN_BASE, base_branch.as_str()),
+                            (
+                                TOKEN_BEHIND,
+                                behind
+                                    .as_deref()
+                                    .expect("a branch-stale notice always carries a commit count"),
+                            ),
+                            (TOKEN_AT, at.as_str()),
+                        ],
+                    ),
+                };
+                let mut rendered = render(id, &values);
+                if let Some((gap, since)) = blind_gap {
+                    // A SUFFIX id, not twin ids: the blindness clause is edited
+                    // once and applies to every notice, present and future.
+                    rendered.push_str(&render(
+                        NOTICE_BLIND_GAP_MESSAGE_ID,
+                        &[(TOKEN_GAP, gap.as_str()), (TOKEN_SINCE, since.as_str())],
+                    ));
+                }
+                truncate_to_rendered_cap(rendered)
+            }
+        }
     }
 }
 
 pub(crate) type InternalNoticeGuard = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
+/// The notice is the largest variant by design: the remote-activity facts are
+/// eight fields because the text and its validation need all eight, and boxing
+/// them would add an allocation per notice to buy nothing measurable. The peer
+/// arm is a borrow, so it is small either way.
+#[allow(clippy::large_enum_variant)]
 enum WakeDelivery<'a> {
     Peer {
         message: &'a OutboxMessage,
@@ -8244,15 +8462,45 @@ impl MailboxPoller {
             idle.touch_silence(session_id);
         }
         let (project, _) = crate::config::teams::split_project_prefix(target.fqn());
-        log::info!(
-            "[context-alert] delivered coordinatorSession={} project={} workgroup={} member={} observed={} thresholds={:?}",
-            session_id,
-            project.unwrap_or(""),
-            notice.workgroup,
-            notice.member,
-            notice.observed,
-            notice.thresholds
-        );
+        match notice {
+            // Byte-identical to the line this feature shipped, including the
+            // field order and the `{:?}` thresholds: operators grep it.
+            InternalSystemNotice::ContextAlert {
+                member,
+                workgroup,
+                observed,
+                thresholds,
+            } => {
+                log::info!(
+                    "[context-alert] delivered coordinatorSession={} project={} workgroup={} member={} observed={} thresholds={:?}",
+                    session_id,
+                    project.unwrap_or(""),
+                    workgroup,
+                    member,
+                    observed,
+                    thresholds
+                );
+            }
+            // A NEW prefix, never the context-alert one: two different notices
+            // under one prefix would make that grep lie.
+            InternalSystemNotice::RemoteActivity {
+                kind,
+                repo_nwo,
+                branch,
+                sha7,
+                ..
+            } => {
+                log::info!(
+                    "[remote-activity] delivered coordinatorSession={} project={} kind={:?} repo={} branch={} sha={}",
+                    session_id,
+                    project.unwrap_or(""),
+                    kind,
+                    repo_nwo,
+                    branch,
+                    sha7
+                );
+            }
+        }
         Ok(())
     }
 
@@ -12678,6 +12926,314 @@ mod tests {
                 "invalid notice case must be rejected: member={member} workgroup={workgroup} observed={observed}"
             );
         }
+    }
+
+    fn remote_activity_notice(
+        kind: RemoteNoticeKind,
+        base_branch: &str,
+        behind_by: Option<u32>,
+        blind_gap: Option<(String, String)>,
+    ) -> Result<InternalSystemNotice, String> {
+        InternalSystemNotice::for_remote_activity(
+            kind,
+            "mblua/AgentsCommander".to_string(),
+            "feature/2083-2064-remote-alerts".to_string(),
+            "abcdef1".to_string(),
+            base_branch.to_string(),
+            behind_by,
+            "2026-09-15 23:18:43-03:00".to_string(),
+            blind_gap,
+        )
+    }
+
+    #[test]
+    fn remote_activity_notice_rejects_a_bad_nwo() {
+        for nwo in [
+            "",
+            "AgentsCommander",
+            "/AgentsCommander",
+            "mblua/",
+            "mblua/Agents/Commander",
+            "mblua AgentsCommander",
+            "mblua/Agents\nCommander",
+        ] {
+            assert!(
+                InternalSystemNotice::for_remote_activity(
+                    RemoteNoticeKind::CiStarted,
+                    nwo.to_string(),
+                    "main".to_string(),
+                    "abcdef1".to_string(),
+                    String::new(),
+                    None,
+                    "2026-09-15 23:18:43-03:00".to_string(),
+                    None,
+                )
+                .is_err(),
+                "nwo must be rejected: {nwo:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_activity_notice_rejects_a_sha_that_is_not_seven_hex() {
+        for sha in ["", "abcdef", "abcdef12", "ABCDEF1", "abcdefg", "1234567 "] {
+            assert!(
+                InternalSystemNotice::for_remote_activity(
+                    RemoteNoticeKind::CiStarted,
+                    "mblua/AgentsCommander".to_string(),
+                    "main".to_string(),
+                    sha.to_string(),
+                    String::new(),
+                    None,
+                    "2026-09-15 23:18:43-03:00".to_string(),
+                    None,
+                )
+                .is_err(),
+                "sha must be rejected: {sha:?}"
+            );
+        }
+        // The exact shape the notice renders is accepted.
+        assert!(remote_activity_notice(RemoteNoticeKind::CiStarted, "", None, None).is_ok());
+    }
+
+    #[test]
+    fn remote_activity_notice_rejects_behind_by_on_a_ci_kind() {
+        for kind in [RemoteNoticeKind::CiStarted, RemoteNoticeKind::CiFinished] {
+            assert!(remote_activity_notice(kind, "", Some(4), None).is_err());
+        }
+    }
+
+    #[test]
+    fn remote_activity_notice_rejects_a_branch_stale_without_behind_by() {
+        assert!(remote_activity_notice(RemoteNoticeKind::BranchStale, "main", None, None).is_err());
+        // `Some(0)` is not "a count greater than zero".
+        assert!(
+            remote_activity_notice(RemoteNoticeKind::BranchStale, "main", Some(0), None).is_err()
+        );
+        assert!(
+            remote_activity_notice(RemoteNoticeKind::BranchStale, "main", Some(4), None).is_ok()
+        );
+    }
+
+    #[test]
+    fn remote_activity_notice_rejects_a_branch_stale_with_an_empty_base_branch() {
+        for base in ["", "main\n", "main\u{7f}"] {
+            assert!(
+                remote_activity_notice(RemoteNoticeKind::BranchStale, base, Some(4), None).is_err(),
+                "base branch must be rejected: {base:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_activity_notice_rejects_a_base_branch_on_a_ci_kind() {
+        for kind in [RemoteNoticeKind::CiStarted, RemoteNoticeKind::CiFinished] {
+            assert!(
+                remote_activity_notice(kind, "main", None, None).is_err(),
+                "a CI notice never carries a default-branch label"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_activity_line_renders_every_token() {
+        let started = remote_activity_notice(RemoteNoticeKind::CiStarted, "", None, None)
+            .unwrap()
+            .line();
+        assert_eq!(
+            started,
+            "[AgentsCommander] CI started on mblua/AgentsCommander feature/2083-2064-remote-alerts (commit abcdef1) at 2026-09-15 23:18:43-03:00. Status notice only; no action is required."
+        );
+
+        let finished = remote_activity_notice(RemoteNoticeKind::CiFinished, "", None, None)
+            .unwrap()
+            .line();
+        assert_eq!(
+            finished,
+            "[AgentsCommander] CI finished on mblua/AgentsCommander feature/2083-2064-remote-alerts (commit abcdef1) at 2026-09-15 23:18:43-03:00. AgentsCommander does not track pass or fail: run 'gh run list --branch feature/2083-2064-remote-alerts' before acting on this."
+        );
+
+        let stale = remote_activity_notice(RemoteNoticeKind::BranchStale, "main", Some(4), None)
+            .unwrap()
+            .line();
+        assert_eq!(
+            stale,
+            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind main as of 2026-09-15 23:18:43-03:00. Any CI running on this branch is validating an out-of-date base."
+        );
+        // The 40-character SHA goes to the query, never to the text.
+        assert!(!stale.contains("abcdef1abcdef1"));
+    }
+
+    #[test]
+    fn blind_gap_suffix_is_concatenated_only_when_present() {
+        let without = remote_activity_notice(RemoteNoticeKind::CiStarted, "", None, None)
+            .unwrap()
+            .line();
+        assert!(!without.contains("could not reach GitHub"));
+
+        let with = remote_activity_notice(
+            RemoteNoticeKind::CiStarted,
+            "",
+            None,
+            Some((
+                "47 minutes".to_string(),
+                "2026-09-15 22:31:02-03:00".to_string(),
+            )),
+        )
+        .unwrap()
+        .line();
+        assert_eq!(
+            with,
+            "[AgentsCommander] CI started on mblua/AgentsCommander feature/2083-2064-remote-alerts (commit abcdef1) at 2026-09-15 23:18:43-03:00. Status notice only; no action is required. AgentsCommander could not reach GitHub for 47 minutes; the previous confirmed state is from 2026-09-15 22:31:02-03:00."
+        );
+    }
+
+    #[test]
+    fn concatenated_render_respects_the_summed_byte_cap() {
+        // 1900 branch bytes put the cap offset one byte INSIDE the fourth byte of
+        // an emoji in the suffix, so a naive `truncate(MAX_RENDERED_BYTES)` splits
+        // a character and panics; 500 of them keep the suffix well past the cap.
+        let gap = "\u{1f6a8}".repeat(500);
+        let since = "2026-09-15 22:31:02-03:00".to_string();
+        let notice = InternalSystemNotice::for_remote_activity(
+            RemoteNoticeKind::CiStarted,
+            "mblua/AgentsCommander".to_string(),
+            "b".repeat(1900),
+            "abcdef1".to_string(),
+            String::new(),
+            None,
+            "\u{1f6a8}".repeat(40),
+            Some((gap.clone(), since.clone())),
+        )
+        .expect("valid notice");
+
+        let base = crate::config::injected_messages::render_with_template(
+            crate::config::injected_messages::DEFAULT_CI_STARTED_TEMPLATE,
+            &[
+                (TOKEN_REPO, "mblua/AgentsCommander"),
+                (TOKEN_BRANCH, &"b".repeat(1900)),
+                (TOKEN_SHA, "abcdef1"),
+                (TOKEN_AT, &"\u{1f6a8}".repeat(40)),
+            ],
+        );
+        let suffix = crate::config::injected_messages::render_with_template(
+            crate::config::injected_messages::DEFAULT_NOTICE_BLIND_GAP_TEMPLATE,
+            &[(TOKEN_GAP, &gap), (TOKEN_SINCE, &since)],
+        );
+        assert!(base.len() <= MAX_RENDERED_BYTES, "base={}", base.len());
+        assert!(
+            suffix.len() <= MAX_RENDERED_BYTES,
+            "suffix={}",
+            suffix.len()
+        );
+        let full = format!("{base}{suffix}");
+        assert!(full.len() > MAX_RENDERED_BYTES, "full={}", full.len());
+        assert!(
+            !full.is_char_boundary(MAX_RENDERED_BYTES),
+            "the cap must straddle a character, or this test never runs the walk"
+        );
+
+        // The expected value is computed here, not read back from the code under
+        // test.
+        let mut expected = full.clone();
+        let mut end = MAX_RENDERED_BYTES.min(expected.len());
+        while end > 0 && !expected.is_char_boundary(end) {
+            end -= 1;
+        }
+        expected.truncate(end);
+        assert!(end < MAX_RENDERED_BYTES);
+        assert_eq!(notice.line(), expected);
+        assert!(notice.line().len() <= MAX_RENDERED_BYTES);
+    }
+
+    #[test]
+    fn context_alert_line_is_byte_identical_to_before() {
+        // The enum change must move no context-alert byte.
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-2-dev-team".to_string(),
+            91,
+            vec![50, 75, 90],
+        )
+        .unwrap();
+        assert_eq!(
+            notice.line(),
+            "[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. No action taken; you decide any follow-up."
+        );
+    }
+
+    #[test]
+    fn thresholds_is_none_for_a_remote_activity_notice() {
+        let context = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-2-dev-team".to_string(),
+            91,
+            vec![50, 75],
+        )
+        .unwrap();
+        assert_eq!(context.thresholds(), Some(&[50u8, 75][..]));
+
+        let remote = remote_activity_notice(RemoteNoticeKind::CiStarted, "", None, None).unwrap();
+        assert_eq!(remote.thresholds(), None);
+    }
+
+    #[test]
+    fn inject_internal_system_notice_log_line_is_unchanged_for_context_alert() {
+        // There is no log-capture seam, so this is a source scan in the pattern of
+        // `agent_update_emits_only_through_emit_all`: the enum rewrite is exactly
+        // the change that could quietly rewrite a line operators grep.
+        let src = include_str!("mailbox.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let boundary = lines
+            .iter()
+            .enumerate()
+            .find(|(index, line)| {
+                **line == "mod tests {"
+                    && lines[..*index]
+                        .iter()
+                        .rev()
+                        .find(|previous| !previous.trim().is_empty())
+                        == Some(&"#[cfg(test)]")
+            })
+            .map(|(index, _)| index)
+            .expect("the tests module boundary");
+        let production = lines[..boundary].join("\n");
+
+        let context_literal = "\"[context-alert] delivered coordinatorSession={} project={} workgroup={} member={} observed={} thresholds={:?}\"";
+        assert_eq!(
+            production.matches(context_literal).count(),
+            1,
+            "the [context-alert] delivered line must stay exactly as shipped"
+        );
+        let context_at = production.find(context_literal).expect("context line");
+        let after = &production[context_at + context_literal.len()..];
+        let closing = after.find(");").expect("the closing argument list");
+        let arguments = &after[..closing];
+        let mut cursor = 0usize;
+        for expected in [
+            "session_id",
+            "project.unwrap_or(\"\")",
+            "workgroup",
+            "member",
+            "observed",
+            "thresholds",
+        ] {
+            let at = arguments[cursor..]
+                .find(expected)
+                .unwrap_or_else(|| panic!("argument {expected} must follow the previous one"));
+            cursor += at + expected.len();
+        }
+
+        assert_eq!(
+            production.matches("\"[remote-activity] ").count(),
+            1,
+            "a remote-activity notice logs under its own prefix exactly once"
+        );
+        assert_eq!(
+            production.matches("\"[context-alert] ").count(),
+            2,
+            "two context-alert lines: the vanished-session warn and the delivered info"
+        );
     }
 
     #[test]
