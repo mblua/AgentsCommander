@@ -15,6 +15,10 @@ import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import { automationIdPart } from "./replica-repo-badges";
+import { remoteActivityStore } from "../stores/remote-activity";
+import { splitWorkgroupsByWorking } from "./workgroup-session";
+import WorkgroupGroupRail from "./WorkgroupGroupRail";
+import type { CiState } from "../../shared/types";
 
 // #1755 leg 2 — ProjectPanel must put `working` on the right elements in the
 // right states and take it off again. Every test below carries its idle control
@@ -53,6 +57,127 @@ const sessionId = (name: string): string => `session-${name}`;
 
 const rowTestId = (context: string, replica: string, wg = wgName): string =>
   `replica.row.${automationIdPart(context)}.${automationIdPart(wg)}.${automationIdPart(replica)}`;
+
+// #2131 - the repo every row in the CI tint block points at. `ciRepoPath()` is the
+// exact string the remote-activity payload is keyed by, which is why it is written
+// once and shared by the discovery and the publish helper.
+const CI_REPO_DIR = "repo-AgentsCommander";
+const CI_REPO_LABEL = "AgentsCommander";
+const ciRepoPath = (wg: string = wgName): string => `${workgroupPathOf(wg)}\\${CI_REPO_DIR}`;
+
+function ciDiscovery() {
+  return discovery({
+    workgroups: [
+      {
+        name: wgName,
+        path: workgroupPath,
+        task: null,
+        taskTitle: "CI working tint",
+        agents: [
+          // Both room-1 rows carry the SAME repo path: the orchestrator must tint on
+          // it and the worker must not, in the same render.
+          { name: ORCHESTRATOR, path: replicaPath(ORCHESTRATOR), repoPaths: [ciRepoPath()], isCoordinator: true },
+          { name: WORKER, path: replicaPath(WORKER), repoPaths: [ciRepoPath()], isCoordinator: false },
+        ],
+      },
+      {
+        name: IDLE_ROOM,
+        path: workgroupPathOf(IDLE_ROOM),
+        task: null,
+        taskTitle: "Idle control room",
+        agents: [
+          {
+            name: IDLE_ORCHESTRATOR,
+            path: replicaPath(IDLE_ORCHESTRATOR, IDLE_ROOM),
+            repoPaths: [ciRepoPath(IDLE_ROOM)],
+            isCoordinator: true,
+          },
+          { name: IDLE_MEMBER, path: replicaPath(IDLE_MEMBER, IDLE_ROOM), repoPaths: [], isCoordinator: false },
+        ],
+      },
+    ],
+  });
+}
+
+/** `withRail` mounts the real rail beside the panel for the classification test;
+ *  the rail needs the one extra fake invoke, exactly as
+ *  ProjectPanel.collapse-state.test.tsx mounts the pair. */
+async function mountCiPanel(options: { withRail?: boolean } = {}) {
+  const fake = new FakeTransport();
+  fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+  fake.resolve("get_settings", baseSettings());
+  fake.resolve("discover_project", ciDiscovery());
+  if (options.withRail) {
+    fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
+  }
+  const rendered = renderWithFakeTransport(
+    () =>
+      options.withRail ? (
+        <div>
+          <WorkgroupGroupRail projects={projectStore.projects} />
+          <ProjectPanel />
+        </div>
+      ) : (
+        <ProjectPanel />
+      ),
+    fake
+  );
+  await settingsStore.load();
+  await projectStore.createAndLoad(projectPath);
+  // Gate on the row element, not on the word "orchestrator": the coord chip renders
+  // that word too, so textContent is not a mount proof.
+  await waitFor(() =>
+    expect(
+      rendered.root.querySelector(`[data-ac-testid="${rowTestId("workgroups", ORCHESTRATOR, wgName)}"]`)
+    ).not.toBeNull()
+  );
+  return rendered;
+}
+
+/** One repo's published answer, exactly as the event carries it (same shape as
+ *  ProjectPanel.remote-activity.test.tsx:110-118). */
+function publishCi(ci: CiState, repoPath: string = ciRepoPath()): void {
+  remoteActivityStore.applyRemoteActivityUpdate({
+    repoPaths: [repoPath],
+    ciStates: [ci],
+    stalenessStates: ["current"],
+    behindBy: [null],
+  });
+}
+
+/** The chip element for one row context and replica, by the test id the panel emits:
+ *  `replica.repoBadge.<context>.<wg>.<replica>.<index>.<label>`. */
+const chipSelector = (context: string, replica: string, wg: string = wgName): string =>
+  `[data-ac-testid="replica.repoBadge.${automationIdPart(context)}.${automationIdPart(wg)}.${automationIdPart(replica)}.0.${CI_REPO_LABEL}"]`;
+
+function chip(root: HTMLElement, context: string, replica: string, wg: string = wgName): HTMLElement {
+  const el = root.querySelector<HTMLElement>(chipSelector(context, replica, wg));
+  if (!el) throw new Error(`missing repo chip: ${chipSelector(context, replica, wg)}`);
+  return el;
+}
+
+/** The rail's working dots and counters come from splitWorkgroupsByWorking; these are
+ *  the selectors WorkgroupGroupRail.test.tsx uses. */
+function railDots(root: HTMLElement): string[] {
+  return Array.from(
+    root.querySelectorAll<HTMLElement>('[data-ac-testid^="workgroupGroups.dot."]')
+  ).map((dot) => dot.dataset.acTestid ?? "");
+}
+
+function railButton(root: HTMLElement, key: string): HTMLElement {
+  const el = root.querySelector<HTMLElement>(`[data-ac-testid="workgroupGroups.button.${key}"]`);
+  if (!el) throw new Error(`missing rail button: ${key}`);
+  return el;
+}
+
+/** The room sequence, read from the first row of each .ac-wg-subgroup. */
+function subgroupRowOrder(root: HTMLElement): string[] {
+  return subgroups(root).map(
+    (sub) =>
+      sub.querySelector('[data-ac-testid^="replica.row."]')?.getAttribute("data-ac-testid") ??
+      "missing"
+  );
+}
 
 function tintDiscovery() {
   return discovery({
@@ -487,6 +612,192 @@ describe("ProjectPanel working tint (#1755)", () => {
       document.documentElement.removeAttribute("data-sidebar-style");
       host.remove();
       style.remove();
+    }
+  });
+});
+
+describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  it("13. tints the orchestrator row in both room contexts while its chip is ci-running", async () => {
+    const rendered = await mountCiPanel();
+    try {
+      sessionsStore.setSessions([
+        replicaSession(ORCHESTRATOR, "idle"),
+        replicaSession(WORKER, "idle"),
+      ]);
+      sessionsStore.setVisibleActiveIdForTests(sessionId(ORCHESTRATOR));
+      // Gate: both contexts are rendered. "selected" only exists with an active
+      // session, and the assertions below must not pass on an absent row.
+      await waitFor(() =>
+        expect(rendered.root.querySelector(chipSelector("selected", ORCHESTRATOR))).not.toBeNull()
+      );
+
+      // Untinted before the store has anything to say, with the chips present and
+      // silent: this half is what makes the flip below a measurement.
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(false);
+      expect(row(rendered.root, "selected", ORCHESTRATOR).classList.contains("working")).toBe(false);
+      expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).not.toContain("ci-running");
+
+      publishCi("running");
+      await waitFor(() =>
+        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).toContain("ci-running")
+      );
+      expect(chip(rendered.root, "selected", ORCHESTRATOR).className).toContain("ci-running");
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(true);
+      expect(row(rendered.root, "selected", ORCHESTRATOR).classList.contains("working")).toBe(true);
+      // Control in the same render: the worker's session is idle and its row is
+      // untinted, so "the CI term tints every row" fails here.
+      expect(row(rendered.root, "workgroups", WORKER).classList.contains("working")).toBe(false);
+
+      // Removal half: CI stops, the tint goes with it.
+      publishCi("idle");
+      await waitFor(() =>
+        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).not.toContain("ci-running")
+      );
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(false);
+      expect(row(rendered.root, "selected", ORCHESTRATOR).classList.contains("working")).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("14. does not tint an orchestrator row on idle, unknown or absent CI state", async () => {
+    const rendered = await mountCiPanel();
+    try {
+      sessionsStore.setSessions([
+        replicaSession(ORCHESTRATOR, "idle"),
+        replicaSession(WORKER, "idle"),
+      ]);
+      await waitFor(() =>
+        expect(rendered.root.querySelector(chipSelector("workgroups", ORCHESTRATOR))).not.toBeNull()
+      );
+
+      // No store entry at all: a user without `gh`, or with the feature off. The chip
+      // is present and silent, and the row is untinted.
+      expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).toBe("ac-discovery-badge branch");
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(false);
+
+      // `idle` - checked, nothing running. The tooltip is the gate: that suffix can
+      // only be there after the store update reached the DOM.
+      publishCi("idle");
+      await waitFor(() =>
+        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).title).toContain(
+          "no CI activity for this commit"
+        )
+      );
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(false);
+
+      // `unknown` - no answer is not an answer. Same gating shape.
+      publishCi("unknown");
+      await waitFor(() =>
+        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).title).not.toContain("no CI activity")
+      );
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(false);
+      expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).not.toContain("ci-running");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("15. does not tint a non-orchestrator row, the quick strip, or another room, from the same CI state", async () => {
+    const rendered = await mountCiPanel();
+    try {
+      sessionsStore.setSessions([
+        replicaSession(ORCHESTRATOR, "idle"),
+        replicaSession(WORKER, "idle"),
+      ]);
+      await waitFor(() =>
+        expect(rendered.root.querySelector(chipSelector("workgroups", ORCHESTRATOR))).not.toBeNull()
+      );
+
+      publishCi("running");
+      await waitFor(() =>
+        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).toContain("ci-running")
+      );
+
+      // Positive control and the negatives in one render.
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(true);
+      // WORKER carries the SAME repoPath, so its repoBadges() is non-empty and only
+      // the orchestrator gate can keep it untinted.
+      expect(row(rendered.root, "workgroups", WORKER).classList.contains("working")).toBe(false);
+      // A different repo path in another room: a "CI is running somewhere" predicate
+      // fails here.
+      expect(
+        row(rendered.root, "workgroups", IDLE_ORCHESTRATOR, IDLE_ROOM).classList.contains("working")
+      ).toBe(false);
+      // D-B6 - the Orchestrators strip keeps #1783's session-only rule. This quick
+      // row is an orchestrator row pointing at the SAME ci-running repo as the tinted
+      // room-tree row above, so only the `rowContext === "quick"` branch keeps it
+      // untinted. The gate proves the strip rendered: without it, an absent quick row
+      // would make the "not tinted" assertion pass for the wrong reason. Adding the CI
+      // term to the quick branch (`workgroupIsWorking(wg) || orchestratorCiRunning()`)
+      // fails HERE, because this row would then carry `working` too.
+      await waitFor(() =>
+        expect(
+          rendered.root.querySelector(`[data-ac-testid="${rowTestId("quick", ORCHESTRATOR)}"]`)
+        ).not.toBeNull()
+      );
+      expect(row(rendered.root, "quick", ORCHESTRATOR).classList.contains("working")).toBe(false);
+      // The chip is orchestrator-only (:2658), so no chip exists for the worker; its
+      // untinted row is the isCoord() gate talking, not an empty repoBadges().
+      expect(
+        rendered.root.querySelector(
+          `[data-ac-testid^="replica.repoBadge.workgroups.${automationIdPart(wgName)}.${automationIdPart(WORKER)}."]`
+        )
+      ).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("16. CI state alone changes no room classification, no rail dot and no order", async () => {
+    const rendered = await mountCiPanel({ withRail: true });
+    try {
+      await waitFor(() => {
+        expect(rendered.root.querySelector(chipSelector("workgroups", ORCHESTRATOR))).not.toBeNull();
+        expect(
+          rendered.root.querySelector('[data-ac-testid="workgroupGroups.button.all"]')
+        ).not.toBeNull();
+      });
+      // Before half: nobody works, so no room is classified as working.
+      expect(anySubgroupWorking(rendered.root)).toBe(false);
+      expect(railDots(rendered.root)).toEqual([]);
+      expect(railButton(rendered.root, "all").textContent).toContain("0/2");
+      const orderBefore = subgroupRowOrder(rendered.root);
+
+      publishCi("running");
+      // In-run positive control: the row IS tinted, so the assertions below cannot
+      // pass because nothing happened.
+      await waitFor(() =>
+        expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(true)
+      );
+
+      // Classification: both rooms are still NOT working, and the panel's group wash
+      // and the rail's dot/counter follow that classification, not the tint.
+      const split = splitWorkgroupsByWorking(projectStore.projects[0].workgroups);
+      expect(split.working.map((group) => group.name)).toEqual([]);
+      expect(split.notWorking.map((group) => group.name)).toEqual([wgName, IDLE_ROOM]);
+      expect(anySubgroupWorking(rendered.root)).toBe(false);
+      expect(railDots(rendered.root)).toEqual([]);
+      expect(railButton(rendered.root, "all").textContent).toContain("0/2");
+
+      // Ordering: the room sequence is the byte-identical one from before the publish.
+      expect(subgroupRowOrder(rendered.root)).toEqual(orderBefore);
+    } finally {
+      rendered.cleanup();
     }
   });
 });
