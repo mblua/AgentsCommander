@@ -107,6 +107,26 @@ fn default_catalog_schema_version() -> u32 {
     CATALOG_SCHEMA_VERSION
 }
 
+/// #2124 - optional per-agent idle-burst filter tuning. A present object on the
+/// effective catalog entry activates the filter for mapped sessions; absent or
+/// `null` leaves it off. Every subfield is optional: an absent one takes the
+/// default declared in `session/profile.rs`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IdleBurstConfig {
+    /// Byte total (printable or not) that confirms a pending output burst.
+    /// `0` disables the filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+    /// Longest gap a pending burst may span before it is discarded as a short
+    /// burst. `0` disables the filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_secs: Option<f64>,
+    /// Silence age a chunk must find before it may open a burst candidate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_silence_secs: Option<f64>,
+}
+
 /// One catalog entry: a built-in (or user-added) coding agent the user can pick
 /// from. Maps cleanly onto `Omit<AgentConfig,"id">` plus `{key, description,
 /// removable}` on the frontend. `removable`, `envs`, and `isolated_home` are
@@ -156,6 +176,13 @@ pub struct CodingAgentDefinition {
     /// runtime reads only the settings map.
     #[serde(default)]
     pub auto_update: bool,
+    /// #2124 - optional idle-burst filter for this agent's sessions. Declared
+    /// LAST on purpose: field order is serialization order, and the managed
+    /// revision hash is taken over this serialization. NOT part of the
+    /// `settings.agents[]` snapshot: it is resolved from the effective catalog
+    /// at every spawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_burst: Option<IdleBurstConfig>,
 }
 
 /// The manifest file shape: a schema version plus the ordered agent list.
@@ -227,6 +254,30 @@ fn validate_definition(def: &CodingAgentDefinition) -> Result<(), String> {
     if let Some(cfg) = def.config_seed.as_ref() {
         if !cfg.dest.trim().is_empty() {
             validate_config_seed_dest(&cfg.dest)?;
+        }
+    }
+    if let Some(burst) = def.idle_burst.as_ref() {
+        validate_idle_burst_config(burst, &context)?;
+    }
+    Ok(())
+}
+
+/// #2124 - the `idleBurst` value rules, shared by the base path
+/// (`validate_definition`) and, by construction, the strict local parser:
+/// `maxBytes` is a non-negative integer and is already typed `u64` here;
+/// `maxSecs` and `priorSilenceSecs` must be finite and >= 0. Absent is legal
+/// and means "use the `session/profile.rs` default".
+fn validate_idle_burst_config(config: &IdleBurstConfig, context: &str) -> Result<(), String> {
+    for (name, value) in [
+        ("maxSecs", config.max_secs),
+        ("priorSilenceSecs", config.prior_silence_secs),
+    ] {
+        if let Some(value) = value {
+            if !value.is_finite() || value < 0.0 {
+                return Err(format!(
+                    "{context}: 'idleBurst.{name}' must be a finite number >= 0"
+                ));
+            }
         }
     }
     Ok(())
@@ -404,6 +455,7 @@ const KNOWN_DEFINITION_FIELDS: &[&str] = &[
     "removable",
     "updateCommands",
     "autoUpdate",
+    "idleBurst",
 ];
 const KNOWN_CONFIG_SEED_FIELDS: &[&str] = &["enabled", "dest"];
 const KNOWN_ENV_FIELDS: &[&str] = &["key", "value", "source", "enabled"];
@@ -903,6 +955,8 @@ struct LocalFieldPatch {
     removable: Option<bool>,
     update_commands: Option<Vec<String>>,
     auto_update: Option<bool>,
+    /// `None` = absent; `Some(None)` = explicit `null`; `Some(Some(_))` = object.
+    idle_burst: Option<Option<IdleBurstConfig>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -938,9 +992,11 @@ const LOCAL_ROW_FIELDS: &[&str] = &[
     "removable",
     "updateCommands",
     "autoUpdate",
+    "idleBurst",
 ];
 const LOCAL_ENV_FIELDS: &[&str] = &["key", "value", "source", "enabled"];
 const LOCAL_CONFIG_SEED_FIELDS: &[&str] = &["enabled", "dest"];
+const LOCAL_IDLE_BURST_FIELDS: &[&str] = &["maxBytes", "maxSecs", "priorSilenceSecs"];
 
 fn validate_update_command_string(
     command: &str,
@@ -1048,6 +1104,47 @@ fn parse_config_seed_patch(
     Ok(patch)
 }
 
+fn parse_idle_burst_patch(
+    value: &serde_json::Value,
+    context: &str,
+) -> Result<IdleBurstConfig, String> {
+    let burst_context = format!("{context} idleBurst");
+    let object = expect_json_object(value, &burst_context)?;
+    reject_unknown_json_fields(object, LOCAL_IDLE_BURST_FIELDS, &burst_context)?;
+    let mut config = IdleBurstConfig::default();
+    if let Some(max_bytes) = object.get("maxBytes") {
+        let Some(max_bytes) = max_bytes.as_u64() else {
+            return Err(format!(
+                "{burst_context}: 'maxBytes' must be a non-negative integer"
+            ));
+        };
+        config.max_bytes = Some(max_bytes);
+    }
+    if let Some(max_secs) = object.get("maxSecs") {
+        config.max_secs = Some(parse_idle_burst_secs(max_secs, "maxSecs", &burst_context)?);
+    }
+    if let Some(prior_silence_secs) = object.get("priorSilenceSecs") {
+        config.prior_silence_secs = Some(parse_idle_burst_secs(
+            prior_silence_secs,
+            "priorSilenceSecs",
+            &burst_context,
+        )?);
+    }
+    Ok(config)
+}
+
+/// One `idleBurst` seconds subfield, strictly: a JSON number, finite and >= 0.
+fn parse_idle_burst_secs(
+    value: &serde_json::Value,
+    field: &str,
+    context: &str,
+) -> Result<f64, String> {
+    let parsed = value
+        .as_f64()
+        .filter(|value| value.is_finite() && *value >= 0.0);
+    parsed.ok_or_else(|| format!("{context}: '{field}' must be a finite number >= 0"))
+}
+
 fn parse_local_fields(
     object: &serde_json::Map<String, serde_json::Value>,
     context: &str,
@@ -1119,6 +1216,13 @@ fn parse_local_fields(
             return Err(format!("{context}: 'autoUpdate' must be a boolean"));
         };
         fields.auto_update = Some(*value);
+    }
+    if let Some(value) = object.get("idleBurst") {
+        fields.idle_burst = Some(match value {
+            serde_json::Value::Null => None,
+            serde_json::Value::Object(_) => Some(parse_idle_burst_patch(value, context)?),
+            _ => return Err(format!("{context}: 'idleBurst' must be an object or null")),
+        });
     }
     Ok(fields)
 }
@@ -1226,6 +1330,23 @@ fn merge_config_seed(
     merged
 }
 
+/// #2124 - merge the local `idleBurst` patch by presence: an absent subfield
+/// inherits the base value; an object after a missing or `null` base starts from
+/// all-absent, i.e. the launch-time defaults.
+fn merge_idle_burst(current: Option<IdleBurstConfig>, patch: &IdleBurstConfig) -> IdleBurstConfig {
+    let mut merged = current.unwrap_or_default();
+    if patch.max_bytes.is_some() {
+        merged.max_bytes = patch.max_bytes;
+    }
+    if patch.max_secs.is_some() {
+        merged.max_secs = patch.max_secs;
+    }
+    if patch.prior_silence_secs.is_some() {
+        merged.prior_silence_secs = patch.prior_silence_secs;
+    }
+    merged
+}
+
 fn apply_local_fields(
     mut definition: CodingAgentDefinition,
     fields: &LocalFieldPatch,
@@ -1265,6 +1386,12 @@ fn apply_local_fields(
     }
     if let Some(value) = fields.auto_update {
         definition.auto_update = value;
+    }
+    if let Some(patch) = &fields.idle_burst {
+        definition.idle_burst = match patch {
+            None => None,
+            Some(patch) => Some(merge_idle_burst(definition.idle_burst.clone(), patch)),
+        };
     }
     definition
 }
@@ -1326,6 +1453,10 @@ fn build_new_definition(
         removable: fields.removable.unwrap_or(true),
         update_commands: fields.update_commands.clone().unwrap_or_default(),
         auto_update: fields.auto_update.unwrap_or(false),
+        idle_burst: match &fields.idle_burst {
+            None | Some(None) => None,
+            Some(Some(config)) => Some(config.clone()),
+        },
     })
 }
 
@@ -2013,6 +2144,12 @@ fn definition_problem_reason(def: &CodingAgentDefinition) -> String {
             return "its config-seed destination is not a valid folder name".to_string();
         }
     }
+    if let Some(burst) = def.idle_burst.as_ref() {
+        if validate_idle_burst_config(burst, "Coding agent").is_err() {
+            return "its idleBurst values are invalid (numbers must be finite and >= 0)"
+                .to_string();
+        }
+    }
     "it failed the current catalog definition validation rules".to_string()
 }
 
@@ -2062,6 +2199,18 @@ fn push_unknown_field_warnings(
                 path,
                 format!(
                     "coding-agent '{key}' configSeed carries unknown field(s) ({names}) that require managed-catalog migration"
+                ),
+            ));
+        }
+    }
+    if let Some(serde_json::Value::Object(burst)) = raw.get("idleBurst") {
+        if let Some(names) = unknown_field_names(burst.keys(), LOCAL_IDLE_BURST_FIELDS) {
+            found = true;
+            warnings.push(catalog_diagnostic(
+                REPORT_CODE_MIGRATION_PENDING,
+                path,
+                format!(
+                    "coding-agent '{key}' idleBurst carries unknown field(s) ({names}) that require managed-catalog migration"
                 ),
             ));
         }
@@ -2677,6 +2826,8 @@ struct LocalRowWire {
     update_commands: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     auto_update: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    idle_burst: Option<Option<IdleBurstConfig>>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -2759,6 +2910,9 @@ fn pin_explicit_legacy_fields(
         auto_update: raw
             .contains_key("autoUpdate")
             .then_some(definition.auto_update),
+        idle_burst: raw
+            .contains_key("idleBurst")
+            .then(|| definition.idle_burst.clone()),
     }
 }
 
@@ -2792,6 +2946,9 @@ fn materialize_complete_legacy_fields(
             Vec::new()
         }),
         auto_update: Some(definition.auto_update),
+        idle_burst: raw
+            .contains_key("idleBurst")
+            .then(|| definition.idle_burst.clone()),
     }
 }
 
@@ -4264,6 +4421,18 @@ mod tests {
             assert!(def.removable, "{key} must be removable");
             assert!(def.envs.is_empty());
             assert!(!def.isolated_home);
+            // #2124 - every shipped row carries the conservative burst filter.
+            let burst = def
+                .idle_burst
+                .as_ref()
+                .unwrap_or_else(|| panic!("{key} must ship idleBurst"));
+            assert_eq!(burst.max_bytes, Some(1024), "{key} idleBurst maxBytes");
+            assert_eq!(burst.max_secs, Some(3.0), "{key} idleBurst maxSecs");
+            assert_eq!(
+                burst.prior_silence_secs,
+                Some(60.0),
+                "{key} idleBurst priorSilenceSecs"
+            );
         }
         let raw: serde_json::Value = serde_json::from_str(EMBEDDED_DEFAULT_CATALOG_JSON).unwrap();
         assert_eq!(raw["schemaVersion"], 1);
@@ -4279,7 +4448,12 @@ mod tests {
                 "isolatedHome": false,
                 "removable": true,
                 "updateCommands": [],
-                "autoUpdate": false
+                "autoUpdate": false,
+                "idleBurst": {
+                    "maxBytes": 1024,
+                    "maxSecs": 3.0,
+                    "priorSilenceSecs": 60.0
+                }
             })
         );
         assert_eq!(
@@ -4305,6 +4479,106 @@ mod tests {
         for def in embedded_default_catalog().agents {
             validate_definition(&def).unwrap_or_else(|e| panic!("{}: {e}", def.key));
         }
+    }
+
+    /// #2124 T9 - serde, strict local layer and legacy migration for `idleBurst`.
+    #[test]
+    fn idle_burst_serde_and_local_layer() {
+        // A definition without `idleBurst` deserializes `None` and does not
+        // re-emit the key.
+        let mut plain = shipped_def_json(&["claude"]).remove(0);
+        plain.as_object_mut().unwrap().remove("idleBurst");
+        let definition: CodingAgentDefinition = serde_json::from_value(plain).unwrap();
+        assert!(definition.idle_burst.is_none());
+        assert!(!serde_json::to_string(&definition)
+            .unwrap()
+            .contains("idleBurst"));
+
+        // The embedded default ships the filter on all nine rows.
+        let embedded = embedded_default_catalog();
+        assert_eq!(embedded.agents.len(), 9);
+        for row in &embedded.agents {
+            let burst = row
+                .idle_burst
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} must ship idleBurst", row.key));
+            assert_eq!(burst.max_bytes, Some(1024), "{}", row.key);
+            assert_eq!(burst.max_secs, Some(3.0), "{}", row.key);
+            assert_eq!(burst.prior_silence_secs, Some(60.0), "{}", row.key);
+        }
+
+        // Compose a managed base (1024/3/60) with a local object patch: the
+        // stated subfield replaces, the absent ones inherit.
+        let dir = seed_dir();
+        let revision = managed_content_sha256(&supported_shipped_definitions());
+        write_managed_base(dir.path(), &shipped_def_json(&["claude"]), &revision, true);
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxBytes":2048}}]}"##,
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none(), "{:?}", report.unavailable);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        let claude = report
+            .catalog
+            .iter()
+            .find(|def| def.key == "claude")
+            .unwrap();
+        let burst = claude.idle_burst.as_ref().expect("composed idleBurst");
+        assert_eq!(burst.max_bytes, Some(2048));
+        assert_eq!(burst.max_secs, Some(3.0), "absent maxSecs inherits");
+        assert_eq!(burst.prior_silence_secs, Some(60.0));
+
+        // Local `null` clears the whole object (filter off).
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":null}]}"##,
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.catalog[0].idle_burst.is_none());
+
+        // Unknown subfields and invalid value shapes disable the whole local
+        // layer; the base entry stays intact.
+        for local in [
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"foo":1}}]}"##,
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxBytes":-1}}]}"##,
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxSecs":"3"}}]}"##,
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxSecs":-1}}]}"##,
+        ] {
+            write_local(dir.path(), local);
+            let report = load_catalog_report(dir.path());
+            assert!(
+                report
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.code == "localInvalid"),
+                "{local}: {:?}",
+                report.warnings
+            );
+            let claude = report
+                .catalog
+                .iter()
+                .find(|def| def.key == "claude")
+                .unwrap();
+            assert_eq!(
+                claude.idle_burst.as_ref().unwrap().max_bytes,
+                Some(1024),
+                "the base entry stays intact after a rejected local layer"
+            );
+        }
+
+        // A legacy row that states `idleBurst` explicitly pins it in the
+        // extracted local layer, presence only.
+        let mut legacy_claude = shipped_def_json(&["claude"]).remove(0);
+        legacy_claude["idleBurst"] = serde_json::json!({"maxSecs": 2.0});
+        let legacy = serde_json::json!({"schemaVersion": 1, "agents": [legacy_claude]}).to_string();
+        let extracted = extract_legacy_local(legacy.as_bytes(), &supported_shipped_definitions())
+            .expect("legacy extraction with explicit idleBurst");
+        let local: serde_json::Value = serde_json::from_slice(&extracted).unwrap();
+        assert_eq!(
+            local["agents"][0]["idleBurst"],
+            serde_json::json!({"maxSecs": 2.0})
+        );
     }
 
     #[test]

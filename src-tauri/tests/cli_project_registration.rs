@@ -682,7 +682,12 @@ fn new_project_seeds_catalog_into_ac() {
             "isolatedHome": false,
             "removable": true,
             "updateCommands": [],
-            "autoUpdate": false
+            "autoUpdate": false,
+            "idleBurst": {
+                "maxBytes": 1024,
+                "maxSecs": 3.0,
+                "priorSilenceSecs": 60.0
+            }
         })
     );
     let claude = parsed["agents"]
