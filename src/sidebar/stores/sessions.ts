@@ -276,6 +276,64 @@ const [collapsedTeams, setCollapsedTeams] = createSignal<Record<string, boolean>
 
 const [detachedIds, setDetachedIds] = createSignal<Set<string>>(new Set());
 
+function appendInactiveMembers(
+  team: Team,
+  teamSessions: Session[],
+  members: Session[],
+  assignedPaths: Set<string>,
+  coordinator: Session | null,
+): Session | null {
+  const activePathSet = new Set(teamSessions.map((s) => normalizePath(s.workingDirectory)));
+  for (const m of team.members) {
+    const np = normalizePath(m.path);
+    if (!activePathSet.has(np)) {
+      const inactive = makeInactiveEntry(m.name, m.path);
+      if (team.coordinatorName && m.name === team.coordinatorName) {
+        coordinator = inactive;
+      } else {
+        members.push(inactive);
+      }
+      assignedPaths.add(np);
+    }
+  }
+  return coordinator;
+}
+
+function buildTeamGroup(
+  team: Team,
+  sessions: Session[],
+  assignedPaths: Set<string>,
+  showInactive: () => boolean,
+): TeamSessionGroup | null {
+  const memberPaths = new Set(team.members.map((m) => normalizePath(m.path)));
+
+  const teamSessions = sessions.filter((s) =>
+    s.workingDirectory && memberPaths.has(normalizePath(s.workingDirectory))
+  );
+
+  if (teamSessions.length === 0 && !showInactive()) return null;
+
+  let coordinator: Session | null = null;
+  const members: Session[] = [];
+
+  for (const s of teamSessions) {
+    const np = normalizePath(s.workingDirectory);
+    const member = team.members.find((m) => normalizePath(m.path) === np);
+    if (member && team.coordinatorName && member.name === team.coordinatorName) {
+      coordinator = s;
+    } else {
+      members.push(s);
+    }
+    assignedPaths.add(np);
+  }
+
+  if (showInactive()) {
+    coordinator = appendInactiveMembers(team, teamSessions, members, assignedPaths, coordinator);
+  }
+
+  return { team, coordinator, members };
+}
+
 const groupedSessionsMemo = createMemo((): { groups: TeamSessionGroup[]; ungrouped: Session[] } => {
   const sessions = filteredSessionsMemo();
   const teams = state.teams;
@@ -287,45 +345,8 @@ const groupedSessionsMemo = createMemo((): { groups: TeamSessionGroup[]; ungroup
 
   for (const team of teams) {
     if (team.visible === false) continue;
-    const memberPaths = new Set(team.members.map((m) => normalizePath(m.path)));
-
-    const teamSessions = sessions.filter((s) =>
-      s.workingDirectory && memberPaths.has(normalizePath(s.workingDirectory))
-    );
-
-    if (teamSessions.length === 0 && !state.showInactive) continue;
-
-    let coordinator: Session | null = null;
-    const members: Session[] = [];
-
-    for (const s of teamSessions) {
-      const np = normalizePath(s.workingDirectory);
-      const member = team.members.find((m) => normalizePath(m.path) === np);
-      if (member && team.coordinatorName && member.name === team.coordinatorName) {
-        coordinator = s;
-      } else {
-        members.push(s);
-      }
-      assignedPaths.add(np);
-    }
-
-    if (state.showInactive) {
-      const activePathSet = new Set(teamSessions.map((s) => normalizePath(s.workingDirectory)));
-      for (const m of team.members) {
-        const np = normalizePath(m.path);
-        if (!activePathSet.has(np)) {
-          const inactive = makeInactiveEntry(m.name, m.path);
-          if (team.coordinatorName && m.name === team.coordinatorName) {
-            coordinator = inactive;
-          } else {
-            members.push(inactive);
-          }
-          assignedPaths.add(np);
-        }
-      }
-    }
-
-    groups.push({ team, coordinator, members });
+    const g = buildTeamGroup(team, sessions, assignedPaths, () => state.showInactive);
+    if (g) groups.push(g);
   }
 
   const ungrouped = sessions.filter((s) => {

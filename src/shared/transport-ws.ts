@@ -183,32 +183,39 @@ export class WsTransport implements Transport {
 
     // Command response routed via __cmd_response event
     if (parsed.event === "__cmd_response") {
-      const payload = parsed.payload as Record<string, unknown>;
-      const data = payload.data as Record<string, unknown>;
-      const id = data.id as number;
-      const pending = this.pending.get(id);
-      if (pending) {
-        this.pending.delete(id);
-        if ("error" in data && data.error) {
-          pending.reject(data.error as string);
-        } else {
-          pending.resolve(data.result);
-        }
-      }
+      this.resolveCommandResponse(parsed);
       return;
     }
 
     // Regular event
     if (parsed.event && parsed.payload !== undefined) {
-      const eventName = parsed.event as string;
-      const callbacks = this.listeners.get(eventName);
-      if (callbacks) {
-        for (const cb of callbacks) {
-          try {
-            cb(parsed.payload);
-          } catch (e) {
-            console.error(`[ws-transport] Listener error for ${eventName}:`, e);
-          }
+      this.dispatchEvent(parsed.event as string, parsed.payload);
+    }
+  }
+
+  private resolveCommandResponse(parsed: Record<string, unknown>): void {
+    const payload = parsed.payload as Record<string, unknown>;
+    const data = payload.data as Record<string, unknown>;
+    const id = data.id as number;
+    const pending = this.pending.get(id);
+    if (pending) {
+      this.pending.delete(id);
+      if ("error" in data && data.error) {
+        pending.reject(data.error as string);
+      } else {
+        pending.resolve(data.result);
+      }
+    }
+  }
+
+  private dispatchEvent(eventName: string, payload: unknown): void {
+    const callbacks = this.listeners.get(eventName);
+    if (callbacks) {
+      for (const cb of callbacks) {
+        try {
+          cb(payload);
+        } catch (e) {
+          console.error(`[ws-transport] Listener error for ${eventName}:`, e);
         }
       }
     }

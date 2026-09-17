@@ -916,6 +916,37 @@ const ProjectPanel: Component = () => {
           setWgDeleteError(msg);
           setWgDeleteInProgress(false);
         };
+        const applyWgRetryFailure = (e: any) => {
+          const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
+          if (msg.startsWith("BLOCKERS:")) {
+            try {
+              const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
+              setWgBlockers(report);
+              setWgDirtyRepos(false);
+              setWgConfirmText("");
+              setWgDeleteError("");
+              setWgRetryInProgress(false);
+              return;
+            } catch (parseErr) {
+              console.error("Failed to parse BLOCKERS: payload on retry:", parseErr);
+              setWgBlockers(null);
+              setWgDeleteError("Room is still locked, but the blocker report could not be parsed. Try again.");
+              setWgRetryInProgress(false);
+              return;
+            }
+          }
+          if (msg.startsWith("DIRTY_REPOS:")) {
+            setWgBlockers(null);
+            setWgDeleteError(msg.slice("DIRTY_REPOS:".length));
+            setWgDirtyRepos(true);
+            setWgConfirmText("");
+            setWgRetryInProgress(false);
+            return;
+          }
+          setWgBlockers(null);
+          setWgDeleteError(msg);
+          setWgRetryInProgress(false);
+        };
         const retryWgDelete = async () => {
           if (wgRetryInProgress()) return;
           const wg = deletingWg();
@@ -931,35 +962,7 @@ const ProjectPanel: Component = () => {
             closeWgDeleteModal();
           } catch (e: any) {
             if (myGen !== retryGen) return;
-            const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
-            if (msg.startsWith("BLOCKERS:")) {
-              try {
-                const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
-                setWgBlockers(report);
-                setWgDirtyRepos(false);
-                setWgConfirmText("");
-                setWgDeleteError("");
-                setWgRetryInProgress(false);
-                return;
-              } catch (parseErr) {
-                console.error("Failed to parse BLOCKERS: payload on retry:", parseErr);
-                setWgBlockers(null);
-                setWgDeleteError("Room is still locked, but the blocker report could not be parsed. Try again.");
-                setWgRetryInProgress(false);
-                return;
-              }
-            }
-            if (msg.startsWith("DIRTY_REPOS:")) {
-              setWgBlockers(null);
-              setWgDeleteError(msg.slice("DIRTY_REPOS:".length));
-              setWgDirtyRepos(true);
-              setWgConfirmText("");
-              setWgRetryInProgress(false);
-              return;
-            }
-            setWgBlockers(null);
-            setWgDeleteError(msg);
-            setWgRetryInProgress(false);
+            applyWgRetryFailure(e);
           }
         };
         const activeReplicas = createMemo(() => {
