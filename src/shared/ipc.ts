@@ -15,6 +15,7 @@ import type {
 import { TauriTransport } from "./transport-tauri";
 import { WsTransport } from "./transport-ws";
 import type {
+  RemoteActivityUpdate,
   Session,
   SessionCommunication,
   SessionRepo,
@@ -843,6 +844,15 @@ export function onDiscoveryBranchUpdated(
     "ac_discovery_branch_updated",
     callback
   );
+}
+
+/** #2064 — the repo-keyed remote-activity sweep (CI state and base staleness): the
+ *  repo-level sibling of the discovery branch event above, emitted by the Rust
+ *  remote sweeper for the complete live set of repos on every round. */
+export function onRemoteActivityUpdated(
+  callback: (data: RemoteActivityUpdate) => void
+): Promise<UnlistenFn> {
+  return transport.listen<RemoteActivityUpdate>("ac_remote_activity_updated", callback);
 }
 
 export function onCoordinatorClockUpdated(
