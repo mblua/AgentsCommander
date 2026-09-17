@@ -40,6 +40,8 @@ const CONTAINER_SHUTDOWN_WORKER_CAPACITY: usize = 4;
 const CONTAINER_SHUTDOWN_QUEUE_CAPACITY: usize = 64;
 const CONTAINER_SHUTDOWN_FALLBACK_CAPACITY: usize = 1;
 const CONTAINER_SHUTDOWN_POLL: Duration = Duration::from_millis(2);
+const CONTAINER_SHUTDOWN_IDLE_RECHECK: Duration = Duration::from_secs(1);
+const CONTAINER_SHUTDOWN_DROP_GRACE: Duration = Duration::from_secs(1);
 const CONTAINER_GLOBAL_SWEEP_RETRY_BACKOFF: Duration = Duration::from_millis(10);
 
 // Keep this re-export so session_transport and container_backend continue to
@@ -671,6 +673,7 @@ struct ContainerShutdownWorkState {
     next_task_id: u64,
     terminating: bool,
     worker_count: usize,
+    sweep_deadline: Option<Instant>,
     #[cfg(test)]
     fail_worker_spawn: bool,
 }
@@ -717,6 +720,18 @@ impl Default for ContainerShutdownWorkRegistry {
             workers: Mutex::new(Vec::new()),
         }
     }
+}
+
+fn decrement_shutdown_worker_count(
+    state: &mut ContainerShutdownWorkState,
+    shared: &ContainerShutdownWorkShared,
+) {
+    if state.worker_count == 0 {
+        log::error!("[container-transport] shutdown worker count underflow");
+    } else {
+        state.worker_count -= 1;
+    }
+    shared.state_changed.notify_all();
 }
 
 impl ContainerShutdownWorkRegistry {
@@ -898,6 +913,7 @@ impl ContainerShutdownWorkRegistry {
         };
         state.phase = ContainerShutdownPhase::GlobalSweep;
         state.terminating = false;
+        state.sweep_deadline = Some(deadline);
         drop(state);
         self.shared.work_available.notify_all();
         let context = ContainerShutdownWorkContext {
@@ -971,6 +987,14 @@ impl ContainerShutdownWorkRegistry {
         for worker in workers.drain(..) {
             if worker.is_finished() {
                 if worker.join().is_err() {
+                    {
+                        let mut state = self
+                            .shared
+                            .state
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        decrement_shutdown_worker_count(&mut state, &self.shared);
+                    }
                     log::error!(
                         "[container-transport] shutdown worker exited after panic session={} reason={}",
                         context
@@ -986,7 +1010,19 @@ impl ContainerShutdownWorkRegistry {
         }
         *workers = retained;
 
-        while workers.len() < CONTAINER_SHUTDOWN_WORKER_CAPACITY {
+        let deficit = {
+            let state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if state.terminating {
+                0
+            } else {
+                CONTAINER_SHUTDOWN_WORKER_CAPACITY.saturating_sub(state.worker_count)
+            }
+        };
+        for _ in 0..deficit {
             #[cfg(test)]
             if self
                 .shared
@@ -1008,12 +1044,28 @@ impl ContainerShutdownWorkRegistry {
 
             let shared = Arc::clone(&self.shared);
             let worker_index = workers.len();
+            {
+                let mut state = self
+                    .shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                state.worker_count += 1;
+            }
             match std::thread::Builder::new()
                 .name(format!("ac-container-shutdown-{worker_index}"))
                 .spawn(move || container_shutdown_worker(shared))
             {
                 Ok(worker) => workers.push(worker),
                 Err(error) => {
+                    {
+                        let mut state = self
+                            .shared
+                            .state
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        decrement_shutdown_worker_count(&mut state, &self.shared);
+                    }
                     log::warn!(
                         "[container-transport] shutdown worker spawn failed session={} reason={} worker={} error={}",
                         context
@@ -1028,13 +1080,11 @@ impl ContainerShutdownWorkRegistry {
                 }
             }
         }
-        let worker_count = workers.len();
         self.shared
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .worker_count = worker_count;
-        worker_count
+            .worker_count
     }
 
     fn begin_shutdown(&self, deadline: Instant) -> bool {
@@ -1093,6 +1143,14 @@ impl ContainerShutdownWorkRegistry {
             for worker in workers.drain(..) {
                 if worker.is_finished() {
                     if worker.join().is_err() {
+                        {
+                            let mut state = self
+                                .shared
+                                .state
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
+                            decrement_shutdown_worker_count(&mut state, &self.shared);
+                        }
                         log::error!(
                             "[container-transport] shutdown worker panicked during bounded join"
                         );
@@ -1210,6 +1268,51 @@ impl ContainerShutdownWorkRegistry {
 static PROCESS_RETAINED_CONTAINER_WORKERS: OnceLock<Mutex<Vec<std::thread::JoinHandle<()>>>> =
     OnceLock::new();
 
+impl ContainerShutdownWorkRegistry {
+    fn join_idle_workers_until(&self, grace: Instant) -> Vec<std::thread::JoinHandle<()>> {
+        let mut workers = self
+            .workers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        loop {
+            let mut unfinished = Vec::with_capacity(workers.len());
+            for worker in workers.drain(..) {
+                if worker.is_finished() {
+                    if worker.join().is_err() {
+                        {
+                            let mut state = self
+                                .shared
+                                .state
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
+                            decrement_shutdown_worker_count(&mut state, &self.shared);
+                        }
+                        log::error!(
+                            "[container-transport] shutdown worker panicked during registry drop"
+                        );
+                    }
+                } else {
+                    unfinished.push(worker);
+                }
+            }
+            *workers = unfinished;
+            let busy = match lock_mutex_until(&self.shared.state, grace) {
+                Some(state) => state.active.len().saturating_sub(state.active_fallbacks),
+                None => break,
+            };
+            if workers.len() <= busy {
+                break;
+            }
+            let remaining = grace.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
+        }
+        std::mem::take(&mut *workers)
+    }
+}
+
 impl Drop for ContainerShutdownWorkRegistry {
     fn drop(&mut self) {
         self.shared
@@ -1228,24 +1331,34 @@ impl Drop for ContainerShutdownWorkRegistry {
             self.shared.work_available.notify_all();
             self.shared.state_changed.notify_all();
         }
-        let workers = self
-            .workers
-            .get_mut()
-            .unwrap_or_else(|error| error.into_inner());
         let retained = PROCESS_RETAINED_CONTAINER_WORKERS.get_or_init(|| Mutex::new(Vec::new()));
-        let retained = retained.lock().unwrap_or_else(|error| error.into_inner());
-        let mut retained = retained;
-        for worker in workers.drain(..) {
-            if worker.is_finished() {
-                if worker.join().is_err() {
-                    log::error!(
-                        "[container-transport] shutdown worker panicked during registry drop"
-                    );
+        {
+            let mut retained = retained.lock().unwrap_or_else(|error| error.into_inner());
+            let mut unfinished = Vec::with_capacity(retained.len());
+            for worker in retained.drain(..) {
+                if worker.is_finished() {
+                    if worker.join().is_err() {
+                        log::error!(
+                            "[container-transport] shutdown worker panicked during retained registry drop"
+                        );
+                    }
+                } else {
+                    unfinished.push(worker);
                 }
-            } else {
-                retained.push(worker);
             }
+            *retained = unfinished;
         }
+        let grace = Instant::now() + CONTAINER_SHUTDOWN_DROP_GRACE;
+        let remaining = self.join_idle_workers_until(grace);
+        let retained_count = remaining.len();
+        retained
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .extend(remaining);
+        log::warn!(
+            "[container-transport] registry drop retained {} unfinished shutdown workers",
+            retained_count
+        );
     }
 }
 
@@ -1267,25 +1380,51 @@ fn container_shutdown_worker(shared: Arc<ContainerShutdownWorkShared>) {
                     break Some(work);
                 }
                 if state.terminating {
+                    decrement_shutdown_worker_count(&mut state, &shared);
                     break None;
                 }
-                state = shared
-                    .work_available
-                    .wait(state)
-                    .unwrap_or_else(|error| error.into_inner());
+                let effective_deadline = if state.phase == ContainerShutdownPhase::GlobalSweep {
+                    state.sweep_deadline
+                } else {
+                    shared.control.shutdown_deadline()
+                };
+                match effective_deadline {
+                    Some(deadline) if Instant::now() >= deadline => {
+                        if state.active_producers == 0 {
+                            if state.phase == ContainerShutdownPhase::Accepting {
+                                state.phase = ContainerShutdownPhase::Draining;
+                            }
+                            state.terminating = true;
+                            shared.work_available.notify_all();
+                            shared.state_changed.notify_all();
+                            decrement_shutdown_worker_count(&mut state, &shared);
+                            break None;
+                        }
+                        state = shared
+                            .work_available
+                            .wait_timeout(state, CONTAINER_SHUTDOWN_IDLE_RECHECK)
+                            .unwrap_or_else(|error| error.into_inner())
+                            .0;
+                    }
+                    Some(deadline) => {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        state = shared
+                            .work_available
+                            .wait_timeout(state, remaining)
+                            .unwrap_or_else(|error| error.into_inner())
+                            .0;
+                    }
+                    None => {
+                        state = shared
+                            .work_available
+                            .wait_timeout(state, CONTAINER_SHUTDOWN_IDLE_RECHECK)
+                            .unwrap_or_else(|error| error.into_inner())
+                            .0;
+                    }
+                }
             }
         };
         let Some(work) = work else {
-            let mut state = shared
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if state.worker_count == 0 {
-                log::error!("[container-transport] shutdown worker count underflow on exit");
-            } else {
-                state.worker_count -= 1;
-            }
-            shared.state_changed.notify_all();
             return;
         };
         let id = work.id;
@@ -1340,6 +1479,7 @@ impl Drop for ContainerShutdownProducer {
         }
         state.active_producers -= 1;
         if state.active_producers == 0 {
+            self.registry.shared.work_available.notify_all();
             self.registry.shared.state_changed.notify_all();
         }
     }
@@ -3543,7 +3683,7 @@ mod tests {
     use crate::pty::container_runtime::{ContainerCleanupReport, RETAINED_OWNER_REPORT_CAPACITY};
     use crate::pty::manager::PtyManager;
     use crate::session::manager::SessionManager;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[derive(Default)]
     struct RecordingRuntime {
@@ -5094,6 +5234,385 @@ mod tests {
         let terminal = registry.seal_and_drain_until(Instant::now() + Duration::from_secs(1));
         assert!(terminal.terminal, "retained={:?}", terminal.retained);
         assert_eq!(registry.snapshot(), (true, 0, 0));
+    }
+
+    fn wait_for_shutdown_work_drain(registry: &ContainerShutdownWorkRegistry) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while registry.snapshot().2 != 0 {
+            assert!(Instant::now() < deadline, "shutdown work did not drain");
+            std::thread::sleep(CONTAINER_SHUTDOWN_POLL);
+        }
+    }
+
+    fn poll_shutdown_workers_until_zero(registry: &ContainerShutdownWorkRegistry, context: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while registry.worker_count() != 0 {
+            assert!(
+                Instant::now() < deadline,
+                "shutdown workers stayed alive after {context}: count={}",
+                registry.worker_count()
+            );
+            std::thread::sleep(CONTAINER_SHUTDOWN_POLL);
+        }
+    }
+
+    #[test]
+    fn drain_overrun_reclaims_workers_after_busy_item_is_released() {
+        let registry = Arc::new(ContainerShutdownWorkRegistry::default());
+        let producer = registry
+            .register_producer()
+            .expect("register overrun producer");
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        producer.spawn_owned(None, "t1-busy-item", move |_| {
+            started.send(()).expect("publish busy item start");
+            release_rx.recv().expect("wait for busy item release");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("busy item starts");
+        assert_eq!(registry.worker_count(), CONTAINER_SHUTDOWN_WORKER_CAPACITY);
+
+        let report = registry.seal_and_drain_until(Instant::now() + Duration::from_millis(100));
+        assert!(!report.terminal, "retained={:?}", report.retained);
+        release.send(()).expect("release busy item");
+        drop(producer);
+        poll_shutdown_workers_until_zero(&registry, "producers dropped after overrun");
+        assert_eq!(registry.snapshot(), (true, 0, 0));
+    }
+
+    #[test]
+    fn drain_overrun_keeps_workers_while_late_producer_is_alive() {
+        let registry = Arc::new(ContainerShutdownWorkRegistry::default());
+        let producer = registry
+            .register_producer()
+            .expect("register late-producer owner");
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        producer.spawn_owned(None, "t1b-busy-item", move |_| {
+            started.send(()).expect("publish busy item start");
+            release_rx.recv().expect("wait for busy item release");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("busy item starts");
+        assert_eq!(registry.worker_count(), CONTAINER_SHUTDOWN_WORKER_CAPACITY);
+
+        let report = registry.seal_and_drain_until(Instant::now() + Duration::from_millis(100));
+        assert!(!report.terminal, "retained={:?}", report.retained);
+        release.send(()).expect("release busy item");
+        let sample_deadline = Instant::now() + Duration::from_millis(200);
+        while Instant::now() < sample_deadline {
+            assert_eq!(
+                registry.worker_count(),
+                CONTAINER_SHUTDOWN_WORKER_CAPACITY,
+                "workers exited while the pre-seal producer was alive"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let late_ran = Arc::new(AtomicBool::new(false));
+        let late_ran_work = Arc::clone(&late_ran);
+        producer.spawn_owned(None, "t1b-late-item", move |_| {
+            late_ran_work.store(true, Ordering::SeqCst);
+        });
+        let late_deadline = Instant::now() + Duration::from_secs(5);
+        while !late_ran.load(Ordering::SeqCst) {
+            assert!(
+                Instant::now() < late_deadline,
+                "late producer work never ran after the overrun"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        drop(producer);
+        poll_shutdown_workers_until_zero(&registry, "late producer dropped");
+    }
+
+    #[test]
+    fn expired_control_deadline_with_unavailable_state_lock_still_seals_and_exits() {
+        let registry = Arc::new(ContainerShutdownWorkRegistry::default());
+        let producer = registry
+            .register_producer()
+            .expect("register quick-item producer");
+        let (done, done_rx) = std::sync::mpsc::channel();
+        producer.spawn_owned(None, "t2-quick-item", move |_| {
+            done.send(()).expect("publish quick item completion");
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("quick item runs");
+        drop(producer);
+        wait_for_shutdown_work_drain(&registry);
+        assert_eq!(registry.worker_count(), CONTAINER_SHUTDOWN_WORKER_CAPACITY);
+
+        let state_guard = registry
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let drain_registry = Arc::clone(&registry);
+        let drain = std::thread::spawn(move || {
+            drain_registry.seal_and_drain_until(Instant::now() + Duration::from_millis(50))
+        });
+        let report = drain.join().expect("join state-lock-blocked drain");
+        assert!(!report.terminal, "retained={:?}", report.retained);
+        drop(state_guard);
+
+        poll_shutdown_workers_until_zero(&registry, "failed state-lock drain");
+        assert!(
+            registry.register_producer().is_none(),
+            "Accepting admission hole stayed open after the failed begin_shutdown"
+        );
+        assert!(
+            registry.snapshot().0,
+            "failed begin_shutdown was never sealed"
+        );
+    }
+
+    #[test]
+    fn sweep_epoch_overrun_reclaims_workers() {
+        let registry = Arc::new(ContainerShutdownWorkRegistry::default());
+        assert!(
+            registry.begin_shutdown(Instant::now() + Duration::from_secs(1)),
+            "sweep epoch pre-seal must succeed"
+        );
+        let sweep_deadline = Instant::now() + Duration::from_millis(100);
+        assert!(
+            registry.start_global_sweep_epoch(sweep_deadline),
+            "global sweep epoch must start"
+        );
+        let control = registry.shared.control.clone();
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        assert!(
+            registry.spawn_global_sweep_owned_with_control(
+                None,
+                "t3-sweep-item",
+                control,
+                sweep_deadline,
+                move |_| {
+                    started.send(()).expect("publish sweep item start");
+                    release_rx.recv().expect("wait for sweep item release");
+                },
+            ),
+            "sweep item must be admitted"
+        );
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("sweep item starts");
+        assert_eq!(registry.worker_count(), CONTAINER_SHUTDOWN_WORKER_CAPACITY);
+
+        let report = registry.seal_and_drain_until(sweep_deadline);
+        assert!(!report.terminal, "retained={:?}", report.retained);
+        release.send(()).expect("release sweep item");
+        poll_shutdown_workers_until_zero(&registry, "sweep epoch overrun");
+    }
+
+    #[test]
+    fn sweep_epoch_reopen_after_overrun_keeps_fresh_workers() {
+        let registry = Arc::new(ContainerShutdownWorkRegistry::default());
+        let producer = registry
+            .register_producer()
+            .expect("register overrun producer");
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        producer.spawn_owned(None, "t4-busy-item", move |_| {
+            started.send(()).expect("publish busy item start");
+            release_rx.recv().expect("wait for busy item release");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("busy item starts");
+        assert_eq!(registry.worker_count(), CONTAINER_SHUTDOWN_WORKER_CAPACITY);
+        let report = registry.seal_and_drain_until(Instant::now() + Duration::from_millis(100));
+        assert!(!report.terminal, "retained={:?}", report.retained);
+        release.send(()).expect("release busy item");
+        drop(producer);
+        poll_shutdown_workers_until_zero(&registry, "control deadline overrun before reopen");
+
+        let epoch_deadline = Instant::now() + Duration::from_secs(1);
+        assert!(
+            registry.start_global_sweep_epoch(epoch_deadline),
+            "reopened sweep epoch must start"
+        );
+        let sample_deadline = Instant::now() + Duration::from_millis(200);
+        while Instant::now() < sample_deadline {
+            assert_eq!(
+                registry.worker_count(),
+                CONTAINER_SHUTDOWN_WORKER_CAPACITY,
+                "reopened epoch workers used the expired control deadline"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let sweep_ran = Arc::new(AtomicBool::new(false));
+        let sweep_ran_work = Arc::clone(&sweep_ran);
+        let control = registry.shared.control.clone();
+        assert!(
+            registry.spawn_global_sweep_owned_with_control(
+                None,
+                "t4-sweep-item",
+                control,
+                epoch_deadline,
+                move |_| {
+                    sweep_ran_work.store(true, Ordering::SeqCst);
+                },
+            ),
+            "reopened sweep item must be admitted"
+        );
+        let report = registry.seal_and_drain_until(epoch_deadline);
+        assert!(report.terminal, "retained={:?}", report.retained);
+        assert!(sweep_ran.load(Ordering::SeqCst), "sweep item never ran");
+        assert_eq!(registry.worker_count(), 0);
+    }
+
+    #[test]
+    fn registry_drop_helper_retains_only_busy_workers() {
+        let registry = Arc::new(ContainerShutdownWorkRegistry::default());
+        let producer = registry
+            .register_producer()
+            .expect("register busy-item producer");
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        producer.spawn_owned(None, "t5-busy-item", move |_| {
+            started.send(()).expect("publish busy item start");
+            release_rx.recv().expect("wait for busy item release");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("busy item starts");
+        assert_eq!(registry.worker_count(), CONTAINER_SHUTDOWN_WORKER_CAPACITY);
+        {
+            let mut state = registry
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.terminating = true;
+            registry.shared.work_available.notify_all();
+            registry.shared.state_changed.notify_all();
+        }
+
+        let remaining = registry.join_idle_workers_until(Instant::now() + Duration::from_secs(5));
+        assert_eq!(
+            remaining.len(),
+            1,
+            "the drop helper must retain only the busy worker"
+        );
+        release.send(()).expect("release busy item");
+        for worker in remaining {
+            worker.join().expect("join retained busy worker");
+        }
+        drop(producer);
+    }
+
+    #[test]
+    fn sweep_epoch_reopen_right_after_worker_exit_still_runs_sweep_work() {
+        // Probabilistic: a reopen racing the previous epoch's worker exit must
+        // still spawn live workers and admit sweep work. The 50 iterations
+        // exercise the race window; any single failure is a regression.
+        for _ in 0..50 {
+            let registry = Arc::new(ContainerShutdownWorkRegistry::default());
+            let producer = registry
+                .register_producer()
+                .expect("register overrun producer");
+            let (started, started_rx) = std::sync::mpsc::channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            producer.spawn_owned(None, "t6-busy-item", move |_| {
+                started.send(()).expect("publish busy item start");
+                release_rx.recv().expect("wait for busy item release");
+            });
+            started_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("busy item starts");
+            let report = registry.seal_and_drain_until(Instant::now() + Duration::from_millis(100));
+            assert!(!report.terminal, "retained={:?}", report.retained);
+            release.send(()).expect("release busy item");
+            drop(producer);
+            poll_shutdown_workers_until_zero(&registry, "overrun before reopen");
+
+            let epoch_deadline = Instant::now() + Duration::from_secs(1);
+            assert!(
+                registry.start_global_sweep_epoch(epoch_deadline),
+                "reopened sweep epoch must start"
+            );
+            let sweep_ran = Arc::new(AtomicBool::new(false));
+            let sweep_ran_work = Arc::clone(&sweep_ran);
+            let control = registry.shared.control.clone();
+            assert!(
+                registry.spawn_global_sweep_owned_with_control(
+                    None,
+                    "t6-sweep-item",
+                    control,
+                    epoch_deadline,
+                    move |_| {
+                        sweep_ran_work.store(true, Ordering::SeqCst);
+                    },
+                ),
+                "reopened sweep item must be admitted"
+            );
+            let report = registry.seal_and_drain_until(epoch_deadline);
+            assert!(report.terminal, "retained={:?}", report.retained);
+            assert!(sweep_ran.load(Ordering::SeqCst), "sweep item never ran");
+            assert_eq!(registry.worker_count(), 0);
+        }
+    }
+
+    #[test]
+    fn ensure_workers_does_not_spawn_or_spin_while_terminating() {
+        let registry = Arc::new(ContainerShutdownWorkRegistry::default());
+        let producer = registry
+            .register_producer()
+            .expect("register quick-item producer");
+        let (done, done_rx) = std::sync::mpsc::channel();
+        producer.spawn_owned(None, "t7-quick-item", move |_| {
+            done.send(()).expect("publish quick item completion");
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("quick item runs");
+        drop(producer);
+        assert_eq!(registry.worker_count(), CONTAINER_SHUTDOWN_WORKER_CAPACITY);
+        {
+            let mut state = registry
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.terminating = true;
+            registry.shared.work_available.notify_all();
+            registry.shared.state_changed.notify_all();
+        }
+        poll_shutdown_workers_until_zero(&registry, "terminating registry");
+
+        let (returned, returned_rx) = std::sync::mpsc::channel();
+        let ensure_registry = Arc::clone(&registry);
+        std::thread::spawn(move || {
+            let context = ContainerShutdownWorkContext {
+                session_id: None,
+                reason: "t7-ensure-workers",
+                provenance: ContainerShutdownWorkProvenance::GlobalSweep,
+            };
+            returned
+                .send(ensure_registry.ensure_workers(&context))
+                .expect("publish ensure_workers result");
+        });
+        assert_eq!(
+            returned_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("ensure_workers must return while terminating"),
+            0
+        );
+        assert_eq!(
+            registry
+                .workers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            0
+        );
+        assert_eq!(registry.worker_count(), 0);
     }
 
     #[tokio::test]
