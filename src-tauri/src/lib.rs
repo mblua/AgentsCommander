@@ -3823,6 +3823,7 @@ pub fn run(
                 commands::loops::toggle_loop,
                 commands::loops::run_loop_now,
                 commands::loops::get_loop_config,
+                commands::loops::list_unresolved_loop_targets,
                 commands::loops::preview_loop_cron,
                 commands::entity_creation::create_agent_matrix,
                 commands::entity_creation::delete_agent_matrix,

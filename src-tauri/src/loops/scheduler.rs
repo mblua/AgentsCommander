@@ -3,15 +3,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
     append_loop_audit_once, baseline_loop_state, details_from_parts, latest_due_between, loop_dir,
-    next_due_after, read_loop_config, read_loop_state, revalidate_loop_current,
-    write_loop_state_atomic, LoopAuditEntry, LoopAuditKind, LoopConfigDetails,
-    LoopConfigRevalidation, LoopConfigToml, LoopLastResult, LoopState, LOOP_DIR_PREFIX,
+    next_due_after, read_loop_config, read_loop_state, resolve_loop_target,
+    revalidate_loop_current, write_loop_state_atomic, LoopAuditEntry, LoopAuditKind,
+    LoopConfigDetails, LoopConfigRevalidation, LoopConfigToml, LoopLastResult, LoopState,
+    LOOP_DIR_PREFIX,
 };
 use crate::config::projects::{enumerate_registered_project_candidates, ProjectResolution};
 use crate::config::sessions_persistence;
@@ -19,6 +21,16 @@ use crate::config::settings::SettingsState;
 use crate::loops::delivery::{deliver_loop_prompt, LoopDeliveryReport};
 use crate::loops::events::emit_loop_change;
 use crate::shutdown::ShutdownSignal;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnresolvedLoopTarget {
+    pub project_path: String,
+    pub loop_id: String,
+    pub loop_name: String,
+    pub workgroup: String,
+    pub error: String,
+}
 
 pub struct LoopScheduler {
     notify: tokio::sync::Notify,
@@ -104,16 +116,17 @@ impl LoopScheduler {
         Ok(details_from_parts(&dir, &config, &state))
     }
 
+    pub async fn unresolved_loop_targets(&self, app: &AppHandle) -> Vec<UnresolvedLoopTarget> {
+        let mut alerts = Vec::new();
+        for project in active_project_candidates(app).await {
+            alerts.extend(unresolved_targets_in_project(&project.path));
+        }
+        alerts
+    }
+
     async fn scan_once(&self, app: AppHandle, startup: bool, pending_only: bool) {
         let _guard = self.scan_lock.lock().await;
-        let (project_paths, archived) = {
-            let settings = app.state::<SettingsState>();
-            let s = settings.read().await;
-            (s.project_paths.clone(), s.archived_project_paths.clone())
-        };
-        let projects = enumerate_registered_project_candidates(&project_paths);
-        let archived_roots = sessions_persistence::normalize_project_roots(&archived);
-        let projects = retain_unarchived_candidates(projects, &archived_roots);
+        let projects = active_project_candidates(&app).await;
         for project in projects {
             if let Err(e) = self
                 .scan_project(&app, &project.path, startup, pending_only)
@@ -440,6 +453,61 @@ impl Default for LoopScheduler {
     }
 }
 
+async fn active_project_candidates(app: &AppHandle) -> Vec<ProjectResolution> {
+    let (project_paths, archived) = {
+        let settings = app.state::<SettingsState>();
+        let s = settings.read().await;
+        (s.project_paths.clone(), s.archived_project_paths.clone())
+    };
+    let projects = enumerate_registered_project_candidates(&project_paths);
+    let archived_roots = sessions_persistence::normalize_project_roots(&archived);
+    retain_unarchived_candidates(projects, &archived_roots)
+}
+
+fn unresolved_targets_in_project(project_dir: &Path) -> Vec<UnresolvedLoopTarget> {
+    let mut alerts = Vec::new();
+    let Some(ac_root) = existing_ac_root(project_dir) else {
+        return alerts;
+    };
+    let dirs = match loop_dirs(&ac_root) {
+        Ok(dirs) => dirs,
+        Err(e) => {
+            log::warn!(
+                "[loops] Failed to list Loops for project {}: {}",
+                project_dir.display(),
+                e
+            );
+            return alerts;
+        }
+    };
+    for dir in dirs {
+        let config = match read_loop_config(&dir) {
+            Ok(config) => config,
+            Err(e) => {
+                log::warn!(
+                    "[loops] Failed to read Loop config {}: {}",
+                    dir.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        if !config.loop_def.enabled {
+            continue;
+        }
+        if let Err(e) = resolve_loop_target(project_dir, &config) {
+            alerts.push(UnresolvedLoopTarget {
+                project_path: project_dir.to_string_lossy().into(),
+                loop_id: config.loop_def.id.clone(),
+                loop_name: config.loop_def.name.clone(),
+                workgroup: config.target.workgroup.clone(),
+                error: e,
+            });
+        }
+    }
+    alerts
+}
+
 fn loop_dirs(ac_root: &Path) -> Result<Vec<PathBuf>, String> {
     let entries =
         std::fs::read_dir(ac_root).map_err(|e| format!("Failed to read Project AC Root: {}", e))?;
@@ -636,6 +704,101 @@ mod tests {
         assert_eq!(filtered.capacity(), capacity);
     }
 
+    fn project_with_loop(config: &LoopConfigToml) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("create ac root");
+        write_loop_config(&ac_root, config).expect("write config");
+        tmp
+    }
+
+    #[test]
+    fn unresolved_targets_in_project_reports_a_missing_room() {
+        let config = sample_config();
+        let tmp = project_with_loop(&config);
+
+        let alerts = unresolved_targets_in_project(tmp.path());
+
+        assert_eq!(alerts.len(), 1, "one unresolved Loop target");
+        let alert = &alerts[0];
+        assert_eq!(alert.loop_id, config.loop_def.id);
+        assert_eq!(alert.loop_name, config.loop_def.name);
+        assert_eq!(alert.workgroup, config.target.workgroup);
+        assert!(
+            alert.error.starts_with("Room '") && alert.error.contains("not found in project"),
+            "unexpected error: {}",
+            alert.error
+        );
+    }
+
+    #[test]
+    fn unresolved_targets_in_project_skips_disabled_loops() {
+        let mut config = sample_config();
+        config.loop_def.enabled = false;
+        let tmp = project_with_loop(&config);
+
+        assert!(unresolved_targets_in_project(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn unresolved_targets_in_project_reports_a_room_without_an_orchestrator() {
+        let config = sample_config();
+        let tmp = project_with_loop(&config);
+        std::fs::create_dir_all(tmp.path().join(".ac").join(&config.target.workgroup))
+            .expect("create room dir");
+
+        let alerts = unresolved_targets_in_project(tmp.path());
+
+        assert_eq!(alerts.len(), 1);
+        assert!(
+            alerts[0]
+                .error
+                .contains("has no identity-verified orchestrator"),
+            "unexpected error: {}",
+            alerts[0].error
+        );
+    }
+
+    #[test]
+    fn unresolved_targets_in_project_returns_empty_without_an_ac_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        assert!(unresolved_targets_in_project(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn unresolved_targets_in_project_orders_by_loop_dir() {
+        let mut first = sample_config();
+        first.loop_def.id = "aaa-sync".to_string();
+        let mut second = sample_config();
+        second.loop_def.id = "zzz-sync".to_string();
+
+        let tmp = project_with_loop(&second);
+        let ac_root = tmp.path().join(".ac");
+        write_loop_config(&ac_root, &first).expect("write first config");
+
+        let alerts = unresolved_targets_in_project(tmp.path());
+
+        assert_eq!(
+            alerts
+                .iter()
+                .map(|a| a.loop_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["aaa-sync", "zzz-sync"]
+        );
+    }
+
+    #[test]
+    fn lib_registers_list_unresolved_loop_targets() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+            .expect("read lib.rs");
+
+        assert!(
+            source.contains("commands::loops::list_unresolved_loop_targets"),
+            "lib.rs must register list_unresolved_loop_targets"
+        );
+    }
+
     #[test]
     fn scan_once_calls_archived_candidate_filter() {
         let source = std::fs::read_to_string(concat!(
@@ -647,16 +810,20 @@ mod tests {
             .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("production scheduler source");
-        let normalize = production
+        let candidates = production
+            .find("async fn active_project_candidates(app: &AppHandle) -> Vec<ProjectResolution> {")
+            .expect("active_project_candidates definition");
+        let body = &production[candidates..];
+        let normalize = body
             .find("let archived_roots = sessions_persistence::normalize_project_roots(&archived);")
             .expect("archived root normalization");
-        let retain = production
-            .find("let projects = retain_unarchived_candidates(projects, &archived_roots);")
+        let retain = body
+            .find("retain_unarchived_candidates(projects, &archived_roots)")
             .expect("retain_unarchived_candidates call");
 
         assert!(
             normalize < retain,
-            "scan_once must subtract archived candidates after normalizing archived roots"
+            "active_project_candidates must subtract archived candidates after normalizing archived roots"
         );
     }
 

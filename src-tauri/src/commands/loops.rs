@@ -15,7 +15,7 @@ use crate::config::loops::{
 };
 // #1252: keep private. A `pub use` here would re-expose the emitter and kill the E0603 backstop.
 use crate::loops::events::emit_loop_change;
-use crate::loops::scheduler::LoopScheduler;
+use crate::loops::scheduler::{LoopScheduler, UnresolvedLoopTarget};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -306,4 +306,12 @@ fn validated_prompt(prompt: String) -> Result<String, String> {
     } else {
         Ok(prompt)
     }
+}
+
+#[tauri::command]
+pub async fn list_unresolved_loop_targets(
+    app: AppHandle,
+    scheduler: State<'_, Arc<LoopScheduler>>,
+) -> Result<Vec<UnresolvedLoopTarget>, String> {
+    Ok(scheduler.unresolved_loop_targets(&app).await)
 }
