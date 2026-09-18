@@ -962,6 +962,14 @@ impl RemoteSweeper {
         //
         // Only the staleness axis moves. A new commit has genuinely unknown CI,
         // and seeding it would assert a run state nobody observed.
+        //
+        // The carry lives inside ONE round and is not a guarantee: if the old key
+        // is retired with no live key on its `(nwo, branch)` to receive it — the
+        // path left the work list, the last room closed, `.git` went unreadable,
+        // the repo was archived — the memory is gone, and the next observation of
+        // that branch starts at `None`, which is not an edge. That case is silent
+        // today too, so nothing regresses, but do not read this block as a
+        // promise that survives a path dropping out of a round.
         {
             let mut state = self.lock_state();
             // Donors are computed BEFORE anything is deleted, and only from keys
@@ -3351,6 +3359,20 @@ mod tests {
     /// Two live paths on one `(nwo, branch)` at different commits — worktrees, or
     /// two clones on the same branch. Neither is retired, so neither may donate:
     /// a live key answering for itself must not be overwritten by the other.
+    ///
+    /// The shape is load-bearing, and the obvious shapes do not test the rule.
+    /// One round proves nothing: on the first round `state.keys` is empty, so
+    /// there are no donors of any kind and the donor filter is never reached. Two
+    /// clean rounds prove nothing either: both keys would hold
+    /// `confirmed = Some(..)` and the `confirmed.is_none()` guard would protect
+    /// them whatever the filter said. One live key has to sit at
+    /// `confirmed = None` while the other holds a `Current`, and a failed compare
+    /// is the only way to get there.
+    ///
+    /// Drop the `!groups.contains_key` filter and B is seeded from A's `Current`,
+    /// reaches `Current -> Stale` in round 2 and notifies, so this test fails.
+    /// Each key is scripted by its own sha through `route`, because two due keys
+    /// are polled concurrently and a shared queue would not be deterministic.
     #[tokio::test]
     async fn two_live_keys_on_one_branch_never_seed_each_other() {
         let _guard = round_test_lock().await;
@@ -3365,34 +3387,39 @@ mod tests {
             git.set_head_sha(&first, 'a');
             git.set_head_sha(&second, 'b');
         }
+        let sha_a = sha_of('a');
+        let sha_b = sha_of('b');
         {
             let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
             gh.repo_info
                 .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
-            // One key is up to date with work of its own, the other is behind
-            // with work of its own. Both are live, so neither donates.
-            gh.compare
-                .push_back(Ok(ok_output(&compare_body("ahead", 0, 1))));
-            gh.compare
-                .push_back(Ok(ok_output(&compare_body("behind", 3, 1))));
+            // Round 1: A answers and records `Current`. B's compare fails, so B
+            // keeps `confirmed = None` while both keys stay live.
+            gh.route(&sha_a, Ok(ok_output(&compare_body("ahead", 0, 1))));
+            gh.route(&sha_b, Err(FailureKind::Other));
         }
 
-        let now = Instant::now();
-        let wall = Local::now();
+        let mut now = Instant::now();
+        let mut wall = Local::now();
         harness.round(now, wall).await;
         drain(&harness);
 
-        let state = harness.sweeper.lock_state();
-        let mut confirmed: Vec<Option<StalenessState>> = state
-            .keys
-            .values()
-            .map(|entry| entry.staleness.confirmed)
-            .collect();
-        confirmed.sort_by_key(|value| format!("{value:?}"));
-        assert_eq!(
-            confirmed,
-            vec![Some(StalenessState::Current), Some(StalenessState::Stale)],
-            "each live key keeps the answer it received; neither seeds the other"
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            // Round 2: A unchanged, B behind with work of its own. B's own history
+            // is `None`, so `None -> Stale` is not an edge and B stays quiet —
+            // unless it was wrongly seeded with A's `Current`.
+            gh.route(&sha_a, Ok(ok_output(&compare_body("ahead", 0, 1))));
+            gh.route(&sha_b, Ok(ok_output(&compare_body("behind", 3, 1))));
+        }
+        // 900s, not 300s: B's failed round backs off to 600s, and the rule is
+        // only exercised when BOTH keys are due and live in the same round.
+        tick(&mut now, &mut wall, 900);
+        harness.round(now, wall).await;
+
+        assert!(
+            harness.drain_transitions().is_empty(),
+            "a live key must not donate to another live key on the same branch"
         );
     }
 
