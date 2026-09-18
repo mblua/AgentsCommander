@@ -1185,129 +1185,296 @@ fn encode_preview_data_url(
 
 // ── Overlay windows ────────────────────────────────────────────────────────
 
+/// Where an overlay window goes. `frame` names the coordinate space `x`, `y`,
+/// `width` and `height` are expressed in.
 struct OverlayPlacement {
     label: String,
     monitor_id: u32,
-    /// Physical pixels.
+    /// Physical pixels on `PlacementFrame::Physical`, logical points on
+    /// `PlacementFrame::Logical`.
     x: i32,
     y: i32,
     width: u32,
     height: u32,
     scale_factor: f64,
+    frame: PlacementFrame,
 }
 
-/// xcap monitor origins are physical pixels on Windows and Linux, and logical
-/// points (`CGDisplayBounds`) on macOS.
-const XCAP_ORIGIN_IS_LOGICAL: bool = cfg!(target_os = "macos");
+/// A monitor as either source can describe it. `scale` is that source's own
+/// scale factor.
+///
+/// The rule this type exists to enforce (#2173): **tao owns the screen
+/// coordinate space** — every value handed to Tauri is derived from
+/// `tauri::Monitor` alone — and **xcap owns pixels** — the captured bitmap stays
+/// the sole authority for the crop. The xcap scale factor is used for exactly
+/// one thing: converting the bitmap size to points, so that an xcap monitor can
+/// be compared to a tao monitor. The two scales disagree on macOS and the
+/// disagreement is not reconcilable by a factor: xcap reports
+/// `pixel_width / CGDisplayBounds.width` (1.714 in "More Space") while tao
+/// reports `backingScaleFactor` (2.0) for the same display. Points are the only
+/// frame in which both describe the monitor exactly.
+#[derive(Debug, Clone, PartialEq)]
+struct MonitorGeometry {
+    name: Option<String>,
+    /// The source's own frame: physical pixels for tao, points for xcap on macOS.
+    position: (i32, i32),
+    /// tao: the physical monitor size. xcap: the captured bitmap, always pixels.
+    size: (u32, u32),
+    scale: f64,
+}
 
-fn xcap_origin_in_physical(
+/// A monitor's frame in logical points — the only cross-source comparison space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LogicalFrame {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// Geometry for one overlay, before it is paired with a label.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlacementGeometry {
     x: i32,
     y: i32,
+    width: u32,
+    height: u32,
     scale_factor: f64,
-    origin_is_logical: bool,
-) -> (i32, i32) {
-    if !origin_is_logical || scale_factor <= 0.0 {
-        return (x, y);
-    }
-    (
-        (x as f64 * scale_factor).round() as i32,
-        (y as f64 * scale_factor).round() as i32,
-    )
+    frame: PlacementFrame,
 }
 
-/// tao reports macOS monitor sizes at scale x real pixels; the captured
-/// bitmap is authoritative there. Identity elsewhere.
-const PLACEMENT_SIZE_FROM_BITMAP: bool = cfg!(target_os = "macos");
+/// The coordinate frame overlay geometry is expressed in. macOS must use
+/// `Logical`: its two sources disagree on the physical scale, so points are the
+/// only frame where `tauri::Monitor` describes the monitor exactly. Windows and
+/// Linux keep `Physical`, where the two sources agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlacementFrame {
+    Physical,
+    Logical,
+}
 
-fn placement_size(tauri: (u32, u32), bitmap: (u32, u32), size_from_bitmap: bool) -> (u32, u32) {
-    if size_from_bitmap {
-        bitmap
+const fn placement_frame() -> PlacementFrame {
+    #[cfg(target_os = "macos")]
+    {
+        PlacementFrame::Logical
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        PlacementFrame::Physical
+    }
+}
+
+/// Rounding slack when pairing the two sources by logical frame. Both sides
+/// round to whole pixels before we divide, so a point can be off by one on each
+/// axis of the origin and by one on each axis of the size.
+const LOGICAL_ORIGIN_TOLERANCE_PT: f64 = 1.0;
+const LOGICAL_SIZE_TOLERANCE_PT: f64 = 2.0;
+
+/// Neither source promises a positive scale; a zero would produce infinities.
+fn positive_scale(scale: f64) -> f64 {
+    if scale > 0.0 {
+        scale
     } else {
-        tauri
+        1.0
     }
 }
 
-/// Decide where each overlay goes. Prefer Tauri's own monitor geometry (physical
-/// position/size + per-monitor scale) matched to the xcap monitor by name, then
-/// by nearest origin; fall back to the xcap geometry if no Tauri monitor matches.
-/// Placement is decoupled from xcap coordinate semantics this way (plan §C).
+/// tao reports origin and size in physical pixels, so points are both divided by
+/// its own scale factor.
+fn tauri_logical_frame(g: &MonitorGeometry) -> LogicalFrame {
+    let scale = positive_scale(g.scale);
+    LogicalFrame {
+        x: g.position.0 as f64 / scale,
+        y: g.position.1 as f64 / scale,
+        width: g.size.0 as f64 / scale,
+        height: g.size.1 as f64 / scale,
+    }
+}
+
+/// xcap on macOS already reports the origin in points (`CGDisplayBounds`); only
+/// the captured bitmap needs dividing by the xcap scale factor.
+fn xcap_logical_frame(g: &MonitorGeometry) -> LogicalFrame {
+    let scale = positive_scale(g.scale);
+    LogicalFrame {
+        x: g.position.0 as f64,
+        y: g.position.1 as f64,
+        width: g.size.0 as f64 / scale,
+        height: g.size.1 as f64 / scale,
+    }
+}
+
+fn logical_origin_distance(a: &LogicalFrame, b: &LogicalFrame) -> f64 {
+    (a.x - b.x).abs() + (a.y - b.y).abs()
+}
+
+/// Pair an xcap monitor with a tao monitor, returning its index.
+///
+/// On `Physical` (Windows, Linux) this is the historical criterion: by name,
+/// else by nearest origin.
+///
+/// On `Logical` (macOS) the name is useless — xcap says `"Display #<model>"` and
+/// tao says `"Monitor #<model>"`, so the comparison is never equal, and both
+/// embed the display *model* number, so repairing the prefix would make two
+/// identical displays collide. The logical frame identifies a monitor exactly
+/// and disambiguates twins by origin: accept the first candidate whose origin
+/// and size both fall inside the rounding tolerance, else fall back to the
+/// nearest origin, which is what shipped before.
+fn match_monitor(
+    tauri: &[MonitorGeometry],
+    captured: &MonitorGeometry,
+    frame: PlacementFrame,
+) -> Option<usize> {
+    if frame == PlacementFrame::Physical {
+        if let Some(idx) = tauri
+            .iter()
+            .position(|tm| tm.name.is_some() && tm.name == captured.name)
+        {
+            return Some(idx);
+        }
+        let (cx, cy) = captured.position;
+        return tauri
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, tm)| {
+                let dx = (tm.position.0 - cx).unsigned_abs() as u64;
+                let dy = (tm.position.1 - cy).unsigned_abs() as u64;
+                dx + dy
+            })
+            .map(|(idx, _)| idx);
+    }
+
+    let want = xcap_logical_frame(captured);
+    if let Some(idx) = tauri.iter().position(|tm| {
+        let got = tauri_logical_frame(tm);
+        logical_origin_distance(&got, &want) <= LOGICAL_ORIGIN_TOLERANCE_PT
+            && (got.width - want.width).abs() + (got.height - want.height).abs()
+                <= LOGICAL_SIZE_TOLERANCE_PT
+    }) {
+        return Some(idx);
+    }
+    tauri
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            logical_origin_distance(&tauri_logical_frame(a), &want)
+                .total_cmp(&logical_origin_distance(&tauri_logical_frame(b), &want))
+        })
+        .map(|(idx, _)| idx)
+}
+
+impl PlacementGeometry {
+    fn from_logical(f: LogicalFrame, scale_factor: f64) -> Self {
+        Self {
+            x: f.x.round() as i32,
+            y: f.y.round() as i32,
+            width: f.width.round().max(0.0) as u32,
+            height: f.height.round().max(0.0) as u32,
+            scale_factor,
+            frame: PlacementFrame::Logical,
+        }
+    }
+}
+
+/// Geometry for one overlay. Prefer the matched tao monitor — it is authoritative
+/// for every Tauri coordinate — and fall back to the xcap geometry when nothing
+/// matched.
+fn build_placement(
+    tauri: Option<&MonitorGeometry>,
+    captured: &MonitorGeometry,
+    frame: PlacementFrame,
+) -> PlacementGeometry {
+    match (frame, tauri) {
+        (PlacementFrame::Physical, Some(tm)) => PlacementGeometry {
+            x: tm.position.0,
+            y: tm.position.1,
+            width: tm.size.0,
+            height: tm.size.1,
+            scale_factor: tm.scale,
+            frame,
+        },
+        (PlacementFrame::Physical, None) => PlacementGeometry {
+            x: captured.position.0,
+            y: captured.position.1,
+            width: captured.size.0,
+            height: captured.size.1,
+            scale_factor: captured.scale,
+            frame,
+        },
+        (PlacementFrame::Logical, Some(tm)) => {
+            PlacementGeometry::from_logical(tauri_logical_frame(tm), tm.scale)
+        }
+        (PlacementFrame::Logical, None) => {
+            PlacementGeometry::from_logical(xcap_logical_frame(captured), captured.scale)
+        }
+    }
+}
+
+/// Decide where each overlay goes. The adapter around the pure functions above:
+/// describe both sides as `MonitorGeometry`, pair them, and build the placement
+/// in this target's frame.
 fn build_placements(
     app: &AppHandle,
     capture_id: Uuid,
     monitors: &[CapturedMonitor],
 ) -> Vec<OverlayPlacement> {
-    let tauri_monitors = app.available_monitors().unwrap_or_default();
+    let frame = placement_frame();
+    let tauri_monitors: Vec<MonitorGeometry> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|tm| {
+            let pos = tm.position();
+            let size = tm.size();
+            MonitorGeometry {
+                name: tm.name().cloned(),
+                position: (pos.x, pos.y),
+                size: (size.width, size.height),
+                scale: tm.scale_factor(),
+            }
+        })
+        .collect();
     monitors
         .iter()
         .map(|m| {
-            let (x, y, width, height, scale_factor) = match_tauri_monitor(&tauri_monitors, m)
-                .map(|tm| {
-                    let pos = tm.position();
-                    let size = tm.size();
-                    let (width, height) = placement_size(
-                        (size.width, size.height),
-                        (m.width, m.height),
-                        PLACEMENT_SIZE_FROM_BITMAP,
-                    );
-                    #[cfg(target_os = "macos")]
-                    log::info!(
-                        "[screenshot] monitor {} tauri raw position=({},{}) size={}x{} scale={}",
-                        m.monitor_id,
-                        pos.x,
-                        pos.y,
-                        size.width,
-                        size.height,
-                        tm.scale_factor()
-                    );
-                    (pos.x, pos.y, width, height, tm.scale_factor())
-                })
-                .unwrap_or_else(|| {
-                    let (x, y) =
-                        xcap_origin_in_physical(m.x, m.y, m.scale_factor, XCAP_ORIGIN_IS_LOGICAL);
-                    (x, y, m.width, m.height, m.scale_factor)
-                });
-            if width != m.width || height != m.height {
+            let captured = MonitorGeometry {
+                name: Some(m.name.clone()),
+                position: (m.x, m.y),
+                size: (m.width, m.height),
+                scale: m.scale_factor,
+            };
+            let matched = match_monitor(&tauri_monitors, &captured, frame)
+                .and_then(|idx| tauri_monitors.get(idx));
+            #[cfg(target_os = "macos")]
+            if let Some(tm) = matched {
+                log::info!(
+                    "[screenshot] monitor {} tauri raw position=({},{}) size={}x{} scale={}",
+                    m.monitor_id,
+                    tm.position.0,
+                    tm.position.1,
+                    tm.size.0,
+                    tm.size.1,
+                    tm.scale
+                );
+            }
+            let g = build_placement(matched, &captured, frame);
+            if g.frame == PlacementFrame::Physical && (g.width != m.width || g.height != m.height) {
                 log::warn!(
                     "[screenshot] monitor {} placement size {}x{} differs from captured bitmap {}x{}; using placement for window, bitmap for crop",
-                    m.monitor_id, width, height, m.width, m.height
+                    m.monitor_id, g.width, g.height, m.width, m.height
                 );
             }
             OverlayPlacement {
                 label: overlay_label(capture_id, m.monitor_id),
                 monitor_id: m.monitor_id,
-                x,
-                y,
-                width,
-                height,
-                scale_factor,
+                x: g.x,
+                y: g.y,
+                width: g.width,
+                height: g.height,
+                scale_factor: g.scale_factor,
+                frame: g.frame,
             }
         })
         .collect()
-}
-
-/// Match an xcap monitor to a Tauri monitor by name, else by nearest origin.
-fn match_tauri_monitor<'a>(
-    tauri_monitors: &'a [tauri::Monitor],
-    captured: &CapturedMonitor,
-) -> Option<&'a tauri::Monitor> {
-    if let Some(by_name) = tauri_monitors
-        .iter()
-        .find(|tm| tm.name().map(|n| n.as_str()) == Some(captured.name.as_str()))
-    {
-        return Some(by_name);
-    }
-    let (cx, cy) = xcap_origin_in_physical(
-        captured.x,
-        captured.y,
-        captured.scale_factor,
-        XCAP_ORIGIN_IS_LOGICAL,
-    );
-    tauri_monitors.iter().min_by_key(|tm| {
-        let pos = tm.position();
-        let dx = (pos.x - cx).unsigned_abs() as u64;
-        let dy = (pos.y - cy).unsigned_abs() as u64;
-        dx + dy
-    })
 }
 
 fn overlay_label(capture_id: Uuid, monitor_id: u32) -> String {
@@ -1363,10 +1530,20 @@ fn open_overlay_windows(
 
     let traits = overlay_window_traits();
     for p in placements {
-        let scale = if p.scale_factor > 0.0 {
-            p.scale_factor
-        } else {
-            1.0
+        // Builder-time size/position are logical points on every target. On the
+        // `Logical` frame the placement already is points; on `Physical` it is
+        // pixels and divides by the monitor scale, exactly as before.
+        let (logical_w, logical_h, logical_x, logical_y) = match p.frame {
+            PlacementFrame::Logical => (p.width as f64, p.height as f64, p.x as f64, p.y as f64),
+            PlacementFrame::Physical => {
+                let scale = positive_scale(p.scale_factor);
+                (
+                    p.width as f64 / scale,
+                    p.height as f64 / scale,
+                    p.x as f64 / scale,
+                    p.y as f64 / scale,
+                )
+            }
         };
         let url = format!(
             "index.html?window=screenshot-overlay&captureId={capture_id}&monitorId={}",
@@ -1386,22 +1563,38 @@ fn open_overlay_windows(
             .resizable(traits.resizable)
             .focused(true)
             .zoom_hotkeys_enabled(false)
-            .inner_size(p.width as f64 / scale, p.height as f64 / scale)
-            .position(p.x as f64 / scale, p.y as f64 / scale)
+            .inner_size(logical_w, logical_h)
+            .position(logical_x, logical_y)
             .build()
             .map_err(|e| format!("failed to create overlay '{}': {e}", p.label))?;
 
+        // Post-build correction, in the placement's own frame. `Physical` is the
+        // historical path byte for byte; `Logical` is macOS, where the overlay
+        // must be stated in points or a scaled display mode undersizes it.
+        let (size, position) = match p.frame {
+            PlacementFrame::Physical => (
+                tauri::Size::Physical(tauri::PhysicalSize {
+                    width: p.width,
+                    height: p.height,
+                }),
+                tauri::Position::Physical(tauri::PhysicalPosition { x: p.x, y: p.y }),
+            ),
+            PlacementFrame::Logical => (
+                tauri::Size::Logical(tauri::LogicalSize {
+                    width: p.width as f64,
+                    height: p.height as f64,
+                }),
+                tauri::Position::Logical(tauri::LogicalPosition {
+                    x: p.x as f64,
+                    y: p.y as f64,
+                }),
+            ),
+        };
         window
-            .set_size(tauri::Size::Physical(tauri::PhysicalSize {
-                width: p.width,
-                height: p.height,
-            }))
+            .set_size(size)
             .map_err(|e| format!("failed to size overlay '{}': {e}", p.label))?;
         window
-            .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                x: p.x,
-                y: p.y,
-            }))
+            .set_position(position)
             .map_err(|e| format!("failed to position overlay '{}': {e}", p.label))?;
 
         if traits.fullscreen {
@@ -2356,33 +2549,292 @@ mod tests {
         assert_eq!(overlay_window_traits(), expected);
     }
 
-    #[test]
-    fn xcap_origin_conversion_is_identity_unless_logical() {
-        assert_eq!(xcap_origin_in_physical(-1920, 0, 2.0, false), (-1920, 0));
-        assert_eq!(
-            xcap_origin_in_physical(1440, -900, 2.0, true),
-            (2880, -1800)
+    /// Frames are f64; compare with a tolerance far below the 1 pt matching slack.
+    fn assert_close(actual: f64, expected: f64, what: &str) {
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "{what}: expected ~{expected}, got {actual}"
         );
-        assert_eq!(xcap_origin_in_physical(1512, 0, 1.5, true), (2268, 0));
-        assert_eq!(xcap_origin_in_physical(7, 7, 0.0, true), (7, 7));
-        assert_eq!(XCAP_ORIGIN_IS_LOGICAL, cfg!(target_os = "macos"));
+    }
+
+    /// The internal display in macOS "More Space": xcap reports the mode pixels
+    /// and a derived 1.714 scale, tao reports 2.0. Only points agree.
+    fn more_space_captured() -> MonitorGeometry {
+        MonitorGeometry {
+            name: Some("Display #123".to_string()),
+            position: (0, 0),
+            size: (2880, 1800),
+            scale: 2880.0 / 1680.0,
+        }
+    }
+
+    fn more_space_tauri() -> MonitorGeometry {
+        MonitorGeometry {
+            name: Some("Monitor #123".to_string()),
+            position: (0, 0),
+            size: (3360, 2100),
+            scale: 2.0,
+        }
     }
 
     #[test]
-    fn placement_size_uses_bitmap_only_when_flagged() {
+    fn xcap_logical_frame_divides_bitmap_by_xcap_scale() {
+        let f = xcap_logical_frame(&more_space_captured());
+        // The origin is already points on macOS (`CGDisplayBounds`).
+        assert_close(f.x, 0.0, "x");
+        assert_close(f.y, 0.0, "y");
+        assert_close(f.width, 1680.0, "width");
+        assert_close(f.height, 1050.0, "height");
+        // A zero scale must not produce infinities.
+        let zero = MonitorGeometry {
+            scale: 0.0,
+            ..more_space_captured()
+        };
+        assert_close(xcap_logical_frame(&zero).width, 2880.0, "zero-scale width");
+    }
+
+    #[test]
+    fn match_monitor_pairs_more_space_display_by_logical_frame() {
+        // 2880/1.714 = 1680 pt and 3360/2.0 = 1680 pt: the same monitor, which
+        // no physical-pixel comparison could tell.
+        let tauri = [more_space_tauri()];
         assert_eq!(
-            placement_size((5760, 3600), (2880, 1800), true),
-            (2880, 1800)
+            match_monitor(&tauri, &more_space_captured(), PlacementFrame::Logical),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn match_monitor_pairs_mixed_scale_pair() {
+        // M6: internal "More Space" at the origin plus a 1x external to its
+        // right. Both xcap names are identical, so the pairing rests entirely on
+        // the logical frame. The tao list is reversed so that index order alone
+        // cannot produce the right answer.
+        let external_captured = MonitorGeometry {
+            name: Some("Display #123".to_string()),
+            position: (1680, 0),
+            size: (1920, 1080),
+            scale: 1.0,
+        };
+        let external_tauri = MonitorGeometry {
+            name: Some("Monitor #123".to_string()),
+            position: (1680, 0),
+            size: (1920, 1080),
+            scale: 1.0,
+        };
+        let tauri = [external_tauri, more_space_tauri()];
+        assert_eq!(
+            match_monitor(&tauri, &more_space_captured(), PlacementFrame::Logical),
+            Some(1)
         );
         assert_eq!(
-            placement_size((1920, 1080), (1920, 1080), false),
-            (1920, 1080)
+            match_monitor(&tauri, &external_captured, PlacementFrame::Logical),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn match_monitor_pairs_identical_twins_by_origin() {
+        // Same model, same size: the name criterion could never separate these.
+        let twin = |x: i32| MonitorGeometry {
+            name: Some("Display #7".to_string()),
+            position: (x, 0),
+            size: (1920, 1080),
+            scale: 1.0,
+        };
+        let tauri = [twin(0), twin(1920)];
+        assert_eq!(
+            match_monitor(&tauri, &twin(0), PlacementFrame::Logical),
+            Some(0)
         );
         assert_eq!(
-            placement_size((5760, 3600), (2880, 1800), false),
-            (5760, 3600)
+            match_monitor(&tauri, &twin(1920), PlacementFrame::Logical),
+            Some(1)
         );
-        assert_eq!(PLACEMENT_SIZE_FROM_BITMAP, cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn match_monitor_falls_back_to_nearest_origin() {
+        // Nothing inside tolerance (the sizes never agree), so the pre-#2173
+        // behaviour stands: nearest origin wins.
+        let at = |x: i32| MonitorGeometry {
+            name: Some("Monitor #1".to_string()),
+            position: (x, 0),
+            size: (1920, 1080),
+            scale: 1.0,
+        };
+        let tauri = [at(0), at(1920)];
+        let stray = MonitorGeometry {
+            name: Some("Display #1".to_string()),
+            position: (5000, 0),
+            size: (800, 600),
+            scale: 1.0,
+        };
+        assert_eq!(
+            match_monitor(&tauri, &stray, PlacementFrame::Logical),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn match_monitor_returns_none_for_empty_list() {
+        assert_eq!(
+            match_monitor(&[], &more_space_captured(), PlacementFrame::Logical),
+            None
+        );
+        assert_eq!(
+            match_monitor(&[], &more_space_captured(), PlacementFrame::Physical),
+            None
+        );
+    }
+
+    #[test]
+    fn build_placement_logical_frame_uses_tauri_points() {
+        let tauri = more_space_tauri();
+        let g = build_placement(
+            Some(&tauri),
+            &more_space_captured(),
+            PlacementFrame::Logical,
+        );
+        assert_eq!(
+            g,
+            PlacementGeometry {
+                x: 0,
+                y: 0,
+                width: 1680,
+                height: 1050,
+                scale_factor: 2.0,
+                frame: PlacementFrame::Logical,
+            }
+        );
+        // The regression this phase fixes: stating the bitmap as the overlay size
+        // produced a 1440 pt window on a 1680 pt screen.
+        assert_ne!((g.width, g.height), (2880, 1800));
+    }
+
+    #[test]
+    fn build_placement_physical_frame_unchanged() {
+        struct Case {
+            n: u32,
+            tauri: Option<MonitorGeometry>,
+            captured: MonitorGeometry,
+            expected: PlacementGeometry,
+        }
+        let cases = [
+            // Matched, negative origin: tao geometry verbatim.
+            Case {
+                n: 1,
+                tauri: Some(MonitorGeometry {
+                    name: Some("Monitor #1".to_string()),
+                    position: (-1920, 0),
+                    size: (1920, 1080),
+                    scale: 1.0,
+                }),
+                captured: MonitorGeometry {
+                    name: Some("Monitor #1".to_string()),
+                    position: (-1920, 0),
+                    size: (1920, 1080),
+                    scale: 1.0,
+                },
+                expected: PlacementGeometry {
+                    x: -1920,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                    scale_factor: 1.0,
+                    frame: PlacementFrame::Physical,
+                },
+            },
+            // Matched, tao size differs from the bitmap: tao still wins the
+            // window size, the bitmap stays the crop authority.
+            Case {
+                n: 2,
+                tauri: Some(MonitorGeometry {
+                    name: Some("Monitor #2".to_string()),
+                    position: (0, 0),
+                    size: (2560, 1440),
+                    scale: 1.5,
+                }),
+                captured: MonitorGeometry {
+                    name: Some("Monitor #2".to_string()),
+                    position: (0, 0),
+                    size: (1920, 1080),
+                    scale: 1.5,
+                },
+                expected: PlacementGeometry {
+                    x: 0,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                    scale_factor: 1.5,
+                    frame: PlacementFrame::Physical,
+                },
+            },
+            // Unmatched: the xcap geometry verbatim, origin included.
+            Case {
+                n: 3,
+                tauri: None,
+                captured: MonitorGeometry {
+                    name: Some("Monitor #3".to_string()),
+                    position: (3000, -100),
+                    size: (1280, 720),
+                    scale: 2.0,
+                },
+                expected: PlacementGeometry {
+                    x: 3000,
+                    y: -100,
+                    width: 1280,
+                    height: 720,
+                    scale_factor: 2.0,
+                    frame: PlacementFrame::Physical,
+                },
+            },
+        ];
+        for case in cases {
+            let got = build_placement(
+                case.tauri.as_ref(),
+                &case.captured,
+                PlacementFrame::Physical,
+            );
+            assert_eq!(got, case.expected, "case {}", case.n);
+        }
+        // The Physical frame also keeps name matching, which macOS cannot use.
+        let tauri = [
+            MonitorGeometry {
+                name: Some("Monitor #9".to_string()),
+                position: (4000, 4000),
+                size: (1920, 1080),
+                scale: 1.0,
+            },
+            MonitorGeometry {
+                name: Some("Monitor #8".to_string()),
+                position: (0, 0),
+                size: (1920, 1080),
+                scale: 1.0,
+            },
+        ];
+        let captured = MonitorGeometry {
+            name: Some("Monitor #9".to_string()),
+            position: (0, 0),
+            size: (1920, 1080),
+            scale: 1.0,
+        };
+        // Name beats the nearer origin at index 1.
+        assert_eq!(
+            match_monitor(&tauri, &captured, PlacementFrame::Physical),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn placement_frame_matches_target() {
+        // macOS must be Logical: its two sources disagree on the physical scale.
+        let expected = if cfg!(target_os = "macos") {
+            PlacementFrame::Logical
+        } else {
+            PlacementFrame::Physical
+        };
+        assert_eq!(placement_frame(), expected);
     }
 
     /// Link proof for the CoreGraphics gate; `CGRequestScreenCaptureAccess` is
