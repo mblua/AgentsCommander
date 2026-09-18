@@ -2318,6 +2318,19 @@ pub fn merge_protected_coding_agent_settings(
     incoming
 }
 
+/// #2162 - the OS suffix tokens a config-seed template folder may carry.
+pub const CONFIG_SEED_OS_TOKENS: [&str; 3] = ["linux", "windows", "macos"];
+
+/// #2162 - `Some(stem)` when `dest` ends with an OS token, where `stem` is the
+/// dest it collides with. `stem` is empty when `dest` is exactly `".<token>"`.
+pub fn config_seed_dest_os_token_stem(dest: &str) -> Option<String> {
+    let lower = dest.trim().to_ascii_lowercase();
+    CONFIG_SEED_OS_TOKENS
+        .iter()
+        .find(|t| lower.ends_with(&format!(".{t}")))
+        .map(|t| lower[..lower.len() - t.len() - 1].to_string())
+}
+
 /// A config-seed `dest` must be a single, relative folder NAME under the replica
 /// root. The convention prefixes (`default`, `default_profile_<letter>`) are
 /// concatenated onto this name for the workspace-root tiers, so it must be a
@@ -2395,6 +2408,24 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
                 validate_config_seed_dest(&seed.dest).map_err(|e| {
                     format!("Agent \"{}\" config seed is invalid: {}", agent.label, e)
                 })?;
+                // #2162: a dest ending in an OS token names the same folder as
+                // the OS variant of the shorter dest. Warn, never reject.
+                if let Some(stem) = config_seed_dest_os_token_stem(&seed.dest) {
+                    if stem.is_empty() {
+                        log::warn!(
+                            "[config-seed] agent \"{}\" dest '{}' is only an OS token suffix",
+                            agent.label,
+                            seed.dest.trim()
+                        );
+                    } else {
+                        log::warn!(
+                            "[config-seed] agent \"{}\" dest '{}' ends with an OS token; it names the same template folder as the OS variant of dest '{}'",
+                            agent.label,
+                            seed.dest.trim(),
+                            stem
+                        );
+                    }
+                }
             }
         }
     }
@@ -7379,10 +7410,10 @@ mod tests {
     }
 
     use super::{
-        merge_protected_coding_agent_settings, repair_coding_agent_profiles_config,
-        validate_agent_commands, validate_api_server_settings, validate_resource_settings,
-        AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, MainSidebarSide,
-        ProfileCellConfig, ProfileSlotConfig, ResourceWatchdogAction,
+        config_seed_dest_os_token_stem, merge_protected_coding_agent_settings,
+        repair_coding_agent_profiles_config, validate_agent_commands, validate_api_server_settings,
+        validate_resource_settings, AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource,
+        MainSidebarSide, ProfileCellConfig, ProfileSlotConfig, ResourceWatchdogAction,
         TelegramNetworkPollErrorLogging, TelegramPollFailureLogLevel, TelegramPollRecoveryLogLevel,
     };
     use std::collections::BTreeMap;
@@ -7407,6 +7438,26 @@ mod tests {
                 })
                 .collect(),
             ..AppSettings::default()
+        }
+    }
+
+    /// #2162 test 10: the save-time collision predicate. Decision logic only --
+    /// the `log::warn!` emission itself is declared not verified by test.
+    #[test]
+    fn dest_os_token_stem_detects_collisions() {
+        for (dest, expected) in [
+            (".claude.linux", Some(".claude")),
+            (".claude.WINDOWS", Some(".claude")),
+            (".claude.macos", Some(".claude")),
+            (".claude", None),
+            (".claudelinux", None),
+            (".linux", Some("")),
+        ] {
+            assert_eq!(
+                config_seed_dest_os_token_stem(dest),
+                expected.map(|e: &str| e.to_string()),
+                "dest {dest}"
+            );
         }
     }
 
