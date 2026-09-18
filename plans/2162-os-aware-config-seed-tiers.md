@@ -215,8 +215,10 @@ Add one step to job `rust-regression-linux` (`.github/workflows/pr-regression-ga
         run: |
           set -euo pipefail
           FILTER='config::config_seed::tests::'
-          # Count observed in the green local run of §7; update it in the same
-          # commit that adds or removes a test in that module.
+          # Count printed by the green local `cargo test --locked --lib
+          # 'config::config_seed::tests::'` run of §7 (same filter as this
+          # step); update it in the same commit that adds or removes a test in
+          # that module.
           EXPECTED=<count from the local run>
           cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2162.log
 
@@ -230,13 +232,21 @@ Add one step to job `rust-regression-linux` (`.github/workflows/pr-regression-ga
             echo "::error::the #2162 sentinel test never ran; the filter matched nothing and this step tested nothing."
             exit 1
           }
+          # Guard 2b: the Linux-gated sentinel. `host_token_matches_target_os`
+          #           (test 11) only compiles its linux arm on Linux and asserts
+          #           host_os_token() == Some("linux"); it cannot pass here
+          #           unless that branch really exists and is really taken.
+          grep -qF 'config::config_seed::tests::host_token_matches_target_os' test-2162.log || {
+            echo "::error::the #2162 Linux token sentinel never ran; the linux branch of host_os_token() is untested on this runner."
+            exit 1
+          }
           grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2162.log || {
             echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER}; the count changed or the filter matched something else."
             exit 1
           }
 ```
 
-This executes the `linux` token branch of `host_os_token()` on a real Linux runner, plus every injected-token test, on the exact PR head.
+This executes the `linux` token branch of `host_os_token()` on a real Linux runner -- through test 11, which is compiled per target and asserted by guard 2b -- plus every injected-token test, on the exact PR head.
 
 ## 4. Required behavior, edge cases, failure behavior
 
@@ -262,6 +272,8 @@ Mandatory:
 9. `os_marker_is_emitted_only_for_os_variants` (`config_seed.rs`) — asserts `os_marker(true) == "+os"` and `os_marker(false) == ""`, and asserts the two formatted strings of §3.8 built from a `ConfigSeedCandidate` pair: `format!("{:?}{}", tier, os_marker(c.os_specific))` yields `WorkspaceBase+os` and `WorkspaceBase`. This covers acceptance criterion 5 for both the success line and the "no source" listing.
 10. `dest_os_token_stem_detects_collisions` (`settings.rs` `#[cfg(test)]`) — table: `".claude.linux"`/`".claude.WINDOWS"`/`".claude.macos"` ⇒ `Some(".claude")`; `".claude"`/`".claudelinux"` ⇒ `None`; `".linux"` ⇒ `Some("")`. Covers §3.9's decision logic.
 
+11. `host_token_matches_target_os` (`config_seed.rs`, module `config::config_seed::tests`) — the **only** test that reads the host token. One `#[cfg(target_os = ...)]` arm per target: on `linux` asserts `host_os_token() == Some("linux")`, on `windows` `Some("windows")`, on `macos` `Some("macos")`; a fallback arm for any other target asserts `host_os_token() == None`. It is the Linux-gated sentinel of §3.10 (guard 2b): on the ubuntu runner it can only pass if the `linux` arm of `host_os_token()` exists and is taken. It adds no file to §2.
+
 **Positive control (required by the verification-difficulty veto):** `selection_is_order_sensitive` — construct a `ResolvedConfigSeed` by hand with the pair **inverted** inside one tier (base before OS variant), both directories present on disk, and assert the **base** wins. What this proves, exactly: selection has **no** intrinsic preference for `os_specific` and follows list order alone, so precedence is entirely a property of the vector built in §3.4. It does **not** by itself prove that tests 1-4 fail on a wrong construction order — test 1 does that, by asserting the exact candidate vector.
 
 **Recorded negative runs (two mutations, both required).** Before committing, apply each mutation to §3.4 alone, record the result, and restore:
@@ -274,8 +286,8 @@ Together the two mutations fail tests 1, 3 and 4. Restore, record all tests pass
 ## 6. Environment and tooling risk (owning dev writes this statement before touching code)
 
 Concrete points the statement must cover:
-- `cfg!(target_os)` is resolved at compile time, so a real build only ever produces its own token; **only** parameter injection exercises the other two. No test may depend on the host's token.
-- **Where the tests actually execute (each claim read from the workflow file).** The only unfiltered `cargo test --locked --lib --bins --tests` in the repository is `.github/workflows/pr-regression-gates.yml:96`, in job `rust-regression` (`:50`), `runs-on: windows-latest` (`:54`). The one other occurrence, `.github/workflows/cache-warm.yml:70`, carries `--no-run`: it compiles, it does not execute. Job `rust-regression-linux` (`:631`, `runs-on: ubuntu-latest` `:635`) runs `cargo check --locked --all-targets` (`:682`) and `cargo clippy --locked --workspace --all-targets -- -D warnings` (`:688`), and only **filtered** tests: `issue_1937_config_lock` (`:700`), the IS #1577 case (`:733`), `screenshot::native::tests::` (`:798`), `issue_1850` (`:837`, `:1338`). None of those filters reaches `config_seed`. **Before this plan, therefore, the config-seed tests executed on Windows only**, and the `linux` token branch of `host_os_token()` — the branch the feature exists for — ran on no runner at all.
+- `cfg!(target_os)` is resolved at compile time, so a real build only ever produces its own token; **only** parameter injection exercises the other two. Exactly one test may depend on the host's token: `host_token_matches_target_os` (test 11), which asserts the token per `#[cfg(target_os)]` arm and exists to make §3.10 fail on a Linux runner if the `linux` branch is lost. No other test may read it.
+- **Where the tests actually execute (each claim read from the workflow file).** The only unfiltered `cargo test --locked --lib --bins --tests` in the repository is `.github/workflows/pr-regression-gates.yml:96`, in job `rust-regression` (`:50`), `runs-on: windows-latest` (`:54`). The one other occurrence, `.github/workflows/cache-warm.yml:70`, carries `--no-run`: it compiles, it does not execute. Job `rust-regression-linux` (`:631`, `runs-on: ubuntu-latest` `:635`) runs `cargo check --locked --all-targets` (`:684`) and `cargo clippy --locked --workspace --all-targets -- -D warnings` (`:688`), and only **filtered** tests: `issue_1937_config_lock` (`:700`), the IS #1577 case (`:733`), `screenshot::native::tests::` (`:798`), `issue_1850` (`:837`, `:1338`). None of those filters reaches `config_seed`. **Before this plan, therefore, the config-seed tests executed on Windows only**, and the `linux` token branch of `host_os_token()` — the branch the feature exists for — ran on no runner at all.
 - **Decision: close that gap (option b).** §3.10 adds one filtered `cargo test` step to `rust-regression-linux`, which makes `.github/workflows/pr-regression-gates.yml` the **fifth file** in scope (§2). Rationale: the feature originates from a Linux need and the user develops on Linux, so leaving the `linux` path executed only on a developer's machine puts the primary target behind the weakest gate; the fix is one step in an existing job, mirroring the guard pattern already used twice in that job, with no new runner, trigger or minute-heavy work. The alternative — accepting the debt and staying at four files — was rejected for that asymmetry, not for cost.
 - **There is a macOS runner and it is blocking.** Job `rust-regression-macos` (`.github/workflows/pr-regression-gates.yml:1614`, `runs-on: macos-latest:1618`) triggers on every `pull_request` and runs `cargo check --locked --all-targets` and `cargo clippy --locked --all-targets -- -D warnings`. `ConfigSeedCandidate`, `os_marker`, `host_os_token` and every new test must therefore **compile and be clippy-clean on macOS**; `host_os_token()` returns `Some("macos")` there, so that branch is compiled in CI.
 - What macOS CI does **not** do is *run* these tests: its `cargo test` steps are filtered to `screenshot::native::tests::` (`:1672`), `issue_1937_config_lock` (`:1702`) and `issue_1850` (`:1725`, `:2222`). So the *execution* coverage of the `macos` token comes from parameter injection on the Linux and Windows runners only — that is the remaining accepted debt. The `None` branch of `host_os_token()` is executed by no runner at all; it is covered by injection (test 2) and accepted as debt.
@@ -289,10 +301,10 @@ Concrete points the statement must cover:
 cd <repo>/src-tauri
 cargo fmt --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --lib config_seed
+cargo test --locked --lib 'config::config_seed::tests::' -- --test-threads=1
 cargo test --locked --lib --bins --tests
 ```
-Expected: all green locally on Linux. Record the passing count of `config::config_seed::tests::` from that run and put it in `EXPECTED` in the §3.10 step.
+Expected: all green locally on Linux. `EXPECTED` in the §3.10 step is the passing count printed by the third command **only** -- it runs the exact filter of the step. Do not read the count from a substring filter such as `--lib config_seed`: that is a strict superset (it also matches `config::settings::tests::validate_config_seed_dest_accepts_dotfile_names` at `settings.rs:7414`, `..._rejects_unsafe_names` at `:7426`, `config_seed_is_active_requires_enabled_and_nonempty_dest` at `:7453`, `config_seed_serde_round_trips_camel_case_and_omits_when_absent` at `:7473`, plus tests in `agent_command.rs` and `seed_manifest.rs`), and its number would make guard 3 fail on the first CI run.
 
 CI on the **exact PR head SHA** owns the rest; evidence from any other SHA, or a skip/waiver, does not satisfy the gate:
 - `rust-regression` (windows-latest) executes the config-seed tests inside the unfiltered suite (`:96`).
@@ -322,10 +334,11 @@ Remaining accepted debt, unchanged by this plan: the `macos` branch of `host_os_
 2. `config_seed.rs`: add `ConfigSeedCandidate` and `host_os_token`; change `ResolvedConfigSeed.candidates`; add the `os_token` parameter and build the 8 candidates (§3.4). Compile — the compiler now lists every consumer.
 3. `config_seed.rs`: add `os_marker`; update selection, the "no source" listing and the success line (§3.6, §3.8).
 4. `agent_command.rs`: pass `host_os_token()`; push both tier-5 candidates (§3.5).
-5. Tests §5 (1-10), including the positive control and both recorded negative runs (mutations A and B).
+5. Tests §5 (1-11), including the positive control and both recorded negative runs (mutations A and B).
 6. `docs/features/config-seed.md`: replace the 5-row tier table and the `.claude`/profile `A` example with the 10-entry list; add the tokens and their compile-time source, the per-tier inherited semantics, the case note, and the new log marker.
-7. `.github/workflows/pr-regression-gates.yml`: add the §3.10 step to `rust-regression-linux`, with `EXPECTED` set from the local run of step 8.
-8. Run §7; open one PR closing #2162.
+7. Run §7 locally; read `EXPECTED` from the `config::config_seed::tests::` run (exact filter).
+8. `.github/workflows/pr-regression-gates.yml`: add the §3.10 step to `rust-regression-linux`, with `EXPECTED` set from step 7.
+9. Open one PR closing #2162.
 
 ## 11. Acceptance criteria
 
@@ -337,5 +350,5 @@ Remaining accepted debt, unchanged by this plan: the `macos` branch of `host_os_
 - A `dest` ending in an OS token is detected at save time and warned about, without rejecting the save (test 10). The emission of the `log::warn!` itself is declared **not verified by test**; only its decision logic is.
 - Tests cover all three tokens injected on one host, the fallback, and the order-sensitivity positive control with both recorded negative runs.
 - `docs/features/config-seed.md` updated as in step 6.
-- The config-seed tests execute on the ubuntu runner via the new `rust-regression-linux` step (§3.10), with its sentinel and count guards green.
+- The config-seed tests execute on the ubuntu runner via the new `rust-regression-linux` step (§3.10), with both sentinel guards (including the Linux-gated test 11) and the count guard green.
 - `cargo fmt --check`, clippy `-D warnings`, and the full test suite pass locally; every triggered and configured-required CI check passes on the exact PR-head SHA.
