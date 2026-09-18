@@ -953,7 +953,7 @@ fn default_ci_sweep_min_interval_secs() -> u64 {
 }
 
 fn default_branch_staleness_interval_secs() -> u64 {
-    300
+    260
 }
 
 fn default_resource_monitor_enabled() -> bool {
@@ -10988,7 +10988,7 @@ mod tests {
   "autoSelfClearByAgent": {},
   "autoSelfClearEnabled": true,
   "branchStalenessEnabled": true,
-  "branchStalenessIntervalSecs": 300,
+  "branchStalenessIntervalSecs": 260,
   "branchStalenessNotifyOrchestrator": true,
   "ciActivityEnabled": true,
   "ciActivityNotifyOrchestrator": true,
@@ -13489,7 +13489,7 @@ mod tests {
         assert!(back.branch_staleness_enabled);
         assert!(back.branch_staleness_notify_orchestrator);
         assert_eq!(back.ci_sweep_min_interval_secs, 30);
-        assert_eq!(back.branch_staleness_interval_secs, 300);
+        assert_eq!(back.branch_staleness_interval_secs, 260);
 
         let round_trip: AppSettings = serde_json::from_value(value).expect("round trip");
         assert_eq!(round_trip.ci_activity_enabled, defaults.ci_activity_enabled);

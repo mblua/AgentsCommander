@@ -147,7 +147,7 @@ AC can inject four notices into the **room orchestrator's** terminal, not into e
 | `branch-stale` | `%REPO%`, `%BRANCH%`, `%BASE%`, `%BEHIND%`, `%AT%` |
 | `notice-blind-gap` | `%GAP%`, `%SINCE%` |
 
-`notice-blind-gap` is a suffix, not a notice of its own: AC appends it to the other three when it could not reach GitHub for more than five minutes before the notice. Editing it once therefore changes every notice.
+`notice-blind-gap` is a suffix, not a notice of its own: AC appends it to the other three when it could not reach GitHub for more than ten minutes before the notice. Editing it once therefore changes every notice.
 
 `ci-finished` says nothing about pass or fail, because AC never reads a run's `conclusion`.
 
@@ -176,7 +176,7 @@ The value persists per window. `mainZoom`, `terminalZoom`, `sidebarZoom` and `gu
 | `branchStalenessEnabled` | Whether the sweeper asks whether the default branch holds commits this checkout does not. `true` by default. |
 | `branchStalenessNotifyOrchestrator` | Whether a staleness answer injects a notice into the room orchestrator. `true` by default. |
 | `ciSweepMinIntervalSecs` | Seconds between CI questions for a key that is not running. `30` by default, clamped to 10 through 3600. |
-| `branchStalenessIntervalSecs` | Seconds between staleness questions. `300` by default, clamped to 10 through 3600. |
+| `branchStalenessIntervalSecs` | Seconds between staleness questions. `260` by default, clamped to 10 through 3600. |
 
 See [Settings reference](../reference/settings.md#git-status-sweeper) for the full section, including why raising the concurrency is rarely the fix.
 
