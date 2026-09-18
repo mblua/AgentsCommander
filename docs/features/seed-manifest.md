@@ -91,13 +91,18 @@ hash or revision.
 Coverage grew to v2 with the `coding_agent_catalog` kind (#1318); the wire shape
 is unchanged (schema_version stays 1). A **v1 manifest upgrades in place on the
 first `ProjectSeedManifestGuard::acquire`** (read or write) under the project
-lock: the parse is substitution-only (the coverage declaration is replaced, every
-row and timestamp is preserved verbatim) and reuses every existing strict row
-check. The upgrade is one-shot (a successful upgrade parses strictly on the next
-acquire) and lossless. Any other degraded shape (future schema, bounds
-violations, external edits, corrupt bytes) stays byte-preserved with the writer
-disabled, exactly as before. A v2 manifest written by this build is NOT readable
-by an older build; the old build preserves its bytes and disables its writer.
+lock: the parse is substitution-only (the coverage declaration is replaced,
+every non-legacy row and timestamp is preserved verbatim) and reuses every
+existing strict row check. The upgrade is one-shot (a successful upgrade parses
+strictly on the next acquire) and lossless for every row except legacy
+`replica_config_file` rows: the upgrade write omits them, so they stay in the
+held state and never return to disk. On a v2 manifest that already carries
+legacy rows, they survive on disk until the next canonical write, which omits
+them as well. A failed upgrade write leaves the original bytes preserved with
+the writer disabled, exactly like any other degraded shape (future schema,
+bounds violations, external edits, corrupt bytes). A v2 manifest written by this
+build is NOT readable by an older build; the old build preserves its bytes and
+disables its writer.
 
 ## Time semantics
 
