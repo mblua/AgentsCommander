@@ -1511,6 +1511,14 @@ export interface LoopEventPayload {
   message?: string | null;
 }
 
+export interface UnresolvedLoopTarget {
+  projectPath: string;
+  loopId: string;
+  loopName: string;
+  workgroup: string;
+  error: string;
+}
+
 export interface ContextTemplateUpdate {
   projectPath: string;
   workspacePath: string;

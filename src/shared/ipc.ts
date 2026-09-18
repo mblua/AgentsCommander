@@ -55,6 +55,7 @@ import type {
   LoopCreateInput,
   LoopCronPreview,
   LoopEventPayload,
+  UnresolvedLoopTarget,
   LoopUpdateInput,
   TeamConfigResult,
   WindowGeometry,
@@ -1093,6 +1094,9 @@ export const LoopAPI = {
 
   getConfig: (projectPath: string, id: string) =>
     transport.invoke<LoopConfigDetails>("get_loop_config", { projectPath, id }),
+
+  listUnresolvedTargets: () =>
+    transport.invoke<UnresolvedLoopTarget[]>("list_unresolved_loop_targets"),
 
   previewCron: (expr: string) =>
     transport.invoke<LoopCronPreview>("preview_loop_cron", { expr }),
