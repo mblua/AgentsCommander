@@ -140,33 +140,65 @@ The later `let Some((tier, src)) = selected else {...}` becomes `let Some(candid
 `manifest_source_for_tier` is **unchanged** and ignores `os_specific`: an OS variant records the same `ManifestSource` as its base. `config:<dest>` scope rows and `source` strings stay byte-compatible; older builds keep reading them.
 
 ### 3.8 Logs (exact strings)
+Both log sites use one shared, testable helper in `config_seed.rs`:
+
+```rust
+/// #2162 - marker appended to the tier name in logs when an OS variant won.
+pub(crate) fn os_marker(os_specific: bool) -> &'static str {
+    if os_specific { "+os" } else { "" }
+}
+```
+
 Success line (`config_seed.rs:684-688`) gains the OS marker:
 ```rust
 log::info!(
     "[config-seed] seeded '{}' into replica from {:?}{} source '{}'",
     seed.dest.display(),
     candidate.tier,
-    if candidate.os_specific { "+os" } else { "" },
+    os_marker(candidate.os_specific),
     candidate.path.display()
 );
 ```
 "No source found" listing (`config_seed.rs:534-540`) uses the same marker:
 ```rust
-.map(|c| format!("{:?}{}={}", c.tier, if c.os_specific { "+os" } else { "" }, c.path.display()))
+.map(|c| format!("{:?}{}={}", c.tier, os_marker(c.os_specific), c.path.display()))
 ```
 
 ### 3.9 Save-time collision warning (`settings.rs:2392-2397`)
-`validate_config_seed_dest` is **not** changed and the save is **not** rejected. In the existing per-agent block, after the successful `validate_config_seed_dest(&seed.dest)?`, add:
+`validate_config_seed_dest` is **not** changed and the save is **not** rejected.
+
+Add next to `CONFIG_SEED_OS_TOKENS` a pure, testable predicate (the log call itself is the only untestable part):
 
 ```rust
-let lower = seed.dest.trim().to_ascii_lowercase();
-if CONFIG_SEED_OS_TOKENS.iter().any(|t| lower.ends_with(&format!(".{t}"))) {
-    log::warn!(
-        "[config-seed] agent \"{}\" dest '{}' ends with an OS token; it names the same template folder as the OS variant of dest '{}'",
-        agent.label,
-        seed.dest.trim(),
-        lower.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(&lower)
-    );
+/// #2162 - `Some(stem)` when `dest` ends with an OS token, where `stem` is the
+/// dest it collides with. `stem` is empty when `dest` is exactly `".<token>"`.
+pub fn config_seed_dest_os_token_stem(dest: &str) -> Option<String> {
+    let lower = dest.trim().to_ascii_lowercase();
+    CONFIG_SEED_OS_TOKENS
+        .iter()
+        .find(|t| lower.ends_with(&format!(".{t}")))
+        .map(|t| lower[..lower.len() - t.len() - 1].to_string())
+}
+```
+
+In the existing per-agent block, after the successful `validate_config_seed_dest(&seed.dest)?`, add:
+
+```rust
+if let Some(stem) = config_seed_dest_os_token_stem(&seed.dest) {
+    if stem.is_empty() {
+        log::warn!(
+            "[config-seed] agent \"{}\" dest '{}' is only an OS token suffix",
+            agent.label,
+            seed.dest.trim()
+        );
+    } else {
+        log::warn!(
+            "[config-seed] agent \"{}\" dest '{}' ends with an OS token; it names the same template folder as the OS variant of dest '{}'",
+            agent.label,
+            seed.dest.trim(),
+            stem
+        );
+    }
 }
 ```
 Warning only. No new error path, no IPC contract change.
@@ -192,14 +224,25 @@ Mandatory:
 6. `catalog_default_os_variant_keeps_absent_only_and_nonempty` — OS master non-empty + dest absent ⇒ fills; dest present ⇒ skipped; OS master empty + base master non-empty ⇒ base fills.
 7. `manifest_source_ignores_os_specific` — winning OS variant of each of the five tiers maps to the same `ManifestSource` as its base.
 8. `build_spawn_appends_both_catalog_default_candidates` — update `agent_command.rs:2335-2352` to expect the 10-entry list (host token) and keep asserting no template dirs were created.
+9. `os_marker_is_emitted_only_for_os_variants` (`config_seed.rs`) — asserts `os_marker(true) == "+os"` and `os_marker(false) == ""`, and asserts the two formatted strings of §3.8 built from a `ConfigSeedCandidate` pair: `format!("{:?}{}", tier, os_marker(c.os_specific))` yields `WorkspaceBase+os` and `WorkspaceBase`. This covers acceptance criterion 5 for both the success line and the "no source" listing.
+10. `dest_os_token_stem_detects_collisions` (`settings.rs` `#[cfg(test)]`) — table: `".claude.linux"`/`".claude.WINDOWS"`/`".claude.macos"` ⇒ `Some(".claude")`; `".claude"`/`".claudelinux"` ⇒ `None`; `".linux"` ⇒ `Some("")`. Covers §3.9's decision logic.
 
-**Positive control (required by the verification-difficulty veto):** `selection_is_order_sensitive` — construct a `ResolvedConfigSeed` by hand with the pair **inverted** inside one tier (base before OS variant), both directories present on disk, and assert the **base** wins. This proves the selection follows list order, so tests 1-4 genuinely fail if the construction order in §3.4 is wrong. Deliver this test together with a recorded negative run: before committing, temporarily swap the two pushes in §3.4 and record that tests 1, 3 and 4 fail; restore, and record them passing. Both runs are reported as evidence.
+**Positive control (required by the verification-difficulty veto):** `selection_is_order_sensitive` — construct a `ResolvedConfigSeed` by hand with the pair **inverted** inside one tier (base before OS variant), both directories present on disk, and assert the **base** wins. What this proves, exactly: selection has **no** intrinsic preference for `os_specific` and follows list order alone, so precedence is entirely a property of the vector built in §3.4. It does **not** by itself prove that tests 1-4 fail on a wrong construction order — test 1 does that, by asserting the exact candidate vector.
+
+**Recorded negative runs (two mutations, both required).** Before committing, apply each mutation to §3.4 alone, record the result, and restore:
+
+- **Mutation A — swap the two pushes inside every tier** (base before OS variant). List becomes wsProfile, wsProfile.os, wsBase, wsBase.os, mxProfile, mxProfile.os, mxBase, mxBase.os. Expected: tests **1 and 3 fail**; test 4 still **passes**, because it only measures order *between* tiers and mutation A reorders *within* a tier. Do not report test 4 as failing here.
+- **Mutation B — emit all four OS variants as one block before the four base tiers.** List becomes wsProfile.os, wsBase.os, mxProfile.os, mxBase.os, wsProfile, wsBase, mxProfile, mxBase. Expected: tests **1 and 4 fail** (test 4's `<mx>/default_profile_a.claude.linux` now outranks its `<ws>/default.claude`); test 3 still passes.
+
+Together the two mutations fail tests 1, 3 and 4. Restore, record all tests passing, and report the three runs as evidence.
 
 ## 6. Environment and tooling risk (owning dev writes this statement before touching code)
 
 Concrete points the statement must cover:
 - `cfg!(target_os)` is resolved at compile time, so a real build only ever produces its own token; **only** parameter injection exercises the other two. No test may depend on the host's token.
-- CI runs `cargo test --locked --lib --bins --tests` on `windows-latest` and `ubuntu-latest` (`.github/workflows/pr-regression-gates.yml`). **There is no macOS runner**: the `macos` token is covered by injection only, and the `None` branch of `host_os_token()` is covered by no runner at all.
+- CI runs `cargo test --locked --lib --bins --tests` on `windows-latest` and `ubuntu-latest` (`.github/workflows/pr-regression-gates.yml`).
+- **There is a macOS runner and it is blocking.** Job `rust-regression-macos` (`.github/workflows/pr-regression-gates.yml:1614`, `runs-on: macos-latest:1618`) triggers on every `pull_request` and runs `cargo check --locked --all-targets` and `cargo clippy --locked --all-targets -- -D warnings`. `ConfigSeedCandidate`, `os_marker`, `host_os_token` and every new test must therefore **compile and be clippy-clean on macOS**; `host_os_token()` returns `Some("macos")` there, so that branch is compiled in CI.
+- What macOS CI does **not** do is *run* these tests: its `cargo test` steps are filtered to `screenshot::native::tests::`, `issue_1937_config_lock` and `issue_1850`. So the *execution* coverage of the `macos` token comes from parameter injection only — that is the accepted debt. The `None` branch of `host_os_token()` is executed by no runner at all.
 - Filesystem case sensitivity differs across the three targets (see §4, "Case"): tests must use exact lowercase names so they behave identically on Linux and Windows.
 - Path length: the suffix adds ≤8 characters under the replica/workspace root; Windows `MAX_PATH` margin shrinks slightly. Tests use `tempfile::tempdir()` and short names.
 - `clippy --locked --workspace --all-targets -- -D warnings` runs on both runners; the new struct must not trip `clippy::struct_excessive_bools` or dead-code lints.
@@ -213,7 +256,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --lib config_seed
 cargo test --locked --lib --bins --tests
 ```
-Expected: all green locally on Linux. Windows-host evidence and every configured-required check are owned by CI on the **exact PR head SHA**; evidence from any other SHA, or a skip/waiver, does not satisfy the gate. macOS has no runner — record it as accepted debt with token-injection coverage as the mitigation.
+Expected: all green locally on Linux. Windows- and macOS-host evidence and every configured-required check are owned by CI on the **exact PR head SHA**; evidence from any other SHA, or a skip/waiver, does not satisfy the gate. The macOS job (`rust-regression-macos`) is blocking for `cargo check` and `clippy -D warnings` and must be green on that SHA. It does not execute the config-seed tests: execution coverage of the `macos` token is by token injection on Linux/Windows, and that — not the compile gate — is the accepted debt. The `None` branch of `host_os_token()` is exercised by no runner and is accepted debt as well.
 
 ## 8. Compatibility, security, cycles, layering
 
@@ -228,15 +271,15 @@ Expected: all green locally on Linux. Windows-host evidence and every configured
 - **Scope:** exactly the four files in §2. Before commit, `git status --porcelain` and `git diff --name-only <base>..HEAD` must list those four and nothing else.
 - **Recovery:** on failure restore only files this run changed, via targeted `git restore -- <path>`; no repository-wide reset or clean.
 - **Bounded execution:** `cargo` commands run non-interactively with captured stdout/stderr; a timed-out or failed command is reported as failed.
-- **Evidence:** the negative run of §5 and both CI runners' results on the exact PR head.
+- **Evidence:** the two negative runs of §5 and all three CI runners' results (ubuntu, windows, macOS) on the exact PR head.
 
 ## 10. Ordered implementation
 
-1. `settings.rs`: add `CONFIG_SEED_OS_TOKENS`; add the save-time warning (§3.9).
+1. `settings.rs`: add `CONFIG_SEED_OS_TOKENS` and `config_seed_dest_os_token_stem`; add the save-time warning (§3.9).
 2. `config_seed.rs`: add `ConfigSeedCandidate` and `host_os_token`; change `ResolvedConfigSeed.candidates`; add the `os_token` parameter and build the 8 candidates (§3.4). Compile — the compiler now lists every consumer.
-3. `config_seed.rs`: update selection, the "no source" listing and the success line (§3.6, §3.8).
+3. `config_seed.rs`: add `os_marker`; update selection, the "no source" listing and the success line (§3.6, §3.8).
 4. `agent_command.rs`: pass `host_os_token()`; push both tier-5 candidates (§3.5).
-5. Tests §5, including the positive control and its recorded negative run.
+5. Tests §5 (1-10), including the positive control and both recorded negative runs (mutations A and B).
 6. `docs/features/config-seed.md`: replace the 5-row tier table and the `.claude`/profile `A` example with the 10-entry list; add the tokens and their compile-time source, the per-tier inherited semantics, the case note, and the new log marker.
 7. Run §7; open one PR closing #2162.
 
@@ -246,7 +289,8 @@ Expected: all green locally on Linux. Windows-host evidence and every configured
 - Tokens `linux`/`windows`/`macos`, from the build target, not user-overridable; unknown target ⇒ no OS candidates.
 - OS variants inherit their tier's overwrite / absent-only semantics.
 - With no OS-suffixed folder, behavior is byte-identical to today, manifest included.
-- The success log line identifies whether an OS variant won.
-- Tests cover all three tokens injected on one host, the fallback, and the order-sensitivity positive control with its recorded negative run.
+- The success log line and the "no source" listing identify whether an OS variant won, via `os_marker` (test 9).
+- A `dest` ending in an OS token is detected at save time and warned about, without rejecting the save (test 10). The emission of the `log::warn!` itself is declared **not verified by test**; only its decision logic is.
+- Tests cover all three tokens injected on one host, the fallback, and the order-sensitivity positive control with both recorded negative runs.
 - `docs/features/config-seed.md` updated as in step 6.
 - `cargo fmt --check`, clippy `-D warnings`, and the full test suite pass locally; every triggered and configured-required CI check passes on the exact PR-head SHA.
