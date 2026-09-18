@@ -2691,7 +2691,7 @@ jobs:
               set -euo pipefail
               source "$1"
               npm_reject_tokenless_auth_environment
-            ' -- "$RUNNER_TEMP/release-controls.sh"; then
+            ' -- "$RUNNER_TEMP/release-controls.sh" >/dev/null 2>&1; then
               echo "::error::token environment fixture unexpectedly passed: $assignment"
               exit 1
             fi
