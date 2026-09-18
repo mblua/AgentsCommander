@@ -12,7 +12,7 @@
     "build:stage": "cross-env BUILD_PROFILE=stage tauri build --config src-tauri/tauri.stage.conf.json",
     "kill-dev": "powershell.exe -ExecutionPolicy Bypass -File ./scripts/kill-dev.ps1",
     "validate-branch-name": "node scripts/validate-branch-name.mjs",
-    "validate-no-plans-path": "node scripts/validate-no-plans-path.mjs",
+    "validate-no-plans-path": "sh scripts/validate-no-plans-path.sh",
     "version:bump": "node scripts/bump-version.mjs",
     "version:check": "node scripts/check-version-sync.mjs",
     "reclaim:artifacts": "node scripts/reclaim-build-artifacts.mjs",

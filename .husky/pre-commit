@@ -2,5 +2,5 @@
 # Rejects any staged/tracked path under plans/ (issue #2183).
 # Bypass locally with `git commit --no-verify` (server-side GitHub Action is authoritative).
 
-node scripts/validate-no-plans-path.mjs || exit 1
+sh scripts/validate-no-plans-path.sh || exit 1
 exit 0

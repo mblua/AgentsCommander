@@ -23,12 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-
       # Reads the git index of the checked-out tree, so it catches a path however it
       # arrived: `git add -f`, `git commit --no-verify`, or `git push --no-verify`.
       - name: Reject tracked paths under plans/
-        run: node scripts/validate-no-plans-path.mjs
+        run: sh scripts/validate-no-plans-path.sh

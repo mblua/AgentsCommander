@@ -9,7 +9,7 @@ src-tauri/gen/schemas/
 .visual-specs/
 .vscode/
 # Plans live in .ac/plans, never in this repository (issue #2183). This line only stops
-# accidental staging; scripts/validate-no-plans-path.mjs is what actually enforces the ban,
+# accidental staging; scripts/validate-no-plans-path.sh is what actually enforces the ban,
 # because .gitignore never applies to a tracked path and "git add -f" bypasses it.
 /plans/
 _logbooks/
