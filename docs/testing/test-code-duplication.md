@@ -39,3 +39,5 @@ The cross-format pairs are the worked example that a block copied between a `.ts
 ## `jscpd` corroborates the shape; it does not predict Sonar
 
 `jscpd` and SonarCloud use different detectors and do not agree pair-for-pair. #2108 established this on the same bytes: `jscpd` found an 81-token repeat Sonar was not counting, while Sonar's 34 duplicated lines were exactly the pair it flagged. A green `dup:changed` does not guarantee a green Sonar gate; it removes the recurrent cost by catching the shape before the expensive matrices run.
+
+**Scope.** `dup:changed` scans only the files `.jscpd.json`'s `pattern` matches — today the `src/**/*.test.{ts,tsx}` test files. Duplication in `scripts/`, in workflow YAML or in production code is outside it, so a green run is not a statement about those files; SonarCloud is the only detector there. #2155's own self-test is the worked example: Sonar flagged 32 duplicated lines in `scripts/check-test-duplication.mjs` while `dup:changed` was green, which is why this paragraph exists.

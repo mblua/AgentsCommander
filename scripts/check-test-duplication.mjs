@@ -63,7 +63,10 @@ function resolveRunner(toolRoot) {
 
 const GIT_CANDIDATES = Object.freeze(
   process.platform === 'win32'
-    ? ['C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\cmd\\git.exe']
+    ? [
+        String.raw`C:\Program Files\Git\cmd\git.exe`,
+        String.raw`C:\Program Files (x86)\Git\cmd\git.exe`,
+      ]
     : ['/usr/bin/git', '/usr/local/bin/git', '/opt/homebrew/bin/git'],
 );
 
@@ -440,6 +443,32 @@ export async function runSelfTest() {
     }
   };
 
+  /**
+   * Cases 10 and 11: a `GATE_GIT_BIN` value the script must reject. The
+   * fixture, the environment save/restore and the failure-banner assertion are
+   * constant; the override and the messages that distinguish the cases are
+   * data, written literally at the call site. The helper applies one uniform
+   * assertion per message and never branches on which case it is.
+   */
+  const expectGitOverrideFailure = async (temp, { override, expectedMessages }) => {
+    const directory = temp('ac-dup-fixture-');
+    const base = createRepo(directory, BASE_FILES);
+    const previous = process.env.GATE_GIT_BIN;
+    process.env.GATE_GIT_BIN = override;
+    let run;
+    try {
+      run = await captureScriptStderr(() => runGate({ workRoot: directory, baseRef: base }));
+    } finally {
+      if (previous === undefined) delete process.env.GATE_GIT_BIN;
+      else process.env.GATE_GIT_BIN = previous;
+    }
+    expectEqual('exit code', run.code, 1);
+    expectContains('message', run.text, 'check:test-duplication FAILED');
+    for (const message of expectedMessages) {
+      expectContains('message', run.text, message);
+    }
+  };
+
   await withCase('GATE_FLAGS is the shipped literal', async () => {
     expectEqual(
       'GATE_FLAGS',
@@ -636,42 +665,22 @@ export async function runSelfTest() {
   });
 
   await withCase('case 10: no git at a fixed location is a hard failure', async (temp) => {
-    const directory = temp('ac-dup-fixture-');
-    const base = createRepo(directory, BASE_FILES);
-    const previous = process.env.GATE_GIT_BIN;
-    process.env.GATE_GIT_BIN = '/nonexistent/git';
-    let run;
-    try {
-      run = await captureScriptStderr(() => runGate({ workRoot: directory, baseRef: base }));
-    } finally {
-      if (previous === undefined) delete process.env.GATE_GIT_BIN;
-      else process.env.GATE_GIT_BIN = previous;
-    }
-    expectEqual('exit code', run.code, 1);
-    expectContains('message', run.text, 'check:test-duplication FAILED');
-    expectContains('message', run.text, 'no executable git found at any of: /nonexistent/git.');
-    expectContains('message', run.text, 'Set GATE_GIT_BIN to an absolute path to git.');
+    await expectGitOverrideFailure(temp, {
+      override: '/nonexistent/git',
+      expectedMessages: [
+        'no executable git found at any of: /nonexistent/git.',
+        'Set GATE_GIT_BIN to an absolute path to git.',
+      ],
+    });
   });
 
   await withCase('case 11: a relative git override is rejected', async (temp) => {
-    const directory = temp('ac-dup-fixture-');
-    const base = createRepo(directory, BASE_FILES);
-    const previous = process.env.GATE_GIT_BIN;
-    process.env.GATE_GIT_BIN = 'git';
-    let run;
-    try {
-      run = await captureScriptStderr(() => runGate({ workRoot: directory, baseRef: base }));
-    } finally {
-      if (previous === undefined) delete process.env.GATE_GIT_BIN;
-      else process.env.GATE_GIT_BIN = previous;
-    }
-    expectEqual('exit code', run.code, 1);
-    expectContains('message', run.text, 'check:test-duplication FAILED');
-    expectContains(
-      'message',
-      run.text,
-      "GATE_GIT_BIN must be an absolute path to a git executable; got 'git'.",
-    );
+    await expectGitOverrideFailure(temp, {
+      override: 'git',
+      expectedMessages: [
+        "GATE_GIT_BIN must be an absolute path to a git executable; got 'git'.",
+      ],
+    });
   });
 
   if (failures.length > 0) {
