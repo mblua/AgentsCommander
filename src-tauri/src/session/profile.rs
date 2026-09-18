@@ -876,16 +876,39 @@ pub struct IdleTuning {
     /// map, so the watcher thread — which only iterates `activity` — never
     /// evaluates it and `mark_idle` never fires. See plan §1.
     pub seed_initial_activity: bool,
+    /// #2124 - byte total at which a pending output burst is confirmed as real
+    /// work. `0` (or a zero `burst_window`) disables the filter for this
+    /// session and restores the pre-#2124 behavior exactly.
+    pub burst_max_bytes: u64,
+    /// #2124 - longest gap a pending burst may keep spanning. A burst still
+    /// unconfirmed `burst_window` after its first chunk is discarded.
+    pub burst_window: Duration,
+    /// #2124 - silence age a chunk must find before it may OPEN a burst
+    /// candidate. Shorter silences count immediately, so input and message
+    /// delivery still register right away.
+    pub burst_prior_silence: Duration,
 }
+
+/// #2124 defaults for an `idleBurst` object that omits a subfield.
+const IDLE_BURST_DEFAULT_MAX_BYTES: u64 = 1024;
+const IDLE_BURST_DEFAULT_MAX_SECS: f64 = 3.0;
+const IDLE_BURST_DEFAULT_PRIOR_SILENCE_SECS: f64 = 60.0;
+/// Caps that keep `Duration::from_secs_f64` panic-free for absurd catalog values.
+const IDLE_BURST_MAX_WINDOW_SECS: f64 = 600.0;
+const IDLE_BURST_MAX_PRIOR_SILENCE_SECS: f64 = 86_400.0;
 
 impl IdleTuning {
     /// Tuning for a plain shell / unrecognised agent. Also the per-field
     /// fallback when a session id is missing from the detector's tuning map.
-    /// Values are identical to the pre-#260 `idle_detector.rs` constants.
+    /// Values are identical to the pre-#260 `idle_detector.rs` constants, with
+    /// the #2124 burst filter disabled.
     pub const DEFAULT: IdleTuning = IdleTuning {
         idle_threshold: Duration::from_millis(2500),
         resize_grace: Duration::from_millis(3000),
         seed_initial_activity: true,
+        burst_max_bytes: 0,
+        burst_window: Duration::ZERO,
+        burst_prior_silence: Duration::ZERO,
     };
 }
 
@@ -1029,6 +1052,40 @@ pub fn idle_tuning_for(kind: Option<CodingAgentKind>) -> IdleTuning {
         Some(k) => k.profile().idle,
         None => IdleTuning::DEFAULT,
     }
+}
+
+/// #2124 - the per-kind tuning plus the session's catalog `idleBurst` filter,
+/// as raw primitives (`maxBytes`, `maxSecs`, `priorSilenceSecs`). `None` (no
+/// catalog object) leaves the filter disabled and equals `idle_tuning_for`.
+/// Absent, non-finite or negative subfields take the documented defaults;
+/// `maxSecs` is capped at 600 s and `priorSilenceSecs` at 86400 s so
+/// `Duration::from_secs_f64` can never panic. `0` for `maxBytes` or `maxSecs`
+/// disables the filter. Takes primitives on purpose: this module must not
+/// depend on `config`.
+pub fn idle_tuning_for_launch(
+    kind: Option<CodingAgentKind>,
+    burst: Option<(Option<u64>, Option<f64>, Option<f64>)>,
+) -> IdleTuning {
+    let mut tuning = idle_tuning_for(kind);
+    let Some((max_bytes, max_secs, prior_silence_secs)) = burst else {
+        return tuning;
+    };
+    tuning.burst_max_bytes = max_bytes.unwrap_or(IDLE_BURST_DEFAULT_MAX_BYTES);
+    tuning.burst_window = Duration::from_secs_f64(
+        sanitized_burst_secs(max_secs, IDLE_BURST_DEFAULT_MAX_SECS).min(IDLE_BURST_MAX_WINDOW_SECS),
+    );
+    tuning.burst_prior_silence = Duration::from_secs_f64(
+        sanitized_burst_secs(prior_silence_secs, IDLE_BURST_DEFAULT_PRIOR_SILENCE_SECS)
+            .min(IDLE_BURST_MAX_PRIOR_SILENCE_SECS),
+    );
+    tuning
+}
+
+/// A finite, non-negative subfield value, else `default`.
+fn sanitized_burst_secs(value: Option<f64>, default: f64) -> f64 {
+    value
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(default)
 }
 
 #[cfg(test)]
@@ -2177,6 +2234,63 @@ mod tests {
         assert_eq!(
             CodingAgentKind::detect("claude.exe", &[]),
             Some(CodingAgentKind::Claude)
+        );
+    }
+
+    #[test]
+    fn idle_tuning_for_launch_resolves_burst_subfields() {
+        assert_eq!(idle_tuning_for_launch(None, None), IdleTuning::DEFAULT);
+        assert_eq!(
+            idle_tuning_for_launch(Some(CodingAgentKind::Claude), None),
+            idle_tuning_for(Some(CodingAgentKind::Claude)),
+            "no catalog object leaves the filter disabled"
+        );
+
+        let defaults =
+            idle_tuning_for_launch(Some(CodingAgentKind::Claude), Some((None, None, None)));
+        assert_eq!(defaults.burst_max_bytes, 1024);
+        assert_eq!(defaults.burst_window, Duration::from_secs(3));
+        assert_eq!(defaults.burst_prior_silence, Duration::from_secs(60));
+
+        let unkinded = idle_tuning_for_launch(None, Some((None, None, None)));
+        assert_eq!(unkinded.burst_max_bytes, 1024);
+        assert_eq!(unkinded.idle_threshold, IdleTuning::DEFAULT.idle_threshold);
+
+        let non_finite_and_negative = idle_tuning_for_launch(
+            Some(CodingAgentKind::Codex),
+            Some((None, Some(-1.0), Some(f64::NAN))),
+        );
+        assert_eq!(non_finite_and_negative.burst_window, Duration::from_secs(3));
+        assert_eq!(
+            non_finite_and_negative.burst_prior_silence,
+            Duration::from_secs(60)
+        );
+
+        let disabled =
+            idle_tuning_for_launch(Some(CodingAgentKind::Claude), Some((Some(0), None, None)));
+        assert_eq!(disabled.burst_max_bytes, 0);
+
+        let zero_window =
+            idle_tuning_for_launch(Some(CodingAgentKind::Claude), Some((None, Some(0.0), None)));
+        assert_eq!(zero_window.burst_window, Duration::ZERO);
+
+        let capped = idle_tuning_for_launch(
+            Some(CodingAgentKind::Claude),
+            Some((None, Some(1e9), Some(1e9))),
+        );
+        assert_eq!(capped.burst_window, Duration::from_secs(600));
+        assert_eq!(capped.burst_prior_silence, Duration::from_secs(86_400));
+
+        let kind = Some(CodingAgentKind::Pi);
+        let resolved = idle_tuning_for_launch(kind, Some((Some(2048), Some(2.0), Some(30.0))));
+        assert_eq!(
+            resolved.idle_threshold,
+            idle_tuning_for(kind).idle_threshold
+        );
+        assert_eq!(resolved.resize_grace, idle_tuning_for(kind).resize_grace);
+        assert_eq!(
+            resolved.seed_initial_activity,
+            idle_tuning_for(kind).seed_initial_activity
         );
     }
 

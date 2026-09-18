@@ -8,34 +8,34 @@
 //! Module layout (see plan `_plans/714-active-agent-screenshot-capture.md`):
 //! - This file owns the serializable IPC types shared with the frontend, the
 //!   target-independent hotkey parser, and the managed-state type aliases.
-//! - `native` (Windows and Linux/X11) owns the native runtime: `xcap` capture,
-//!   `image` crop/encode, clipboard, global shortcut, overlay windows, and the
-//!   capture lifecycle. Only its window-capture region stays Windows-only.
-//! - `unsupported` is the macOS-and-everything-else stub: same public surface,
-//!   no native screenshot crates, every capture path reports an unsupported
-//!   status.
+//! - `native` (Windows, Linux/X11 and macOS) owns the native runtime: `xcap`
+//!   capture, `image` crop/encode, clipboard, global shortcut, overlay windows,
+//!   and the capture lifecycle. Only its window-capture region stays Windows-only.
+//! - `unsupported` is the every-other-target stub: same public surface, no
+//!   native screenshot crates, every capture path reports an unsupported status.
 //!
 //! `pub use <cfg-module>::*` lets callers use `crate::screenshot::*` without
 //! per-call `cfg` blocks; the two cfg modules each provide
 //! `ScreenshotCaptureLifecycle`, `ScreenshotHotkeyRuntime`, and the runtime
 //! functions referenced by the type aliases and command layer below.
 //!
-//! The `any(target_os = "windows", target_os = "linux")` predicate is
-//! duplicated in `Cargo.toml` (the target dependency tables) and in `lib.rs`
-//! (the plugin cfg); the three must agree.
+//! The `any(target_os = "windows", target_os = "linux", target_os = "macos")`
+//! predicate is duplicated in `Cargo.toml` (the target dependency tables), in
+//! `lib.rs` (the plugin cfg) and in `session/selection.rs` (the test-only
+//! helpers); they must agree.
 
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod native;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub use native::*;
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 mod unsupported;
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub use unsupported::*;
 
 /// Short-lived capture lifecycle, guarded by an async mutex. `Starting` is

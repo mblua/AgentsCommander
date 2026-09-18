@@ -14,6 +14,7 @@ import { FakeTransport } from "./fake-transport";
 import { toastStore } from "../stores/toasts";
 import { projectStore } from "../../sidebar/stores/project";
 import { replicaVolatileStore } from "../../sidebar/stores/replica-volatile";
+import { remoteActivityStore } from "../../sidebar/stores/remote-activity";
 import { autoUnarchiveStore } from "../../sidebar/stores/auto-unarchive";
 import { sessionsStore } from "../../sidebar/stores/sessions";
 import { bridgesStore } from "../../sidebar/stores/bridges";
@@ -277,6 +278,9 @@ export function resetUiStoresForTests(): void {
   // lands a branch event leaks its repoBranch/repoBranchByPath into the next test
   // in the same file (order-dependent, and silently wrong rather than red).
   replicaVolatileStore.clearAll();
+  // #2064 - same hazard, same reason: the remote-activity map is event-fed and out
+  // of setSessions' reach, so it would survive into the next test in the same file.
+  remoteActivityStore.clearAll();
   // #1033 - same hazard, same reason: the context reading map is event-fed and is
   // deliberately out of setSessions' reach, so it survives into the next test.
   sessionsStore.resetContextReadingsForTests();

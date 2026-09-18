@@ -2,7 +2,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import SettingsModal from "./SettingsModal";
-import type { AppSettings, SettingsSnapshot } from "../../shared/types";
+import type {
+  AgentConfig,
+  AppSettings,
+  ProfileCellConfig,
+  SettingsSnapshot,
+} from "../../shared/types";
 import { PtyAPI, SettingsAPI } from "../../shared/ipc";
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
@@ -264,6 +269,76 @@ async function enterTwoRails(): Promise<void> {
   sel.value = "2";
   sel.dispatchEvent(new Event("change", { bubbles: true }));
   await settle();
+}
+
+// #2061 - shared fixture for the eight #2057/#2061 guard cases. Every one renders
+// the same two rails and the same A/B slot skeleton; only which agents hold B
+// (cells and/or labels) varies.
+const CODEX_RAIL_AGENT: AgentConfig = {
+  id: "codex",
+  label: "Codex",
+  command: "codex",
+  color: "#10b981",
+  envs: [],
+  isolatedHome: false,
+};
+
+const CLAUDE_RAIL_AGENT: AgentConfig = {
+  id: "claude",
+  label: "Claude Code",
+  command: "claude",
+  color: "#d97706",
+  envs: [],
+  isolatedHome: false,
+};
+
+function profileCell(command: string, enabled = true): ProfileCellConfig {
+  return { enabled, command, env: {}, notes: "" };
+}
+
+function profileGuardSettings({
+  agents = [CODEX_RAIL_AGENT, CLAUDE_RAIL_AGENT],
+  profilesByAgent = {
+    codex: { A: profileCell("codex") },
+    claude: { A: profileCell("claude") },
+  },
+  profileLabelsByAgent = {},
+}: {
+  agents?: AgentConfig[];
+  profilesByAgent?: Record<string, Record<string, ProfileCellConfig>>;
+  profileLabelsByAgent?: Record<string, Record<string, string>>;
+} = {}): SettingsSnapshot {
+  return settings({
+    agents,
+    codingAgentProfiles: {
+      schemaVersion: 2,
+      profileSlots: { A: { label: "" }, B: { label: "fast" } },
+      defaultProfileByAgent: {},
+      profilesByAgent,
+      profileLabelsByAgent,
+    },
+  });
+}
+
+// #2061 - the guard cases mount the same profiles section; two rails except the
+// one-agent dead-id case. Returns the disposer.
+async function mountProfilesSection(twoRails = true): Promise<() => void> {
+  const root = document.createElement("div");
+  document.body.append(root);
+  const dispose = render(
+    () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+    root,
+  );
+  await settle();
+  if (twoRails) await enterTwoRails();
+  return dispose;
+}
+
+// #2061 - save and read the first persisted draft.
+async function saveAndReadDraft(): Promise<AppSettings | undefined> {
+  byTestId<HTMLButtonElement>("settings.save").click();
+  await settle();
+  return vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
 }
 
 describe("SettingsModal automation hooks", () => {
@@ -1460,50 +1535,13 @@ describe("SettingsModal automation hooks", () => {
   });
 
   it("blocks Delete Profile while the slot is configured in another agent", async () => {
-    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
-      agents: [
-        {
-          id: "codex",
-          label: "Codex",
-          command: "codex",
-          color: "#10b981",
-          envs: [],
-          isolatedHome: false,
-        },
-        {
-          id: "claude",
-          label: "Claude Code",
-          command: "claude",
-          color: "#d97706",
-          envs: [],
-          isolatedHome: false,
-        },
-      ],
-      codingAgentProfiles: {
-        schemaVersion: 2,
-        profileSlots: { A: { label: "" }, B: { label: "fast" } },
-        defaultProfileByAgent: {},
-        profileLabelsByAgent: {},
-        profilesByAgent: {
-          codex: {
-            A: { enabled: true, command: "codex", env: {}, notes: "" },
-            B: { enabled: true, command: "codex --profile fast", env: {}, notes: "" },
-          },
-          claude: {
-            A: { enabled: true, command: "claude", env: {}, notes: "" },
-            B: { enabled: true, command: "claude --model opus", env: {}, notes: "" },
-          },
-        },
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(profileGuardSettings({
+      profilesByAgent: {
+        codex: { A: profileCell("codex"), B: profileCell("codex --profile fast") },
+        claude: { A: profileCell("claude"), B: profileCell("claude --model opus") },
       },
     }));
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
-      root,
-    );
-    await settle();
-    await enterTwoRails();
+    const dispose = await mountProfilesSection();
 
     // B is configured on BOTH agents, so the slot delete is blocked.
     expect(byTestId("settings.profileCard.0.B")).toBeTruthy();
@@ -1523,10 +1561,7 @@ describe("SettingsModal automation hooks", () => {
     expect(byTestId("settings.profileCard.0.B")).toBeTruthy();
     expect(byTestId("settings.profileCard.1.B")).toBeTruthy();
 
-    byTestId<HTMLButtonElement>("settings.save").click();
-    await settle();
-
-    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    const saved = await saveAndReadDraft();
     expect(saved?.codingAgentProfiles.profileSlots.B).toBeTruthy();
     expect(saved?.codingAgentProfiles.profilesByAgent.codex?.B).toBeTruthy();
     expect(saved?.codingAgentProfiles.profilesByAgent.claude?.B).toBeTruthy();
@@ -1536,46 +1571,73 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  // #2057 - T1: no live agent holds B, so the slot-level delete still works.
-  it("deletes the slot when it is empty in every live coding agent", async () => {
-    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
-      agents: [
-        {
-          id: "codex",
-          label: "Codex",
-          command: "codex",
-          color: "#10b981",
-          envs: [],
-          isolatedHome: false,
+  // #2061 - the guard is a runtime invariant, not just the disabled attribute.
+  // A force-enabled click reaches removeProfileLetter, and the early return must
+  // still refuse to delete. The Clear/Delete control afterwards proves the click
+  // path is live in this harness.
+  it("#2061: a force-enabled Delete Profile click cannot delete a held slot", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(profileGuardSettings({
+      profilesByAgent: {
+        codex: {
+          A: profileCell("codex"),
+          B: profileCell("codex --profile fast"),
         },
-        {
-          id: "claude",
-          label: "Claude Code",
-          command: "claude",
-          color: "#d97706",
-          envs: [],
-          isolatedHome: false,
-        },
-      ],
-      codingAgentProfiles: {
-        schemaVersion: 2,
-        profileSlots: { A: { label: "" }, B: { label: "fast" } },
-        defaultProfileByAgent: {},
-        profileLabelsByAgent: {},
-        profilesByAgent: {
-          codex: { A: { enabled: true, command: "codex", env: {}, notes: "" } },
-          claude: { A: { enabled: true, command: "claude", env: {}, notes: "" } },
+        claude: {
+          A: profileCell("claude"),
+          B: profileCell("claude --model opus"),
         },
       },
     }));
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
-      root,
-    );
+    const dispose = await mountProfilesSection();
+
+    const deleteBtn = byTestId<HTMLButtonElement>("settings.profileCard.0.B.deleteProfile");
+    expect(deleteBtn.disabled).toBe(true);
+    expect(deleteBtn.getAttribute("data-ac-state")).toBe("blocked");
+
+    // Bypass the disabled attribute, then prove at the instant of the click that
+    // the button is really clickable, so the no-op below can only be the guard.
+    deleteBtn.disabled = false;
+    expect(deleteBtn.disabled).toBe(false);
+    deleteBtn.click();
     await settle();
-    await enterTwoRails();
+
+    // The early return fired before any store write: cards, notice and draft intact.
+    expect(byTestId("settings.profileCard.0.B")).toBeTruthy();
+    expect(byTestId("settings.profileCard.1.B")).toBeTruthy();
+    expect(byTestId("settings.profileCard.0.B.deleteProfile.blocked")).toBeTruthy();
+
+    const saved = await saveAndReadDraft();
+    expect(saved?.codingAgentProfiles.profileSlots.B).toBeTruthy();
+    expect(saved?.codingAgentProfiles.profilesByAgent.codex?.B).toBeTruthy();
+    expect(saved?.codingAgentProfiles.profilesByAgent.claude?.B).toBeTruthy();
+    // The A baseline is untouched.
+    expect(saved?.codingAgentProfiles.profileSlots.A).toBeTruthy();
+
+    // Positive control - same harness, same .click(): emptying both holders
+    // enables the same button, and its click then deletes the slot.
+    byTestId<HTMLButtonElement>("settings.profileCard.0.B.clearCell").click();
+    await settle();
+    expect(byTestId("settings.profileCard.0.B.deleteProfile.blocked").textContent).toBe(
+      "Still configured in: Claude Code. Empty this profile in every coding agent before deleting the slot.",
+    );
+
+    byTestId<HTMLButtonElement>("settings.profileCard.1.B.clearCell").click();
+    await settle();
+    const unblockedBtn = byTestId<HTMLButtonElement>("settings.profileCard.0.B.deleteProfile");
+    expect(unblockedBtn.disabled).toBe(false);
+    unblockedBtn.click();
+    await settle();
+
+    expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B"]')).toBeNull();
+    expect(document.querySelector('[data-ac-testid="settings.profileCard.1.B"]')).toBeNull();
+
+    dispose();
+  });
+
+  // #2057 - T1: no live agent holds B, so the slot-level delete still works.
+  it("deletes the slot when it is empty in every live coding agent", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(profileGuardSettings());
+    const dispose = await mountProfilesSection();
 
     const deleteBtn = byTestId<HTMLButtonElement>("settings.profileCard.0.B.deleteProfile");
     expect(deleteBtn.disabled).toBe(false);
@@ -1591,10 +1653,7 @@ describe("SettingsModal automation hooks", () => {
     expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B"]')).toBeNull();
     expect(document.querySelector('[data-ac-testid="settings.profileCard.1.B"]')).toBeNull();
 
-    byTestId<HTMLButtonElement>("settings.save").click();
-    await settle();
-
-    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    const saved = await saveAndReadDraft();
     expect(saved?.codingAgentProfiles.profileSlots.B).toBeUndefined();
     // The A baseline is untouched.
     expect(saved?.codingAgentProfiles.profileSlots.A).toBeTruthy();
@@ -1605,47 +1664,14 @@ describe("SettingsModal automation hooks", () => {
   // #2057 - T2/D7: the holder is the selected agent itself; the delete is still
   // blocked and the notice names that one agent.
   it("blocks the slot delete when only the selected agent holds it", async () => {
-    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
-      agents: [
-        {
-          id: "codex",
-          label: "Codex",
-          command: "codex",
-          color: "#10b981",
-          envs: [],
-          isolatedHome: false,
-        },
-        {
-          id: "claude",
-          label: "Claude Code",
-          command: "claude",
-          color: "#d97706",
-          envs: [],
-          isolatedHome: false,
-        },
-      ],
-      codingAgentProfiles: {
-        schemaVersion: 2,
-        profileSlots: { A: { label: "" }, B: { label: "fast" } },
-        defaultProfileByAgent: {},
-        profileLabelsByAgent: { codex: { B: "fast" } },
-        profilesByAgent: {
-          codex: {
-            A: { enabled: true, command: "codex", env: {}, notes: "" },
-            B: { enabled: true, command: "codex --profile fast", env: {}, notes: "" },
-          },
-          claude: { A: { enabled: true, command: "claude", env: {}, notes: "" } },
-        },
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(profileGuardSettings({
+      profilesByAgent: {
+        codex: { A: profileCell("codex"), B: profileCell("codex --profile fast") },
+        claude: { A: profileCell("claude") },
       },
+      profileLabelsByAgent: { codex: { B: "fast" } },
     }));
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
-      root,
-    );
-    await settle();
-    await enterTwoRails();
+    const dispose = await mountProfilesSection();
 
     const deleteBtn = byTestId<HTMLButtonElement>("settings.profileCard.0.B.deleteProfile");
     expect(deleteBtn.disabled).toBe(true);
@@ -1659,47 +1685,14 @@ describe("SettingsModal automation hooks", () => {
 
   // #2057 - T3: Clear in this agent unblocks the slot and the delete then succeeds.
   it("clears the one holder and then deletes the slot", async () => {
-    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
-      agents: [
-        {
-          id: "codex",
-          label: "Codex",
-          command: "codex",
-          color: "#10b981",
-          envs: [],
-          isolatedHome: false,
-        },
-        {
-          id: "claude",
-          label: "Claude Code",
-          command: "claude",
-          color: "#d97706",
-          envs: [],
-          isolatedHome: false,
-        },
-      ],
-      codingAgentProfiles: {
-        schemaVersion: 2,
-        profileSlots: { A: { label: "" }, B: { label: "fast" } },
-        defaultProfileByAgent: {},
-        profileLabelsByAgent: { codex: { B: "fast" } },
-        profilesByAgent: {
-          codex: {
-            A: { enabled: true, command: "codex", env: {}, notes: "" },
-            B: { enabled: true, command: "codex --profile fast", env: {}, notes: "" },
-          },
-          claude: { A: { enabled: true, command: "claude", env: {}, notes: "" } },
-        },
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(profileGuardSettings({
+      profilesByAgent: {
+        codex: { A: profileCell("codex"), B: profileCell("codex --profile fast") },
+        claude: { A: profileCell("claude") },
       },
+      profileLabelsByAgent: { codex: { B: "fast" } },
     }));
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
-      root,
-    );
-    await settle();
-    await enterTwoRails();
+    const dispose = await mountProfilesSection();
 
     expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.deleteProfile").disabled).toBe(true);
     expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.clearCell").disabled).toBe(false);
@@ -1715,10 +1708,8 @@ describe("SettingsModal automation hooks", () => {
 
     byTestId<HTMLButtonElement>("settings.profileCard.0.B.deleteProfile").click();
     await settle();
-    byTestId<HTMLButtonElement>("settings.save").click();
-    await settle();
 
-    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    const saved = await saveAndReadDraft();
     expect(saved?.codingAgentProfiles.profileSlots.B).toBeUndefined();
     expect(saved?.codingAgentProfiles.profilesByAgent.codex?.B).toBeUndefined();
     expect(saved?.codingAgentProfiles.profileLabelsByAgent.codex?.B).toBeUndefined();
@@ -1730,57 +1721,18 @@ describe("SettingsModal automation hooks", () => {
 
   // #2057 - T4: Clear in this agent is scoped to the clicked agent only.
   it("Clear in this agent leaves the other agents and the slot untouched", async () => {
-    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
-      agents: [
-        {
-          id: "codex",
-          label: "Codex",
-          command: "codex",
-          color: "#10b981",
-          envs: [],
-          isolatedHome: false,
-        },
-        {
-          id: "claude",
-          label: "Claude Code",
-          command: "claude",
-          color: "#d97706",
-          envs: [],
-          isolatedHome: false,
-        },
-      ],
-      codingAgentProfiles: {
-        schemaVersion: 2,
-        profileSlots: { A: { label: "" }, B: { label: "fast" } },
-        defaultProfileByAgent: {},
-        profileLabelsByAgent: {},
-        profilesByAgent: {
-          codex: {
-            A: { enabled: true, command: "codex", env: {}, notes: "" },
-            B: { enabled: true, command: "codex --profile fast", env: {}, notes: "" },
-          },
-          claude: {
-            A: { enabled: true, command: "claude", env: {}, notes: "" },
-            B: { enabled: true, command: "claude --model opus", env: {}, notes: "" },
-          },
-        },
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(profileGuardSettings({
+      profilesByAgent: {
+        codex: { A: profileCell("codex"), B: profileCell("codex --profile fast") },
+        claude: { A: profileCell("claude"), B: profileCell("claude --model opus") },
       },
     }));
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
-      root,
-    );
-    await settle();
-    await enterTwoRails();
+    const dispose = await mountProfilesSection();
 
     byTestId<HTMLButtonElement>("settings.profileCard.0.B.clearCell").click();
     await settle();
-    byTestId<HTMLButtonElement>("settings.save").click();
-    await settle();
 
-    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    const saved = await saveAndReadDraft();
     expect(saved?.codingAgentProfiles.profilesByAgent.codex?.B).toBeUndefined();
     expect(saved?.codingAgentProfiles.profilesByAgent.claude?.B).toEqual({
       enabled: true,
@@ -1795,47 +1747,13 @@ describe("SettingsModal automation hooks", () => {
 
   // #2057 - T5: a disabled, fully empty cell is keystroke residue, not a holder.
   it("does not treat a disabled empty residue cell as a holder", async () => {
-    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
-      agents: [
-        {
-          id: "codex",
-          label: "Codex",
-          command: "codex",
-          color: "#10b981",
-          envs: [],
-          isolatedHome: false,
-        },
-        {
-          id: "claude",
-          label: "Claude Code",
-          command: "claude",
-          color: "#d97706",
-          envs: [],
-          isolatedHome: false,
-        },
-      ],
-      codingAgentProfiles: {
-        schemaVersion: 2,
-        profileSlots: { A: { label: "" }, B: { label: "fast" } },
-        defaultProfileByAgent: {},
-        profileLabelsByAgent: {},
-        profilesByAgent: {
-          codex: { A: { enabled: true, command: "codex", env: {}, notes: "" } },
-          claude: {
-            A: { enabled: true, command: "claude", env: {}, notes: "" },
-            B: { enabled: false, command: "", env: {}, notes: "" },
-          },
-        },
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(profileGuardSettings({
+      profilesByAgent: {
+        codex: { A: profileCell("codex") },
+        claude: { A: profileCell("claude"), B: profileCell("", false) },
       },
     }));
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
-      root,
-    );
-    await settle();
-    await enterTwoRails();
+    const dispose = await mountProfilesSection();
 
     const deleteBtn = byTestId<HTMLButtonElement>("settings.profileCard.0.B.deleteProfile");
     expect(deleteBtn.disabled).toBe(false);
@@ -1850,10 +1768,7 @@ describe("SettingsModal automation hooks", () => {
     expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B"]')).toBeNull();
     expect(document.querySelector('[data-ac-testid="settings.profileCard.1.B"]')).toBeNull();
 
-    byTestId<HTMLButtonElement>("settings.save").click();
-    await settle();
-
-    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    const saved = await saveAndReadDraft();
     expect(saved?.codingAgentProfiles.profileSlots.B).toBeUndefined();
     // The residue cell for the deleted slot goes with it.
     expect(saved?.codingAgentProfiles.profilesByAgent.claude?.B).toBeUndefined();
@@ -1864,38 +1779,14 @@ describe("SettingsModal automation hooks", () => {
   // #2057 - T6/D2: a fully configured cell for an agent id no longer in
   // `settings.data.agents` is dead data and must not block the slot delete.
   it("a configured dead agent id does not block the slot delete", async () => {
-    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
-      agents: [
-        {
-          id: "codex",
-          label: "Codex",
-          command: "codex",
-          color: "#10b981",
-          envs: [],
-          isolatedHome: false,
-        },
-      ],
-      codingAgentProfiles: {
-        schemaVersion: 2,
-        profileSlots: { A: { label: "" }, B: { label: "fast" } },
-        defaultProfileByAgent: {},
-        profileLabelsByAgent: {},
-        profilesByAgent: {
-          codex: { A: { enabled: true, command: "codex", env: {}, notes: "" } },
-          ghost: {
-            A: { enabled: true, command: "ghost", env: {}, notes: "" },
-            B: { enabled: true, command: "ghost --profile fast", env: {}, notes: "" },
-          },
-        },
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(profileGuardSettings({
+      agents: [CODEX_RAIL_AGENT],
+      profilesByAgent: {
+        codex: { A: profileCell("codex") },
+        ghost: { A: profileCell("ghost"), B: profileCell("ghost --profile fast") },
       },
     }));
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
-      root,
-    );
-    await settle();
+    const dispose = await mountProfilesSection(false);
 
     const deleteBtn = byTestId<HTMLButtonElement>("settings.profileCard.0.B.deleteProfile");
     expect(deleteBtn.disabled).toBe(false);
@@ -1906,10 +1797,7 @@ describe("SettingsModal automation hooks", () => {
 
     expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B"]')).toBeNull();
 
-    byTestId<HTMLButtonElement>("settings.save").click();
-    await settle();
-
-    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    const saved = await saveAndReadDraft();
     expect(saved?.codingAgentProfiles.profileSlots.B).toBeUndefined();
     expect(saved?.codingAgentProfiles.profilesByAgent.ghost?.B).toBeUndefined();
 

@@ -17,6 +17,8 @@ pub mod local_backend;
 pub mod manager;
 pub mod menu_guard; // #1646 / #1647 - proactive detection of terminal blocking menus
 pub mod output;
+// #2064 - the remote activity producer. `pub(crate)`: only `lib.rs` constructs it.
+pub(crate) mod remote_watcher;
 pub mod spawn_diagnostics; // #942 - spawn/first-output/exit evidence for hang triage
 pub mod terminal_snapshot;
 pub mod watchers; // #1171 - generic regex pattern watchers over PTY output

@@ -1,7 +1,7 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport, AppSettings } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged } from "../../shared/ipc";
+import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, onRemoteActivityUpdated } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import {
   pendingCoordinatorClose,
@@ -32,6 +32,7 @@ import {
   effectiveRepoDirtyByPath,
   replicaVolatileStore,
 } from "../stores/replica-volatile";
+import { remoteActivityStore } from "../stores/remote-activity";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
 import {
   projectCollapseStore,
@@ -392,11 +393,26 @@ function runningCoordinatorPeers(wg: AcWorkgroup, replica: AcAgentReplica): AcAg
   );
 }
 
+/** #2064 — the additive CI and staleness classes for one repo chip, in the fixed
+ *  order `ci-running` then `stale` so the className string is deterministic and
+ *  assertable. `unknown`, `idle` and `current` carry NO class: a user without `gh`,
+ *  or with the feature off, sees exactly today's UI, and a marker for "we do not
+ *  know" would be permanent noise on most rows. The distinction lives in the
+ *  tooltip, not in colour. */
+function remoteActivityClasses(sourcePath: string): string {
+  const activity = remoteActivityStore.forPath(sourcePath);
+  if (!activity) return "";
+  return `${activity.ci === "running" ? " ci-running" : ""}${
+    activity.staleness === "stale" ? " stale" : ""
+  }`;
+}
+
 const ProjectPanel: Component = () => {
   let unlistenBranch: (() => void) | null = null;
   let unlistenClock: (() => void) | null = null;
   let unlistenAutoClose: (() => void) | null = null;
   let unlistenManualClose: (() => void) | null = null;
+  let unlistenRemoteActivity: (() => void) | null = null;
   onCleanup(registerCoordinatorCloseModalHost());
   onMount(async () => {
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
@@ -417,12 +433,24 @@ const ProjectPanel: Component = () => {
     unlistenManualClose = await onCoordinatorManualCloseChanged((data) => {
       replicaVolatileStore.setManuallyClosedAt(data.replicaPath, data.manuallyClosedAt);
     });
+    // #2064 — the fifth listener, same shape as the four above. A registration
+    // failure is caught ONCE per mount (a remount is new information) and leaves
+    // the handle null, so the chip degrades to today's UI instead of failing the
+    // mount. Section 7's last row is that degradation.
+    try {
+      unlistenRemoteActivity = await onRemoteActivityUpdated((data) => {
+        remoteActivityStore.applyRemoteActivityUpdate(data);
+      });
+    } catch (error) {
+      console.warn("[ProjectPanel] failed to register the remote-activity listener:", error);
+    }
   });
   onCleanup(() => {
     unlistenBranch?.();
     unlistenClock?.();
     unlistenAutoClose?.();
     unlistenManualClose?.();
+    unlistenRemoteActivity?.();
   });
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
@@ -858,6 +886,36 @@ const ProjectPanel: Component = () => {
           document.addEventListener("keydown", handleDeleteModalKeyDown);
           onCleanup(() => document.removeEventListener("keydown", handleDeleteModalKeyDown));
         });
+        const applyWgDeleteFailure = (e: any, forceDelete: boolean, myGen: number) => {
+          if (myGen !== retryGen) return;
+          console.error("delete_workgroup failed:", e);
+          const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
+          if (msg.startsWith("BLOCKERS:")) {
+            try {
+              const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
+              setWgBlockers(report);
+              setWgDirtyRepos(false);
+              setWgConfirmText("");
+              setWgDeleteError("");
+              setWgDeleteInProgress(false);
+              return;
+            } catch (parseErr) {
+              console.error("Failed to parse BLOCKERS: payload:", parseErr);
+              setWgDeleteError("Room is locked, but the blocker report could not be parsed. Try again.");
+              setWgDeleteInProgress(false);
+              return;
+            }
+          }
+          if (!forceDelete && msg.startsWith("DIRTY_REPOS:")) {
+            setWgDeleteError(msg.slice("DIRTY_REPOS:".length));
+            setWgDirtyRepos(true);
+            setWgConfirmText("");
+            setWgDeleteInProgress(false);
+            return;
+          }
+          setWgDeleteError(msg);
+          setWgDeleteInProgress(false);
+        };
         const retryWgDelete = async () => {
           if (wgRetryInProgress()) return;
           const wg = deletingWg();
@@ -2365,13 +2423,6 @@ const ProjectPanel: Component = () => {
           const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => replica.isCoordinator;
           const session = () => replicaSession(wg, replica);
-          // #1783 - the quick-access panel answers "is this team busy", so an
-          // orchestrator row there tints when ANY agent in its room is working,
-          // the orchestrator included. Every other render site (rowContext
-          // "workgroups" and "selected", both inside .ac-wg-subgroup) keeps the
-          // per-row meaning: own session only. Do not collapse this branch.
-          const rowIsWorking = () =>
-            rowContext === "quick" ? workgroupIsWorking(wg) : isReplicaWorking(wg, replica);
           const communication = createMemo(() => session()?.communication ?? null);
           const showRaiseHand = createMemo(() =>
             isCoord() &&
@@ -2388,6 +2439,32 @@ const ProjectPanel: Component = () => {
               ? s.gitRepos
               : configuredReplicaRepoBadgesLive(replica, wg);
           });
+          // #2131 - CI running on this orchestrator row's repo is work the room is
+          // waiting on, so the row takes the existing wash while its chip carries
+          // `ci-running`. It reads the SAME published entry the chip class reads
+          // (`remoteActivityClasses`) and the SAME `repoBadges()` list the chip
+          // <For> renders, so the chip and the row cannot disagree. It must NOT
+          // reach workgroupIsWorking: room ordering, the group-rail dot and the
+          // quick-access row stay session-only. Non-orchestrator rows are excluded
+          // here, not at the chip.
+          const orchestratorCiRunning = () =>
+            isCoord() &&
+            repoBadges().some(
+              (repo) => remoteActivityStore.forPath(repo.sourcePath)?.ci === "running"
+            );
+          // #1783 - the quick-access panel answers "is this team busy", so an
+          // orchestrator row there tints when ANY agent in its room is working,
+          // the orchestrator included. Every other render site (rowContext
+          // "workgroups" and "selected", both inside .ac-wg-subgroup) keeps the
+          // per-row meaning: own session only. Do not collapse this branch.
+          // #2131 - the CI term is added ONLY on the non-quick branch, so the
+          // quick-access row keeps #1783's room-wide session rule unchanged. That
+          // is the stated limit of D-B6: the same orchestrator can be tinted in
+          // the room tree and untinted in the Orchestrators strip in one frame.
+          const rowIsWorking = () =>
+            rowContext === "quick"
+              ? workgroupIsWorking(wg)
+              : isReplicaWorking(wg, replica) || orchestratorCiRunning();
           const idleBadge = createMemo(() =>
             isCoord()
               ? coordinatorIdleBadge(
@@ -2601,8 +2678,8 @@ const ProjectPanel: Component = () => {
                     <For each={repoBadges()}>
                       {(repo, index) => (
                         <span
-                          class={`ac-discovery-badge branch${repo.dirty === true ? " dirty" : ""}`}
-                          title={formatReplicaRepoBadgeTitle(repo)}
+                          class={`ac-discovery-badge branch${repo.dirty === true ? " dirty" : ""}${remoteActivityClasses(repo.sourcePath)}`}
+                          title={formatReplicaRepoBadgeTitle(repo, remoteActivityStore.forPath(repo.sourcePath))}
                           data-ac-testid={repoBadgeTestId(repo.label, index())}
                         >
                           {formatReplicaRepoBadgeLabel(repo)}
@@ -4240,34 +4317,7 @@ const ProjectPanel: Component = () => {
                             await projectStore.reloadProject(proj.path);
                             if (myGen !== retryGen) return;
                           } catch (e: any) {
-                            if (myGen !== retryGen) return;
-                            console.error("delete_workgroup failed:", e);
-                            const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
-                            if (msg.startsWith("BLOCKERS:")) {
-                              try {
-                                const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
-                                setWgBlockers(report);
-                                setWgDirtyRepos(false);
-                                setWgConfirmText("");
-                                setWgDeleteError("");
-                                setWgDeleteInProgress(false);
-                                return;
-                              } catch (parseErr) {
-                                console.error("Failed to parse BLOCKERS: payload:", parseErr);
-                                setWgDeleteError("Room is locked, but the blocker report could not be parsed. Try again.");
-                                setWgDeleteInProgress(false);
-                                return;
-                              }
-                            }
-                            if (!forceDelete && msg.startsWith("DIRTY_REPOS:")) {
-                              setWgDeleteError(msg.slice("DIRTY_REPOS:".length));
-                              setWgDirtyRepos(true);
-                              setWgConfirmText("");
-                              setWgDeleteInProgress(false);
-                              return;
-                            }
-                            setWgDeleteError(msg);
-                            setWgDeleteInProgress(false);
+                            applyWgDeleteFailure(e, forceDelete, myGen);
                             return;
                           }
                           closeWgDeleteModal();

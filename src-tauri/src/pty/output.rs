@@ -1045,10 +1045,6 @@ impl SessionIoFanout {
         let id = token.identity.session_id;
         let n = data.len();
 
-        #[cfg(test)]
-        self.trace(FanoutTraceEvent::TouchSilence);
-        self.idle_detector.touch_silence(id);
-
         let text = String::from_utf8_lossy(&data);
         if text.contains('\u{FFFD}') {
             log::debug!(
@@ -1059,11 +1055,19 @@ impl SessionIoFanout {
             );
         }
 
-        if output_has_printable_activity(&text) {
-            #[cfg(test)]
+        // #2124 - the detector decides whether this chunk counts, resets the
+        // silence clock or is absorbed into a pending short burst. The trace
+        // order stays TouchSilence then PrintableActivity for the burst-off
+        // sessions the trace tests use.
+        let printable = output_has_printable_activity(&text);
+        #[cfg(test)]
+        self.trace(FanoutTraceEvent::TouchSilence);
+        #[cfg(test)]
+        if printable {
             self.trace(FanoutTraceEvent::PrintableActivity);
-            self.idle_detector.record_activity_with_bytes(id, n);
-        } else {
+        }
+        self.idle_detector.record_output(id, n, printable);
+        if !printable {
             log::trace!(
                 "[idle] SKIPPED activity for {} ({} bytes, escape-only output)",
                 &id.to_string()[..8],
@@ -2340,6 +2344,67 @@ mod tests {
         assert_eq!(emitted.len(), 1);
         assert_eq!(emitted[0].1, bytes);
         assert_eq!(emitted[0].2, Some(1));
+    }
+
+    /// #2124 T12 - the real wiring through `handle_output`: the fanout's single
+    /// detector call reaches the burst filter, so a 64 B status-line chunk after
+    /// long silence neither resets the auto-close clock nor fires `on_busy`,
+    /// while 1024 B of real output does both.
+    #[test]
+    fn t12_handle_output_applies_the_burst_filter() {
+        let busy_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let busy_calls_cb = Arc::clone(&busy_calls);
+        let detector = IdleDetector::new(
+            |_| {},
+            move |_| {
+                busy_calls_cb.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        let fanout = SessionIoFanout::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::clone(&detector),
+            None,
+        );
+        let tuning = IdleTuning {
+            burst_max_bytes: 1024,
+            burst_window: Duration::from_secs(3),
+            burst_prior_silence: Duration::from_secs(60),
+            ..IdleTuning::DEFAULT
+        };
+
+        let id = Uuid::new_v4();
+        let token = fanout
+            .register_session(id, tuning, 30, 120, PtyOutputTarget::noop())
+            .expect("register burst session");
+        detector.set_auto_close_ages_for_test(
+            id,
+            Duration::from_secs(30 * 60),
+            Duration::from_secs(31 * 60),
+        );
+        detector.set_pty_input_ready_for_test(id);
+
+        fanout.handle_output(&token, &id.to_string(), vec![b'a'; 64]);
+        assert_eq!(busy_calls.load(Ordering::SeqCst), 0);
+        assert!(
+            detector.silence_age(id).unwrap() >= Duration::from_secs(30 * 60),
+            "the short chunk must not reset the auto-close clock"
+        );
+
+        // Control: the same path with real work resets the clock and flips the
+        // idle dot.
+        let control_id = Uuid::new_v4();
+        let control_token = fanout
+            .register_session(control_id, tuning, 30, 120, PtyOutputTarget::noop())
+            .expect("register control session");
+        detector.set_auto_close_ages_for_test(
+            control_id,
+            Duration::from_secs(30 * 60),
+            Duration::from_secs(31 * 60),
+        );
+        detector.set_pty_input_ready_for_test(control_id);
+        fanout.handle_output(&control_token, &control_id.to_string(), vec![b'a'; 1024]);
+        assert_eq!(busy_calls.load(Ordering::SeqCst), 1);
+        assert!(detector.silence_age(control_id).unwrap() < Duration::from_secs(1));
     }
 
     #[test]

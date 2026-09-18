@@ -561,7 +561,28 @@ impl DiscoveryBranchWatcher {
                 .flat_map(|e| e.repos.iter().map(|(_, path)| path.clone()))
                 .collect()
         };
+        // #2064 - the room half of the same map, pushed in the same
+        // guard-released window: `remote_watcher` needs (repo path, room dir) to
+        // route a transition to the room that owns the repo. `room_dir` is the
+        // parent of the replica path, so no new filesystem discovery happens.
+        let rooms: Vec<(String, String)> = {
+            let map = self.replicas.lock().unwrap();
+            let mut rooms = Vec::new();
+            for entry in map.values().flatten() {
+                let Some(room_dir) = std::path::Path::new(&entry.replica_path)
+                    .parent()
+                    .map(|parent| parent.to_string_lossy().to_string())
+                else {
+                    continue;
+                };
+                for (_, path) in &entry.repos {
+                    rooms.push((path.clone(), room_dir.clone()));
+                }
+            }
+            rooms
+        };
         crate::pty::git_watcher::set_discovery_repo_paths(paths);
+        crate::pty::git_watcher::set_discovery_repo_rooms(rooms);
         result
     }
 
@@ -6172,6 +6193,55 @@ mod tests {
         assert_ne!(clean, dirtied, "clean -> dirty must re-emit");
         assert_ne!(dirtied, unknown, "dirty -> unknown must re-emit");
         assert_ne!(clean, unknown, "false and null are distinct on the wire");
+    }
+
+    /// #2064 - the room map travels with the path vector, from the same map, in
+    /// the same guard-released window. The room dir is the parent of the replica
+    /// path, and the existing path push is unchanged.
+    #[test]
+    fn with_replicas_mut_pushes_repo_rooms_alongside_paths() {
+        let _guard = crate::pty::git_watcher::DISCOVERY_TEST_LOCK.blocking_lock();
+        let (app, _settings, _receiver, session_mgr, _pty_mgr) =
+            archive_command_app(AppSettings::default());
+        let watcher = DiscoveryBranchWatcher::new(app.handle().clone(), Arc::clone(&session_mgr));
+
+        let replica_path = "C:/proj/.ac/wg-1-team/__agent_coord";
+        let repos = vec![
+            ("A".to_string(), "C:/wg/repo-AgentsCommander".to_string()),
+            ("B".to_string(), "C:/wg/repo-webpage".to_string()),
+        ];
+        watcher.with_replicas_mut(|map| {
+            map.entry("C:/proj".to_string())
+                .or_default()
+                .push(ReplicaBranchEntry {
+                    replica_path: replica_path.to_string(),
+                    repos: repos.clone(),
+                    session_name: "wg-1-team/__agent_coord".to_string(),
+                });
+        });
+
+        assert_eq!(
+            crate::pty::git_watcher::discovery_repo_paths(),
+            vec![
+                "C:/wg/repo-AgentsCommander".to_string(),
+                "C:/wg/repo-webpage".to_string(),
+            ],
+            "the existing path push is unchanged"
+        );
+        assert_eq!(
+            crate::pty::git_watcher::discovery_repo_rooms(),
+            vec![
+                (
+                    "C:/wg/repo-AgentsCommander".to_string(),
+                    "C:/proj/.ac/wg-1-team".to_string(),
+                ),
+                (
+                    "C:/wg/repo-webpage".to_string(),
+                    "C:/proj/.ac/wg-1-team".to_string(),
+                ),
+            ],
+            "the room map is the parent of the replica path"
+        );
     }
 
     /// A repo-set change with identical branch text must also fire: swapping a repo

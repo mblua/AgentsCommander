@@ -279,15 +279,21 @@ impl SessionSelection {
     // #1842: compiled on exactly the targets that compile `screenshot::native`,
     // whose `live_capture_resolution_...` test is the only caller in the crate.
     // Keep this predicate equal to `screenshot/mod.rs`'s `native` predicate. A
-    // plain `#[cfg(test)]` would leave these caller-less on macOS, where
-    // `native` is not compiled, and `dead_code` under `clippy -D warnings`
-    // would fail `rust-regression-macos`.
-    #[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
+    // plain `#[cfg(test)]` would leave these caller-less on targets outside the
+    // three, where `native` is not compiled, and `dead_code` under
+    // `clippy -D warnings` would fail those CI legs.
+    #[cfg(all(
+        test,
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
     pub(crate) fn live_for_test(id: Uuid) -> Self {
         Self::live(Uuid::new_v4(), 1, SelectionCause::UserSwitch, id)
     }
 
-    #[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
+    #[cfg(all(
+        test,
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
     pub(crate) fn dormant_for_test(id: Uuid, exit_code: i32) -> Self {
         Self::dormant(
             Uuid::new_v4(),
@@ -299,7 +305,10 @@ impl SessionSelection {
         )
     }
 
-    #[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
+    #[cfg(all(
+        test,
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
     pub(crate) fn none_for_test() -> Self {
         Self::none(Uuid::new_v4(), 1, SelectionCause::AutoClose)
     }
@@ -3006,6 +3015,67 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
+    async fn await_state_eq<T, F, D>(
+        label: &str,
+        budget: Duration,
+        mut probe: F,
+        expected: T,
+        diagnose: D,
+    ) -> T
+    where
+        T: PartialEq + std::fmt::Debug,
+        F: FnMut() -> T,
+        D: FnOnce() -> String,
+    {
+        let mut last = probe();
+        if tokio::time::timeout(budget, async {
+            while last != expected {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                last = probe();
+            }
+        })
+        .await
+        .is_err()
+        {
+            panic!(
+                "{label}: expected {expected:?} within {budget:?}, last observed {last:?}; {}",
+                diagnose()
+            );
+        }
+        last
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "AC2-DIAGNOSE-MARKER")]
+    async fn await_state_eq_fails_when_the_state_never_arrives() {
+        await_state_eq(
+            "await_state_eq positive control",
+            Duration::from_millis(50),
+            || 0usize,
+            1usize,
+            || "AC2-DIAGNOSE-MARKER".to_string(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn await_state_eq_does_not_evaluate_diagnose_when_the_state_arrives() {
+        let diagnose_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&diagnose_calls);
+        await_state_eq(
+            "await_state_eq lazy diagnose control",
+            Duration::from_millis(50),
+            || 7usize,
+            7usize,
+            || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                String::new()
+            },
+        )
+        .await;
+        assert_eq!(diagnose_calls.load(Ordering::SeqCst), 0);
+    }
+
     #[derive(Default)]
     struct LifecycleTestBackend {
         live: Mutex<HashSet<Uuid>>,
@@ -3374,36 +3444,36 @@ mod tests {
             let coordinator = coordinator.clone();
             tokio::spawn(async move { coordinator.critical_probe_for_test(session.id, kind).await })
         };
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
+        await_state_eq(
+            "critical waiter reaches requested cancellation point",
+            Duration::from_secs(1),
+            || {
                 let registered = coordinator.critical_key_registered_for_test(session.id, kind);
-                let reached_wait = match wait_point {
+                match wait_point {
                     CriticalWaitPoint::AdmissionPermit => registered,
                     CriticalWaitPoint::QueueSlot => {
                         registered && coordinator.inner.admission.available_permits() == 0
                     }
-                };
-                if reached_wait {
-                    break;
                 }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("critical waiter reaches requested cancellation point");
+            },
+            true,
+            String::new,
+        )
+        .await;
 
         waiter.abort();
         assert!(waiter
             .await
             .expect_err("waiter must be aborted")
             .is_cancelled());
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while coordinator.critical_key_registered_for_test(session.id, kind) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("aborted waiter removes its critical admission key");
+        await_state_eq(
+            "aborted waiter removes its critical admission key",
+            Duration::from_secs(1),
+            || coordinator.critical_key_registered_for_test(session.id, kind),
+            false,
+            String::new,
+        )
+        .await;
 
         drop(held_admission);
         drop(reservations);
@@ -3418,13 +3488,14 @@ mod tests {
             CriticalAdmissionOutcome::Completed(())
         );
         // #1580 releases the key before Completed; this bounded wait is kept unchanged.
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while coordinator.critical_key_registered_for_test(session.id, kind) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("fresh probe releases its critical admission key");
+        await_state_eq(
+            "fresh probe releases its critical admission key",
+            Duration::from_secs(1),
+            || coordinator.critical_key_registered_for_test(session.id, kind),
+            false,
+            String::new,
+        )
+        .await;
         assert!(!coordinator.critical_key_registered_for_test(session.id, kind));
         coordinator.close_and_join().await;
     }
@@ -3731,7 +3802,7 @@ mod tests {
         };
         let shutdown_signal = tokio::time::timeout(Duration::from_secs(1), async {
             while !coordinator.inner.shutdown.is_cancelled() {
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await;
@@ -3787,6 +3858,50 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner())
             .stop_all_started_containers_blocking(Duration::from_secs(1));
         let stopped_signal = tokio::time::timeout(Duration::from_secs(1), stop_started_rx).await;
+        await_state_eq(
+            "global sweep stops the retained handle exactly once",
+            Duration::from_secs(1),
+            || runtime.stop_calls.load(Ordering::SeqCst),
+            1,
+            String::new,
+        )
+        .await;
+        await_state_eq(
+            "retained container stop is no longer active",
+            Duration::from_secs(1),
+            || runtime.active_stops.load(Ordering::SeqCst),
+            0,
+            String::new,
+        )
+        .await;
+        await_state_eq(
+            "no shutdown worker remains after the sweep",
+            Duration::from_secs(1),
+            || container_backend.shutdown_observation_for_test().3,
+            0,
+            String::new,
+        )
+        .await;
+        await_state_eq(
+            "retained container stop observed its deadline",
+            Duration::from_secs(1),
+            || runtime.deadline_seen.load(Ordering::SeqCst),
+            true,
+            String::new,
+        )
+        .await;
+        await_state_eq(
+            "pending cleanup ownership is released after the sweep",
+            Duration::from_secs(1),
+            || {
+                container_backend
+                    .retained_cleanup_sessions_for_test()
+                    .is_empty()
+            },
+            true,
+            String::new,
+        )
+        .await;
         let stop_calls = runtime.stop_calls.load(Ordering::SeqCst);
         let active_stops = runtime.active_stops.load(Ordering::SeqCst);
         let worker_count = container_backend.shutdown_worker_count_for_test();
@@ -4004,13 +4119,14 @@ mod tests {
                 }
             })
         };
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !coordinator.inner.shutdown.is_cancelled() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("real pending-container shutdown signal becomes visible");
+        await_state_eq(
+            "real pending-container shutdown signal becomes visible",
+            Duration::from_secs(1),
+            || coordinator.inner.shutdown.is_cancelled(),
+            true,
+            String::new,
+        )
+        .await;
         let create_error = (&mut create)
             .await
             .expect("join canceled real container create")
@@ -4043,7 +4159,7 @@ mod tests {
                 {
                     break;
                 }
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -4102,6 +4218,46 @@ mod tests {
             guard.finish();
         }
 
+        await_state_eq(
+            "runtime start was called exactly once",
+            Duration::from_secs(1),
+            || runtime.start_calls.load(Ordering::SeqCst),
+            1,
+            String::new,
+        )
+        .await;
+        await_state_eq(
+            "runtime stop was called exactly once",
+            Duration::from_secs(1),
+            || runtime.stop_calls.load(Ordering::SeqCst),
+            1,
+            String::new,
+        )
+        .await;
+        await_state_eq(
+            "no runtime start is active",
+            Duration::from_secs(1),
+            || runtime.active_starts.load(Ordering::SeqCst),
+            0,
+            String::new,
+        )
+        .await;
+        await_state_eq(
+            "no runtime stop is active",
+            Duration::from_secs(1),
+            || runtime.active_stops.load(Ordering::SeqCst),
+            0,
+            String::new,
+        )
+        .await;
+        await_state_eq(
+            "runtime stop observed the shutdown deadline",
+            Duration::from_secs(1),
+            || runtime.deadline_seen.load(Ordering::SeqCst),
+            true,
+            String::new,
+        )
+        .await;
         assert_eq!(runtime.start_calls.load(Ordering::SeqCst), 1);
         assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
         assert_eq!(runtime.active_starts.load(Ordering::SeqCst), 0);
@@ -4129,27 +4285,19 @@ mod tests {
             }),
             "retained cleanup must identify runtime-backed ownership separately from non-runtime residue: {retained_contexts:?}"
         );
-        if capped {
-            // The bounded close may abandon ownership at its absolute deadline,
-            // and reports it when it does, so the canceled-start cleanup can
-            // still be owned for a moment after the join. Wait for that bounded
-            // work instead of racing it; the close-latency assertion above
-            // already pins that the capped budget itself was honored.
-            tokio::time::timeout(Duration::from_secs(5), async {
-                while container_backend.shutdown_work_state_for_test() != (true, 0, 0) {
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            })
-            .await
-            .unwrap_or_else(|_| {
-                panic!(
-                    "capped shutdown work did not drain after the bounded close: state={:?} workers={} retained={:?}",
-                    container_backend.shutdown_work_state_for_test(),
-                    container_backend.shutdown_worker_count_for_test(),
+        await_state_eq(
+            "shutdown work drains",
+            Duration::from_secs(5),
+            || container_backend.shutdown_observation_for_test(),
+            (true, 0, 0, 0),
+            || {
+                format!(
+                    "retained={:?}",
                     container_backend.retained_cleanup_contexts_for_test()
                 )
-            });
-        }
+            },
+        )
+        .await;
         assert_eq!(
             container_backend.shutdown_work_state_for_test(),
             (true, 0, 0)
@@ -5134,16 +5282,14 @@ fn commit_selection_transition() {
             let sender = coordinator.container_lifecycle_sender();
             tokio::spawn(async move { sender.route_lost(session.id, 82).await })
         };
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if coordinator.inner.critical_keys.lock().unwrap().len() == 1 {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("critical waiter registers while the queue is full");
+        await_state_eq(
+            "critical waiter registers while the queue is full",
+            Duration::from_secs(1),
+            || coordinator.inner.critical_keys.lock().unwrap().len(),
+            1,
+            String::new,
+        )
+        .await;
         assert_eq!(
             coordinator
                 .container_lifecycle_sender()
@@ -5171,15 +5317,14 @@ fn commit_selection_transition() {
             CriticalAdmissionOutcome::Completed(())
         );
         // Completed is observed before the first waiter's admission guard drops.
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while coordinator
-                .critical_key_registered_for_test(session.id, CriticalAdmissionKind::RouteLoss)
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("first route-loss waiter releases its critical admission key");
+        await_state_eq(
+            "route-loss waiter releases every critical key",
+            Duration::from_secs(1),
+            || coordinator.inner.critical_keys.lock().unwrap().len(),
+            0,
+            String::new,
+        )
+        .await;
         assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
         assert_eq!(
             manager
@@ -5200,15 +5345,14 @@ fn commit_selection_transition() {
             CriticalAdmissionOutcome::Completed(())
         );
         // Completed is observed before the follow-up probe's admission guard drops.
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while coordinator
-                .critical_key_registered_for_test(session.id, CriticalAdmissionKind::RouteLoss)
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("follow-up route-loss probe releases its critical admission key");
+        await_state_eq(
+            "route-loss waiter releases every critical key",
+            Duration::from_secs(1),
+            || coordinator.inner.critical_keys.lock().unwrap().len(),
+            0,
+            String::new,
+        )
+        .await;
         assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
         coordinator.close_and_join().await;
     }
@@ -5759,13 +5903,14 @@ fn commit_selection_transition() {
             let sender = coordinator.container_lifecycle_sender();
             tokio::spawn(async move { sender.route_lost(pending.id, 9).await })
         };
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while coordinator.inner.critical_keys.lock().unwrap().is_empty() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("route-loss key is registered behind the held worker");
+        await_state_eq(
+            "route-loss key is registered behind the held worker",
+            Duration::from_secs(1),
+            || coordinator.inner.critical_keys.lock().unwrap().is_empty(),
+            false,
+            String::new,
+        )
+        .await;
 
         let started = std::time::Instant::now();
         coordinator
@@ -5785,6 +5930,20 @@ fn commit_selection_transition() {
             route_waiter.await.unwrap().unwrap_err(),
             SelectionCoordinatorError::Unavailable.to_string()
         );
+        await_state_eq(
+            "capped close cleanup kills the pending session",
+            Duration::from_secs(1),
+            || {
+                (
+                    backend.kill_count(pending.id),
+                    backend.has_session(pending.id),
+                    pty.lock().unwrap().has_session(pending.id),
+                )
+            },
+            (1, false, false),
+            String::new,
+        )
+        .await;
         assert_eq!(backend.kill_count(pending.id), 1);
         assert!(!backend.has_session(pending.id));
         assert!(!pty.lock().unwrap().has_session(pending.id));
@@ -5798,7 +5957,7 @@ fn commit_selection_transition() {
                 {
                     break;
                 }
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -5964,6 +6123,14 @@ fn commit_selection_transition() {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .has_session(session_id));
+        await_state_eq(
+            "installed-handle cleanup drains shutdown work",
+            Duration::from_secs(1),
+            || container_backend.shutdown_observation_for_test(),
+            (true, 0, 0, 0),
+            String::new,
+        )
+        .await;
         assert_eq!(
             container_backend.shutdown_work_state_for_test(),
             (true, 0, 0)

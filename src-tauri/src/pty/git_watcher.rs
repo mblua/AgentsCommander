@@ -171,8 +171,36 @@ pub(crate) fn set_discovery_repo_paths(paths: Vec<String>) {
         .unwrap_or_else(|e| e.into_inner()) = paths;
 }
 
-fn discovery_repo_paths() -> Vec<String> {
+pub(crate) fn discovery_repo_paths() -> Vec<String> {
     discovery_repo_paths_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// #2064 - the room half of the map `remote_watcher` needs: `(repo_path,
+/// room_dir)`, pushed by the same `with_replicas_mut` call that pushes
+/// `DISCOVERY_REPO_PATHS`. `room_dir` is the parent of the replica path, so no
+/// new filesystem discovery is involved. Same push-not-pull reason as above, and
+/// `GitSweeper` never reads this map.
+static DISCOVERY_REPO_ROOMS: OnceLock<Mutex<Vec<(String, String)>>> = OnceLock::new();
+
+fn discovery_repo_rooms_cell() -> &'static Mutex<Vec<(String, String)>> {
+    DISCOVERY_REPO_ROOMS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub(crate) fn set_discovery_repo_rooms(pairs: Vec<(String, String)>) {
+    *discovery_repo_rooms_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = pairs;
+}
+
+/// `pub(crate)` rather than `pub(super)` (both this getter and
+/// `discovery_repo_paths` above): the ac_discovery tests assert that this map
+/// mirrors the pushed path vector, and a `pub(super)` accessor would be
+/// invisible from `commands::`. Production readers of both still live in `pty`.
+pub(crate) fn discovery_repo_rooms() -> Vec<(String, String)> {
+    discovery_repo_rooms_cell()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
@@ -631,7 +659,7 @@ fn sweep_dials(cfg: &AppSettings) -> (usize, Duration) {
 /// hung repo, so a deterministic order makes that reproducible. Consequence worth
 /// knowing before reading a log: the alphabetically first path sits permanently at
 /// the head of every round. That pattern is expected, not a bug.
-fn build_work_list(
+pub(super) fn build_work_list(
     discovery: Vec<String>,
     sessions: Vec<String>,
     archived_roots: &[String],
@@ -826,6 +854,15 @@ impl GitSweeper {
         applied
     }
 }
+
+/// #2064 - the discovery maps are process-global and are written by two test
+/// modules (`pty::remote_watcher` rounds and `commands::ac_discovery`'s push
+/// test), so those tests must serialize against each other, not merely within
+/// one module. Lives beside the maps it guards. Async-aware because the round
+/// tests hold it across their awaits; the sync ac_discovery test uses
+/// `blocking_lock`.
+#[cfg(test)]
+pub(crate) static DISCOVERY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
 mod tests {

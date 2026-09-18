@@ -11,6 +11,7 @@ import {
   effectiveRepoDirtyByPath,
   replicaVolatileStore,
 } from "../stores/replica-volatile";
+import type { RemoteActivityEntry } from "../stores/remote-activity";
 
 describe("replica repo badges", () => {
   it("renders every configured repo path for dormant coordinator rows", () => {
@@ -309,5 +310,73 @@ describe("#1028 badge title carries the third state", () => {
     expect(formatReplicaRepoBadgeTitle({ sourcePath: REPO, dirty: null })).toBe(
       `${REPO} (status unknown)`
     );
+  });
+});
+
+// #2064 - the CI and branch-staleness suffixes on the same tooltip. The second
+// parameter is OPTIONAL with a default, which is what keeps every call site above
+// compiling unedited and every omitted call byte-identical.
+describe("#2064 badge title remote-activity suffixes", () => {
+  const REPO = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
+
+  /** One repo's published answer; unknown/unknown/null unless overridden, which is
+   *  what a cold or feature-off machine produces. */
+  const activity = (
+    overrides: Partial<RemoteActivityEntry> = {}
+  ): RemoteActivityEntry => ({
+    ci: "unknown",
+    staleness: "unknown",
+    behindBy: null,
+    ...overrides,
+  });
+
+  const cleanTitle = (remote: RemoteActivityEntry | null | undefined) =>
+    formatReplicaRepoBadgeTitle({ sourcePath: REPO, dirty: false }, remote);
+
+  it("title_is_unchanged_when_the_new_parameter_is_omitted", () => {
+    // One case per existing dirty branch, plus an explicit null: omitting the
+    // parameter and passing "no activity" must be the same string, or the default
+    // is not a default.
+    expect(formatReplicaRepoBadgeTitle({ sourcePath: REPO, dirty: true })).toBe(
+      `${REPO} (local work not confirmed by cached origin tracking)`
+    );
+    expect(formatReplicaRepoBadgeTitle({ sourcePath: REPO, dirty: false })).toBe(REPO);
+    expect(formatReplicaRepoBadgeTitle({ sourcePath: REPO, dirty: null })).toBe(
+      `${REPO} (status unknown)`
+    );
+    expect(cleanTitle(null)).toBe(REPO);
+    expect(cleanTitle(undefined)).toBe(REPO);
+    expect(cleanTitle(activity())).toBe(REPO);
+  });
+
+  it("title_suffixes_per_state", () => {
+    // Section 6's five rows. CI `unknown` is SILENT on purpose: it is the majority
+    // case and it has nothing to say.
+    expect(cleanTitle(activity({ ci: "running" }))).toBe(`${REPO} - CI running`);
+    expect(cleanTitle(activity({ ci: "idle" }))).toBe(
+      `${REPO} - no CI activity for this commit`
+    );
+    expect(cleanTitle(activity({ ci: "unknown" }))).toBe(REPO);
+    expect(cleanTitle(activity({ staleness: "stale", behindBy: 3 }))).toBe(
+      `${REPO} - base is 3 commits ahead`
+    );
+    expect(cleanTitle(activity({ staleness: "current" }))).toBe(REPO);
+    expect(cleanTitle(activity({ staleness: "unknown" }))).toBe(REPO);
+
+    // Both signals at once: appended in the documented order, AFTER the dirty text.
+    expect(
+      formatReplicaRepoBadgeTitle(
+        { sourcePath: REPO, dirty: true },
+        activity({ ci: "running", staleness: "stale", behindBy: 2 })
+      )
+    ).toBe(
+      `${REPO} (local work not confirmed by cached origin tracking) - CI running - base is 2 commits ahead`
+    );
+  });
+
+  it("stale_suffix_is_omitted_when_behind_by_is_null", () => {
+    // The bar still renders; a suffix without a count explains nothing, so it is
+    // dropped rather than guessed.
+    expect(cleanTitle(activity({ staleness: "stale", behindBy: null }))).toBe(REPO);
   });
 });

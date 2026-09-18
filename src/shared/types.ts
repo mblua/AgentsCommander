@@ -9,6 +9,24 @@ export type RepoBranchByPath = Record<string, string | null>;
 
 export type RepoDirtyByPath = Record<string, boolean | null>;
 
+/** #2064 — whether CI is running on this repo's exact HEAD. `unknown` is the
+ *  majority case (no `gh`, feature off, or not yet swept) and is SILENT in the UI. */
+export type CiState = "unknown" | "idle" | "running";
+
+/** #2064 — whether the repo's upstream base has moved ahead of HEAD. */
+export type StalenessState = "unknown" | "current" | "stale";
+
+/** #2064 — one `ac_remote_activity_updated` payload, exactly as Phase A emits it:
+ *  four vectors of identical length, parallel by index. A misaligned payload is
+ *  rejected by the store rather than zipped, because a misaligned zip paints the
+ *  WRONG repo, which is worse than painting nothing. */
+export interface RemoteActivityUpdate {
+  repoPaths: string[];
+  ciStates: CiState[];
+  stalenessStates: StalenessState[];
+  behindBy: (number | null)[];
+}
+
 export type SessionCommunicationKind = "raiseHand" | "blockedMenu";
 
 export interface SessionCommunication {
@@ -410,6 +428,15 @@ export interface CodingAgentDefinition {
   updateCommands: string[];
   /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdateByCommand. Inert: the runtime reads only `AppSettings.agentAutoUpdateByCommand`. */
   autoUpdate: boolean;
+  /** #2124 - optional idle-burst filter for this agent's sessions. Catalog-only:
+   * it is never part of the `settings.agents[]` snapshot and is resolved from
+   * the effective catalog at every spawn. Absent or `null` leaves the filter
+   * off; an absent subfield takes AC's shipped default. */
+  idleBurst?: {
+    maxBytes?: number;
+    maxSecs?: number;
+    priorSilenceSecs?: number;
+  } | null;
 }
 
 export type CatalogDiagnostic = { code: string; path: string; reason: string };
@@ -677,6 +704,17 @@ export interface AppSettings {
   specBoardEnabled: boolean;
   gitSweepConcurrency: number;
   gitSweepMinIntervalSecs: number;
+  // #2064 — the remote-activity dials the Rust sweeper reads. OPTIONAL on purpose,
+  // following `railCollapsedProjects?` above: Rust serializes all six unconditionally,
+  // so the object the frontend loads and sends back already carries them, and the
+  // seven tests that build a COMPLETE AppSettings literal do not each need six new
+  // lines for dials no UI reads. Round-tripping is unaffected either way.
+  ciActivityEnabled?: boolean;
+  ciActivityNotifyOrchestrator?: boolean;
+  branchStalenessEnabled?: boolean;
+  branchStalenessNotifyOrchestrator?: boolean;
+  ciSweepMinIntervalSecs?: number;
+  branchStalenessIntervalSecs?: number;
   resourceMonitorEnabled: boolean;
   maxConcurrentAgentProcesses: number;
   resourceWatchdogAction: ResourceWatchdogAction;

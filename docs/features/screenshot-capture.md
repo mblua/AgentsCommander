@@ -2,13 +2,14 @@
 
 In-app screenshot capture lets you press a global hotkey, drag a rectangle over the frozen screen, and save a PNG inside the room replica that owns the session you are working with, with the saved path already on your clipboard.
 
-Use this feature when you want to hand a coding agent a picture of what you are looking at. It is not a terminal snapshot (that reads a backend terminal viewport without touching OS pixels) and not [window capture](window-capture.md) (that captures exactly one native window from the CLI or the API). Screenshot capture works on Windows and on Linux under X11. A Linux Wayland session is not supported: AgentsCommander detects it and says so instead of failing silently. macOS and every other target compile a stub that reports the feature as unsupported and never registers the hotkey.
+Use this feature when you want to hand a coding agent a picture of what you are looking at. It is not a terminal snapshot (that reads a backend terminal viewport without touching OS pixels) and not [window capture](window-capture.md) (that captures exactly one native window from the CLI or the API). Screenshot capture works on Windows, macOS and Linux under X11. A Linux Wayland session is not supported: AgentsCommander detects it and says so instead of failing silently. Every other target compiles a stub that reports the feature as unsupported and never registers the hotkey.
 
 ## Before you start
 
 You need:
 
-- AgentsCommander running on Windows, or on Linux in an X11 session (not Wayland); see [Linux: X11 only](#linux-x11-only) to check which one you are in;
+- AgentsCommander running on Windows, on macOS, or on Linux in an X11 session (not Wayland); see [Linux: X11 only](#linux-x11-only) to check which one you are in;
+- on macOS, the Screen Recording permission, which macOS asks for on the first capture; see [macOS: Screen Recording permission](#macos-screen-recording-permission);
 - a session selected in the app and displayable, because the screenshot belongs to that session; and
 - that session's working directory inside a room replica (an `__agent_*` directory), because the replica root is the destination.
 
@@ -17,7 +18,7 @@ A screenshot records whatever is on your monitors, including passwords, tokens, 
 ## Capture a screenshot
 
 1. Select the session the screenshot belongs to.
-2. Press the capture hotkey (`Ctrl+Q` by default).
+2. Press the capture hotkey (`Ctrl+Q` by default; on macOS, `Ctrl` is the Control key, not Command).
    AgentsCommander captures every monitor and opens one overlay window per monitor. Each overlay shows a frozen image of that monitor, not a live view, so the screen you are photographing cannot change under you.
 3. Drag a rectangle over the area you want. A magnifier follows the pointer while you hover and while you drag, so you can place the edges precisely.
 4. Release the pointer.
@@ -28,7 +29,7 @@ To abandon the capture, press `Escape` or close the overlay. Nothing is written.
 Two behaviors are deliberate and are not failures:
 
 - Releasing on a selection thinner than 2 pixels in either direction discards that selection and leaves the overlay open, so you can drag again. Both the width and the height must reach 2 pixels, so a 1 by 500 pixel drag is rejected.
-- Pressing the hotkey while a capture is already in flight does nothing on Windows: the second press is ignored so you cannot photograph your own overlays or start two captures at once. On Linux a second press cancels the capture instead; see [Linux: two behaviors that differ from Windows](#linux-two-behaviors-that-differ-from-windows).
+- Pressing the hotkey while a capture is already in flight does nothing on Windows: the second press is ignored so you cannot photograph your own overlays or start two captures at once. On Linux and macOS a second press cancels the capture instead; see [Linux: two behaviors that differ from Windows](#linux-two-behaviors-that-differ-from-windows) and [macOS: behaviors that differ from Windows](#macos-behaviors-that-differ-from-windows).
 
 ## Where the file goes
 
@@ -37,6 +38,7 @@ AgentsCommander walks up from the active session's working directory to its `__a
 ```text
 Windows:  <room-replica-root>\agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
 Linux:    <room-replica-root>/agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
+macOS:    <room-replica-root>/agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
 ```
 
 The timestamp is local time. The last segment is the first 8 hexadecimal characters of the session id, so two sessions capturing in the same second still get distinct names.
@@ -75,6 +77,33 @@ In a Wayland session the hotkey is not registered. The sticky error toast that [
 **The copied path may not survive closing AgentsCommander.** On X11 the clipboard is usually served by the running application, so when AgentsCommander exits the path is normally gone. A clipboard manager can change that: if one is running (KDE's Klipper, for example), it can take over the clipboard before the app exits and keep the path available. Without one, expect to lose it. The PNG file is unaffected either way. Paste the path before you quit. This is how X11 works, not a defect.
 
 **Pressing the hotkey a second time cancels the capture.** On Windows a second press while a capture is in flight is ignored. On Linux it closes the overlays and cancels the capture, because a window manager may decline to give the overlay keyboard focus, which would leave `Escape` undelivered. So on Linux you always have a way out: `Escape`, or the hotkey again.
+
+## macOS: Screen Recording permission
+
+macOS grants applications other windows' pixels only with the Screen Recording permission; without it a capture returns the wallpaper alone. AgentsCommander checks the permission before capturing, asks macOS for it on the first capture, and shows this message:
+
+```text
+Screenshot capture needs the Screen Recording permission. Allow AgentsCommander in System Settings > Privacy & Security > Screen Recording, then quit and reopen AgentsCommander.
+```
+
+Nothing is captured, no overlay opens, and nothing is written. To grant the permission:
+
+1. Open System Settings > Privacy & Security > Screen Recording.
+2. Turn on AgentsCommander in the list.
+3. Quit AgentsCommander and open it again. The grant takes effect only after a restart.
+4. Press the capture hotkey again.
+
+Builds are unsigned, so an update can require the grant again: macOS can treat the new binary as a different app. If a capture fails again after an update, remove the AgentsCommander entry in System Settings > Privacy & Security > Screen Recording, grant it again on the next capture, quit, and reopen. Whether the grant survives an update was not verified on a real Mac.
+
+If you start AgentsCommander from a terminal instead of Finder, macOS may ask for the terminal app instead of AgentsCommander. That was not verified on a real Mac.
+
+## macOS: behaviors that differ from Windows
+
+**Pressing the hotkey a second time cancels the capture.** As on Linux, a second press while a capture is in flight closes the overlays and cancels the capture. macOS does not guarantee keyboard focus for the overlay, so `Escape` may not reach it; the hotkey always does. Only Windows ignores the second press.
+
+**The copied path survives quitting AgentsCommander.** macOS keeps clipboard contents after an application quits, so the path stays pasteable; on X11 it is usually lost. This was not verified on a real Mac.
+
+**Two behaviors remain unverified on a real Mac:** whether the menu bar and the Dock draw above the overlay, and whether the overlay appears over an app that is fullscreen in its own Space.
 
 ## Configure the hotkey
 

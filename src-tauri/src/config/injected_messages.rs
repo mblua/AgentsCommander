@@ -38,18 +38,47 @@ pub(crate) const INJECTED_MESSAGES_STATE_FILENAME: &str = ".agentscommander-inje
 /// default; content is versioned per entry by sha256.
 pub(crate) const SCHEMA_VERSION: u32 = 1;
 /// Versions the SET of covered ids.
-pub(crate) const COVERAGE_VERSION: u32 = 1;
+pub(crate) const COVERAGE_VERSION: u32 = 2;
 
 pub(crate) const CONTEXT_ALERT_MESSAGE_ID: &str = "context-alert";
+pub(crate) const CI_STARTED_MESSAGE_ID: &str = "ci-started";
+pub(crate) const CI_FINISHED_MESSAGE_ID: &str = "ci-finished";
+pub(crate) const BRANCH_STALE_MESSAGE_ID: &str = "branch-stale";
+pub(crate) const NOTICE_BLIND_GAP_MESSAGE_ID: &str = "notice-blind-gap";
 
 pub(crate) const TOKEN_MEMBER: &str = "%MEMBER%";
 pub(crate) const TOKEN_WORKGROUP: &str = "%WORKGROUP%";
 pub(crate) const TOKEN_THRESHOLDS: &str = "%THRESHOLDS%";
 pub(crate) const TOKEN_OBSERVED: &str = "%OBSERVED%";
+pub(crate) const TOKEN_REPO: &str = "%REPO%";
+pub(crate) const TOKEN_BRANCH: &str = "%BRANCH%";
+pub(crate) const TOKEN_SHA: &str = "%SHA%";
+pub(crate) const TOKEN_AT: &str = "%AT%";
+pub(crate) const TOKEN_BASE: &str = "%BASE%";
+pub(crate) const TOKEN_BEHIND: &str = "%BEHIND%";
+pub(crate) const TOKEN_GAP: &str = "%GAP%";
+pub(crate) const TOKEN_SINCE: &str = "%SINCE%";
 
 /// The only embedded copy of the context-alert wording. 125 characters, 125
 /// UTF-8 bytes, sha256 `e672581d47e7e4a4749b510f23eff72982ff3fa5261109122b3bdf8fdfda153f`.
 pub(crate) const DEFAULT_CONTEXT_ALERT_TEMPLATE: &str = "[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.";
+
+/// sha256 `e8d7993332268690db1220277b0c3926c99ce4d1e3e4af8c0978c22e3b01c50a`.
+pub(crate) const DEFAULT_CI_STARTED_TEMPLATE: &str = "[AgentsCommander] CI started on %REPO% %BRANCH% (commit %SHA%) at %AT%. Status notice only; no action is required.";
+
+/// sha256 `8e9df5e4986e93999f10401d31b12f3f629f43cde6519691802ddf68e77f0b85`. The
+/// second sentence is mandatory and is not filler: `conclusion` is never read,
+/// so "CI finished" must never be read as "CI passed".
+pub(crate) const DEFAULT_CI_FINISHED_TEMPLATE: &str = "[AgentsCommander] CI finished on %REPO% %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does not track pass or fail: run 'gh run list --branch %BRANCH%' before acting on this.";
+
+/// sha256 `a2f428dcf62be65a968b2ee2cad37a1e11c85a74e3d5643567695325348a258f`.
+pub(crate) const DEFAULT_BRANCH_STALE_TEMPLATE: &str = "[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. Any CI running on this branch is validating an out-of-date base.";
+
+/// sha256 `e895fefbd3e482568d4e21ac22f3826d10d8a7911b3303239726a2b8ade49aff`. It
+/// begins with ONE space because it is concatenated onto a sentence that
+/// already ends in a period. A suffix id, not twin ids: with twins an operator
+/// who edits one and forgets the other gets two silently diverging texts.
+pub(crate) const DEFAULT_NOTICE_BLIND_GAP_TEMPLATE: &str = " AgentsCommander could not reach GitHub for %GAP%; the previous confirmed state is from %SINCE%.";
 
 /// The only bound between an operator's template and the coordinator's PTY.
 /// `PTY_INPUT_MAX_BYTES` is enforced inside `validate_pty_input_text`, which the
@@ -79,18 +108,83 @@ const CONTEXT_ALERT_DOC_COMMENT: &str = "\
 #   %THRESHOLDS%  thresholds just crossed, already formatted, e.g. 50%, 75%
 #   %OBSERVED%    observed context use, e.g. 91% (best-effort human signal)";
 
-const KNOWN_MESSAGES: [MessageSpec; 1] = [MessageSpec {
-    id: CONTEXT_ALERT_MESSAGE_ID,
-    default_template: DEFAULT_CONTEXT_ALERT_TEMPLATE,
-    known_default_sha256: &["e672581d47e7e4a4749b510f23eff72982ff3fa5261109122b3bdf8fdfda153f"],
-    tokens: &[
-        TOKEN_MEMBER,
-        TOKEN_WORKGROUP,
-        TOKEN_THRESHOLDS,
-        TOKEN_OBSERVED,
-    ],
-    doc_comment: CONTEXT_ALERT_DOC_COMMENT,
-}];
+const CI_STARTED_DOC_COMMENT: &str = "\
+# Injected into the orchestrator's terminal when CI starts running on a room repo's
+# exact HEAD.
+# Placeholders:
+#   %REPO%    repository nwo, e.g. mblua/AgentsCommander
+#   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
+#   %SHA%     abbreviated commit SHA, 7 characters
+#   %AT%      observation time, local with a numeric UTC offset";
+
+const CI_FINISHED_DOC_COMMENT: &str = "\
+# Injected into the orchestrator's terminal when CI stops running on a room repo's
+# exact HEAD. It never says whether CI passed.
+# Placeholders:
+#   %REPO%    repository nwo, e.g. mblua/AgentsCommander
+#   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
+#   %SHA%     abbreviated commit SHA, 7 characters
+#   %AT%      observation time, local with a numeric UTC offset";
+
+const BRANCH_STALE_DOC_COMMENT: &str = "\
+# Injected into the orchestrator's terminal when a room repo's branch falls behind
+# the repository's default branch.
+# Placeholders:
+#   %REPO%    repository nwo, e.g. mblua/AgentsCommander
+#   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
+#   %BASE%    default branch label, e.g. main
+#   %BEHIND%  commit count behind, e.g. 4
+#   %AT%      observation time, local with a numeric UTC offset";
+
+const NOTICE_BLIND_GAP_DOC_COMMENT: &str = "\
+# Appended to a CI or branch-stale notice when AgentsCommander could not reach
+# GitHub for longer than five minutes before the notice.
+# Placeholders:
+#   %GAP%    how long GitHub was unreachable, e.g. 47 minutes
+#   %SINCE%  time of the previous confirmed state, local with a numeric UTC offset";
+
+const KNOWN_MESSAGES: [MessageSpec; 5] = [
+    MessageSpec {
+        id: CONTEXT_ALERT_MESSAGE_ID,
+        default_template: DEFAULT_CONTEXT_ALERT_TEMPLATE,
+        known_default_sha256: &["e672581d47e7e4a4749b510f23eff72982ff3fa5261109122b3bdf8fdfda153f"],
+        tokens: &[
+            TOKEN_MEMBER,
+            TOKEN_WORKGROUP,
+            TOKEN_THRESHOLDS,
+            TOKEN_OBSERVED,
+        ],
+        doc_comment: CONTEXT_ALERT_DOC_COMMENT,
+    },
+    MessageSpec {
+        id: CI_STARTED_MESSAGE_ID,
+        default_template: DEFAULT_CI_STARTED_TEMPLATE,
+        known_default_sha256: &["e8d7993332268690db1220277b0c3926c99ce4d1e3e4af8c0978c22e3b01c50a"],
+        tokens: &[TOKEN_REPO, TOKEN_BRANCH, TOKEN_SHA, TOKEN_AT],
+        doc_comment: CI_STARTED_DOC_COMMENT,
+    },
+    MessageSpec {
+        id: CI_FINISHED_MESSAGE_ID,
+        default_template: DEFAULT_CI_FINISHED_TEMPLATE,
+        known_default_sha256: &["8e9df5e4986e93999f10401d31b12f3f629f43cde6519691802ddf68e77f0b85"],
+        tokens: &[TOKEN_REPO, TOKEN_BRANCH, TOKEN_SHA, TOKEN_AT],
+        doc_comment: CI_FINISHED_DOC_COMMENT,
+    },
+    MessageSpec {
+        id: BRANCH_STALE_MESSAGE_ID,
+        default_template: DEFAULT_BRANCH_STALE_TEMPLATE,
+        known_default_sha256: &["a2f428dcf62be65a968b2ee2cad37a1e11c85a74e3d5643567695325348a258f"],
+        tokens: &[TOKEN_REPO, TOKEN_BRANCH, TOKEN_BASE, TOKEN_BEHIND, TOKEN_AT],
+        doc_comment: BRANCH_STALE_DOC_COMMENT,
+    },
+    MessageSpec {
+        id: NOTICE_BLIND_GAP_MESSAGE_ID,
+        default_template: DEFAULT_NOTICE_BLIND_GAP_TEMPLATE,
+        known_default_sha256: &["e895fefbd3e482568d4e21ac22f3826d10d8a7911b3303239726a2b8ade49aff"],
+        tokens: &[TOKEN_GAP, TOKEN_SINCE],
+        doc_comment: NOTICE_BLIND_GAP_DOC_COMMENT,
+    },
+];
 
 const FILE_HEADER_COMMENT: &str = "\
 # AgentsCommander injected PTY message templates.
@@ -1370,7 +1464,7 @@ mod tests {
 #
 # See injected-messages.default.toml for the current canonical set.
 schema_version = 1
-coverage_version = 1
+coverage_version = 2
 
 [messages.context-alert]
 # Injected into the orchestrator's terminal when a member crosses a configured
@@ -1382,6 +1476,130 @@ coverage_version = 1
 #   %OBSERVED%    observed context use, e.g. 91% (best-effort human signal)
 template = '''
 [AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.
+'''
+
+[messages.ci-started]
+# Injected into the orchestrator's terminal when CI starts running on a room repo's
+# exact HEAD.
+# Placeholders:
+#   %REPO%    repository nwo, e.g. mblua/AgentsCommander
+#   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
+#   %SHA%     abbreviated commit SHA, 7 characters
+#   %AT%      observation time, local with a numeric UTC offset
+template = '''
+[AgentsCommander] CI started on %REPO% %BRANCH% (commit %SHA%) at %AT%. Status notice only; no action is required.
+'''
+
+[messages.ci-finished]
+# Injected into the orchestrator's terminal when CI stops running on a room repo's
+# exact HEAD. It never says whether CI passed.
+# Placeholders:
+#   %REPO%    repository nwo, e.g. mblua/AgentsCommander
+#   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
+#   %SHA%     abbreviated commit SHA, 7 characters
+#   %AT%      observation time, local with a numeric UTC offset
+template = '''
+[AgentsCommander] CI finished on %REPO% %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does not track pass or fail: run 'gh run list --branch %BRANCH%' before acting on this.
+'''
+
+[messages.branch-stale]
+# Injected into the orchestrator's terminal when a room repo's branch falls behind
+# the repository's default branch.
+# Placeholders:
+#   %REPO%    repository nwo, e.g. mblua/AgentsCommander
+#   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
+#   %BASE%    default branch label, e.g. main
+#   %BEHIND%  commit count behind, e.g. 4
+#   %AT%      observation time, local with a numeric UTC offset
+template = '''
+[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. Any CI running on this branch is validating an out-of-date base.
+'''
+
+[messages.notice-blind-gap]
+# Appended to a CI or branch-stale notice when AgentsCommander could not reach
+# GitHub for longer than five minutes before the notice.
+# Placeholders:
+#   %GAP%    how long GitHub was unreachable, e.g. 47 minutes
+#   %SINCE%  time of the previous confirmed state, local with a numeric UTC offset
+template = '''
+ AgentsCommander could not reach GitHub for %GAP%; the previous confirmed state is from %SINCE%.
+'''
+"##;
+
+    /// The exact reference companion, transcribed the same way and for the same
+    /// reason as [`EXPECTED_SEED`].
+    const EXPECTED_REFERENCE: &str = r##"# AgentsCommander injected PTY message templates - CANONICAL REFERENCE.
+#
+# GENERATED FILE, DO NOT EDIT. AgentsCommander rewrites it whenever the shipped
+# defaults change, and never reads it back. It exists so you can see the current
+# canonical set next to your own injected-messages.toml.
+#
+# To change what AgentsCommander injects, edit injected-messages.toml instead.
+schema_version = 1
+coverage_version = 2
+
+[messages.context-alert]
+# Supported placeholders: %MEMBER%, %WORKGROUP%, %THRESHOLDS%, %OBSERVED%
+# Injected into the orchestrator's terminal when a member crosses a configured
+# context-usage threshold.
+# Placeholders:
+#   %MEMBER%      name of the observed member, e.g. dev-rust
+#   %WORKGROUP%   room name, e.g. room-2-dev-team
+#   %THRESHOLDS%  thresholds just crossed, already formatted, e.g. 50%, 75%
+#   %OBSERVED%    observed context use, e.g. 91% (best-effort human signal)
+template = '''
+[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.
+'''
+
+[messages.ci-started]
+# Supported placeholders: %REPO%, %BRANCH%, %SHA%, %AT%
+# Injected into the orchestrator's terminal when CI starts running on a room repo's
+# exact HEAD.
+# Placeholders:
+#   %REPO%    repository nwo, e.g. mblua/AgentsCommander
+#   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
+#   %SHA%     abbreviated commit SHA, 7 characters
+#   %AT%      observation time, local with a numeric UTC offset
+template = '''
+[AgentsCommander] CI started on %REPO% %BRANCH% (commit %SHA%) at %AT%. Status notice only; no action is required.
+'''
+
+[messages.ci-finished]
+# Supported placeholders: %REPO%, %BRANCH%, %SHA%, %AT%
+# Injected into the orchestrator's terminal when CI stops running on a room repo's
+# exact HEAD. It never says whether CI passed.
+# Placeholders:
+#   %REPO%    repository nwo, e.g. mblua/AgentsCommander
+#   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
+#   %SHA%     abbreviated commit SHA, 7 characters
+#   %AT%      observation time, local with a numeric UTC offset
+template = '''
+[AgentsCommander] CI finished on %REPO% %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does not track pass or fail: run 'gh run list --branch %BRANCH%' before acting on this.
+'''
+
+[messages.branch-stale]
+# Supported placeholders: %REPO%, %BRANCH%, %BASE%, %BEHIND%, %AT%
+# Injected into the orchestrator's terminal when a room repo's branch falls behind
+# the repository's default branch.
+# Placeholders:
+#   %REPO%    repository nwo, e.g. mblua/AgentsCommander
+#   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
+#   %BASE%    default branch label, e.g. main
+#   %BEHIND%  commit count behind, e.g. 4
+#   %AT%      observation time, local with a numeric UTC offset
+template = '''
+[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. Any CI running on this branch is validating an out-of-date base.
+'''
+
+[messages.notice-blind-gap]
+# Supported placeholders: %GAP%, %SINCE%
+# Appended to a CI or branch-stale notice when AgentsCommander could not reach
+# GitHub for longer than five minutes before the notice.
+# Placeholders:
+#   %GAP%    how long GitHub was unreachable, e.g. 47 minutes
+#   %SINCE%  time of the previous confirmed state, local with a numeric UTC offset
+template = '''
+ AgentsCommander could not reach GitHub for %GAP%; the previous confirmed state is from %SINCE%.
 '''
 "##;
 
@@ -1717,7 +1935,7 @@ template = '''
         );
 
         // Against the transcribed literal, never against the generator.
-        assert_eq!(EXPECTED_SEED.len(), 1531, "the pinned seed is 1531 bytes");
+        assert_eq!(EXPECTED_SEED.len(), 3682, "the pinned seed is 3682 bytes");
         assert!(!EXPECTED_SEED.contains('\r'), "the pinned seed is LF");
         let written = read(&main_path(dir.path()));
         assert_eq!(written, EXPECTED_SEED);
@@ -1725,7 +1943,7 @@ template = '''
         assert!(written.ends_with("'''\n"));
         assert!(!written.ends_with("\n\n"), "exactly one trailing newline");
         assert!(written.contains("schema_version = 1"));
-        assert!(written.contains("coverage_version = 1"));
+        assert!(written.contains("coverage_version = 2"));
         assert!(written.contains("[messages.context-alert]"));
 
         let state: InjectedMessagesState =
@@ -1914,11 +2132,22 @@ template = '''
         assert!(load_registry_from_dir(dir.path()).is_empty());
     }
 
+    /// The `coverage_version` [`newer_coverage_version_keeps_rendering_from_file`]
+    /// writes into its fixture. It MUST stay strictly above `COVERAGE_VERSION`:
+    /// the writer block is gated on a strict `>` in `analyze_source`, so an equal
+    /// version leaves `writer_disabled` at `None` and the fixture stops
+    /// exercising the downgrade branch. Naming it here is what makes that
+    /// invariant assertable instead of a literal nobody re-checks.
+    const NEWER_COVERAGE_VERSION: u32 = 3;
+
     #[test]
     fn newer_coverage_version_keeps_rendering_from_file() {
         let dir = tempdir();
-        let source = "schema_version = 1\ncoverage_version = 2\n\n[messages.context-alert]\ntemplate = '''\nOPERATOR TEXT %MEMBER%\n'''\n";
-        std::fs::write(main_path(dir.path()), source).expect("write");
+        let source = format!(
+            "schema_version = 1\ncoverage_version = {}\n\n[messages.context-alert]\ntemplate = '''\nOPERATOR TEXT %MEMBER%\n'''\n",
+            NEWER_COVERAGE_VERSION
+        );
+        std::fs::write(main_path(dir.path()), &source).expect("write");
 
         let report = ensure_injected_messages(dir.path()).expect("provision");
         assert!(report.writer_disabled.is_some());
@@ -1961,11 +2190,29 @@ template = '''
 
         let report = ensure_injected_messages(dir.path()).expect("provision");
         assert_eq!(report.writer_disabled, None);
-        assert_eq!(read(&main_path(dir.path())), source);
+        // The source carries no `coverage_version`, so the writer is enabled and
+        // the four ids this binary knows and the file does not are appended. The
+        // operator's bytes stay a prefix: nothing already written moves.
+        let after = read(&main_path(dir.path()));
+        assert!(after.starts_with(source));
+        let tail = &after[source.len()..];
+        assert_eq!(
+            appended_headers(tail),
+            expected_appended_headers(),
+            "the appended tail holds exactly the four new ids, in KNOWN_MESSAGES order"
+        );
         assert_eq!(
             load_registry_from_dir(dir.path()).get(CONTEXT_ALERT_MESSAGE_ID),
             Some(&"OPERATOR %MEMBER%".to_string())
         );
+        for spec in KNOWN_MESSAGES.iter().skip(1) {
+            assert_eq!(
+                load_registry_from_dir(dir.path()).get(spec.id),
+                Some(&spec.default_template.to_string()),
+                "{}",
+                spec.id
+            );
+        }
         // The unknown id is preserved but never rendered.
         assert!(!load_registry_from_dir(dir.path()).contains_key("not-a-known-id"));
     }
@@ -2083,7 +2330,13 @@ template = '''
         )
         .expect("edit");
         let reset = reseed(dir.path(), ReseedTarget::All).expect("reseed --all");
-        assert_eq!(reset, vec![CONTEXT_ALERT_MESSAGE_ID.to_string()]);
+        // Every covered id is reset, in the sorted order `reseed` reports.
+        let mut all_ids: Vec<String> = KNOWN_MESSAGES
+            .iter()
+            .map(|spec| spec.id.to_string())
+            .collect();
+        all_ids.sort();
+        assert_eq!(reset, all_ids);
         let after_all = read(&main_path(dir.path()));
         assert!(after_all.contains(DEFAULT_CONTEXT_ALERT_TEMPLATE));
         assert!(after_all.contains("# an operator comment kept across reseed"));
@@ -2205,7 +2458,14 @@ template = '''
         std::fs::write(main_path(dir.path()), &table_valued).expect("write");
         let report = ensure_injected_messages(dir.path()).expect("provision");
         assert_eq!(report.writer_disabled, None);
-        assert_eq!(read(&main_path(dir.path())), table_valued);
+        // The unreadable entry stays byte-identical and the four missing ids are
+        // appended after it.
+        let after = read(&main_path(dir.path()));
+        assert!(after.starts_with(&table_valued));
+        assert_eq!(
+            appended_headers(&after[table_valued.len()..]),
+            expected_appended_headers()
+        );
     }
 
     #[test]
@@ -2391,7 +2651,14 @@ template = '''
         );
 
         let report = ensure_injected_messages(dir.path()).expect("provision");
-        assert_eq!(read(&main_path(dir.path())), source);
+        // The damaged entry is preserved verbatim and the four ids this binary
+        // knows and the file lacks are appended after it.
+        let after = read(&main_path(dir.path()));
+        assert!(after.starts_with(source));
+        assert_eq!(
+            appended_headers(&after[source.len()..]),
+            expected_appended_headers()
+        );
         assert_eq!(
             report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
             Some(&EntryOutcome::PreservedUserEdit)
@@ -2700,7 +2967,16 @@ template = '''
             report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
             Some(&EntryOutcome::AlreadyCurrent)
         );
-        assert_eq!(read(&main_path(dir.path())), source);
+        // Absent version keys are never written back; the four missing ids are
+        // appended after the operator's own bytes, which stay a prefix.
+        let after = read(&main_path(dir.path()));
+        assert!(after.starts_with(&source));
+        assert!(!after.contains("schema_version = "));
+        assert!(!after.contains("coverage_version = "));
+        assert_eq!(
+            appended_headers(&after[source.len()..]),
+            expected_appended_headers()
+        );
 
         // A non-integer version key is strict-invalid, unlike an absent one.
         assert!(analyze_source("schema_version = \"1\"\n")
@@ -2709,6 +2985,158 @@ template = '''
         assert!(analyze_source("coverage_version = true\n")
             .strict_invalid
             .is_some());
+    }
+
+    /// The `[messages.<id>]` headers of an appended tail, in file order. Both
+    /// append tests assert against [`expected_appended_headers`] rather than a
+    /// count, so a wrong id or a wrong order is caught, not merely a wrong size.
+    fn appended_headers(tail: &str) -> Vec<String> {
+        tail.lines()
+            .filter(|line| line.starts_with("[messages."))
+            .map(|line| line.to_string())
+            .collect()
+    }
+
+    fn expected_appended_headers() -> Vec<String> {
+        KNOWN_MESSAGES
+            .iter()
+            .skip(1)
+            .map(|spec| format!("[messages.{}]", spec.id))
+            .collect()
+    }
+
+    #[test]
+    fn known_messages_has_five_entries_with_unique_ids() {
+        assert_eq!(KNOWN_MESSAGES.len(), 5);
+        let ids: Vec<&str> = KNOWN_MESSAGES.iter().map(|spec| spec.id).collect();
+        let unique: std::collections::BTreeSet<&str> = ids.iter().copied().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate ids: {:?}", ids);
+        assert_eq!(
+            ids,
+            vec![
+                CONTEXT_ALERT_MESSAGE_ID,
+                CI_STARTED_MESSAGE_ID,
+                CI_FINISHED_MESSAGE_ID,
+                BRANCH_STALE_MESSAGE_ID,
+                NOTICE_BLIND_GAP_MESSAGE_ID,
+            ]
+        );
+        // Every documented token is a token the spec declares, which is what
+        // keeps the generated `#   %TOKEN%` lines honest.
+        for spec in &KNOWN_MESSAGES {
+            assert!(!spec.default_template.is_empty(), "{}", spec.id);
+            assert!(!spec.tokens.is_empty(), "{}", spec.id);
+            for token in spec.tokens {
+                assert!(
+                    spec.doc_comment.contains(token),
+                    "{} documents every token; {} is missing",
+                    spec.id,
+                    token
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn each_new_default_has_exactly_one_known_sha_and_it_matches_the_template() {
+        for spec in &KNOWN_MESSAGES {
+            assert_eq!(
+                spec.known_default_sha256.len(),
+                1,
+                "`{}` must list exactly one digest; a second one means the shipped bytes moved after shipping and pristine entries stop auto-refreshing",
+                spec.id
+            );
+            assert_eq!(
+                spec.known_default_sha256[0],
+                sha256_hex(spec.default_template.as_bytes()),
+                "`{}`",
+                spec.id
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_seed_bytes_and_reference_bytes_regenerated() {
+        // Both pin transcribed bytes, read by a human off the regenerated files
+        // and checked against the specification: a comparison against
+        // `canonical_*_bytes` alone cannot fail, so a header or ordering edit
+        // would drift from the spec with nothing going red.
+        assert_eq!(EXPECTED_SEED.len(), 3682, "the pinned seed is 3682 bytes");
+        assert_eq!(canonical_seed_bytes(&KNOWN_MESSAGES), EXPECTED_SEED);
+        assert_eq!(
+            EXPECTED_REFERENCE.len(),
+            3414,
+            "the pinned companion is 3414 bytes"
+        );
+        assert_eq!(
+            canonical_reference_bytes(&KNOWN_MESSAGES),
+            EXPECTED_REFERENCE
+        );
+    }
+
+    #[test]
+    fn coverage_version_is_two() {
+        assert_eq!(COVERAGE_VERSION, 2);
+        assert_eq!(KNOWN_MESSAGES.len(), 5);
+    }
+
+    #[test]
+    fn newer_coverage_version_literal_raised_to_three() {
+        assert_eq!(NEWER_COVERAGE_VERSION, 3);
+        // A const block, so the invariant is checked when it can still be false:
+        // a runtime assertion over two constants can never fail and would quietly
+        // stop meaning anything.
+        const {
+            assert!(
+                NEWER_COVERAGE_VERSION > COVERAGE_VERSION,
+                "the fixture must stay strictly above COVERAGE_VERSION: `writer_blocked` is gated on a strict `>`, so equality leaves the writer enabled and the test stops exercising the newer-than-this-binary branch"
+            );
+        }
+    }
+
+    #[test]
+    fn existing_operator_file_at_coverage_one_is_appended_not_rewritten() {
+        let dir = tempdir();
+        let source = "schema_version = 1\ncoverage_version = 1\n\n[messages.context-alert]\ntemplate = '''\nOPERATOR %MEMBER% EDITED\n'''\n";
+        std::fs::write(main_path(dir.path()), source).expect("write");
+
+        let report = ensure_injected_messages(dir.path()).expect("provision");
+        assert_eq!(report.writer_disabled, None);
+        assert_eq!(
+            report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
+            Some(&EntryOutcome::PreservedUserEdit)
+        );
+        for spec in KNOWN_MESSAGES.iter().skip(1) {
+            assert_eq!(
+                report.outcomes.get(spec.id),
+                Some(&EntryOutcome::Appended),
+                "{}",
+                spec.id
+            );
+        }
+
+        let after = read(&main_path(dir.path()));
+        assert!(
+            after.starts_with(source),
+            "an operator edit at coverage_version 1 is appended to, never rewritten"
+        );
+        assert!(!after.contains(DEFAULT_CONTEXT_ALERT_TEMPLATE));
+        assert_eq!(
+            appended_headers(&after[source.len()..]),
+            expected_appended_headers()
+        );
+        assert_eq!(
+            load_registry_from_dir(dir.path()).get(CONTEXT_ALERT_MESSAGE_ID),
+            Some(&"OPERATOR %MEMBER% EDITED".to_string())
+        );
+        for spec in KNOWN_MESSAGES.iter().skip(1) {
+            assert_eq!(
+                load_registry_from_dir(dir.path()).get(spec.id),
+                Some(&spec.default_template.to_string()),
+                "{}",
+                spec.id
+            );
+        }
     }
 
     #[test]

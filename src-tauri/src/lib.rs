@@ -2750,13 +2750,13 @@ pub fn run(
     let message_store_state = crate::api::message_store::MessageStoreState::initialize();
     let pty_target_gate_state = message_store_state.target_gate_state();
 
-    // #714/#1842 clipboard + global-shortcut plugins are referenced ONLY on
-    // Windows and Linux so non-Linux, non-Windows (macOS) release builds never
-    // link them. The rest of the builder chain is shared. This predicate must
-    // match `Cargo.toml` and `screenshot/mod.rs`.
+    // #714/#1842/#2079 clipboard + global-shortcut plugins are referenced ONLY
+    // on Windows, Linux and macOS; every other target never links them. The
+    // rest of the builder chain is shared. This predicate must match
+    // `Cargo.toml` and `screenshot/mod.rs`.
     let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
 
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     let builder = builder
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
@@ -2892,6 +2892,41 @@ pub fn run(
                 app.state::<SettingsState>().inner().clone(),
             );
             git_sweeper.start(shutdown_for_setup.clone());
+
+            // #2064 - the remote activity producer: asks GitHub, through `gh`,
+            // whether CI runs on each room repo's exact HEAD and whether the
+            // default branch is ahead. Beside `GitSweeper` for the same reason it
+            // sits there: it mutates no session metadata, it only publishes into
+            // process-local maps. Phase B consumes the transition stream: the
+            // notifier started below is its only consumer.
+            let (remote_sweeper, remote_transitions) =
+                crate::pty::remote_watcher::RemoteSweeper::new(
+                    app.state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                        .inner()
+                        .clone(),
+                    app.state::<SettingsState>().inner().clone(),
+                    Box::new({
+                        let app_for_remote_activity = app.handle().clone();
+                        move |payload: &crate::pty::remote_watcher::RemoteActivityPayload| {
+                            let _ = app_for_remote_activity
+                                .emit("ac_remote_activity_updated", payload);
+                        }
+                    }),
+                    crate::pty::remote_watcher::RemoteSweeper::production_seams(),
+                );
+            let _ = remote_sweeper.start(shutdown_for_setup.clone());
+            // #2064 Phase B - the transition stream's consumer. Started beside the
+            // sweeper that produces it, in this same setup closure, and handed a
+            // child of the same shutdown token, so the notifier stops when the app
+            // does. It injects only into a room orchestrator, and only when both
+            // its feature dial and its notify dial are on.
+            // The JoinHandle is dropped on purpose: the monitor's lifecycle is its
+            // shutdown token and the sweeper's channel, not a join at exit.
+            drop(crate::session::remote_alerts::start(
+                app.handle().clone(),
+                remote_transitions,
+                shutdown_for_setup.token().child_token(),
+            ));
 
             // PtyManager needs GitWatcher for cleanup on session kill
             let pty_mgr = Arc::new(Mutex::new(PtyManager::new(

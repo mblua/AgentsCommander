@@ -296,6 +296,126 @@ function hasExecutableRustBody(originalBody, strippedBody) {
   return false;
 }
 
+// Pieces of the former single `fn` regex. Every unbounded close search goes through rustScanFrom.
+const RUST_BRACKET_CLOSE = /\]/g;
+const RUST_PAREN_CLOSE = /\)/g;
+const RUST_GENERICS_STOP = /[>{}]/g;
+const RUST_FN_CANDIDATE = /pub\s*\(|(?:async\s+)?fn\s+[A-Za-z_]\w*\s*[(<]/g;
+const RUST_FN_TAIL = /(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*[(<]/y;
+const RUST_FN_TAIL_AFTER_PUB_PAREN = /(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*[(<]/y;
+
+// First `stop` match at or after `from`, or -1. `scan` keeps the last answer: no match lies in
+// [scan.from, scan.at), so it is reused for any `from` in [scan.from, scan.at].
+function rustScanFrom(source, from, scan, stop) {
+  if (from < scan.from || (scan.at !== -1 && from > scan.at)) {
+    stop.lastIndex = from;
+    const hit = stop.exec(source);
+    scan.from = from;
+    scan.at = hit === null ? -1 : hit.index;
+  }
+  return scan.at;
+}
+
+function rustFnTailAt(source, index, tail, memo) {
+  tail.lastIndex = index;
+  const match = tail.exec(source);
+  if (match === null) return null;
+  let open = tail.lastIndex - 1;
+  if (source[open] === '<') {
+    const close = rustScanFrom(source, open + 1, memo.generics, RUST_GENERICS_STOP);
+    if (close === -1 || source[close] !== '>') return null;
+    open = skipWhitespace(source, close + 1);
+  }
+  return source[open] === '(' ? { end: open + 1, name: match[1] } : null;
+}
+
+// `pub(?:\s*\([^)]*\))?\s+`, `async\s+`, `fn name`, `<[^>{}]*>`, `(` at `index`: { end, name } or null.
+function rustFnHeaderAt(source, index, memo) {
+  if (source.startsWith('pub', index)) {
+    const open = skipWhitespace(source, index + 3);
+    const close = source[open] === '(' ? rustScanFrom(source, open + 1, memo.parens, RUST_PAREN_CLOSE) : -1;
+    const body = close === -1 ? -1 : skipWhitespace(source, close + 1);
+    const header = body > close + 1 ? rustFnTailAt(source, body, RUST_FN_TAIL_AFTER_PUB_PAREN, memo) : null;
+    if (header !== null) return header;
+  }
+  return rustFnTailAt(source, index, RUST_FN_TAIL, memo);
+}
+
+// Leftmost fn header at or after `from`, kept in memo.headerIndex/memo.headerEnd (-1: none).
+function rustFindFnHeader(source, from, memo) {
+  memo.headerIndex = -1;
+  RUST_FN_CANDIDATE.lastIndex = from;
+  for (let hit = RUST_FN_CANDIDATE.exec(source); hit !== null; hit = RUST_FN_CANDIDATE.exec(source)) {
+    const simple = hit[0][0] !== 'p' && hit[0].endsWith('(');
+    const header = simple ? null : rustFnHeaderAt(source, hit.index, memo);
+    if (simple || header !== null) {
+      memo.headerIndex = hit.index;
+      memo.headerEnd = simple ? RUST_FN_CANDIDATE.lastIndex : header.end;
+      return;
+    }
+    RUST_FN_CANDIDATE.lastIndex = hit.index + 1;
+  }
+}
+
+// End of the leftmost fn header starting in [cursor, hash), or -1. A `pub ` or `pub async ` prefix is
+// found at its `async`/`fn`, which cannot change the comparison with `hash`.
+function rustFnHeaderEndBefore(source, cursor, hash, memo) {
+  if (memo.headerIndex === -2 || (memo.headerIndex >= 0 && memo.headerIndex < cursor)) {
+    rustFindFnHeader(source, cursor, memo);
+  }
+  return memo.headerIndex >= 0 && memo.headerIndex < hash ? memo.headerEnd : -1;
+}
+
+// End of the `#\s*\[[^\]]*\]` attribute at `index`, or -1.
+function rustAttributeEnd(source, index, memo) {
+  const open = skipWhitespace(source, index + 1);
+  if (source[open] !== '[') return -1;
+  const close = rustScanFrom(source, open + 1, memo.brackets, RUST_BRACKET_CLOSE);
+  return close === -1 ? -1 : close + 1;
+}
+
+// The former regex's match at the whitespace before `hash` (not before `cursor`): attributes from `hash`,
+// whitespace, a fn header. Positions whose attribute chain already failed are kept in memo.failed.
+function rustAttributedFnAt(source, cursor, hash, memo) {
+  const chain = [];
+  let end = hash;
+  let attrEnd = rustAttributeEnd(source, hash, memo);
+  while (attrEnd !== -1 && !memo.failed.has(end)) {
+    chain.push(end);
+    end = skipWhitespace(source, attrEnd);
+    attrEnd = source[end] === '#' ? rustAttributeEnd(source, end, memo) : -1;
+  }
+  const header = chain.length === 0 || memo.failed.has(end) ? null : rustFnHeaderAt(source, end, memo);
+  if (header === null) {
+    for (const position of chain) memo.failed.add(position);
+    memo.failed.add(end);
+    return null;
+  }
+  let runStart = hash;
+  while (runStart > cursor && /\s/.test(source[runStart - 1])) runStart -= 1;
+  return { index: runStart, end: header.end, attrs: source.slice(runStart, end), name: header.name };
+}
+
+// Matches of the former `fn` regex that carry attributes ({ index, end, attrs, name }), in source order;
+// attribute-free matches are only skipped. Worst case O(n^2) when close searches restart behind their
+// cached answer; see plans/2088-sonar-regex-backtracking.md.
+function rustAttributedFnMatches(source) {
+  const matches = [];
+  const scan = () => ({ from: Infinity, at: -1 });
+  const memo = { headerIndex: -2, headerEnd: -1, failed: new Set(), brackets: scan(), parens: scan(), generics: scan() };
+  let cursor = 0;
+  let hash = source.indexOf('#');
+  while (hash !== -1) {
+    const headerEnd = cursor < hash ? rustFnHeaderEndBefore(source, cursor, hash, memo) : -1;
+    const match = headerEnd === -1 ? rustAttributedFnAt(source, cursor, hash, memo) : null;
+    if (match !== null) matches.push(match);
+    if (headerEnd !== -1) cursor = headerEnd;
+    else cursor = match === null ? hash + 1 : match.end;
+    if (hash < cursor) hash = source.indexOf('#', cursor);
+  }
+  return matches;
+}
+
 function scanRustFile(root, filePath) {
   const source = fs.readFileSync(filePath, 'utf8');
   const rel = relPath(root, filePath);
@@ -304,15 +424,12 @@ function scanRustFile(root, filePath) {
   const modules = moduleRanges(masked);
   const findings = [];
   const warnings = [];
-  const fnRe = /((?:\s*#\s*\[[^\]]*\]\s*)*)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]*>)?\s*\(/g;
-  let match;
-
-  while ((match = fnRe.exec(masked)) !== null) {
-    const attrs = match[1] || '';
+  for (const match of rustAttributedFnMatches(masked)) {
+    const attrs = match.attrs;
     if (!/#\s*\[\s*test\b/.test(attrs)) continue;
-    const fnName = match[2];
-    const fnStart = match.index + match[0].lastIndexOf('fn ');
-    const bodyOpen = masked.indexOf('{', fnRe.lastIndex);
+    const fnName = match.name;
+    const fnStart = match.index + masked.slice(match.index, match.end).lastIndexOf('fn ');
+    const bodyOpen = masked.indexOf('{', match.end);
     if (bodyOpen === -1) {
       warnings.push({
         category: 'parse-warning',
