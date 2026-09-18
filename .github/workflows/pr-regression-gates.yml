@@ -841,6 +841,42 @@ jobs:
             exit 1
           }
 
+      # IS #2113: the widened internal-notice pre-filter is deliberately
+      # over-wide, and on a case-SENSITIVE filesystem it matches two distinct
+      # real replica directories. The control that it still cannot deliver to
+      # the wrong one is Linux-gated and the suite runs only on the Windows
+      # leg, so without this step it would compile here and never execute.
+      - name: "cargo test (IS #2113 case-tolerant notice pre-filter)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          FILTER='issue_2113'
+          # T1-T5 (portable) + T6 (Linux-gated) = 6 here. The Windows leg
+          # compiles T7 and T8 instead of T6 and so reports 7. Update in the
+          # same commit that adds or removes an issue_2113 test.
+          EXPECTED=6
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2113.log
+
+          # Three guards, matching the #1842 step, none redundant:
+          #   1. pipefail (LOAD-BEARING through the tee) catches a test that
+          #      ran and FAILED.
+          #   2. The sentinel grep is the POSITIVE CONTROL: a filter matching
+          #      nothing exits 0 and prints "0 passed". This test is
+          #      `cfg(target_os = "linux")` and cannot exist unless it really
+          #      compiled here.
+          #   3. The anchored count is the MUTATION PROBE: gating a test out
+          #      moves the number.
+          grep -qF 'issue_2113_canonical_gate_separates_two_case_distinct_linux_dirs' test-2113.log || {
+            echo "::error::the Linux-only #2113 canonical-gate control never ran; it was renamed or gated out, and this step was testing nothing."
+            exit 1
+          }
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2113.log || {
+            echo "::error::expected exactly ${EXPECTED} passing ${FILTER} tests; the count changed or the filter matched something else."
+            exit 1
+          }
+
       # IS #1850: focused debug execution of every issue_1850 test. Guards
       # mirror the #1577 step: pipefail catches a failing test, the identifier
       # greps catch a filter that selected nothing or something else, and the

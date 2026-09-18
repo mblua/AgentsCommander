@@ -49,6 +49,6 @@ For developers looking for the page that covers one AgentsCommander feature. Eve
 | Page | What it covers |
 |---|---|
 | [Config seed](config-seed.md) | Copy a template config folder into every replica at spawn, with AC path tokens already substituted. |
-| [Seed manifest](seed-manifest.md) | Read the Git-diffable inventory of the project-scoped files AC published into your project's `.ac` folder. |
+| [Seed manifest](seed-manifest.md) | Read the diagnostic inventory of the project-scoped files AC published into your project's `.ac` folder. |
 | [Portable instances](portable-instances.md) | Run native copies with distinct, version-verified configurations side by side. |
 | [Project archiving](project-archiving.md) | Hide a project from the sidebar without touching its files, and get it back. |

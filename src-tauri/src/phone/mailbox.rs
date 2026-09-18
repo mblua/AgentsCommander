@@ -2483,6 +2483,38 @@ fn session_cwd_matches_fqn(cwd: &str, target: &str) -> bool {
     crate::config::teams::agent_fqn_from_path(cwd) == target
 }
 
+/// #2113: case-tolerant pre-filter for internal system notices.
+///
+/// The target FQN is derived from the CANONICAL replica dir
+/// (`InternalSystemTarget::for_context_alert`), so it carries the on-disk
+/// spelling. A session CWD carries the spelling in `cfg.project_paths`, stored
+/// verbatim by `SessionManager::create_session`. On a case-insensitive
+/// filesystem the two can differ by case and still name the same directory,
+/// which dropped the notice (#2113).
+///
+/// Covers a case difference in the project segment, in the agent segment, and
+/// in the room segment AFTER its `room-`/`wg-` prefix. It does NOT cover a
+/// case difference in the prefix letters themselves: `has_entity_prefix` is
+/// case-sensitive, so `Room-1-Team` never reaches this comparison in
+/// project-qualified form. That gap is out of scope; see the plan.
+///
+/// Deliberately over-wide: `to_lowercase` is Unicode simple lowercasing, which
+/// matches neither the NTFS uppercase table nor Linux's byte comparison. That is
+/// safe HERE and only here, because this function is a pre-filter, never the
+/// authority. Every candidate it admits is re-checked by
+/// `canonical_cwd_owned_by_replica`, which canonicalizes the CWD and requires
+/// real filesystem identity with the replica dir. A false positive from this
+/// function is discarded there; a false negative loses the notice.
+///
+/// Cross-OS risk, stated: on Linux `.../__agent_bob` and `.../__agent_Bob` are
+/// two distinct real directories, and this function matches both. It does not
+/// deliver to both: the canonical gate admits exactly the one whose canonical
+/// path equals the target replica dir. See the `linux` test below.
+fn internal_target_fqn_prefilter_matches(cwd: &str, target_fqn: &str) -> bool {
+    let candidate = crate::config::teams::agent_fqn_from_path(cwd);
+    candidate == target_fqn || candidate.to_lowercase() == target_fqn.to_lowercase()
+}
+
 fn resolve_wg_path_from_session_dirs(dirs: &[(Uuid, String)], agent_name: &str) -> Option<String> {
     let (target_project, local) = crate::config::teams::split_project_prefix(agent_name);
     let (wg_name, agent_short) = local.split_once('/')?;
@@ -8230,8 +8262,10 @@ impl MailboxPoller {
                 !session.is_root_agent
                     && session.agent_id.is_some()
                     && crate::pty::inject::needs_explicit_enter(&session.shell)
-                    && crate::config::teams::agent_fqn_from_path(&session.working_directory)
-                        == target_fqn
+                    && internal_target_fqn_prefilter_matches(
+                        &session.working_directory,
+                        &target_fqn,
+                    )
             })
             .collect();
         let mut owned = tokio::task::spawn_blocking(move || {
@@ -8324,7 +8358,7 @@ impl MailboxPoller {
             || session.agent_id.is_none()
             || !crate::pty::inject::needs_explicit_enter(&session.shell)
             || session.working_directory != expected_cwd
-            || crate::config::teams::agent_fqn_from_path(&session.working_directory) != target.fqn()
+            || !internal_target_fqn_prefilter_matches(&session.working_directory, target.fqn())
         {
             return Err(format!(
                 "Orchestrator session {} restarted or changed immediately before destruction",
@@ -27830,6 +27864,57 @@ mod tests {
         assert!(crate::pty::menu_guard::is_menu_guard_deferred_error(&err));
     }
 
+    /// Single source of the TTL-bound fixture pair: `expires_at` is derived from the same
+    /// instant as `issued_at`, so the canonical millisecond truncation can never split them.
+    fn pty_ttl_fixture_timestamps(now: chrono::DateTime<chrono::Utc>) -> (String, String) {
+        (
+            crate::phone::types::canonical_pty_timestamp(now),
+            crate::phone::types::canonical_pty_timestamp(
+                now + chrono::Duration::seconds(crate::phone::types::PTY_INPUT_TTL_SECS),
+            ),
+        )
+    }
+
+    #[test]
+    fn test_pty_ttl_fixture_single_instant_survives_millisecond_boundary() {
+        // Adversarial base: 900 microseconds past a millisecond boundary, so a second clock
+        // sample taken 100 microseconds later truncates to the next canonical millisecond.
+        let base = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00.000900Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let (issued_at, expires_at) = pty_ttl_fixture_timestamps(base);
+        assert_eq!(issued_at, "2026-01-01T00:00:00.000Z");
+        assert_eq!(expires_at, "2026-01-01T00:10:00.000Z");
+
+        let issued = crate::phone::types::parse_canonical_pty_timestamp(&issued_at).unwrap();
+        let expires = crate::phone::types::parse_canonical_pty_timestamp(&expires_at).unwrap();
+        assert_eq!(
+            expires - issued,
+            chrono::Duration::milliseconds(600_000),
+            "the TTL fixture helper must yield exactly the span enqueue_pty_input accepts"
+        );
+        assert_eq!(
+            expires - issued,
+            chrono::Duration::seconds(crate::phone::types::PTY_INPUT_TTL_SECS)
+        );
+
+        // The rejected two-sample form, pinned at the same base: a 100-microsecond-later
+        // second sample lands one canonical millisecond ahead, i.e. 600001 ms.
+        let second_sample = base + chrono::Duration::microseconds(100);
+        let two_sample_expires = crate::phone::types::canonical_pty_timestamp(
+            second_sample + chrono::Duration::seconds(crate::phone::types::PTY_INPUT_TTL_SECS),
+        );
+        assert_eq!(two_sample_expires, "2026-01-01T00:10:00.001Z");
+        assert_ne!(
+            two_sample_expires, expires_at,
+            "the fixture must not be rebuilt from a second clock sample"
+        );
+        let two_sample =
+            crate::phone::types::parse_canonical_pty_timestamp(&two_sample_expires).unwrap();
+        assert_eq!(two_sample - issued, chrono::Duration::milliseconds(600_001));
+    }
+
     #[tokio::test]
     async fn test_pty_input_operation_retried_on_menu_guard() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -27837,6 +27922,7 @@ mod tests {
         let store = crate::api::message_store::MessageStore::open(path).unwrap();
 
         let op_id = Uuid::new_v4().to_string();
+        let (issued_at, expires_at) = pty_ttl_fixture_timestamps(chrono::Utc::now());
         store
             .enqueue_pty_input(crate::api::message_store::PtyInputEnqueueRequest {
                 injection_id: op_id.clone(),
@@ -27855,10 +27941,8 @@ mod tests {
                 authority_session_id: Uuid::new_v4().to_string(),
                 authority_client_id: Some("client".into()),
                 authority_client_generation: Some(Uuid::new_v4().to_string()),
-                issued_at: crate::phone::types::canonical_pty_timestamp(chrono::Utc::now()),
-                expires_at: crate::phone::types::canonical_pty_timestamp(
-                    chrono::Utc::now() + chrono::Duration::minutes(10),
-                ),
+                issued_at,
+                expires_at,
             })
             .unwrap();
 
@@ -28052,5 +28136,217 @@ mod tests {
             idle.control_write_age(target_id).is_none(),
             "the exact-agent-input boundary arms the turn and must cancel the mark"
         );
+    }
+
+    #[test]
+    fn issue_2113_prefilter_matches_case_differing_project_segment() {
+        let cwd = "D:/0_repos/Proj/.ac/room-1-team/__agent_bob";
+        let target = "proj:room-1-team/bob";
+        assert_ne!(
+            crate::config::teams::agent_fqn_from_path(cwd),
+            target,
+            "the exact compare the call sites used to make must drop the case-skewed CWD"
+        );
+        assert!(internal_target_fqn_prefilter_matches(cwd, target));
+    }
+
+    #[test]
+    fn issue_2113_prefilter_matches_case_differing_room_suffix_and_agent_segments() {
+        assert!(internal_target_fqn_prefilter_matches(
+            "D:/0_repos/proj/.ac/room-1-Team/__agent_Bob",
+            "proj:room-1-team/bob"
+        ));
+        // Out-of-scope boundary: a case-differing `room-` prefix fails
+        // `has_entity_prefix`, so `agent_fqn_from_path` returns the
+        // two-segment fallback `Room-1-Team/Bob` and folding cannot align it.
+        assert!(!internal_target_fqn_prefilter_matches(
+            "D:/0_repos/proj/.ac/Room-1-Team/__agent_Bob",
+            "proj:room-1-team/bob"
+        ));
+    }
+
+    #[test]
+    fn issue_2113_prefilter_still_rejects_a_different_agent() {
+        let cwd = "D:/0_repos/Proj/.ac/room-1-team/__agent_bob";
+        assert!(!internal_target_fqn_prefilter_matches(
+            cwd,
+            "proj:room-1-team/alice"
+        ));
+        assert!(!internal_target_fqn_prefilter_matches(
+            cwd,
+            "other:room-1-team/bob"
+        ));
+    }
+
+    #[test]
+    fn issue_2113_prefilter_matches_exactly_spelled_fqn() {
+        assert!(internal_target_fqn_prefilter_matches(
+            "D:/0_repos/proj/.ac/room-1-team/__agent_bob",
+            "proj:room-1-team/bob"
+        ));
+    }
+
+    #[test]
+    fn issue_2113_prefilter_folds_non_ascii_segments() {
+        assert!(internal_target_fqn_prefilter_matches(
+            "D:/0_repos/proj/.ac/room-1-team/__agent_ÑOÑO",
+            "proj:room-1-team/ñoño"
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn issue_2113_canonical_gate_separates_two_case_distinct_linux_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize temp root");
+        let room = root.join("proj").join(".ac").join("room-1-team");
+        let lower = room.join("__agent_bob");
+        let upper = room.join("__agent_Bob");
+        std::fs::create_dir_all(&lower).unwrap();
+        std::fs::create_dir_all(&upper).unwrap();
+        assert_ne!(
+            std::fs::canonicalize(&lower).unwrap(),
+            std::fs::canonicalize(&upper).unwrap(),
+            "this control requires a case-sensitive filesystem"
+        );
+        let replica = crate::path_utils::normalize_windows_verbatim_path_buf(
+            &std::fs::canonicalize(&lower).unwrap(),
+        );
+        let lower_cwd = lower.to_string_lossy().to_string();
+        let upper_cwd = upper.to_string_lossy().to_string();
+        // The pre-filter is over-wide on purpose: both spellings pass it.
+        assert!(internal_target_fqn_prefilter_matches(
+            &lower_cwd,
+            "proj:room-1-team/bob"
+        ));
+        assert!(internal_target_fqn_prefilter_matches(
+            &upper_cwd,
+            "proj:room-1-team/bob"
+        ));
+        // The canonical gate is the authority: exactly the real replica passes.
+        assert!(canonical_cwd_owned_by_replica(&lower_cwd, &replica).unwrap());
+        assert!(!canonical_cwd_owned_by_replica(&upper_cwd, &replica).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn issue_2113_case_differing_project_segment_still_injects_live() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let project = fixture.sender_cwd.ancestors().nth(3).unwrap();
+        let skewed = project
+            .parent()
+            .unwrap()
+            .join("Proj-A")
+            .join(".ac")
+            .join("wg-1-dev-team")
+            .join("__agent_tech-lead");
+        assert_eq!(
+            std::fs::canonicalize(&skewed).unwrap(),
+            std::fs::canonicalize(&fixture.sender_cwd).unwrap(),
+            "this control requires one real directory reachable by two spellings"
+        );
+        let id = add_mailbox_session(
+            &app,
+            &skewed,
+            "wg-1-dev-team/tech-lead",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        assert_ne!(
+            crate::config::teams::agent_fqn_from_path(&skewed.to_string_lossy()),
+            target.fqn(),
+            "the exact compare the call sites used to make must drop this CWD"
+        );
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            80,
+            vec![50, 75],
+        )
+        .unwrap();
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(id, true);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.inject_calls.lock().unwrap().as_slice(), &[id]);
+        assert_no_spawn_or_destroy_events(&hooks);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn issue_2113_case_differing_project_segment_destroys_exited_orchestrator() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let project = fixture.sender_cwd.ancestors().nth(3).unwrap();
+        let skewed = project
+            .parent()
+            .unwrap()
+            .join("Proj-A")
+            .join(".ac")
+            .join("wg-1-dev-team")
+            .join("__agent_tech-lead");
+        assert_eq!(
+            std::fs::canonicalize(&skewed).unwrap(),
+            std::fs::canonicalize(&fixture.sender_cwd).unwrap(),
+            "this control requires one real directory reachable by two spellings"
+        );
+        let exited_id = add_mailbox_session(
+            &app,
+            &skewed,
+            "exited-coordinator",
+            SessionStatus::Exited(0),
+            None,
+        )
+        .await;
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let hooks = MailboxTestHooks::default();
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.destroy_calls.lock().unwrap().as_slice(), &[exited_id]);
+        assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+        let events = hooks.events.lock().unwrap();
+        assert!(matches!(events[0], MailboxTestEvent::Destroy(id) if id == exited_id));
+        assert!(matches!(events[1], MailboxTestEvent::Spawn(_)));
+        assert!(matches!(events[2], MailboxTestEvent::Inject(_)));
     }
 }
