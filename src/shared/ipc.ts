@@ -99,6 +99,7 @@ import type {
   ScreenshotHotkeyStatus,
   WorkgroupGroupsConfig,
   NonStopReport,
+  NonStopAlarmEvent,
   WebServerOwnedStatus,
   WebServerInterfaceInfo,
   ApiClientMintRequest,
@@ -1048,6 +1049,14 @@ export const NonStopAPI = {
   report: (reports: NonStopReport[]) =>
     transport.invoke<void>("non_stop_report", { reports }),
 };
+
+export const NON_STOP_ALARM_EVENT = "non_stop_alarm";
+
+export function onNonStopAlarm(
+  callback: (event: NonStopAlarmEvent) => void,
+): Promise<UnlistenFn> {
+  return transport.listen<NonStopAlarmEvent>(NON_STOP_ALARM_EVENT, callback);
+}
 
 export const LoopAPI = {
   create: (projectPath: string, input: LoopCreateInput) =>
