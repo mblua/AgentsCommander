@@ -18,6 +18,16 @@ type FakeOscillator = {
   throwOnStopCall: number;
 };
 
+type FakeGainCall = {
+  method: "setValueAtTime" | "linearRampToValueAtTime";
+  value: number;
+  time: number;
+};
+
+type FakeGain = {
+  calls: FakeGainCall[];
+};
+
 // The fake records `stopCalls`, never a "was stop called" boolean. scheduleTone
 // already schedules its own stop on every oscillator the moment it is built, so a
 // boolean would read true for all 110 nodes before any mute and would keep this
@@ -29,6 +39,7 @@ class FakeAudioContext {
   static defaultState: AudioContextState = "running";
 
   readonly oscillators: FakeOscillator[] = [];
+  readonly gains: FakeGain[] = [];
   state: AudioContextState = FakeAudioContext.defaultState;
   currentTime = 0;
   resumeCalls = 0;
@@ -79,10 +90,16 @@ class FakeAudioContext {
   }
 
   createGain(): GainNode {
+    const record: FakeGain = { calls: [] };
+    this.gains.push(record);
     const gain = {
       gain: {
-        setValueAtTime: () => {},
-        linearRampToValueAtTime: () => {},
+        setValueAtTime: (value: number, time: number) => {
+          record.calls.push({ method: "setValueAtTime", value, time });
+        },
+        linearRampToValueAtTime: (value: number, time: number) => {
+          record.calls.push({ method: "linearRampToValueAtTime", value, time });
+        },
       },
       connect: () => {},
     };
@@ -165,11 +182,20 @@ describe("sound.ts non-stop alarm", () => {
     const nodes = fakeContext().oscillators;
 
     expect(nodes).toHaveLength(19);
-    for (const node of nodes) expect(node.frequency.value).toBe(880);
+    for (const node of nodes) {
+      expect(node.frequency.value).toBe(880);
+      // stopCalls[0] is scheduleTone's own scheduled end: startTime + tone +
+      // 0.02. 0.42 pins ALARM_TONE_S at 0.4; a longer tone swallows the 0.15 s
+      // gap and turns the pulsed alarm into a continuous one.
+      expect(node.stopCalls[0] - node.startTime).toBeCloseTo(0.42, 9);
+    }
     for (let index = 1; index < nodes.length; index += 1) {
       const delta = nodes[index].startTime - nodes[index - 1].startTime;
       expect(delta).toBeCloseTo(0.55, 9);
     }
+    // The alarm's gain envelope, recorded from the fake param: the peak is
+    // 0.12, so a peakGain mutation to 1.0 shows up here.
+    expect(fakeContext().gains[0].calls.map((call) => call.value)).toEqual([0, 0.12, 0.12, 0]);
   });
 
   it("case 4: seconds are clamped into 1..60", () => {
@@ -177,6 +203,8 @@ describe("sound.ts non-stop alarm", () => {
       [0, 2],
       [-5, 2],
       [Number.NaN, 2],
+      // 1.5 is the floor pin: rounding, ceiling or dropping it gives 4 bursts.
+      [1.5, 2],
       [600, 110],
     ];
 
@@ -187,16 +215,25 @@ describe("sound.ts non-stop alarm", () => {
     }
   });
 
-  it("case 5: stop cuts every node of the train", () => {
+  it("case 5: stop cuts every node of the train and rewinds the timeline", () => {
     playNonStopAlarm("p", 10);
     const ctx = fakeContext();
     expect(ctx.oscillators).toHaveLength(19);
 
+    // Move the clock off 0 so the rewind must land on "now", not on 0.
+    ctx.currentTime = 3;
     const at = ctx.currentTime;
     stopNonStopAlarm("p");
 
     for (const node of ctx.oscillators) expectToneCut(node, at);
     expect(__soundDiagnosticsForTests().liveKeys).toEqual([]);
+
+    // Post-stop: without the rewind the next alarm inherits the cut train's
+    // end (10.45 s) and starts there instead of here.
+    playNonStopAlarm("q", 1);
+    const next = ctx.oscillators.slice(19);
+    expect(next).toHaveLength(2);
+    expect(next[0].startTime).toBeCloseTo(at, 9);
   });
 
   it("case 6: a node that rejects its cut does not spare the rest", () => {
@@ -262,14 +299,16 @@ describe("sound.ts non-stop alarm", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     playNonStopAlarm("p", 3);
+    playNonStopAlarm("q", 3);
     const ctx = fakeContext();
 
     expect(ctx.oscillators).toHaveLength(0);
-    expect(ctx.resumeCalls).toBe(1);
+    expect(ctx.resumeCalls).toBe(2);
     const diagnostics = __soundDiagnosticsForTests();
-    expect(diagnostics.suppressedAlarms).toBe(1);
+    // Two dropped alarms must count two: a plain assignment would still read 1.
+    expect(diagnostics.suppressedAlarms).toBe(2);
     expect(diagnostics.liveKeys).toEqual([]);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
     const message = String(warnSpy.mock.calls[0][0]);
     expect(message.startsWith("[non-stop] alarm suppressed: AudioContext is 'suspended'")).toBe(
       true,
@@ -287,6 +326,9 @@ describe("sound.ts non-stop alarm", () => {
   });
 
   it("case 12: primeAudio keeps every gesture armed until the context runs", async () => {
+    primeAudio();
+    // A second call must not stack a second set of listeners: one gesture below
+    // would then request two resumes.
     primeAudio();
     const ctx = fakeContext();
     ctx.state = "suspended";
@@ -329,6 +371,13 @@ describe("sound.ts non-stop alarm", () => {
     setSoundsEnabled(false);
     await playTeamIdleBeep();
     expect(ctx.oscillators).toHaveLength(4);
+
+    // The test reset clears the coalescing window too: a beep after it must
+    // schedule even though the previous pair sits at the same fake currentTime.
+    __resetSoundStateForTests();
+    setSoundsEnabled(true);
+    await playTeamIdleBeep();
+    expect(allOscillators()).toHaveLength(6);
   });
 
   it("case 14: a throwing AudioContext constructor cannot reach the mount path", () => {
