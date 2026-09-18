@@ -917,7 +917,7 @@ fn default_selected_row_rail_width() -> String {
 }
 
 fn default_selected_row_rail_color() -> String {
-    "#630707".to_string()
+    "#FFFFFF".to_string()
 }
 
 fn default_main_sidebar_width() -> f64 {
@@ -1015,11 +1015,11 @@ impl Default for AppSettings {
             coding_agent_profiles: CodingAgentProfilesConfig::default(),
             telegram_bots: vec![],
             telegram_network_poll_error_logging: TelegramNetworkPollErrorLogging::default(),
-            restore_coordinator_wake_state: false,
+            restore_coordinator_wake_state: true,
             legacy_start_only_coordinators: None,
             restart_resume_orchestrator_prompt: default_restart_resume_orchestrator_prompt(),
             restart_resume_agent_prompt: default_restart_resume_agent_prompt(),
-            restart_resume_wake_working_agents: false,
+            restart_resume_wake_working_agents: true,
             sidebar_always_on_top: false,
             team_idle_beep_enabled: true,
             sounds_enabled: true,
@@ -10011,7 +10011,8 @@ mod tests {
             "AgentsCommander was restarted. Continue with the work that was in flight."
         );
         assert_eq!(s.restart_resume_agent_prompt, ".");
-        assert!(!s.restart_resume_wake_working_agents);
+        // #2190: on a fresh install the struct default is now on.
+        assert!(s.restart_resume_wake_working_agents);
     }
 
     #[test]
@@ -10043,6 +10044,9 @@ mod tests {
             "AgentsCommander was restarted. Continue with the work that was in flight."
         );
         assert_eq!(s.restart_resume_agent_prompt, ".");
+        // #2190 changed the struct default to true, but the field carries a bare
+        // `#[serde(default)]`, so an existing settings.json without the key keeps
+        // loading as false — existing user configs are deliberately untouched.
         assert!(!s.restart_resume_wake_working_agents);
     }
 
@@ -11120,7 +11124,7 @@ mod tests {
   "restartResumeWakeWorkingAgents": false,
   "restoreCoordinatorWakeState": false,
   "screenshotCaptureHotkey": "Ctrl+Q",
-  "selectedRowRailColor": "#630707",
+  "selectedRowRailColor": "#FFFFFF",
   "selectedRowRailWidth": "9px",
   "sidebarAlwaysOnTop": false,
   "sidebarStyle": "noir-minimal",
@@ -11791,6 +11795,9 @@ mod tests {
             fixture.insert("sidebarZoom".to_string(), json!(1.5));
             fixture.insert("sidebarAlwaysOnTop".to_string(), json!(true));
             fixture.insert("startOnlyCoordinators".to_string(), json!(true));
+            // #2190: pinned explicitly so the legacy carrier still flips the
+            // destination (false -> true) whatever the struct default is.
+            fixture.insert("restoreCoordinatorWakeState".to_string(), json!(false));
             fixture.insert(
                 "agents".to_string(),
                 json!([{"id": "codex", "label": "Codex", "command": "codex", "color": "#000000"}]),

@@ -159,27 +159,15 @@ The tier in the message (`WorkspaceProfile`, `WorkspaceBase`, `MatrixProfile`, `
 
 ## Recording in the seed manifest
 
-A **successful** config-seed publication is recorded in the project's
-[seed manifest](seed-manifest.md), `<project>/.ac/seed-manifest.toml`: the whole
-`config:<dest>` scope is replaced with one row per installed regular file, all
-sharing the single UTC time captured at the install. A few things follow from that:
+Config seed does not record its publications. Since
+[#1480](https://github.com/mblua/AgentsCommander/issues/1480), a successful seed
+creates no [seed manifest](seed-manifest.md) rows, and no skip, install failure,
+or restore failure adds, updates, or removes one. A manifest written by an older
+build may still carry legacy `replica_config_file` rows.
 
-- **Every-spawn churn is normal.** Tiers 1 through 4 replace the destination on
-  every spawn, so the manifest rows get a fresh timestamp each launch even when the
-  copied bytes are identical. Two spawns inside the same millisecond can serialize
-  to the same value and produce no Git diff.
-- **Only real publications record.** A skip (no source, destination in use, or a
-  stale replica whose owner changed while AC waited for the project lock) and an
-  ordinary staging/install failure leave the manifest untouched.
-- **Install-and-restore failure prunes, never publishes.** If AC renames the old
-  destination aside, the new install fails, and the restore also fails while the
-  process survives, AC removes that config scope's now-stale rows without adding a
-  row or time - the failed install is never recorded as published.
-- **Tracking is fail-soft.** A busy project lock, an unsupported filesystem, or a
-  manifest write error never aborts the spawn: the PTY still launches, and the seed
-  is simply left unrecorded (or skipped when the lock is contended) rather than
-  racing a cooperating writer. Config seed into a Root Agent or another unowned
-  launch root is not recorded at all.
+Config seed still runs under the project gate: when the gate is unavailable - a
+busy project lock, for example - AC skips the seed rather than racing a
+cooperating writer, and the spawn continues regardless.
 
 See [Seed manifest](seed-manifest.md) for the schema, time semantics, and Git
 behavior.
@@ -201,7 +189,7 @@ Config seed copies the template. That is all. In particular:
 
 ## See also
 
-- [Seed manifest](seed-manifest.md) - where successful replica publications are recorded
+- [Seed manifest](seed-manifest.md) - the project seed inventory; config-seed publications are no longer recorded (#1480)
 - [Settings reference](../reference/settings.md#coding-agents) - the `configSeed` field on a coding agent
 - [Coding Agent Profiles](coding-agent-profiles.md) - how the profile letter is resolved
 - [Portable instances](portable-instances.md#config-directory-rule) - where `<config_dir>` lives

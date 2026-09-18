@@ -49,11 +49,40 @@ const TRANSITION_QUEUE_CAPACITY: usize = 1024;
 /// due times are checked.
 const ROUND_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Global ceiling on sweeper-issued `gh` calls, per minute, per process.
+/// GitHub's secondary budget is per account and per minute, and the same
+/// account may run a second instance on another machine, so the ceiling is
+/// set well under the budget rather than at it.
+const MAX_GH_CALLS_PER_MINUTE: f64 = 30.0;
+/// Burst ceiling for the bucket. Equal to the per-minute rate: one minute of
+/// idleness buys at most one minute of work.
+const GH_BUDGET_BURST: f64 = MAX_GH_CALLS_PER_MINUTE;
+/// First backoff for a SECONDARY limit. A secondary limit is a burst signal,
+/// not an exhausted quota, so it does not jump to `BACKOFF_CAP`.
+const SECONDARY_BACKOFF_BASE: Duration = Duration::from_secs(60);
+
 /// The label rendered for `%BASE%` when neither GitHub nor the local clone can
 /// name the default branch. It is a label in a sentence, never a query argument,
 /// so an unresolved label degrades the text and nothing else. A `BranchStale`
 /// notice is NEVER suppressed for want of it.
 const DEFAULT_BRANCH_LABEL: &str = "the default branch";
+
+/// #2129 - the rendered `%BASE%` for a branch-stale notice. The comparison is
+/// `repos/<nwo>/compare/HEAD...<sha>`, answered by GitHub, so the text says
+/// GitHub and never `origin/<x>`: a local remote may be named otherwise, be
+/// stale, or not exist. The branch name is never printed twice: an unresolved
+/// base keeps its sentinel prose, and a base equal to the branch is named by
+/// relation. The raw label is left untouched everywhere else, because the
+/// #2131 suppression compares it for identity.
+pub(crate) fn base_branch_display(branch: &str, base_label: &str) -> String {
+    if base_label == DEFAULT_BRANCH_LABEL {
+        format!("{DEFAULT_BRANCH_LABEL} on GitHub")
+    } else if base_label == branch {
+        "its counterpart on GitHub".to_string()
+    } else {
+        format!("{base_label} on GitHub")
+    }
+}
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -322,6 +351,7 @@ struct GhCallOutput {
 enum FailureKind {
     Timeout,
     RateLimited,
+    SecondaryRateLimited,
     NotAuthenticated,
     Incomplete,
     Other,
@@ -336,12 +366,18 @@ type LocalGitRunner = Arc<dyn Fn(String, Vec<String>) -> LocalGitFuture + Send +
 
 type GhProbe = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
 
-/// The three process seams. Production wires them in `production_seams`; tests
-/// inject recorded results so no test ever spawns `gh` or touches the network.
+/// Returns a fraction in [0.0, 1.0). Production draws from `getrandom`; tests
+/// pin it so every backoff assertion is exact.
+type JitterSource = Arc<dyn Fn() -> f64 + Send + Sync>;
+
+/// The process seams plus the jitter source. Production wires them in
+/// `production_seams`; tests inject recorded results so no test ever spawns
+/// `gh` or touches the network.
 pub(crate) struct RemoteSweeperSeams {
     probe: GhProbe,
     spawner: GhSpawner,
     local_git: LocalGitRunner,
+    jitter: JitterSource,
 }
 
 /// Program-independent failure classification, from the text `gh` prints.
@@ -350,7 +386,9 @@ pub(crate) struct RemoteSweeperSeams {
 /// is available to read headers.
 fn failure_kind(output: &GhCallOutput) -> FailureKind {
     let text = output.stderr.to_ascii_lowercase();
-    if text.contains("rate limit") || text.contains("x-ratelimit-remaining: 0") {
+    if text.contains("secondary rate limit") || text.contains("abuse detection") {
+        FailureKind::SecondaryRateLimited
+    } else if text.contains("rate limit") || text.contains("x-ratelimit-remaining: 0") {
         FailureKind::RateLimited
     } else if text.contains("not logged into any github hosts") || text.contains("http 401") {
         FailureKind::NotAuthenticated
@@ -496,12 +534,25 @@ fn ci_base_interval(confirmed: Option<CiState>, dial: Duration) -> Duration {
 fn failure_interval(kind: FailureKind, base: Duration, current: Option<Duration>) -> Duration {
     match kind {
         FailureKind::RateLimited | FailureKind::NotAuthenticated => BACKOFF_CAP.max(base),
+        FailureKind::SecondaryRateLimited => current
+            .unwrap_or(SECONDARY_BACKOFF_BASE / 2)
+            .saturating_mul(2)
+            .min(BACKOFF_CAP)
+            .max(base),
         FailureKind::Timeout | FailureKind::Incomplete | FailureKind::Other => current
             .unwrap_or(base)
             .saturating_mul(2)
             .min(BACKOFF_CAP)
             .max(base),
     }
+}
+
+/// The applied wait is `base + base * jitter()`, uniform over `[base, 2*base)`.
+/// The offset is TRUNCATED to whole nanoseconds, not rounded: `Duration::mul_f64`
+/// rounds, so a fraction just under 1.0 returns `base` itself and the range
+/// would be closed at both ends. The clamp guards a misbehaving seam.
+fn jitter_offset(base: Duration, fraction: f64) -> Duration {
+    Duration::from_nanos((base.as_nanos() as f64 * fraction.clamp(0.0, 1.0)) as u64)
 }
 
 fn axis_label(axis: Axis) -> &'static str {
@@ -579,7 +630,6 @@ struct QueryState {
     staleness: StalenessAxis,
 }
 
-#[derive(Default)]
 struct SweeperState {
     gh_path: Option<PathBuf>,
     keys: HashMap<QueryKey, QueryState>,
@@ -591,6 +641,31 @@ struct SweeperState {
     /// Once per PROCESS, not per key: a closed channel is a Phase B wiring fact.
     closed_warned: bool,
     last_payload: Option<RemoteActivityPayload>,
+    /// Token bucket for sweeper-issued `gh` calls. Every `gh` call the round can
+    /// issue is reserved from this bucket BEFORE it is issued, so the ceiling is
+    /// a guarantee, not an estimate.
+    budget_tokens: f64,
+    budget_refilled_at: Option<Instant>,
+    /// While set and not elapsed, the round issues NO `gh` call at all.
+    throttled_until: Option<Instant>,
+}
+
+impl Default for SweeperState {
+    fn default() -> Self {
+        Self {
+            gh_path: None,
+            keys: HashMap::new(),
+            base_branches: HashMap::new(),
+            warned_base_branch: HashSet::new(),
+            warned_failures: HashSet::new(),
+            warned_transition_drops: HashSet::new(),
+            closed_warned: false,
+            last_payload: None,
+            budget_tokens: GH_BUDGET_BURST,
+            budget_refilled_at: None,
+            throttled_until: None,
+        }
+    }
 }
 
 struct PathFacts {
@@ -613,6 +688,9 @@ struct KeyOutcome {
     /// Set when the CI answer was suppressed by the identical-to-default rule.
     /// Carried beside `ci` because `CiState` has no `Suppressed` value.
     ci_suppressed: bool,
+    /// Set only when the identity compare was issued as an EXTRA `gh` call, so
+    /// the reservation made for it is refunded when it was never made.
+    ci_identity_call: bool,
     staleness: Option<CompareAnswer>,
 }
 
@@ -641,6 +719,7 @@ pub(crate) struct RemoteSweeper {
     probe: GhProbe,
     spawner: GhSpawner,
     local_git_runner: LocalGitRunner,
+    jitter: JitterSource,
     transitions: mpsc::Sender<RemoteTransition>,
     state: Mutex<SweeperState>,
 }
@@ -676,6 +755,7 @@ impl RemoteSweeper {
             probe: seams.probe,
             spawner: seams.spawner,
             local_git_runner: seams.local_git,
+            jitter: seams.jitter,
             transitions,
             state: Mutex::new(SweeperState::default()),
         });
@@ -689,6 +769,15 @@ impl RemoteSweeper {
             probe: Arc::new(|| which::which("gh").ok()),
             spawner: Arc::new(|spec| Box::pin(spawn_gh(spec))),
             local_git: Arc::new(|path, args| Box::pin(run_local_git(path, args))),
+            jitter: Arc::new(|| {
+                let mut bytes = [0u8; 8];
+                match getrandom::fill(&mut bytes) {
+                    Ok(()) => (u64::from_le_bytes(bytes) >> 11) as f64 / (1u64 << 53) as f64,
+                    // No entropy is not a reason to stop sweeping; mid-range is
+                    // a safe, still-legal wait.
+                    Err(_) => 0.5,
+                }
+            }),
         }
     }
 
@@ -861,22 +950,105 @@ impl RemoteSweeper {
             }
         }
 
+        // Refill the global `gh` budget before any call is considered, then
+        // read the gate. A gated round issues NO `gh` call: no resolution, no
+        // query. Nothing else about the round changes.
+        let throttled = {
+            let mut state = self.lock_state();
+            let elapsed = state
+                .budget_refilled_at
+                .map(|last| now.saturating_duration_since(last))
+                .unwrap_or_default();
+            state.budget_tokens = (state.budget_tokens
+                + elapsed.as_secs_f64() * MAX_GH_CALLS_PER_MINUTE / 60.0)
+                .min(GH_BUDGET_BURST);
+            state.budget_refilled_at = Some(now);
+            match state.throttled_until {
+                Some(until) if now < until => true,
+                _ => {
+                    state.throttled_until = None;
+                    false
+                }
+            }
+        };
+
+        // Priority order, built once: a key the user is watching (`Running`)
+        // first, then the least recently confirmed. A missing entry or a `None`
+        // timestamp sorts first (never checked, so most owed) and the trailing
+        // key makes the order total.
+        let mut due_keys: Vec<(QueryKey, KeyPlan)> = plans
+            .iter()
+            .filter(|(_, plan)| plan.ci || plan.staleness)
+            .cloned()
+            .collect();
+        {
+            let state = self.lock_state();
+            due_keys.sort_by_cached_key(|(key, _)| {
+                let entry = state.keys.get(key);
+                (
+                    if entry.map(|e| e.ci.confirmed) == Some(Some(CiState::Running)) {
+                        0u8
+                    } else {
+                        1u8
+                    },
+                    entry.and_then(|e| e.ci.last_confirmed_at),
+                    entry.and_then(|e| e.staleness.last_confirmed_at),
+                    key.clone(),
+                )
+            });
+        }
+
+        // Reserve-before-issue: every `gh` call this round can make - the
+        // per-`nwo` base-branch resolution, the axis queries and the extra
+        // identity compare - is subtracted from the bucket BEFORE it is issued.
+        // A key that cannot pay is dropped from the round: no outcome, no
+        // failure, chip and `next_due` untouched, first in line next round.
+        //
         // The label chain runs on either axis, once per distinct nwo, and is
         // cached for the process lifetime: CI needs the name to decide the
         // identical-to-default suppression, staleness to render `%BASE%`.
         let mut pending_base: Vec<(String, String)> = Vec::new();
-        if gh_path.is_some() {
-            let state = self.lock_state();
-            for (key, plan) in &plans {
-                if !(plan.ci || plan.staleness)
-                    || state.base_branches.contains_key(&key.nwo)
-                    || pending_base.iter().any(|(nwo, _)| nwo == &key.nwo)
-                {
+        let mut admitted: Vec<(QueryKey, KeyPlan)> = Vec::new();
+        let mut identity_reserved: HashSet<QueryKey> = HashSet::new();
+        let mut unresolvable_nwos: HashSet<String> = HashSet::new();
+        if gh_path.is_some() && !throttled {
+            let mut state = self.lock_state();
+            for (key, plan) in &due_keys {
+                // A key is never queried with a base label a resolution would
+                // have supplied, so suppression decisions are unchanged.
+                if unresolvable_nwos.contains(&key.nwo) {
                     continue;
                 }
-                if let Some(index) = groups.get(key).and_then(|group| group.first()) {
+                let resolved = state.base_branches.contains_key(&key.nwo)
+                    || pending_base.iter().any(|(nwo, _)| nwo == &key.nwo);
+                // An unresolved label must assume the worst case; step 7 refunds
+                // the reservation when the compare is not issued.
+                let identity = u32::from(
+                    plan.ci
+                        && !plan.staleness
+                        && state.base_branches.get(&key.nwo).is_none_or(|label| {
+                            label.as_str() != DEFAULT_BRANCH_LABEL && *label != key.branch
+                        }),
+                );
+                let cost = u32::from(plan.staleness) + u32::from(plan.ci) + identity;
+                let needed = f64::from(cost) + if resolved { 0.0 } else { 1.0 };
+                if state.budget_tokens < needed {
+                    if !resolved {
+                        unresolvable_nwos.insert(key.nwo.clone());
+                    }
+                    continue;
+                }
+                if !resolved {
+                    let Some(index) = groups.get(key).and_then(|group| group.first()) else {
+                        continue;
+                    };
                     pending_base.push((key.nwo.clone(), facts[*index].path.clone()));
                 }
+                state.budget_tokens -= needed;
+                if identity == 1 {
+                    identity_reserved.insert(key.clone());
+                }
+                admitted.push((key.clone(), *plan));
             }
         }
         if let Some(gh) = gh_path.as_deref() {
@@ -888,11 +1060,7 @@ impl RemoteSweeper {
 
         let mut outcomes: Vec<(QueryKey, KeyOutcome)> = Vec::new();
         if let Some(gh) = gh_path.as_deref() {
-            let query_keys: Vec<(QueryKey, KeyPlan)> = plans
-                .iter()
-                .filter(|(_, plan)| plan.ci || plan.staleness)
-                .cloned()
-                .collect();
+            let query_keys: Vec<(QueryKey, KeyPlan)> = admitted;
             let defaults: HashMap<String, Option<String>> = {
                 let state = self.lock_state();
                 query_keys
@@ -926,6 +1094,37 @@ impl RemoteSweeper {
             .await;
         }
 
+        // A reservation returns a call that was never made; it never forgives
+        // one that was.
+        if !identity_reserved.is_empty() {
+            let refund = outcomes
+                .iter()
+                .filter(|(key, outcome)| {
+                    identity_reserved.contains(key) && !outcome.ci_identity_call
+                })
+                .count() as f64;
+            if refund > 0.0 {
+                let mut state = self.lock_state();
+                state.budget_tokens = (state.budget_tokens + refund).min(GH_BUDGET_BURST);
+            }
+        }
+
+        let mut secondary_limited = false;
+        let mut primary_limited = false;
+        for (_, outcome) in &outcomes {
+            let mut note = |kind: FailureKind| match kind {
+                FailureKind::SecondaryRateLimited => secondary_limited = true,
+                FailureKind::RateLimited => primary_limited = true,
+                _ => {}
+            };
+            if let Some(Err(kind)) = &outcome.ci {
+                note(*kind);
+            }
+            if let Some(Err(kind)) = &outcome.staleness {
+                note(*kind);
+            }
+        }
+
         let ctx = RoundCtx {
             facts: &facts,
             now,
@@ -937,6 +1136,22 @@ impl RemoteSweeper {
             let indices = groups.get(&key).map(Vec::as_slice).unwrap_or(&[]);
             self.apply_ci(&key, outcome.ci, outcome.ci_suppressed, indices, &ctx);
             self.apply_staleness(&key, outcome.staleness, indices, &ctx);
+        }
+
+        // One gate per round, never shortened: a limit is an account-wide
+        // signal, so every key waits, not just the ones that discovered it.
+        if secondary_limited || primary_limited {
+            let base = if primary_limited {
+                BACKOFF_CAP
+            } else {
+                SECONDARY_BACKOFF_BASE
+            };
+            let candidate = now + base + jitter_offset(base, (self.jitter)());
+            let mut state = self.lock_state();
+            state.throttled_until = Some(match state.throttled_until {
+                Some(until) if until > candidate => until,
+                _ => candidate,
+            });
         }
 
         // Retire keys no path maps to any more: a local commit moves `head_sha`
@@ -993,9 +1208,10 @@ impl RemoteSweeper {
 
         log::log!(
             ROUND_LOG_LEVEL,
-            "[RemoteSweeper] round: {} path(s), {} key(s)",
+            "[RemoteSweeper] round: {} path(s), {} key(s){}",
             paths.len(),
-            groups.len()
+            groups.len(),
+            if throttled { ", throttled" } else { "" }
         );
     }
 
@@ -1391,7 +1607,8 @@ async fn query_key(
             }
             Err(_) => Err(FailureKind::Other),
         };
-        outcome.ci = Some(match ci {
+        let scripted_staleness = outcome.staleness;
+        let ci_result = match ci {
             // Only a non-default branch that HAS runs needs the identity
             // question; a branch with no runs answers `Idle` without it, and the
             // default branch is never suppressed.
@@ -1399,18 +1616,24 @@ async fn query_key(
                 if answer.branch_has_runs
                     && default_branch.is_some_and(|default| key.branch != default) =>
             {
-                let compare = match &outcome.staleness {
-                    Some(result) => *result,
-                    None => match build_gh_command_spec(
-                        gh,
-                        GhQuery::Compare {
-                            nwo: &key.nwo,
-                            sha40: &key.sha40,
-                        },
-                    ) {
-                        Ok(spec) => run_query(spawner, spec, parse_compare_response).await,
-                        Err(_) => Err(FailureKind::Other),
-                    },
+                let compare = match scripted_staleness {
+                    Some(result) => result,
+                    None => {
+                        // The ONLY place an extra `gh` call is issued for the
+                        // identity question, and so the only place the round's
+                        // reservation for it is consumed.
+                        outcome.ci_identity_call = true;
+                        match build_gh_command_spec(
+                            gh,
+                            GhQuery::Compare {
+                                nwo: &key.nwo,
+                                sha40: &key.sha40,
+                            },
+                        ) {
+                            Ok(spec) => run_query(spawner, spec, parse_compare_response).await,
+                            Err(_) => Err(FailureKind::Other),
+                        }
+                    }
                 };
                 match compare {
                     Ok((_, _, true)) => {
@@ -1423,7 +1646,8 @@ async fn query_key(
             }
             Ok(answer) => Ok(answer.state),
             Err(kind) => Err(kind),
-        });
+        };
+        outcome.ci = Some(ci_result);
     }
 
     outcome
@@ -1663,6 +1887,7 @@ mod tests {
         emitted: Arc<Mutex<Vec<RemoteActivityPayload>>>,
         gh: Arc<Mutex<GhScripts>>,
         git: Arc<Mutex<LocalGitScripts>>,
+        jitter: Arc<Mutex<f64>>,
     }
 
     impl Harness {
@@ -1706,6 +1931,13 @@ mod tests {
                 })
             };
             let probe: GhProbe = Arc::new(|| Some(PathBuf::from("gh")));
+            // Pinned, not random: every backoff assertion in this module is
+            // exact, so the default draw is the low end of the range.
+            let jitter_value = Arc::new(Mutex::new(0.0f64));
+            let jitter: JitterSource = {
+                let jitter_value = Arc::clone(&jitter_value);
+                Arc::new(move || *jitter_value.lock().unwrap_or_else(|e| e.into_inner()))
+            };
 
             let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
             let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -1717,6 +1949,7 @@ mod tests {
                     probe,
                     spawner,
                     local_git,
+                    jitter,
                 },
                 capacity,
             );
@@ -1729,6 +1962,7 @@ mod tests {
                 emitted,
                 gh,
                 git,
+                jitter: jitter_value,
             }
         }
 
@@ -1746,6 +1980,26 @@ mod tests {
                 }),
             );
             path
+        }
+
+        fn set_jitter(&self, value: f64) {
+            *self.jitter.lock().unwrap_or_else(|e| e.into_inner()) = value;
+        }
+
+        /// Pins the bucket AND clears the refill mark, so the next round refills
+        /// by zero and the pinned value is exactly what that round may spend.
+        fn set_budget(&self, tokens: f64) {
+            let mut state = self.sweeper.lock_state();
+            state.budget_tokens = tokens;
+            state.budget_refilled_at = None;
+        }
+
+        fn gh_call_count(&self) -> usize {
+            self.gh
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .calls
+                .len()
         }
 
         fn set_work(&self, paths: &[String]) {
@@ -2953,6 +3207,467 @@ mod tests {
         assert_eq!(due_at, now + Duration::from_secs(900));
     }
 
+    // --- #2152: the global call budget, the priority order and the gate ---
+
+    fn secondary_limit_output() -> GhCallOutput {
+        GhCallOutput {
+            stdout: String::new(),
+            stderr: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.".to_string(),
+            success: false,
+        }
+    }
+
+    fn primary_limit_output() -> GhCallOutput {
+        GhCallOutput {
+            stdout: String::new(),
+            stderr: "gh: API rate limit exceeded for user ID 1 (HTTP 403)".to_string(),
+            success: false,
+        }
+    }
+
+    fn ci_count_for(harness: &Harness, nwo: &str) -> usize {
+        harness
+            .gh
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .count(&format!("{nwo}/actions/runs"))
+    }
+
+    fn throttled_until(harness: &Harness) -> Option<Instant> {
+        harness.sweeper.lock_state().throttled_until
+    }
+
+    fn ci_next_due(harness: &Harness, nwo: &str) -> Option<Instant> {
+        let key = QueryKey {
+            nwo: format!("mblua/{nwo}"),
+            sha40: sha_of('a'),
+            branch: "main".to_string(),
+        };
+        harness
+            .sweeper
+            .lock_state()
+            .keys
+            .get(&key)
+            .and_then(|entry| entry.ci.next_due)
+    }
+
+    /// Two repos, two distinct `nwo`, so `compare_count` can separate them.
+    fn two_repos(harness: &Harness) -> (String, String) {
+        let first = harness.repo("a");
+        let second = harness.repo("b");
+        harness.set_work(&[first.clone(), second.clone()]);
+        {
+            let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+            git.set_origin(&first, "git@github.com:mblua/repo-a.git");
+            git.set_origin(&second, "git@github.com:mblua/repo-b.git");
+        }
+        (first, second)
+    }
+
+    #[tokio::test]
+    async fn secondary_rate_limit_backs_off_one_minute() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        harness.set_work(&[repo]);
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.ci.push_back(Ok(ok_output(&ci_body(&[]))));
+            gh.ci.push_back(Ok(secondary_limit_output()));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        tick(&mut now, &mut wall, 30);
+        harness.round(now, wall).await;
+
+        let key = QueryKey {
+            nwo: "mblua/AgentsCommander".to_string(),
+            sha40: sha_of('a'),
+            branch: "main".to_string(),
+        };
+        let due_at = harness
+            .sweeper
+            .lock_state()
+            .keys
+            .get(&key)
+            .expect("key state")
+            .ci
+            .next_due
+            .expect("due time");
+        assert_eq!(
+            due_at,
+            now + Duration::from_secs(60),
+            "a secondary limit is a burst signal, not an exhausted quota"
+        );
+    }
+
+    #[test]
+    fn failure_kind_classifies_the_three_403_texts() {
+        assert_eq!(
+            failure_kind(&primary_limit_output()),
+            FailureKind::RateLimited
+        );
+        assert_eq!(
+            failure_kind(&secondary_limit_output()),
+            FailureKind::SecondaryRateLimited
+        );
+        assert_eq!(
+            failure_kind(&GhCallOutput {
+                stdout: String::new(),
+                stderr: "You have triggered an abuse detection mechanism".to_string(),
+                success: false,
+            }),
+            FailureKind::SecondaryRateLimited
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_starved_key_is_not_queried_and_keeps_its_chip() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let _paths = two_repos(&harness);
+        // One resolution plus two axis queries: exactly one key fits.
+        harness.set_budget(3.0);
+
+        let now = Instant::now();
+        let wall = Local::now();
+        harness.round(now, wall).await;
+
+        assert_eq!(
+            compare_count(&harness, "repo-b"),
+            0,
+            "the starved key must issue no gh call at all"
+        );
+        assert_eq!(ci_count_for(&harness, "repo-b"), 0);
+        assert_eq!(
+            ci_count(&harness),
+            1,
+            "exactly the admitted key's CI query was issued"
+        );
+        assert!(
+            ci_next_due(&harness, "repo-b").is_none(),
+            "a key without budget never fails and never gets a due time"
+        );
+        assert_eq!(
+            harness
+                .snapshot()
+                .values()
+                .filter(|activity| activity.ci != CiState::Unknown)
+                .count(),
+            1,
+            "the starved path keeps its transparent chip"
+        );
+
+        // Positive control: the identical fixture with a full bucket queries both.
+        let full = Harness::new(AppSettings::default());
+        let _paths = two_repos(&full);
+        full.set_budget(GH_BUDGET_BURST);
+        full.round(now, wall).await;
+        assert_eq!(ci_count_for(&full, "repo-a"), 1);
+        assert_eq!(ci_count_for(&full, "repo-b"), 1);
+    }
+
+    #[tokio::test]
+    async fn running_ci_wins_the_last_token() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let first = harness.repo("a");
+        let second = harness.repo("z");
+        harness.set_work(&[first.clone(), second.clone()]);
+        {
+            let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+            git.set_origin(&first, "git@github.com:mblua/repo-a.git");
+            git.set_origin(&second, "git@github.com:mblua/repo-z.git");
+        }
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.route(
+                "repo-z/actions/runs",
+                Ok(ok_output(&ci_body(&["in_progress"]))),
+            );
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        assert_eq!(ci_count_for(&harness, "repo-a"), 1);
+        assert_eq!(ci_count_for(&harness, "repo-z"), 1);
+
+        // The `Running` key is made to lose every fallback: it is last
+        // alphabetically and it was confirmed most recently.
+        {
+            let mut state = harness.sweeper.lock_state();
+            let key = QueryKey {
+                nwo: "mblua/repo-z".to_string(),
+                sha40: sha_of('a'),
+                branch: "main".to_string(),
+            };
+            let entry = state.keys.get_mut(&key).expect("running key state");
+            assert_eq!(entry.ci.confirmed, Some(CiState::Running));
+            entry.ci.last_confirmed_at = Some(wall + chrono::Duration::seconds(1));
+        }
+
+        tick(&mut now, &mut wall, 30);
+        // Both nwo are resolved, staleness is not due: one token, one CI query.
+        harness.set_budget(1.0);
+        harness.round(now, wall).await;
+
+        assert_eq!(
+            ci_count_for(&harness, "repo-z"),
+            2,
+            "what the user is watching wins the last token"
+        );
+        assert_eq!(
+            ci_count_for(&harness, "repo-a"),
+            1,
+            "the dormant key degrades first"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_secondary_limit_silences_the_next_round() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        harness.set_jitter(0.0);
+        let _paths = two_repos(&harness);
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.route("repo-a/actions/runs", Ok(secondary_limit_output()));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        let after_first = harness.gh_call_count();
+        let emitted = harness.emitted_count();
+        assert_eq!(
+            throttled_until(&harness),
+            Some(now + Duration::from_secs(60)),
+            "the gate is armed for the whole process, not just the failing key"
+        );
+        assert!(ci_count_for(&harness, "repo-b") > 0);
+        let healthy_before = ci_count_for(&harness, "repo-b");
+
+        tick(&mut now, &mut wall, 30);
+        harness.round(now, wall).await;
+        assert_eq!(
+            harness.gh_call_count(),
+            after_first,
+            "the healthy key was due, and the gate still issued nothing"
+        );
+        assert_eq!(
+            harness.emitted_count(),
+            emitted,
+            "a gated round changes no chip"
+        );
+
+        tick(&mut now, &mut wall, 31);
+        harness.round(now, wall).await;
+        assert!(
+            ci_count_for(&harness, "repo-b") > healthy_before,
+            "the gate opens after the armed interval"
+        );
+    }
+
+    #[tokio::test]
+    async fn jitter_spans_the_half_open_range() {
+        let _guard = round_test_lock().await;
+        let now = Instant::now();
+        let wall = Local::now();
+
+        let low = Harness::new(AppSettings::default());
+        low.set_jitter(0.0);
+        let repo = low.repo("repo-a");
+        low.set_work(&[repo]);
+        low.gh
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .ci
+            .push_back(Ok(secondary_limit_output()));
+        low.round(now, wall).await;
+        assert_eq!(
+            throttled_until(&low),
+            Some(now + SECONDARY_BACKOFF_BASE),
+            "the low end of the range is closed"
+        );
+
+        let high = Harness::new(AppSettings::default());
+        high.set_jitter(1.0 - f64::EPSILON);
+        let repo = high.repo("repo-a");
+        high.set_work(&[repo]);
+        high.gh
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .ci
+            .push_back(Ok(secondary_limit_output()));
+        high.round(now, wall).await;
+        let gate = throttled_until(&high).expect("armed gate");
+        assert!(gate > now + SECONDARY_BACKOFF_BASE);
+        assert!(
+            gate < now + 2 * SECONDARY_BACKOFF_BASE,
+            "the high end of the range is open"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_primary_limit_closes_the_gate_for_fifteen_minutes() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        harness.set_jitter(0.0);
+        let _paths = two_repos(&harness);
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.route("repo-a/actions/runs", Ok(primary_limit_output()));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        assert_eq!(
+            throttled_until(&harness),
+            Some(now + BACKOFF_CAP),
+            "an exhausted quota closes the gate for the cap"
+        );
+        let after_first = harness.gh_call_count();
+        let healthy_before = ci_count_for(&harness, "repo-b");
+
+        tick(&mut now, &mut wall, 899);
+        harness.round(now, wall).await;
+        assert_eq!(harness.gh_call_count(), after_first, "still gated at +899s");
+
+        tick(&mut now, &mut wall, 2);
+        harness.round(now, wall).await;
+        assert!(
+            ci_count_for(&harness, "repo-b") > healthy_before,
+            "the healthy key resumes once the gate opens"
+        );
+    }
+
+    const BUDGET_FIXTURE_REPOS: usize = 40;
+
+    /// The worst case: 40 distinct `nwo`, CI only, every key on a non-default
+    /// branch that has runs, so each key costs a resolution, a query and an
+    /// identity compare on its first round.
+    fn budget_fixture() -> (Harness, Vec<String>) {
+        let settings = AppSettings {
+            branch_staleness_enabled: false,
+            ci_sweep_min_interval_secs: INTERVAL_FLOOR_SECS,
+            ..AppSettings::default()
+        };
+        let harness = Harness::new(settings);
+        let mut paths = Vec::with_capacity(BUDGET_FIXTURE_REPOS);
+        for index in 0..BUDGET_FIXTURE_REPOS {
+            let name = format!("repo-{index:02}");
+            let path = harness.repo(&name);
+            crate::pty::git_watcher::publish_git_status(
+                &path,
+                Some(crate::pty::git_watcher::GitStatus {
+                    branch: Some("feature".to_string()),
+                    dirty: false,
+                }),
+            );
+            harness
+                .git
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_origin(&path, &format!("git@github.com:mblua/{name}.git"));
+            paths.push(path);
+        }
+        harness.set_work(&paths);
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            for _ in 0..(BUDGET_FIXTURE_REPOS * 40) {
+                gh.repo_info.push_back(Ok(ok_output(
+                    &serde_json::json!({ "default_branch": "main" }).to_string(),
+                )));
+                gh.ci
+                    .push_back(Ok(ok_output(&ci_rows(&[("feature", "completed")]))));
+            }
+        }
+        (harness, paths)
+    }
+
+    fn fixture_nwo(index: usize) -> String {
+        format!("repo-{index:02}")
+    }
+
+    #[tokio::test]
+    async fn sustained_spend_never_exceeds_the_ceiling() {
+        let _guard = round_test_lock().await;
+        let (harness, _paths) = budget_fixture();
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        let mut totals: Vec<usize> = Vec::new();
+        for step in 0..12 {
+            if step > 0 {
+                tick(&mut now, &mut wall, INTERVAL_FLOOR_SECS);
+            }
+            harness.round(now, wall).await;
+            totals.push(harness.gh_call_count());
+        }
+
+        // Every call is reserved before it is issued and the bucket is clamped,
+        // so a window of T seconds can spend at most one burst plus T's refill.
+        let bound_60 = GH_BUDGET_BURST + 60.0 * MAX_GH_CALLS_PER_MINUTE / 60.0;
+        let bound_120 = GH_BUDGET_BURST + 120.0 * MAX_GH_CALLS_PER_MINUTE / 60.0;
+        let first_minute = totals[5];
+        let second_minute = totals[11] - totals[5];
+        assert!(
+            first_minute as f64 <= bound_60,
+            "{first_minute} calls in [0, 60) exceeds {bound_60}"
+        );
+        assert!(
+            second_minute as f64 <= bound_60,
+            "{second_minute} calls in [60, 120) exceeds {bound_60}"
+        );
+        assert!(
+            totals[11] as f64 <= bound_120,
+            "{} calls in [0, 120) exceeds {bound_120}",
+            totals[11]
+        );
+        // Positive control: a sweeper that issues nothing must not pass.
+        assert!(totals[11] >= 60, "only {} calls issued", totals[11]);
+    }
+
+    #[tokio::test]
+    async fn starved_keys_are_served_in_a_later_round() {
+        let _guard = round_test_lock().await;
+        let (harness, _paths) = budget_fixture();
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+
+        let first_unqueried = (0..BUDGET_FIXTURE_REPOS)
+            .map(fixture_nwo)
+            .find(|nwo| ci_count_for(&harness, nwo) == 0)
+            .expect("the cold-start bucket cannot pay for every key");
+
+        for _ in 0..6 {
+            tick(&mut now, &mut wall, INTERVAL_FLOOR_SECS);
+            harness.round(now, wall).await;
+        }
+        assert!(
+            ci_count_for(&harness, &first_unqueried) > 0,
+            "{first_unqueried} was first in line and still unserved after a minute"
+        );
+
+        for _ in 0..30 {
+            tick(&mut now, &mut wall, INTERVAL_FLOOR_SECS);
+            harness.round(now, wall).await;
+        }
+        for index in 0..BUDGET_FIXTURE_REPOS {
+            let nwo = fixture_nwo(index);
+            assert!(
+                ci_count_for(&harness, &nwo) > 0,
+                "{nwo} was never queried in 360s"
+            );
+        }
+    }
+
     #[test]
     fn missing_gh_spawns_no_process() {
         let probes = Arc::new(AtomicUsize::new(0));
@@ -2983,6 +3698,7 @@ mod tests {
                 probe,
                 spawner,
                 local_git,
+                jitter: Arc::new(|| 0.0),
             },
         );
         let shutdown = ShutdownSignal::new();
@@ -3025,6 +3741,7 @@ mod tests {
                 probe,
                 spawner,
                 local_git,
+                jitter: Arc::new(|| 0.0),
             },
         );
         let shutdown = ShutdownSignal::new();
@@ -3084,6 +3801,7 @@ mod tests {
                 probe,
                 spawner,
                 local_git,
+                jitter: Arc::new(|| 0.0),
             },
         );
 
@@ -3724,5 +4442,24 @@ mod tests {
             Duration::from_secs(900),
             "the cap holds"
         );
+    }
+    /// #2129 - T6: the three cases of the rendering rule, plus an empty label,
+    /// which takes case 3 and is unreachable for stale notices because
+    /// `for_remote_activity` rejects an empty stale base.
+    #[test]
+    fn issue_2129_base_branch_display_covers_every_case() {
+        assert_eq!(
+            base_branch_display("main", DEFAULT_BRANCH_LABEL),
+            "the default branch on GitHub"
+        );
+        assert_eq!(
+            base_branch_display("main", "main"),
+            "its counterpart on GitHub"
+        );
+        assert_eq!(
+            base_branch_display("feature/2083-2064-remote-alerts", "main"),
+            "main on GitHub"
+        );
+        assert_eq!(base_branch_display("main", ""), " on GitHub");
     }
 }

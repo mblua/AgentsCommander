@@ -31,7 +31,7 @@ use crate::phone::mailbox::{
     InternalNoticeGuard, InternalSystemNotice, InternalSystemTarget, MailboxPoller,
     RemoteNoticeKind,
 };
-use crate::pty::remote_watcher::{RemoteTransition, TransitionKind};
+use crate::pty::remote_watcher::{base_branch_display, RemoteTransition, TransitionKind};
 
 /// At most this many notices per `(room_dir, repo_path)` in a rolling window.
 /// Twelve is six complete CI cycles, and the cap is a safety net against a
@@ -211,7 +211,13 @@ fn notice_for(transition: &RemoteTransition) -> Result<InternalSystemNotice, Str
         transition.nwo.clone(),
         transition.branch.clone(),
         sha7,
-        transition.base_branch.clone(),
+        // #2129 - branch-stale text only. CI kinds carry an empty base branch,
+        // which `for_remote_activity` requires to stay empty (mailbox.rs:319).
+        if matches!(kind, RemoteNoticeKind::BranchStale) {
+            base_branch_display(&transition.branch, &transition.base_branch)
+        } else {
+            transition.base_branch.clone()
+        },
         transition.behind_by,
         transition.observed_at.format(TIMESTAMP_FORMAT).to_string(),
         blind_gap(transition),
@@ -1261,5 +1267,71 @@ mod tests {
             ports.deliveries().is_empty(),
             "a linked replica is never targeted"
         );
+    }
+    /// #2129 - T2: the unresolved sentinel is qualified, and neither the bare
+    /// sentinel nor the branch name is what the notice carries.
+    #[test]
+    fn issue_2129_branch_stale_qualifies_the_unresolved_sentinel() {
+        let mut transition = transition(TransitionKind::BranchStale, Path::new("room"), "repo");
+        transition.branch = "main".to_string();
+        transition.base_branch = "the default branch".to_string();
+        let notice = notice_for(&transition).expect("a branch-stale notice");
+        match notice {
+            InternalSystemNotice::RemoteActivity { base_branch, .. } => {
+                assert_eq!(base_branch, "the default branch on GitHub");
+                assert_ne!(base_branch, "the default branch");
+                assert_ne!(base_branch, "main");
+            }
+            InternalSystemNotice::ContextAlert { .. } => panic!("a remote activity notice"),
+        }
+    }
+    /// #2129 - T1: a resolved base is named and qualified.
+    #[test]
+    fn issue_2129_branch_stale_qualifies_a_resolved_base() {
+        let transition = transition(TransitionKind::BranchStale, Path::new("room"), "repo");
+        let notice = notice_for(&transition).expect("a branch-stale notice");
+        match notice {
+            InternalSystemNotice::RemoteActivity { base_branch, .. } => {
+                assert_eq!(base_branch, "main on GitHub");
+            }
+            InternalSystemNotice::ContextAlert { .. } => panic!("a remote activity notice"),
+        }
+    }
+
+    /// #2129 - T3: a base equal to the branch is named by relation, so the
+    /// branch name is never printed twice. #2131 normally suppresses this
+    /// notice first; the branch is defence in depth.
+    #[test]
+    fn issue_2129_branch_stale_names_a_base_equal_to_the_branch_by_relation() {
+        let mut transition = transition(TransitionKind::BranchStale, Path::new("room"), "repo");
+        transition.branch = "main".to_string();
+        transition.base_branch = "main".to_string();
+        let notice = notice_for(&transition).expect("a branch-stale notice");
+        match notice {
+            InternalSystemNotice::RemoteActivity { base_branch, .. } => {
+                assert_eq!(base_branch, "its counterpart on GitHub");
+                assert!(!base_branch.contains("main"));
+            }
+            InternalSystemNotice::ContextAlert { .. } => panic!("a remote activity notice"),
+        }
+    }
+
+    /// #2129 - T4: the qualifier never touches a CI kind, whose base branch
+    /// must stay empty.
+    #[test]
+    fn issue_2129_ci_kinds_keep_an_empty_base_branch() {
+        for kind in [TransitionKind::CiStarted, TransitionKind::CiFinished] {
+            let transition = transition(kind, Path::new("room"), "repo");
+            let notice = notice_for(&transition).expect("a CI notice");
+            match notice {
+                InternalSystemNotice::RemoteActivity { base_branch, .. } => {
+                    assert!(
+                        base_branch.is_empty(),
+                        "a CI notice carries no base: {kind:?}"
+                    );
+                }
+                InternalSystemNotice::ContextAlert { .. } => panic!("a remote activity notice"),
+            }
+        }
     }
 }
