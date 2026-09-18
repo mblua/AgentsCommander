@@ -5,9 +5,8 @@ export const isTauri =
 
 export const isBrowser = !isTauri;
 
-/// #777 True when the host OS is Windows. Used to gate Windows-only features in
-/// the UI (e.g. the Non-stop Sound Alert, whose backend beep is a Win32 no-op
-/// off Windows). UA-based because the webview has no direct OS API; WebView2
-/// (Windows), WKWebView (macOS), and WebKitGTK (Linux) all report the OS token.
+/// #777 True when the host OS is Windows, read from the user agent because the
+/// webview exposes no direct OS API. Used for platform-specific UI text, e.g.
+/// the default-shell hint in src/sidebar/components/SettingsModal.tsx:1931.
 export const isWindows =
   typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
