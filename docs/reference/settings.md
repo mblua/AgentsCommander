@@ -265,7 +265,7 @@ See [Resource monitor](../features/resource-monitor.md).
 | `branchStalenessEnabled` | bool | `true` | Whether the sweeper asks whether the repository's default branch holds commits this checkout does not. No clamp. Read once per round. Needs a **restart**. |
 | `branchStalenessNotifyOrchestrator` | bool | `true` | Whether a staleness answer may inject a notice into the room's orchestrator. No clamp. Needs a **restart**. |
 | `ciSweepMinIntervalSecs` | number | `30` | Seconds between CI questions for a key that is not running. Clamped to `10..=3600` when read. A key whose last confirmed state is `Running` uses a fixed `10`-second cadence instead, because `Finished` is the transition that unblocks an agent. Needs a **restart**. |
-| `branchStalenessIntervalSecs` | number | `300` | Seconds between staleness questions. Clamped to `10..=3600` when read. Needs a **restart**. |
+| `branchStalenessIntervalSecs` | number | `260` | Seconds between staleness questions. Clamped to `10..=3600` when read. Needs a **restart**. |
 
 See [Sidebar guide](../features/sidebar-guide.md).
 

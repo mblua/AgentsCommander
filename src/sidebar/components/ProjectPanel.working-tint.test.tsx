@@ -712,7 +712,7 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
     }
   });
 
-  it("15. does not tint a non-orchestrator row, the quick strip, or another room, from the same CI state", async () => {
+  it("15. does not tint a non-orchestrator row or another room from the same CI state", async () => {
     const rendered = await mountCiPanel();
     try {
       sessionsStore.setSessions([
@@ -738,19 +738,6 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
       expect(
         row(rendered.root, "workgroups", IDLE_ORCHESTRATOR, IDLE_ROOM).classList.contains("working")
       ).toBe(false);
-      // D-B6 - the Orchestrators strip keeps #1783's session-only rule. This quick
-      // row is an orchestrator row pointing at the SAME ci-running repo as the tinted
-      // room-tree row above, so only the `rowContext === "quick"` branch keeps it
-      // untinted. The gate proves the strip rendered: without it, an absent quick row
-      // would make the "not tinted" assertion pass for the wrong reason. Adding the CI
-      // term to the quick branch (`workgroupIsWorking(wg) || orchestratorCiRunning()`)
-      // fails HERE, because this row would then carry `working` too.
-      await waitFor(() =>
-        expect(
-          rendered.root.querySelector(`[data-ac-testid="${rowTestId("quick", ORCHESTRATOR)}"]`)
-        ).not.toBeNull()
-      );
-      expect(row(rendered.root, "quick", ORCHESTRATOR).classList.contains("working")).toBe(false);
       // The chip is orchestrator-only (:2658), so no chip exists for the worker; its
       // untinted row is the isCoord() gate talking, not an empty repoBadges().
       expect(
@@ -795,6 +782,71 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
       expect(railButton(rendered.root, "all").textContent).toContain("0/2");
 
       // Ordering: the room sequence is the byte-identical one from before the publish.
+      expect(subgroupRowOrder(rendered.root)).toEqual(orderBefore);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("17. the CI tint reaches the Orchestrators strip and the room tree in the same render", async () => {
+    const rendered = await mountCiPanel();
+    try {
+      sessionsStore.setSessions([
+        replicaSession(ORCHESTRATOR, "idle"),
+        replicaSession(WORKER, "idle"),
+      ]);
+      // #2151 - the strip row must exist before it is asserted on, or an absent row
+      // would let the assertion below fail (or pass) for the wrong reason.
+      await waitFor(() =>
+        expect(
+          rendered.root.querySelector(`[data-ac-testid="${rowTestId("quick", ORCHESTRATOR)}"]`)
+        ).not.toBeNull()
+      );
+
+      publishCi("running");
+      await waitFor(() =>
+        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).toContain("ci-running")
+      );
+
+      // The point of the issue: one orchestrator, one frame, both surfaces tinted.
+      expect(row(rendered.root, "quick", ORCHESTRATOR).classList.contains("working")).toBe(true);
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(true);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("18. the strip tint alone changes no room classification, no rail dot and no order", async () => {
+    const rendered = await mountCiPanel({ withRail: true });
+    try {
+      sessionsStore.setSessions([
+        replicaSession(ORCHESTRATOR, "idle"),
+        replicaSession(WORKER, "idle"),
+      ]);
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector(`[data-ac-testid="${rowTestId("quick", ORCHESTRATOR)}"]`)
+        ).not.toBeNull();
+        expect(
+          rendered.root.querySelector('[data-ac-testid="workgroupGroups.button.all"]')
+        ).not.toBeNull();
+      });
+      const orderBefore = subgroupRowOrder(rendered.root);
+
+      publishCi("running");
+      // In-run positive control on the NEW surface: the strip row is tinted, so the
+      // negatives below cannot pass because nothing happened.
+      await waitFor(() =>
+        expect(row(rendered.root, "quick", ORCHESTRATOR).classList.contains("working")).toBe(true)
+      );
+
+      // #2142's limit still holds: the strip tint does not reach workgroupIsWorking.
+      expect(
+        splitWorkgroupsByWorking(projectStore.projects[0].workgroups).working
+      ).toEqual([]);
+      expect(anySubgroupWorking(rendered.root)).toBe(false);
+      expect(railDots(rendered.root)).toEqual([]);
+      expect(railButton(rendered.root, "all").textContent).toContain("0/2");
       expect(subgroupRowOrder(rendered.root)).toEqual(orderBefore);
     } finally {
       rendered.cleanup();
