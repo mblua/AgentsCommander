@@ -40,9 +40,12 @@ use crate::pty::remote_watcher::{RemoteTransition, TransitionKind};
 const NOTICE_CAP: usize = 12;
 const NOTICE_WINDOW: Duration = Duration::from_secs(60 * 60);
 
-/// About ten sweeper rounds. Below this the blindness is normal operation and
-/// saying so would be noise.
-const BLIND_GAP_THRESHOLD_SECS: i64 = 300;
+/// Below this the blindness is normal operation and saying so would be noise.
+/// The value is strictly above twice, and at most three times, the default
+/// branch-staleness interval, so one lost round never renders the clause and
+/// two always do. `blind_gap_threshold_needs_two_lost_rounds_at_the_default_interval`
+/// pins that relation.
+const BLIND_GAP_THRESHOLD_SECS: i64 = 600;
 
 /// Local time with an explicit numeric offset. UTC with `Z` makes the human at
 /// the terminal compare against their own clock and misread by hours; local
@@ -234,8 +237,8 @@ fn blind_gap(transition: &RemoteTransition) -> Option<(String, String)> {
 }
 
 /// Minutes below the hour, hours and minutes above it, never seconds: a reader
-/// does not convert 2820 into 47 minutes. The threshold guarantees at least five
-/// minutes, so the singular never arises.
+/// does not convert 2820 into 47 minutes. The threshold is above 120 seconds, so
+/// `minutes >= 2` and the singular never arises.
 fn human_gap(seconds: i64) -> String {
     let minutes = seconds / 60;
     if minutes < 60 {
@@ -962,7 +965,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blind_gap_threshold_is_three_hundred_seconds() {
+    async fn blind_gap_threshold_is_six_hundred_seconds() {
         let fixture = room_fixture();
         let ports = Arc::new(RecordingPorts::new(
             dials(true, true),
@@ -972,9 +975,9 @@ mod tests {
         let now = Instant::now();
 
         let mut short = transition(TransitionKind::CiStarted, &fixture.room, "repo-a");
-        short.last_confirmed_at = Some(observed_at() - chrono::Duration::seconds(299));
+        short.last_confirmed_at = Some(observed_at() - chrono::Duration::seconds(599));
         let mut long = transition(TransitionKind::CiStarted, &fixture.room, "repo-a");
-        long.last_confirmed_at = Some(observed_at() - chrono::Duration::seconds(301));
+        long.last_confirmed_at = Some(observed_at() - chrono::Duration::seconds(601));
         let mut first_ever = transition(TransitionKind::CiStarted, &fixture.room, "repo-a");
         first_ever.last_confirmed_at = None;
         for candidate in [short, long, first_ever] {
@@ -983,15 +986,29 @@ mod tests {
 
         let delivered = ports.deliveries();
         assert_eq!(delivered.len(), 3);
-        assert_eq!(delivered[0].blind_gap, None, "299 s is not a blind gap");
+        assert_eq!(delivered[0].blind_gap, None, "599 s is not a blind gap");
         assert_eq!(
             delivered[1].blind_gap.as_ref().map(|(gap, _)| gap.as_str()),
-            Some("5 minutes"),
-            "301 s is"
+            Some("10 minutes"),
+            "601 s is"
         );
         assert_eq!(
             delivered[2].blind_gap, None,
             "no previous confirmed state appends nothing"
+        );
+    }
+
+    #[test]
+    fn blind_gap_threshold_needs_two_lost_rounds_at_the_default_interval() {
+        let i =
+            crate::config::settings::AppSettings::default().branch_staleness_interval_secs as i64;
+        assert!(
+            BLIND_GAP_THRESHOLD_SECS > 2 * i,
+            "#2149: one lost round measures two intervals and must not render the clause"
+        );
+        assert!(
+            BLIND_GAP_THRESHOLD_SECS <= 3 * i,
+            "#2149: two lost rounds must render the clause"
         );
     }
 
