@@ -2447,26 +2447,26 @@ const ProjectPanel: Component = () => {
           // `ci-running`. It reads the SAME published entry the chip class reads
           // (`remoteActivityClasses`) and the SAME `repoBadges()` list the chip
           // <For> renders, so the chip and the row cannot disagree. It must NOT
-          // reach workgroupIsWorking: room ordering, the group-rail dot and the
-          // quick-access row stay session-only. Non-orchestrator rows are excluded
-          // here, not at the chip.
+          // reach workgroupIsWorking: room ordering and the group-rail dot stay
+          // session-only. The quick-access row no longer does (see #2151).
+          // Non-orchestrator rows are excluded here, not at the chip.
           const orchestratorCiRunning = () =>
             isCoord() &&
             repoBadges().some(
               (repo) => remoteActivityStore.forPath(repo.sourcePath)?.ci === "running"
             );
-          // #1783 - the quick-access panel answers "is this team busy", so an
-          // orchestrator row there tints when ANY agent in its room is working,
-          // the orchestrator included. Every other render site (rowContext
-          // "workgroups" and "selected", both inside .ac-wg-subgroup) keeps the
-          // per-row meaning: own session only. Do not collapse this branch.
-          // #2131 - the CI term is added ONLY on the non-quick branch, so the
-          // quick-access row keeps #1783's room-wide session rule unchanged. That
-          // is the stated limit of D-B6: the same orchestrator can be tinted in
-          // the room tree and untinted in the Orchestrators strip in one frame.
+          // #1783 - the quick-access panel answers "is anyone in this room
+          // working, or is its repo running CI", so an orchestrator row there
+          // tints when ANY agent in its room is working, the orchestrator
+          // included. Every other render site (rowContext "workgroups" and
+          // "selected", both inside .ac-wg-subgroup) keeps the per-row meaning:
+          // own session only, plus CI. Do not collapse this branch.
+          // #2151 - the CI term is added on BOTH branches, so an orchestrator can
+          // no longer be tinted in the room tree and untinted in the Orchestrators
+          // strip in the same frame.
           const rowIsWorking = () =>
             rowContext === "quick"
-              ? workgroupIsWorking(wg)
+              ? workgroupIsWorking(wg) || orchestratorCiRunning()
               : isReplicaWorking(wg, replica) || orchestratorCiRunning();
           const idleBadge = createMemo(() =>
             isCoord()
