@@ -42,8 +42,10 @@ jobs:
 
       - name: Install frontend dependencies
         # Never pass --omit=optional: jscpd's native runner arrives through
-        # optionalDependencies.
-        run: npm ci
+        # optionalDependencies. --ignore-scripts is a different switch: it
+        # skips lifecycle scripts only and keeps every optional package
+        # installed.
+        run: npm ci --ignore-scripts
 
       - name: Check ignored and placeholder test debt
         run: npm run test:debt

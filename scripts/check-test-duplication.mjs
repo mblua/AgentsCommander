@@ -25,6 +25,11 @@
  * only `workRoot`, so the runner, version probe, config bytes and argv under
  * test are the shipped ones.
  *
+ * `git` is never searched through `PATH`: both call sites spawn the absolute
+ * path returned by `resolveGit()` — a fixed system location, or the
+ * `GATE_GIT_BIN` override, which must itself be absolute. `GATE_BASE_REF` and
+ * `GATE_GIT_BIN` are the only two environment controls this script reads.
+ *
  * See `docs/testing/test-code-duplication.md` for the convention and the
  * recorded baseline.
  */
@@ -54,6 +59,55 @@ function fail(message) {
 
 function resolveRunner(toolRoot) {
   return path.join(toolRoot, ...JSCPD_RELATIVE);
+}
+
+const GIT_CANDIDATES = Object.freeze(
+  process.platform === 'win32'
+    ? ['C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\cmd\\git.exe']
+    : ['/usr/bin/git', '/usr/local/bin/git', '/opt/homebrew/bin/git'],
+);
+
+let cachedGit = null;
+
+/**
+ * Absolute path to a git executable; never a `PATH` lookup.
+ *
+ * The override is read on every call, before any cache lookup, and is never
+ * memoized: an earlier unoverridden call must not defeat a later
+ * `GATE_GIT_BIN`. Only the fixed-location scan is cached.
+ */
+export function resolveGit() {
+  const override = (process.env.GATE_GIT_BIN ?? '').trim();
+  if (override) {
+    if (!path.isAbsolute(override)) {
+      throw new Error(
+        `GATE_GIT_BIN must be an absolute path to a git executable; got '${override}'.`,
+      );
+    }
+    try {
+      fs.accessSync(override, fs.constants.X_OK);
+      return override;
+    } catch {
+      throw new Error(
+        `no executable git found at any of: ${override}. ` +
+          `Set GATE_GIT_BIN to an absolute path to git.`,
+      );
+    }
+  }
+  if (cachedGit) return cachedGit;
+  for (const candidate of GIT_CANDIDATES) {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      cachedGit = candidate;
+      return cachedGit;
+    } catch {
+      // try the next fixed location
+    }
+  }
+  throw new Error(
+    `no executable git found at any of: ${GIT_CANDIDATES.join(', ')}. ` +
+      `Set GATE_GIT_BIN to an absolute path to git.`,
+  );
 }
 
 /**
@@ -104,7 +158,13 @@ export async function runGate({
 
   const requestedRef =
     baseRef ?? ((process.env.GATE_BASE_REF ?? '').trim() || DEFAULT_BASE_REF);
-  const merged = spawnSync('git', ['merge-base', 'HEAD', requestedRef], {
+  let git;
+  try {
+    git = resolveGit();
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+  const merged = spawnSync(git, ['merge-base', 'HEAD', requestedRef], {
     cwd: workRoot,
     shell: false,
     encoding: 'utf8',
@@ -229,7 +289,11 @@ const IDENTITY = [
 ];
 
 function runGit(cwd, args) {
-  const result = spawnSync('git', [...IDENTITY, ...args], { cwd, shell: false, encoding: 'utf8' });
+  const result = spawnSync(resolveGit(), [...IDENTITY, ...args], {
+    cwd,
+    shell: false,
+    encoding: 'utf8',
+  });
   if (result.error) {
     throw new Error(`git ${args.join(' ')} failed to spawn: ${result.error.message}`);
   }
@@ -569,6 +633,45 @@ export async function runSelfTest() {
       clones: 1,
       newClones: 0,
     });
+  });
+
+  await withCase('case 10: no git at a fixed location is a hard failure', async (temp) => {
+    const directory = temp('ac-dup-fixture-');
+    const base = createRepo(directory, BASE_FILES);
+    const previous = process.env.GATE_GIT_BIN;
+    process.env.GATE_GIT_BIN = '/nonexistent/git';
+    let run;
+    try {
+      run = await captureScriptStderr(() => runGate({ workRoot: directory, baseRef: base }));
+    } finally {
+      if (previous === undefined) delete process.env.GATE_GIT_BIN;
+      else process.env.GATE_GIT_BIN = previous;
+    }
+    expectEqual('exit code', run.code, 1);
+    expectContains('message', run.text, 'check:test-duplication FAILED');
+    expectContains('message', run.text, 'no executable git found at any of: /nonexistent/git.');
+    expectContains('message', run.text, 'Set GATE_GIT_BIN to an absolute path to git.');
+  });
+
+  await withCase('case 11: a relative git override is rejected', async (temp) => {
+    const directory = temp('ac-dup-fixture-');
+    const base = createRepo(directory, BASE_FILES);
+    const previous = process.env.GATE_GIT_BIN;
+    process.env.GATE_GIT_BIN = 'git';
+    let run;
+    try {
+      run = await captureScriptStderr(() => runGate({ workRoot: directory, baseRef: base }));
+    } finally {
+      if (previous === undefined) delete process.env.GATE_GIT_BIN;
+      else process.env.GATE_GIT_BIN = previous;
+    }
+    expectEqual('exit code', run.code, 1);
+    expectContains('message', run.text, 'check:test-duplication FAILED');
+    expectContains(
+      'message',
+      run.text,
+      "GATE_GIT_BIN must be an absolute path to a git executable; got 'git'.",
+    );
   });
 
   if (failures.length > 0) {
