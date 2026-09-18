@@ -6,6 +6,22 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- **The "Update available" toast has a Copy button** that copies the upgrade command to the clipboard. The toast stays open so the command remains readable, and repeated copies reuse one confirmation toast instead of stacking. ([#2135](https://github.com/mblua/AgentsCommander/issues/2135))
+
+### Fixed
+
+- **The CI ring no longer blanks for minutes under GitHub's secondary rate limit.** The remote sweeper reserves every `gh` call against a 30-calls-per-minute budget, prioritizes repositories with confirmed running CI, and backs off a secondary 403 from 60 s instead of jumping to the 900 s cap. ([#2152](https://github.com/mblua/AgentsCommander/issues/2152))
+- **Blind-gap notices no longer fire on healthy polling rounds.** The gap threshold rises to 600 s and the default branch-staleness interval drops to 260 s, so the notice means two consecutive lost checks. Installs that already persist `branchStalenessIntervalSecs: 300` keep that value. ([#2149](https://github.com/mblua/AgentsCommander/issues/2149))
+- **CI activity counts only runs on the repository's current branch**, matched by exact name, so a branch sitting on the default branch's tip reports no CI and sends no notice. ([#2126](https://github.com/mblua/AgentsCommander/issues/2126))
+- **No branch-stale notice on the default branch itself.** The repo chip still shows the orange bar with its behind-count, and an orchestrator row takes the working wash while its repo chip shows CI running. ([#2131](https://github.com/mblua/AgentsCommander/issues/2131))
+- **The CI working tint also reaches the Orchestrators strip**, so one orchestrator can no longer appear tinted in the room tree and untinted in the strip. ([#2151](https://github.com/mblua/AgentsCommander/issues/2151))
+- **Short status-line bursts after a long silence no longer keep idle sessions awake.** Output following at least 60 s of silence is held as a pending burst and counts as activity only once it reaches 1024 bytes or lasts 3 s, so auto-close and busy/idle edges ignore a coding agent's periodic update check. The per-agent `idleBurst` settings are overridable in `agents.local.json`. ([#2124](https://github.com/mblua/AgentsCommander/issues/2124))
+- **Internal system notices survive case-skewed project paths.** A project path spelled with different letter case than the folder on disk no longer drops context alerts and remote-activity notices; filesystem identity still decides the match. ([#2113](https://github.com/mblua/AgentsCommander/issues/2113))
+- **The project `.ac/.gitignore` ignores `seed-manifest.toml`**, migrating the previous un-ignore block while preserving user bytes. ([#2090](https://github.com/mblua/AgentsCommander/issues/2090))
+- **Documentation corrections** for the seed manifest, portable readme storage after the configuration-directory change, macOS screenshot support, and the remote-activity settings, chip signals and notices. ([#2112](https://github.com/mblua/AgentsCommander/issues/2112), [#2080](https://github.com/mblua/AgentsCommander/issues/2080), [#2087](https://github.com/mblua/AgentsCommander/issues/2087), [#2085](https://github.com/mblua/AgentsCommander/issues/2085))
+- **Frontend static-analysis findings were cleared and two test suites made deterministic**, with no behavior change. ([#2108](https://github.com/mblua/AgentsCommander/issues/2108), [#2011](https://github.com/mblua/AgentsCommander/issues/2011), [#1582](https://github.com/mblua/AgentsCommander/issues/1582))
 ## 0.35.0
 
 ### Added
