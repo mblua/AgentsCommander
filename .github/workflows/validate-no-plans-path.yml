@@ -14,8 +14,10 @@ concurrency:
 jobs:
   validate-no-plans-path:
     name: validate-no-plans-path
-    # Skip branch-deletion push events (after-SHA is all zeros).
-    if: github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'
+    # Skip branch-deletion push events (after-SHA is all zeros). The guard is scoped to
+    # push because `github.event.after` is absent on pull_request, where GitHub casts the
+    # comparison operands to numbers and the whole condition evaluates false.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
