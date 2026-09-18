@@ -28349,4 +28349,55 @@ mod tests {
         assert!(matches!(events[1], MailboxTestEvent::Spawn(_)));
         assert!(matches!(events[2], MailboxTestEvent::Inject(_)));
     }
+    /// #2129 - T5: a qualified base reaches the sentence unchanged. The value
+    /// is a literal here on purpose: `render_with_template` is pure token
+    /// substitution, so this half cannot depend on how the field was produced.
+    #[test]
+    fn issue_2129_branch_stale_line_renders_a_qualified_base() {
+        let resolved = remote_activity_notice(
+            RemoteNoticeKind::BranchStale,
+            "main on GitHub",
+            Some(4),
+            None,
+        )
+        .expect("a branch-stale notice")
+        .line();
+        assert_eq!(
+            resolved,
+            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind main on GitHub as of 2026-09-15 23:18:43-03:00. Any CI running on this branch is validating an out-of-date base."
+        );
+
+        let sentinel = remote_activity_notice(
+            RemoteNoticeKind::BranchStale,
+            "the default branch on GitHub",
+            Some(4),
+            None,
+        )
+        .expect("a branch-stale notice")
+        .line();
+        assert_eq!(
+            sentinel,
+            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind the default branch on GitHub as of 2026-09-15 23:18:43-03:00. Any CI running on this branch is validating an out-of-date base."
+        );
+
+        // The helper hardcodes the branch, so the branch == base case is built
+        // directly.
+        let counterpart = InternalSystemNotice::for_remote_activity(
+            RemoteNoticeKind::BranchStale,
+            "mblua/AgentsCommander".to_string(),
+            "main".to_string(),
+            "abcdef1".to_string(),
+            "its counterpart on GitHub".to_string(),
+            Some(4),
+            "2026-09-15 23:18:43-03:00".to_string(),
+            None,
+        )
+        .expect("a branch-stale notice")
+        .line();
+        assert_eq!(
+            counterpart,
+            "[AgentsCommander] mblua/AgentsCommander main is now 4 commits behind its counterpart on GitHub as of 2026-09-15 23:18:43-03:00. Any CI running on this branch is validating an out-of-date base."
+        );
+        assert_eq!(counterpart.matches("main").count(), 1);
+    }
 }
