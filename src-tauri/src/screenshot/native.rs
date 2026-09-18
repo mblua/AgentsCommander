@@ -1264,9 +1264,15 @@ const fn placement_frame() -> PlacementFrame {
     }
 }
 
-/// Rounding slack when pairing the two sources by logical frame. Both sides
-/// round to whole pixels before we divide, so a point can be off by one on each
-/// axis of the origin and by one on each axis of the size.
+/// Rounding slack when pairing the two sources by logical frame. Both tolerances
+/// are compared against a **sum over the two axes**, not per axis.
+///
+/// Origin: 1 pt in total. Deliberately strict — a monitor that rounds a point on
+/// x *and* on y sums to 2.0, misses this, and lands on the nearest-origin
+/// fallback, which is the safe outcome for an ambiguous pairing.
+///
+/// Size: 2 pt in total, which does admit one point on each axis, because each
+/// side divides a whole-pixel size by its own scale factor.
 const LOGICAL_ORIGIN_TOLERANCE_PT: f64 = 1.0;
 const LOGICAL_SIZE_TOLERANCE_PT: f64 = 2.0;
 
