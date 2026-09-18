@@ -132,7 +132,7 @@ const BRANCH_STALE_DOC_COMMENT: &str = "\
 # Placeholders:
 #   %REPO%    repository nwo, e.g. mblua/AgentsCommander
 #   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
-#   %BASE%    default branch label, e.g. main
+#   %BASE%    comparison base, already remote-qualified, e.g. main on GitHub
 #   %BEHIND%  commit count behind, e.g. 4
 #   %AT%      observation time, local with a numeric UTC offset";
 
@@ -1508,7 +1508,7 @@ template = '''
 # Placeholders:
 #   %REPO%    repository nwo, e.g. mblua/AgentsCommander
 #   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
-#   %BASE%    default branch label, e.g. main
+#   %BASE%    comparison base, already remote-qualified, e.g. main on GitHub
 #   %BEHIND%  commit count behind, e.g. 4
 #   %AT%      observation time, local with a numeric UTC offset
 template = '''
@@ -1584,7 +1584,7 @@ template = '''
 # Placeholders:
 #   %REPO%    repository nwo, e.g. mblua/AgentsCommander
 #   %BRANCH%  branch name, e.g. feature/2083-2064-remote-alerts
-#   %BASE%    default branch label, e.g. main
+#   %BASE%    comparison base, already remote-qualified, e.g. main on GitHub
 #   %BEHIND%  commit count behind, e.g. 4
 #   %AT%      observation time, local with a numeric UTC offset
 template = '''
@@ -1935,7 +1935,7 @@ template = '''
         );
 
         // Against the transcribed literal, never against the generator.
-        assert_eq!(EXPECTED_SEED.len(), 3681, "the pinned seed is 3681 bytes");
+        assert_eq!(EXPECTED_SEED.len(), 3712, "the pinned seed is 3712 bytes");
         assert!(!EXPECTED_SEED.contains('\r'), "the pinned seed is LF");
         let written = read(&main_path(dir.path()));
         assert_eq!(written, EXPECTED_SEED);
@@ -3061,12 +3061,12 @@ template = '''
         // and checked against the specification: a comparison against
         // `canonical_*_bytes` alone cannot fail, so a header or ordering edit
         // would drift from the spec with nothing going red.
-        assert_eq!(EXPECTED_SEED.len(), 3681, "the pinned seed is 3681 bytes");
+        assert_eq!(EXPECTED_SEED.len(), 3712, "the pinned seed is 3712 bytes");
         assert_eq!(canonical_seed_bytes(&KNOWN_MESSAGES), EXPECTED_SEED);
         assert_eq!(
             EXPECTED_REFERENCE.len(),
-            3413,
-            "the pinned companion is 3413 bytes"
+            3444,
+            "the pinned companion is 3444 bytes"
         );
         assert_eq!(
             canonical_reference_bytes(&KNOWN_MESSAGES),
