@@ -559,7 +559,23 @@ const ProjectPanel: Component = () => {
   const setAlertOpenError = (loopId: string, message: string) =>
     setLoopTargetOpenErrors((prev) => ({ ...prev, [loopId]: message }));
 
+  /** Bumped whenever the notice is dismissed, so an open attempt that is still
+   *  in flight cannot write its failure into the cleared error map: a later
+   *  refresh would surface that write as a stale error row. */
+  let loopTargetNoticeGeneration = 0;
+
+  const dismissLoopTargetNotice = () => {
+    loopTargetNoticeGeneration += 1;
+    setLoopTargetAlerts([]);
+    setLoopTargetOpenErrors({});
+  };
+
   const openLoopConfigFromAlert = async (alert: UnresolvedLoopTarget) => {
+    const generation = loopTargetNoticeGeneration;
+    const setOpenErrorIfNotDismissed = (message: string) => {
+      if (loopTargetNoticeGeneration !== generation) return;
+      setAlertOpenError(alert.loopId, message);
+    };
     setAlertOpenError(alert.loopId, "");
     setLoopTargetBusyLoopId(alert.loopId);
     try {
@@ -572,8 +588,7 @@ const ProjectPanel: Component = () => {
           alert.projectPath,
           "; keeping the Loop target notice open"
         );
-        setAlertOpenError(
-          alert.loopId,
+        setOpenErrorIfNotDismissed(
           "This Loop's project is not open in the sidebar, so its configuration cannot be opened from here. Open the project, then try again."
         );
         return;
@@ -583,7 +598,7 @@ const ProjectPanel: Component = () => {
       setLoopTargetOpenErrors({});
     } catch (error) {
       console.warn("[ProjectPanel] failed to open the Loop configuration from the notice:", error);
-      setAlertOpenError(alert.loopId, "Could not open this Loop's configuration. See the log for details.");
+      setOpenErrorIfNotDismissed("Could not open this Loop's configuration. See the log for details.");
     } finally {
       setLoopTargetBusyLoopId(null);
     }
@@ -4501,10 +4516,7 @@ const ProjectPanel: Component = () => {
           openErrors={loopTargetOpenErrors()}
           busyLoopId={loopTargetBusyLoopId()}
           onOpenConfig={(alert) => void openLoopConfigFromAlert(alert)}
-          onDismiss={() => {
-            setLoopTargetAlerts([]);
-            setLoopTargetOpenErrors({});
-          }}
+          onDismiss={dismissLoopTargetNotice}
         />
       </Portal>
     </Show>

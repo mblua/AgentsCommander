@@ -5,6 +5,7 @@ import type { AcLoopSummary, UnresolvedLoopTarget } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   click,
+  contextMenu,
   discovery,
   installBrowserDomStubs,
   renderWithFakeTransport,
@@ -12,6 +13,7 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
+import { automationIdPart } from "./replica-repo-badges";
 
 const projectPath = "C:\\Project";
 const workgroupName = "wg-1-dev-team";
@@ -229,6 +231,59 @@ describe("ProjectPanel Loop target notice (#2171)", () => {
       expect(unhandled).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener("unhandledrejection", unhandled);
+      rendered.cleanup();
+    }
+  });
+
+  it("does not surface an error written after the notice was dismissed mid-flight", async () => {
+    const fake = new FakeTransport();
+    setupProject(fake);
+    fake.resolve("list_unresolved_loop_targets", [
+      alert({ projectPath: "C:\\Other", loopId: "other-loop", loopName: "Other loop" }),
+    ]);
+    let rejectReload!: (reason?: unknown) => void;
+    vi.spyOn(projectStore, "reloadProject").mockReturnValue(
+      new Promise<void>((_resolve, reject) => {
+        rejectReload = reject;
+      }),
+    );
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(byTestId("loopTargetMissing.open.other-loop")).toBeTruthy());
+
+      // Open attempt in flight, then dismissed before the reload settles.
+      click(byTestId("loopTargetMissing.open.other-loop")!);
+      click(byTestId("loopTargetMissing.dismiss")!);
+      await waitFor(() => expect(byTestId("loopTargetMissing.modal")).toBeNull());
+
+      rejectReload(new Error("reload failed"));
+      await waitFor(() =>
+        expect(
+          warn!.mock.calls.some((call: unknown[]) =>
+            String(call[0]).includes("failed to open the Loop configuration"),
+          ),
+        ).toBe(true),
+      );
+
+      // The notice comes back on the next refresh (EditLoopModal close) and must
+      // not carry the error line written after the dismissal.
+      const projectId = automationIdPart(projectPath);
+      const loopId = automationIdPart("daily-release");
+      const row = rendered.root.querySelector(`[data-ac-testid="loop.row.${projectId}.${loopId}"]`);
+      if (!(row instanceof HTMLElement)) throw new Error("Loop row not found");
+      contextMenu(row);
+      await waitFor(() =>
+        expect(byTestId(`loop.action.edit.${projectId}.${loopId}`)).toBeTruthy(),
+      );
+      click(byTestId(`loop.action.edit.${projectId}.${loopId}`)!);
+      await waitFor(() => expect(byTestId("loop.edit.cancel")).toBeTruthy());
+      click(byTestId("loop.edit.cancel")!);
+
+      await waitFor(() => expect(byTestId("loopTargetMissing.modal")).toBeTruthy());
+      expect(document.querySelector(".new-agent-error")).toBeNull();
+    } finally {
       rendered.cleanup();
     }
   });
