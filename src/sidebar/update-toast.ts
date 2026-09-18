@@ -11,7 +11,7 @@ import type { UpdateInfo } from "../shared/types";
 async function copyUpgradeCommand(command: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(command);
-    toastStore.success("Command copied");
+    toastStore.success("Command copied", { tag: "update-copy" });
   } catch (err) {
     console.error("[update-toast] clipboard write failed:", err);
   }

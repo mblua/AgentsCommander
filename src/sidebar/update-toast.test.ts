@@ -127,6 +127,28 @@ describe("update toast Copy action (#2135)", () => {
     expect(toastStore.items[0].message).toContain(COMMAND);
   });
 
+  it("survives four copies without evicting the sticky toast", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    setClipboard({ writeText });
+    showToast();
+    clickCopy();
+    clickCopy();
+    clickCopy();
+    clickCopy();
+
+    await vi.waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(4);
+    });
+    // #2135: the success toast carries tag "update-copy", so the repeats patch
+    // it in place instead of pushing past MAX_VISIBLE and evicting the info
+    // toast via tier 1 (toasts.ts:169).
+    expect(toastStore.items[0].kind).toBe("info");
+    expect(toastStore.items[0].message).toContain(COMMAND);
+    expect(
+      toastStore.items.filter((toast) => toast.kind === "success"),
+    ).toHaveLength(1);
+  });
+
   it("logs and stays quiet when the clipboard write rejects", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     setClipboard({ writeText: vi.fn().mockRejectedValue(new Error("denied")) });
