@@ -50,9 +50,9 @@ The project-scoped tree. AC creates and maintains it, and the recommended layout
 | `Context.coordinator.md` | Orchestrator context template (seed scope `context:coordinator`) | Seeded by AC |
 | `Context.coordinator.md.bak` | Previous version of the orchestrator template, kept when AC refreshes it | Written by AC on refresh |
 | `.agentscommander-context-templates.json` | Seeded-template state: per-template version and content hashes | Written by AC |
-| `seed-manifest.toml` | Seed manifest: inventory of every file AC last seeded into `.ac` | Written by AC; see [Seed manifest](../features/seed-manifest.md) |
+| `seed-manifest.toml` | Seed manifest: inventory of the project-scoped files AC last seeded into `.ac` | Written by AC; gitignored by default; see [Seed manifest](../features/seed-manifest.md) |
 | `.seed-manifest.lock` | Write lock for the seed manifest | Written by AC; gitignored |
-| `.gitignore` | AC-maintained ignore rules for this tree (`room-*/`, lock files; un-ignores `seed-manifest.toml`) | Written by AC at project discovery |
+| `.gitignore` | AC-maintained ignore rules for this tree (`room-*/`, lock files, `seed-manifest.toml`) | Written by AC at project discovery |
 | `project-settings.json` | Project settings: agent catalog overrides, groups, and project-level configuration | Written by AC |
 | `default.claude/`, `default.codex/` | Default config-folder masters (`default` + the tool's dotfolder) that config seed copies into replicas | Written by AC; see [Config seed](../features/config-seed.md) |
 | `default.claude.archived-20260710-000519/` | Timestamped archive of a previous `default.claude` master | No writer in the current source; treat as legacy or hand-placed |
@@ -121,7 +121,7 @@ This deployment's selected machine-local application state. Never commit or shar
 
 ## Where the seed manifest tracks seeded files
 
-The seed manifest at `.ac/seed-manifest.toml` records every file AC seeded into `.ac`, one row per project-relative logical destination: the project context templates (`.ac/Context.AgentsCommander.md`, `.ac/Context.coordinator.md`), the replica config folders (rows under `config:<dest>` scopes such as `__agent_<name>/.claude/`), and the managed catalog publication (`.ac/coding-agents/agents.json`, scope `catalog:coding-agents`). The catalog's `agents.local.json` and migration sidecars are never rowed. `.seed-manifest.lock` serializes the writes. See [Seed manifest](../features/seed-manifest.md) for the schema and [Config seed](../features/config-seed.md) for what gets copied.
+The seed manifest at `.ac/seed-manifest.toml` records the project-scoped files AC last seeded into `.ac`, one row per project-relative logical destination: the project context templates (`.ac/Context.AgentsCommander.md`, `.ac/Context.coordinator.md`) and the managed catalog publication (`.ac/coding-agents/agents.json`, scope `catalog:coding-agents`). Replica config folders are **not recorded**: since [#1480](https://github.com/mblua/AgentsCommander/issues/1480) a config-seed publication creates no rows, and a manifest written by an older build may still carry legacy `replica_config_file` rows. The catalog's `agents.local.json` and migration sidecars are never rowed. `.seed-manifest.lock` serializes the writes. See [Seed manifest](../features/seed-manifest.md) for the schema and [Config seed](../features/config-seed.md) for what gets copied.
 
 The manifest never tracks the selected application config dir. Under the `v0.33.0` and `main` resolver, a public override can place that directory anywhere, including under a project tree, but it remains machine-local state outside seed-manifest ownership. Published `v0.30.3` has no public override.
 
