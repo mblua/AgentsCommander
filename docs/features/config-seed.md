@@ -70,7 +70,7 @@ The variant is a **refinement inside its own tier**, never a jump between tiers.
 
 An OS variant **inherits its tier's semantics** exactly. A tier 1-4 variant is copied on every spawn just like its base; the tier 5 variant stays **absent-only and non-empty-gated** like its base, and an empty or missing tier 5 OS master reads as "not present", so the plain tier 5 master is then considered.
 
-If you create no `.<os>` folder at all, behavior is **byte-identical to before**: the same tier wins, the same files are copied, and the seed manifest records the same source.
+If you create no `.<os>` folder at all, behavior is **byte-identical to before**: the same tier wins and the same files are copied.
 
 > **Case.** The tokens are emitted lowercase. On a case-insensitive filesystem (Windows, and macOS by default) a folder named `.claude.LINUX` would also match; on Linux it would not. Name the folder in lowercase.
 
