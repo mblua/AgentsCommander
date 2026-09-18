@@ -13092,7 +13092,7 @@ mod tests {
             .line();
         assert_eq!(
             stale,
-            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind main as of 2026-09-15 23:18:43-03:00. Any CI running on this branch is validating an out-of-date base."
+            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind main as of 2026-09-15 23:18:43-03:00. If CI runs on this branch, it is validating an out-of-date base."
         );
         // The 40-character SHA goes to the query, never to the text.
         assert!(!stale.contains("abcdef1abcdef1"));
@@ -28364,7 +28364,7 @@ mod tests {
         .line();
         assert_eq!(
             resolved,
-            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind main on GitHub as of 2026-09-15 23:18:43-03:00. Any CI running on this branch is validating an out-of-date base."
+            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind main on GitHub as of 2026-09-15 23:18:43-03:00. If CI runs on this branch, it is validating an out-of-date base."
         );
 
         let sentinel = remote_activity_notice(
@@ -28377,7 +28377,7 @@ mod tests {
         .line();
         assert_eq!(
             sentinel,
-            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind the default branch on GitHub as of 2026-09-15 23:18:43-03:00. Any CI running on this branch is validating an out-of-date base."
+            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind the default branch on GitHub as of 2026-09-15 23:18:43-03:00. If CI runs on this branch, it is validating an out-of-date base."
         );
 
         // The helper hardcodes the branch, so the branch == base case is built
@@ -28396,7 +28396,7 @@ mod tests {
         .line();
         assert_eq!(
             counterpart,
-            "[AgentsCommander] mblua/AgentsCommander main is now 4 commits behind its counterpart on GitHub as of 2026-09-15 23:18:43-03:00. Any CI running on this branch is validating an out-of-date base."
+            "[AgentsCommander] mblua/AgentsCommander main is now 4 commits behind its counterpart on GitHub as of 2026-09-15 23:18:43-03:00. If CI runs on this branch, it is validating an out-of-date base."
         );
         assert_eq!(counterpart.matches("main").count(), 1);
     }
