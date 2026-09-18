@@ -24,6 +24,21 @@ function buildGitRepos(replica: AcAgentReplica): SessionRepoInput[] {
   });
 }
 
+function applyBranchUpdate(
+  wg: AcWorkgroup,
+  replicaPath: string,
+  branch: string | null,
+): AcWorkgroup {
+  return {
+    ...wg,
+    agents: wg.agents.map((a) =>
+      a.path === replicaPath
+        ? { ...a, repoBranch: branch ?? undefined }
+        : a
+    ),
+  };
+}
+
 const AcDiscoveryPanel: Component = () => {
   const [agents, setAgents] = createSignal<AcAgentMatrix[]>([]);
   const [teams, setTeams] = createSignal<AcTeam[]>([]);
@@ -182,16 +197,7 @@ const AcDiscoveryPanel: Component = () => {
     // Listen for replica branch updates from the backend poller
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
       console.debug("[DiscoveryBranchWatcher] event received:", data.replicaPath, "->", data.branch);
-      setWorkgroups((wgs) =>
-        wgs.map((wg) => ({
-          ...wg,
-          agents: wg.agents.map((a) =>
-            a.path === data.replicaPath
-              ? { ...a, repoBranch: data.branch ?? undefined }
-              : a
-          ),
-        }))
-      );
+      setWorkgroups((wgs) => wgs.map((wg) => applyBranchUpdate(wg, data.replicaPath, data.branch)));
     });
   });
 
