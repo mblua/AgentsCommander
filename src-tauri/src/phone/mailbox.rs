@@ -27864,6 +27864,57 @@ mod tests {
         assert!(crate::pty::menu_guard::is_menu_guard_deferred_error(&err));
     }
 
+    /// Single source of the TTL-bound fixture pair: `expires_at` is derived from the same
+    /// instant as `issued_at`, so the canonical millisecond truncation can never split them.
+    fn pty_ttl_fixture_timestamps(now: chrono::DateTime<chrono::Utc>) -> (String, String) {
+        (
+            crate::phone::types::canonical_pty_timestamp(now),
+            crate::phone::types::canonical_pty_timestamp(
+                now + chrono::Duration::seconds(crate::phone::types::PTY_INPUT_TTL_SECS),
+            ),
+        )
+    }
+
+    #[test]
+    fn test_pty_ttl_fixture_single_instant_survives_millisecond_boundary() {
+        // Adversarial base: 900 microseconds past a millisecond boundary, so a second clock
+        // sample taken 100 microseconds later truncates to the next canonical millisecond.
+        let base = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00.000900Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let (issued_at, expires_at) = pty_ttl_fixture_timestamps(base);
+        assert_eq!(issued_at, "2026-01-01T00:00:00.000Z");
+        assert_eq!(expires_at, "2026-01-01T00:10:00.000Z");
+
+        let issued = crate::phone::types::parse_canonical_pty_timestamp(&issued_at).unwrap();
+        let expires = crate::phone::types::parse_canonical_pty_timestamp(&expires_at).unwrap();
+        assert_eq!(
+            expires - issued,
+            chrono::Duration::milliseconds(600_000),
+            "the TTL fixture helper must yield exactly the span enqueue_pty_input accepts"
+        );
+        assert_eq!(
+            expires - issued,
+            chrono::Duration::seconds(crate::phone::types::PTY_INPUT_TTL_SECS)
+        );
+
+        // The rejected two-sample form, pinned at the same base: a 100-microsecond-later
+        // second sample lands one canonical millisecond ahead, i.e. 600001 ms.
+        let second_sample = base + chrono::Duration::microseconds(100);
+        let two_sample_expires = crate::phone::types::canonical_pty_timestamp(
+            second_sample + chrono::Duration::seconds(crate::phone::types::PTY_INPUT_TTL_SECS),
+        );
+        assert_eq!(two_sample_expires, "2026-01-01T00:10:00.001Z");
+        assert_ne!(
+            two_sample_expires, expires_at,
+            "the fixture must not be rebuilt from a second clock sample"
+        );
+        let two_sample =
+            crate::phone::types::parse_canonical_pty_timestamp(&two_sample_expires).unwrap();
+        assert_eq!(two_sample - issued, chrono::Duration::milliseconds(600_001));
+    }
+
     #[tokio::test]
     async fn test_pty_input_operation_retried_on_menu_guard() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -27871,6 +27922,7 @@ mod tests {
         let store = crate::api::message_store::MessageStore::open(path).unwrap();
 
         let op_id = Uuid::new_v4().to_string();
+        let (issued_at, expires_at) = pty_ttl_fixture_timestamps(chrono::Utc::now());
         store
             .enqueue_pty_input(crate::api::message_store::PtyInputEnqueueRequest {
                 injection_id: op_id.clone(),
@@ -27889,10 +27941,8 @@ mod tests {
                 authority_session_id: Uuid::new_v4().to_string(),
                 authority_client_id: Some("client".into()),
                 authority_client_generation: Some(Uuid::new_v4().to_string()),
-                issued_at: crate::phone::types::canonical_pty_timestamp(chrono::Utc::now()),
-                expires_at: crate::phone::types::canonical_pty_timestamp(
-                    chrono::Utc::now() + chrono::Duration::minutes(10),
-                ),
+                issued_at,
+                expires_at,
             })
             .unwrap();
 
