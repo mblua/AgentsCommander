@@ -69,26 +69,32 @@ mod tests {
         });
 
         app.state::<NonStopWatchdogState>()
-            .ingest(vec![report("p", true)])
+            .ingest(vec![report("p", true), report("q", true)])
             .await;
 
         non_stop_report(
             app.handle().clone(),
             app.state::<NonStopWatchdogState>(),
-            vec![report("p", false)],
+            vec![report("p", false), report("q", false)],
         )
         .await
         .unwrap();
 
-        let payload: serde_json::Value =
-            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
-        assert_eq!(payload["action"], "stop");
-        assert_eq!(payload["projectPath"], "p");
-        assert_eq!(payload["seconds"], 0);
-        assert_eq!(payload["groupName"], "");
-        let mut keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
-        keys.sort();
-        assert_eq!(keys, vec!["action", "groupName", "projectPath", "seconds"]);
+        // "For each recovered path": two armed paths -> exactly two stop payloads.
+        let mut paths: Vec<String> = Vec::new();
+        for _ in 0..2 {
+            let payload: serde_json::Value =
+                serde_json::from_str(&rx.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
+            assert_eq!(payload["action"], "stop");
+            assert_eq!(payload["seconds"], 0);
+            assert_eq!(payload["groupName"], "");
+            let mut keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
+            keys.sort();
+            assert_eq!(keys, vec!["action", "groupName", "projectPath", "seconds"]);
+            paths.push(payload["projectPath"].as_str().unwrap().to_string());
+        }
+        paths.sort();
+        assert_eq!(paths, vec!["p", "q"]);
         // One stop per recovered path, not a repeat.
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
     }

@@ -570,6 +570,21 @@ mod tests {
         // Single-fire latch: a second collection yields nothing, so no second event.
         assert!(fireable(&state).await.is_empty());
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+
+        // Third, separate drive: pins the clamp(1, 60) floor.
+        let state = NonStopWatchdogState::new();
+        state
+            .ingest(vec![report_with_sound("r", true, 30, 0)])
+            .await;
+        backdate_disparity(&state, "r", Duration::from_secs(31)).await;
+        let to_fire = fireable(&state).await;
+        assert_eq!(to_fire.len(), 1);
+        fire(app.handle(), &state, &to_fire[0]).await;
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
+        assert_eq!(payload["projectPath"], "r");
+        assert_eq!(payload["seconds"], 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -590,7 +605,11 @@ mod tests {
         let to_fire = fireable(&state).await;
         assert_eq!(to_fire.len(), 1);
         // The clear arrives between the tick's fire-decision and actuation (G5).
-        state.ingest(vec![report("p", false, 30)]).await;
+        // Armed with the Sound measure ON so only the TOCTOU guard can suppress it:
+        // a `sound_enabled: false` clear would be hidden by the sound gate instead.
+        state
+            .ingest(vec![report_with_sound("p", false, 30, 30)])
+            .await;
         fire(app.handle(), &state, &to_fire[0]).await;
 
         assert!(
