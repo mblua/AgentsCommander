@@ -22,7 +22,7 @@ A community library of agent role templates at [@msitarzewski/agency-agents](htt
 
 ## Agents config repo
 
-The git repository that versions a project's **Project AC Root** (`.ac/`): the origin agent matrices (`_agent_<name>/`) with their `Role.md`, `skills/`, `memory/`, and `plans/`, the team definitions (`_team_<name>/config.json`), and `seed-manifest.toml`. Giving `.ac/` a repository of its own is the recommended layout, because agent configuration then gets its own history, review, and rollback, and a checkout of the product code never drags agent state along with it. Two other layouts work and are supported: track `.ac/` inside an existing **Work repo**, which is simplest when the project is a single repo, or do not track it at all, which leaves it local with no history and nothing to share. All three keep rooms out of git: `.ac/.gitignore` must exclude `room-*/`, because the `repo-*` clones inside a room are independent git repositories nested in the parent tree and parent-repo operations corrupt them. See [Project AC Root](#project-ac-root), [Work repo](#work-repo), and [Agent Matrix conventions](agent-matrix-conventions.md).
+The git repository that versions a project's **Project AC Root** (`.ac/`): the origin agent matrices (`_agent_<name>/`) with their `Role.md`, `skills/`, `memory/`, and `plans/`, the team definitions (`_team_<name>/config.json`). Giving `.ac/` a repository of its own is the recommended layout, because agent configuration then gets its own history, review, and rollback, and a checkout of the product code never drags agent state along with it. Two other layouts work and are supported: track `.ac/` inside an existing **Work repo**, which is simplest when the project is a single repo, or do not track it at all, which leaves it local with no history and nothing to share. All three keep rooms out of git: `.ac/.gitignore` must exclude `room-*/`, because the `repo-*` clones inside a room are independent git repositories nested in the parent tree and parent-repo operations corrupt them. See [Project AC Root](#project-ac-root), [Work repo](#work-repo), and [Agent Matrix conventions](agent-matrix-conventions.md).
 
 ## Archived project
 
@@ -170,7 +170,7 @@ A Project AC Root-level orchestrator that can route messages between orchestrato
 
 ## Seed manifest
 
-`<project>/.ac/seed-manifest.toml`, a git-diffable text file recording every project-scoped file AC last published into `.ac/`, one row per project-relative logical destination, each carrying the UTC time of that file's most recent successful publication. It is a diagnostic inventory, not an ownership ledger: it never grants ownership and never authorizes AC to overwrite, repair, or delete anything. See [Seed manifest](features/seed-manifest.md).
+`<project>/.ac/seed-manifest.toml`, a text file recording the project-scoped files AC last published into `.ac/` - the project context templates and the coding-agent catalog - one row per project-relative logical destination, each carrying the UTC time of that file's most recent successful publication. AC's managed `.ac/.gitignore` ignores it by default. It is a diagnostic inventory, not an ownership ledger: it never grants ownership and never authorizes AC to overwrite, repair, or delete anything. See [Seed manifest](features/seed-manifest.md).
 
 ## Self-handoff
 
