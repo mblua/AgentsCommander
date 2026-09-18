@@ -67,6 +67,23 @@ const SECONDARY_BACKOFF_BASE: Duration = Duration::from_secs(60);
 /// notice is NEVER suppressed for want of it.
 const DEFAULT_BRANCH_LABEL: &str = "the default branch";
 
+/// #2129 - the rendered `%BASE%` for a branch-stale notice. The comparison is
+/// `repos/<nwo>/compare/HEAD...<sha>`, answered by GitHub, so the text says
+/// GitHub and never `origin/<x>`: a local remote may be named otherwise, be
+/// stale, or not exist. The branch name is never printed twice: an unresolved
+/// base keeps its sentinel prose, and a base equal to the branch is named by
+/// relation. The raw label is left untouched everywhere else, because the
+/// #2131 suppression compares it for identity.
+pub(crate) fn base_branch_display(branch: &str, base_label: &str) -> String {
+    if base_label == DEFAULT_BRANCH_LABEL {
+        format!("{DEFAULT_BRANCH_LABEL} on GitHub")
+    } else if base_label == branch {
+        "its counterpart on GitHub".to_string()
+    } else {
+        format!("{base_label} on GitHub")
+    }
+}
+
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -4425,5 +4442,24 @@ mod tests {
             Duration::from_secs(900),
             "the cap holds"
         );
+    }
+    /// #2129 - T6: the three cases of the rendering rule, plus an empty label,
+    /// which takes case 3 and is unreachable for stale notices because
+    /// `for_remote_activity` rejects an empty stale base.
+    #[test]
+    fn issue_2129_base_branch_display_covers_every_case() {
+        assert_eq!(
+            base_branch_display("main", DEFAULT_BRANCH_LABEL),
+            "the default branch on GitHub"
+        );
+        assert_eq!(
+            base_branch_display("main", "main"),
+            "its counterpart on GitHub"
+        );
+        assert_eq!(
+            base_branch_display("feature/2083-2064-remote-alerts", "main"),
+            "main on GitHub"
+        );
+        assert_eq!(base_branch_display("main", ""), " on GitHub");
     }
 }

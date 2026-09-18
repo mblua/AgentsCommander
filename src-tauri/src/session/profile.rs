@@ -878,7 +878,9 @@ pub struct IdleTuning {
     pub seed_initial_activity: bool,
     /// #2124 - byte total at which a pending output burst is confirmed as real
     /// work. `0` (or a zero `burst_window`) disables the filter for this
-    /// session and restores the pre-#2124 behavior exactly.
+    /// session and restores the pre-#2124 behavior exactly. #2156 - ON by
+    /// default for a recognised coding agent ([`IdleTuning::AGENT_DEFAULT`]);
+    /// OFF for a plain shell ([`IdleTuning::DEFAULT`]).
     pub burst_max_bytes: u64,
     /// #2124 - longest gap a pending burst may keep spanning. A burst still
     /// unconfirmed `burst_window` after its first chunk is discarded.
@@ -898,10 +900,11 @@ const IDLE_BURST_MAX_WINDOW_SECS: f64 = 600.0;
 const IDLE_BURST_MAX_PRIOR_SILENCE_SECS: f64 = 86_400.0;
 
 impl IdleTuning {
-    /// Tuning for a plain shell / unrecognised agent. Also the per-field
-    /// fallback when a session id is missing from the detector's tuning map.
-    /// Values are identical to the pre-#260 `idle_detector.rs` constants, with
-    /// the #2124 burst filter disabled.
+    /// Tuning for a plain shell / unrecognised agent (`idle_tuning_for(None)`).
+    /// Also the per-field fallback when a session id is missing from the
+    /// detector's tuning map. Values are identical to the pre-#260
+    /// `idle_detector.rs` constants, with the #2124 burst filter disabled.
+    /// A recognised coding agent uses [`IdleTuning::AGENT_DEFAULT`] instead.
     pub const DEFAULT: IdleTuning = IdleTuning {
         idle_threshold: Duration::from_millis(2500),
         resize_grace: Duration::from_millis(3000),
@@ -909,6 +912,16 @@ impl IdleTuning {
         burst_max_bytes: 0,
         burst_window: Duration::ZERO,
         burst_prior_silence: Duration::ZERO,
+    };
+
+    /// #2156 - tuning for a recognised coding agent: `DEFAULT` plus the #2124
+    /// burst filter ON by default. Values mirror the IDLE_BURST_DEFAULT_*
+    /// constants (a test pins the two in sync).
+    pub const AGENT_DEFAULT: IdleTuning = IdleTuning {
+        burst_max_bytes: IDLE_BURST_DEFAULT_MAX_BYTES, // 1024
+        burst_window: Duration::from_millis(3_000),    // IDLE_BURST_DEFAULT_MAX_SECS
+        burst_prior_silence: Duration::from_secs(60),  // IDLE_BURST_DEFAULT_PRIOR_SILENCE_SECS
+        ..IdleTuning::DEFAULT
     };
 }
 
@@ -981,13 +994,15 @@ pub struct CodingAgentProfile {
     pub auto_self_clear_supported: bool,
 }
 
-// All five agents currently use `IdleTuning::DEFAULT`, identical to the
-// pre-#260 hard-coded constants, which GUARANTEES zero behavior change. The
-// per-profile `idle` field exists so a future agent can diverge (e.g. a
-// longer `resize_grace` for a heavier TUI) without re-plumbing the detector.
+// #2156 - all five agents use `IdleTuning::AGENT_DEFAULT`: the pre-#260
+// hard-coded idle constants plus the #2124 burst filter ON, so a recognised
+// coding agent gets the filter regardless of what the persisted catalog
+// contains. The per-profile `idle` field exists so a future agent can diverge
+// (e.g. a longer `resize_grace` for a heavier TUI) without re-plumbing the
+// detector.
 const CLAUDE_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Claude,
-    idle: IdleTuning::DEFAULT,
+    idle: IdleTuning::AGENT_DEFAULT,
     resume_tokens: &["--continue"],
     // #930 - verified end-to-end: host ~/.claude/.credentials.json copies to
     // <replica>/.claude/.credentials.json, read in-container as
@@ -1011,7 +1026,7 @@ const CLAUDE_PROFILE: CodingAgentProfile = CodingAgentProfile {
 };
 const CODEX_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Codex,
-    idle: IdleTuning::DEFAULT,
+    idle: IdleTuning::AGENT_DEFAULT,
     resume_tokens: &["resume", "--last"],
     // #930 follow-up (needs CODEX_HOME container wiring verified, Q3):
     // Some(ContainerCredentialSource { host_dir: ".codex", host_dir_env: Some("CODEX_HOME"),
@@ -1021,7 +1036,7 @@ const CODEX_PROFILE: CodingAgentProfile = CodingAgentProfile {
 };
 const ANTIGRAVITY_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Antigravity,
-    idle: IdleTuning::DEFAULT,
+    idle: IdleTuning::AGENT_DEFAULT,
     resume_tokens: &["--continue"],
     // #930 - no established container credential-file flow for Antigravity.
     container_credential: None,
@@ -1029,7 +1044,7 @@ const ANTIGRAVITY_PROFILE: CodingAgentProfile = CodingAgentProfile {
 };
 const PI_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Pi,
-    idle: IdleTuning::DEFAULT,
+    idle: IdleTuning::AGENT_DEFAULT,
     resume_tokens: &["--continue"],
     container_credential: None,
     auto_self_clear_supported: false,
@@ -1039,7 +1054,7 @@ const PI_PROFILE: CodingAgentProfile = CodingAgentProfile {
 // no container credential flow, no auto-self-clear, no logical PTY submission.
 const MUSE_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Muse,
-    idle: IdleTuning::DEFAULT,
+    idle: IdleTuning::AGENT_DEFAULT,
     resume_tokens: &["resume", "--last"],
     container_credential: None,
     auto_self_clear_supported: false,
@@ -1056,7 +1071,8 @@ pub fn idle_tuning_for(kind: Option<CodingAgentKind>) -> IdleTuning {
 
 /// #2124 - the per-kind tuning plus the session's catalog `idleBurst` filter,
 /// as raw primitives (`maxBytes`, `maxSecs`, `priorSilenceSecs`). `None` (no
-/// catalog object) leaves the filter disabled and equals `idle_tuning_for`.
+/// catalog object) means NO OVERRIDE and equals `idle_tuning_for`, i.e. #2156
+/// leaves the filter ON for a recognised agent and OFF for a plain shell.
 /// Absent, non-finite or negative subfields take the documented defaults;
 /// `maxSecs` is capped at 600 s and `priorSilenceSecs` at 86400 s so
 /// `Duration::from_secs_f64` can never panic. `0` for `maxBytes` or `maxSecs`
@@ -1915,7 +1931,7 @@ mod tests {
         assert_eq!(CodingAgentKind::Antigravity.as_str(), "agy");
         let profile = CodingAgentKind::Antigravity.profile();
         assert_eq!(profile.kind, CodingAgentKind::Antigravity);
-        assert_eq!(profile.idle, IdleTuning::DEFAULT);
+        assert_eq!(profile.idle, IdleTuning::AGENT_DEFAULT);
         assert_eq!(profile.resume_tokens, ["--continue"]);
         assert!(profile.container_credential.is_none());
         assert!(profile.auto_self_clear_supported);
@@ -1930,7 +1946,7 @@ mod tests {
         assert_eq!(CodingAgentKind::Pi.as_str(), "pi");
         let profile = CodingAgentKind::Pi.profile();
         assert_eq!(profile.kind, CodingAgentKind::Pi);
-        assert_eq!(profile.idle, IdleTuning::DEFAULT);
+        assert_eq!(profile.idle, IdleTuning::AGENT_DEFAULT);
         assert_eq!(profile.resume_tokens, ["--continue"]);
         assert!(profile.container_credential.is_none());
         assert!(!profile.auto_self_clear_supported);
@@ -1962,13 +1978,13 @@ mod tests {
         // Exact profile.
         let profile = CodingAgentKind::Muse.profile();
         assert_eq!(profile.kind, CodingAgentKind::Muse);
-        assert_eq!(profile.idle, IdleTuning::DEFAULT);
+        assert_eq!(profile.idle, IdleTuning::AGENT_DEFAULT);
         assert_eq!(profile.resume_tokens, ["resume", "--last"]);
         assert!(profile.container_credential.is_none());
         assert!(!profile.auto_self_clear_supported);
         assert_eq!(
             idle_tuning_for(Some(CodingAgentKind::Muse)),
-            IdleTuning::DEFAULT
+            IdleTuning::AGENT_DEFAULT
         );
 
         // Direct positives: bare, absolute (both separators), and an exe stem.
@@ -2239,11 +2255,17 @@ mod tests {
 
     #[test]
     fn idle_tuning_for_launch_resolves_burst_subfields() {
+        // #2156 - unrecognised-agent OFF contract.
         assert_eq!(idle_tuning_for_launch(None, None), IdleTuning::DEFAULT);
+        assert_eq!(idle_tuning_for_launch(None, None).burst_max_bytes, 0);
         assert_eq!(
             idle_tuning_for_launch(Some(CodingAgentKind::Claude), None),
-            idle_tuning_for(Some(CodingAgentKind::Claude)),
-            "no catalog object leaves the filter disabled"
+            IdleTuning::AGENT_DEFAULT,
+            "#2156 - no catalog object means no override, the filter stays ON"
+        );
+        assert_eq!(
+            idle_tuning_for_launch(Some(CodingAgentKind::Claude), None).burst_max_bytes,
+            1024
         );
 
         let defaults =
@@ -2305,8 +2327,38 @@ mod tests {
             CodingAgentKind::Muse,
         ] {
             assert!(kind.profile().idle.seed_initial_activity);
-            assert_eq!(kind.profile().idle, IdleTuning::DEFAULT);
+            assert_eq!(kind.profile().idle, IdleTuning::AGENT_DEFAULT);
         }
         assert!(idle_tuning_for(None).seed_initial_activity);
+        assert_eq!(
+            IdleTuning::AGENT_DEFAULT.idle_threshold,
+            IdleTuning::DEFAULT.idle_threshold
+        );
+        assert_eq!(
+            IdleTuning::AGENT_DEFAULT.resize_grace,
+            IdleTuning::DEFAULT.resize_grace
+        );
+        assert_eq!(
+            IdleTuning::AGENT_DEFAULT.seed_initial_activity,
+            IdleTuning::DEFAULT.seed_initial_activity
+        );
+    }
+
+    /// #2156 - guards the const-literal durations against the
+    /// `IDLE_BURST_DEFAULT_*` constants they duplicate.
+    #[test]
+    fn agent_default_burst_matches_the_documented_constants() {
+        assert_eq!(
+            IdleTuning::AGENT_DEFAULT.burst_max_bytes,
+            IDLE_BURST_DEFAULT_MAX_BYTES
+        );
+        assert_eq!(
+            IdleTuning::AGENT_DEFAULT.burst_window,
+            Duration::from_secs_f64(IDLE_BURST_DEFAULT_MAX_SECS)
+        );
+        assert_eq!(
+            IdleTuning::AGENT_DEFAULT.burst_prior_silence,
+            Duration::from_secs_f64(IDLE_BURST_DEFAULT_PRIOR_SILENCE_SECS)
+        );
     }
 }
