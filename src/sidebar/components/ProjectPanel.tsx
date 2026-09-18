@@ -916,6 +916,37 @@ const ProjectPanel: Component = () => {
           setWgDeleteError(msg);
           setWgDeleteInProgress(false);
         };
+        const applyWgRetryFailure = (e: any) => {
+          const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
+          if (msg.startsWith("BLOCKERS:")) {
+            try {
+              const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
+              setWgBlockers(report);
+              setWgDirtyRepos(false);
+              setWgConfirmText("");
+              setWgDeleteError("");
+              setWgRetryInProgress(false);
+              return;
+            } catch (parseErr) {
+              console.error("Failed to parse BLOCKERS: payload on retry:", parseErr);
+              setWgBlockers(null);
+              setWgDeleteError("Room is still locked, but the blocker report could not be parsed. Try again.");
+              setWgRetryInProgress(false);
+              return;
+            }
+          }
+          if (msg.startsWith("DIRTY_REPOS:")) {
+            setWgBlockers(null);
+            setWgDeleteError(msg.slice("DIRTY_REPOS:".length));
+            setWgDirtyRepos(true);
+            setWgConfirmText("");
+            setWgRetryInProgress(false);
+            return;
+          }
+          setWgBlockers(null);
+          setWgDeleteError(msg);
+          setWgRetryInProgress(false);
+        };
         const retryWgDelete = async () => {
           if (wgRetryInProgress()) return;
           const wg = deletingWg();
@@ -931,35 +962,7 @@ const ProjectPanel: Component = () => {
             closeWgDeleteModal();
           } catch (e: any) {
             if (myGen !== retryGen) return;
-            const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
-            if (msg.startsWith("BLOCKERS:")) {
-              try {
-                const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
-                setWgBlockers(report);
-                setWgDirtyRepos(false);
-                setWgConfirmText("");
-                setWgDeleteError("");
-                setWgRetryInProgress(false);
-                return;
-              } catch (parseErr) {
-                console.error("Failed to parse BLOCKERS: payload on retry:", parseErr);
-                setWgBlockers(null);
-                setWgDeleteError("Room is still locked, but the blocker report could not be parsed. Try again.");
-                setWgRetryInProgress(false);
-                return;
-              }
-            }
-            if (msg.startsWith("DIRTY_REPOS:")) {
-              setWgBlockers(null);
-              setWgDeleteError(msg.slice("DIRTY_REPOS:".length));
-              setWgDirtyRepos(true);
-              setWgConfirmText("");
-              setWgRetryInProgress(false);
-              return;
-            }
-            setWgBlockers(null);
-            setWgDeleteError(msg);
-            setWgRetryInProgress(false);
+            applyWgRetryFailure(e);
           }
         };
         const activeReplicas = createMemo(() => {
@@ -2423,13 +2426,6 @@ const ProjectPanel: Component = () => {
           const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => replica.isCoordinator;
           const session = () => replicaSession(wg, replica);
-          // #1783 - the quick-access panel answers "is this team busy", so an
-          // orchestrator row there tints when ANY agent in its room is working,
-          // the orchestrator included. Every other render site (rowContext
-          // "workgroups" and "selected", both inside .ac-wg-subgroup) keeps the
-          // per-row meaning: own session only. Do not collapse this branch.
-          const rowIsWorking = () =>
-            rowContext === "quick" ? workgroupIsWorking(wg) : isReplicaWorking(wg, replica);
           const communication = createMemo(() => session()?.communication ?? null);
           const showRaiseHand = createMemo(() =>
             isCoord() &&
@@ -2446,6 +2442,32 @@ const ProjectPanel: Component = () => {
               ? s.gitRepos
               : configuredReplicaRepoBadgesLive(replica, wg);
           });
+          // #2131 - CI running on this orchestrator row's repo is work the room is
+          // waiting on, so the row takes the existing wash while its chip carries
+          // `ci-running`. It reads the SAME published entry the chip class reads
+          // (`remoteActivityClasses`) and the SAME `repoBadges()` list the chip
+          // <For> renders, so the chip and the row cannot disagree. It must NOT
+          // reach workgroupIsWorking: room ordering and the group-rail dot stay
+          // session-only. The quick-access row no longer does (see #2151).
+          // Non-orchestrator rows are excluded here, not at the chip.
+          const orchestratorCiRunning = () =>
+            isCoord() &&
+            repoBadges().some(
+              (repo) => remoteActivityStore.forPath(repo.sourcePath)?.ci === "running"
+            );
+          // #1783 - the quick-access panel answers "is anyone in this room
+          // working, or is its repo running CI", so an orchestrator row there
+          // tints when ANY agent in its room is working, the orchestrator
+          // included. Every other render site (rowContext "workgroups" and
+          // "selected", both inside .ac-wg-subgroup) keeps the per-row meaning:
+          // own session only, plus CI. Do not collapse this branch.
+          // #2151 - the CI term is added on BOTH branches, so an orchestrator can
+          // no longer be tinted in the room tree and untinted in the Orchestrators
+          // strip in the same frame.
+          const rowIsWorking = () =>
+            rowContext === "quick"
+              ? workgroupIsWorking(wg) || orchestratorCiRunning()
+              : isReplicaWorking(wg, replica) || orchestratorCiRunning();
           const idleBadge = createMemo(() =>
             isCoord()
               ? coordinatorIdleBadge(

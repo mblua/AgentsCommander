@@ -352,3 +352,43 @@ describe("WsTransport backend-owned completion (#1942)", () => {
     transport.close();
   });
 });
+
+describe("WsTransport listener isolation", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    MockWebSocket.instances.length = 0;
+    vi.stubGlobal("WebSocket", MockWebSocket);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps dispatching to later listeners when one throws, and still resolves a response", async () => {
+    const transport = new WsTransport();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    const seen: unknown[] = [];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await transport.listen("listener_isolation", () => {
+        throw new Error("listener boom");
+      });
+      await transport.listen("listener_isolation", (payload) => seen.push(payload));
+
+      socket.message(JSON.stringify({ event: "listener_isolation", payload: { ok: true } }));
+      expect(seen).toEqual([{ ok: true }]);
+
+      const call = trackInvoke(transport.invoke("get_settings"));
+      await flushInvoke();
+      const [sent] = sentMessages(socket);
+      respondWith(socket, sent.id, { answered: true });
+      await expect(call.promise).resolves.toEqual({ answered: true });
+    } finally {
+      consoleError.mockRestore();
+      transport.close();
+    }
+  });
+});

@@ -1,26 +1,24 @@
 # Seed manifest
 
 AgentsCommander records the project-scoped files it publishes into your project's
-`.ac` folder in a small, Git-diffable text file: `<project>/.ac/seed-manifest.toml`.
-It is a **diagnostic inventory**, not an ownership ledger: it tells you which
-managed files AC last seeded and when, so a code review of `.ac` shows what
-changed. It never grants ownership and never authorizes AC to overwrite, repair,
-or delete anything.
+`.ac` folder in a small, deterministic text file:
+`<project>/.ac/seed-manifest.toml`. It is a **diagnostic inventory**, not an
+ownership ledger: it tells you which managed files AC last seeded and when. It
+never grants ownership and never authorizes AC to overwrite, repair, or delete
+anything. AC's managed `.ac/.gitignore` ignores it, so it is not
+version-controlled by default (see [Git behavior](#git-behavior)).
 
 ## What it records
 
 The manifest has one row per project-relative **logical destination**, and each
 row carries the UTC wall-clock time of that file's most recent successful physical
-publication by AgentsCommander. Three publisher families write rows:
+publication by AgentsCommander. Two publisher families write rows:
 
 - **Project context templates** - `.ac/Context.AgentsCommander.md` (scope
   `context:agentscommander`) and `.ac/Context.coordinator.md` (scope
   `context:coordinator`), created or refreshed when AC registers a project, scans
   it during discovery, materializes a session's context, or you explicitly
   overwrite a template.
-- **Replica config folders** - the `.claude`/`.codex`/... folder that
-  [config seed](config-seed.md) copies into a room replica at spawn. Each
-  installed regular file is one row under a single `config:<dest>` scope.
 - **Coding-agent catalog** (#1318) - `.ac/coding-agents/agents.json` (scope
   `catalog:coding-agents`, source `builtin`). One row is recorded for every
   actual base publication: the first management of a fresh catalog, a one-time
@@ -30,6 +28,14 @@ publication by AgentsCommander. Three publisher families write rows:
   `agents.local.json`, the migration backup `agents.migration-v1.backup.json`
   and the journal `.agents.migration-v1.json` are never published files and
   never get rows. The `_seed/` masters tree is not rowed.
+
+Replica config folders are **not recorded**. [Config seed](config-seed.md) still
+installs `.claude`/`.codex`/... into a room replica at every spawn, but since
+[#1480](https://github.com/mblua/AgentsCommander/issues/1480) those publications
+create no rows. A manifest written by an older build may still carry
+`replica_config_file` rows: AC reads them, never updates them, and omits them from
+the next canonical write. The `replica_config_folders` name remains in the
+`coverage` declaration below as compatibility vocabulary.
 
 Everything else is deliberately **out of scope**: the manifest does not track
 files you create by hand, the `.agentscommander-context-templates.json` ownership
@@ -50,14 +56,6 @@ kind = "project_context_template"
 scope = "context:agentscommander"
 source = "builtin"
 last_seeded_at = "2026-07-16T19:40:07.123Z"
-
-[[files]]
-path = ".ac/room-14-dev-team/__agent_architect/.claude/settings.json"
-path_encoding = "utf8"
-kind = "replica_config_file"
-scope = "config:.ac/room-14-dev-team/__agent_architect/.claude"
-source = "workspace_base"
-last_seeded_at = "2026-07-16T19:41:12.456Z"
 
 [[files]]
 path = ".ac/coding-agents/agents.json"
@@ -119,14 +117,13 @@ higher-level caller.
 
 ## Normal churn
 
-Config-seed tiers 1 through 4 replace the destination on **every successful
-spawn**, so every file row in that scope gets the new spawn's shared timestamp even
-if the copied bytes are identical. This is expected and can produce frequent
-`.ac/seed-manifest.toml` timestamp changes in Git. That is the accepted product
-cost of recording real publication time; AC does not suppress the timestamp,
-compare content, or truncate the row list to reduce churn. If you do not want the
-churn in version control, ignore the manifest locally (see
-[Git behavior](#git-behavior)).
+Every physical publication updates its row to that event's wall-clock time, even
+when the published bytes are identical (see [Time semantics](#time-semantics)).
+That is the accepted product cost of recording real publication time; AC does not
+suppress the timestamp, compare content, or truncate the row list to reduce churn.
+The manifest is ignored by Git by default (see [Git behavior](#git-behavior)), so
+this churn stops appearing in your diffs once the manifest is untracked; a
+manifest AC creates is never tracked.
 
 ## Lifecycle removal
 
@@ -141,7 +138,7 @@ explicit lifecycle events prune rows:
   The manifest records what AC published, not what currently exists on disk.
 - **Project archive, unarchive, unregister, or re-register** leave the project and
   its `.ac` (and manifest) untouched.
-- **Cloning or copying a project** preserves the committed manifest byte-for-byte.
+- **Cloning or copying a project** preserves an existing manifest byte-for-byte.
   AC does not invent a new owner, reset times, backfill, or prune room paths
   the clone happens to lack. A row heals to a real new time only on the clone's
   next real publication.
@@ -159,13 +156,11 @@ and v1 deliberately chooses **no false rows over guaranteed completeness**:
   a timestamp from file existence, mtime, content equality, or Git history; the
   next real publication heals the row.
 - **Config install-and-restore failure.** Config seed renames the old destination
-  aside before installing the new one. If the install fails and the old tree is
-  restored, nothing changes. If the install fails **and** the restore also fails
-  while the process survives, AC reports a typed failure and removes that config
-  scope's now-stale rows without adding a new row or time - it never labels the
-  failed install as published. A process death inside that narrow rename window is
-  a documented stale-row gap that only a later real publication or explicit
-  lifecycle event reconciles.
+  aside before installing the new one, and reports a typed failure when the
+  install, the restore, or both fail. Since #1480 a config-seed publication
+  neither adds nor removes a manifest row, so no failure mode of that install
+  changes the manifest; a legacy `replica_config_file` row survives until the
+  next canonical write or explicit lifecycle event.
 - **Strict-invalid manifest (including a Git conflict).** If the manifest becomes
   corrupt, carries a newer `schema_version`/`coverage`, or contains Git conflict
   markers, AC preserves those bytes exactly and disables the writer for that
@@ -175,13 +170,17 @@ and v1 deliberately chooses **no false rows over guaranteed completeness**:
 
 ## Git behavior
 
-`.ac/seed-manifest.toml` is meant to be **committed and reviewed**. AC's managed
-`.ac/.gitignore` block ignores only the manifest's lock and temp companions
-(`.seed-manifest.lock`, `.seed-manifest.*.tmp`) and keeps the root
-`seed-manifest.toml` visible; a `.gitattributes` `*.toml text eol=lf` rule keeps
-its line endings stable across platforms. Same-named files in nested user
-directories are unaffected. If you would rather not track it, add your own ignore
-rule for the manifest; AC does not require it in version control.
+`.ac/seed-manifest.toml` is **not version-controlled by default**. AC's managed
+`.ac/.gitignore` block ignores the manifest together with its lock and temp
+companions: `/.seed-manifest.lock`, `/.seed-manifest.*.tmp` and
+`/seed-manifest.toml`. The leading slash anchors all three rules to the `.ac`
+root, so same-named files in nested user directories are unaffected. If a project
+already tracks the manifest, the ignore rule alone does not untrack it; run
+`git rm --cached <project>/.ac/seed-manifest.toml` to stop tracking it. If you
+would rather keep reviewing the manifest in Git, add `!/seed-manifest.toml`
+after AC's rule in `.ac/.gitignore`: Git applies the last matching rule. An
+existing `.ac/.gitignore` that still carries the retired `!/seed-manifest.toml`
+block is migrated in place by the next project registration or discovery.
 
 ## Durability and support
 
@@ -209,7 +208,7 @@ delete. Treat it as a record of what AC did, not as a control surface.
 
 ## See also
 
-- [Config seed](config-seed.md) - the replica config publications that produce
-  `replica_config_file` rows
+- [Config seed](config-seed.md) - the replica config publications, which no
+  longer produce manifest rows (#1480)
 - [Agent Matrix conventions](../agent-matrix-conventions.md) - the `.ac` layout the
   manifest paths are relative to
