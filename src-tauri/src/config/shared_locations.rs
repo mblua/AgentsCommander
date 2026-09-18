@@ -5,7 +5,7 @@
 //! Leaf module by design: it depends on `std` only. `config::session_context`,
 //! `config::seeded_context_templates` and `commands::entity_creation` all call into
 //! it, and because it calls nothing back it can never join or grow a dependency
-//! cycle. See section 9 of plans/1795-golden-rule-shared-locations.md.
+//! cycle. See section 9 of .ac/plans/1795-golden-rule-shared-locations.md.
 
 use std::path::Path;
 

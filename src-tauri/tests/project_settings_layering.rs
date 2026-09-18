@@ -69,7 +69,7 @@
 //! reviewing #1265 and is expected; it changes nothing else.
 //!
 //! **This file is the canonical copy.** Section 5.5 of
-//! `plans/1265-extract-project-settings-from-scc.md` quotes it verbatim, but that
+//! `.ac/plans/1265-extract-project-settings-from-scc.md` quotes it verbatim, but that
 //! quote is a snapshot taken when the plan was certified. The first appended
 //! entry makes the two diverge, and that is expected: this file runs, the plan
 //! does not. Append here and leave the plan alone.
@@ -180,7 +180,7 @@
 //!      `ALLOWED_GUARDED_CRATE_REFERENCES` table the way the emitter module
 //!      already does. That is tracked in **#1268** and is deliberately not
 //!      done here: it would change the anchor contract of Section 4.3 of
-//!      `plans/1265-extract-project-settings-from-scc.md`, which is
+//!      `.ac/plans/1265-extract-project-settings-from-scc.md`, which is
 //!      specification, and appending here is what Section 9.3.5 contemplates.
 //!  14. (append here: one entry per spelling a reviewer proves still passes)
 
