@@ -927,12 +927,20 @@ mod tests {
 
     /// Insert straight into the coalescer, bypassing the pruning that
     /// [`locked_coalescer`] applies, so a test can plant an entry the emitter
-    /// would otherwise have dropped.
-    fn seed_coalescer(id: Uuid, stamped: Instant, wall: DateTime<Utc>) {
-        coalescer()
+    /// would otherwise have dropped, and report what the map holds for `id`
+    /// without releasing the lock. Observing under the same guard is what makes
+    /// an already-stale seed checkable: a parallel test that takes the lock
+    /// between a write and a separate read would prune the entry first (#2212).
+    fn seed_coalescer(
+        id: Uuid,
+        stamped: Instant,
+        wall: DateTime<Utc>,
+    ) -> Option<(Instant, DateTime<Utc>)> {
+        let mut guard = coalescer()
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .insert(id, (stamped, wall));
+            .unwrap_or_else(|poison| poison.into_inner());
+        guard.insert(id, (stamped, wall));
+        guard.get(&id).copied()
     }
 
     fn coalescer_entry(id: Uuid) -> Option<(Instant, DateTime<Utc>)> {
@@ -1274,8 +1282,18 @@ mod tests {
     #[test]
     fn coalescer_state_prunes_entries_older_than_the_window() {
         let stale = Uuid::new_v4();
-        seed_coalescer(stale, ago(120), Utc::now() - chrono::Duration::seconds(120));
-        assert!(coalescer_entry(stale).is_some(), "seeded");
+        assert!(
+            seed_coalescer(stale, ago(120), Utc::now() - chrono::Duration::seconds(120)).is_some(),
+            "seeded"
+        );
+        // Positive control: an in-window entry planted the same way must survive
+        // the same write, so a prune that dropped everything could not pass.
+        let fresh = Uuid::new_v4();
+        let fresh_entry = (ago(1), Utc::now() - chrono::Duration::seconds(1));
+        assert!(
+            seed_coalescer(fresh, fresh_entry.0, fresh_entry.1).is_some(),
+            "seeded"
+        );
 
         let other = sample_session(Uuid::new_v4(), None);
         let _ = build_idle(other.id, &other, IdleReason::MarkIdle);
@@ -1283,6 +1301,11 @@ mod tests {
         assert!(
             coalescer_entry(stale).is_none(),
             "an entry past the window is dropped on the next write"
+        );
+        assert_eq!(
+            coalescer_entry(fresh),
+            Some(fresh_entry),
+            "an entry inside the window survives the same write"
         );
     }
 
