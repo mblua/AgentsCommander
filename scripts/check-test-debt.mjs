@@ -398,7 +398,7 @@ function rustAttributedFnAt(source, cursor, hash, memo) {
 
 // Matches of the former `fn` regex that carry attributes ({ index, end, attrs, name }), in source order;
 // attribute-free matches are only skipped. Worst case O(n^2) when close searches restart behind their
-// cached answer; see plans/2088-sonar-regex-backtracking.md.
+// cached answer; see .ac/plans/2088-sonar-regex-backtracking.md.
 function rustAttributedFnMatches(source) {
   const matches = [];
   const scan = () => ({ from: Infinity, at: -1 });
