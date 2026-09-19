@@ -71,8 +71,11 @@ pub(crate) const DEFAULT_CI_STARTED_TEMPLATE: &str = "[AgentsCommander] CI start
 /// so "CI finished" must never be read as "CI passed".
 pub(crate) const DEFAULT_CI_FINISHED_TEMPLATE: &str = "[AgentsCommander] CI finished on %REPO% %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does not track pass or fail: run 'gh run list --branch %BRANCH%' before acting on this.";
 
-/// sha256 `a2f428dcf62be65a968b2ee2cad37a1e11c85a74e3d5643567695325348a258f`.
-pub(crate) const DEFAULT_BRANCH_STALE_TEMPLATE: &str = "[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. Any CI running on this branch is validating an out-of-date base.";
+/// sha256 `3c03dc790a9d3b36edbf1174dc3e661572ad0f93e70e1b200daff8945ff6e468`. The second sentence is conditional on purpose: #2141
+/// suppresses the notice for a branch with no commits of its own, but a branch
+/// WITH its own commits and no runs still receives it, so the old wording
+/// asserted a premise that need not hold.
+pub(crate) const DEFAULT_BRANCH_STALE_TEMPLATE: &str = "[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. If CI runs on this branch, it is validating an out-of-date base.";
 
 /// sha256 `e895fefbd3e482568d4e21ac22f3826d10d8a7911b3303239726a2b8ade49aff`. It
 /// begins with ONE space because it is concatenated onto a sentence that
@@ -173,7 +176,14 @@ const KNOWN_MESSAGES: [MessageSpec; 5] = [
     MessageSpec {
         id: BRANCH_STALE_MESSAGE_ID,
         default_template: DEFAULT_BRANCH_STALE_TEMPLATE,
-        known_default_sha256: &["a2f428dcf62be65a968b2ee2cad37a1e11c85a74e3d5643567695325348a258f"],
+        // Two digests, newest last: #2141 is the first change to move a shipped
+        // default's bytes. The v1 hash stays so a pristine entry whose sidecar is
+        // gone is still recognized and refreshed, instead of freezing forever as
+        // a false "user edit".
+        known_default_sha256: &[
+            "a2f428dcf62be65a968b2ee2cad37a1e11c85a74e3d5643567695325348a258f",
+            "3c03dc790a9d3b36edbf1174dc3e661572ad0f93e70e1b200daff8945ff6e468",
+        ],
         tokens: &[TOKEN_REPO, TOKEN_BRANCH, TOKEN_BASE, TOKEN_BEHIND, TOKEN_AT],
         doc_comment: BRANCH_STALE_DOC_COMMENT,
     },
@@ -1512,7 +1522,7 @@ template = '''
 #   %BEHIND%  commit count behind, e.g. 4
 #   %AT%      observation time, local with a numeric UTC offset
 template = '''
-[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. Any CI running on this branch is validating an out-of-date base.
+[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. If CI runs on this branch, it is validating an out-of-date base.
 '''
 
 [messages.notice-blind-gap]
@@ -1588,7 +1598,7 @@ template = '''
 #   %BEHIND%  commit count behind, e.g. 4
 #   %AT%      observation time, local with a numeric UTC offset
 template = '''
-[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. Any CI running on this branch is validating an out-of-date base.
+[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. If CI runs on this branch, it is validating an out-of-date base.
 '''
 
 [messages.notice-blind-gap]
@@ -3037,21 +3047,34 @@ template = '''
         }
     }
 
+    /// #2141 replaced the older "exactly one digest" rule. That rule encoded "no
+    /// shipped default has moved yet", which stopped being true when the
+    /// branch-stale wording changed; the rule worth keeping is that the list ENDS
+    /// at what ships today, so reconciliation still recognizes every default ever
+    /// shipped and refreshes a pristine entry to the current one.
     #[test]
-    fn each_new_default_has_exactly_one_known_sha_and_it_matches_the_template() {
+    fn each_default_digest_list_ends_at_the_current_template() {
         for spec in &KNOWN_MESSAGES {
-            assert_eq!(
-                spec.known_default_sha256.len(),
-                1,
-                "`{}` must list exactly one digest; a second one means the shipped bytes moved after shipping and pristine entries stop auto-refreshing",
+            assert!(
+                !spec.known_default_sha256.is_empty(),
+                "`{}` must list at least the digest it ships today",
                 spec.id
             );
             assert_eq!(
-                spec.known_default_sha256[0],
-                sha256_hex(spec.default_template.as_bytes()),
-                "`{}`",
+                spec.known_default_sha256.last().copied(),
+                Some(sha256_hex(spec.default_template.as_bytes()).as_str()),
+                "`{}`: the LAST digest must be the shipped default's, newest last",
                 spec.id
             );
+            let mut seen = std::collections::HashSet::new();
+            for digest in spec.known_default_sha256 {
+                assert!(
+                    seen.insert(*digest),
+                    "`{}` lists {} twice; every entry is a distinct shipped default",
+                    spec.id,
+                    digest
+                );
+            }
         }
     }
 

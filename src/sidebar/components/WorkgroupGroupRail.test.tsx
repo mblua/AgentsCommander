@@ -14,6 +14,8 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { ProjectState } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
+import { remoteActivityStore } from "../stores/remote-activity";
+import type { CiState } from "../../shared/types";
 import {
   defaultGroupsConfig,
   defaultNonStop,
@@ -176,6 +178,48 @@ function replicaSession(wgName: string, overrides: Partial<Session> = {}): Sessi
     status: "running",
     ...overrides,
   });
+}
+
+// #2202 - the CI half of the rail. The replica's configured `repoPaths` carries
+// the EXACT string the remote-activity payload is keyed by (the map normalizes
+// nothing), and the store replaces the WHOLE map per update, so every repo of
+// interest is published in ONE call.
+const ciRepoPath = (wgName: string): string => `${projectPath}\\.ac\\${wgName}\\repo-AgentsCommander`;
+
+function publishCi(entries: [string, CiState][]): void {
+  remoteActivityStore.applyRemoteActivityUpdate({
+    repoPaths: entries.map(([repoPath]) => repoPath),
+    ciStates: entries.map(([, ci]) => ci),
+    stalenessStates: entries.map(() => "current" as const),
+    behindBy: entries.map(() => null),
+  });
+}
+
+/** A project whose rooms carry a CI-capable repo; `coordinator: false` makes the
+ *  room's only replica a non-coordinator, whose CI must count nowhere. */
+function ciProject(names: string[], coordinator = true): ProjectState {
+  return {
+    path: projectPath,
+    folderName: "Project",
+    workgroups: names.map((name) => ({
+      name,
+      path: `${projectPath}\\.ac\\${name}`,
+      task: null,
+      taskTitle: null,
+      agents: [
+        {
+          name: "dev-webpage-ui",
+          path: `${projectPath}\\.ac\\${name}\\__agent_dev-webpage-ui`,
+          repoPaths: [ciRepoPath(name)],
+          isCoordinator: coordinator,
+        },
+      ],
+    })),
+    agents: [],
+    teams: [],
+    loops: [],
+    contextTemplateUpdates: [],
+  };
 }
 
 describe("WorkgroupGroupRail", () => {
@@ -1009,5 +1053,99 @@ describe("WorkgroupGroupRail, Rooms (#1614 F4/F5)", () => {
     expect(wgTooltipLabel("wg-1-dev-team")).toBe("WG1");
     expect(wgTooltipLabel("ROOM-1-dev-team")).toBe("ROOM1");
     expect(wgTooltipLabel("not-an-entity")).toBe("not-an-entity");
+  });
+
+  it("#2202 counts a CI-only room in the counter, the dot and the tooltip", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig({ groups: [] }));
+    publishCi([[ciRepoPath("wg-1-dev-team"), "running"]]);
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[ciProject(["wg-1-dev-team"])]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toContain("all"));
+      // No session exists at all, so the counter can only move through the CI term.
+      await waitFor(() =>
+        expect(target("workgroupGroups.button.all").textContent).toContain("1/1")
+      );
+      await waitFor(() => expect(railDots()).toEqual(["all", "ungrouped"]));
+
+      const tooltip = target<HTMLElement>("workgroupGroups.button.all").title;
+      expect(tooltip).toContain("WG1:(CI)");
+      expect(tooltip).not.toContain("No running agents");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("#2202 shows the replica row and the CI row for a room that is both", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig({ groups: [] }));
+    sessionsStore.setSessions([replicaSession("wg-1-dev-team")]);
+    publishCi([[ciRepoPath("wg-1-dev-team"), "running"]]);
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[ciProject(["wg-1-dev-team"])]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toContain("all"));
+      await waitFor(() =>
+        expect(target<HTMLElement>("workgroupGroups.button.all").title).toContain("WG1:(CI)")
+      );
+      const tooltip = target<HTMLElement>("workgroupGroups.button.all").title;
+      expect(tooltip).toContain("WG1:(dev-webpage-ui)");
+      // One room, counted once on both grounds.
+      expect(target("workgroupGroups.button.all").textContent).toContain("1/1");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("#2202 leaves the counter at 0/1 when the CI repo belongs to a non-coordinator", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig({ groups: [] }));
+    publishCi([[ciRepoPath("wg-1-dev-team"), "running"]]);
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[ciProject(["wg-1-dev-team"], false)]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toContain("all"));
+      await waitFor(() =>
+        expect(target("workgroupGroups.button.all").textContent).toContain("0/1")
+      );
+      expect(railDots()).toEqual([]);
+      expect(target<HTMLElement>("workgroupGroups.button.all").title).toContain("No running agents");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("#2202 sorts the tooltip by room number across both row kinds", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig({ groups: [] }));
+    // wg2 works, wg1 only runs CI. Room number wins over row kind: an
+    // append-CI-after-the-replicas rule would print wg2 first.
+    sessionsStore.setSessions([replicaSession("wg-2-rust-team")]);
+    publishCi([[ciRepoPath("wg-1-dev-team"), "running"]]);
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[ciProject(["wg-1-dev-team", "wg-2-rust-team"])]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toContain("all"));
+      await waitFor(() =>
+        expect(target("workgroupGroups.button.all").textContent).toContain("2/2")
+      );
+      const body = target<HTMLElement>("workgroupGroups.button.all").title.split("\n").slice(1);
+      expect(body).toEqual(["WG1:(CI)", "WG2:(dev-webpage-ui)"]);
+    } finally {
+      rendered.cleanup();
+    }
   });
 });

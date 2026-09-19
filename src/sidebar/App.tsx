@@ -56,6 +56,7 @@ import { applyWindowLayout } from "../shared/window-layout";
 import { sessionsStore } from "./stores/sessions";
 import { bridgesStore } from "./stores/bridges";
 import { projectStore } from "./stores/project";
+import { startCiActivityStamp } from "./stores/ci-activity-stamp";
 import { codingAgentsStore } from "./stores/coding-agents";
 import { workgroupGroupsStore } from "./stores/workgroup-groups";
 import { normalizeProjectPathForCompare } from "./stores/project-refresh";
@@ -652,6 +653,11 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       liveWarningsDuringInitialDrain.clear();
     }
   };
+
+  // #2202 - the CI-stop activity stamp, beside the only other markActivity call
+  // site (onSessionIdle below). In the body, before onMount, so the effect has a
+  // reactive owner and its cleanup runs on dispose.
+  startCiActivityStamp();
 
   onMount(async () => {
     try {

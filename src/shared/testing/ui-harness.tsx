@@ -20,6 +20,7 @@ import { sessionsStore } from "../../sidebar/stores/sessions";
 import { bridgesStore } from "../../sidebar/stores/bridges";
 import { workgroupGroupsStore } from "../../sidebar/stores/workgroup-groups";
 import { projectCollapseStore } from "../../sidebar/stores/project-collapse";
+import { resetCiActivityStampForTests } from "../../sidebar/stores/ci-activity-stamp";
 import { railCollapseStore } from "../../sidebar/stores/rail-collapse";
 import { codingAgentsStore } from "../../sidebar/stores/coding-agents";
 import { terminalStore } from "../../terminal/stores/terminal";
@@ -304,6 +305,11 @@ export function resetUiStoresForTests(): void {
   // render exactly like the stores above. Without this, a test that collapses a
   // header leaks a folded rail into the next test in the same file.
   railCollapseStore.resetForTests();
+  // #2202 - same hazard, same reason as #1624/#965: the CI falling-edge watcher's
+  // previous-state map is module-level and out of setSessions' reach, so a second
+  // App render in one file would inherit a stale `true` (spurious stamp) or a
+  // cleared map (missed stamp).
+  resetCiActivityStampForTests();
   codingAgentsStore.resetForTests();
   bridgesStore.setBridges([]);
   terminalStore.resetForTests();

@@ -121,6 +121,8 @@ AC ships factory masters for three Config folder values only: `.claude`, `.codex
 
 AC writes each shipped master into the project's `<workspace>/coding-agents/_seed/<dest>/` at startup and project registration if that master is absent, and never touches one that already exists; when the project master is absent, a pre-migration master left at the legacy `<config_dir>/coding-agents/_seed/<dest>/` is copied into the project verbatim instead of the shipped default, so your edits survive the move. The master is **yours to edit** afterward: change `_seed/.claude/settings.json` and every future absent-only bootstrap uses your edited copy.
 
+One further condition sits in front of both the master above and the button below. Each shipped master belongs to a built-in agent key, and AC drops a master whose key is switched off in the built-in support table in the code ([#1912](https://github.com/mblua/AgentsCommander/issues/1912)). A disabled key ships no factory master and shows no Re-seed button, whatever the Config folder or command says. All three master-carrying keys are enabled in the shipped build, so today nothing is dropped.
+
 **Settings -> Coding Agents** shows a **Re-seed default configuration** button on any agent whose command is exactly `claude`, `codex`, or `opencode`. That button is gated on the **command's executable basename**, not on the Config folder, so a custom agent that runs `claude` shows it too. It restores the master for that command's shipped Config folder back to the version AC ships:
 
 - It first backs up your current master to `<dest>.bak-<timestamp>` (your edits are never lost), then atomically swaps AC's shipped default into place.

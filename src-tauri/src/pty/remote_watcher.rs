@@ -397,7 +397,11 @@ fn failure_kind(output: &GhCallOutput) -> FailureKind {
     }
 }
 
-type CompareAnswer = Result<(StalenessState, Option<u32>, bool), FailureKind>;
+/// The compare answer for one key: the staleness state, `behind_by`, `ahead_by`
+/// and whether GitHub said `identical`. `ahead_by` is #2141's suppression input:
+/// `Some(0)` means the branch carries no commit of its own, and `None` means the
+/// field was absent or out of range, which fails open.
+type CompareAnswer = Result<(StalenessState, Option<u32>, Option<u32>, bool), FailureKind>;
 
 /// The CI answer for one branch: the filtered state plus whether that branch
 /// has any run at all, which the identical-to-default rule reads.
@@ -450,6 +454,9 @@ fn parse_ci_response(body: &str, branch: &str) -> Result<CiAnswer, FailureKind> 
 
 /// The staleness mapping is unchanged; the extra flag reports whether GitHub
 /// said `identical`, which is the same statement the CI suppression rule needs.
+/// `ahead_by` is read with the same shape as `behind_by` and is NOT part of the
+/// classification: an absent or out-of-range value is `None`, never an error,
+/// because #2141 fails open on it.
 fn parse_compare_response(body: &str) -> CompareAnswer {
     let value: serde_json::Value = serde_json::from_str(body).map_err(|_| FailureKind::Other)?;
     let status = value
@@ -460,11 +467,17 @@ fn parse_compare_response(body: &str) -> CompareAnswer {
         .get("behind_by")
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u32::try_from(value).ok());
+    let ahead_by = value
+        .get("ahead_by")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
     let identical = status == "identical";
     match (status, behind_by) {
-        ("identical" | "ahead", Some(0)) => Ok((StalenessState::Current, None, identical)),
+        ("identical" | "ahead", Some(0)) => {
+            Ok((StalenessState::Current, None, ahead_by, identical))
+        }
         ("behind" | "diverged", Some(behind)) if behind > 0 => {
-            Ok((StalenessState::Stale, Some(behind), identical))
+            Ok((StalenessState::Stale, Some(behind), ahead_by, identical))
         }
         _ => Err(FailureKind::Other),
     }
@@ -600,6 +613,14 @@ impl Default for CiAxis {
             failure_interval: None,
         }
     }
+}
+
+/// What #2141 carries from a retired key to a live key on the same
+/// `(nwo, branch)`. Deliberately just these two fields: see the seeding step.
+#[derive(Clone, Copy)]
+struct StalenessCarry {
+    confirmed: StalenessState,
+    last_confirmed_at: Option<DateTime<Local>>,
 }
 
 struct StalenessAxis {
@@ -926,6 +947,84 @@ impl RemoteSweeper {
                 .push(index);
         }
 
+        // #2141: retire keys no path maps to any more, carrying the STALENESS
+        // axis to a live key on the same `(nwo, branch)` first. A local commit
+        // moves `head_sha`, so it retires the old key and creates a new one that
+        // would otherwise start at `confirmed = None`; `None -> Stale` is not the
+        // edge the notice fires on, so the branch would never be told.
+        //
+        // This runs BEFORE the apply loop, which is the hard requirement: the old
+        // retirement site sat after it, so the commit's own round decided with
+        // `None` and recorded `Stale`, and without a rebase no edge ever occurred
+        // again. Running it before `plans` as well is safe, not required: an
+        // absent key is already due, and a seeded one is due only because
+        // `next_due` is NOT carried (see below).
+        //
+        // Only the staleness axis moves. A new commit has genuinely unknown CI,
+        // and seeding it would assert a run state nobody observed.
+        //
+        // The carry lives inside ONE round and is not a guarantee: if the old key
+        // is retired with no live key on its `(nwo, branch)` to receive it — the
+        // path left the work list, the last room closed, `.git` went unreadable,
+        // the repo was archived — the memory is gone, and the next observation of
+        // that branch starts at `None`, which is not an edge. That case is silent
+        // today too, so nothing regresses, but do not read this block as a
+        // promise that survives a path dropping out of a round.
+        {
+            let mut state = self.lock_state();
+            // Donors are computed BEFORE anything is deleted, and only from keys
+            // this round retires. A live key is never a donor: two paths on one
+            // branch at different commits (worktrees, or two clones on the same
+            // branch) must not seed each other.
+            let mut donors: HashMap<(String, String), (QueryKey, StalenessCarry)> = HashMap::new();
+            for (key, entry) in state
+                .keys
+                .iter()
+                .filter(|(key, _)| !groups.contains_key(*key))
+            {
+                let Some(confirmed) = entry.staleness.confirmed else {
+                    continue;
+                };
+                let carry = StalenessCarry {
+                    confirmed,
+                    last_confirmed_at: entry.staleness.last_confirmed_at,
+                };
+                let id = (key.nwo.clone(), key.branch.clone());
+                match donors.get(&id) {
+                    // Most recently confirmed wins; `None` never beats `Some`; a
+                    // remaining tie goes to the greater `sha40`, so the choice is
+                    // deterministic rather than hash-order dependent.
+                    Some((held_key, held))
+                        if (held.last_confirmed_at, &held_key.sha40)
+                            >= (carry.last_confirmed_at, &key.sha40) => {}
+                    _ => {
+                        donors.insert(id, (key.clone(), carry));
+                    }
+                }
+            }
+
+            state.keys.retain(|key, _| groups.contains_key(key));
+
+            if !donors.is_empty() {
+                for key in groups.keys() {
+                    let Some((_, carry)) = donors.get(&(key.nwo.clone(), key.branch.clone()))
+                    else {
+                        continue;
+                    };
+                    let entry = state.keys.entry(key.clone()).or_default();
+                    // A key that already has a confirmed answer of its own keeps
+                    // it. `chip`, `behind_by`, `next_due` and `failure_interval`
+                    // are never carried: the new commit is un-queried, and a
+                    // carried `next_due` would leave it not due in the very round
+                    // that has to decide.
+                    if entry.staleness.confirmed.is_none() {
+                        entry.staleness.confirmed = Some(carry.confirmed);
+                        entry.staleness.last_confirmed_at = carry.last_confirmed_at;
+                    }
+                }
+            }
+        }
+
         let gh_path = self.lock_state().gh_path.clone();
 
         let mut plans: Vec<(QueryKey, KeyPlan)> = Vec::with_capacity(groups.len());
@@ -1153,13 +1252,6 @@ impl RemoteSweeper {
                 _ => candidate,
             });
         }
-
-        // Retire keys no path maps to any more: a local commit moves `head_sha`
-        // (or the branch changes on the same commit), the new key starts at
-        // `Unknown`, and the old key must not linger.
-        self.lock_state()
-            .keys
-            .retain(|key, _| groups.contains_key(key));
 
         let live: HashSet<String> = paths.iter().cloned().collect();
         let mut activities: Vec<RemoteActivity> = Vec::with_capacity(facts.len());
@@ -1425,11 +1517,30 @@ impl RemoteSweeper {
         let base = ctx.staleness_dial;
 
         match result {
-            Ok((answer, behind_by, _identical)) => {
+            Ok((answer, behind_by, ahead_by, _identical)) => {
                 let prior_confirmed = entry.staleness.confirmed;
                 let prior_last = entry.staleness.last_confirmed_at;
+                // #2141 precedence, in this order, one decision branch:
+                //   1. `on_default_branch`  -> #2131, unchanged, records `answer`.
+                //   2. `ahead_by == Some(0)` -> no own commits, records `Current`.
+                //   3. otherwise             -> today's behaviour; `None` fails open.
+                // A repo on its own default branch also reports `ahead_by == 0`,
+                // so case 1 is tested FIRST or the two rules disagree about what
+                // was written to `confirmed`.
+                let no_own_commits = !on_default_branch && ahead_by == Some(0);
+                // Unlike `apply_ci`, which writes `confirmed = None` for a
+                // suppressed answer ("no edge into or out of it"), a suppressed
+                // staleness answer records `Current`. The axes differ on purpose:
+                // CI has no deferred notice to keep alive, staleness does. Writing
+                // `None` here, or leaving the prior value, consumes or never opens
+                // the `Current -> Stale` edge, and the branch is never told again.
+                let recorded = if no_own_commits {
+                    StalenessState::Current
+                } else {
+                    answer
+                };
                 entry.staleness.chip = answer;
-                entry.staleness.confirmed = Some(answer);
+                entry.staleness.confirmed = Some(recorded);
                 entry.staleness.behind_by = behind_by;
                 entry.staleness.last_confirmed_at = Some(ctx.wall);
                 entry.staleness.failure_interval = None;
@@ -1440,7 +1551,7 @@ impl RemoteSweeper {
                     (prior_confirmed, answer),
                     (Some(StalenessState::Current), StalenessState::Stale)
                 );
-                if stale && !on_default_branch {
+                if stale && !on_default_branch && !no_own_commits {
                     self.fan_out(
                         key,
                         TransitionMeta {
@@ -1636,11 +1747,11 @@ async fn query_key(
                     }
                 };
                 match compare {
-                    Ok((_, _, true)) => {
+                    Ok((_, _, _, true)) => {
                         outcome.ci_suppressed = true;
                         Ok(CiState::Idle)
                     }
-                    Ok((_, _, false)) => Ok(answer.state),
+                    Ok((_, _, _, false)) => Ok(answer.state),
                     Err(kind) => Err(kind),
                 }
             }
@@ -1729,6 +1840,18 @@ mod tests {
         }
     }
 
+    /// Republishes a repo's branch: `Harness::repo` publishes `main`, and every
+    /// #2141 staleness test needs a branch that is NOT the default one.
+    fn publish_branch(path: &str, branch: &str) {
+        crate::pty::git_watcher::publish_git_status(
+            path,
+            Some(crate::pty::git_watcher::GitStatus {
+                branch: Some(branch.to_string()),
+                dirty: false,
+            }),
+        );
+    }
+
     fn ci_body(statuses: &[&str]) -> String {
         ci_body_with_total(statuses, statuses.len() as u64)
     }
@@ -1751,11 +1874,15 @@ mod tests {
         serde_json::json!({ "total_count": values.len(), "workflow_runs": values }).to_string()
     }
 
-    fn compare_body(status: &str, behind_by: u64) -> String {
+    /// `ahead_by` is explicit at every call site, with no defaulting wrapper:
+    /// since #2141 it decides whether the notice is suppressed, so a staleness
+    /// fixture that does not state whether the branch has commits of its own is
+    /// not stating its own premise.
+    fn compare_body(status: &str, behind_by: u64, ahead_by: u64) -> String {
         serde_json::json!({
             "status": status,
             "behind_by": behind_by,
-            "ahead_by": 0,
+            "ahead_by": ahead_by,
         })
         .to_string()
     }
@@ -1798,7 +1925,7 @@ mod tests {
             } else if target.contains("/compare/") {
                 self.compare
                     .pop_front()
-                    .unwrap_or_else(|| Ok(ok_output(&compare_body("identical", 0))))
+                    .unwrap_or_else(|| Ok(ok_output(&compare_body("identical", 0, 0))))
             } else {
                 self.repo_info
                     .pop_front()
@@ -2236,21 +2363,44 @@ mod tests {
     #[test]
     fn compare_status_table_maps_to_staleness() {
         assert_eq!(
-            parse_compare_response(&compare_body("identical", 0)),
-            Ok((StalenessState::Current, None, true))
+            parse_compare_response(&compare_body("identical", 0, 0)),
+            Ok((StalenessState::Current, None, Some(0), true))
         );
         assert_eq!(
-            parse_compare_response(&compare_body("ahead", 0)),
-            Ok((StalenessState::Current, None, false)),
+            parse_compare_response(&compare_body("ahead", 0, 1)),
+            Ok((StalenessState::Current, None, Some(1), false)),
             "ahead with behind_by 0 is not stale"
         );
         assert_eq!(
-            parse_compare_response(&compare_body("behind", 3)),
-            Ok((StalenessState::Stale, Some(3), false))
+            parse_compare_response(&compare_body("behind", 3, 0)),
+            Ok((StalenessState::Stale, Some(3), Some(0), false)),
+            "behind carries ahead_by 0: nothing of its own to validate"
         );
         assert_eq!(
-            parse_compare_response(&compare_body("diverged", 7)),
-            Ok((StalenessState::Stale, Some(7), false))
+            parse_compare_response(&compare_body("diverged", 7, 2)),
+            Ok((StalenessState::Stale, Some(7), Some(2), false))
+        );
+    }
+
+    /// #2141 fail-open: `ahead_by` is a suppression input, not part of the
+    /// classification, so a response without the field still maps to the same
+    /// staleness state and reads `None`, which never suppresses.
+    #[test]
+    fn compare_without_ahead_by_reads_none_and_keeps_its_state() {
+        let body = serde_json::json!({ "status": "behind", "behind_by": 4 }).to_string();
+        assert_eq!(
+            parse_compare_response(&body),
+            Ok((StalenessState::Stale, Some(4), None, false))
+        );
+        let out_of_range = serde_json::json!({
+            "status": "behind",
+            "behind_by": 4,
+            "ahead_by": u64::from(u32::MAX) + 1,
+        })
+        .to_string();
+        assert_eq!(
+            parse_compare_response(&out_of_range),
+            Ok((StalenessState::Stale, Some(4), None, false))
         );
     }
 
@@ -2522,7 +2672,7 @@ mod tests {
                 .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
             for _ in 0..3 {
                 gh.compare
-                    .push_back(Ok(ok_output(&compare_body("ahead", 0))));
+                    .push_back(Ok(ok_output(&compare_body("ahead", 0, 1))));
             }
             let bodies = [
                 ci_rows(&[("fix/2124-ignore-short-idle-bursts", "completed")]),
@@ -2829,9 +2979,9 @@ mod tests {
         {
             let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
             gh.compare
-                .push_back(Ok(ok_output(&compare_body("behind", 2))));
+                .push_back(Ok(ok_output(&compare_body("behind", 2, 1))));
             gh.compare
-                .push_back(Ok(ok_output(&compare_body("identical", 0))));
+                .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
         }
 
         let mut now = Instant::now();
@@ -2860,10 +3010,10 @@ mod tests {
         {
             let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
             gh.compare
-                .push_back(Ok(ok_output(&compare_body("identical", 0))));
+                .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
             for _ in 0..6 {
                 gh.compare
-                    .push_back(Ok(ok_output(&compare_body("behind", 4))));
+                    .push_back(Ok(ok_output(&compare_body("behind", 4, 1))));
             }
             gh.repo_info
                 .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
@@ -2895,9 +3045,9 @@ mod tests {
             gh.repo_info
                 .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
             gh.compare
-                .push_back(Ok(ok_output(&compare_body("identical", 0))));
+                .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
             gh.compare
-                .push_back(Ok(ok_output(&compare_body("behind", 4))));
+                .push_back(Ok(ok_output(&compare_body("behind", 4, 0))));
         }
 
         let mut now = Instant::now();
@@ -2921,6 +3071,389 @@ mod tests {
         assert_eq!(activity.behind_by, Some(4));
     }
 
+    /// #2141: a repo on its default branch reports `ahead_by == 0` too, so the
+    /// #2131 gate is evaluated FIRST and the `ahead_by` rule never runs there.
+    /// Own commits on the default branch change nothing.
+    #[tokio::test]
+    async fn stale_on_default_branch_with_own_commits_still_sends_no_notice() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("diverged", 4, 3))));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        drain(&harness);
+        tick(&mut now, &mut wall, 300);
+        harness.round(now, wall).await;
+
+        assert!(
+            harness.drain_transitions().is_empty(),
+            "#2131 wins over the #2141 rule on the default branch"
+        );
+        assert_eq!(
+            harness.snapshot().get(&repo).expect("entry").staleness,
+            StalenessState::Stale
+        );
+    }
+
+    /// #2141: a branch with no commits of its own has nothing that a stale base
+    /// could invalidate, so the notice is suppressed while the chip still turns.
+    #[tokio::test]
+    async fn stale_without_own_commits_sends_no_notice_but_keeps_the_chip() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        publish_branch(&repo, "fix/2141");
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 2, 0))));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        drain(&harness);
+        tick(&mut now, &mut wall, 300);
+        harness.round(now, wall).await;
+
+        assert!(
+            harness.drain_transitions().is_empty(),
+            "no commits of its own: nothing to validate against a stale base"
+        );
+        let snapshot = harness.snapshot();
+        let activity = snapshot.get(&repo).expect("entry");
+        assert_eq!(
+            activity.staleness,
+            StalenessState::Stale,
+            "the chip keeps its orange bar"
+        );
+        assert_eq!(activity.behind_by, Some(2));
+    }
+
+    /// #2141, the whole point: the suppressed round records `Current`, the commit
+    /// moves `head_sha` and the carry-over hands that `Current` to the new key,
+    /// so the notice arrives in the round OF the commit and exactly once.
+    ///
+    /// The `head_sha` MUST change here. A same-sha version of this test exercises
+    /// one key and proves nothing about the carry-over.
+    #[tokio::test]
+    async fn stale_without_own_commits_notifies_once_after_the_first_own_commit() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        publish_branch(&repo, "fix/2141");
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 2, 0))));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 2, 1))));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 5, 1))));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        assert!(
+            harness.drain_transitions().is_empty(),
+            "round 1: empty branch, no notice"
+        );
+        drain(&harness);
+
+        // The first commit of its own: a new `head_sha`, so a new QueryKey.
+        harness
+            .git
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_head_sha(&repo, 'b');
+        tick(&mut now, &mut wall, 300);
+        harness.round(now, wall).await;
+
+        let transitions = harness.drain_transitions();
+        assert_eq!(
+            transitions.len(),
+            1,
+            "round 2: the branch now has work of its own, and it is behind"
+        );
+        assert_eq!(transitions[0].kind, TransitionKind::BranchStale);
+        assert_eq!(transitions[0].behind_by, Some(2));
+
+        tick(&mut now, &mut wall, 300);
+        harness.round(now, wall).await;
+        assert!(
+            harness.drain_transitions().is_empty(),
+            "round 3: still stale on the same key, no second notice"
+        );
+    }
+
+    /// #2141 closes a defect that predates it: a branch that is current, commits,
+    /// and only then falls behind used to observe `None -> Stale` on its new key,
+    /// which is not the edge the notice fires on, so it was never told at all.
+    #[tokio::test]
+    async fn branch_that_commits_while_behind_notifies_after_the_carry_over() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        publish_branch(&repo, "fix/2141");
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 2, 1))));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        drain(&harness);
+        harness
+            .git
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_head_sha(&repo, 'b');
+        tick(&mut now, &mut wall, 300);
+        harness.round(now, wall).await;
+
+        let transitions = harness.drain_transitions();
+        assert_eq!(
+            transitions.len(),
+            1,
+            "the carry-over preserves the `Current` the commit used to destroy"
+        );
+        assert_eq!(transitions[0].behind_by, Some(2));
+    }
+
+    /// The other direction of the same carry: a `Stale` that already notified is
+    /// carried too, so a commit does not re-open the edge and notify twice. The
+    /// #2131 dedup now survives a commit, which it did not before.
+    #[tokio::test]
+    async fn carry_over_does_not_duplicate_a_notice_across_a_commit() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        publish_branch(&repo, "fix/2141");
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            // `ahead 0/1`, not `identical 0/1`: GitHub answers `ahead` for an
+            // up-to-date branch that carries commits of its own.
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("ahead", 0, 1))));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 2, 1))));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 2, 2))));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        drain(&harness);
+        tick(&mut now, &mut wall, 300);
+        harness.round(now, wall).await;
+        assert_eq!(
+            harness.drain_transitions().len(),
+            1,
+            "the branch is behind with work of its own: one notice"
+        );
+
+        harness
+            .git
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_head_sha(&repo, 'b');
+        tick(&mut now, &mut wall, 300);
+        harness.round(now, wall).await;
+        assert!(
+            harness.drain_transitions().is_empty(),
+            "the new key inherits `Stale`, so there is no second edge"
+        );
+    }
+
+    /// The carry moves the staleness axis ONLY. A new commit has genuinely
+    /// unknown CI, and seeding it would assert a run state nobody observed.
+    #[tokio::test]
+    async fn carry_over_leaves_the_ci_axis_unknown_on_a_new_sha() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings {
+            ci_activity_enabled: true,
+            ..AppSettings::default()
+        });
+        let repo = harness.repo("repo-a");
+        publish_branch(&repo, "fix/2141");
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 2, 0))));
+            gh.ci
+                .push_back(Ok(ok_output(&ci_rows(&[("fix/2141", "completed")]))));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        drain(&harness);
+        {
+            let state = harness.sweeper.lock_state();
+            let (_, entry) = state.keys.iter().next().expect("one key");
+            assert_eq!(entry.ci.confirmed, Some(CiState::Idle), "CI answered once");
+        }
+
+        harness
+            .git
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_head_sha(&repo, 'b');
+        tick(&mut now, &mut wall, 300);
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("behind", 2, 0))));
+            gh.ci.push_back(Err(FailureKind::Other));
+        }
+        harness.round(now, wall).await;
+
+        let state = harness.sweeper.lock_state();
+        let (_, entry) = state.keys.iter().next().expect("one key");
+        assert_eq!(
+            entry.staleness.confirmed,
+            Some(StalenessState::Current),
+            "the staleness axis is carried across the new sha"
+        );
+        assert_eq!(
+            entry.ci.confirmed, None,
+            "the CI axis is NOT carried: a new commit has unknown CI"
+        );
+    }
+
+    /// Two live paths on one `(nwo, branch)` at different commits — worktrees, or
+    /// two clones on the same branch. Neither is retired, so neither may donate:
+    /// a live key answering for itself must not be overwritten by the other.
+    ///
+    /// The shape is load-bearing, and the obvious shapes do not test the rule.
+    /// One round proves nothing: on the first round `state.keys` is empty, so
+    /// there are no donors of any kind and the donor filter is never reached. Two
+    /// clean rounds prove nothing either: both keys would hold
+    /// `confirmed = Some(..)` and the `confirmed.is_none()` guard would protect
+    /// them whatever the filter said. One live key has to sit at
+    /// `confirmed = None` while the other holds a `Current`, and a failed compare
+    /// is the only way to get there.
+    ///
+    /// Drop the `!groups.contains_key` filter and B is seeded from A's `Current`,
+    /// reaches `Current -> Stale` in round 2 and notifies, so this test fails.
+    /// Each key is scripted by its own sha through `route`, because two due keys
+    /// are polled concurrently and a shared queue would not be deterministic.
+    #[tokio::test]
+    async fn two_live_keys_on_one_branch_never_seed_each_other() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let first = harness.repo("repo-a");
+        let second = harness.repo("repo-b");
+        publish_branch(&first, "fix/2141");
+        publish_branch(&second, "fix/2141");
+        harness.set_work(&[first.clone(), second.clone()]);
+        {
+            let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+            git.set_head_sha(&first, 'a');
+            git.set_head_sha(&second, 'b');
+        }
+        let sha_a = sha_of('a');
+        let sha_b = sha_of('b');
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            // Round 1: A answers and records `Current`. B's compare fails, so B
+            // keeps `confirmed = None` while both keys stay live.
+            gh.route(&sha_a, Ok(ok_output(&compare_body("ahead", 0, 1))));
+            gh.route(&sha_b, Err(FailureKind::Other));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        drain(&harness);
+
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            // Round 2: A unchanged, B behind with work of its own. B's own history
+            // is `None`, so `None -> Stale` is not an edge and B stays quiet —
+            // unless it was wrongly seeded with A's `Current`.
+            gh.route(&sha_a, Ok(ok_output(&compare_body("ahead", 0, 1))));
+            gh.route(&sha_b, Ok(ok_output(&compare_body("behind", 3, 1))));
+        }
+        // 900s, not 300s: B's failed round backs off to 600s, and the rule is
+        // only exercised when BOTH keys are due and live in the same round.
+        tick(&mut now, &mut wall, 900);
+        harness.round(now, wall).await;
+
+        assert!(
+            harness.drain_transitions().is_empty(),
+            "a live key must not donate to another live key on the same branch"
+        );
+    }
+
+    /// #2141 fails open on a missing `ahead_by`: the field is a suppression
+    /// input, and an absent one is not evidence that the branch is empty.
+    #[tokio::test]
+    async fn stale_with_a_missing_ahead_by_still_sends_the_notice() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let repo = harness.repo("repo-a");
+        publish_branch(&repo, "fix/2141");
+        harness.set_work(std::slice::from_ref(&repo));
+        let no_ahead_by = serde_json::json!({ "status": "behind", "behind_by": 4 }).to_string();
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
+            gh.compare.push_back(Ok(ok_output(&no_ahead_by)));
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        drain(&harness);
+        tick(&mut now, &mut wall, 300);
+        harness.round(now, wall).await;
+
+        let transitions = harness.drain_transitions();
+        assert_eq!(transitions.len(), 1, "an unknown ahead_by never suppresses");
+        assert_eq!(transitions[0].behind_by, Some(4));
+    }
+
     #[tokio::test]
     async fn stale_on_a_feature_branch_still_sends_the_notice() {
         let _guard = round_test_lock().await;
@@ -2939,9 +3472,9 @@ mod tests {
             gh.repo_info
                 .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
             gh.compare
-                .push_back(Ok(ok_output(&compare_body("identical", 0))));
+                .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
             gh.compare
-                .push_back(Ok(ok_output(&compare_body("behind", 4))));
+                .push_back(Ok(ok_output(&compare_body("behind", 4, 1))));
         }
 
         let mut now = Instant::now();
@@ -2988,9 +3521,9 @@ mod tests {
             // published branch equals that sentinel, so the sentinel guard is the
             // only thing keeping the notice alive.
             gh.compare
-                .push_back(Ok(ok_output(&compare_body("identical", 0))));
+                .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
             gh.compare
-                .push_back(Ok(ok_output(&compare_body("behind", 4))));
+                .push_back(Ok(ok_output(&compare_body("behind", 4, 1))));
         }
 
         let mut now = Instant::now();
@@ -4102,9 +4635,9 @@ mod tests {
                 gh.repo_info
                     .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
                 gh.compare
-                    .push_back(Ok(ok_output(&compare_body("identical", 0))));
+                    .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
                 gh.compare
-                    .push_back(Ok(ok_output(&compare_body("behind", 2))));
+                    .push_back(Ok(ok_output(&compare_body("behind", 2, 1))));
             }
             let mut now = Instant::now();
             let mut wall = Local::now();
@@ -4125,9 +4658,9 @@ mod tests {
             {
                 let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
                 gh.compare
-                    .push_back(Ok(ok_output(&compare_body("identical", 0))));
+                    .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
                 gh.compare
-                    .push_back(Ok(ok_output(&compare_body("behind", 2))));
+                    .push_back(Ok(ok_output(&compare_body("behind", 2, 1))));
             }
             harness
                 .git
@@ -4154,9 +4687,9 @@ mod tests {
             {
                 let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
                 gh.compare
-                    .push_back(Ok(ok_output(&compare_body("identical", 0))));
+                    .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
                 gh.compare
-                    .push_back(Ok(ok_output(&compare_body("behind", 2))));
+                    .push_back(Ok(ok_output(&compare_body("behind", 2, 1))));
             }
             let mut now = Instant::now();
             let mut wall = Local::now();
@@ -4181,7 +4714,7 @@ mod tests {
             let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
             for _ in 0..10 {
                 gh.compare
-                    .push_back(Ok(ok_output(&compare_body("behind", 2))));
+                    .push_back(Ok(ok_output(&compare_body("behind", 2, 1))));
             }
         }
         {
@@ -4258,9 +4791,9 @@ mod tests {
             gh.ci.push_back(Ok(ok_output(&ci_body(&[]))));
             gh.ci.push_back(Ok(ok_output(&ci_body(&[]))));
             gh.compare
-                .push_back(Ok(ok_output(&compare_body("identical", 0))));
+                .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
             gh.compare
-                .push_back(Ok(ok_output(&compare_body("identical", 0))));
+                .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
             gh.repo_info
                 .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
             gh.repo_info
