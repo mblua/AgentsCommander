@@ -189,6 +189,10 @@ Recommended phase order:
 
 Within a functional file, run cases in ascending ID order unless the case says it is independent.
 
+## Test-Code Duplication
+
+Before adding or editing test cases, follow [test-code-duplication.md](test-code-duplication.md): repeats of 10 lines or more are hoisted into a data-only helper, and `npm run dup:changed` catches new clones before the regression matrices run.
+
 ## Coding-Agent Compatibility Matrices
 
 Per-coding-agent compatibility evidence — what was actually tested against each coding agent, when (UTC), on which OS, and with what result — lives in one matrix file per agent, following the shared checklist:
