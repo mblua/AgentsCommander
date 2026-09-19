@@ -46,13 +46,35 @@ You never name a source folder directly. `<dest>` is exactly the **Config folder
 
 | Rank | Tier | Folder |
 |---|---|---|
-| 1 | Workspace, profile-lettered | `<workspace>/default_profile_<letter><dest>` |
-| 2 | Workspace, base | `<workspace>/default<dest>` |
-| 3 | Matrix, profile-lettered | `<matrix>/default_profile_<letter><dest>` |
-| 4 | Matrix, base | `<matrix>/default<dest>` |
-| 5 | Factory default (AC catalog) | `<workspace>/coding-agents/_seed/<dest>` |
+| 1 | Workspace, profile-lettered, OS | `<workspace>/default_profile_<letter><dest>.<os>` |
+| 2 | Workspace, profile-lettered | `<workspace>/default_profile_<letter><dest>` |
+| 3 | Workspace, base, OS | `<workspace>/default<dest>.<os>` |
+| 4 | Workspace, base | `<workspace>/default<dest>` |
+| 5 | Matrix, profile-lettered, OS | `<matrix>/default_profile_<letter><dest>.<os>` |
+| 6 | Matrix, profile-lettered | `<matrix>/default_profile_<letter><dest>` |
+| 7 | Matrix, base, OS | `<matrix>/default<dest>.<os>` |
+| 8 | Matrix, base | `<matrix>/default<dest>` |
+| 9 | Factory default (AC catalog), OS | `<workspace>/coding-agents/_seed/<dest>.<os>` |
+| 10 | Factory default (AC catalog) | `<workspace>/coding-agents/_seed/<dest>` |
 
 **The first matching tier wins.** AC checks the tiers top to bottom and stops at the first one that qualifies; lower tiers are not consulted for that spawn.
+
+### The `.<os>` variant
+
+Each of the five tiers can carry an **OS-specific variant**: the same folder name with `.<os>` appended. `<os>` is one of `linux`, `windows`, `macos`, lowercase and exact, taken from the **build target of the AC binary you are running**. It is not a setting and there is no env var for it; on any other target no OS candidate is produced at all and the list is exactly the five plain tiers.
+
+The variant is a **refinement inside its own tier**, never a jump between tiers. It is placed immediately above its base, so:
+
+- `<workspace>/default.claude.linux` beats `<workspace>/default.claude` - same tier, OS variant first.
+- `<workspace>/default.claude` still beats `<matrix>/default_profile_a.claude.linux` - a lower tier's OS variant never outranks a higher tier's base.
+
+An OS variant **inherits its tier's semantics** exactly. A tier 1-4 variant is copied on every spawn just like its base; the tier 5 variant stays **absent-only and non-empty-gated** like its base, and an empty or missing tier 5 OS master reads as "not present", so the plain tier 5 master is then considered.
+
+If you create no `.<os>` folder at all, behavior is **byte-identical to before**: the same tier wins and the same files are copied.
+
+> **Case.** The tokens are emitted lowercase. On a case-insensitive filesystem (Windows, and macOS by default) a folder named `.claude.LINUX` would also match; on Linux it would not. Name the folder in lowercase.
+
+> **A `<dest>` that ends in an OS token collides.** Setting **Config folder** to `.claude.linux` makes its own base folder `<workspace>/default.claude.linux` - the very same folder as the OS variant of `<dest>` = `.claude`. AC logs a warning at save time and still saves; it does not reject the value.
 
 The path roots:
 
@@ -76,13 +98,20 @@ The five tiers split into two groups with **different ownership and different ov
 
 ### Example: Claude, `Config folder` = `.claude`, profile `A`
 
-AC looks, in order, for:
+On Linux (so `<os>` = `linux`), AC looks, in order, for:
 
-1. `<workspace>/default_profile_a.claude`
-2. `<workspace>/default.claude` - a template you own; if it exists it wins, and it is re-copied on every spawn.
-3. `<matrix>/default_profile_a.claude`
-4. `<matrix>/default.claude`
-5. `<workspace>/coding-agents/_seed/.claude` - the AC factory fallback, used **only** when none of the above exists **and** the replica has no `.claude` yet.
+1. `<workspace>/default_profile_a.claude.linux`
+2. `<workspace>/default_profile_a.claude`
+3. `<workspace>/default.claude.linux`
+4. `<workspace>/default.claude` - a template you own; if it exists it wins, and it is re-copied on every spawn.
+5. `<matrix>/default_profile_a.claude.linux`
+6. `<matrix>/default_profile_a.claude`
+7. `<matrix>/default.claude.linux`
+8. `<matrix>/default.claude`
+9. `<workspace>/coding-agents/_seed/.claude.linux`
+10. `<workspace>/coding-agents/_seed/.claude` - the AC factory fallback, used **only** when none of the above exists **and** the replica has no `.claude` yet.
+
+On Windows the same list reads `.claude.windows`, on macOS `.claude.macos`; on any other target ranks 1, 3, 5, 7 and 9 are absent.
 
 The first that qualifies is copied to `<replica>/.claude`. So `<workspace>/default.claude`, the user template, always wins ahead of the factory seed; `<workspace>/coding-agents/_seed/.claude` is only the factory fallback that bootstraps a fresh replica.
 
@@ -91,6 +120,8 @@ The first that qualifies is copied to `<replica>/.claude`. So `<workspace>/defau
 AC ships factory masters for three Config folder values only: `.claude`, `.codex`, and `.opencode` (the defaults of the built-in Claude, Codex, and OpenCode agents). **Tier 5 is keyed by the Config folder value, not by agent identity.** It therefore exists for any agent whose Config folder is one of those three, including an agent you create yourself. For any other Config folder value the tier is absent.
 
 AC writes each shipped master into the project's `<workspace>/coding-agents/_seed/<dest>/` at startup and project registration if that master is absent, and never touches one that already exists; when the project master is absent, a pre-migration master left at the legacy `<config_dir>/coding-agents/_seed/<dest>/` is copied into the project verbatim instead of the shipped default, so your edits survive the move. The master is **yours to edit** afterward: change `_seed/.claude/settings.json` and every future absent-only bootstrap uses your edited copy.
+
+One further condition sits in front of both the master above and the button below. Each shipped master belongs to a built-in agent key, and AC drops a master whose key is switched off in the built-in support table in the code ([#1912](https://github.com/mblua/AgentsCommander/issues/1912)). A disabled key ships no factory master and shows no Re-seed button, whatever the Config folder or command says. All three master-carrying keys are enabled in the shipped build, so today nothing is dropped.
 
 **Settings -> Coding Agents** shows a **Re-seed default configuration** button on any agent whose command is exactly `claude`, `codex`, or `opencode`. That button is gated on the **command's executable basename**, not on the Config folder, so a custom agent that runs `claude` shows it too. It restores the master for that command's shipped Config folder back to the version AC ships:
 
@@ -126,7 +157,7 @@ A successful seed logs one `info`-level line. With `logLevel` at `info` (the def
 [config-seed] seeded 'C:\tools\.ac\room-1-team\__agent_claude\.claude' into replica from WorkspaceBase source 'C:\tools\.ac\default.claude'
 ```
 
-The tier in the message (`WorkspaceProfile`, `WorkspaceBase`, `MatrixProfile`, `MatrixBase`, or `CatalogDefault` for the factory default) tells you which source won. If you see no `[config-seed]` line at all, the seed did not run; see [Troubleshooting](#troubleshooting). See [Log filtering](../reference/log-filtering.md#where-logs-go) for where `app.log` lives and how to raise the log level.
+The tier in the message (`WorkspaceProfile`, `WorkspaceBase`, `MatrixProfile`, `MatrixBase`, or `CatalogDefault` for the factory default) tells you which source won. When an **OS variant** won, the tier carries a `+os` suffix - `WorkspaceBase+os` - so you can tell `default.claude.linux` from `default.claude` at a glance. The same marker appears in the `info` line that lists every candidate when no source was found. If you see no `[config-seed]` line at all, the seed did not run; see [Troubleshooting](#troubleshooting). See [Log filtering](../reference/log-filtering.md#where-logs-go) for where `app.log` lives and how to raise the log level.
 
 ## Recording in the seed manifest
 

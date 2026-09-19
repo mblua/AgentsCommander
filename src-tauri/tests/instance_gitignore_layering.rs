@@ -87,7 +87,7 @@
 //! is expected; it changes nothing else.
 //!
 //! **This file is the canonical copy.** Section 5.4 of
-//! `plans/1273-extract-instance-gitignore-from-scc.md` quotes it verbatim, but
+//! `.ac/plans/1273-extract-instance-gitignore-from-scc.md` quotes it verbatim, but
 //! that quote is a snapshot taken when the plan was certified. The first appended
 //! entry makes the two diverge, and that is expected: this file runs, the plan
 //! does not. Append here and leave the plan alone.
@@ -1955,7 +1955,7 @@ fn the_constant_home_names_nothing_at_all() {
          INSTEAD: if this module needs something, that something belongs below \
          it. Adding the first row to ALLOWED_HOST_CRATE_REFERENCES is a decision \
          about the crate's shape and has to be argued in the commit, and Section \
-         4.3 of `plans/1273-extract-instance-gitignore-from-scc.md` has to be \
+         4.3 of `.ac/plans/1273-extract-instance-gitignore-from-scc.md` has to be \
          rewritten before the dependency is added."
     );
 

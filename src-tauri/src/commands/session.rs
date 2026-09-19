@@ -3781,7 +3781,7 @@ fn effective_restart_requested_profile(
 /// return `Ok(None)` and silently keep the old recipe). Root agents and plain
 /// terminals have no `currentCodingAgent`, so they fall straight through to
 /// `stored_agent_id` and their behavior is unchanged.
-fn resolve_restart_selected_agent_id(
+pub(crate) fn resolve_restart_selected_agent_id(
     settings: &AppSettings,
     cwd: &str,
     requested_agent_id: Option<&str>,
@@ -5508,8 +5508,8 @@ mod tests {
         assert_eq!(resolved.idle_threshold, per_kind.idle_threshold);
         assert_eq!(resolved.resize_grace, per_kind.resize_grace);
 
-        // An entry with `idleBurst: null` leaves the filter off, exactly like
-        // the plain per-kind tuning.
+        // #2156 - an entry with `idleBurst: null` means no override, so the
+        // per-kind filter stays ON.
         let off = catalog_rows(serde_json::json!([claude_entry(serde_json::Value::Null)]));
         let resolved = resolve_launch_idle_tuning(
             &settings,
@@ -5519,22 +5519,29 @@ mod tests {
         );
         assert_eq!(resolved, per_kind);
 
-        // No agent id, no configured agent, or no matching command: off.
-        for (agent_id, command) in [
-            (None, "claude"),
-            (Some("nope"), "claude"),
-            (Some("claude"), "mystery"),
+        // No agent id, no configured agent, or no matching command: the
+        // override is dropped. #2156 - the per-kind tuning then decides, so a
+        // recognised kind keeps the filter ON and an unrecognised one is OFF.
+        for (agent_id, command, agent_kind) in [
+            (None, "claude", Some(CodingAgentKind::Claude)),
+            (Some("nope"), "claude", Some(CodingAgentKind::Claude)),
+            (Some("claude"), "mystery", Some(CodingAgentKind::Claude)),
+            (None, "claude", None),
         ] {
             let mut probe = test_settings();
             probe.agents[0].command = command.to_string();
-            let resolved = resolve_launch_idle_tuning(
-                &probe,
-                agent_id,
-                Some(CodingAgentKind::Claude),
-                &catalog,
+            let resolved = resolve_launch_idle_tuning(&probe, agent_id, agent_kind, &catalog);
+            let expected = match agent_kind {
+                Some(_) => crate::session::profile::IdleTuning::AGENT_DEFAULT,
+                None => crate::session::profile::IdleTuning::DEFAULT,
+            };
+            assert_eq!(
+                resolved, expected,
+                "agent_id={agent_id:?} kind={agent_kind:?}"
             );
-            assert_eq!(resolved.burst_max_bytes, 0, "agent_id={agent_id:?}");
-            assert_eq!(resolved.burst_window, Duration::ZERO);
+            if agent_kind.is_none() {
+                assert_eq!(resolved.burst_max_bytes, 0);
+            }
         }
 
         // Two entries share the basename; the second states the configured

@@ -101,7 +101,14 @@ pub async fn deliver_loop_prompt(
                     );
                 }
             }
-            match spawn_coordinator_session(app, &target, lookup.had_any_match).await {
+            match spawn_coordinator_session(
+                app,
+                &target,
+                lookup.had_any_match,
+                lookup.persisted_agent.clone(),
+            )
+            .await
+            {
                 Ok(session) => session,
                 Err(e) => return failed_report(Some(target_fqn), None, e),
             }
@@ -262,11 +269,21 @@ fn failed_report(
     }
 }
 
+/// #2176 - the agent pin carried by the replica's persisted session record:
+/// the `agentId` the session was launched with and its stored
+/// `requestedProfile` (always from the same record).
+#[derive(Debug, Clone, PartialEq)]
+struct PersistedCoordinatorAgent {
+    agent_id: String,
+    requested_profile: Option<String>,
+}
+
 #[derive(Debug)]
 struct CoordinatorSessionLookup {
     live: Option<SessionInfo>,
     stale_session_ids: Vec<Uuid>,
     had_any_match: bool,
+    persisted_agent: Option<PersistedCoordinatorAgent>,
 }
 
 async fn find_coordinator_session(
@@ -276,9 +293,12 @@ async fn find_coordinator_session(
     let target_key = path_compare_key(coordinator_replica_dir);
     let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
     let mgr = session_mgr.read().await;
-    let mut matches = mgr
-        .list_sessions()
-        .await
+    let sessions = mgr.list_sessions().await;
+    // #2176 - the persisted agent pin is extracted from the same unfiltered
+    // snapshot the live/stale logic uses. The helper repeats the filter and
+    // status ordering on purpose, so the extraction is one tested unit.
+    let persisted_agent = persisted_agent_for_replica(&sessions, coordinator_replica_dir);
+    let mut matches = sessions
         .into_iter()
         .filter(|session| path_compare_key(Path::new(&session.working_directory)) == target_key)
         .collect::<Vec<_>>();
@@ -313,6 +333,7 @@ async fn find_coordinator_session(
                 live: Some(session),
                 stale_session_ids,
                 had_any_match,
+                persisted_agent,
             });
         }
         if loop_candidate_should_respawn(&session.status, has_pty) {
@@ -330,6 +351,40 @@ async fn find_coordinator_session(
         live: None,
         stale_session_ids,
         had_any_match,
+        persisted_agent,
+    })
+}
+
+/// #2176 - pure extraction of the replica's pinned agent from the unfiltered
+/// `list_sessions()` output. It reproduces, in order, what
+/// `find_coordinator_session` does to its own candidates: the same
+/// working-directory filter, then the same status ordering (`sort_by_key` is
+/// stable, so within one status rank the registry order is preserved). The
+/// first remaining entry with an `agentId` wins; an entry without one is
+/// skipped, not treated as a stop. The profile is always taken from the same
+/// record as the agent id.
+fn persisted_agent_for_replica(
+    sessions: &[SessionInfo],
+    replica_dir: &Path,
+) -> Option<PersistedCoordinatorAgent> {
+    let target_key = path_compare_key(replica_dir);
+    let mut matches = sessions
+        .iter()
+        .filter(|session| path_compare_key(Path::new(&session.working_directory)) == target_key)
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|session| match session.status {
+        SessionStatus::Active | SessionStatus::Running => 0u8,
+        SessionStatus::Idle => 1,
+        SessionStatus::Exited(_) => 2,
+    });
+    matches.into_iter().find_map(|session| {
+        session
+            .agent_id
+            .as_ref()
+            .map(|agent_id| PersistedCoordinatorAgent {
+                agent_id: agent_id.clone(),
+                requested_profile: session.requested_profile.clone(),
+            })
     })
 }
 
@@ -351,8 +406,14 @@ async fn spawn_coordinator_session(
     app: &AppHandle,
     target: &crate::config::loops::ResolvedLoopTarget,
     had_existing_match: bool,
+    persisted_agent: Option<PersistedCoordinatorAgent>,
 ) -> Result<SessionInfo, String> {
-    let command = resolve_loop_agent_command(app, &target.coordinator_replica_dir).await?;
+    let command = resolve_loop_agent_command(
+        app,
+        &target.coordinator_replica_dir,
+        persisted_agent.as_ref(),
+    )
+    .await?;
     let session_name = format!(
         "{}/{}",
         target
@@ -470,6 +531,7 @@ async fn set_last_prompt(app: &AppHandle, session_id: Uuid, prompt: String) -> R
 async fn resolve_loop_agent_command(
     app: &AppHandle,
     replica_dir: &Path,
+    persisted_agent: Option<&PersistedCoordinatorAgent>,
 ) -> Result<ResolvedLoopAgentCommand, String> {
     let replica_dir = crate::path_utils::normalize_windows_verbatim_path_buf(replica_dir);
     let replica_dir = replica_dir.as_path();
@@ -479,9 +541,63 @@ async fn resolve_loop_agent_command(
         settings
     };
 
-    let local_last = read_last_coding_agent(replica_dir);
-    if let Some(agent_id) = local_last.as_deref() {
-        if let Some(command) = command_for_agent(&settings, agent_id, replica_dir)? {
+    resolve_loop_agent_command_from_settings(&settings, replica_dir, persisted_agent)
+}
+
+/// #2176 - the whole Loop wake agent decision, kept free of `AppHandle` so it
+/// is directly unit-testable.
+///
+/// Rank 1 (`tooling.currentCodingAgent`, validated) and rank 2 (the persisted
+/// session's `agentId`) both come through
+/// `resolve_restart_selected_agent_id`, the manual restart path's own
+/// function. Rank 3 (`tooling.lastCodingAgent`) is a deliberate legacy
+/// allowance kept only for a replica that has neither of the first two; it is
+/// not claimed as manual-path parity. `settings.agents.first()` is gone: a
+/// replica with no pin fails closed instead of silently waking a different
+/// agent.
+fn resolve_loop_agent_command_from_settings(
+    settings: &AppSettings,
+    replica_dir: &Path,
+    persisted_agent: Option<&PersistedCoordinatorAgent>,
+) -> Result<ResolvedLoopAgentCommand, String> {
+    let replica_dir_string =
+        crate::path_utils::path_to_string_without_windows_verbatim_prefix(replica_dir);
+    let selected = crate::commands::session::resolve_restart_selected_agent_id(
+        settings,
+        &replica_dir_string,
+        None,
+        persisted_agent.map(|p| p.agent_id.as_str()),
+    );
+    let requested_profile = persisted_agent.and_then(|p| p.requested_profile.clone());
+
+    if let Some(selected_id) = selected.as_deref() {
+        if let Some(command) = command_for_agent(
+            settings,
+            selected_id,
+            replica_dir,
+            requested_profile.as_deref(),
+        )? {
+            return Ok(command);
+        }
+        // `resolve_restart_selected_agent_id` validates rank 1 against
+        // `settings.agents`, so an unconfigured `Some` can only be the
+        // persisted `agentId`. That pin wins over `lastCodingAgent`, so a
+        // deleted agent fails closed here and rank 3 is never consulted.
+        let message = format!(
+            "[loops] Replica '{}' is pinned to coding agent '{}', which is not configured; refusing to wake with a different agent",
+            replica_dir_string, selected_id
+        );
+        log::warn!("{}", message);
+        return Err(message);
+    }
+
+    if let Some(agent_id) = read_last_coding_agent(replica_dir) {
+        if let Some(command) = command_for_agent(
+            settings,
+            &agent_id,
+            replica_dir,
+            requested_profile.as_deref(),
+        )? {
             return Ok(command);
         }
         log::warn!(
@@ -490,12 +606,12 @@ async fn resolve_loop_agent_command(
         );
     }
 
-    if let Some(agent) = settings.agents.first() {
-        let spawn = build_agent_spawn_command(&settings, &agent.id, Some(replica_dir), None)?;
-        return Ok(resolved_loop_command_from_spawn(spawn, &settings));
-    }
-
-    Err("No coding agent is configured for Loop orchestrator wake".to_string())
+    let message = format!(
+        "[loops] No pinned coding agent for '{}': tooling.currentCodingAgent, the persisted session agentId and tooling.lastCodingAgent are all absent or not configured",
+        replica_dir_string
+    );
+    log::warn!("{}", message);
+    Err(message)
 }
 
 fn resolved_loop_command_from_spawn(
@@ -521,11 +637,13 @@ fn command_for_agent(
     settings: &AppSettings,
     agent_id: &str,
     replica_dir: &Path,
+    requested_profile: Option<&str>,
 ) -> Result<Option<ResolvedLoopAgentCommand>, String> {
     let Some(agent) = settings.agents.iter().find(|agent| agent.id == agent_id) else {
         return Ok(None);
     };
-    let spawn = build_agent_spawn_command(settings, &agent.id, Some(replica_dir), None)?;
+    let spawn =
+        build_agent_spawn_command(settings, &agent.id, Some(replica_dir), requested_profile)?;
     Ok(Some(resolved_loop_command_from_spawn(spawn, settings)))
 }
 
@@ -554,6 +672,8 @@ mod tests {
         write_loop_config, LoopDef, LoopPolicy, LoopPrompt, LoopTarget, LoopTargetKind,
         LoopTrigger, LoopTriggerKind, LOOP_TIMEZONE_LOCAL,
     };
+    use crate::config::settings::{AgentConfig, ProfileCellConfig};
+    use std::collections::BTreeMap;
 
     #[test]
     #[cfg(windows)]
@@ -825,5 +945,316 @@ mod tests {
         )
         .is_some());
         assert!(!dir.exists());
+    }
+
+    // ── #2176 - Loop wake agent resolution ──
+
+    fn loop_test_agent(id: &str, command: &str) -> AgentConfig {
+        AgentConfig {
+            id: id.to_string(),
+            label: id.to_string(),
+            command: command.to_string(),
+            color: "#000000".to_string(),
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+            context_regex: None,
+            blocking_menus: None,
+            backend: Default::default(),
+        }
+    }
+
+    /// Two agents with codex first, plus one enabled profile cell carrying a
+    /// distinctive env row. As in `config/agent_command.rs`'s fixtures, codex
+    /// being first is what makes any surviving `settings.agents.first()`
+    /// behavior fail the assertions.
+    fn loop_test_settings_with_cell(
+        agent_id: &str,
+        letter: &str,
+        env_key: &str,
+        env_value: &str,
+    ) -> AppSettings {
+        let mut settings = AppSettings {
+            agents: vec![
+                loop_test_agent("codex", "codex"),
+                loop_test_agent("claude", "claude"),
+            ],
+            ..AppSettings::default()
+        };
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry(agent_id.to_string())
+            .or_default()
+            .insert(
+                letter.to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: String::new(),
+                    env: BTreeMap::from([(env_key.to_string(), env_value.to_string())]),
+                    notes: String::new(),
+                },
+            );
+        settings
+    }
+
+    /// A real replica directory so `path_compare_key`'s `canonicalize`
+    /// succeeds, laid out as `<tmp>/.ac/wg-7-dev-team/__agent_dev-rust`.
+    fn loop_test_replica_dir(tmp: &tempfile::TempDir) -> PathBuf {
+        let replica = tmp
+            .path()
+            .join(".ac")
+            .join("wg-7-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&replica).expect("create replica dir");
+        replica
+    }
+
+    fn write_replica_config(replica: &Path, tooling: &str) {
+        std::fs::write(
+            replica.join("config.json"),
+            format!(r#"{{"tooling":{}}}"#, tooling),
+        )
+        .expect("write replica config.json");
+    }
+
+    fn session_info_for_test(
+        id: &str,
+        cwd: &str,
+        status: SessionStatus,
+        agent_id: Option<&str>,
+        requested_profile: Option<&str>,
+    ) -> SessionInfo {
+        SessionInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            shell: "claude".to_string(),
+            shell_args: Vec::new(),
+            backend_kind: crate::pty::backend::SessionBackendKind::LocalProcess,
+            effective_shell_args: None,
+            created_at: "2026-05-16T00:00:00Z".to_string(),
+            working_directory: cwd.to_string(),
+            status,
+            waiting_for_input: false,
+            communication: None,
+            pending_review: false,
+            last_prompt: None,
+            agent_id: agent_id.map(str::to_string),
+            agent_label: agent_id.map(str::to_string),
+            git_repos: Vec::new(),
+            workgroup_task: None,
+            is_coordinator: true,
+            is_root_agent: false,
+            token: "t".to_string(),
+            agent_kind: None,
+            requested_profile: requested_profile.map(str::to_string),
+            effective_profile: None,
+            profile_fallback_chain: Vec::new(),
+            profile_fallback_applied: false,
+            effective_codex_home: None,
+            profile_content_hash: None,
+            trusted_configured_spawn: false,
+            profile_outdated: false,
+            telegram_bot_id: None,
+            was_detached: false,
+            detached_geometry: None,
+            start_fresh_on_restore: false,
+            context_percent: None,
+        }
+    }
+
+    /// Issue acceptance criterion 4: no `lastCodingAgent`, no
+    /// `currentCodingAgent`, still resolves the persisted session's agent and
+    /// its stored profile letter, and the profile cell is actually applied.
+    #[test]
+    fn loop_resolves_persisted_agent_and_profile_when_last_coding_agent_is_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let replica = loop_test_replica_dir(&tmp);
+        write_replica_config(&replica, "{}");
+        let settings =
+            loop_test_settings_with_cell("claude", "E", "LOOP_TEST_PROFILE_E", "applied");
+        let persisted = PersistedCoordinatorAgent {
+            agent_id: "claude".to_string(),
+            requested_profile: Some("E".to_string()),
+        };
+
+        let command =
+            resolve_loop_agent_command_from_settings(&settings, &replica, Some(&persisted))
+                .expect("persisted agent should resolve");
+
+        assert_eq!(command.agent_id.as_deref(), Some("claude"));
+        let spawn = command.resolved_spawn.expect("resolved spawn");
+        assert_eq!(spawn.trusted_agent_id, "claude");
+        assert_eq!(spawn.profile_resolution.requested_profile, "E");
+        assert!(
+            spawn
+                .child_env
+                .iter()
+                .any(|(key, value)| key == "LOOP_TEST_PROFILE_E" && value == "applied"),
+            "profile cell env row must be applied, child_env={:?}",
+            spawn.child_env
+        );
+    }
+
+    /// Rank 1 (`currentCodingAgent`) outranks rank 2 (the persisted agentId).
+    #[test]
+    fn loop_prefers_current_coding_agent_over_persisted_agent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let replica = loop_test_replica_dir(&tmp);
+        write_replica_config(&replica, r#"{"currentCodingAgent":"claude"}"#);
+        let settings =
+            loop_test_settings_with_cell("claude", "E", "LOOP_TEST_PROFILE_E", "applied");
+        let persisted = PersistedCoordinatorAgent {
+            agent_id: "codex".to_string(),
+            requested_profile: None,
+        };
+
+        let command =
+            resolve_loop_agent_command_from_settings(&settings, &replica, Some(&persisted))
+                .expect("currentCodingAgent should resolve");
+
+        assert_eq!(command.agent_id.as_deref(), Some("claude"));
+    }
+
+    /// Rank 3 is the explicit legacy tail: no persisted record and no
+    /// `currentCodingAgent`, but a configured `lastCodingAgent`.
+    #[test]
+    fn loop_falls_back_to_last_coding_agent_when_no_session_record() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let replica = loop_test_replica_dir(&tmp);
+        write_replica_config(&replica, r#"{"lastCodingAgent":"claude"}"#);
+        let settings =
+            loop_test_settings_with_cell("claude", "E", "LOOP_TEST_PROFILE_E", "applied");
+
+        let command = resolve_loop_agent_command_from_settings(&settings, &replica, None)
+            .expect("legacy lastCodingAgent tail should resolve");
+
+        assert_eq!(command.agent_id.as_deref(), Some("claude"));
+    }
+
+    /// The deleted `settings.agents.first()` fallback: with no pin at all the
+    /// resolver must fail closed instead of waking codex just because it is
+    /// first in `settings.agents`.
+    #[test]
+    fn loop_resolution_fails_closed_without_any_pinned_agent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let replica = loop_test_replica_dir(&tmp);
+        write_replica_config(&replica, "{}");
+        let settings =
+            loop_test_settings_with_cell("claude", "E", "LOOP_TEST_PROFILE_E", "applied");
+
+        let err = resolve_loop_agent_command_from_settings(&settings, &replica, None)
+            .expect_err("no pin must fail closed");
+
+        assert!(
+            err.contains("No pinned coding agent"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Decision 2.1: a persisted record naming a deleted agent is the pin, so
+    /// resolution errors instead of falling back to `lastCodingAgent`.
+    #[test]
+    fn loop_fails_closed_when_persisted_agent_is_not_configured() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let replica = loop_test_replica_dir(&tmp);
+        write_replica_config(&replica, r#"{"lastCodingAgent":"codex"}"#);
+        let settings =
+            loop_test_settings_with_cell("claude", "E", "LOOP_TEST_PROFILE_E", "applied");
+        let persisted = PersistedCoordinatorAgent {
+            agent_id: "ghost".to_string(),
+            requested_profile: Some("E".to_string()),
+        };
+
+        let err = resolve_loop_agent_command_from_settings(&settings, &replica, Some(&persisted))
+            .expect_err("an unconfigured pin must fail closed");
+
+        assert!(err.contains("ghost"), "unexpected error: {err}");
+        assert!(err.contains("not configured"), "unexpected error: {err}");
+    }
+
+    /// Most-live status first, then registry insertion order; an agent-less
+    /// record is skipped and its profile is never borrowed.
+    #[test]
+    fn persisted_agent_skips_records_without_an_agent_and_pins_the_tie_break() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let replica = loop_test_replica_dir(&tmp);
+        let sibling = tmp.path().join("sibling");
+        std::fs::create_dir_all(&sibling).expect("create sibling dir");
+        let replica_cwd = replica.to_string_lossy().to_string();
+        let sibling_cwd = sibling.to_string_lossy().to_string();
+
+        let rows = vec![
+            session_info_for_test(
+                "sibling",
+                &sibling_cwd,
+                SessionStatus::Idle,
+                Some("codex"),
+                Some("Z"),
+            ),
+            session_info_for_test(
+                "no-agent",
+                &replica_cwd,
+                SessionStatus::Idle,
+                None,
+                Some("Z"),
+            ),
+            session_info_for_test(
+                "claude",
+                &replica_cwd,
+                SessionStatus::Idle,
+                Some("claude"),
+                Some("E"),
+            ),
+            session_info_for_test(
+                "codex",
+                &replica_cwd,
+                SessionStatus::Idle,
+                Some("codex"),
+                Some("B"),
+            ),
+        ];
+
+        assert_eq!(
+            persisted_agent_for_replica(&rows, &replica),
+            Some(PersistedCoordinatorAgent {
+                agent_id: "claude".to_string(),
+                requested_profile: Some("E".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn persisted_agent_prefers_the_most_live_status() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let replica = loop_test_replica_dir(&tmp);
+        let replica_cwd = replica.to_string_lossy().to_string();
+
+        let rows = vec![
+            session_info_for_test(
+                "codex",
+                &replica_cwd,
+                SessionStatus::Exited(0),
+                Some("codex"),
+                Some("B"),
+            ),
+            session_info_for_test(
+                "claude",
+                &replica_cwd,
+                SessionStatus::Active,
+                Some("claude"),
+                Some("E"),
+            ),
+        ];
+
+        assert_eq!(
+            persisted_agent_for_replica(&rows, &replica),
+            Some(PersistedCoordinatorAgent {
+                agent_id: "claude".to_string(),
+                requested_profile: Some("E".to_string()),
+            })
+        );
+        assert_eq!(persisted_agent_for_replica(&[], &replica), None);
     }
 }
