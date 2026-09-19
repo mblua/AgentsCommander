@@ -3,11 +3,13 @@ import type { SessionSelection } from "../shared/types";
 import { liveSelection, SESSION_A, userLiveSelection, userNoneSelection } from "../shared/testing/session-selection";
 
 type SwitchedPayload = SessionSelection;
+type ViewRequestedPayload = { id: string };
 
 // Capture the listener callbacks so cases can fire crafted payloads through the
 // same code path the backend would use (mirrors listeners-home.test.ts).
 const m = vi.hoisted(() => ({
   switchedCb: null as ((data: SwitchedPayload) => void) | null,
+  viewRequestedCb: null as ((data: ViewRequestedPayload) => void) | null,
   attachCb: null as (() => void) | null,
   setAttached: vi.fn(() => Promise.resolve()),
 }));
@@ -22,6 +24,10 @@ vi.mock("../shared/ipc", () => ({
   }),
   onResourceMonitorAttach: vi.fn((cb: () => void) => {
     m.attachCb = cb;
+    return Promise.resolve(() => {});
+  }),
+  onSessionViewRequested: vi.fn((cb: (data: ViewRequestedPayload) => void) => {
+    m.viewRequestedCb = cb;
     return Promise.resolve(() => {});
   }),
   // centralViewStore imports SettingsAPI; stub the narrow setter it persists with
@@ -40,6 +46,7 @@ describe("wireCentralViewListeners (issue #587)", () => {
     vi.clearAllMocks();
     __resetCentralViewStoreForTests();
     m.switchedCb = null;
+    m.viewRequestedCb = null;
     m.attachCb = null;
   });
 
@@ -84,5 +91,31 @@ describe("wireCentralViewListeners (issue #587)", () => {
     m.attachCb!();
     expect(centralViewStore.isResourceMonitor).toBe(true);
     expect(m.setAttached).toHaveBeenCalledWith(true);
+  });
+
+  it("onSessionViewRequested reveals the terminal after a non-user switch leaves RM in place", async () => {
+    centralViewStore.setInitialView("resourceMonitor");
+    await wireCentralViewListeners();
+
+    // Boot restore: the non-user switch must not move the view.
+    m.switchedCb!(liveSelection(SESSION_A));
+    expect(centralViewStore.isResourceMonitor).toBe(true);
+
+    m.viewRequestedCb!({ id: SESSION_A });
+    expect(centralViewStore.isResourceMonitor).toBe(false);
+    expect(m.setAttached).toHaveBeenCalledWith(false);
+  });
+
+  it("onSessionViewRequested with an empty id leaves RM in place", async () => {
+    centralViewStore.setInitialView("resourceMonitor");
+    await wireCentralViewListeners();
+
+    m.viewRequestedCb!({ id: "" });
+    expect(centralViewStore.isResourceMonitor).toBe(true);
+
+    // Positive control: the callback is registered and reachable, so the
+    // empty-id case above proved suppression and not a dead listener.
+    m.viewRequestedCb!({ id: SESSION_A });
+    expect(centralViewStore.isResourceMonitor).toBe(false);
   });
 });

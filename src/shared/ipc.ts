@@ -578,6 +578,12 @@ export function onSessionDestroyed(
   return transport.listen<{ id: string }>("session_destroyed", callback);
 }
 
+export function onSessionViewRequested(
+  callback: (data: { id: string }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ id: string }>("session_view_requested", callback);
+}
+
 export function onSessionSwitched(
   callback: (data: SessionSelection, deliveryGeneration: number) => void
 ): Promise<UnlistenFn> {

@@ -8,7 +8,6 @@ import { bridgesStore } from "../stores/bridges";
 import { sessionsStore } from "../stores/sessions";
 import { requestCoordinatorClose } from "../stores/coordinator-close";
 import { settingsStore } from "../../shared/stores/settings";
-import { centralViewStore } from "../../main/stores/centralView";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
@@ -118,7 +117,6 @@ const SessionItem: Component<{
   };
 
   const handleClick = async () => {
-    centralViewStore.showTerminal();
     await SessionAPI.switch(props.session.id);
     if (isTauri) {
       const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
