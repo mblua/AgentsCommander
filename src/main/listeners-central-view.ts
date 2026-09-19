@@ -1,4 +1,4 @@
-import { onResourceMonitorAttach, onSessionSwitched } from "../shared/ipc";
+import { onResourceMonitorAttach, onSessionSwitched, onSessionViewRequested } from "../shared/ipc";
 import type { UnlistenFn } from "../shared/transport";
 import { centralViewStore } from "./stores/centralView";
 
@@ -15,9 +15,11 @@ import { centralViewStore } from "./stores/centralView";
  *   flip away from RM: `centralViewStore.showTerminal()` persists `false`, which
  *   would defeat the restored `mainResourceMonitorAttached` choice (plan §6) and
  *   yank the RM view away mid-use. This mirrors the Home listener's discriminator
- *   (`listeners-home.ts`). Explicit user clicks are additionally covered by
- *   `SessionItem.handleClick`, which calls `showTerminal()` directly (so an
- *   already-active click, which emits no `session_switched`, still covers RM).
+ *   (`listeners-home.ts`).
+ * - `onSessionViewRequested`: covers the already-active user click, which
+ *   commits without changing the selection and so emits no `session_switched`
+ *   (issue #2222). The backend emits it only for an accepted user switch, so
+ *   there is no `userInitiated` filter here.
  * - `resource_monitor_attach`: the detached RM window asks the main window to
  *   pull RM back into the central pane.
  *
@@ -29,6 +31,12 @@ export async function wireCentralViewListeners(): Promise<UnlistenFn[]> {
   unlisteners.push(
     await onSessionSwitched(({ id, userInitiated }) => {
       if (id && userInitiated === true) centralViewStore.showTerminal();
+    })
+  );
+
+  unlisteners.push(
+    await onSessionViewRequested(({ id }) => {
+      if (id) centralViewStore.showTerminal();
     })
   );
 

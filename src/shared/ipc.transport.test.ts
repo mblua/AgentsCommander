@@ -110,6 +110,31 @@ describe("shared ipc transport seam", () => {
     }
   });
 
+  // #2222 boundary pin: this is the only test that loads the real ipc module
+  // for the new event. The listener suites swap `../shared/ipc` for a mocked
+  // factory that never sees an event string, so F-T1..F-T4 stay green even if
+  // this literal is misspelled here.
+  it("binds onSessionViewRequested to the exact session_view_requested event name", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      const viewRequested = vi.fn();
+      const unlisten = await ipc.onSessionViewRequested(viewRequested);
+      expect(fake.listensFor("session_view_requested")).toHaveLength(1);
+
+      fake.emitFromBackend("session_view_requested", { id: SESSION_A });
+      expect(viewRequested).toHaveBeenCalledTimes(1);
+      expect(viewRequested).toHaveBeenCalledWith({ id: SESSION_A });
+
+      unlisten();
+      fake.emitFromBackend("session_view_requested", { id: SESSION_A });
+      expect(viewRequested).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
+  });
+
   it("rejects malformed hydration and exposes local connection snapshots", async () => {
     vi.resetModules();
     const ipc = await import("./ipc");

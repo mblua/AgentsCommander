@@ -1,4 +1,9 @@
-import { SessionAPI, onSessionDestroyed, onSessionSwitched } from "../shared/ipc";
+import {
+  SessionAPI,
+  onSessionDestroyed,
+  onSessionSwitched,
+  onSessionViewRequested,
+} from "../shared/ipc";
 import type { UnlistenFn } from "../shared/transport";
 import { homeStore } from "./stores/home";
 
@@ -17,6 +22,9 @@ import { homeStore } from "./stores/home";
  * - `session_destroyed`: shows Home when the LAST session goes away
  *   (issue #164 contract). Yields a microtask so TerminalApp's destroy
  *   handler can settle before we re-query the session list.
+ * - `onSessionViewRequested`: hides Home when the backend accepted a user
+ *   click on an already-selected row (issue #2222). The backend emits it only
+ *   for a user switch it accepted, so there is no `userInitiated` filter here.
  *
  * The `session_created` listener was removed in #183: that event fires for
  * restored AND backend-driven creations (mailbox / web / coordinator
@@ -50,6 +58,12 @@ export async function wireHomeListeners(): Promise<UnlistenFn[]> {
       } catch (e) {
         console.error("[home] Failed to query session list after destroy:", e);
       }
+    })
+  );
+
+  unlisteners.push(
+    await onSessionViewRequested(({ id }) => {
+      if (id) homeStore.hide();
     })
   );
 

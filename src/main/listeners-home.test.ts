@@ -4,12 +4,14 @@ import { liveSelection, SESSION_A, userLiveSelection, userNoneSelection } from "
 
 type SwitchedPayload = SessionSelection;
 type DestroyedPayload = { id: string };
+type ViewRequestedPayload = { id: string };
 
 // Capture the listener callbacks so individual cases can fire crafted
 // payloads through the same code path the backend would use.
 const m = vi.hoisted(() => ({
   switchedCb: null as ((data: SwitchedPayload) => void) | null,
   destroyedCb: null as ((data: DestroyedPayload) => void | Promise<void>) | null,
+  viewRequestedCb: null as ((data: ViewRequestedPayload) => void) | null,
   list: vi.fn(),
 }));
 
@@ -25,6 +27,10 @@ vi.mock("../shared/ipc", () => ({
     m.destroyedCb = cb;
     return Promise.resolve(() => {});
   }),
+  onSessionViewRequested: vi.fn((cb: (data: ViewRequestedPayload) => void) => {
+    m.viewRequestedCb = cb;
+    return Promise.resolve(() => {});
+  }),
   // homeStore imports HomeAPI; stub it so the module graph loads.
   HomeAPI: { fetchMarkdown: vi.fn() },
 }));
@@ -38,6 +44,7 @@ describe("wireHomeListeners (issue #183)", () => {
     __resetHomeStoreForTests();
     m.switchedCb = null;
     m.destroyedCb = null;
+    m.viewRequestedCb = null;
   });
 
   it("shows Home unconditionally on wire-up", async () => {
@@ -89,6 +96,31 @@ describe("wireHomeListeners (issue #183)", () => {
     homeStore.hide();
     expect(homeStore.visible).toBe(false);
     await m.destroyedCb!({ id: "abc" });
+    expect(homeStore.visible).toBe(false);
+  });
+
+  it("onSessionViewRequested hides Home after a non-user restore leaves it visible", async () => {
+    await wireHomeListeners();
+    expect(homeStore.visible).toBe(true);
+
+    // Boot restore: an already-selected row that carries no user intent.
+    m.switchedCb!(liveSelection(SESSION_A));
+    expect(homeStore.visible).toBe(true);
+
+    m.viewRequestedCb!({ id: SESSION_A });
+    expect(homeStore.visible).toBe(false);
+  });
+
+  it("onSessionViewRequested with an empty id leaves Home visible", async () => {
+    await wireHomeListeners();
+    expect(homeStore.visible).toBe(true);
+
+    m.viewRequestedCb!({ id: "" });
+    expect(homeStore.visible).toBe(true);
+
+    // Positive control: the callback is registered and reachable, so the
+    // empty-id case above proved suppression and not a dead listener.
+    m.viewRequestedCb!({ id: SESSION_A });
     expect(homeStore.visible).toBe(false);
   });
 });
