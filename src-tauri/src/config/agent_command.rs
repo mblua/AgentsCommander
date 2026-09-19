@@ -922,10 +922,13 @@ pub(crate) fn resolve_agent_spawn_command(
     // later at the single session chokepoint (create_session_inner).
     let seed = match seed_choice {
         Some(cfg) => {
+            // #2162: the host OS token drives the `.<os>` refinement of every tier.
+            let os_token = crate::config::config_seed::host_os_token();
             let mut resolved = crate::config::config_seed::resolve_config_seed(
                 cfg,
                 &profile_resolution.effective_profile,
                 placeholder_context.as_ref(),
+                os_token,
             );
             if let Some(r) = resolved.as_mut() {
                 // #769 P2 + #1318: append the absent-only, non-empty CatalogDefault
@@ -938,25 +941,34 @@ pub(crate) fn resolve_agent_spawn_command(
                 // location. The master exists only for built-ins that ship one; for
                 // any other dest the candidate path is absent and the tier is inert.
                 let dest = cfg.dest.trim();
-                let master_dir = placeholder_context
+                let master_root = placeholder_context
                     .as_ref()
                     .and_then(|ctx| ctx.ac_root.as_ref())
-                    .map(|ac_root| {
-                        crate::config::coding_agents_catalog::master_dir_for_dest(ac_root, dest)
-                    })
-                    .or_else(|| {
-                        crate::config::config_dir().map(|config_dir| {
-                            crate::config::coding_agents_catalog::master_dir_for_dest(
-                                &config_dir,
+                    .cloned()
+                    .or_else(crate::config::config_dir);
+                if let Some(master_root) = master_root {
+                    // #2162: the OS variant of the master precedes the base one,
+                    // inside the same (absent-only, non-empty-gated) tier.
+                    if let Some(os) = os_token {
+                        r.candidates
+                            .push(crate::config::config_seed::ConfigSeedCandidate {
+                                tier: crate::config::config_seed::ConfigSeedTier::CatalogDefault,
+                                os_specific: true,
+                                path: crate::config::coding_agents_catalog::master_dir_for_dest(
+                                    &master_root,
+                                    &format!("{dest}.{os}"),
+                                ),
+                            });
+                    }
+                    r.candidates
+                        .push(crate::config::config_seed::ConfigSeedCandidate {
+                            tier: crate::config::config_seed::ConfigSeedTier::CatalogDefault,
+                            os_specific: false,
+                            path: crate::config::coding_agents_catalog::master_dir_for_dest(
+                                &master_root,
                                 dest,
-                            )
-                        })
-                    });
-                if let Some(master_dir) = master_dir {
-                    r.candidates.push((
-                        crate::config::config_seed::ConfigSeedTier::CatalogDefault,
-                        master_dir,
-                    ));
+                            ),
+                        });
                 }
                 r.config_dir_warning = crate::config::config_seed::compute_config_dir_warning(
                     &r.dest,
@@ -2325,25 +2337,54 @@ mod tests {
         // (still pure path math; perform_config_seed gates it on absent-dest +
         // non-empty), resolved from the SESSION WORKSPACE's
         // `.ac/coding-agents/_seed/<dest>`.
-        let mut expected = vec![
-            (
-                ConfigSeedTier::WorkspaceProfile,
-                ac_root.join(format!("default_profile_{}.claude", letter)),
-            ),
-            (
-                ConfigSeedTier::WorkspaceBase,
-                ac_root.join("default.claude"),
-            ),
-            (
-                ConfigSeedTier::MatrixProfile,
-                matrix.join(format!("default_profile_{}.claude", letter)),
-            ),
-            (ConfigSeedTier::MatrixBase, matrix.join("default.claude")),
-        ];
-        expected.push((
+        // #2162: each tier is preceded by its `.<os>` variant when the host has
+        // a token, so the list is 10 entries on linux/windows/macos and 5 on any
+        // other target. Built here from the same host token the code uses, so
+        // the assertion is exact on every supported target.
+        use crate::config::config_seed::{host_os_token, ConfigSeedCandidate};
+        let os = host_os_token();
+        let seed_master = ac_root.join("coding-agents").join("_seed");
+        let mut expected: Vec<ConfigSeedCandidate> = Vec::new();
+        let mut tier_pair = |tier: ConfigSeedTier, root: &std::path::Path, folder: String| {
+            if let Some(os) = os {
+                expected.push(ConfigSeedCandidate {
+                    tier,
+                    os_specific: true,
+                    path: root.join(format!("{}.{}", folder, os)),
+                });
+            }
+            expected.push(ConfigSeedCandidate {
+                tier,
+                os_specific: false,
+                path: root.join(folder),
+            });
+        };
+        tier_pair(
+            ConfigSeedTier::WorkspaceProfile,
+            ac_root,
+            format!("default_profile_{}.claude", letter),
+        );
+        tier_pair(
+            ConfigSeedTier::WorkspaceBase,
+            ac_root,
+            "default.claude".to_string(),
+        );
+        tier_pair(
+            ConfigSeedTier::MatrixProfile,
+            &matrix,
+            format!("default_profile_{}.claude", letter),
+        );
+        tier_pair(
+            ConfigSeedTier::MatrixBase,
+            &matrix,
+            "default.claude".to_string(),
+        );
+        tier_pair(
             ConfigSeedTier::CatalogDefault,
-            ac_root.join("coding-agents").join("_seed").join(".claude"),
-        ));
+            &seed_master,
+            ".claude".to_string(),
+        );
+        assert_eq!(seed.candidates.len(), if os.is_some() { 10 } else { 5 });
         assert_eq!(seed.candidates, expected);
         assert_eq!(seed.dest, expected_replica.join(".claude"));
         // Pure resolution: no template dirs were created.

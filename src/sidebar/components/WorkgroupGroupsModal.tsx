@@ -1,7 +1,6 @@
 import { Component, For, Index, Show, createMemo, createResource, createSignal } from "solid-js";
 import { focusOnMount } from "../../shared/focus-on-mount";
 import { SettingsAPI } from "../../shared/ipc";
-import { isWindows } from "../../shared/platform";
 import type { NonStopGroupConfig, WorkgroupGroupsConfig } from "../../shared/types";
 import {
   MAX_GROUP_NAME_LENGTH,
@@ -274,7 +273,6 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
                 <input
                   type="checkbox"
                   checked={ns().sound.enabled}
-                  disabled={!isWindows}
                   onChange={(e) => setNonStopSound({ enabled: e.currentTarget.checked })}
                   data-ac-testid="workgroupGroups.nonstop.soundEnabled"
                 />
@@ -285,19 +283,11 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
                 min="1"
                 max="60"
                 value={ns().sound.seconds}
-                disabled={!isWindows || !ns().sound.enabled}
+                disabled={!ns().sound.enabled}
                 onInput={(e) => setNonStopSound({ seconds: Number(e.currentTarget.value) })}
                 aria-label="Sound alert seconds"
                 data-ac-testid="workgroupGroups.nonstop.soundSeconds"
               />
-              <Show when={!isWindows}>
-                <div
-                  class="workgroup-groups-nonstop-hint"
-                  data-ac-testid="workgroupGroups.nonstop.soundWindowsOnly"
-                >
-                  Sound alert is Windows-only.
-                </div>
-              </Show>
             </div>
           </div>
 
