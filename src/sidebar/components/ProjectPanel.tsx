@@ -81,12 +81,14 @@ import {
 import { sessionDotClass } from "./session-status";
 import { replicaDotClass } from "./replica-dot";
 import {
+  configuredReplicaRepoBadgesLive,
   findReplicaSession as replicaSession,
   isReplicaWorking,
+  replicaCiRunning,
   replicaHasBlockedMenu,
   replicaSessionName,
   workgroupHasBlockedMenu,
-  workgroupIsWorking,
+  workgroupIsActive,
 } from "./workgroup-session";
 import {
   DEFAULT_NON_STOP_NAME,
@@ -225,21 +227,6 @@ function workgroupCollapseId(wg: AcWorkgroup, rowContext: string): string {
 }
 
 export const RESTART_TIMEOUT_MS = 30_000;
-
-function configuredReplicaRepoBadgesLive(
-  replica: AcAgentReplica,
-  workgroup: Pick<AcWorkgroup, "repoPath">
-): SessionRepo[] {
-  return configuredReplicaRepoBadges(
-    {
-      repoPaths: replica.repoPaths,
-      repoBranch: effectiveRepoBranch(replica),
-      repoBranchByPath: effectiveRepoBranchByPath(replica),
-      repoDirtyByPath: effectiveRepoDirtyByPath(replica),
-    },
-    workgroup
-  );
-}
 
 function replicaRepoMenuEntries(wg: AcWorkgroup, replica: AcAgentReplica): SessionRepo[] {
   if (!replica.isCoordinator) return [];
@@ -2445,16 +2432,16 @@ const ProjectPanel: Component = () => {
           // #2131 - CI running on this orchestrator row's repo is work the room is
           // waiting on, so the row takes the existing wash while its chip carries
           // `ci-running`. It reads the SAME published entry the chip class reads
-          // (`remoteActivityClasses`) and the SAME `repoBadges()` list the chip
-          // <For> renders, so the chip and the row cannot disagree. It must NOT
-          // reach workgroupIsWorking: room ordering and the group-rail dot stay
-          // session-only. The quick-access row no longer does (see #2151).
+          // (`remoteActivityClasses`) and the SAME badge list the chip <For>
+          // renders, so the chip and the row cannot disagree.
           // Non-orchestrator rows are excluded here, not at the chip.
-          const orchestratorCiRunning = () =>
-            isCoord() &&
-            repoBadges().some(
-              (repo) => remoteActivityStore.forPath(repo.sourcePath)?.ci === "running"
-            );
+          // #2202 - CI now DOES reach the group-rail counter, dot and tooltip and
+          // the `.ac-wg-subgroup.working` class, all through `workgroupIsActive`.
+          // The body below delegates to `replicaCiRunning`, the one shared CI
+          // definition those surfaces read, so no surface can hold its own.
+          // Room ordering still reads no working predicate at all: it sorts on
+          // `lastActivityBySessionId` only (#2202 adds a CI-stop stamp there).
+          const orchestratorCiRunning = () => replicaCiRunning(wg, replica);
           // #1783 - the quick-access panel answers "is anyone in this room
           // working, or is its repo running CI", so an orchestrator row there
           // tints when ANY agent in its room is working, the orchestrator
@@ -2466,7 +2453,7 @@ const ProjectPanel: Component = () => {
           // strip in the same frame.
           const rowIsWorking = () =>
             rowContext === "quick"
-              ? workgroupIsWorking(wg) || orchestratorCiRunning()
+              ? workgroupIsActive(wg)
               : isReplicaWorking(wg, replica) || orchestratorCiRunning();
           const idleBadge = createMemo(() =>
             isCoord()
@@ -2730,7 +2717,7 @@ const ProjectPanel: Component = () => {
           );
           const wgCollapsed = () => isPanelCollapsed(wgCollapsedKey);
           return (
-            <div class="ac-wg-subgroup" classList={{ working: workgroupIsWorking(wg) }}>
+            <div class="ac-wg-subgroup" classList={{ working: workgroupIsActive(wg) }}>
               <div
                 class="ac-wg-header ac-wg-header--collapsible"
                 title={wg.path}
