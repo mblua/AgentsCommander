@@ -178,13 +178,10 @@ jobs:
           const exactPaths = evidenceNames.map((name) => path.posix.join(releaseDirectory, name));
           assert.deepEqual(manifest.contracts.evidenceAvailability.directory, releaseDirectory);
           assert.deepEqual(manifest.contracts.evidenceAvailability.exactPaths, exactPaths);
-          const parts = version.split('.');
-          const canonicalPlanPath = 'plans/' + manifest.inputs.releaseIssueNumber + '-v' + parts.join('') + '-release-hardening.md';
           assert.deepEqual(
             manifest.contracts.evidenceAvailability.hardeningAllowlist,
-            ['.github/workflows/release.yml', ...exactPaths, canonicalPlanPath],
+            ['.github/workflows/release.yml', ...exactPaths],
           );
-          assert.ok(fs.statSync(canonicalPlanPath).isFile(), 'canonical plan missing');
 
           const contract = manifest.contracts.reviewSet;
           const reviewNames = [
@@ -2800,8 +2797,14 @@ jobs:
           # and the packument can still report the previous dist-tags.latest.
           # Wait for all of them within one bounded window instead of failing on
           # the first read.
+          # Propagation budget shared by every post-publish wait below. The npm
+          # registry took ~188 s to expose v0.36.0 (#2074), so the previous ~60 s
+          # bounded patience, not propagation.
+          propagation_attempts=120
+          propagation_delay=5
+          propagation_budget_secs=$(( propagation_attempts * propagation_delay ))
           metadata_ready=false
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 "$propagation_attempts"); do
             status="$(curl --silent --show-error --output "$work_dir/version-metadata.json" --write-out '%{http_code}' "$metadata_url")"
             if [ "$status" = 200 ]; then
               if node -e '
@@ -2816,19 +2819,23 @@ jobs:
               echo "::error::registry returned HTTP $status while waiting for $package_name@$VERSION"
               exit 1
             fi
-            sleep 2
+            sleep "$propagation_delay"
           done
           if [ "$metadata_ready" != true ]; then
-            echo "::error::$package_name@$VERSION metadata with attestations and signatures did not appear in the registry (last HTTP $status)"
+            if [ "$registry_state" = absent ]; then
+              echo "::error::$package_name@$VERSION WAS PUBLISHED by this job, but its metadata with attestations and signatures did not propagate within ${propagation_budget_secs}s (last HTTP $status). The version exists in the registry: do not rerun this job and do not publish manually. Verify with npm view $package_name@$VERSION and npm audit signatures."
+            else
+              echo "::error::$package_name@$VERSION was already present before this job and its metadata with attestations and signatures did not appear within ${propagation_budget_secs}s (last HTTP $status)."
+            fi
             exit 1
           fi
           latest=""
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 "$propagation_attempts"); do
             latest="$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" view "$package_name" dist-tags.latest --registry "$REGISTRY_URL" || true)"
             if [ "$latest" = "$VERSION" ]; then
               break
             fi
-            sleep 2
+            sleep "$propagation_delay"
           done
           if [ "$latest" != "$VERSION" ]; then
             echo "::error::registry dist-tags.latest for $package_name is '$latest', expected $VERSION"
@@ -2865,7 +2872,7 @@ jobs:
             local output="$2"
             local status
             local attempt
-            for attempt in $(seq 1 30); do
+            for attempt in $(seq 1 "$propagation_attempts"); do
               status="$(curl --silent --show-error --location --proto '=https' --tlsv1.2 --output "$output" --write-out '%{http_code}' "$url")"
               if [ "$status" = 200 ]; then
                 return 0
@@ -2873,7 +2880,7 @@ jobs:
               if [ "$status" != 404 ]; then
                 break
               fi
-              sleep 2
+              sleep "$propagation_delay"
             done
             echo "::error::registry returned HTTP $status fetching $url"
             return 1

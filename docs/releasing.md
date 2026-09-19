@@ -35,9 +35,10 @@ handoff; it cannot supply the release workflow. Neither command publishes.
 
 Verify the generated checksums, scope and version. Add the exact V1 files under
 `docs/releases/vX.Y.Z/`, preserving LF bytes. Existing accepted bundles must not
-be overwritten or relabeled. The workflow also requires the manifest-derived
-`plans/<issue>-v<major><minor><patch>-release-hardening.md`; write a short release
-implementation record there, linked to the bundle and intended checks.
+be overwritten or relabeled. The workflow requires nothing outside
+`docs/releases/vX.Y.Z/`: the canonical release-hardening plan was dropped from the
+contract with `plans/` itself (issue #2183). Keep any release implementation record
+in the AgentsCommander shared plans directory, outside this repository.
 
 ## 2. Bump and verify all versions
 

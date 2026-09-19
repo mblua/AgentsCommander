@@ -9589,7 +9589,7 @@ html.light-theme .onboarding-card.selected {
 
    The alphas encode an ordering, not a strength: room wash < hover < working
    row < selection, measured as luminance distance from --sidebar-bg. See the
-   "signal ladder" in plans/1755-sidebar-working-tint.md; working-tint-css.test.ts
+   "signal ladder" in .ac/plans/1755-sidebar-working-tint.md; working-tint-css.test.ts
    asserts it from these bytes and from variables.css. That ladder is measured
    over --sidebar-bg. In the four styles whose .ac-wg-group wrapper paints a
    background of its own, the room wash sits on that instead and rises above
