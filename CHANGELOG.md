@@ -6,6 +6,10 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Fixed
+
+- **`terminal-snapshot` now says which argument it rejected and why.** Every CLI-originated rejection adds `field=` (when exactly one argument is at fault, from `token`, `root`, `to`, `format`, `output`, `timeout`) and `reason=` to the `terminal_snapshot_error` line, so the six previously identical `invalid_request` failures are distinguishable. `code=` values, exit codes, stdout and the HTTP API are unchanged, and the new tokens are fixed literals that never carry a path or a token. ([#2227](https://github.com/mblua/AgentsCommander/issues/2227), [#2223](https://github.com/mblua/AgentsCommander/issues/2223))
+
 ## 0.36.0
 
 ### Added

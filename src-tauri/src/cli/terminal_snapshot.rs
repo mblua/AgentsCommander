@@ -70,31 +70,164 @@ impl From<SnapshotFormatArg> for TerminalSnapshotFormat {
     }
 }
 
-pub fn execute(args: TerminalSnapshotArgs) -> i32 {
-    match execute_inner(args) {
-        Ok(()) => 0,
-        Err(reason) => fail(&reason),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalSnapshotField {
+    Token,
+    Root,
+    To,
+    /// Part of the closed `field=` set by contract. No current site attributes
+    /// to it: every format mistake is a mistake about `--output` given the
+    /// chosen format, so those sites name `output`. Kept so the vocabulary a
+    /// consumer parses is the declared one.
+    #[allow(dead_code)]
+    Format,
+    Output,
+    Timeout,
+}
+
+impl TerminalSnapshotField {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Token => "token",
+            Self::Root => "root",
+            Self::To => "to",
+            Self::Format => "format",
+            Self::Output => "output",
+            Self::Timeout => "timeout",
+        }
     }
 }
 
-fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalSnapshotRejectionReason {
+    TimeoutOutOfRange,
+    TokenNotUuid,
+    TokenIsPersistedStatic,
+    TargetSyntaxInvalid,
+    OutputRequiredForPng,
+    OutputForbiddenForJson,
+    OutputPathRejected,
+    RequesterRootUnverified,
+    RequesterNotCoordinator,
+    RequesterRootObjectMismatch,
+    LocalStateUnsafe,
+    RequestIdCollision,
+    RequestEncodingFailed,
+    Unattributed,
+}
+
+impl TerminalSnapshotRejectionReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::TimeoutOutOfRange => "timeout_out_of_range",
+            Self::TokenNotUuid => "token_not_uuid",
+            Self::TokenIsPersistedStatic => "token_is_persisted_static",
+            Self::TargetSyntaxInvalid => "target_syntax_invalid",
+            Self::OutputRequiredForPng => "output_required_for_png",
+            Self::OutputForbiddenForJson => "output_forbidden_for_json",
+            Self::OutputPathRejected => "output_path_rejected",
+            Self::RequesterRootUnverified => "requester_root_unverified",
+            Self::RequesterNotCoordinator => "requester_not_coordinator",
+            Self::RequesterRootObjectMismatch => "requester_root_object_mismatch",
+            Self::LocalStateUnsafe => "local_state_unsafe",
+            Self::RequestIdCollision => "request_id_collision",
+            Self::RequestEncodingFailed => "request_encoding_failed",
+            Self::Unattributed => "unattributed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalSnapshotRejection {
+    code: TerminalSnapshotReasonCode,
+    field: Option<TerminalSnapshotField>,
+    reason: TerminalSnapshotRejectionReason,
+}
+
+impl TerminalSnapshotRejection {
+    const fn new(
+        code: TerminalSnapshotReasonCode,
+        field: Option<TerminalSnapshotField>,
+        reason: TerminalSnapshotRejectionReason,
+    ) -> Self {
+        Self { code, field, reason }
+    }
+}
+
+/// Every error still propagating as a `String` - from the response path and
+/// from every helper this phase does not re-type - converts here. The code is
+/// preserved byte for byte; only the attribution is absent, which is exactly
+/// what `unattributed` states.
+impl From<String> for TerminalSnapshotRejection {
+    fn from(value: String) -> Self {
+        Self {
+            code: reason_code(&value).unwrap_or(TerminalSnapshotReasonCode::Internal),
+            field: None,
+            reason: TerminalSnapshotRejectionReason::Unattributed,
+        }
+    }
+}
+
+pub fn execute(args: TerminalSnapshotArgs) -> i32 {
+    match execute_inner(args) {
+        Ok(()) => 0,
+        Err(rejection) => fail(rejection),
+    }
+}
+
+fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), TerminalSnapshotRejection> {
+    use TerminalSnapshotField as F;
+    use TerminalSnapshotReasonCode as C;
+    use TerminalSnapshotRejectionReason as R;
+
     if !(5..=60).contains(&args.timeout) {
-        return Err("invalid_request".to_string());
+        return Err(TerminalSnapshotRejection::new(
+            C::InvalidRequest,
+            Some(F::Timeout),
+            R::TimeoutOutOfRange,
+        ));
     }
-    let token = terminal_snapshot_renderer::validate_uuid(&args.token, Some(4))
-        .map_err(|_| "invalid_request".to_string())?;
+    let token = terminal_snapshot_renderer::validate_uuid(&args.token, Some(4)).map_err(|_| {
+        TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Token), R::TokenNotUuid)
+    })?;
     if is_persisted_static_token(&args.token) {
-        return Err("invalid_request".to_string());
+        return Err(TerminalSnapshotRejection::new(
+            C::InvalidRequest,
+            Some(F::Token),
+            R::TokenIsPersistedStatic,
+        ));
     }
-    terminal_snapshot_renderer::validate_target_syntax(&args.to)
-        .map_err(|_| "invalid_request".to_string())?;
+    terminal_snapshot_renderer::validate_target_syntax(&args.to).map_err(|_| {
+        TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::To), R::TargetSyntaxInvalid)
+    })?;
     let format = TerminalSnapshotFormat::from(args.format);
     match (format, args.output.as_deref()) {
         (TerminalSnapshotFormat::Json, None) => {}
         (TerminalSnapshotFormat::Png, Some(output)) => {
-            crate::path_identity::validate_terminal_snapshot_output_path(output)?;
+            crate::path_identity::validate_terminal_snapshot_output_path(output).map_err(
+                |reason| {
+                    TerminalSnapshotRejection::new(
+                        reason_code(&reason).unwrap_or(C::Internal),
+                        Some(F::Output),
+                        R::OutputPathRejected,
+                    )
+                },
+            )?;
         }
-        _ => return Err("invalid_request".to_string()),
+        (TerminalSnapshotFormat::Png, None) => {
+            return Err(TerminalSnapshotRejection::new(
+                C::InvalidRequest,
+                Some(F::Output),
+                R::OutputRequiredForPng,
+            ))
+        }
+        (TerminalSnapshotFormat::Json, Some(_)) => {
+            return Err(TerminalSnapshotRejection::new(
+                C::InvalidRequest,
+                Some(F::Output),
+                R::OutputForbiddenForJson,
+            ))
+        }
     }
 
     let (root_identity, from) = verify_requester_root(&args.root)?;
@@ -102,18 +235,27 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
     let outbox = local.join("outbox");
     let request_directory = outbox.join("terminal-snapshot-requests");
     let response_directory = local.join("terminal-snapshot-responses");
+    let local_state_unsafe =
+        || TerminalSnapshotRejection::new(C::UnsafePath, Some(F::Root), R::LocalStateUnsafe);
     let local_identity =
-        crate::path_identity::verify_directory(&local).map_err(|_| "unsafe_path".to_string())?;
+        crate::path_identity::verify_directory(&local).map_err(|_| local_state_unsafe())?;
     if !crate::path_identity::is_verified_descendant(&local_identity, &root_identity) {
-        return Err("unsafe_path".to_string());
+        return Err(local_state_unsafe());
     }
     let outbox_identity =
-        crate::path_identity::verify_directory(&outbox).map_err(|_| "unsafe_path".to_string())?;
+        crate::path_identity::verify_directory(&outbox).map_err(|_| local_state_unsafe())?;
     if !crate::path_identity::is_verified_descendant(&outbox_identity, &root_identity) {
-        return Err("unsafe_path".to_string());
+        return Err(local_state_unsafe());
     }
-    ensure_private_child(&outbox, &request_directory)?;
-    ensure_private_child(&local, &response_directory)?;
+    let propagated_local_state_unsafe = |reason: String| {
+        TerminalSnapshotRejection::new(
+            reason_code(&reason).unwrap_or(C::Internal),
+            Some(F::Root),
+            R::LocalStateUnsafe,
+        )
+    };
+    ensure_private_child(&outbox, &request_directory).map_err(propagated_local_state_unsafe)?;
+    ensure_private_child(&local, &response_directory).map_err(propagated_local_state_unsafe)?;
 
     let request_id = Uuid::new_v4();
     let issued = chrono::Utc::now();
@@ -136,12 +278,17 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
         confirmation_tag: String::new(),
     };
     request.confirmation_tag = confirmation_tag(&request);
-    let request_bytes =
-        to_ascii_json(&request, MAX_REQUEST_BYTES).map_err(|_| "invalid_request".to_string())?;
+    let request_bytes = to_ascii_json(&request, MAX_REQUEST_BYTES).map_err(|_| {
+        TerminalSnapshotRejection::new(C::InvalidRequest, None, R::RequestEncodingFailed)
+    })?;
     let request_path = request_directory.join(format!("{request_id}.json"));
     let response_path = response_directory.join(format!("{request_id}.json"));
     if request_path.exists() || response_path.exists() {
-        return Err("unsafe_path".to_string());
+        return Err(TerminalSnapshotRejection::new(
+            C::UnsafePath,
+            None,
+            R::RequestIdCollision,
+        ));
     }
     let published_request_identity = publish_request(
         &request_directory,
@@ -161,7 +308,9 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
                 &request.nonce,
                 &published_request_identity,
             );
-            return Err("snapshot_timeout".to_string());
+            return Err(TerminalSnapshotRejection::from(
+                "snapshot_timeout".to_string(),
+            ));
         }
         if response_path.exists() {
             let (response, response_identity) = read_response(
@@ -172,7 +321,7 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
                 request.format,
                 deadline,
             )?;
-            return finish_response(
+            finish_response(
                 &response_path,
                 &response_identity,
                 &response,
@@ -181,7 +330,8 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
                 &request.from,
                 &request.to,
                 deadline,
-            );
+            )?;
+            return Ok(());
         }
         std::thread::sleep(POLL_INTERVAL);
     }
@@ -212,31 +362,53 @@ fn requester_identity_diagnostic(stage: &'static str, reason: &str) -> String {
 
 fn verify_requester_root(
     root: &Path,
-) -> Result<(crate::path_identity::VerifiedPathIdentity, String), String> {
+) -> Result<(crate::path_identity::VerifiedPathIdentity, String), TerminalSnapshotRejection> {
+    use TerminalSnapshotField as F;
+    use TerminalSnapshotReasonCode as C;
+    use TerminalSnapshotRejectionReason as R;
+
     if let Ok(identity) = crate::config::root_agent::verify_live_root_agent_path(root) {
         return Ok((
             identity,
             crate::config::root_agent::ROOT_AGENT_SENDER.to_string(),
         ));
     }
+    let root_unverified = TerminalSnapshotRejection::new(
+        C::RequesterUnavailable,
+        Some(F::Root),
+        R::RequesterRootUnverified,
+    );
     let identity = crate::config::teams::verify_pty_input_replica_cwd(root).map_err(|reason| {
         log::warn!(
             "{}",
             requester_identity_diagnostic("replica_identity", &reason)
         );
-        "requester_unavailable".to_string()
+        root_unverified
     })?;
     let supplied = crate::path_identity::verify_directory(root).map_err(|reason| {
         log::warn!(
             "{}",
             requester_identity_diagnostic("root_directory", &reason)
         );
-        "requester_unavailable".to_string()
+        root_unverified
     })?;
-    if !identity.is_coordinator
-        || !crate::path_identity::same_object(&supplied, &identity.replica_identity)
-    {
-        return Err("not_authorized".to_string());
+    // One base `if` over two independent causes. `code=not_authorized` is
+    // identical for both - nothing is reclassified - but they are different
+    // mistakes with different fixes, so they get different reasons. Check
+    // order is unchanged: `is_coordinator` first.
+    if !identity.is_coordinator {
+        return Err(TerminalSnapshotRejection::new(
+            C::NotAuthorized,
+            Some(F::Root),
+            R::RequesterNotCoordinator,
+        ));
+    }
+    if !crate::path_identity::same_object(&supplied, &identity.replica_identity) {
+        return Err(TerminalSnapshotRejection::new(
+            C::NotAuthorized,
+            Some(F::Root),
+            R::RequesterRootObjectMismatch,
+        ));
     }
     Ok((supplied, identity.canonical_fqn))
 }
@@ -679,15 +851,31 @@ fn record_stage_side_channel(code: &str) {
     }
 }
 
-fn fail(reason: &str) -> i32 {
-    let reason = reason_code(reason).unwrap_or(TerminalSnapshotReasonCode::Internal);
-    record_stage_side_channel(reason.as_str());
-    eprintln!(
-        "terminal_snapshot_error code={} detail={}",
-        reason.as_str(),
-        reason.detail()
-    );
+fn fail(rejection: TerminalSnapshotRejection) -> i32 {
+    record_stage_side_channel(rejection.code.as_str());
+    eprintln!("{}", rejection_line(rejection));
     1
+}
+
+/// The whole emitted contract, in one place so tests assert on the same bytes
+/// stderr receives. Every token after `code=` is a compile-time `&'static str`
+/// from a `match` on an enum; no caller-supplied value can reach this line.
+fn rejection_line(rejection: TerminalSnapshotRejection) -> String {
+    match rejection.field {
+        Some(field) => format!(
+            "terminal_snapshot_error code={} field={} reason={} detail={}",
+            rejection.code.as_str(),
+            field.as_str(),
+            rejection.reason.as_str(),
+            rejection.code.detail()
+        ),
+        None => format!(
+            "terminal_snapshot_error code={} reason={} detail={}",
+            rejection.code.as_str(),
+            rejection.reason.as_str(),
+            rejection.code.detail()
+        ),
+    }
 }
 
 fn reason_code(value: &str) -> Option<TerminalSnapshotReasonCode> {
@@ -716,6 +904,245 @@ fn reason_code(value: &str) -> Option<TerminalSnapshotReasonCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ALL_FIELDS: [TerminalSnapshotField; 6] = [
+        TerminalSnapshotField::Token,
+        TerminalSnapshotField::Root,
+        TerminalSnapshotField::To,
+        TerminalSnapshotField::Format,
+        TerminalSnapshotField::Output,
+        TerminalSnapshotField::Timeout,
+    ];
+
+    const ALL_REASONS: [TerminalSnapshotRejectionReason; 14] = [
+        TerminalSnapshotRejectionReason::TimeoutOutOfRange,
+        TerminalSnapshotRejectionReason::TokenNotUuid,
+        TerminalSnapshotRejectionReason::TokenIsPersistedStatic,
+        TerminalSnapshotRejectionReason::TargetSyntaxInvalid,
+        TerminalSnapshotRejectionReason::OutputRequiredForPng,
+        TerminalSnapshotRejectionReason::OutputForbiddenForJson,
+        TerminalSnapshotRejectionReason::OutputPathRejected,
+        TerminalSnapshotRejectionReason::RequesterRootUnverified,
+        TerminalSnapshotRejectionReason::RequesterNotCoordinator,
+        TerminalSnapshotRejectionReason::RequesterRootObjectMismatch,
+        TerminalSnapshotRejectionReason::LocalStateUnsafe,
+        TerminalSnapshotRejectionReason::RequestIdCollision,
+        TerminalSnapshotRejectionReason::RequestEncodingFailed,
+        TerminalSnapshotRejectionReason::Unattributed,
+    ];
+
+    /// `crates/terminal-snapshot-renderer/src/protocol.rs` declares exactly
+    /// these sixteen. The array is exhaustive by construction: a new variant
+    /// there is not covered here until it is added.
+    const ALL_CODES: [TerminalSnapshotReasonCode; 16] = [
+        TerminalSnapshotReasonCode::InvalidRequest,
+        TerminalSnapshotReasonCode::RequesterUnavailable,
+        TerminalSnapshotReasonCode::TerminalSnapshotsDisabled,
+        TerminalSnapshotReasonCode::NotAuthorized,
+        TerminalSnapshotReasonCode::TargetUnavailable,
+        TerminalSnapshotReasonCode::SnapshotUnavailable,
+        TerminalSnapshotReasonCode::SnapshotTooLarge,
+        TerminalSnapshotReasonCode::AuthorityChanged,
+        TerminalSnapshotReasonCode::RateLimited,
+        TerminalSnapshotReasonCode::SnapshotTimeout,
+        TerminalSnapshotReasonCode::ServiceUnavailable,
+        TerminalSnapshotReasonCode::RenderFailed,
+        TerminalSnapshotReasonCode::UnsafePath,
+        TerminalSnapshotReasonCode::OutputFailed,
+        TerminalSnapshotReasonCode::ResponseUnavailable,
+        TerminalSnapshotReasonCode::Internal,
+    ];
+
+    fn snapshot_args(
+        token: &str,
+        to: &str,
+        format: SnapshotFormatArg,
+        output: Option<PathBuf>,
+        timeout: u64,
+    ) -> TerminalSnapshotArgs {
+        TerminalSnapshotArgs {
+            token: token.to_string(),
+            root: PathBuf::from("."),
+            to: to.to_string(),
+            format,
+            output,
+            timeout,
+        }
+    }
+
+    const VALID_TOKEN: &str = "0b9c4d2e-7a31-4f56-8b2c-1d3e5f7a9b10";
+
+    #[test]
+    fn rejection_line_names_each_invalid_request_cause() {
+        use TerminalSnapshotField as F;
+        use TerminalSnapshotReasonCode as C;
+        use TerminalSnapshotRejectionReason as R;
+
+        let detail = C::InvalidRequest.detail();
+        let cases = [
+            (
+                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Timeout), R::TimeoutOutOfRange),
+                format!("terminal_snapshot_error code=invalid_request field=timeout reason=timeout_out_of_range detail={detail}"),
+            ),
+            (
+                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Token), R::TokenNotUuid),
+                format!("terminal_snapshot_error code=invalid_request field=token reason=token_not_uuid detail={detail}"),
+            ),
+            (
+                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Token), R::TokenIsPersistedStatic),
+                format!("terminal_snapshot_error code=invalid_request field=token reason=token_is_persisted_static detail={detail}"),
+            ),
+            (
+                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::To), R::TargetSyntaxInvalid),
+                format!("terminal_snapshot_error code=invalid_request field=to reason=target_syntax_invalid detail={detail}"),
+            ),
+            (
+                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Output), R::OutputRequiredForPng),
+                format!("terminal_snapshot_error code=invalid_request field=output reason=output_required_for_png detail={detail}"),
+            ),
+            (
+                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Output), R::OutputForbiddenForJson),
+                format!("terminal_snapshot_error code=invalid_request field=output reason=output_forbidden_for_json detail={detail}"),
+            ),
+        ];
+
+        let mut lines = Vec::new();
+        for (rejection, expected) in &cases {
+            let line = rejection_line(*rejection);
+            assert_eq!(&line, expected, "unexpected line for {rejection:?}");
+            lines.push(line);
+        }
+
+        // The defect in #2223 is that these six were one indistinguishable
+        // line. Pairwise distinctness is the property that removes it.
+        for left in 0..lines.len() {
+            for right in (left + 1)..lines.len() {
+                assert_ne!(
+                    lines[left], lines[right],
+                    "causes {left} and {right} are still indistinguishable"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejection_line_keeps_code_and_detail_contract() {
+        for code in ALL_CODES {
+            for field in [None, Some(TerminalSnapshotField::Root)] {
+                let line = rejection_line(TerminalSnapshotRejection::new(
+                    code,
+                    field,
+                    TerminalSnapshotRejectionReason::Unattributed,
+                ));
+                assert!(
+                    line.starts_with(&format!("terminal_snapshot_error code={} ", code.as_str())),
+                    "prefix moved: {line}"
+                );
+                assert!(
+                    line.ends_with(&format!("detail={}", code.detail())),
+                    "detail is no longer last: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejection_line_field_token_is_absent_when_unattributed() {
+        let line = rejection_line(TerminalSnapshotRejection::new(
+            TerminalSnapshotReasonCode::Internal,
+            None,
+            TerminalSnapshotRejectionReason::Unattributed,
+        ));
+        assert!(!line.contains("field="), "empty field token emitted: {line}");
+        assert_eq!(
+            line,
+            format!(
+                "terminal_snapshot_error code=internal reason=unattributed detail={}",
+                TerminalSnapshotReasonCode::Internal.detail()
+            )
+        );
+    }
+
+    #[test]
+    fn rejection_vocabulary_is_closed_and_literal() {
+        // Executable form of the no-caller-data invariant: a path, a token or
+        // any formatted string cannot satisfy this shape.
+        fn assert_literal(value: &str) {
+            assert!(!value.is_empty(), "empty vocabulary entry");
+            let mut characters = value.chars();
+            let first = characters.next().expect("non-empty");
+            assert!(
+                first.is_ascii_lowercase(),
+                "{value} does not start with [a-z]"
+            );
+            for character in characters {
+                assert!(
+                    character.is_ascii_lowercase()
+                        || character.is_ascii_digit()
+                        || character == '_',
+                    "{value} contains {character:?}"
+                );
+            }
+            for forbidden in ['/', '\\', ':', '.', ' '] {
+                assert!(!value.contains(forbidden), "{value} contains {forbidden:?}");
+            }
+        }
+
+        for field in ALL_FIELDS {
+            assert_literal(field.as_str());
+        }
+        for reason in ALL_REASONS {
+            assert_literal(reason.as_str());
+        }
+    }
+
+    #[test]
+    fn execute_inner_attributes_argument_rejections() {
+        use TerminalSnapshotField as F;
+        use TerminalSnapshotReasonCode as C;
+        use TerminalSnapshotRejectionReason as R;
+
+        let cases = [
+            (
+                "timeout_out_of_range",
+                snapshot_args(VALID_TOKEN, "demo-project/demo-agent", SnapshotFormatArg::Json, None, 1),
+                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Timeout), R::TimeoutOutOfRange),
+            ),
+            (
+                "token_not_uuid",
+                snapshot_args("not-a-uuid", "demo-project/demo-agent", SnapshotFormatArg::Json, None, 15),
+                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Token), R::TokenNotUuid),
+            ),
+            (
+                "target_syntax_invalid",
+                snapshot_args(VALID_TOKEN, "###", SnapshotFormatArg::Json, None, 15),
+                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::To), R::TargetSyntaxInvalid),
+            ),
+            // The PNG/JSON split. Both arms were one `_ =>` on base; if they
+            // are ever collapsed again these two cases stop disagreeing.
+            (
+                "output_required_for_png",
+                snapshot_args(VALID_TOKEN, "demo-project/demo-agent", SnapshotFormatArg::Png, None, 15),
+                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Output), R::OutputRequiredForPng),
+            ),
+            (
+                "output_forbidden_for_json",
+                snapshot_args(
+                    VALID_TOKEN,
+                    "demo-project/demo-agent",
+                    SnapshotFormatArg::Json,
+                    Some(PathBuf::from("snapshot.png")),
+                    15,
+                ),
+                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Output), R::OutputForbiddenForJson),
+            ),
+        ];
+
+        for (name, args, expected) in cases {
+            let rejection = execute_inner(args).expect_err("case must be rejected");
+            assert_eq!(rejection, expected, "wrong attribution for {name}");
+        }
+    }
 
     #[test]
     fn requester_identity_diagnostic_filters_unknown_and_path_bearing_reasons() {
