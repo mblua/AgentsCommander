@@ -494,7 +494,7 @@ $snapshotRootCanary = Join-Path $Root 'ACSNAP_PS_CALLER_PATH_1173_P5Q1'
 $snapshotTargetCanary = 'project:wg-1-team/acsnap-ps-target-p5q1'
 $r0SnapshotFailure = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "00-terminal-snapshot-fixed-failure-direct" -Exe $BinaryPath -ExeArgs @('terminal-snapshot', '--token', $snapshotTokenCanary, '--root', $snapshotRootCanary, '--to', $snapshotTargetCanary, '--timeout', '4')
 $normalizedSnapshotStderr = $r0SnapshotFailure.Stderr -replace "`r`n", "`n"
-$expectedSnapshotStderr = "terminal_snapshot_error code=invalid_request detail=The terminal snapshot request is invalid.`n"
+$expectedSnapshotStderr = "terminal_snapshot_error code=invalid_request field=timeout reason=timeout_out_of_range detail=The terminal snapshot request is invalid.`n"
 Assert-True "terminal-snapshot semantic failure stdout empty" ($r0SnapshotFailure.Stdout.Length -eq 0) "stdout was not byte-empty" $r0SnapshotFailure.CaseName $r0SnapshotFailure
 Assert-True "terminal-snapshot semantic failure stderr exact" ($normalizedSnapshotStderr -ceq $expectedSnapshotStderr) "stderr did not match the fixed one-line contract" $r0SnapshotFailure.CaseName $r0SnapshotFailure
 Assert-True "terminal-snapshot semantic failure hides token" (-not $r0SnapshotFailure.Stderr.Contains($snapshotTokenCanary)) "stderr reflected the token canary" $r0SnapshotFailure.CaseName $r0SnapshotFailure

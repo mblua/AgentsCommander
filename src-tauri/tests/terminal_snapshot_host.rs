@@ -82,14 +82,14 @@ fn run_with_closed_stdout(binary: &Path, arguments: &[&str]) -> Output {
     child.wait_with_output().unwrap()
 }
 
-fn assert_fixed_failure(output: &Output, code: &str) {
+fn assert_fixed_failure(output: &Output, code: &str, attribution: &str) {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr.clone()).unwrap();
     assert_eq!(
         stderr,
         format!(
-            "terminal_snapshot_error code={code} detail={}\n",
+            "terminal_snapshot_error code={code} {attribution} detail={}\n",
             all_reason_codes()
                 .into_iter()
                 .find(|reason| reason.as_str() == code)
@@ -144,7 +144,11 @@ fn terminal_snapshot_semantic_failures_are_fixed_and_secret_free() {
             "4",
         ],
     );
-    assert_fixed_failure(&output, "invalid_request");
+    assert_fixed_failure(
+        &output,
+        "invalid_request",
+        "field=timeout reason=timeout_out_of_range",
+    );
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(!stderr.contains(secret));
     assert!(!stderr.contains(root_text.as_ref()));
@@ -164,7 +168,11 @@ fn terminal_snapshot_semantic_failures_are_fixed_and_secret_free() {
             "png",
         ],
     );
-    assert_fixed_failure(&output, "invalid_request");
+    assert_fixed_failure(
+        &output,
+        "invalid_request",
+        "field=output reason=output_required_for_png",
+    );
 
     let output = run(
         &binary,
@@ -182,7 +190,11 @@ fn terminal_snapshot_semantic_failures_are_fixed_and_secret_free() {
             "relative.png",
         ],
     );
-    assert_fixed_failure(&output, "unsafe_path");
+    assert_fixed_failure(
+        &output,
+        "unsafe_path",
+        "field=output reason=output_path_rejected",
+    );
 }
 
 #[test]
@@ -212,7 +224,11 @@ fn terminal_snapshot_rejects_a_persisted_static_token_before_publication() {
             "project:wg-1-team/member",
         ],
     );
-    assert_fixed_failure(&output, "invalid_request");
+    assert_fixed_failure(
+        &output,
+        "invalid_request",
+        "field=token reason=token_is_persisted_static",
+    );
     assert!(!String::from_utf8(output.stderr).unwrap().contains(token));
 }
 
@@ -653,7 +669,7 @@ fn terminal_snapshot_host_process_surfaces_every_fixed_server_failure() {
         });
         let output = run_host(&layout, TerminalSnapshotFormat::Json, None, 5);
         let captured = responder.join().unwrap();
-        assert_fixed_failure(&output, reason.as_str());
+        assert_fixed_failure(&output, reason.as_str(), "reason=unattributed");
         assert_request_canaries_are_confined(&captured, &output);
         dynamic_canaries.push(captured.wire.nonce);
         dynamic_canaries.push(captured.wire.confirmation_tag);
@@ -706,7 +722,7 @@ fn d2_targeted_closed_stdout_harness() {
             mismatches.push(format!("iteration={iteration} responder-saw-no-request"));
         }
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            assert_fixed_failure(&output, "output_failed");
+            assert_fixed_failure(&output, "output_failed", "reason=unattributed");
         }))
         .is_err()
         {
@@ -762,7 +778,7 @@ fn terminal_snapshot_host_process_transport_deadline_collision_and_output_failur
     });
     let malformed = run_host(&layout, TerminalSnapshotFormat::Json, None, 5);
     let malformed_request = malformed_responder.join().unwrap();
-    assert_fixed_failure(&malformed, "response_unavailable");
+    assert_fixed_failure(&malformed, "response_unavailable", "reason=unattributed");
     assert_request_canaries_are_confined(&malformed_request, &malformed);
     assert_empty_protocol_directories(&layout);
 
@@ -778,7 +794,7 @@ fn terminal_snapshot_host_process_transport_deadline_collision_and_output_failur
     });
     let corrupt = run_host(&layout, TerminalSnapshotFormat::Png, Some(&corrupt_path), 5);
     let corrupt_request = corrupt_responder.join().unwrap();
-    assert_fixed_failure(&corrupt, "response_unavailable");
+    assert_fixed_failure(&corrupt, "response_unavailable", "reason=unattributed");
     assert!(!corrupt_path.exists());
     assert_request_canaries_are_confined(&corrupt_request, &corrupt);
     assert_empty_protocol_directories(&layout);
@@ -791,7 +807,11 @@ fn terminal_snapshot_host_process_transport_deadline_collision_and_output_failur
         Some(&collision_path),
         5,
     );
-    assert_fixed_failure(&collision, "unsafe_path");
+    assert_fixed_failure(
+        &collision,
+        "unsafe_path",
+        "field=output reason=output_path_rejected",
+    );
     assert_eq!(
         std::fs::read(&collision_path).unwrap(),
         HOST_COLLISION_CANARY
@@ -800,7 +820,7 @@ fn terminal_snapshot_host_process_transport_deadline_collision_and_output_failur
 
     let timeout_path = output_parent.join("deadline.png");
     let timeout = run_host(&layout, TerminalSnapshotFormat::Png, Some(&timeout_path), 5);
-    assert_fixed_failure(&timeout, "snapshot_timeout");
+    assert_fixed_failure(&timeout, "snapshot_timeout", "reason=unattributed");
     assert!(!timeout_path.exists());
     assert_empty_protocol_directories(&layout);
 
@@ -813,7 +833,7 @@ fn terminal_snapshot_host_process_transport_deadline_collision_and_output_failur
         5,
     );
     let completed_request = completed_responder.join().unwrap();
-    assert_fixed_failure(&output_failed, "output_failed");
+    assert_fixed_failure(&output_failed, "output_failed", "reason=unattributed");
     assert_eq!(
         std::fs::read(&completed_path).unwrap(),
         render_png(&host_model()).unwrap().bytes
