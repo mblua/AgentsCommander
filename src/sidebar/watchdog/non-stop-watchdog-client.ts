@@ -1,5 +1,7 @@
 import { createEffect, onCleanup } from "solid-js";
-import { NonStopAPI } from "../../shared/ipc";
+import { NonStopAPI, onNonStopAlarm } from "../../shared/ipc";
+import { playNonStopAlarm, stopNonStopAlarm, stopAllNonStopAlarms } from "../../shared/sound";
+import type { UnlistenFn } from "../../shared/transport";
 import type { NonStopReport } from "../../shared/types";
 import { workgroupGroupsStore, nonStopDisplayName, nonStopMatchesWorkgroup } from "../stores/workgroup-groups";
 import { splitWorkgroupsByActive } from "../components/workgroup-session";
@@ -55,5 +57,29 @@ export function startNonStopWatchdogClient(): void {
     lastJson = ""; // force a resend even if unchanged
     push();
   }, KEEPALIVE_MS);
-  onCleanup(() => clearInterval(timer));
+
+  let unlisten: UnlistenFn | null = null;
+  let disposed = false;
+  void onNonStopAlarm((e) => {
+    if (e.action === "start") {
+      playNonStopAlarm(e.projectPath, e.seconds);
+    } else {
+      stopNonStopAlarm(e.projectPath);
+    }
+  })
+    .then((fn) => {
+      if (disposed) {
+        void fn();
+      } else {
+        unlisten = fn;
+      }
+    })
+    .catch(() => {});
+
+  onCleanup(() => {
+    disposed = true;
+    clearInterval(timer);
+    if (unlisten) void unlisten();
+    stopAllNonStopAlarms();
+  });
 }

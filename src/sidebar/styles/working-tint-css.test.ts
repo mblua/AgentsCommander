@@ -561,7 +561,7 @@ describe("#1755 composite arithmetic and the signal ladder (leg 3)", () => {
     // the four states over --sidebar-bg. It does not model the .ac-wg-group
     // wrapper ground, and in the four styles that declare one the room wash
     // rises above hover. That inversion is measured, accepted by the user, and
-    // recorded in plans/1755-sidebar-working-tint.md; it is not this assertion's
+    // recorded in .ac/plans/1755-sidebar-working-tint.md; it is not this assertion's
     // to catch.
     expect.hasAssertions();
     const wash = rowWash();
