@@ -26,6 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # `--baseline-from-ref` scans the base ref's tree; a shallow checkout
+          # makes that ref unreachable and the gate fails loudly.
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -35,6 +39,13 @@ jobs:
 
       - name: Pin npm version
         run: npm install -g npm@11.6.2
+
+      - name: Install frontend dependencies
+        # Never pass --omit=optional: jscpd's native runner arrives through
+        # optionalDependencies. --ignore-scripts is a different switch: it
+        # skips lifecycle scripts only and keeps every optional package
+        # installed.
+        run: npm ci --ignore-scripts
 
       - name: Check ignored and placeholder test debt
         run: npm run test:debt
@@ -46,6 +57,12 @@ jobs:
         run: |
           npm run check:served-paths:self
           npm run check:served-paths
+      - name: "Check test-code duplication (#2155)"
+        env:
+          GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: |
+          npm run dup:changed:self
+          npm run dup:changed
 
   rust-regression:
     name: rust-regression

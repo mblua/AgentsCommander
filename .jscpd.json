@@ -1,0 +1,10 @@
+{
+  "minLines": 10,
+  "minTokens": 100,
+  "format": ["typescript", "tsx"],
+  "crossFormats": ["typescript,tsx"],
+  "pattern": "src/**/*.test.{ts,tsx}",
+  "absolute": true,
+  "gitignore": false,
+  "ignore": ["**/node_modules/**"]
+}
