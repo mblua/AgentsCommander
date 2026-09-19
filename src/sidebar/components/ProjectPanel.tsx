@@ -27,9 +27,6 @@ import {
   effectiveAutoClosedAt,
   effectiveLastUserMessageAt,
   effectiveManuallyClosedAt,
-  effectiveRepoBranch,
-  effectiveRepoBranchByPath,
-  effectiveRepoDirtyByPath,
   replicaVolatileStore,
 } from "../stores/replica-volatile";
 import { remoteActivityStore } from "../stores/remote-activity";
@@ -73,7 +70,6 @@ import UserPlusIcon from "./UserPlusIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
 import {
   automationIdPart,
-  configuredReplicaRepoBadges,
   formatReplicaRepoBadgeLabel,
   formatReplicaRepoBadgeTitle,
   repoLabelFromPath,
