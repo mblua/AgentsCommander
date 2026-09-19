@@ -280,9 +280,20 @@ fn strict_project_ac_root(project: &Path) -> Result<Option<PathBuf>, String> {
     Ok(Some(ac_root))
 }
 
+/// Where a candidate project directory came from. A caller-supplied
+/// (`Configured`) path stays fail-closed; a `ScannedChild` found by walking the
+/// caller's tree is skipped and counted when it fails identity verification
+/// (#2228).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectOrigin {
+    Configured,
+    ScannedChild,
+}
+
 fn enumerate_project_dirs_strict(
     project_paths: &[String],
-) -> Result<Vec<(String, PathBuf)>, String> {
+    skipped_children: &mut usize,
+) -> Result<Vec<(String, PathBuf, ProjectOrigin)>, String> {
     if project_paths.len() > 1_024 {
         return Err("invalid_target".to_string());
     }
@@ -299,7 +310,7 @@ fn enumerate_project_dirs_strict(
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| "unsafe_path".to_string())?;
-            out.push((name.to_string(), base.clone()));
+            out.push((name.to_string(), base.clone(), ProjectOrigin::Configured));
         }
         let entries = std::fs::read_dir(&base).map_err(|_| "unsafe_path".to_string())?;
         for entry in entries {
@@ -319,9 +330,25 @@ fn enumerate_project_dirs_strict(
             if !metadata.is_dir() {
                 continue;
             }
-            let child_identity = crate::path_identity::verify_directory(&entry.path())?;
-            if strict_project_ac_root(&child_identity.canonical_path)?.is_some() {
-                out.push((name, child_identity.canonical_path));
+            // #2228: a scanned neighbour that fails identity verification is
+            // irrelevant to the caller's request and can never be emitted as a
+            // target, so it is skipped and counted instead of aborting the
+            // whole scan. The caller-supplied path at the top of this loop
+            // stays fail-closed.
+            let Ok(child_identity) = crate::path_identity::verify_directory(&entry.path()) else {
+                *skipped_children = skipped_children.saturating_add(1);
+                continue;
+            };
+            let Ok(child_ac_root) = strict_project_ac_root(&child_identity.canonical_path) else {
+                *skipped_children = skipped_children.saturating_add(1);
+                continue;
+            };
+            if child_ac_root.is_some() {
+                out.push((
+                    name,
+                    child_identity.canonical_path,
+                    ProjectOrigin::ScannedChild,
+                ));
                 if out.len() > 1_024 {
                     return Err("invalid_target".to_string());
                 }
@@ -1051,10 +1078,11 @@ fn find_target_identity(
     if project_paths.len() > 1_024 {
         return Err("invalid_target".to_string());
     }
-    let candidates = enumerate_project_dirs_strict(project_paths)?;
+    let mut _skipped = 0usize;
+    let candidates = enumerate_project_dirs_strict(project_paths, &mut _skipped)?;
     let mut matching_projects = Vec::new();
     let mut seen_objects = std::collections::HashSet::new();
-    for (project_name, project_dir) in candidates {
+    for (project_name, project_dir, _origin) in candidates {
         if !crate::path_identity::paths_equivalent(
             Path::new(&project_name),
             Path::new(&parsed.project),
@@ -1104,27 +1132,82 @@ pub(crate) fn resolve_pty_input_target(
     resolve_verified_wg_target(target_fqn, project_paths)
 }
 
+/// How many candidates the snapshot-target scan skipped, by kind. Counts only:
+/// nothing here may carry a path, a name, an FQN or a rule name (#2228 Tier B).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SnapshotDiscoverySkips {
+    pub project_children: usize,
+    pub rooms: usize,
+    pub replicas: usize,
+}
+
+impl SnapshotDiscoverySkips {
+    pub(crate) fn any(self) -> bool {
+        self.project_children > 0 || self.rooms > 0 || self.replicas > 0
+    }
+}
+
+pub(crate) struct DiscoveredSnapshotTargets {
+    pub targets: Vec<TerminalSnapshotTargetIdentity>,
+    pub skips: SnapshotDiscoverySkips,
+}
+
+/// Signature-preserving wrapper. `phone/mailbox.rs` iterates the returned
+/// `Vec` directly, so the counted form is additive and that caller compiles
+/// untouched (#2228).
 pub(crate) fn discover_verified_terminal_snapshot_targets(
     project_paths: &[String],
 ) -> Result<Vec<TerminalSnapshotTargetIdentity>, String> {
+    discover_verified_terminal_snapshot_targets_counted(project_paths).map(|d| d.targets)
+}
+
+pub(crate) fn discover_verified_terminal_snapshot_targets_counted(
+    project_paths: &[String],
+) -> Result<DiscoveredSnapshotTargets, String> {
     const TARGET_CAP: usize = 4_096;
-    let projects = enumerate_project_dirs_strict(project_paths)?;
+    let mut skips = SnapshotDiscoverySkips::default();
+    let projects = enumerate_project_dirs_strict(project_paths, &mut skips.project_children)?;
     let mut project_names = std::collections::HashSet::new();
     let mut project_objects = std::collections::HashSet::new();
-    for (name, path) in &projects {
-        let identity = crate::path_identity::verify_directory(path)?;
+    let mut verified_projects = Vec::new();
+    for (name, path, origin) in projects {
+        // Defence-in-depth (#2228): after the skip at the enumeration site a
+        // scanned child that fails here can only have lost a TOCTOU race, so a
+        // race degrades to a counted skip instead of aborting the whole scan.
+        // No test covers this and none is claimed.
+        let identity = match crate::path_identity::verify_directory(&path) {
+            Ok(identity) => identity,
+            Err(error) => {
+                if origin == ProjectOrigin::ScannedChild {
+                    skips.project_children = skips.project_children.saturating_add(1);
+                    continue;
+                }
+                return Err(error);
+            }
+        };
         if !project_names.insert(name.clone()) || !project_objects.insert(identity.object_id) {
             return Err("ambiguous_project".to_string());
         }
+        verified_projects.push((name, path, origin));
     }
+    let projects = verified_projects;
 
     let mut targets = Vec::new();
     let mut target_names = std::collections::HashSet::new();
     let mut target_objects = std::collections::HashSet::new();
     let mut scanned_entries = 0usize;
-    for (project, project_dir) in projects {
-        let ac_root =
-            strict_project_ac_root(&project_dir)?.ok_or_else(|| "unsafe_path".to_string())?;
+    for (project, project_dir, origin) in projects {
+        // Same defence-in-depth as the pre-pass above: no probe, no claimed
+        // coverage (#2228).
+        let ac_root = match strict_project_ac_root(&project_dir) {
+            Ok(Some(ac_root)) => ac_root,
+            Ok(None) | Err(_) if origin == ProjectOrigin::ScannedChild => {
+                skips.project_children = skips.project_children.saturating_add(1);
+                continue;
+            }
+            Ok(None) => return Err("unsafe_path".to_string()),
+            Err(error) => return Err(error),
+        };
         let workgroups = std::fs::read_dir(&ac_root).map_err(|_| "unsafe_path".to_string())?;
         for workgroup in workgroups {
             let workgroup = workgroup.map_err(|_| "unsafe_path".to_string())?;
@@ -1139,7 +1222,14 @@ pub(crate) fn discover_verified_terminal_snapshot_targets(
             if !crate::config::entity_prefix::has_entity_prefix(&name) {
                 continue;
             }
-            let workgroup_identity = crate::path_identity::verify_directory(&workgroup.path())?;
+            // #2228 Site B: a linked or junctioned room entry reaches this
+            // call with no metadata gate in front of it. Skip and count it
+            // rather than aborting every other target of the scan.
+            let Ok(workgroup_identity) = crate::path_identity::verify_directory(&workgroup.path())
+            else {
+                skips.rooms = skips.rooms.saturating_add(1);
+                continue;
+            };
             let replicas = std::fs::read_dir(&workgroup_identity.canonical_path)
                 .map_err(|_| "unsafe_path".to_string())?;
             for replica in replicas {
@@ -1156,8 +1246,16 @@ pub(crate) fn discover_verified_terminal_snapshot_targets(
                     continue;
                 };
                 let candidate = format!("{project}:{name}/{agent}");
-                let parsed = parse_strict_pty_fqn(&candidate)?;
-                let identity = verify_replica(&project_dir, &ac_root, &parsed)?;
+                // #2228 Site C: one stale or half-removed replica must not hide
+                // every other target.
+                let Ok(parsed) = parse_strict_pty_fqn(&candidate) else {
+                    skips.replicas = skips.replicas.saturating_add(1);
+                    continue;
+                };
+                let Ok(identity) = verify_replica(&project_dir, &ac_root, &parsed) else {
+                    skips.replicas = skips.replicas.saturating_add(1);
+                    continue;
+                };
                 if !target_names.insert(identity.canonical_fqn.clone())
                     || !target_objects.insert(identity.replica_identity.object_id)
                 {
@@ -1178,7 +1276,7 @@ pub(crate) fn discover_verified_terminal_snapshot_targets(
         }
     }
     targets.sort_by(|left, right| left.canonical_fqn.cmp(&right.canonical_fqn));
-    Ok(targets)
+    Ok(DiscoveredSnapshotTargets { targets, skips })
 }
 
 pub(crate) fn verify_terminal_snapshot_root_identity(
@@ -3376,6 +3474,171 @@ mod tests {
         assert_eq!(
             pty_input_create_gate_key_from_cwd(&nested_origin).expect("key must not error"),
             None
+        );
+    }
+
+    // ── #2228 phase 2: fail-soft snapshot-target discovery (RED-FIRST FORM) ──
+
+    /// Unix-only: a child directory that passes `DirEntry::metadata().is_dir()`
+    /// (so it reaches `teams.rs:322`) but cannot be opened, so `verify_directory`
+    /// fails with `OpenFailed`. Returns the child path; the caller must restore
+    /// the mode so the fixture can be removed.
+    #[cfg(unix)]
+    fn make_unopenable_child(parent: &Path, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let child = parent.join(name);
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o000)).unwrap();
+        child
+    }
+
+    #[cfg(unix)]
+    fn restore_child_mode(child: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(child, std::fs::Permissions::from_mode(0o700));
+    }
+
+    #[cfg(unix)]
+    fn running_as_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enumerate_project_dirs_strict_skips_unopenable_child() {
+        if running_as_root() {
+            return;
+        }
+        let (tmp, paths) = make_coordinator_fixture(false);
+        let child = make_unopenable_child(tmp.path(), "unopenable");
+        let mut skipped = 0usize;
+        let result = enumerate_project_dirs_strict(&paths, &mut skipped);
+        restore_child_mode(&child);
+        let projects = result.expect("scan must not abort on an unverifiable child");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].2, ProjectOrigin::ScannedChild);
+        assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn discover_snapshot_targets_skips_unverifiable_room() {
+        let (tmp, paths) = make_coordinator_fixture(false);
+        let ac_root = tmp.path().join("proj-a").join(".ac");
+        let real = ac_root.join("wg-1-dev-team");
+        let linked = ac_root.join("room-9-linked");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args([
+                    "/C",
+                    "mklink",
+                    "/J",
+                    &linked.to_string_lossy(),
+                    &real.to_string_lossy(),
+                ])
+                .status()
+                .expect("mklink /J must run");
+            assert!(status.success(), "mklink /J must create the junction");
+        }
+        let discovered = discover_verified_terminal_snapshot_targets_counted(&paths)
+            .expect("scan must not abort on a linked room");
+        assert_eq!(discovered.targets.len(), 2);
+        assert_eq!(discovered.skips.rooms, 1);
+        assert_eq!(discovered.skips.replicas, 0);
+        assert_eq!(discovered.skips.project_children, 0);
+    }
+
+    #[test]
+    fn discover_snapshot_targets_skips_unverifiable_replica() {
+        let (tmp, paths) = make_coordinator_fixture(false);
+        let ghost = tmp
+            .path()
+            .join("proj-a")
+            .join(".ac")
+            .join("wg-1-dev-team")
+            .join("__agent_ghost");
+        std::fs::create_dir_all(&ghost).unwrap();
+        let discovered = discover_verified_terminal_snapshot_targets_counted(&paths)
+            .expect("scan must not abort on a broken replica");
+        assert_eq!(discovered.targets.len(), 2);
+        assert_eq!(discovered.skips.replicas, 1);
+        assert_eq!(discovered.skips.rooms, 0);
+    }
+
+    /// Negative control: the fail-soft change must not swallow a collision
+    /// between two candidates that both verify.
+    #[test]
+    fn discover_snapshot_targets_still_fails_hard_on_ambiguity() {
+        let (tmp, paths) = make_coordinator_fixture(false);
+        let clone = tmp.path().join("copy").join("proj-a");
+        let source = tmp.path().join("proj-a");
+        copy_tree(&source, &clone);
+        let mut both = paths;
+        both.push(tmp.path().join("copy").to_string_lossy().to_string());
+        match discover_verified_terminal_snapshot_targets_counted(&both) {
+            Err(error) => assert_eq!(error, "ambiguous_project"),
+            Ok(_) => panic!("two verifiable copies must still collide"),
+        }
+    }
+
+    /// Pins the signature that keeps `phone/mailbox.rs` out of this phase's
+    /// file set: the wrapper returns exactly `counted().targets`.
+    #[test]
+    fn discover_verified_terminal_snapshot_targets_wrapper_matches_counted() {
+        let (tmp, paths) = make_coordinator_fixture(false);
+        let ghost = tmp
+            .path()
+            .join("proj-a")
+            .join(".ac")
+            .join("wg-1-dev-team")
+            .join("__agent_ghost");
+        std::fs::create_dir_all(&ghost).unwrap();
+        let counted = discover_verified_terminal_snapshot_targets_counted(&paths).unwrap();
+        assert!(counted.skips.any(), "fixture must contain a skip");
+        let wrapped = discover_verified_terminal_snapshot_targets(&paths).unwrap();
+        assert_eq!(
+            wrapped.iter().map(|t| &t.canonical_fqn).collect::<Vec<_>>(),
+            counted
+                .targets
+                .iter()
+                .map(|t| &t.canonical_fqn)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn copy_tree(source: &Path, destination: &Path) {
+        std::fs::create_dir_all(destination).unwrap();
+        for entry in std::fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let target = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_target_identity_resolves_when_the_colliding_copy_is_skipped() {
+        if running_as_root() {
+            return;
+        }
+        let (tmp, _paths) = make_coordinator_fixture(false);
+        let project = tmp.path().join("proj-a");
+        let shadow = make_unopenable_child(&project, "proj-a");
+        let configured = vec![project.to_string_lossy().to_string()];
+        let result = resolve_pty_input_target("proj-a:wg-1-dev-team/dev-rust", &configured);
+        restore_child_mode(&shadow);
+        let identity = result.expect("resolution must survive a skipped colliding copy");
+        assert_eq!(identity.canonical_fqn, "proj-a:wg-1-dev-team/dev-rust");
+        // The surviving candidate must be the good copy, not the shadow.
+        assert_eq!(
+            identity.project_identity.canonical_path,
+            std::fs::canonicalize(&project).unwrap()
         );
     }
 }

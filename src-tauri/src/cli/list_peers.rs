@@ -127,7 +127,9 @@ Orchestrator lists non-Orchestrator members of its own room. Workers and\n\
 origin agents receive `[]`. This view reads no sessions.json, creates no peer\n\
 directories, and grants no authority. Use the returned exact name with\n\
 `terminal-snapshot --to`. This view never emits `blockedMenu` or\n\
-`blockedMenuMessage`, because it reads no session index.\n\n\
+`blockedMenuMessage`, because it reads no session index. Candidates that fail\n\
+identity verification are skipped rather than aborting the command, and are\n\
+reported as counts on stderr.\n\n\
 PEER FILTER (--peer):\n  \
   Repeat `--peer <FQN>` to return only the named peers. Matching is by\n  \
   exact canonical FQN (no substring, no case-folding). Duplicate values\n  \
@@ -1374,36 +1376,97 @@ fn snapshot_target_projection(
     }
 }
 
-fn discover_snapshot_targets(root: &str) -> Result<Vec<LeanPeerInfo>, String> {
+/// Why `--snapshot-targets` returned `[]` without scanning. The vocabulary is
+/// closed and compile-time: no path, name or FQN can reach it (#2228).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotTargetsSilentReason {
+    NotRoomOrchestrator,
+    NotRoomReplica,
+}
+
+impl SnapshotTargetsSilentReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            SnapshotTargetsSilentReason::NotRoomOrchestrator => "requester_not_room_orchestrator",
+            SnapshotTargetsSilentReason::NotRoomReplica => "requester_not_room_replica",
+        }
+    }
+}
+
+/// Tier B: integers only. Never a path, a name, an FQN or a rule name, because
+/// every one of these candidates was found by scanning the caller's neighbours
+/// rather than supplied by the caller (#2228).
+fn snapshot_targets_counts_note(skips: crate::config::teams::SnapshotDiscoverySkips) -> String {
+    format!(
+        "snapshot_targets_note skipped_project_children={} skipped_rooms={} skipped_replicas={}",
+        skips.project_children, skips.rooms, skips.replicas
+    )
+}
+
+fn snapshot_targets_reason_note(reason: SnapshotTargetsSilentReason) -> String {
+    format!("snapshot_targets_note reason={}", reason.as_str())
+}
+
+/// Tier A: the caller supplied `--root`, so naming the rule that rejected it
+/// discloses nothing the caller does not already own (#2228).
+fn verify_snapshot_root(
+    root_path: &Path,
+) -> Result<crate::path_identity::VerifiedPathIdentity, String> {
+    crate::path_identity::verify_directory_reason(root_path)
+        .map_err(|rule| format!("unsafe_path field=root reason={}", rule.as_str()))
+}
+
+fn discover_snapshot_targets(
+    root: &str,
+) -> Result<
+    (
+        Vec<LeanPeerInfo>,
+        crate::config::teams::SnapshotDiscoverySkips,
+    ),
+    String,
+> {
     let root_path = Path::new(root);
     if crate::config::root_agent::is_root_agent_path(root) {
         let expected = crate::config::root_agent::verify_live_root_agent_path(root_path)?;
-        let supplied = crate::path_identity::verify_directory(root_path)?;
+        let supplied = verify_snapshot_root(root_path)?;
         if !crate::path_identity::same_object(&expected, &supplied) {
             return Err("invalid snapshot discovery root".to_string());
         }
         let project_paths = crate::config::settings::read_terminal_snapshot_project_paths_strict()?;
-        let targets =
-            crate::config::teams::discover_verified_terminal_snapshot_targets(&project_paths)?;
-        return Ok(targets
-            .into_iter()
-            .map(|target| {
-                let reachable = target.is_coordinator;
-                snapshot_target_projection(target, reachable)
-            })
-            .collect());
+        let discovered = crate::config::teams::discover_verified_terminal_snapshot_targets_counted(
+            &project_paths,
+        )?;
+        return Ok((
+            discovered
+                .targets
+                .into_iter()
+                .map(|target| {
+                    let reachable = target.is_coordinator;
+                    snapshot_target_projection(target, reachable)
+                })
+                .collect(),
+            discovered.skips,
+        ));
     }
 
     let Some(wg) = detect_wg_replica(root)? else {
-        return Ok(Vec::new());
+        eprintln!(
+            "{}",
+            snapshot_targets_reason_note(SnapshotTargetsSilentReason::NotRoomReplica)
+        );
+        return Ok((Vec::new(), Default::default()));
     };
     let requester = crate::config::teams::verify_pty_input_replica_cwd(root_path)?;
-    let supplied = crate::path_identity::verify_directory(root_path)?;
+    let supplied = verify_snapshot_root(root_path)?;
     if !crate::path_identity::same_object(&requester.replica_identity, &supplied) {
         return Err("invalid snapshot discovery root".to_string());
     }
     if !requester.is_coordinator {
-        return Ok(Vec::new());
+        eprintln!(
+            "{}",
+            snapshot_targets_reason_note(SnapshotTargetsSilentReason::NotRoomOrchestrator)
+        );
+        return Ok((Vec::new(), Default::default()));
     }
     let project_dir = wg
         .ac_root
@@ -1411,17 +1474,21 @@ fn discover_snapshot_targets(root: &str) -> Result<Vec<LeanPeerInfo>, String> {
         .ok_or_else(|| "snapshot project path unavailable".to_string())?
         .to_string_lossy()
         .to_string();
-    let targets =
-        crate::config::teams::discover_verified_terminal_snapshot_targets(&[project_dir])?;
-    Ok(targets
-        .into_iter()
-        .filter(|target| {
-            target.project == requester.project
-                && target.workgroup == requester.workgroup
-                && !target.is_coordinator
-        })
-        .map(|target| snapshot_target_projection(target, true))
-        .collect())
+    let discovered =
+        crate::config::teams::discover_verified_terminal_snapshot_targets_counted(&[project_dir])?;
+    Ok((
+        discovered
+            .targets
+            .into_iter()
+            .filter(|target| {
+                target.project == requester.project
+                    && target.workgroup == requester.workgroup
+                    && !target.is_coordinator
+            })
+            .map(|target| snapshot_target_projection(target, true))
+            .collect(),
+        discovered.skips,
+    ))
 }
 
 fn apply_snapshot_target_filter(
@@ -1496,13 +1563,16 @@ pub fn execute_lean(args: ListPeersLeanArgs) -> i32 {
     };
 
     if args.snapshot_targets {
-        let peers = match discover_snapshot_targets(&root) {
-            Ok(peers) => peers,
+        let (peers, skips) = match discover_snapshot_targets(&root) {
+            Ok(discovered) => discovered,
             Err(error) => {
                 eprintln!("Error: {}", error);
                 return 1;
             }
         };
+        if skips.any() {
+            eprintln!("{}", snapshot_targets_counts_note(skips));
+        }
         let available: Vec<String> = peers.iter().map(|peer| peer.name.clone()).collect();
         return match apply_snapshot_target_filter(peers, &args.peer) {
             Ok(filtered) => serialize_snapshot_targets(&filtered),
@@ -3311,5 +3381,86 @@ mod tests {
         let after = lp.get_after_help().expect("after_help present").to_string();
         assert!(after.contains("PEER FILTER"));
         assert!(after.contains("--peer"));
+    }
+
+    // ── #2228 phase 2: stderr notes disclose counts and closed literals only ──
+
+    /// Tier-B boundary test: the counts note may carry integers and nothing
+    /// else, whatever the candidate paths were.
+    #[test]
+    fn snapshot_targets_note_discloses_counts_only() {
+        let candidate_paths = [
+            "/home/someone/secret-project",
+            r"C:\Users\someone\room-9-private",
+            "proj-a:wg-1-dev-team/dev-rust",
+        ];
+        let skips = crate::config::teams::SnapshotDiscoverySkips {
+            project_children: 3,
+            rooms: 1,
+            replicas: 7,
+        };
+        let note = snapshot_targets_counts_note(skips);
+        for forbidden in ['/', '\\', ':'] {
+            assert!(
+                !note.contains(forbidden),
+                "note must not contain {forbidden:?}: {note}"
+            );
+        }
+        for path in candidate_paths {
+            for segment in path.split(['/', '\\', ':']).filter(|s| s.len() > 2) {
+                assert!(!note.contains(segment), "note leaked {segment:?}: {note}");
+            }
+        }
+        let (head, rest) = note.split_once(' ').expect("note must have fields");
+        assert_eq!(head, "snapshot_targets_note");
+        for field in rest.split(' ') {
+            let (key, value) = field.split_once('=').expect("field must be key=value");
+            assert!(
+                !key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "key {key:?} must match [a-z_]+"
+            );
+            assert!(
+                !value.is_empty() && value.chars().all(|c| c.is_ascii_digit()),
+                "value {value:?} must be an integer"
+            );
+        }
+        assert_eq!(
+            note,
+            "snapshot_targets_note skipped_project_children=3 skipped_rooms=1 skipped_replicas=7"
+        );
+    }
+
+    /// The second note shape, which test 10's integer regex deliberately does
+    /// not cover.
+    #[test]
+    fn snapshot_targets_note_non_orchestrator_is_a_closed_literal() {
+        for reason in [
+            SnapshotTargetsSilentReason::NotRoomOrchestrator,
+            SnapshotTargetsSilentReason::NotRoomReplica,
+        ] {
+            let note = snapshot_targets_reason_note(reason);
+            let rendered = note
+                .strip_prefix("snapshot_targets_note reason=")
+                .unwrap_or_else(|| panic!("unexpected note shape: {note}"));
+            let mut characters = rendered.chars();
+            assert!(
+                characters.next().is_some_and(|c| c.is_ascii_lowercase()),
+                "{rendered:?} must start with [a-z]"
+            );
+            assert!(
+                rendered
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "{rendered:?} must match ^[a-z][a-z0-9_]*$"
+            );
+        }
+        assert_eq!(
+            snapshot_targets_reason_note(SnapshotTargetsSilentReason::NotRoomOrchestrator),
+            "snapshot_targets_note reason=requester_not_room_orchestrator"
+        );
+        assert_eq!(
+            snapshot_targets_reason_note(SnapshotTargetsSilentReason::NotRoomReplica),
+            "snapshot_targets_note reason=requester_not_room_replica"
+        );
     }
 }
