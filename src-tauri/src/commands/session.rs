@@ -3781,7 +3781,7 @@ fn effective_restart_requested_profile(
 /// return `Ok(None)` and silently keep the old recipe). Root agents and plain
 /// terminals have no `currentCodingAgent`, so they fall straight through to
 /// `stored_agent_id` and their behavior is unchanged.
-fn resolve_restart_selected_agent_id(
+pub(crate) fn resolve_restart_selected_agent_id(
     settings: &AppSettings,
     cwd: &str,
     requested_agent_id: Option<&str>,
