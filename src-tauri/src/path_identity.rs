@@ -780,9 +780,45 @@ fn snapshot(metadata: &Metadata, links: u64) -> VerifiedMetadata {
     }
 }
 
+/// Which identity rule rejected a path. The vocabulary is closed and every
+/// variant renders to a compile-time snake_case literal, so no filesystem text
+/// can ever escape through a rule name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathRule {
+    ParentComponent,
+    ComponentUnreadable,
+    ComponentIsLink,
+    NotADirectory,
+    OpenFailed,
+    HandleIdentityUnavailable,
+    CanonicalizeFailed,
+    IdentityChangedDuringCheck,
+}
+
+impl PathRule {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            PathRule::ParentComponent => "parent_component",
+            PathRule::ComponentUnreadable => "component_unreadable",
+            PathRule::ComponentIsLink => "component_is_link",
+            PathRule::NotADirectory => "not_a_directory",
+            PathRule::OpenFailed => "open_failed",
+            PathRule::HandleIdentityUnavailable => "handle_identity_unavailable",
+            PathRule::CanonicalizeFailed => "canonicalize_failed",
+            PathRule::IdentityChangedDuringCheck => "identity_changed_during_check",
+        }
+    }
+}
+
 /// Inspect every existing path component without following a link/reparse
 /// component. The path itself must exist.
 pub fn verify_component_chain(path: &Path) -> Result<(), String> {
+    verify_component_chain_reason(path).map_err(|_| "unsafe_path".to_string())
+}
+
+/// Same checks as [`verify_component_chain`], reporting which rule rejected the
+/// path instead of collapsing every rejection to `unsafe_path`.
+pub fn verify_component_chain_reason(path: &Path) -> Result<(), PathRule> {
     let mut current = PathBuf::new();
     for component in path.components() {
         match component {
@@ -792,40 +828,51 @@ pub fn verify_component_chain(path: &Path) -> Result<(), String> {
             }
             Component::CurDir => continue,
             Component::ParentDir => {
-                return Err("unsafe_path".to_string());
+                return Err(PathRule::ParentComponent);
             }
             Component::Normal(part) => current.push(part),
         }
         let metadata =
-            std::fs::symlink_metadata(&current).map_err(|_| "unsafe_path".to_string())?;
+            std::fs::symlink_metadata(&current).map_err(|_| PathRule::ComponentUnreadable)?;
         if is_link_or_reparse(&metadata) {
-            return Err("unsafe_path".to_string());
+            return Err(PathRule::ComponentIsLink);
         }
     }
     Ok(())
 }
 
 pub fn verify_directory(path: &Path) -> Result<VerifiedPathIdentity, String> {
-    verify_component_chain(path)?;
-    let entry_before = std::fs::symlink_metadata(path).map_err(|_| "unsafe_path".to_string())?;
+    verify_directory_reason(path).map_err(|_| "unsafe_path".to_string())
+}
+
+/// Same checks as [`verify_directory`], reporting which rule rejected the path
+/// instead of collapsing every rejection to `unsafe_path`.
+pub fn verify_directory_reason(path: &Path) -> Result<VerifiedPathIdentity, PathRule> {
+    verify_component_chain_reason(path)?;
+    let entry_before =
+        std::fs::symlink_metadata(path).map_err(|_| PathRule::ComponentUnreadable)?;
     if !entry_before.is_dir() || is_link_or_reparse(&entry_before) {
-        return Err("unsafe_path".to_string());
+        return Err(PathRule::NotADirectory);
     }
-    let opened = open_directory_no_follow(path)?;
-    let opened_metadata = opened.metadata().map_err(|_| "unsafe_path".to_string())?;
+    let opened = open_directory_no_follow(path).map_err(|_| PathRule::OpenFailed)?;
+    let opened_metadata = opened
+        .metadata()
+        .map_err(|_| PathRule::HandleIdentityUnavailable)?;
     if !opened_metadata.is_dir() || is_link_or_reparse(&opened_metadata) {
-        return Err("unsafe_path".to_string());
+        return Err(PathRule::NotADirectory);
     }
-    let (opened_id, links) = handle_identity(&opened)?;
-    let canonical_path = std::fs::canonicalize(path).map_err(|_| "unsafe_path".to_string())?;
-    let entry_after = std::fs::symlink_metadata(path).map_err(|_| "unsafe_path".to_string())?;
+    let (opened_id, links) =
+        handle_identity(&opened).map_err(|_| PathRule::HandleIdentityUnavailable)?;
+    let canonical_path = std::fs::canonicalize(path).map_err(|_| PathRule::CanonicalizeFailed)?;
+    let entry_after = std::fs::symlink_metadata(path).map_err(|_| PathRule::ComponentUnreadable)?;
     if !entry_after.is_dir() || is_link_or_reparse(&entry_after) {
-        return Err("unsafe_path".to_string());
+        return Err(PathRule::NotADirectory);
     }
-    let reopened = open_directory_no_follow(path)?;
-    let (reopened_id, _) = handle_identity(&reopened)?;
+    let reopened = open_directory_no_follow(path).map_err(|_| PathRule::OpenFailed)?;
+    let (reopened_id, _) =
+        handle_identity(&reopened).map_err(|_| PathRule::HandleIdentityUnavailable)?;
     if reopened_id != opened_id {
-        return Err("unsafe_path".to_string());
+        return Err(PathRule::IdentityChangedDuringCheck);
     }
     Ok(VerifiedPathIdentity {
         canonical_path,
@@ -2687,6 +2734,130 @@ mod tests {
         assert!(validate_terminal_snapshot_output_path(Path::new("relative.png")).is_err());
         assert!(
             validate_terminal_snapshot_output_path(&directory.path().join("wrong.txt")).is_err()
+        );
+    }
+
+    // ── #2228 phase 2: named path rules ──
+
+    #[test]
+    fn verify_directory_reason_names_the_failing_rule() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing = temp.path().join("absent");
+        assert_eq!(
+            verify_directory_reason(&missing),
+            Err(PathRule::ComponentUnreadable)
+        );
+
+        let file = temp.path().join("regular");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(verify_directory_reason(&file), Err(PathRule::NotADirectory));
+
+        let parent = temp.path().join("child").join("..");
+        std::fs::create_dir_all(temp.path().join("child")).unwrap();
+        assert_eq!(
+            verify_directory_reason(&parent),
+            Err(PathRule::ParentComponent)
+        );
+    }
+
+    /// The executable form of "a path can never become a rule name".
+    #[test]
+    fn path_rule_vocabulary_is_closed_and_literal() {
+        for rule in [
+            PathRule::ParentComponent,
+            PathRule::ComponentUnreadable,
+            PathRule::ComponentIsLink,
+            PathRule::NotADirectory,
+            PathRule::OpenFailed,
+            PathRule::HandleIdentityUnavailable,
+            PathRule::CanonicalizeFailed,
+            PathRule::IdentityChangedDuringCheck,
+        ] {
+            let rendered = rule.as_str();
+            assert!(!rendered.is_empty(), "{rule:?} renders empty");
+            let mut characters = rendered.chars();
+            let first = characters.next().unwrap();
+            assert!(
+                first.is_ascii_lowercase(),
+                "{rendered:?} must start with [a-z]"
+            );
+            assert!(
+                rendered
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "{rendered:?} must match ^[a-z][a-z0-9_]*$"
+            );
+            for forbidden in ['/', '\\', ':', '.', ' '] {
+                assert!(
+                    !rendered.contains(forbidden),
+                    "{rendered:?} must not contain {forbidden:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_directory_reason_rejects_symlinked_component() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let real = temp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(
+            verify_directory_reason(&link),
+            Err(PathRule::ComponentIsLink)
+        );
+    }
+
+    /// Windows reparse points are not POSIX symlinks: assert the rule name for
+    /// BOTH a symlink and a real directory junction. A silent skip of the
+    /// symlink half is a job failure when `AC_REQUIRE_WINDOWS_LINK_TESTS` is
+    /// set, which CI does.
+    #[cfg(windows)]
+    #[test]
+    fn verify_directory_reason_rejects_reparse_component() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let real = temp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+
+        let symlink = temp.path().join("symlinked");
+        match std::os::windows::fs::symlink_dir(&real, &symlink) {
+            Ok(()) => assert_eq!(
+                verify_directory_reason(&symlink),
+                Err(PathRule::ComponentIsLink)
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                if std::env::var_os("AC_REQUIRE_WINDOWS_LINK_TESTS").is_some() {
+                    panic!(
+                        "symlink_dir needs Developer Mode or SeCreateSymbolicLinkPrivilege; \
+                         AC_REQUIRE_WINDOWS_LINK_TESTS forbids skipping this half"
+                    );
+                }
+                eprintln!(
+                    "SKIPPED symlink half: symlink_dir needs Developer Mode or \
+                     SeCreateSymbolicLinkPrivilege"
+                );
+            }
+            Err(error) => panic!("symlink_dir failed unexpectedly: {error}"),
+        }
+
+        // A junction needs no privilege and therefore always runs.
+        let junction = temp.path().join("junctioned");
+        let status = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                &junction.to_string_lossy(),
+                &real.to_string_lossy(),
+            ])
+            .status()
+            .expect("mklink /J must run");
+        assert!(status.success(), "mklink /J must create the junction");
+        assert_eq!(
+            verify_directory_reason(&junction),
+            Err(PathRule::ComponentIsLink)
         );
     }
 }
