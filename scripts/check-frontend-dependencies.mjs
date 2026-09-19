@@ -69,7 +69,7 @@ function runCruise(target) {
   const result = spawnSync(
     process.execPath,
     [CRUISE_BIN, "--config", CONFIG, "--output-type", "json", target],
-    { cwd: REPO_ROOT, encoding: "utf8" },
+    { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
   );
   if (result.error) {
     throw new Error(`cannot spawn pinned dependency-cruiser: ${result.error.message}`);
@@ -232,7 +232,7 @@ function verifyFullRoot(result) {
     return failures;
   }
 
-  const git = spawnSync("git", ["ls-files"], { cwd: REPO_ROOT, encoding: "utf8" });
+  const git = spawnSync("git", ["ls-files"], { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (git.error || git.status !== 0) {
     failures.push(`cannot read tracked inventory: ${git.error?.message ?? git.stderr}`);
     return failures;
