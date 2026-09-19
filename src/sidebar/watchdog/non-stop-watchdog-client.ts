@@ -4,7 +4,7 @@ import { playNonStopAlarm, stopNonStopAlarm, stopAllNonStopAlarms } from "../../
 import type { UnlistenFn } from "../../shared/transport";
 import type { NonStopReport } from "../../shared/types";
 import { workgroupGroupsStore, nonStopDisplayName, nonStopMatchesWorkgroup } from "../stores/workgroup-groups";
-import { splitWorkgroupsByWorking } from "../components/workgroup-session";
+import { splitWorkgroupsByActive } from "../components/workgroup-session";
 import { projectStore } from "../stores/project";
 
 
@@ -21,15 +21,18 @@ export function buildSnapshot(): NonStopReport[] {
     const members = project.workgroups.filter((wg) => nonStopMatchesWorkgroup(ns, wg));
     const total = members.length;
     if (total === 0) continue; // empty group, no disparity possible
-    const { working: workingWgs, notWorking } = splitWorkgroupsByWorking(members);
-    const working = workingWgs.length;
+    // #2202 - a room whose repo is running CI is working: alerting about it would
+    // be a false alarm. `NonStopReport`'s field names and the Rust consumer are
+    // unchanged.
+    const { active, notActive } = splitWorkgroupsByActive(members);
+    const working = active.length;
     reports.push({
       projectPath: project.path,
       groupName: nonStopDisplayName(ns.name),
       disparity: working < total,
       working,
       total,
-      notWorkingWorkgroups: notWorking.map((wg) => wg.name),
+      notWorkingWorkgroups: notActive.map((wg) => wg.name),
       toleranceSeconds: ns.toleranceSeconds,
       telegramEnabled: ns.telegram.enabled,
       telegramBotId: ns.telegram.botId ?? null,

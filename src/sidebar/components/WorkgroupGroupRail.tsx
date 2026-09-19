@@ -1,6 +1,6 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { AcWorkgroup, NonStopGroupConfig, WorkgroupGroup } from "../../shared/types";
+import type { AcAgentReplica, AcWorkgroup, NonStopGroupConfig, WorkgroupGroup } from "../../shared/types";
 import type { ProjectState } from "../stores/project";
 import { entityDirNumber, entityShortLabel } from "../../shared/entity-prefix";
 import { projectStore } from "../stores/project";
@@ -18,7 +18,8 @@ import {
 } from "../stores/workgroup-groups";
 import {
   isReplicaWorking,
-  splitWorkgroupsByWorking,
+  splitWorkgroupsByActive,
+  workgroupCiRunning,
   workgroupHasBlockedMenu,
   workgroupHasRaisedHand,
 } from "./workgroup-session";
@@ -77,18 +78,25 @@ function wgTooltipLabel(wgName: string): string {
 }
 
 function tooltipFor(folderName: string, workgroups: AcWorkgroup[]): string {
-  const rows = workgroups
-    .flatMap((wg) =>
-      wg.agents
-        .filter((replica) => isReplicaWorking(wg, replica))
-        .map((replica) => ({ wg, replica }))
-    )
+  // #2202 - ONE list and ONE sort over both row kinds: a working replica entry
+  // (`replica` set) and a room's CI entry (`replica` null). Room number is the
+  // primary key for both, so a CI-only wg1 sorts above a working wg2; an
+  // "append CI after the replicas" rule would invert that.
+  const entries: { wg: AcWorkgroup; replica: AcAgentReplica | null }[] = [];
+  for (const wg of workgroups) {
+    for (const replica of wg.agents) {
+      if (isReplicaWorking(wg, replica)) entries.push({ wg, replica });
+    }
+    if (workgroupCiRunning(wg)) entries.push({ wg, replica: null });
+  }
+  const rows = entries
     .sort((a, b) => {
       const wgDelta = wgNumber(a.wg.name) - wgNumber(b.wg.name);
       if (wgDelta !== 0) return wgDelta;
+      if (!a.replica || !b.replica) return (a.replica ? 0 : 1) - (b.replica ? 0 : 1);
       return a.replica.name.localeCompare(b.replica.name, "en", { sensitivity: "base", numeric: true });
     })
-    .map(({ wg, replica }) => `${wgTooltipLabel(wg.name)}:(${replica.name})`);
+    .map(({ wg, replica }) => `${wgTooltipLabel(wg.name)}:(${replica ? replica.name : "CI"})`);
   const body = rows.length > 0 ? rows.join("\n") : "No running agents";
   return `${folderName}\n${body}`;
 }
@@ -97,11 +105,14 @@ function buttonContent(
   name: string,
   workgroups: AcWorkgroup[]
 ): Pick<GroupButton, "name" | "counter" | "working" | "raiseHand" | "blockedMenu"> {
-  const working = splitWorkgroupsByWorking(workgroups).working.length;
+  // #2202 - the counter and the dot read the active meaning (session working OR
+  // room CI running). The `working` field name is kept: renaming it would touch
+  // RailButton and the dot testids for no behavior gain.
+  const active = splitWorkgroupsByActive(workgroups).active.length;
   return {
     name,
-    counter: `${working}/${workgroups.length}`,
-    working: working > 0,
+    counter: `${active}/${workgroups.length}`,
+    working: active > 0,
     raiseHand: workgroups.some(workgroupHasRaisedHand),
     blockedMenu: workgroups.some(workgroupHasBlockedMenu),
   };
