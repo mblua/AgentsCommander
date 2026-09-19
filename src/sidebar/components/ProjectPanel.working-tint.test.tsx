@@ -16,7 +16,7 @@ import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import { automationIdPart } from "./replica-repo-badges";
 import { remoteActivityStore } from "../stores/remote-activity";
-import { splitWorkgroupsByWorking } from "./workgroup-session";
+import { splitWorkgroupsByActive, splitWorkgroupsByWorking } from "./workgroup-session";
 import WorkgroupGroupRail from "./WorkgroupGroupRail";
 import type { CiState } from "../../shared/types";
 
@@ -750,7 +750,7 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
     }
   });
 
-  it("16. CI state alone changes no room classification, no rail dot and no order", async () => {
+  it("16. #2202 CI alone makes the room active on the rail and the wash, and changes no order", async () => {
     const rendered = await mountCiPanel({ withRail: true });
     try {
       await waitFor(() => {
@@ -772,12 +772,22 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
         expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(true)
       );
 
-      // Classification: both rooms are still NOT working, and the panel's group wash
-      // and the rail's dot/counter follow that classification, not the tint.
+      // #2202 - the session-only primitive is unchanged: neither room is WORKING.
       const split = splitWorkgroupsByWorking(projectStore.projects[0].workgroups);
       expect(split.working.map((group) => group.name)).toEqual([]);
       expect(split.notWorking.map((group) => group.name)).toEqual([wgName, IDLE_ROOM]);
-      expect(anySubgroupWorking(rendered.root)).toBe(false);
+      // ...but the CI room IS active, and that is what every user-facing surface
+      // reads: the room wash, the rail dot and the rail counter.
+      const active = splitWorkgroupsByActive(projectStore.projects[0].workgroups);
+      expect(active.active.map((group) => group.name)).toEqual([wgName]);
+      expect(active.notActive.map((group) => group.name)).toEqual([IDLE_ROOM]);
+      await waitFor(() => expect(anySubgroupWorking(rendered.root)).toBe(true));
+      expect(railDots(rendered.root).length).toBeGreaterThan(0);
+      expect(railButton(rendered.root, "all").textContent).toContain("1/2");
+
+      // Losing CI takes the wash and the count back off, in the same run.
+      publishCi("idle");
+      await waitFor(() => expect(anySubgroupWorking(rendered.root)).toBe(false));
       expect(railDots(rendered.root)).toEqual([]);
       expect(railButton(rendered.root, "all").textContent).toContain("0/2");
 
@@ -816,7 +826,7 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
     }
   });
 
-  it("18. the strip tint alone changes no room classification, no rail dot and no order", async () => {
+  it("18. #2202 the strip tint and the rail agree on the CI room, and the order is untouched", async () => {
     const rendered = await mountCiPanel({ withRail: true });
     try {
       sessionsStore.setSessions([
@@ -840,13 +850,18 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
         expect(row(rendered.root, "quick", ORCHESTRATOR).classList.contains("working")).toBe(true)
       );
 
-      // #2142's limit still holds: the strip tint does not reach workgroupIsWorking.
+      // The session-only primitive is unchanged...
       expect(
         splitWorkgroupsByWorking(projectStore.projects[0].workgroups).working
       ).toEqual([]);
-      expect(anySubgroupWorking(rendered.root)).toBe(false);
-      expect(railDots(rendered.root)).toEqual([]);
-      expect(railButton(rendered.root, "all").textContent).toContain("0/2");
+      // ...and the rail counts the same room the strip tinted: AC 6, one frame,
+      // one CI definition shared by both surfaces.
+      await waitFor(() =>
+        expect(railButton(rendered.root, "all").textContent).toContain("1/2")
+      );
+      expect(anySubgroupWorking(rendered.root)).toBe(true);
+      expect(railDots(rendered.root).length).toBeGreaterThan(0);
+      // Room ordering reads no working predicate, so it is byte-identical.
       expect(subgroupRowOrder(rendered.root)).toEqual(orderBefore);
     } finally {
       rendered.cleanup();
