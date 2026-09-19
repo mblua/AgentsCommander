@@ -136,6 +136,7 @@ pub async fn update_loop(
             workgroup: request.workgroup,
             prompt_body: request.prompt_body,
             busy_coordinator: request.busy_coordinator,
+            session_start: None,
             enabled: request.enabled,
         },
     )?;
