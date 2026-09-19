@@ -1293,13 +1293,6 @@ export type UiAutomationResponse<
       diagnostics?: UiAutomationDiagnostics;
     };
 
-export interface TeamSessionGroup {
-  team: Team;
-  coordinator: Session | null;
-  members: Session[];
-}
-
-
 export interface TeamMember {
   name: string;
   path: string;
