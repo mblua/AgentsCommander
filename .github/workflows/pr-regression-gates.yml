@@ -881,6 +881,47 @@ jobs:
             exit 1
           }
 
+      # IS #2162: the full suite runs only on the Windows leg, so without this
+      # the config-seed tests would compile on Linux and never execute -- and
+      # the `linux` branch of host_os_token(), the branch the feature exists
+      # for, would run on no runner at all. The filter is a MODULE PATH, not
+      # the bare word `config_seed`, which would also match tests in settings,
+      # agent_command and seed_manifest and make the count guard wrong.
+      - name: "cargo test (IS #2162 config seed OS tiers on Linux)"
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILTER='config::config_seed::tests::'
+          # LINUX count (the module has Windows-gated tests and one #[ignore],
+          # so Windows and macOS differ); update it in the same commit that
+          # adds or removes a test in that module.
+          EXPECTED=52
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2162.log
+
+          # Guard 1: the exit code through `tee` (pipefail is LOAD-BEARING)
+          #          catches a test that ran and failed.
+          # Guard 2: the sentinel grep is the POSITIVE CONTROL -- a filter that
+          #          matches nothing exits 0 and prints "0 passed".
+          # Guard 3: the anchored count is the mutation probe -- a test gated
+          #          out moves the number.
+          grep -qF 'config::config_seed::tests::os_candidates_for_each_token' test-2162.log || {
+            echo "::error::the #2162 sentinel test never ran; the filter matched nothing and this step tested nothing."
+            exit 1
+          }
+          # Guard 2b: the Linux-gated sentinel. host_token_matches_target_os
+          #           only compiles its linux arm on Linux and asserts
+          #           host_os_token() == Some("linux"); it cannot pass here
+          #           unless that branch really exists and is really taken.
+          grep -qF 'config::config_seed::tests::host_token_matches_target_os' test-2162.log || {
+            echo "::error::the #2162 Linux token sentinel never ran; the linux branch of host_os_token() is untested on this runner."
+            exit 1
+          }
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2162.log || {
+            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER}; the count changed or the filter matched something else."
+            exit 1
+          }
+
       # IS #1850: focused debug execution of every issue_1850 test. Guards
       # mirror the #1577 step: pipefail catches a failing test, the identifier
       # greps catch a filter that selected nothing or something else, and the

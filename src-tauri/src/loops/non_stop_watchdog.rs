@@ -4,7 +4,7 @@
 //! `working/total` counter parity, and pushes a full snapshot (one entry per
 //! project with an ACTIVE Non-stop group) via the `non_stop_report` IPC command.
 //! This module owns everything latency- and reliability-sensitive: the tolerance
-//! timer and the two measures (a pulsed Win32 beep and a Telegram message). The
+//! timer and the two measures (a frontend alarm event and a Telegram message). The
 //! backend NEVER computes "working"; it only times and actuates on the reported
 //! disparity.
 //!
@@ -16,8 +16,9 @@
 //!   false-disarmed.
 //! - Single-fire (Maria, locked): the `fired` latch fires at most once per
 //!   episode; it re-arms only when the disparity clears and reappears.
-//! - Beep lifecycle (G3): one alarm at a time (`beep_serialize`), and recovery
-//!   cancels an in-progress beep via a per-project `CancellationToken`.
+//! - Alarm lifecycle (G3): serialization, cancellation and audibility now live
+//!   in `src/shared/sound.ts`; the backend only decides WHEN to alarm and emits
+//!   an alarm event.
 //! - TOCTOU (G5): `fire` re-reads the episode under the lock and skips if the
 //!   disparity cleared between the tick's fire-decision and actuation.
 
@@ -25,10 +26,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
-use tauri::{AppHandle, Manager};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 use crate::shutdown::ShutdownSignal;
 use crate::telegram::types::TelegramBotConfig;
@@ -59,6 +59,26 @@ pub struct NonStopReport {
     pub sound_seconds: u32,
 }
 
+/// Frontend alarm event. The backend decides WHEN to alarm; the frontend owns
+/// serialization, cancellation and audibility (`src/shared/sound.ts`).
+pub const NON_STOP_ALARM_EVENT: &str = "non_stop_alarm";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NonStopAlarmPayload {
+    pub project_path: String,
+    pub group_name: String,
+    pub seconds: u32,
+    pub action: String, // "start" | "stop"
+}
+
+pub fn emit_non_stop_alarm<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    payload: NonStopAlarmPayload,
+) {
+    let _ = app.emit(NON_STOP_ALARM_EVENT, payload);
+}
+
 struct Episode {
     report: NonStopReport,
     disparity_since: Option<Instant>,
@@ -72,13 +92,6 @@ struct Episode {
 #[derive(Clone, Default)]
 pub struct NonStopWatchdogState {
     inner: Arc<Mutex<HashMap<String, Episode>>>,
-    /// (G3) One in-flight alarm token per project; recovery cancels it so a long
-    /// beep (up to 60s) is silenced the moment the disparity clears.
-    alarms: Arc<Mutex<HashMap<String, CancellationToken>>>,
-    /// (G3) Serializes beeps so two simultaneous project fires do not overlap
-    /// into a garbled tone.
-    #[cfg(any(target_os = "windows", test))]
-    beep_serialize: Arc<Mutex<()>>,
 }
 
 impl NonStopWatchdogState {
@@ -92,8 +105,8 @@ impl NonStopWatchdogState {
     /// `disparity_since` + `fired` for a continuing episode; stamps a new onset on
     /// false->true; clears on ->false; stamps `last_seen = now` on every entry.
     /// Any project that transitions to no-disparity (or drops out of the snapshot)
-    /// has its in-flight alarm cancelled (G3), so recovery silences the beep.
-    pub async fn ingest(&self, reports: Vec<NonStopReport>) {
+    /// is returned as recovered, so the caller can emit the `stop` alarm for it.
+    pub async fn ingest(&self, reports: Vec<NonStopReport>) -> Vec<String> {
         let now = Instant::now();
         let mut recovered: Vec<String> = Vec::new();
         {
@@ -121,20 +134,13 @@ impl NonStopWatchdogState {
                 );
             }
             // Projects known before but absent from this snapshot are also
-            // recovered (disarmed) for alarm-cancellation purposes.
+            // returned as recovered.
             for gone in map.keys() {
                 recovered.push(gone.clone());
             }
             *map = next;
         }
-        if !recovered.is_empty() {
-            let mut alarms = self.alarms.lock().await;
-            for p in recovered {
-                if let Some(tok) = alarms.remove(&p) {
-                    tok.cancel();
-                }
-            }
-        }
+        recovered
     }
 }
 
@@ -222,7 +228,11 @@ async fn tick(app: &AppHandle, state: &NonStopWatchdogState) {
     }
 }
 
-async fn fire(app: &AppHandle, state: &NonStopWatchdogState, r: &NonStopReport) {
+async fn fire<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    state: &NonStopWatchdogState,
+    r: &NonStopReport,
+) {
     // (G5, TOCTOU) Re-read under the lock: if the disparity cleared between the
     // tick's fire-decision and now, abort. No beep, no stale "not working"
     // Telegram message listing already-recovered workgroups.
@@ -243,17 +253,14 @@ async fn fire(app: &AppHandle, state: &NonStopWatchdogState, r: &NonStopReport) 
         fresh.tolerance_seconds
     );
     if fresh.sound_enabled {
-        let token = CancellationToken::new();
-        state
-            .alarms
-            .lock()
-            .await
-            .insert(fresh.project_path.clone(), token.clone());
-        play_alarm_beep(
-            state.clone(),
-            fresh.project_path.clone(),
-            fresh.sound_seconds.clamp(1, 60),
-            token,
+        emit_non_stop_alarm(
+            app,
+            NonStopAlarmPayload {
+                project_path: fresh.project_path.clone(),
+                group_name: fresh.group_name.clone(),
+                seconds: fresh.sound_seconds.clamp(1, 60),
+                action: "start".to_string(),
+            },
         );
     }
     if fresh.telegram_enabled {
@@ -261,65 +268,7 @@ async fn fire(app: &AppHandle, state: &NonStopWatchdogState, r: &NonStopReport) 
     }
 }
 
-// Serialized, cancellable pulsed alarm (G3). Only one plays at a time; a recovery
-// (ingest) cancels the token so an in-progress long beep stops within one pulse
-// (<= ~550ms).
-//
-// (F1) This function does NOT touch the alarm map. `ingest`'s recovery/drop path
-// owns removal + cancellation EXCLUSIVELY, and `fire`'s insert overwrites any
-// stale (already-cancelled) entry cleanly. A trailing self-remove here would be
-// wrong: under `beep_serialize` contention a queued-then-cancelled spawn can run
-// LONG after a recovery + re-fire replaced its map entry with a newer token, so
-// removing "its own" project key would actually delete the NEWER token, orphaning
-// it (a later recovery would find nothing to cancel and the beep would play its
-// full clamped duration unsilenceable). Leaving removal to `ingest` keeps the
-// cancellation invariant intact; a fired-but-never-recovered project leaves at
-// most one stale entry, bounded by project count and reclaimed on its next
-// recovery/drop.
-#[cfg(target_os = "windows")]
-fn play_alarm_beep(
-    state: NonStopWatchdogState,
-    _project_path: String,
-    seconds: u32,
-    token: CancellationToken,
-) {
-    tauri::async_runtime::spawn(async move {
-        // One alarm at a time. Held across the blocking beep so a second project
-        // fire queues behind this one instead of overlapping.
-        let _serialize = state.beep_serialize.lock().await;
-        if !token.is_cancelled() {
-            let beep_token = token.clone();
-            let _ = tauri::async_runtime::spawn_blocking(move || {
-                // `Beep` lives in Win32::System::Diagnostics::Debug (feature
-                // `Win32_System_Diagnostics_Debug`, already enabled in Cargo.toml),
-                // NOT in ::System::Console.
-                use windows_sys::Win32::System::Diagnostics::Debug::Beep;
-                let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_secs(seconds as u64);
-                while std::time::Instant::now() < deadline && !beep_token.is_cancelled() {
-                    // 400ms tone (blocking) + 150ms gap -> reads as a pulsed alarm.
-                    let _ = unsafe { Beep(880, 400) };
-                    std::thread::sleep(std::time::Duration::from_millis(150));
-                }
-            })
-            .await;
-        }
-    });
-}
-
-#[cfg(not(target_os = "windows"))]
-fn play_alarm_beep(
-    _state: NonStopWatchdogState,
-    _project_path: String,
-    _seconds: u32,
-    _token: CancellationToken,
-) {
-    // No backend audio off Windows; the modal disables the Sound measure there.
-    // (F1) Does not touch the alarm map: `ingest` owns removal exclusively.
-    log::info!("[non-stop] sound alert requested (no-op on non-Windows)");
-}
-
-async fn send_telegram(app: &AppHandle, r: &NonStopReport) {
+async fn send_telegram<R: tauri::Runtime>(app: &AppHandle<R>, r: &NonStopReport) {
     // Resolve bot from global settings: requested id, else first bot; skip if none.
     // Bind the State to a local before .read().await (E0716).
     let resolved = {
@@ -369,6 +318,7 @@ fn project_folder_name(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri::Listener;
 
     fn report(project: &str, disparity: bool, tolerance_seconds: u32) -> NonStopReport {
         NonStopReport {
@@ -387,6 +337,19 @@ mod tests {
             telegram_bot_id: None,
             sound_enabled: false,
             sound_seconds: 3,
+        }
+    }
+
+    fn report_with_sound(
+        project: &str,
+        disparity: bool,
+        tolerance_seconds: u32,
+        sound_seconds: u32,
+    ) -> NonStopReport {
+        NonStopReport {
+            sound_enabled: true,
+            sound_seconds,
+            ..report(project, disparity, tolerance_seconds)
         }
     }
 
@@ -523,74 +486,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ingest_cancels_alarm_on_recovery() {
+    async fn ingest_returns_recovered_paths() {
         let state = NonStopWatchdogState::new();
+
+        let recovered = state.ingest(vec![report("p", true, 30)]).await;
+        assert!(recovered.is_empty());
+
+        let recovered = state.ingest(vec![report("p", false, 30)]).await;
+        assert_eq!(recovered, vec!["p"]);
+
+        // Re-arm, then drop the project from the snapshot entirely.
         state.ingest(vec![report("p", true, 30)]).await;
-        // Simulate an in-flight alarm.
-        let token = CancellationToken::new();
-        state
-            .alarms
-            .lock()
-            .await
-            .insert("p".to_string(), token.clone());
-
-        state.ingest(vec![report("p", false, 30)]).await;
-
-        assert!(token.is_cancelled(), "recovery cancels the in-flight beep");
-        assert!(
-            state.alarms.lock().await.get("p").is_none(),
-            "the cancelled token is removed"
-        );
-    }
-
-    #[tokio::test]
-    async fn stale_queued_beep_completion_does_not_orphan_a_refired_token() {
-        // F1 regression: under beep_serialize contention, a queued-then-cancelled
-        // first spawn must NOT remove a newer token's alarm-map entry when it later
-        // completes, or a subsequent recovery cannot cancel the second beep.
-        let state = NonStopWatchdogState::new();
-
-        // Fire #1 for "p" produced token_p1, which a recovery already cancelled.
-        let token_p1 = CancellationToken::new();
-        token_p1.cancel();
-
-        // Re-arm + Fire #2 inserted a fresh token_p2 (as `fire` does on re-fire).
-        let token_p2 = CancellationToken::new();
-        state
-            .alarms
-            .lock()
-            .await
-            .insert("p".to_string(), token_p2.clone());
-
-        // Simulate project A holding the serialize lock (a long beep in flight), so
-        // the stale Spawn_p1 queues behind it instead of running immediately.
-        let a_guard = state.beep_serialize.lock().await;
-        play_alarm_beep(state.clone(), "p".to_string(), 3, token_p1);
-        // Give the stale spawn time to reach its `beep_serialize.lock().await`.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(
-            state.alarms.lock().await.contains_key("p"),
-            "token_p2 present while the stale spawn is still queued"
-        );
-
-        // A finishes. tokio's Mutex is FIFO, so the stale spawn (queued before this
-        // re-lock) runs to completion before the test re-acquires the lock.
-        drop(a_guard);
-        drop(state.beep_serialize.lock().await);
-
-        // With the F1 fix, the stale spawn left the alarm map untouched.
-        assert!(
-            state.alarms.lock().await.contains_key("p"),
-            "a stale, cancelled spawn must not orphan the re-fired token"
-        );
-
-        // The invariant grinch's trace breaks: a later recovery must cancel token_p2.
-        state.ingest(vec![report("p", false, 30)]).await;
-        assert!(
-            token_p2.is_cancelled(),
-            "recovery must find and cancel the re-fired beep token"
-        );
-        assert!(!state.alarms.lock().await.contains_key("p"));
+        let recovered = state.ingest(vec![]).await;
+        assert_eq!(recovered, vec!["p"]);
     }
 
     #[tokio::test]
@@ -607,6 +515,129 @@ mod tests {
         assert!(
             fresh_if_still_disparate(&map, "p").is_none(),
             "TOCTOU guard: no send/beep once the disparity cleared"
+        );
+    }
+
+    #[test]
+    fn alarm_event_name_matches_the_frontend_contract() {
+        assert_eq!(NON_STOP_ALARM_EVENT, "non_stop_alarm");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fire_emits_start_once_per_episode() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap_or_else(|_| panic!("build app"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen_any(NON_STOP_ALARM_EVENT, move |event| {
+            let _ = tx.send(event.payload().to_string());
+        });
+
+        let state = NonStopWatchdogState::new();
+        state
+            .ingest(vec![report_with_sound("p", true, 30, 30)])
+            .await;
+        backdate_disparity(&state, "p", Duration::from_secs(31)).await;
+        let to_fire = fireable(&state).await;
+        assert_eq!(to_fire.len(), 1);
+        fire(app.handle(), &state, &to_fire[0]).await;
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
+        assert_eq!(payload["action"], "start");
+        assert_eq!(payload["projectPath"], "p");
+        assert_eq!(payload["groupName"], "Alert me!");
+        assert_eq!(payload["seconds"], 30);
+        let mut keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["action", "groupName", "projectPath", "seconds"]);
+
+        // Second, separate drive inside the same test: pins the clamp(1, 60) ceiling.
+        let state = NonStopWatchdogState::new();
+        state
+            .ingest(vec![report_with_sound("q", true, 30, 600)])
+            .await;
+        backdate_disparity(&state, "q", Duration::from_secs(31)).await;
+        let to_fire = fireable(&state).await;
+        assert_eq!(to_fire.len(), 1);
+        fire(app.handle(), &state, &to_fire[0]).await;
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
+        assert_eq!(payload["projectPath"], "q");
+        assert_eq!(payload["seconds"], 60);
+
+        // Single-fire latch: a second collection yields nothing, so no second event.
+        assert!(fireable(&state).await.is_empty());
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+
+        // Third, separate drive: pins the clamp(1, 60) floor.
+        let state = NonStopWatchdogState::new();
+        state
+            .ingest(vec![report_with_sound("r", true, 30, 0)])
+            .await;
+        backdate_disparity(&state, "r", Duration::from_secs(31)).await;
+        let to_fire = fireable(&state).await;
+        assert_eq!(to_fire.len(), 1);
+        fire(app.handle(), &state, &to_fire[0]).await;
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
+        assert_eq!(payload["projectPath"], "r");
+        assert_eq!(payload["seconds"], 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fire_emits_nothing_when_disparity_cleared() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap_or_else(|_| panic!("build app"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen_any(NON_STOP_ALARM_EVENT, move |event| {
+            let _ = tx.send(event.payload().to_string());
+        });
+
+        let state = NonStopWatchdogState::new();
+        state
+            .ingest(vec![report_with_sound("p", true, 30, 30)])
+            .await;
+        backdate_disparity(&state, "p", Duration::from_secs(31)).await;
+        let to_fire = fireable(&state).await;
+        assert_eq!(to_fire.len(), 1);
+        // The clear arrives between the tick's fire-decision and actuation (G5).
+        // Armed with the Sound measure ON so only the TOCTOU guard can suppress it:
+        // a `sound_enabled: false` clear would be hidden by the sound gate instead.
+        state
+            .ingest(vec![report_with_sound("p", false, 30, 30)])
+            .await;
+        fire(app.handle(), &state, &to_fire[0]).await;
+
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "TOCTOU: no alarm once the disparity cleared"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fire_emits_nothing_when_sound_disabled() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap_or_else(|_| panic!("build app"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen_any(NON_STOP_ALARM_EVENT, move |event| {
+            let _ = tx.send(event.payload().to_string());
+        });
+
+        let state = NonStopWatchdogState::new();
+        state.ingest(vec![report("p", true, 30)]).await; // sound_enabled: false
+        backdate_disparity(&state, "p", Duration::from_secs(31)).await;
+        let to_fire = fireable(&state).await;
+        assert_eq!(to_fire.len(), 1);
+        fire(app.handle(), &state, &to_fire[0]).await;
+
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "no alarm when the Sound measure is off"
         );
     }
 

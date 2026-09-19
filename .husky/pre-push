@@ -2,6 +2,9 @@
 # Pre-push hook: validates every branch ref being pushed against the naming convention.
 # Bypass locally with `git push --no-verify` (server-side GitHub Action is authoritative).
 
+# Plans-path ban (issue #2183): the repository must never track anything under plans/.
+sh scripts/validate-no-plans-path.sh || exit 1
+
 # stdin lines from git: "<local_ref> <local_oid> <remote_ref> <remote_oid>"
 while read -r local_ref local_oid remote_ref remote_oid; do
   # Skip branch deletions (local_oid is all zeros)

@@ -29,7 +29,7 @@
 //!    looked".
 //!
 //!    That claim rests entirely on the enumeration recipe of the #1446 plan
-//!    (`plans/1446-instance-gitignore-artifact-registry.md`, Section 7), which
+//!    (`.ac/plans/1446-instance-gitignore-artifact-registry.md`, Section 7), which
 //!    is the procedure that produced this inventory and the only way to keep it
 //!    true. Its four legs exist because narrower sweeps missed real writers: leg
 //!    1 collects every way production obtains the instance directory, including

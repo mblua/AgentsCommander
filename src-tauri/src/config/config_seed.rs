@@ -57,12 +57,46 @@ pub enum ConfigSeedTier {
     CatalogDefault,
 }
 
+/// #2162 - one candidate source folder: its tier, whether it carries the
+/// `.<os>` suffix, and the composed path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigSeedCandidate {
+    pub tier: ConfigSeedTier,
+    /// True when this path carries the `.<os>` suffix.
+    pub os_specific: bool,
+    pub path: PathBuf,
+}
+
+/// #2162 - compile-time host OS token. `None` on any other target, which then
+/// contributes no OS candidates. Not user-overridable.
+pub fn host_os_token() -> Option<&'static str> {
+    if cfg!(target_os = "linux") {
+        Some("linux")
+    } else if cfg!(target_os = "windows") {
+        Some("windows")
+    } else if cfg!(target_os = "macos") {
+        Some("macos")
+    } else {
+        None
+    }
+}
+
+/// #2162 - marker appended to the tier name in logs when an OS variant won.
+pub(crate) fn os_marker(os_specific: bool) -> &'static str {
+    if os_specific {
+        "+os"
+    } else {
+        ""
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedConfigSeed {
     /// Candidate source folders, highest precedence first: workspace profile,
-    /// workspace base, matrix profile, matrix base. Pure path math; no
-    /// filesystem touched at resolve time.
-    pub candidates: Vec<(ConfigSeedTier, PathBuf)>,
+    /// workspace base, matrix profile, matrix base. #2162: each tier is
+    /// preceded by its `.<os>` variant when an OS token is supplied. Pure path
+    /// math; no filesystem touched at resolve time.
+    pub candidates: Vec<ConfigSeedCandidate>,
     /// Absolute destination, under the replica root.
     pub dest: PathBuf,
     /// Carried for CONTENT substitution at copy time.
@@ -152,6 +186,7 @@ pub fn resolve_config_seed(
     cfg: &ConfigSeedConfig,
     effective_letter: &str,
     context: Option<&PlaceholderContext>,
+    os_token: Option<&str>,
 ) -> Option<ResolvedConfigSeed> {
     let context = context?;
     if context.root_kind != PlaceholderRootKind::AcReplicaOrRootAgent {
@@ -177,26 +212,55 @@ pub fn resolve_config_seed(
     // bare `<dest>` is intentionally never a source (it is the agent's own live
     // config; see ConfigSeedTier), so the matrix tiers mirror the workspace
     // naming (`default_profile_<l><dest>` / `default<dest>`) instead.
-    let mut candidates: Vec<(ConfigSeedTier, PathBuf)> = Vec::new();
+    //
+    // #2162: within EACH tier the `.<os>` variant is pushed first and the base
+    // second, so an OS folder refines its own tier and never jumps one. With
+    // `os_token == None` the list is byte-identical to the pre-#2162 one.
+    let mut candidates: Vec<ConfigSeedCandidate> = Vec::new();
+    let push_tier = |candidates: &mut Vec<ConfigSeedCandidate>,
+                     tier: ConfigSeedTier,
+                     root: &Path,
+                     folder: String| {
+        if let Some(os) = os_token {
+            candidates.push(ConfigSeedCandidate {
+                tier,
+                os_specific: true,
+                path: root.join(format!("{}.{}", folder, os)),
+            });
+        }
+        candidates.push(ConfigSeedCandidate {
+            tier,
+            os_specific: false,
+            path: root.join(folder),
+        });
+    };
     if let Some(ws) = context.ac_root.as_ref() {
-        candidates.push((
+        push_tier(
+            &mut candidates,
             ConfigSeedTier::WorkspaceProfile,
-            ws.join(format!("default_profile_{}{}", letter, dest_name)),
-        ));
-        candidates.push((
+            ws,
+            format!("default_profile_{}{}", letter, dest_name),
+        );
+        push_tier(
+            &mut candidates,
             ConfigSeedTier::WorkspaceBase,
-            ws.join(format!("default{}", dest_name)),
-        ));
+            ws,
+            format!("default{}", dest_name),
+        );
     }
     if let Some(mx) = context.matrix_root.as_ref() {
-        candidates.push((
+        push_tier(
+            &mut candidates,
             ConfigSeedTier::MatrixProfile,
-            mx.join(format!("default_profile_{}{}", letter, dest_name)),
-        ));
-        candidates.push((
+            mx,
+            format!("default_profile_{}{}", letter, dest_name),
+        );
+        push_tier(
+            &mut candidates,
             ConfigSeedTier::MatrixBase,
-            mx.join(format!("default{}", dest_name)),
-        ));
+            mx,
+            format!("default{}", dest_name),
+        );
     }
     if candidates.is_empty() {
         return None;
@@ -495,11 +559,13 @@ fn perform_config_seed_with_clock_and_hooks(
     let mut selected = seed
         .candidates
         .iter()
-        .find(|(tier, src)| *tier != ConfigSeedTier::CatalogDefault && is_readable_dir(src));
+        .find(|c| c.tier != ConfigSeedTier::CatalogDefault && is_readable_dir(&c.path));
     if selected.is_none() {
-        if let Some(candidate) = seed.candidates.iter().find(|(tier, src)| {
-            *tier == ConfigSeedTier::CatalogDefault && is_nonempty_seed_dir(src)
-        }) {
+        if let Some(candidate) = seed
+            .candidates
+            .iter()
+            .find(|c| c.tier == ConfigSeedTier::CatalogDefault && is_nonempty_seed_dir(&c.path))
+        {
             match destination_absent_no_follow(&seed.dest) {
                 Ok(true) => selected = Some(candidate),
                 Ok(false) => {}
@@ -517,7 +583,7 @@ fn perform_config_seed_with_clock_and_hooks(
             }
         }
     }
-    let Some((tier, src)) = selected else {
+    let Some(candidate) = selected else {
         // #598: seeding is active but no template exists at any tier. This is a
         // benign no-op (nothing to copy), but a SILENT one confused users who
         // enabled the feature, created no template, and saw nothing happen. Log
@@ -533,7 +599,14 @@ fn perform_config_seed_with_clock_and_hooks(
         let looked_in = seed
             .candidates
             .iter()
-            .map(|(t, p)| format!("{:?}={}", t, p.display()))
+            .map(|c| {
+                format!(
+                    "{:?}{}={}",
+                    c.tier,
+                    os_marker(c.os_specific),
+                    c.path.display()
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
         log::info!(
@@ -572,7 +645,9 @@ fn perform_config_seed_with_clock_and_hooks(
 
     // 3. Stage the template into temp. On any error the dest is untouched.
     //    master->replica copy substitutes the 3 AC tokens (substitute = true).
-    let mut collector = SeedFileCollector::new(seed, *tier);
+    let tier = candidate.tier;
+    let src = &candidate.path;
+    let mut collector = SeedFileCollector::new(seed, tier);
     if let Err(e) = copy_tree_collecting(src, &temp, Some(&seed.context), true, &mut collector) {
         log::warn!(
             "[config-seed] failed to stage template {} -> {}: {}",
@@ -682,9 +757,10 @@ fn perform_config_seed_with_clock_and_hooks(
         log::warn!("[config-seed] {}", w);
     }
     log::info!(
-        "[config-seed] seeded '{}' into replica from {:?} source '{}'",
+        "[config-seed] seeded '{}' into replica from {:?}{} source '{}'",
         seed.dest.display(),
-        tier,
+        candidate.tier,
+        os_marker(candidate.os_specific),
         src.display()
     );
     // #1596: pi's bash tool runs through `shellPath`; project `.pi/settings.json`
@@ -701,7 +777,7 @@ fn perform_config_seed_with_clock_and_hooks(
         }
     }
     ConfigSeedReport::Published(ConfigSeedPublication {
-        tier: *tier,
+        tier,
         dest: seed.dest.clone(),
         files,
         published_at,
@@ -1229,6 +1305,7 @@ fn is_symlink_or_reparse(entry: &std::fs::DirEntry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::settings::CONFIG_SEED_OS_TOKENS;
 
     fn ctx_with(
         replica: &Path,
@@ -1284,8 +1361,368 @@ mod tests {
         write_file(&ac_root.join("default.claude").join("new.txt"), b"NEW");
         write_file(&replica.join(".claude").join("old.txt"), b"OLD");
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         (temp, resolved, replica)
+    }
+
+    // ---- #2162 OS-aware tiers ---------------------------------------------
+
+    /// Expected candidate pair (OS variant first, then base) for one tier.
+    fn os_pair(
+        tier: ConfigSeedTier,
+        root: &Path,
+        folder: &str,
+        os: &str,
+    ) -> Vec<ConfigSeedCandidate> {
+        vec![
+            ConfigSeedCandidate {
+                tier,
+                os_specific: true,
+                path: root.join(format!("{folder}.{os}")),
+            },
+            ConfigSeedCandidate {
+                tier,
+                os_specific: false,
+                path: root.join(folder),
+            },
+        ]
+    }
+
+    /// Test 1: every token produces the exact 8-entry, profile-major list of
+    /// plan section 3.4, ranks 1-8. Injected, so one host covers all three.
+    #[test]
+    fn os_candidates_for_each_token() {
+        let ac_root = abs(r"C:\ws", "/ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
+        let matrix = ac_root.join("_agent_x");
+        let ctx = ctx_with(&replica, Some(&ac_root), Some(&matrix));
+
+        for os in CONFIG_SEED_OS_TOKENS {
+            let resolved =
+                resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx), Some(os)).expect("some");
+            let mut expected = Vec::new();
+            expected.extend(os_pair(
+                ConfigSeedTier::WorkspaceProfile,
+                &ac_root,
+                "default_profile_c.claude",
+                os,
+            ));
+            expected.extend(os_pair(
+                ConfigSeedTier::WorkspaceBase,
+                &ac_root,
+                "default.claude",
+                os,
+            ));
+            expected.extend(os_pair(
+                ConfigSeedTier::MatrixProfile,
+                &matrix,
+                "default_profile_c.claude",
+                os,
+            ));
+            expected.extend(os_pair(
+                ConfigSeedTier::MatrixBase,
+                &matrix,
+                "default.claude",
+                os,
+            ));
+            assert_eq!(resolved.candidates, expected, "token {os}");
+        }
+    }
+
+    /// Test 2: no token => exactly today's four candidates, none OS-specific.
+    /// This is also the only coverage of `host_os_token`'s `None` branch shape.
+    #[test]
+    fn no_os_token_matches_today() {
+        let ac_root = abs(r"C:\ws", "/ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
+        let matrix = ac_root.join("_agent_x");
+        let ctx = ctx_with(&replica, Some(&ac_root), Some(&matrix));
+
+        let resolved =
+            resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).expect("some");
+        assert_eq!(
+            resolved.candidates,
+            vec![
+                ConfigSeedCandidate {
+                    tier: ConfigSeedTier::WorkspaceProfile,
+                    os_specific: false,
+                    path: ac_root.join("default_profile_a.claude"),
+                },
+                ConfigSeedCandidate {
+                    tier: ConfigSeedTier::WorkspaceBase,
+                    os_specific: false,
+                    path: ac_root.join("default.claude"),
+                },
+                ConfigSeedCandidate {
+                    tier: ConfigSeedTier::MatrixProfile,
+                    os_specific: false,
+                    path: matrix.join("default_profile_a.claude"),
+                },
+                ConfigSeedCandidate {
+                    tier: ConfigSeedTier::MatrixBase,
+                    os_specific: false,
+                    path: matrix.join("default.claude"),
+                },
+            ]
+        );
+    }
+
+    /// Test 3: within one tier, the OS variant beats its base.
+    #[test]
+    fn os_variant_wins_within_its_tier() {
+        let temp = tempfile::tempdir().unwrap();
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"BASE");
+        write_file(&ac_root.join("default.claude.linux").join("f.txt"), b"OS");
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
+
+        let resolved =
+            resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), Some("linux")).unwrap();
+        let published = assert_published(perform_config_seed(&resolved, "t3"));
+        assert_eq!(published.tier, ConfigSeedTier::WorkspaceBase);
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("f.txt")).unwrap(),
+            b"OS"
+        );
+    }
+
+    /// Test 4: an OS variant never outranks a base of a HIGHER tier.
+    #[test]
+    fn os_never_jumps_a_tier() {
+        let temp = tempfile::tempdir().unwrap();
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
+        let matrix = ac_root.join("_agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"WS_BASE");
+        write_file(
+            &matrix.join("default_profile_a.claude.linux").join("f.txt"),
+            b"MX_PROFILE_OS",
+        );
+        let ctx = ctx_with(&replica, Some(&ac_root), Some(&matrix));
+
+        let resolved =
+            resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), Some("linux")).unwrap();
+        let published = assert_published(perform_config_seed(&resolved, "t4"));
+        assert_eq!(published.tier, ConfigSeedTier::WorkspaceBase);
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("f.txt")).unwrap(),
+            b"WS_BASE"
+        );
+    }
+
+    /// Test 5: with no `.<os>` folder on disk, an OS token changes nothing --
+    /// same files, same tier, same manifest `source`.
+    #[test]
+    fn fallback_is_byte_identical() {
+        fn run(os_token: Option<&str>, sfx: &str) -> (ConfigSeedPublication, ManifestSource) {
+            let temp = tempfile::tempdir().unwrap();
+            let ac_root = temp.path().join("ws");
+            let replica = ac_root.join("wg-1-team").join("__agent_x");
+            std::fs::create_dir_all(&replica).unwrap();
+            write_file(&ac_root.join("default.claude").join("f.txt"), b"BASE");
+            let ctx = ctx_with(&replica, Some(&ac_root), None);
+            let resolved =
+                resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), os_token).unwrap();
+            let published = assert_published(perform_config_seed(&resolved, sfx));
+            assert_eq!(
+                std::fs::read(replica.join(".claude").join("f.txt")).unwrap(),
+                b"BASE"
+            );
+            let source = manifest_source_for_tier(published.tier);
+            (published, source)
+        }
+        let (with_os, source_with_os) = run(Some("linux"), "t5a");
+        let (without, source_without) = run(None, "t5b");
+        assert_eq!(with_os.tier, without.tier);
+        assert_eq!(source_with_os, source_without);
+        let names = |p: &ConfigSeedPublication| match &p.files {
+            CollectedSeedFiles::Exact(v) => v.clone(),
+            other => panic!("expected exact files, got {other:?}"),
+        };
+        assert_eq!(names(&with_os), names(&without));
+    }
+
+    /// Test 6: the OS variant of tier 5 keeps the absent-only + non-empty gate.
+    #[test]
+    fn catalog_default_os_variant_keeps_absent_only_and_nonempty() {
+        // Build a tier-5-only seed the way the spawn caller does, with both the
+        // OS master and the base master, OS first.
+        fn fixture(
+            temp: &Path,
+            os_master_files: &[(&str, &[u8])],
+            base_master_files: &[(&str, &[u8])],
+            dest_exists: bool,
+        ) -> (ResolvedConfigSeed, PathBuf) {
+            let ac_root = temp.join("ws");
+            let replica = ac_root.join("wg-1-team").join("__agent_x");
+            std::fs::create_dir_all(&replica).unwrap();
+            let os_master = temp.join("masters").join(".claude.linux");
+            let base_master = temp.join("masters").join(".claude");
+            std::fs::create_dir_all(&os_master).unwrap();
+            std::fs::create_dir_all(&base_master).unwrap();
+            for (n, c) in os_master_files {
+                write_file(&os_master.join(n), c);
+            }
+            for (n, c) in base_master_files {
+                write_file(&base_master.join(n), c);
+            }
+            if dest_exists {
+                write_file(&replica.join(".claude").join("live.txt"), b"LIVE");
+            }
+            let ctx = ctx_with(&replica, Some(&ac_root), None);
+            let mut resolved =
+                resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), Some("linux")).unwrap();
+            resolved.candidates.push(ConfigSeedCandidate {
+                tier: ConfigSeedTier::CatalogDefault,
+                os_specific: true,
+                path: os_master,
+            });
+            resolved.candidates.push(ConfigSeedCandidate {
+                tier: ConfigSeedTier::CatalogDefault,
+                os_specific: false,
+                path: base_master,
+            });
+            (resolved, replica)
+        }
+
+        // (a) OS master non-empty + dest absent => the OS master fills.
+        let t = tempfile::tempdir().unwrap();
+        let (resolved, replica) =
+            fixture(t.path(), &[("f.txt", b"OS")], &[("f.txt", b"BASE")], false);
+        let published = assert_published(perform_config_seed(&resolved, "t6a"));
+        assert_eq!(published.tier, ConfigSeedTier::CatalogDefault);
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("f.txt")).unwrap(),
+            b"OS"
+        );
+
+        // (b) dest present => skipped, the live config is untouched.
+        let t = tempfile::tempdir().unwrap();
+        let (resolved, replica) =
+            fixture(t.path(), &[("f.txt", b"OS")], &[("f.txt", b"BASE")], true);
+        assert_skipped(perform_config_seed(&resolved, "t6b"));
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("live.txt")).unwrap(),
+            b"LIVE"
+        );
+
+        // (c) OS master EMPTY => reads as "not present"; the base master fills.
+        let t = tempfile::tempdir().unwrap();
+        let (resolved, replica) = fixture(t.path(), &[], &[("f.txt", b"BASE")], false);
+        let published = assert_published(perform_config_seed(&resolved, "t6c"));
+        assert_eq!(published.tier, ConfigSeedTier::CatalogDefault);
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("f.txt")).unwrap(),
+            b"BASE"
+        );
+    }
+
+    /// Test 7: the manifest source depends on the tier ALONE; an OS variant
+    /// records exactly what its base records, for all five tiers.
+    #[test]
+    fn manifest_source_ignores_os_specific() {
+        for tier in [
+            ConfigSeedTier::WorkspaceProfile,
+            ConfigSeedTier::WorkspaceBase,
+            ConfigSeedTier::MatrixProfile,
+            ConfigSeedTier::MatrixBase,
+            ConfigSeedTier::CatalogDefault,
+        ] {
+            let os_variant = ConfigSeedCandidate {
+                tier,
+                os_specific: true,
+                path: PathBuf::from("os"),
+            };
+            let base = ConfigSeedCandidate {
+                tier,
+                os_specific: false,
+                path: PathBuf::from("base"),
+            };
+            assert_eq!(
+                manifest_source_for_tier(os_variant.tier),
+                manifest_source_for_tier(base.tier),
+                "{tier:?}"
+            );
+        }
+    }
+
+    /// Test 9: the log marker, and the two formatted strings of plan section 3.8.
+    #[test]
+    fn os_marker_is_emitted_only_for_os_variants() {
+        assert_eq!(os_marker(true), "+os");
+        assert_eq!(os_marker(false), "");
+        let os_variant = ConfigSeedCandidate {
+            tier: ConfigSeedTier::WorkspaceBase,
+            os_specific: true,
+            path: PathBuf::from("os"),
+        };
+        let base = ConfigSeedCandidate {
+            tier: ConfigSeedTier::WorkspaceBase,
+            os_specific: false,
+            path: PathBuf::from("base"),
+        };
+        assert_eq!(
+            format!("{:?}{}", os_variant.tier, os_marker(os_variant.os_specific)),
+            "WorkspaceBase+os"
+        );
+        assert_eq!(
+            format!("{:?}{}", base.tier, os_marker(base.os_specific)),
+            "WorkspaceBase"
+        );
+    }
+
+    /// Test 11: the ONLY test that reads the host token. Compiled per target;
+    /// on the ubuntu runner it can pass only if the `linux` arm of
+    /// `host_os_token` exists and is taken (plan section 3.10, guard 2b).
+    #[test]
+    fn host_token_matches_target_os() {
+        #[cfg(target_os = "linux")]
+        assert_eq!(host_os_token(), Some("linux"));
+        #[cfg(target_os = "windows")]
+        assert_eq!(host_os_token(), Some("windows"));
+        #[cfg(target_os = "macos")]
+        assert_eq!(host_os_token(), Some("macos"));
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+        assert_eq!(host_os_token(), None);
+    }
+
+    /// Positive control: selection has NO intrinsic preference for
+    /// `os_specific`. With the pair inverted inside one tier and both folders on
+    /// disk, the BASE wins -- so precedence is a property of the vector built in
+    /// plan section 3.4 and nothing else.
+    #[test]
+    fn selection_is_order_sensitive() {
+        let temp = tempfile::tempdir().unwrap();
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"BASE");
+        write_file(&ac_root.join("default.claude.linux").join("f.txt"), b"OS");
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
+
+        let mut resolved =
+            resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
+        // Hand-built, INVERTED pair: base first, OS variant second.
+        resolved.candidates = vec![
+            ConfigSeedCandidate {
+                tier: ConfigSeedTier::WorkspaceBase,
+                os_specific: false,
+                path: ac_root.join("default.claude"),
+            },
+            ConfigSeedCandidate {
+                tier: ConfigSeedTier::WorkspaceBase,
+                os_specific: true,
+                path: ac_root.join("default.claude.linux"),
+            },
+        ];
+        assert_published(perform_config_seed(&resolved, "pc"));
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("f.txt")).unwrap(),
+            b"BASE"
+        );
     }
 
     // ---- resolve_config_seed (pure path math, fail-soft) -------------------
@@ -1297,23 +1734,27 @@ mod tests {
         let matrix = ac_root.join("_agent_x");
         let ctx = ctx_with(&replica, Some(&ac_root), Some(&matrix));
 
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).expect("some");
+        let resolved =
+            resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx), None).expect("some");
         // All workspace tiers outrank all matrix tiers; profile beats base in each.
         assert_eq!(resolved.candidates.len(), 4);
-        assert_eq!(resolved.candidates[0].0, ConfigSeedTier::WorkspaceProfile);
         assert_eq!(
-            resolved.candidates[0].1,
+            resolved.candidates[0].tier,
+            ConfigSeedTier::WorkspaceProfile
+        );
+        assert_eq!(
+            resolved.candidates[0].path,
             ac_root.join("default_profile_c.claude")
         );
-        assert_eq!(resolved.candidates[1].0, ConfigSeedTier::WorkspaceBase);
-        assert_eq!(resolved.candidates[1].1, ac_root.join("default.claude"));
-        assert_eq!(resolved.candidates[2].0, ConfigSeedTier::MatrixProfile);
+        assert_eq!(resolved.candidates[1].tier, ConfigSeedTier::WorkspaceBase);
+        assert_eq!(resolved.candidates[1].path, ac_root.join("default.claude"));
+        assert_eq!(resolved.candidates[2].tier, ConfigSeedTier::MatrixProfile);
         assert_eq!(
-            resolved.candidates[2].1,
+            resolved.candidates[2].path,
             matrix.join("default_profile_c.claude")
         );
-        assert_eq!(resolved.candidates[3].0, ConfigSeedTier::MatrixBase);
-        assert_eq!(resolved.candidates[3].1, matrix.join("default.claude"));
+        assert_eq!(resolved.candidates[3].tier, ConfigSeedTier::MatrixBase);
+        assert_eq!(resolved.candidates[3].path, matrix.join("default.claude"));
         assert_eq!(resolved.dest, replica.join(".claude"));
         // Regression guard: the matrix's bare `.claude` (the agent's own live
         // config) must NEVER be a source candidate.
@@ -1321,7 +1762,7 @@ mod tests {
             !resolved
                 .candidates
                 .iter()
-                .any(|(_, p)| *p == matrix.join(".claude")),
+                .any(|c| c.path == matrix.join(".claude")),
             "bare matrix .claude must not be a seed source"
         );
     }
@@ -1332,9 +1773,10 @@ mod tests {
         let replica = ac_root.join("ac-root-agent");
         let ctx = ctx_with(&replica, Some(&ac_root), None);
 
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).expect("some");
+        let resolved =
+            resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).expect("some");
         // Root-agent: matrix is None, so only the two workspace tiers remain.
-        let tiers: Vec<_> = resolved.candidates.iter().map(|(t, _)| *t).collect();
+        let tiers: Vec<_> = resolved.candidates.iter().map(|c| c.tier).collect();
         assert_eq!(
             tiers,
             vec![
@@ -1352,7 +1794,7 @@ mod tests {
             ac_root: Some(abs(r"C:\ws", "/ws")),
             matrix_root: None,
         };
-        assert!(resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).is_none());
+        assert!(resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).is_none());
     }
 
     #[test]
@@ -1361,13 +1803,13 @@ mod tests {
         let replica = ac_root.join("wg-1").join("__agent_x");
         let ctx = ctx_with(&replica, Some(&ac_root), None);
         // A dest that bypassed save validation must fail soft (None), not abort.
-        assert!(resolve_config_seed(&seed_cfg("../escape"), "A", Some(&ctx)).is_none());
-        assert!(resolve_config_seed(&seed_cfg("a/b"), "A", Some(&ctx)).is_none());
+        assert!(resolve_config_seed(&seed_cfg("../escape"), "A", Some(&ctx), None).is_none());
+        assert!(resolve_config_seed(&seed_cfg("a/b"), "A", Some(&ctx), None).is_none());
     }
 
     #[test]
     fn resolve_is_none_without_context() {
-        assert!(resolve_config_seed(&seed_cfg(".claude"), "A", None).is_none());
+        assert!(resolve_config_seed(&seed_cfg(".claude"), "A", None, None).is_none());
     }
 
     // ---- perform_config_seed (trash-first atomic swap) ---------------------
@@ -1388,7 +1830,7 @@ mod tests {
         write_file(&replica.join(".claude").join("stale.txt"), b"OLD");
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx), None).unwrap();
         let publication = assert_published(perform_config_seed(&resolved, "sfx1"));
         assert_eq!(publication.tier, ConfigSeedTier::WorkspaceProfile);
         assert_eq!(publication.dest, replica.join(".claude"));
@@ -1420,7 +1862,7 @@ mod tests {
         write_file(&ac_root.join("default.claude").join("f.txt"), b"SEED");
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx), None).unwrap();
         let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
         let publication =
             assert_published(perform_config_seed_recorded(&resolved, "sfx", Some(&token)));
@@ -1443,7 +1885,7 @@ mod tests {
         std::fs::create_dir_all(&replica).unwrap();
         write_file(&ac_root.join("default.claude").join("f.txt"), b"SEED");
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx), None).unwrap();
         let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
         let manifest_path = ac_root.join("seed-manifest.toml");
         let manifest_before = concat!(
@@ -1533,7 +1975,7 @@ mod tests {
         std::fs::create_dir_all(&replica).unwrap();
         write_file(&ac_root.join("default.pi").join("extensions.txt"), b"EXT");
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".pi"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".pi"), "A", Some(&ctx), None).unwrap();
         (temp, resolved, replica)
     }
 
@@ -1569,7 +2011,7 @@ mod tests {
             b"{\"shellPath\": \"C:/custom/pwsh.exe\"}",
         );
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".pi"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".pi"), "A", Some(&ctx), None).unwrap();
         let publication = assert_published(perform_config_seed(&resolved, "sfx"));
         assert_eq!(publication.dest, replica.join(".pi"));
         assert_eq!(
@@ -1606,7 +2048,8 @@ mod tests {
                 std::fs::write(source.join(format!("file-{i:07}.txt")), b"seed").unwrap();
             }
             let ctx = ctx_with(&replica, Some(&ac_root), None);
-            let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+            let resolved =
+                resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
 
             let started = std::time::Instant::now();
             let publication = assert_published(perform_config_seed(&resolved, "sfx"));
@@ -1633,7 +2076,7 @@ mod tests {
         write_file(&replica.join(".claude").join("keep.txt"), b"KEEP");
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         assert_skipped(perform_config_seed(&resolved, "s"));
         // Dest fully intact.
         assert_eq!(
@@ -1655,7 +2098,7 @@ mod tests {
         write_file(&replica.join(".claude.acseed-tmp-sfx"), b"blocker");
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         assert_failed(perform_config_seed(&resolved, "sfx"));
         // Dest fully intact (old content kept).
         assert_eq!(
@@ -1768,7 +2211,7 @@ mod tests {
         std::fs::create_dir_all(&replica).unwrap();
         write_file(&ac_root.join("default.claude").join("f.txt"), b"NEW");
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         std::fs::remove_dir_all(&replica).unwrap();
 
         let report = perform_config_seed(&resolved, "stale");
@@ -1788,7 +2231,7 @@ mod tests {
         std::fs::create_dir_all(&replica).unwrap();
         write_file(&ac_root.join("default.claude").join("f.txt"), b"NEW");
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         let expected = DateTime::parse_from_rfc3339("2026-07-20T15:47:23.456Z")
             .unwrap()
             .with_timezone(&Utc);
@@ -1808,7 +2251,7 @@ mod tests {
         let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         let mut collector = SeedFileCollector::new(&resolved, ConfigSeedTier::WorkspaceBase);
         for index in 0..=MAX_MANIFEST_ROWS {
             collector.record(PathBuf::from(format!("f-{index}")));
@@ -1839,7 +2282,7 @@ mod tests {
         write_file(&replica.join(".claude").join("keep.txt"), b"OLD");
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
 
         // Hold an open handle to a file inside dest: Windows then refuses to
         // rename the dest directory (File::open grants no FILE_SHARE_DELETE),
@@ -1876,7 +2319,7 @@ mod tests {
         );
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         assert_published(perform_config_seed(&resolved, "sfx"));
         assert_eq!(
             std::fs::read(replica.join(".claude").join("f.txt")).unwrap(),
@@ -1905,7 +2348,7 @@ mod tests {
         );
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         assert_published(perform_config_seed(&resolved, "NEWID"));
         assert!(!replica.join(".claude.acseed-old-OLDID").exists());
         assert!(!replica.join(".claude.acseed-tmp-OLDID").exists());
@@ -1957,9 +2400,11 @@ mod tests {
     /// Append the absent-only CatalogDefault candidate LAST, exactly as the spawn
     /// caller (`build_agent_spawn_command`) does.
     fn with_catalog_default(mut resolved: ResolvedConfigSeed, master: &Path) -> ResolvedConfigSeed {
-        resolved
-            .candidates
-            .push((ConfigSeedTier::CatalogDefault, master.to_path_buf()));
+        resolved.candidates.push(ConfigSeedCandidate {
+            tier: ConfigSeedTier::CatalogDefault,
+            os_specific: false,
+            path: master.to_path_buf(),
+        });
         resolved
     }
 
@@ -1974,7 +2419,7 @@ mod tests {
         write_file(&master.join("settings.json"), b"{\"seeded\":true}");
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         let resolved = with_catalog_default(resolved, &master);
 
         // dest absent + master non-empty -> CatalogDefault wins and fills.
@@ -1998,7 +2443,7 @@ mod tests {
         write_file(&master.join("settings.json"), b"{\"seeded\":true}");
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         let resolved = with_catalog_default(resolved, &master);
 
         // dest present -> CatalogDefault gate fails -> Skipped, dest fully intact.
@@ -2023,7 +2468,7 @@ mod tests {
         std::fs::create_dir_all(&master).unwrap(); // exists but EMPTY
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         let resolved = with_catalog_default(resolved, &master);
 
         assert_skipped(perform_config_seed(&resolved, "sfx"));
@@ -2043,7 +2488,7 @@ mod tests {
         write_file(&master.join("f.txt"), b"CATALOG");
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         let resolved = with_catalog_default(resolved, &master);
 
         assert_published(perform_config_seed(&resolved, "sfx"));
@@ -2224,7 +2669,7 @@ mod tests {
         );
 
         let ctx = ctx_with(&replica, Some(&ac_root), None);
-        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx), None).unwrap();
         assert_published(perform_config_seed(&resolved, "sfx924"));
 
         let out =
@@ -2432,14 +2877,14 @@ mod tests {
         let ac_root = abs(r"C:\proj\.ac", "/proj/.ac");
         let matrix = abs(r"C:\proj\.ac\_agent_x", "/proj/.ac/_agent_x");
         let ctx = ctx_with(&replica, Some(&ac_root), Some(&matrix));
-        let resolved = resolve_config_seed(&seed_cfg(".muse"), "A", Some(&ctx))
+        let resolved = resolve_config_seed(&seed_cfg(".muse"), "A", Some(&ctx), None)
             .expect("active user seed resolves");
         assert_eq!(resolved.dest, replica.join(".muse"));
         assert_eq!(
             resolved
                 .candidates
                 .iter()
-                .map(|(tier, _)| *tier)
+                .map(|c| c.tier)
                 .collect::<Vec<_>>(),
             vec![
                 ConfigSeedTier::WorkspaceProfile,
@@ -2449,12 +2894,12 @@ mod tests {
             ]
         );
         assert_eq!(
-            resolved.candidates[0].1,
+            resolved.candidates[0].path,
             ac_root.join("default_profile_a.muse")
         );
         assert!(resolved.config_dir_warning.is_none());
         // Identical resolution for a non-Muse agent proves provider neutrality.
-        let other = resolve_config_seed(&seed_cfg(".muse"), "A", Some(&ctx)).unwrap();
+        let other = resolve_config_seed(&seed_cfg(".muse"), "A", Some(&ctx), None).unwrap();
         assert_eq!(other.dest, resolved.dest);
         assert_eq!(other.candidates, resolved.candidates);
     }

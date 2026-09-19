@@ -178,13 +178,10 @@ jobs:
           const exactPaths = evidenceNames.map((name) => path.posix.join(releaseDirectory, name));
           assert.deepEqual(manifest.contracts.evidenceAvailability.directory, releaseDirectory);
           assert.deepEqual(manifest.contracts.evidenceAvailability.exactPaths, exactPaths);
-          const parts = version.split('.');
-          const canonicalPlanPath = 'plans/' + manifest.inputs.releaseIssueNumber + '-v' + parts.join('') + '-release-hardening.md';
           assert.deepEqual(
             manifest.contracts.evidenceAvailability.hardeningAllowlist,
-            ['.github/workflows/release.yml', ...exactPaths, canonicalPlanPath],
+            ['.github/workflows/release.yml', ...exactPaths],
           );
-          assert.ok(fs.statSync(canonicalPlanPath).isFile(), 'canonical plan missing');
 
           const contract = manifest.contracts.reviewSet;
           const reviewNames = [
