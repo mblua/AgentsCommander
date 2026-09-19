@@ -375,8 +375,10 @@ See the [control-plane API reference](../../src-tauri/src/api/README.md#terminal
 After command dispatch, host and helper failures exit 1, write no normal stdout, and write exactly this shape to stderr:
 
 ```text
-terminal_snapshot_error code=<code> detail=<fixed-detail>
+terminal_snapshot_error code=<code> [field=<field>] reason=<reason> detail=<fixed-detail>
 ```
+
+The host CLI carries `field=` and `reason=`; `field=` only when exactly one argument is at fault, from `token`, `root`, `to`, `format`, `output`, `timeout`, and `reason=` always, from the closed set in [CLI reference](../reference/cli.md). The `agentscommander-api-helper` plane keeps the old `terminal_snapshot_error code=<code> detail=<fixed-detail>` two-token line byte for byte.
 
 Standard host Clap help and syntax errors keep normal Clap output and exit behavior. If an OS error occurs after a stdout write has already begun, safe partial ASCII bytes cannot be retracted; the command reports `output_failed` and does not attempt a second stdout document.
 

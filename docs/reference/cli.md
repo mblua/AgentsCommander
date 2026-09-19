@@ -335,8 +335,10 @@ JSON success writes exactly one compact ASCII-only `TerminalSnapshotDocument` pl
 After Clap parses the command, success exits 0. Every semantic, authorization, unavailable, rate, timeout, transport, or output failure exits 1, writes no normal stdout, and writes one fixed line:
 
 ```text
-terminal_snapshot_error code=<code> detail=<fixed-detail>
+terminal_snapshot_error code=<code> [field=<field>] reason=<reason> detail=<fixed-detail>
 ```
+
+`field=` is present only when exactly one argument is at fault and is one of `token`, `root`, `to`, `format`, `output`, `timeout`; `reason=` is always present and is one of `timeout_out_of_range`, `token_not_uuid`, `token_is_persisted_static`, `target_syntax_invalid`, `output_required_for_png`, `output_forbidden_for_json`, `output_path_rejected`, `requester_root_unverified`, `requester_not_coordinator`, `requester_root_object_mismatch`, `local_state_unsafe`, `request_id_collision`, `request_encoding_failed`, `unattributed`.
 
 Standard `--help` and pre-dispatch Clap syntax failures keep normal Clap output and exit behavior. If an OS failure occurs after a stdout write begins, safe partial ASCII bytes cannot be retracted; the command reports `output_failed` without attempting a second document. See [Terminal snapshots](../features/terminal-snapshots.md#stable-errors) for every stable code, exact detail, and recovery step.
 

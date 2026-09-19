@@ -150,7 +150,11 @@ impl TerminalSnapshotRejection {
         field: Option<TerminalSnapshotField>,
         reason: TerminalSnapshotRejectionReason,
     ) -> Self {
-        Self { code, field, reason }
+        Self {
+            code,
+            field,
+            reason,
+        }
     }
 }
 
@@ -1053,7 +1057,10 @@ mod tests {
             None,
             TerminalSnapshotRejectionReason::Unattributed,
         ));
-        assert!(!line.contains("field="), "empty field token emitted: {line}");
+        assert!(
+            !line.contains("field="),
+            "empty field token emitted: {line}"
+        );
         assert_eq!(
             line,
             format!(
@@ -1105,25 +1112,55 @@ mod tests {
         let cases = [
             (
                 "timeout_out_of_range",
-                snapshot_args(VALID_TOKEN, "demo-project/demo-agent", SnapshotFormatArg::Json, None, 1),
-                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Timeout), R::TimeoutOutOfRange),
+                snapshot_args(
+                    VALID_TOKEN,
+                    "demo-project/demo-agent",
+                    SnapshotFormatArg::Json,
+                    None,
+                    1,
+                ),
+                TerminalSnapshotRejection::new(
+                    C::InvalidRequest,
+                    Some(F::Timeout),
+                    R::TimeoutOutOfRange,
+                ),
             ),
             (
                 "token_not_uuid",
-                snapshot_args("not-a-uuid", "demo-project/demo-agent", SnapshotFormatArg::Json, None, 15),
+                snapshot_args(
+                    "not-a-uuid",
+                    "demo-project/demo-agent",
+                    SnapshotFormatArg::Json,
+                    None,
+                    15,
+                ),
                 TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Token), R::TokenNotUuid),
             ),
             (
                 "target_syntax_invalid",
                 snapshot_args(VALID_TOKEN, "###", SnapshotFormatArg::Json, None, 15),
-                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::To), R::TargetSyntaxInvalid),
+                TerminalSnapshotRejection::new(
+                    C::InvalidRequest,
+                    Some(F::To),
+                    R::TargetSyntaxInvalid,
+                ),
             ),
             // The PNG/JSON split. Both arms were one `_ =>` on base; if they
             // are ever collapsed again these two cases stop disagreeing.
             (
                 "output_required_for_png",
-                snapshot_args(VALID_TOKEN, "demo-project/demo-agent", SnapshotFormatArg::Png, None, 15),
-                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Output), R::OutputRequiredForPng),
+                snapshot_args(
+                    VALID_TOKEN,
+                    "demo-project/demo-agent",
+                    SnapshotFormatArg::Png,
+                    None,
+                    15,
+                ),
+                TerminalSnapshotRejection::new(
+                    C::InvalidRequest,
+                    Some(F::Output),
+                    R::OutputRequiredForPng,
+                ),
             ),
             (
                 "output_forbidden_for_json",
@@ -1134,7 +1171,11 @@ mod tests {
                     Some(PathBuf::from("snapshot.png")),
                     15,
                 ),
-                TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::Output), R::OutputForbiddenForJson),
+                TerminalSnapshotRejection::new(
+                    C::InvalidRequest,
+                    Some(F::Output),
+                    R::OutputForbiddenForJson,
+                ),
             ),
         ];
 
@@ -1142,6 +1183,29 @@ mod tests {
             let rejection = execute_inner(args).expect_err("case must be rejected");
             assert_eq!(rejection, expected, "wrong attribution for {name}");
         }
+    }
+
+    #[test]
+    fn propagated_string_conversion_preserves_every_code() {
+        for code in ALL_CODES {
+            let rejection = TerminalSnapshotRejection::from(code.as_str().to_string());
+            assert_eq!(
+                rejection.code,
+                code,
+                "propagated code collapsed for {}",
+                code.as_str()
+            );
+            assert_eq!(rejection.field, None);
+            assert_eq!(
+                rejection.reason,
+                TerminalSnapshotRejectionReason::Unattributed
+            );
+        }
+
+        assert_eq!(
+            TerminalSnapshotRejection::from("not_a_code".to_string()).code,
+            TerminalSnapshotReasonCode::Internal
+        );
     }
 
     #[test]
