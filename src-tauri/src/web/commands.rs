@@ -1229,6 +1229,7 @@ mod tests {
             "session_created",
             "session_destroyed",
             "session_communication_changed",
+            "session_view_requested",
         ] {
             let response = dispatch(
                 &state,
