@@ -951,9 +951,33 @@ mod tests {
             .copied()
     }
 
+    /// Pure form: `None` when the requested instant is not representable —
+    /// on Windows when `seconds` exceeds host uptime, on Linux only on
+    /// integer overflow of the monotonic timespec.
+    fn checked_ago(now: Instant, seconds: u64) -> Option<Instant> {
+        now.checked_sub(Duration::from_secs(seconds))
+    }
+
     fn ago(seconds: u64) -> Instant {
         let now = Instant::now();
-        now.checked_sub(Duration::from_secs(seconds)).unwrap_or(now)
+        checked_ago(now, seconds).unwrap_or_else(|| {
+            panic!(
+                "ago({seconds}) cannot be represented on this platform, so the seed \
+                 would land inside the coalescer window instead of outside it"
+            )
+        })
+    }
+
+    #[test]
+    fn ago_panics_instead_of_saturating_when_the_instant_cannot_exist() {
+        // u64::MAX is the one input that is None on every platform, so the
+        // None branch is reached deterministically regardless of host uptime.
+        assert!(
+            checked_ago(Instant::now(), u64::MAX).is_none(),
+            "the unrepresentable case must be None, not a saturated Instant"
+        );
+        let panicked = std::panic::catch_unwind(|| ago(u64::MAX)).is_err();
+        assert!(panicked, "ago must panic rather than saturate to now");
     }
 
     // ---------------------------------------------------------------------
