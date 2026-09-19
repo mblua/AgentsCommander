@@ -1,6 +1,6 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport, AppSettings } from "../../shared/types";
+import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport, AppSettings, UnresolvedLoopTarget } from "../../shared/types";
 import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, onRemoteActivityUpdated } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import {
@@ -59,6 +59,7 @@ import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
 import NewLoopModal from "./NewLoopModal";
 import EditLoopModal from "./EditLoopModal";
+import LoopTargetMissingModal from "./LoopTargetMissingModal";
 import AgentPickerModal, { type AgentPickerScopeContext, LockIcon } from "./AgentPickerModal";
 import RestartPromptModal from "./RestartPromptModal";
 import AgentMatrixNoticeModal from "./AgentMatrixNoticeModal";
@@ -427,6 +428,7 @@ const ProjectPanel: Component = () => {
     } catch (error) {
       console.warn("[ProjectPanel] failed to register the remote-activity listener:", error);
     }
+    void refreshLoopTargetAlerts();
   });
   onCleanup(() => {
     unlistenBranch?.();
@@ -508,6 +510,11 @@ const ProjectPanel: Component = () => {
   const [newWorkgroupTarget, setNewWorkgroupTarget] = createSignal<{ projectPath: string } | null>(null);
   const [newLoopTarget, setNewLoopTarget] = createSignal<{ projectPath: string } | null>(null);
   const [editingLoopTarget, setEditingLoopTarget] = createSignal<{ projectPath: string; loopId: string } | null>(null);
+  // #2171 - Loops whose configured room cannot be resolved, loaded once per
+  // mount. In-memory and per-session: dismissing does not persist.
+  const [loopTargetAlerts, setLoopTargetAlerts] = createSignal<UnresolvedLoopTarget[]>([]);
+  const [loopTargetOpenErrors, setLoopTargetOpenErrors] = createSignal<Record<string, string>>({});
+  const [loopTargetBusyLoopId, setLoopTargetBusyLoopId] = createSignal<string | null>(null);
   const [replicaCodingAgentTarget, setReplicaCodingAgentTarget] = createSignal<{ sessionId: string; sessionName: string } | null>(null);
   const [inactiveCodingAgentTarget, setInactiveCodingAgentTarget] = createSignal<{ projectPath: string; wgPath: string; replicaPath: string } | null>(null);
 
@@ -517,6 +524,67 @@ const ProjectPanel: Component = () => {
     return projectStore.projects.find(
       (p) => normalizeProjectPathForCompare(p.path) === normalized,
     );
+  };
+
+  const refreshLoopTargetAlerts = async () => {
+    try {
+      setLoopTargetAlerts(await LoopAPI.listUnresolvedTargets());
+    } catch (error) {
+      console.warn("[ProjectPanel] failed to check Loop targets:", error);
+      setLoopTargetAlerts([]);
+      setLoopTargetOpenErrors({});
+    }
+  };
+
+  const alertLoopIsLoaded = (alert: UnresolvedLoopTarget) =>
+    findProjectByPath(alert.projectPath)?.loops.some((l) => l.id === alert.loopId) === true;
+
+  const setAlertOpenError = (loopId: string, message: string) =>
+    setLoopTargetOpenErrors((prev) => ({ ...prev, [loopId]: message }));
+
+  /** Bumped whenever the notice is dismissed, so an open attempt that is still
+   *  in flight cannot write its failure into the cleared error map: a later
+   *  refresh would surface that write as a stale error row. */
+  let loopTargetNoticeGeneration = 0;
+
+  const dismissLoopTargetNotice = () => {
+    loopTargetNoticeGeneration += 1;
+    setLoopTargetAlerts([]);
+    setLoopTargetOpenErrors({});
+  };
+
+  const openLoopConfigFromAlert = async (alert: UnresolvedLoopTarget) => {
+    const generation = loopTargetNoticeGeneration;
+    const setOpenErrorIfNotDismissed = (message: string) => {
+      if (loopTargetNoticeGeneration !== generation) return;
+      setAlertOpenError(alert.loopId, message);
+    };
+    setAlertOpenError(alert.loopId, "");
+    setLoopTargetBusyLoopId(alert.loopId);
+    try {
+      if (!alertLoopIsLoaded(alert)) await projectStore.reloadProject(alert.projectPath);
+      if (!alertLoopIsLoaded(alert)) {
+        console.warn(
+          "[ProjectPanel] Loop",
+          alert.loopId,
+          "is not loaded for project",
+          alert.projectPath,
+          "; keeping the Loop target notice open"
+        );
+        setOpenErrorIfNotDismissed(
+          "This Loop's project is not open in the sidebar, so its configuration cannot be opened from here. Open the project, then try again."
+        );
+        return;
+      }
+      setEditingLoopTarget({ projectPath: alert.projectPath, loopId: alert.loopId });
+      setLoopTargetAlerts([]);
+      setLoopTargetOpenErrors({});
+    } catch (error) {
+      console.warn("[ProjectPanel] failed to open the Loop configuration from the notice:", error);
+      setOpenErrorIfNotDismissed("Could not open this Loop's configuration. See the log for details.");
+    } finally {
+      setLoopTargetBusyLoopId(null);
+    }
   };
 
   const inactiveCodingAgentResolved = createMemo(() => {
@@ -4424,6 +4492,17 @@ const ProjectPanel: Component = () => {
         </Portal>
       )}
     </Show>
+    <Show when={loopTargetAlerts().length > 0}>
+      <Portal>
+        <LoopTargetMissingModal
+          alerts={loopTargetAlerts()}
+          openErrors={loopTargetOpenErrors()}
+          busyLoopId={loopTargetBusyLoopId()}
+          onOpenConfig={(alert) => void openLoopConfigFromAlert(alert)}
+          onDismiss={dismissLoopTargetNotice}
+        />
+      </Portal>
+    </Show>
     <Show when={editingLoopResolved()}>
       {(resolved) => (
         <Portal>
@@ -4431,7 +4510,10 @@ const ProjectPanel: Component = () => {
             projectPath={resolved().proj.path}
             workgroups={resolved().proj.workgroups}
             loop={resolved().loop}
-            onClose={() => setEditingLoopTarget(null)}
+            onClose={() => {
+              setEditingLoopTarget(null);
+              void refreshLoopTargetAlerts();
+            }}
           />
         </Portal>
       )}
