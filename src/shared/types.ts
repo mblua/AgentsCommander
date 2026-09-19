@@ -1443,6 +1443,15 @@ export interface NonStopReport {
   soundSeconds: number;
 }
 
+export type NonStopAlarmAction = "start" | "stop";
+
+export interface NonStopAlarmEvent {
+  projectPath: string;
+  groupName: string;
+  seconds: number;
+  action: NonStopAlarmAction;
+}
+
 export type LoopTriggerKind = "cron";
 export type LoopTargetKind = "workgroupCoordinator";
 export type MissedWhileClosedPolicy = "notify";
