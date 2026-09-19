@@ -117,7 +117,7 @@ The first that qualifies is copied to `<replica>/.claude`. So `<workspace>/defau
 
 ## The factory default and the "Re-seed" button
 
-AC ships factory masters for three Config folder values only: `.claude`, `.codex`, and `.opencode` (the defaults of the built-in Claude, Codex, and OpenCode agents). **Tier 5 is keyed by the Config folder value, not by agent identity.** It therefore exists for any agent whose Config folder is one of those three, including an agent you create yourself. For any other Config folder value the tier is absent.
+AC ships factory masters for three Config folder values only: `.claude`, `.codex`, and `.opencode` (the defaults of the built-in Claude, Codex, and OpenCode agents). **Tier 5 is keyed by the Config folder value, not by agent identity.** It therefore exists for any agent whose Config folder is one of those three, including an agent you create yourself. For any other Config folder value the tier is absent. A built-in that is disabled in AC's internal support table ships no factory master and shows no re-seed button, whatever its Config folder is; all three agents that ship a master are enabled today, so this gate changes nothing you can observe.
 
 AC writes each shipped master into the project's `<workspace>/coding-agents/_seed/<dest>/` at startup and project registration if that master is absent, and never touches one that already exists; when the project master is absent, a pre-migration master left at the legacy `<config_dir>/coding-agents/_seed/<dest>/` is copied into the project verbatim instead of the shipped default, so your edits survive the move. The master is **yours to edit** afterward: change `_seed/.claude/settings.json` and every future absent-only bootstrap uses your edited copy.
 
