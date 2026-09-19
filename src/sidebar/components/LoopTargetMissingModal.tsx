@@ -15,18 +15,26 @@ const LoopTargetMissingModal: Component<{
   onOpenConfig: (alert: UnresolvedLoopTarget) => void;
   onDismiss: () => void;
 }> = (props) => {
+  // Escape dismisses from anywhere: the document listener covers the case where
+  // nothing inside the modal has focus, the element handlers give the overlay and
+  // the dialog their own keyboard path. One key press dismisses once, whichever
+  // listener the browser runs first.
+  const handledEscapes = new WeakSet<KeyboardEvent>();
+  const dismissOnEscape = (e: KeyboardEvent) => {
+    if (e.key !== "Escape" || handledEscapes.has(e)) return;
+    handledEscapes.add(e);
+    props.onDismiss();
+  };
   // Registered while the modal is mounted (AgentMatrixNoticeModal precedent)
   // and removed on unmount.
-  const handleDocumentKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") props.onDismiss();
-  };
-  document.addEventListener("keydown", handleDocumentKeyDown);
-  onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
+  document.addEventListener("keydown", dismissOnEscape);
+  onCleanup(() => document.removeEventListener("keydown", dismissOnEscape));
 
   return (
     <div
       class="modal-overlay"
       onClick={props.onDismiss}
+      onKeyDown={dismissOnEscape}
       {...automationAttrs("loopTargetMissing.overlay", "overlay")}
     >
       <div
@@ -37,6 +45,7 @@ const LoopTargetMissingModal: Component<{
         aria-describedby="loopTargetMissingDescription"
         style={{ "max-width": "520px" }}
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={dismissOnEscape}
         {...automationAttrs("loopTargetMissing.modal", "dialog")}
       >
         <div class="agent-modal-header">

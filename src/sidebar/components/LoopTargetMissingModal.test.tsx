@@ -125,4 +125,26 @@ describe("LoopTargetMissingModal (#2171)", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(onDismiss).toHaveBeenCalledTimes(3);
   });
+
+  it("dismisses once on Escape from the overlay and from inside the dialog", async () => {
+    const onDismiss = vi.fn();
+    dispose = mount({ alerts: [alert()], onDismiss });
+
+    await waitFor(() => expect(byTestId("loopTargetMissing.overlay")).toBeTruthy());
+
+    byTestId("loopTargetMissing.overlay").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+
+    byTestId("loopTargetMissing.dismiss").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    expect(onDismiss).toHaveBeenCalledTimes(2);
+
+    byTestId("loopTargetMissing.overlay").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    expect(onDismiss).toHaveBeenCalledTimes(2);
+  });
 });
