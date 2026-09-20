@@ -38,6 +38,12 @@
         "notification": "claude is waiting for you to answer a selection menu in this terminal",
         "enabled": true,
         "capturedAgainst": "claude / Windows"
+      },
+      {
+        "pattern": "^[^A-Za-z0-9]*API Error: Connection lost mid-response\\b",
+        "notification": "claude lost the API connection mid-response; its response may be incomplete; check this terminal",
+        "enabled": true,
+        "capturedAgainst": "claude / Windows"
       }
     ],
     "codex": [

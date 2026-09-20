@@ -8,7 +8,9 @@ import type {
 import { LoopAPI } from "../../shared/ipc";
 import { projectStore } from "../stores/project";
 import {
+  accumulateCheckboxFromSessionStart,
   busyPolicyForEdit,
+  sessionStartFromAccumulateCheckbox,
   coordinatorOptionsFromWorkgroups,
   formatLoopNextDue,
   hasFiveCronFields,
@@ -34,6 +36,9 @@ const EditLoopModal: Component<{
   const [promptBody, setPromptBody] = createSignal("");
   const [enabled, setEnabled] = createSignal(props.loop.enabled);
   const [forceInject, setForceInject] = createSignal(props.loop.busyCoordinator === "forceInject");
+  const [accumulate, setAccumulate] = createSignal(
+    accumulateCheckboxFromSessionStart(props.loop.sessionStart)
+  );
   const [forceCheckboxTouched, setForceCheckboxTouched] = createSignal(false);
   const [loadedDetails, setLoadedDetails] = createSignal<LoopConfigDetails | null>(null);
   const [error, setError] = createSignal("");
@@ -58,6 +63,7 @@ const EditLoopModal: Component<{
       setPromptBody(details.promptBody);
       setEnabled(details.summary.enabled);
       setForceInject(details.summary.busyCoordinator === "forceInject");
+      setAccumulate(accumulateCheckboxFromSessionStart(details.summary.sessionStart));
       setLoading(false);
     } catch (e) {
       if (!mounted) return;
@@ -146,6 +152,8 @@ const EditLoopModal: Component<{
       if (selectedWorkgroup() !== baseline.summary.workgroup) input.workgroup = selectedWorkgroup();
       if (promptBody() !== baseline.promptBody) input.promptBody = promptBody();
       if (nextBusyPolicy !== baseline.summary.busyCoordinator) input.busyCoordinator = nextBusyPolicy;
+      const nextSessionStart = sessionStartFromAccumulateCheckbox(accumulate());
+      if (nextSessionStart !== baseline.summary.sessionStart) input.sessionStart = nextSessionStart;
       if (enabled() !== baseline.summary.enabled) input.enabled = enabled();
 
       await LoopAPI.update(props.projectPath, props.loop.id, input);
@@ -280,6 +288,17 @@ const EditLoopModal: Component<{
               data-ac-testid="loop.edit.forceInject"
             />
             Force inject even if orchestrator is busy
+          </label>
+
+          <label class="loop-checkbox-field">
+            <input
+              type="checkbox"
+              checked={accumulate()}
+              onChange={(e) => setAccumulate(e.currentTarget.checked)}
+              disabled={loading()}
+              data-ac-testid="loop.edit.accumulate"
+            />
+            Continue the previous conversation each run
           </label>
 
           <Show when={!loading() && loadedBusyPolicy() === "skip" && !forceCheckboxTouched()}>

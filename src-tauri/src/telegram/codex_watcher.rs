@@ -10,17 +10,21 @@
 
 use std::io::Read as IoRead;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 use tauri::Emitter;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+use crate::capture::record::{CaptureProvider, CapturedRecord, RecordOrigin};
 use crate::commands::codex_resolver::canonicalize_cwd_for_codex;
 use crate::network::OutboundNetwork;
 use crate::telegram::jsonl_kernel::{
-    read_new_lines, read_preamble_for_race, POLL_INTERVAL_MS, ROTATION_STALE_SECS,
+    read_new_lines_with_starts, read_preamble_for_race, POLL_INTERVAL_MS, ROTATION_STALE_SECS,
 };
 use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
 
@@ -82,7 +86,7 @@ fn codex_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>
 }
 
 /// Parse a single Codex rollout JSONL line and extract the current-format
-/// final assistant answer body, if any.
+/// final assistant answer body together with its turn id, if any.
 ///
 /// Accepts exactly `type=response_item`, `payload.type=message`,
 /// `payload.role=assistant` and `payload.phase=final_answer` (all
@@ -93,9 +97,14 @@ fn codex_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>
 /// `text` values are skipped without discarding the other valid blocks. Every
 /// other record shape — including all `event_msg` records — malformed JSON and
 /// missing or wrong fields fail closed to `None`, with no panic, fallback,
-/// dedup or per-line diagnostics. Internal metadata, ids and turn metadata are
-/// never read or rendered.
-fn extract_assistant_final(line: &str) -> Option<String> {
+/// dedup or per-line diagnostics. The body is never rendered with internal
+/// metadata; the only metadata read is `turn_id`.
+///
+/// The turn id lives at
+/// `payload.internal_chat_message_metadata_passthrough.turn_id` (the real
+/// fixture below shows the nested location). The flat `turn_id` on
+/// `task_complete` is a different location and belongs to phase 5.
+fn extract_assistant_final_with_turn(line: &str) -> Option<(String, Option<String>)> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     if v.get("type")?.as_str()? != "response_item" {
         return None;
@@ -131,10 +140,129 @@ fn extract_assistant_final(line: &str) -> Option<String> {
     let joined = parts.join("\n");
     let trimmed = joined.trim();
     if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+        return None;
     }
+
+    let turn_id = payload
+        .get("internal_chat_message_metadata_passthrough")
+        .and_then(|metadata| metadata.get("turn_id"))
+        .and_then(|turn_id| turn_id.as_str())
+        .map(str::to_owned);
+    Some((trimmed.to_string(), turn_id))
+}
+
+/// Text-only view of [`extract_assistant_final_with_turn`].
+fn extract_assistant_final(line: &str) -> Option<String> {
+    extract_assistant_final_with_turn(line).map(|(text, _)| text)
+}
+
+/// Build one [`CapturedRecord`] for an accepted final-answer record.
+///
+/// `reader_seq` is a per-reader counter starting at 0: the record keeps the
+/// value it was built with and the counter advances once per produced record.
+/// `epoch` is `0` in this phase; phase 3 owns the real epoch.
+fn capture_record(
+    text: String,
+    turn_id: Option<String>,
+    record_start: Option<u64>,
+    origin: RecordOrigin,
+    session_id: &str,
+    file: &Path,
+    reader_seq: &mut u64,
+) -> Arc<CapturedRecord> {
+    let turn_identified = turn_id.is_some();
+    let text_sha256: [u8; 32] = Sha256::digest(text.as_bytes()).into();
+    let record = Arc::new(CapturedRecord {
+        session_id: session_id.to_owned(),
+        text,
+        file: file.to_path_buf(),
+        epoch: 0,
+        record_start,
+        reader_seq: *reader_seq,
+        text_sha256,
+        turn_id,
+        provider: CaptureProvider::Codex,
+        // Codex carries its provider's own `final_answer` marker, so every
+        // accepted record is final; only a `turn_id` makes it groupable.
+        provider_final: true,
+        turn_identified,
+        origin,
+    });
+    *reader_seq += 1;
+    record
+}
+
+/// Deliver `record` to the capture sink when one is attached.
+///
+/// The send result is deliberately discarded: a closed or absent receiver must
+/// never fail the watcher loop, and a slow consumer must never stall Telegram
+/// (the channel is unbounded). Every caller leaves `sender` `None` in this
+/// phase.
+fn deliver_capture_record(
+    sender: Option<&UnboundedSender<Arc<CapturedRecord>>>,
+    record: &Arc<CapturedRecord>,
+) {
+    if let Some(sender) = sender {
+        let _ = sender.send(Arc::clone(record));
+    }
+}
+
+/// Capture and deliver every accepted record among `new_lines`, in order.
+///
+/// The caller appends `record.text` and a newline to the Telegram buffer,
+/// exactly as the pre-#2232 code appended the extractor text.
+fn capture_live_lines(
+    new_lines: Vec<(u64, String)>,
+    session_id: &str,
+    file: &Path,
+    reader_seq: &mut u64,
+    sender: Option<&UnboundedSender<Arc<CapturedRecord>>>,
+) -> Vec<Arc<CapturedRecord>> {
+    let mut records = Vec::new();
+    for (record_start, line) in new_lines {
+        let Some((text, turn_id)) = extract_assistant_final_with_turn(&line) else {
+            continue;
+        };
+        let record = capture_record(
+            text,
+            turn_id,
+            Some(record_start),
+            RecordOrigin::Live,
+            session_id,
+            file,
+            reader_seq,
+        );
+        deliver_capture_record(sender, &record);
+        records.push(record);
+    }
+    records
+}
+
+/// Capture and deliver the bodies of a §J first-attach preamble scan. Those
+/// lines are not tracked by the kernel, so `record_start` is `None` and the
+/// origin is [`RecordOrigin::Preamble`].
+fn capture_preamble_bodies(
+    bodies: Vec<String>,
+    session_id: &str,
+    file: &Path,
+    reader_seq: &mut u64,
+    sender: Option<&UnboundedSender<Arc<CapturedRecord>>>,
+) -> Vec<Arc<CapturedRecord>> {
+    let mut records = Vec::new();
+    for text in bodies {
+        let record = capture_record(
+            text,
+            None,
+            None,
+            RecordOrigin::Preamble,
+            session_id,
+            file,
+            reader_seq,
+        );
+        deliver_capture_record(sender, &record);
+        records.push(record);
+    }
+    records
 }
 
 /// Open `path`, read up to 64 KiB from the start, return the first complete
@@ -258,6 +386,13 @@ async fn watch_loop<R: tauri::Runtime>(
     let mut last_buffer_add = Instant::now();
     let flush_delay = Duration::from_millis(FLUSH_DELAY_MS);
 
+    // #2232 phase 1: records are built and delivered per accepted JSONL record,
+    // but no sink is attached yet — phase 4 passes a real sender into this
+    // watcher. With `None` the emit is a no-op and the Telegram path stays
+    // byte-identical.
+    let capture_tx: Option<UnboundedSender<Arc<CapturedRecord>>> = None;
+    let mut reader_seq: u64 = 0;
+
     let mut current_file: Option<PathBuf> = None;
     let mut current_file_mtime: Option<SystemTime> = None;
     let mut last_mtime_advance: Instant = Instant::now();
@@ -305,9 +440,15 @@ async fn watch_loop<R: tauri::Runtime>(
                             if first_bind {
                                 match read_preamble_for_race(&found, attach_time, codex_preamble_extractor) {
                                     Ok((bodies, _ids, file_len)) => {
-                                        for text in bodies {
-                                            logger.log("CODEX_PREAMBLE", &session_id, &text);
-                                            buffer.push_str(&text);
+                                        for record in capture_preamble_bodies(
+                                            bodies,
+                                            &session_id,
+                                            &found,
+                                            &mut reader_seq,
+                                            capture_tx.as_ref(),
+                                        ) {
+                                            logger.log("CODEX_PREAMBLE", &session_id, &record.text);
+                                            buffer.push_str(&record.text);
                                             buffer.push('\n');
                                             last_buffer_add = Instant::now();
                                         }
@@ -344,15 +485,19 @@ async fn watch_loop<R: tauri::Runtime>(
                 }
 
                 if let Some(ref path) = current_file {
-                    match read_new_lines(path, &mut file_offset, &mut line_remainder) {
+                    match read_new_lines_with_starts(path, &mut file_offset, &mut line_remainder) {
                         Ok(new_lines) => {
-                            for line in new_lines {
-                                if let Some(text) = extract_assistant_final(&line) {
-                                    logger.log("CODEX_EXTRACT", &session_id, &text);
-                                    buffer.push_str(&text);
-                                    buffer.push('\n');
-                                    last_buffer_add = Instant::now();
-                                }
+                            for record in capture_live_lines(
+                                new_lines,
+                                &session_id,
+                                path,
+                                &mut reader_seq,
+                                capture_tx.as_ref(),
+                            ) {
+                                logger.log("CODEX_EXTRACT", &session_id, &record.text);
+                                buffer.push_str(&record.text);
+                                buffer.push('\n');
+                                last_buffer_add = Instant::now();
                             }
                             let new_mtime = std::fs::metadata(path).ok()
                                 .and_then(|m| m.modified().ok());
@@ -391,12 +536,18 @@ async fn watch_loop<R: tauri::Runtime>(
 
     // Final poll + flush after cancel.
     if let Some(ref path) = current_file {
-        if let Ok(new_lines) = read_new_lines(path, &mut file_offset, &mut line_remainder) {
-            for line in new_lines {
-                if let Some(text) = extract_assistant_final(&line) {
-                    buffer.push_str(&text);
-                    buffer.push('\n');
-                }
+        if let Ok(new_lines) =
+            read_new_lines_with_starts(path, &mut file_offset, &mut line_remainder)
+        {
+            for record in capture_live_lines(
+                new_lines,
+                &session_id,
+                path,
+                &mut reader_seq,
+                capture_tx.as_ref(),
+            ) {
+                buffer.push_str(&record.text);
+                buffer.push('\n');
             }
         }
     }
@@ -419,6 +570,10 @@ async fn watch_loop<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The extractor tests drive the kernel directly; production now reads
+    // through `read_new_lines_with_starts` (`#2232` phase 1), so the wrapper
+    // is imported here instead of by the module's production import list.
+    use crate::telegram::jsonl_kernel::read_new_lines;
     use std::fs;
     use std::io::Write;
 
@@ -1355,5 +1510,125 @@ mod tests {
 
         let found = find_session_file(root, "c:\\users\\foo\\bar", now);
         assert_eq!(found, Some(expected));
+    }
+
+    // ── #2232 phase 1: capture records ────────────────────────────────────
+
+    /// Capture one synthetic line with no sink attached.
+    fn capture_one(line: &str) -> Vec<Arc<CapturedRecord>> {
+        let mut reader_seq = 0u64;
+        capture_live_lines(
+            vec![(0, line.to_string())],
+            "codex-session",
+            Path::new("rollout.jsonl"),
+            &mut reader_seq,
+            None,
+        )
+    }
+
+    #[test]
+    fn real_fixture_carries_the_nested_turn_id_and_final_bits() {
+        // Test 3: the real fixture's turn id lives at
+        // `payload.internal_chat_message_metadata_passthrough.turn_id`.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut reader_seq = 0u64;
+        let records = capture_live_lines(
+            vec![(17, REAL_CURRENT_CODEX_FINAL.to_string())],
+            "codex-session",
+            Path::new("rollout-real.jsonl"),
+            &mut reader_seq,
+            Some(&tx),
+        );
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(
+            record.turn_id.as_deref(),
+            Some("01a09c07-0ad4-7710-9c1d-ce3f8dd0aaac")
+        );
+        assert!(record.provider_final);
+        assert!(record.turn_identified);
+        assert_eq!(record.text, "sanitized assistant reply");
+        assert_eq!(record.provider, CaptureProvider::Codex);
+        assert_eq!(record.origin, RecordOrigin::Live);
+        assert_eq!(record.record_start, Some(17));
+        assert_eq!(record.reader_seq, 0);
+        // The record reached the sink, exactly once.
+        assert_eq!(rx.try_recv().unwrap().text, "sanitized assistant reply");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn final_answer_without_turn_metadata_is_final_but_not_identified() {
+        // Test 4: metadata object absent → `provider_final == true`,
+        // `turn_identified == false`, `turn_id == None`.
+        let records = capture_one(&current_final_record(&["no metadata"]));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].turn_id, None);
+        assert!(records[0].provider_final);
+        assert!(!records[0].turn_identified);
+    }
+
+    #[test]
+    fn task_complete_emits_no_capture_record() {
+        // Test 5: the extractor still rejects `task_complete`; the flat
+        // `turn_id` on that record belongs to phase 5.
+        let line = serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": "01a09c07-0ad4-7710-9c1d-ce3f8dd0aaac"}
+        })
+        .to_string();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut reader_seq = 0u64;
+        let records = capture_live_lines(
+            vec![(0, line)],
+            "codex-session",
+            Path::new("rollout.jsonl"),
+            &mut reader_seq,
+            Some(&tx),
+        );
+        assert!(records.is_empty());
+        assert!(rx.try_recv().is_err(), "nothing may reach the sink");
+        assert_eq!(reader_seq, 0, "a rejected line must not advance reader_seq");
+    }
+
+    #[test]
+    fn capture_without_a_sender_leaves_the_telegram_bytes_unchanged() {
+        // Test 8: a full watcher read pass with the sender left `None` appends
+        // exactly the bytes the pre-change code appended.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-parity.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, "{}", current_final_record(&["first body"])).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"event_msg","payload":{{"type":"task_complete"}}}}"#
+        )
+        .unwrap();
+        writeln!(f, "{}", current_final_record(&["second body"])).unwrap();
+        drop(f);
+
+        let mut offset = 0u64;
+        let mut remainder = String::new();
+        let new_lines = read_new_lines_with_starts(&path, &mut offset, &mut remainder).unwrap();
+
+        // Pre-change append path: extractor text, one trailing newline each.
+        let mut expected = String::new();
+        for (_, line) in &new_lines {
+            if let Some(text) = extract_assistant_final(line) {
+                expected.push_str(&text);
+                expected.push('\n');
+            }
+        }
+
+        // Watcher path: capture with no sink attached, then buffer the text.
+        let mut reader_seq = 0u64;
+        let mut observed = String::new();
+        for record in capture_live_lines(new_lines, "codex-session", &path, &mut reader_seq, None) {
+            observed.push_str(&record.text);
+            observed.push('\n');
+        }
+
+        assert_eq!(expected, observed);
+        assert_eq!(reader_seq, 2);
     }
 }

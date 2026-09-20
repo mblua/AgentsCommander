@@ -5,6 +5,7 @@ pub mod agent_config;
 pub mod agent_creation;
 pub(crate) mod agent_memory;
 pub mod archive_gate;
+pub mod co_managed;
 pub mod coding_agent_mutations;
 pub mod coding_agent_profiles;
 pub mod coding_agents_catalog;
