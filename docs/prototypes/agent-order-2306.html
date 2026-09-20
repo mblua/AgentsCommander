@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Agent order prototype — Settings and Step 1 (bug #2311 / epic #2306)</title>
+<title>Prototipo: orden de herramientas de coding — Settings y Step 1 (bug #2311 · épica #2306)</title>
 <style>
   /* ==========================================================================
      P0 two-screen agent-order prototype (bug #2311, epic #2306).
@@ -733,20 +733,20 @@
 <body>
 
 <header class="review-head">
-  <h1>Prototype: coding-tool order — Settings and Step 1 (bug #2311 · epic #2306)</h1>
-  <p><strong>Static design mock.</strong> No application code, no IPC, no schema, no real settings files. Every save below is simulated in in-page state only; reloading the browser resets it.</p>
-  <p><strong>Today</strong> reproduces the current behavior: Settings shows the saved vector order (Claude Code, Codex, Pi, Grok); Step 1 stays alphabetical (Claude Code, Codex, Grok, Pi) and has no move controls. <strong>Proposed</strong> starts both screens in the Settings order and shows up/down move controls in both — shown together only for comparison, not as an approved placement.</p>
-  <p class="decision-line"><strong>Decision for you:</strong> where should move controls live — Settings only, Step 1 only, or both?</p>
-  <p>Mock conditions (persistent <code>settings.local.json</code> ownership, transient save failure, stale expected-neighbour conflict) can be triggered from the toolbar. The disabled-by-ownership state is <em>proposed</em> production behavior: it assumes a read-only backend snapshot flag plus authoritative command rejection, and the current app exposes no such flag.</p>
+  <h1>Prototipo: orden de las herramientas de coding — Settings y Step 1 (bug #2311 · épica #2306)</h1>
+  <p><strong>Maqueta de diseño estática.</strong> Sin código de aplicación, sin IPC, sin esquema y sin archivos de settings reales. Cada guardado de abajo se simula solo en el estado de la página; recargar el navegador lo reinicia.</p>
+  <p><strong>Actual</strong> reproduce el comportamiento actual: Settings muestra el orden vectorial guardado (Claude Code, Codex, Pi, Grok); Step 1 queda alfabético (Claude Code, Codex, Grok, Pi) y no tiene controles de movimiento. <strong>Propuesto</strong> arranca ambas pantallas en el orden de Settings y muestra controles de subir/bajar en las dos — juntos solo para comparar, no como una ubicación aprobada.</p>
+  <p class="decision-line"><strong>Decisión para vos:</strong> ¿dónde deberían vivir los controles de movimiento — solo en Settings, solo en Step 1, o en ambas?</p>
+  <p>Las condiciones mock (propiedad persistente de <code>settings.local.json</code>, fallo de guardado transitorio, conflicto por vecino esperado obsoleto) se activan desde la barra. El estado deshabilitado por propiedad es el comportamiento <em>propuesto</em> de producción: asume un flag de snapshot de backend de solo lectura más el rechazo autoritativo del comando, y la aplicación actual no expone ese flag.</p>
 
   <div class="review-toolbar">
-    <button type="button" class="review-btn" id="reopen-btn" data-focus-key="reopen">Reopen proposed views</button>
-    <label><input type="checkbox" id="ownership-check" /> Mock: settings.local.json owns top-level agents (persistent)</label>
-    <button type="button" class="review-btn" id="ownership-after-load-btn" data-focus-key="ownership-after-load">Simulate ownership starting after load</button>
-    <label><input type="checkbox" id="fail-check" /> Mock: make the next move save fail</label>
-    <button type="button" class="review-btn" id="external-btn" data-focus-key="external">Simulate another writer changing the order</button>
-    <button type="button" class="review-btn" id="reset-btn" data-focus-key="reset">Restore proposed starting order</button>
-    <button type="button" class="review-btn" id="discard-btn" data-focus-key="discard">Discard unsaved colour edits</button>
+    <button type="button" class="review-btn" id="reopen-btn" data-focus-key="reopen">Reabrir vistas propuestas</button>
+    <label><input type="checkbox" id="ownership-check" /> Mock: settings.local.json es dueño de «agents» de nivel superior (persistente)</label>
+    <button type="button" class="review-btn" id="ownership-after-load-btn" data-focus-key="ownership-after-load">Simular que la propiedad empieza después de cargar</button>
+    <label><input type="checkbox" id="fail-check" /> Mock: hacer que falle el próximo guardado de movimiento</label>
+    <button type="button" class="review-btn" id="external-btn" data-focus-key="external">Simular que otro escritor cambia el orden</button>
+    <button type="button" class="review-btn" id="reset-btn" data-focus-key="reset">Restaurar el orden inicial propuesto</button>
+    <button type="button" class="review-btn" id="discard-btn" data-focus-key="discard">Descartar ediciones de color sin guardar</button>
   </div>
   <p class="review-status" id="review-status" role="status" aria-live="polite"></p>
 </header>
@@ -755,14 +755,14 @@
   <!-- ============================== SCREEN A: Settings > Coding Agents -->
   <section class="screen-block" aria-labelledby="settings-screen-title">
     <div class="screen-nav">
-      <h2 id="settings-screen-title">Screen A — Settings &gt; Coding Agents
-        <span class="screen-sub">Pinned reference: 2306-settings-coding-agents.png (773×491)</span>
+      <h2 id="settings-screen-title">Pantalla A — Settings &gt; Coding Agents
+        <span class="screen-sub">Referencia fijada: 2306-settings-coding-agents.png (773×491)</span>
       </h2>
-      <div class="mode-switch" role="group" aria-label="Settings screen state">
+      <div class="mode-switch" role="group" aria-label="Estado de la pantalla Settings">
         <button type="button" data-screen="settings" data-mode="today"
-                id="settings-mode-today" data-focus-key="mode-settings-today" aria-pressed="false">Today</button>
+                id="settings-mode-today" data-focus-key="mode-settings-today" aria-pressed="false">Actual</button>
         <button type="button" data-screen="settings" data-mode="proposed"
-                id="settings-mode-proposed" data-focus-key="mode-settings-proposed" aria-pressed="true">Proposed</button>
+                id="settings-mode-proposed" data-focus-key="mode-settings-proposed" aria-pressed="true">Propuesto</button>
       </div>
     </div>
     <div id="settings-frame-root"></div>
@@ -772,14 +772,14 @@
   <!-- ============================== SCREEN B: Assignment > Step 1 -->
   <section class="screen-block" aria-labelledby="picker-screen-title">
     <div class="screen-nav">
-      <h2 id="picker-screen-title">Screen B — Coding Agent profile assignment &gt; Step 1
-        <span class="screen-sub">Pinned reference: 2306-profile-agent-picker.png (607×1074)</span>
+      <h2 id="picker-screen-title">Pantalla B — Coding Agent profile assignment &gt; Step 1
+        <span class="screen-sub">Referencia fijada: 2306-profile-agent-picker.png (607×1074)</span>
       </h2>
-      <div class="mode-switch" role="group" aria-label="Step 1 screen state">
+      <div class="mode-switch" role="group" aria-label="Estado de la pantalla Step 1">
         <button type="button" data-screen="picker" data-mode="today"
-                id="picker-mode-today" data-focus-key="mode-picker-today" aria-pressed="false">Today</button>
+                id="picker-mode-today" data-focus-key="mode-picker-today" aria-pressed="false">Actual</button>
         <button type="button" data-screen="picker" data-mode="proposed"
-                id="picker-mode-proposed" data-focus-key="mode-picker-proposed" aria-pressed="true">Proposed</button>
+                id="picker-mode-proposed" data-focus-key="mode-picker-proposed" aria-pressed="true">Propuesto</button>
       </div>
     </div>
     <div id="picker-frame-root"></div>
@@ -910,7 +910,7 @@
 
     // Persistent ownership: controls are rendered disabled, this is a guard.
     if (ownershipDisablesControls()) {
-      announce("Move controls are unavailable because settings.local.json owns the agent order.");
+      announce("Los controles de movimiento no están disponibles porque settings.local.json es dueño del orden de los agentes.");
       return;
     }
     // Ownership that began after this view loaded: the stale snapshot still
@@ -918,13 +918,13 @@
     if (state.ownershipAfterLoad) {
       state.moveError = {
         id: id, dir: dir,
-        message: "Move refused by the command side: settings.local.json began owning the agent order after this view loaded. " +
-                 "No change was saved and the list is back to the last saved order. " +
-                 "Reopen the proposed views to pick up the ownership snapshot."
+        message: "Movimiento rechazado por el lado del comando: settings.local.json empezó a ser dueño del orden de los agentes después de cargar esta vista. " +
+                 "No se guardó ningún cambio y la lista volvió al último orden guardado. " +
+                 "Reabrí las vistas propuestas para tomar el snapshot de propiedad."
       };
       state.pendingRetry = null;
-      setStatus("Move refused: settings.local.json now owns the agent order. Rolled back, nothing saved.", "error");
-      announce("Move refused. settings.local.json now owns the agent order. The list was rolled back and nothing was saved.");
+      setStatus("Movimiento rechazado: settings.local.json ahora es dueño del orden de los agentes. Revertido, nada guardado.", "error");
+      announce("Movimiento rechazado. settings.local.json ahora es dueño del orden de los agentes. La lista se revirtió y no se guardó nada.");
       rerender();
       return;
     }
@@ -933,13 +933,13 @@
       state.proposedOrder = EXTERNAL_ORDER.slice();
       state.externalPending = false;
       state.conflict = {
-        message: "Another window changed the saved order while this view was open (Grok moved before Pi). " +
-                 "Your move was checked against the order this view loaded and was not applied. The list now shows the other writer's order."
+        message: "Otra ventana cambió el orden guardado mientras esta vista estaba abierta (Grok se movió antes que Pi). " +
+                 "Tu movimiento se comparó contra el orden que cargó esta vista y no se aplicó. La lista ahora muestra el orden del otro escritor."
       };
       state.moveError = null;
       state.pendingRetry = null;
-      setStatus("Stale expected neighbour: adopted the other writer's order.", "warn");
-      announce("Conflict: another window changed the order. Your move was not applied; the list now shows the other writer's order.");
+      setStatus("Vecino esperado obsoleto: se adoptó el orden del otro escritor.", "warn");
+      announce("Conflicto: otra ventana cambió el orden. Tu movimiento no se aplicó; la lista ahora muestra el orden del otro escritor.");
       rerender();
       return;
     }
@@ -948,11 +948,11 @@
       state.failNextSave = false;
       state.moveError = {
         id: id, dir: dir,
-        message: "Could not save the new order. The list was restored to the last saved order. Try again."
+        message: "No se pudo guardar el nuevo orden. La lista volvió al último orden guardado. Probá de nuevo."
       };
       state.pendingRetry = { id: id, dir: dir };
-      setStatus("Transient save failure: order rolled back. Retry is available.", "error");
-      announce("Save failed. The order was rolled back. Retry is available.");
+      setStatus("Fallo de guardado transitorio: orden revertido. Hay reintento disponible.", "error");
+      announce("Falló el guardado. El orden se revirtió. Hay reintento disponible.");
       syncToolbar();
       rerender();
       return;
@@ -972,12 +972,14 @@
     state.conflict = null;
 
     var draftNote = draftCount() > 0
-      ? " Your unsaved colour edit" + (draftCount() === 1 ? " was" : "s were") + " NOT saved by this move."
+      ? (draftCount() === 1
+          ? " Tu edición de color sin guardar NO se guardó con este movimiento."
+          : " Tus ediciones de color sin guardar NO se guardaron con este movimiento.")
       : "";
-    setStatus("Order saved (mock): " + state.proposedOrder.map(labelFor).join(", ") + "." + draftNote,
+    setStatus("Orden guardado (mock): " + state.proposedOrder.map(labelFor).join(", ") + "." + draftNote,
               draftCount() > 0 ? "warn" : "ok");
-    announce(labelFor(moved) + " moved " + (dir < 0 ? "up" : "down") + " to position " + (target + 1) +
-             " of " + order.length + "." + draftNote);
+    announce(labelFor(moved) + " se movió " + (dir < 0 ? "hacia arriba" : "hacia abajo") + " a la posición " + (target + 1) +
+             " de " + order.length + "." + draftNote);
     rerender();
   }
 
@@ -989,31 +991,31 @@
     state.failNextSave = false;
     syncToolbar();
     moveTool("settings", pending.id, pending.dir);
-    setStatus("Retry succeeded: the order was saved (mock).", "ok");
+    setStatus("Reintento exitoso: el orden se guardó (mock).", "ok");
   }
 
   function setMode(screen, mode) {
     if (state.mode[screen] === mode) return;
     state.mode[screen] = mode;
     if (mode === "today") {
-      setStatus("Showing Today for " + (screen === "settings" ? "Settings" : "Step 1") + ": the current behavior.", "");
+      setStatus("Mostrando Actual en " + (screen === "settings" ? "Settings" : "Step 1") + ": el comportamiento actual.", "");
     } else {
-      setStatus("Showing Proposed for " + (screen === "settings" ? "Settings" : "Step 1") + ".", "");
+      setStatus("Mostrando Propuesto en " + (screen === "settings" ? "Settings" : "Step 1") + ".", "");
     }
     rerender();
   }
 
   function setRailTool(id) {
     state.railTool = id;
-    setStatus("Showing profiles for " + labelFor(id) + " on the LEFT comparison rail. Order unchanged.", "");
-    announce("Showing profiles for " + labelFor(id) + ". The order did not change.");
+    setStatus("Mostrando perfiles de " + labelFor(id) + " en el rail de comparación LEFT. El orden no cambió.", "");
+    announce("Mostrando perfiles de " + labelFor(id) + ". El orden no cambió.");
     rerender();
   }
 
   function setPickerSelected(id) {
     state.pickerSelected = id;
-    setStatus("Selected " + labelFor(id) + " in Step 1. Order unchanged.", "");
-    announce("Selected " + labelFor(id) + ".");
+    setStatus("Seleccionado " + labelFor(id) + " en Step 1. El orden no cambió.", "");
+    announce(labelFor(id) + " seleccionado.");
     rerender();
   }
 
@@ -1029,10 +1031,10 @@
     if (!on) state.ownershipAfterLoad = false;
     if (on) {
       state.ownershipAfterLoad = false;
-      setStatus("Persistent ownership mock ON: proposed move controls are disabled with an accessible reason.", "warn");
-      announce("Move controls disabled: settings.local.json owns the top-level agents setting.");
+      setStatus("Mock de propiedad persistente ACTIVADO: los controles de movimiento propuestos quedan deshabilitados con un motivo accesible.", "warn");
+      announce("Controles de movimiento deshabilitados: settings.local.json es dueño del ajuste agents de nivel superior.");
     } else {
-      setStatus("Persistent ownership mock OFF: proposed move controls are enabled again.", "");
+      setStatus("Mock de propiedad persistente DESACTIVADO: los controles de movimiento propuestos vuelven a estar habilitados.", "");
     }
     syncToolbar();
     rerender();
@@ -1041,8 +1043,8 @@
   function simulateOwnershipAfterLoad() {
     state.ownership = true;
     state.ownershipAfterLoad = true;
-    setStatus("Ownership began after load: the stale snapshot keeps controls enabled; the next move will be refused and rolled back.", "warn");
-    announce("Ownership began after this view loaded. Move controls still look enabled; the command side will refuse the next move.");
+    setStatus("La propiedad empezó después de cargar: el snapshot obsoleto mantiene los controles habilitados; el próximo movimiento será rechazado y revertido.", "warn");
+    announce("La propiedad empezó después de cargar esta vista. Los controles de movimiento todavía parecen habilitados; el lado del comando rechazará el próximo movimiento.");
     syncToolbar();
     rerender();
   }
@@ -1050,8 +1052,8 @@
   function simulateExternalWriter() {
     state.externalPending = true;
     state.conflict = null;
-    setStatus("Another writer moved Grok before Pi. The next move will be checked against a stale expected neighbour.", "warn");
-    announce("Another writer changed the saved order. The next move will conflict with a stale expected neighbour.");
+    setStatus("Otro escritor movió Grok antes que Pi. El próximo movimiento se comparará contra un vecino esperado obsoleto.", "warn");
+    announce("Otro escritor cambió el orden guardado. El próximo movimiento entrará en conflicto con un vecino esperado obsoleto.");
     syncToolbar();
     rerender();
   }
@@ -1062,8 +1064,8 @@
     state.pendingRetry = null;
     state.conflict = null;
     state.externalPending = false;
-    setStatus("Restored the proposed starting order: " + state.proposedOrder.map(labelFor).join(", ") + ".", "ok");
-    announce("Restored the proposed starting order: " + state.proposedOrder.map(labelFor).join(", ") + ".");
+    setStatus("Se restauró el orden inicial propuesto: " + state.proposedOrder.map(labelFor).join(", ") + ".", "ok");
+    announce("Se restauró el orden inicial propuesto: " + state.proposedOrder.map(labelFor).join(", ") + ".");
     syncToolbar();
     rerender();
   }
@@ -1071,8 +1073,8 @@
   function discardDrafts() {
     state.draftColor = {};
     state.draftLabel = {};
-    setStatus("Unsaved colour and label edits discarded. Tool order untouched.", "");
-    announce("Unsaved colour and label edits discarded.");
+    setStatus("Se descartaron las ediciones de color y etiqueta sin guardar. El orden de las herramientas no se tocó.", "");
+    announce("Se descartaron las ediciones de color y etiqueta sin guardar.");
     rerender();
   }
 
@@ -1086,9 +1088,9 @@
         // disabled with the persistent reason.
         state.ownershipAfterLoad = false;
       }
-      setStatus("Proposed views reopened from the mock saved order: " +
+      setStatus("Vistas propuestas reabiertas con el orden guardado mock: " +
                 state.proposedOrder.map(labelFor).join(", ") + ".", "ok");
-      announce("Proposed views reopened. The mock saved order survived: " +
+      announce("Vistas propuestas reabiertas. El orden guardado mock sobrevivió: " +
                state.proposedOrder.map(labelFor).join(", ") + ".");
       syncToolbar();
       rerender();
@@ -1097,9 +1099,9 @@
 
   /* -------------------------------------------------------------- rendering */
   function protoBanner(screenLabel) {
-    return '<div class="proto-banner" role="note"><b>PROTOTYPE</b><span>' +
-      esc(screenLabel) + ' — simulated saving only, no application change. ' +
-      'Nothing here writes settings.json or settings.local.json. Reopening is simulated in this page; a browser reload resets everything.</span></div>';
+    return '<div class="proto-banner" role="note"><b>PROTOTIPO</b><span>' +
+      esc(screenLabel) + ' — solo guardado simulado, sin cambios en la aplicación. ' +
+      'Nada aquí escribe settings.json ni settings.local.json. La reapertura se simula en esta página; recargar el navegador lo reinicia todo.</span></div>';
   }
 
   function moveButton(screen, id, dir, order, opts) {
@@ -1107,7 +1109,7 @@
     var boundary = dir < 0 ? index === 0 : index === order.length - 1;
     var disabled = boundary || (opts && opts.disabled);
     var describedBy = opts && opts.describedBy ? ' aria-describedby="' + attr(opts.describedBy) + '"' : "";
-    var label = (dir < 0 ? "Move " : "Move ") + labelFor(id) + (dir < 0 ? " up" : " down");
+    var label = "Mover " + labelFor(id) + (dir < 0 ? " hacia arriba" : " hacia abajo");
     return '<button type="button" class="move-btn" data-move="' + attr(screen) + '" data-tool="' + attr(id) +
       '" data-dir="' + dir + '" data-focus-key="move-' + attr(screen) + '-' + attr(id) + '-' + (dir < 0 ? "up" : "down") + '"' +
       ' aria-label="' + attr(label) + '"' + (disabled ? " disabled" : "") + describedBy + '>' +
@@ -1116,9 +1118,9 @@
 
   function ownershipReasonBlock() {
     return '<p class="settings-ownership-reason" id="ownership-reason">' +
-      '<strong>Move controls are unavailable.</strong> settings.local.json owns the top-level agents setting, ' +
-      'so this window cannot change the order. Change the overlay outside this feature, then reopen. ' +
-      '(Proposed production behavior: needs a read-only backend snapshot flag plus authoritative command rejection; the current app exposes no such flag.)</p>';
+      '<strong>Los controles de movimiento no están disponibles.</strong> settings.local.json es dueño del ajuste agents de nivel superior, ' +
+      'así que esta ventana no puede cambiar el orden. Cambiá el overlay fuera de esta función y reabrí. ' +
+      '(Comportamiento propuesto de producción: requiere un flag de snapshot de backend de solo lectura más el rechazo autoritativo del comando; la aplicación actual no expone ese flag.)</p>';
   }
 
   function resolveLabelToday(id, firstId) {
@@ -1152,20 +1154,20 @@
         '<div class="settings-agent-row" style="--agent-color:' + attr(tool.color) + '" role="listitem"' +
           (isRail ? ' aria-current="true"' : "") + ' data-tool="' + attr(id) + '">' +
           '<div class="settings-agent-row-head" role="button" tabindex="0" data-select-tool="' + attr(id) +
-            '" data-focus-key="row-' + attr(id) + '" aria-label="Show ' + attr(tool.label) + ' on the LEFT comparison rail">' +
+            '" data-focus-key="row-' + attr(id) + '" aria-label="Mostrar ' + attr(tool.label) + ' en el rail de comparación LEFT">' +
             '<span class="settings-agent-dot" style="background:' + attr(tool.color) + '"></span>' +
             '<div class="settings-agent-row-meta">' +
               '<div class="settings-agent-row-name">' + esc(tool.label) +
-                (isRail ? ' <span class="settings-rail-pill left" aria-hidden="true">Selected</span>' : "") +
+                (isRail ? ' <span class="settings-rail-pill left" aria-hidden="true">Seleccionado</span>' : "") +
               '</div>' +
               '<div class="settings-agent-row-cmd">' + esc(tool.command) + '</div>' +
               '<div class="settings-agent-row-colorline">' +
                 '<span class="settings-agent-swatch" style="background:' + attr(hex) + '"></span>' +
                 '<input class="settings-agent-color-input" type="text" spellcheck="false" value="' + attr(hex) + '"' +
-                  ' aria-label="Draft colour for ' + attr(tool.label) + ' (unsaved)"' +
+                  ' aria-label="Color en borrador para ' + attr(tool.label) + ' (sin guardar)"' +
                   ' data-color-tool="' + attr(id) + '" data-focus-key="color-' + attr(id) + '">' +
                 '<span class="settings-rail-pill ' + (isRail ? "left" : "available") + '">' + (isRail ? "LEFT" : "AVAILABLE") + '</span>' +
-                (editing ? '<span class="draft-chip">Unsaved</span>' : "") +
+                (editing ? '<span class="draft-chip">Sin guardar</span>' : "") +
               '</div>' +
             '</div>' +
             '<div class="settings-agent-row-actions">' +
@@ -1189,7 +1191,7 @@
 
     var errorBanner = state.moveError
       ? '<div class="state-banner error">' + esc(state.moveError.message) +
-          (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Retry move</button>' : "") +
+          (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Reintentar movimiento</button>' : "") +
         '</div>'
       : "";
     var conflictBanner = state.conflict
@@ -1215,18 +1217,18 @@
             '</div>' +
             '<div class="settings-agents-panel-body">' +
               (ownsDisabled ? ownershipReasonBlock() : "") +
-              '<div role="list" aria-label="Registered coding agents">' + rows + '</div>' +
+              '<div role="list" aria-label="Agentes de coding registrados">' + rows + '</div>' +
               '<div class="settings-actions-block">' +
                 '<div class="settings-actions-title">Actions</div>' +
                 '<div class="settings-actions-row">' +
-                  '<button type="button" class="settings-row-btn" disabled title="Not part of this prototype">Swap Rails</button>' +
-                  '<button type="button" class="settings-row-btn danger" disabled title="Not part of this prototype">Delete Agent</button>' +
+                  '<button type="button" class="settings-row-btn" disabled title="No forma parte de este prototipo">Swap Rails</button>' +
+                  '<button type="button" class="settings-row-btn danger" disabled title="No forma parte de este prototipo">Delete Agent</button>' +
                 '</div>' +
               '</div>' +
               '<p class="settings-hint">' +
                 (isProposed
-                  ? "Proposed: up/down controls beside the row actions move a tool one real adjacent position. First-up and last-down are disabled. A move never changes which tool is LEFT and never saves the colour draft."
-                  : "Today: the saved vector order with no move controls. The divergence from Step 1 (which sorts alphabetically today) is the bug this prototype is about.") +
+                  ? "Propuesto: los controles de subir/bajar junto a las acciones de fila mueven una herramienta una posición adyacente real. El primero-arriba y el último-abajo están deshabilitados. Un movimiento nunca cambia qué herramienta es LEFT ni guarda el borrador de color."
+                  : "Actual: el orden vectorial guardado, sin controles de movimiento. La divergencia con Step 1 (que hoy ordena alfabéticamente) es el bug de este prototipo.") +
               '</p>' +
             '</div>' +
           '</aside>' +
@@ -1234,30 +1236,30 @@
             '<div class="settings-profile-rail" style="--agent-color:' + attr(rail.color) + '">' +
               '<div class="settings-profile-rail-header">' +
                 '<div class="settings-profile-rail-title">' + esc(rail.label) + ' rail</div>' +
-                '<div class="settings-profile-rail-subtitle">LEFT comparison rail · profile card for letter A</div>' +
+                '<div class="settings-profile-rail-subtitle">Rail de comparación LEFT · tarjeta de perfil para la letra A</div>' +
               '</div>' +
               '<div class="settings-profile-rail-body">' +
                 '<article class="settings-profile-card">' +
                   '<div class="settings-profile-card-head">' +
-                    '<span class="settings-profile-letter-badge" aria-label="Profile letter A">A</span>' +
+                    '<span class="settings-profile-letter-badge" aria-label="Letra de perfil A">A</span>' +
                     '<div class="settings-profile-card-heading">' +
                       '<div class="settings-profile-name-line">' +
                         '<input class="settings-profile-label" type="text" value="' + attr(railOwn) + '"' +
                           ' placeholder="' + attr(railPlaceholder) + '"' +
-                          ' aria-label="Profile label for ' + attr(rail.label) + ' letter A (draft)"' +
+                          ' aria-label="Etiqueta de perfil para ' + attr(rail.label) + ', letra A (borrador)"' +
                           ' data-label-tool="' + attr(rail.id) + '" data-focus-key="label-' + attr(rail.id) + '">' +
                         '<span class="settings-profile-badge configured">CONFIGURED</span>' +
                       '</div>' +
                       '<div class="settings-profile-card-sub">' + esc(rail.command) + '</div>' +
                     '</div>' +
                   '</div>' +
-                  '<p class="settings-hint">Moving rows never changes the LEFT tool or this comparison pair. The placeholder shows label resolution; the full example is below.</p>' +
+                  '<p class="settings-hint">Mover filas nunca cambia la herramienta LEFT ni este par de comparación. El placeholder muestra la resolución de etiqueta; el ejemplo completo está abajo.</p>' +
                 '</article>' +
               '</div>' +
             '</div>' +
           '</div>' +
         '</div>' +
-        (state.reopening && isProposed ? '<div class="reopen-cover">Reopening proposed view…</div>' : "") +
+        (state.reopening && isProposed ? '<div class="reopen-cover">Reabriendo vista propuesta…</div>' : "") +
       '</div>';
 
     document.getElementById("settings-frame-root").innerHTML = panel;
@@ -1278,35 +1280,35 @@
       if (isProposed) {
         var resolved = resolveLabelProposed(id);
         placeholder = resolved || "Baseline";
-        if (own) { note = "own label"; }
-        else if (resolved) { note = "legacy slot label \u201C" + resolved + "\u201D"; }
-        else { note = "no own label, no legacy label \u2192 bare letter A"; }
+        if (own) { note = "etiqueta propia"; }
+        else if (resolved) { note = "etiqueta heredada del slot \u201C" + resolved + "\u201D"; }
+        else { note = "sin etiqueta propia ni heredada \u2192 letra A sola"; }
       } else {
         var inheritedOwn = ownLabel(firstId);
         var resolvedToday = resolveLabelToday(id, firstId);
         placeholder = resolvedToday || "Baseline";
-        if (own) { note = "own label"; }
+        if (own) { note = "etiqueta propia"; }
         else if (inheritedOwn) {
-          note = "inherited from the first tool (" + labelFor(firstId) + ") \u2014 the bug";
+          note = "heredada de la primera herramienta (" + labelFor(firstId) + ") \u2014 el bug";
           warn = true;
-        } else if (resolvedToday) { note = "legacy slot label"; }
-        else { note = "no label"; }
+        } else if (resolvedToday) { note = "etiqueta heredada del slot"; }
+        else { note = "sin etiqueta"; }
       }
       return '<div class="label-example-row">' +
         '<span class="tool-name">' + esc(tool.label) + '</span>' +
         '<input type="text" value="' + attr(own) + '" placeholder="' + attr(placeholder) + '"' +
-          ' aria-label="Profile label for ' + attr(tool.label) + ' letter A, example"' +
+          ' aria-label="Etiqueta de perfil para ' + attr(tool.label) + ', letra A, ejemplo"' +
           ' data-label-tool="' + attr(id) + '" data-focus-key="example-label-' + attr(id) + '">' +
         '<span class="resolution' + (warn ? " warn" : "") + '">' + esc(note) + '</span>' +
       '</div>';
     }).join("");
 
     document.getElementById("label-example-card").innerHTML =
-      '<h3>Profile label example (letter A) — Settings inputs (review-only, separate from the screenshot layout)</h3>' +
+      '<h3>Ejemplo de etiqueta de perfil (letra A) — inputs de Settings (solo revisión, fuera del layout de la captura)</h3>' +
       '<p>' + (isProposed
-        ? 'Proposed fallback everywhere: own label \u2192 legacy slot label \u2192 bare letter. The first tool\u2019s label is never inherited. No stored label is deleted; the legacy slot label still applies to every unlabelled tool.'
-        : 'Today the resolver falls back to the first tool\u2019s label: an unlabelled tool shows Claude Code\u2019s \u201CCODER\u201D (amber). That is the inheritance bug.') + '</p>' +
-      '<p>Example label values only \u2014 the pinned screenshot has no labels configured, so the Step 1 cards keep their bare \u201CA\u201D chips in both Today and Proposed.</p>' +
+        ? 'Fallback propuesto en todas partes: etiqueta propia \u2192 etiqueta heredada del slot \u2192 letra sola. La etiqueta de la primera herramienta nunca se hereda. No se borra ninguna etiqueta guardada; la etiqueta heredada del slot sigue aplicándose a toda herramienta sin etiqueta.'
+        : 'Hoy el resolvedor cae a la etiqueta de la primera herramienta: una herramienta sin etiqueta muestra \u201CCODER\u201D de Claude Code (ámbar). Ese es el bug de herencia.') + '</p>' +
+      '<p>Valores de etiqueta solo de ejemplo \u2014 la captura fijada no tiene etiquetas configuradas, así que las tarjetas de Step 1 conservan su chip \u201CA\u201D en Actual y en Propuesto.</p>' +
       '<div class="label-example-grid">' + rows + '</div>';
   }
 
@@ -1326,10 +1328,10 @@
     });
 
     var filterStatus = query === ""
-      ? order.length + " agents"
+      ? order.length + " agentes"
       : visible.length === 0
-        ? 'No coding agent matches \u201C' + state.filterQuery.trim() + '\u201D. Clear the filter to see all ' + order.length + '.'
-        : visible.length + " of " + order.length + ' agents match \u201C' + state.filterQuery.trim() + '\u201D.';
+        ? 'Ninguna herramienta de coding coincide con \u201C' + state.filterQuery.trim() + '\u201D. Limpiá el filtro para ver las ' + order.length + '.'
+        : visible.length + " de " + order.length + ' agentes coinciden con \u201C' + state.filterQuery.trim() + '\u201D.';
     var filterState = query === "" ? "" : (visible.length === 0 ? ' data-state="empty"' : ' data-state="match"');
 
     var cards = visible.map(function (id, i) {
@@ -1341,7 +1343,7 @@
       var moveDisabled = ownsDisabled || filterActive;
       var describedBy = filterActive ? "filter-reason" : (ownsDisabled ? "ownership-reason" : "");
       var moveGroup = isProposed
-        ? '<div class="provider-card-moves" role="group" aria-label="Reorder ' + attr(tool.label) + '">' +
+        ? '<div class="provider-card-moves" role="group" aria-label="Reordenar ' + attr(tool.label) + '">' +
             moveButton("picker", id, -1, order, { disabled: moveDisabled || boundaryUp, describedBy: describedBy }) +
             moveButton("picker", id, 1, order, { disabled: moveDisabled || boundaryDown, describedBy: describedBy }) +
           '</div>'
@@ -1350,23 +1352,23 @@
           ' style="--agent-color:' + attr(tool.color) + '" data-tool="' + attr(id) + '">' +
           '<button type="button" class="agent-profile-provider-card" aria-pressed="' + (active ? "true" : "false") + '"' +
             ' data-select-picker="' + attr(id) + '" data-focus-key="picker-card-' + attr(id) + '"' +
-            ' aria-label="' + attr(tool.label) + ', command ' + attr(tool.command) + (active ? ", selected" : "") + '">' +
+            ' aria-label="' + attr(tool.label) + ', comando ' + attr(tool.command) + (active ? ", seleccionado" : "") + '">' +
             '<span>' +
               '<span class="agent-profile-provider-name">' + esc(tool.label) + '</span>' +
               '<span class="agent-profile-provider-command">' + esc(tool.command) + '</span>' +
             '</span>' +
-            '<span class="agent-profile-provider-chip" title="Default profile letter A">A</span>' +
+            '<span class="agent-profile-provider-chip" title="Letra de perfil por defecto A">A</span>' +
           '</button>' +
           moveGroup +
         '</div>';
     }).join("");
 
     var emptyState = visible.length === 0
-      ? '<div class="settings-hint">No coding agent matches. The comparison rows below still list all ' + order.length + ' tools in order.</div>'
+      ? '<div class="settings-hint">Ninguna herramienta de coding coincide. Las filas de comparación de abajo siguen listando las ' + order.length + ' herramientas en orden.</div>'
       : "";
 
     var filterReason = (isProposed && filterActive)
-      ? '<p class="picker-filter-reason" id="filter-reason">Step 1 move controls are disabled while the filter is active. Clear the filter to change the order. Settings move controls stay enabled (they are not filtered).</p>'
+      ? '<p class="picker-filter-reason" id="filter-reason">Los controles de movimiento de Step 1 están deshabilitados mientras el filtro está activo. Limpiá el filtro para cambiar el orden. Los controles de movimiento de Settings siguen habilitados (no se filtran).</p>'
       : "";
     var ownsReason = (isProposed && ownsDisabled) ? ownershipReasonBlock() : "";
 
@@ -1376,7 +1378,7 @@
       return '<div class="agent-comparison-row' + (active ? " active" : "") + '" role="row" data-tool="' + attr(id) + '">' +
         '<span class="agent-comparison-agent" role="cell">' + esc(tool.label) + '</span>' +
         '<span class="agent-comparison-agent-sub" role="cell">' + esc(tool.command) + '</span>' +
-        '<span class="agent-comparison-status" role="cell">letter A</span>' +
+        '<span class="agent-comparison-status" role="cell">letra A</span>' +
       '</div>';
     }).join("");
 
@@ -1385,7 +1387,7 @@
         protoBanner("Step 1 — Choose the tool first") +
         '<div class="banner-stack">' +
           (state.moveError ? '<div class="state-banner error">' + esc(state.moveError.message) +
-            (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Retry move</button>' : "") +
+            (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Reintentar movimiento</button>' : "") +
             '</div>' : "") +
           (state.conflict ? '<div class="state-banner warn">' + esc(state.conflict.message) + '</div>' : "") +
         '</div>' +
@@ -1418,7 +1420,7 @@
             '</div>' +
           '</aside>' +
         '</div>' +
-        (state.reopening && isProposed ? '<div class="reopen-cover">Reopening proposed view…</div>' : "") +
+        (state.reopening && isProposed ? '<div class="reopen-cover">Reabriendo vista propuesta…</div>' : "") +
       '</div>';
 
     var comparison =
@@ -1426,13 +1428,13 @@
         '<div class="agent-profile-panel-head">' +
           '<div>' +
             '<div class="agent-profile-panel-title">Same profile comparison</div>' +
-            '<div class="agent-profile-panel-kicker">Letter A across every configured Coding Agent. This list keeps the full order even while the filter hides cards.</div>' +
+            '<div class="agent-profile-panel-kicker">Letra A en cada Coding Agent configurado. Esta lista mantiene el orden completo aunque el filtro oculte tarjetas.</div>' +
           '</div>' +
         '</div>' +
         '<p class="settings-hint">' +
           (isProposed
-            ? 'Proposed: the Step 1 list follows the Settings order and both screens share one mock saved order. A move in either screen updates the other; the filter only hides cards.'
-            : 'Today: the Step 1 list is sorted alphabetically here and has no move controls, so it disagrees with Settings.') +
+            ? 'Propuesto: la lista de Step 1 sigue el orden de Settings y ambas pantallas comparten un único orden guardado mock. Un movimiento en cualquiera de las dos actualiza la otra; el filtro solo oculta tarjetas.'
+            : 'Actual: la lista de Step 1 se ordena alfabéticamente y no tiene controles de movimiento, así que no coincide con Settings.') +
         '</p>' +
         '<div class="agent-comparison-table" role="table" aria-label="Same profile comparison">' +
           '<div class="agent-comparison-table-head" role="row">' +
@@ -1442,7 +1444,7 @@
           '</div>' +
           '<div role="rowgroup">' + comparisonRows + '</div>' +
         '</div>' +
-        '<p class="under-fold-note">Shown here for review; in the pinned 607×1074 screenshot this table sits below the fold of the stacked Step 1 layout.</p>' +
+        '<p class="under-fold-note">Se muestra acá para revisión; en la captura fijada de 607×1074 esta tabla queda debajo del pliegue del layout apilado de Step 1.</p>' +
       '</section>';
 
     document.getElementById("picker-frame-root").innerHTML =
@@ -1527,17 +1529,17 @@
       if (colorline && el.value !== TOOLS[id].color && !chip) {
         chip = document.createElement("span");
         chip.className = "draft-chip";
-        chip.textContent = "Unsaved";
+        chip.textContent = "Sin guardar";
         colorline.appendChild(chip);
       } else if (colorline && el.value === TOOLS[id].color && chip) {
         chip.remove();
       }
-      setStatus("Unsaved Settings colour draft for " + labelFor(id) + " (" + el.value + "). Moves save the order only, never this draft.", "warn");
+      setStatus("Borrador de color sin guardar en Settings para " + labelFor(id) + " (" + el.value + "). Los movimientos guardan solo el orden, nunca este borrador.", "warn");
       return;
     }
     if (el.getAttribute && el.getAttribute("data-label-tool")) {
       state.draftLabel[el.getAttribute("data-label-tool")] = el.value;
-      setStatus("Unsaved profile-label draft. No stored label is deleted; the order is untouched.", "warn");
+      setStatus("Borrador de etiqueta de perfil sin guardar. No se borra ninguna etiqueta guardada; el orden no se toca.", "warn");
     }
   });
 
@@ -1549,10 +1551,10 @@
   document.getElementById("ownership-check").addEventListener("change", function (e) { toggleOwnership(e.currentTarget.checked); });
   document.getElementById("fail-check").addEventListener("change", function (e) {
     state.failNextSave = e.currentTarget.checked;
-    setStatus(state.failNextSave ? "The next move save will fail once (mock)." : "Transient save-failure mock off.", state.failNextSave ? "warn" : "");
+    setStatus(state.failNextSave ? "El próximo guardado de movimiento fallará una vez (mock)." : "Mock de fallo de guardado transitorio desactivado.", state.failNextSave ? "warn" : "");
   });
 
-  setStatus("Both views start in Proposed. Switch either screen to Today to see the current behavior.", "");
+  setStatus("Ambas vistas empiezan en Propuesto. Cambiá cualquiera de las pantallas a Actual para ver el comportamiento actual.", "");
   render();
 })();
 </script>
