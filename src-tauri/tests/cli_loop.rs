@@ -1,5 +1,40 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard};
+
+/// Excludes one test's open write descriptor on a freshly copied binary from
+/// overlapping another test's fork/exec.
+///
+/// These tests run in parallel and each copies the binary into its own temp dir
+/// before exec'ing it. `Command::spawn` forks, and the child inherits the write
+/// descriptor another thread still holds on *its* copy; exec'ing a binary that
+/// any process holds open for writing fails with `ETXTBSY`. Covering both the
+/// copy and the spawn closes that window. The lock is released before output is
+/// collected, so the binary runs themselves still overlap.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The single spawn site. Holds the lock across `spawn` only.
+fn run_output(bin: &Path, args: &[&str]) -> Output {
+    let mut command = command_for_binary(bin);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    child.wait_with_output().expect("collect output")
+}
 
 fn command_for_binary(bin: &Path) -> Command {
     let mut command = Command::new(bin);
@@ -34,7 +69,10 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    {
+        let _guard = spawn_lock();
+        std::fs::copy(src, &dst).expect("copy binary");
+    }
     dst
 }
 
@@ -87,7 +125,7 @@ fn project_with_verified_coordinator(tmp: &Path) -> PathBuf {
 }
 
 fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let out = run_output(bin, args);
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -99,7 +137,7 @@ fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_stdout(bin: &Path, args: &[&str]) -> String {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let out = run_output(bin, args);
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -111,7 +149,7 @@ fn run_stdout(bin: &Path, args: &[&str]) -> String {
 }
 
 fn run_fail(bin: &Path, args: &[&str]) -> String {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let out = run_output(bin, args);
     assert!(
         !out.status.success(),
         "expected failure\nstdout: {}\nstderr: {}",
@@ -413,4 +451,189 @@ fn loop_existing_id_commands_reject_transformed_ids() {
             );
         }
     }
+}
+
+/// AC-9 - the new flag is discoverable. Added beside the existing help test
+/// rather than by editing it.
+#[test]
+fn loop_create_help_describes_session_start() {
+    let tmp = Tmp::new("cli-loop-help-session-start");
+    let bin = copy_binary_into(tmp.path());
+
+    let help = run_stdout(&bin, &["loop", "create", "--help"]);
+    assert!(help.contains("--session-start"));
+    assert!(help.contains("fresh"));
+    assert!(help.contains("accumulate"));
+}
+
+/// AC-5 - the persist-and-read-back path through the real binary.
+#[test]
+fn loop_create_persists_session_start_accumulate() {
+    let tmp = Tmp::new("cli-loop-session-start-create");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    project_with_verified_coordinator(tmp.path());
+
+    let created = run_json(
+        &bin,
+        &[
+            "loop",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--name",
+            "Accumulating Loop",
+            "--cron",
+            "0 9 * * *",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--prompt",
+            "Summarize status",
+            "--session-start",
+            "accumulate",
+        ],
+    );
+    assert_eq!(created["summary"]["sessionStart"], "accumulate");
+
+    let list = run_json(&bin, &["loop", "list", "--project", "ProjectAlpha"]);
+    assert_eq!(list["loops"][0]["id"], "accumulating-loop");
+    assert_eq!(list["loops"][0]["sessionStart"], "accumulate");
+}
+
+/// AC-6 - create without the flag. This is the binary-level proof of the whole
+/// epic's `Fresh` default, so it passes no `--session-start` at all.
+#[test]
+fn loop_create_without_the_flag_defaults_to_fresh() {
+    let tmp = Tmp::new("cli-loop-session-start-default");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    project_with_verified_coordinator(tmp.path());
+
+    let created = run_json(
+        &bin,
+        &[
+            "loop",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--name",
+            "Default Loop",
+            "--cron",
+            "0 10 * * *",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--prompt",
+            "Summarize status",
+        ],
+    );
+    assert_eq!(created["summary"]["sessionStart"], "fresh");
+
+    let list = run_json(&bin, &["loop", "list", "--project", "ProjectAlpha"]);
+    assert_eq!(list["loops"][0]["id"], "default-loop");
+    assert_eq!(list["loops"][0]["sessionStart"], "fresh");
+}
+
+/// AC-7 - omitted means leave unchanged, and an explicit value changes it.
+#[test]
+fn loop_update_leaves_session_start_untouched_unless_given() {
+    let tmp = Tmp::new("cli-loop-session-start-update");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    project_with_verified_coordinator(tmp.path());
+
+    run_json(
+        &bin,
+        &[
+            "loop",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--name",
+            "Accumulating Loop",
+            "--cron",
+            "0 9 * * *",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--prompt",
+            "Summarize status",
+            "--session-start",
+            "accumulate",
+        ],
+    );
+
+    // An update that mentions only --name must not rewrite the field.
+    let renamed = run_json(
+        &bin,
+        &[
+            "loop",
+            "update",
+            "--project",
+            "ProjectAlpha",
+            "--loop",
+            "accumulating-loop",
+            "--name",
+            "Renamed Loop",
+        ],
+    );
+    assert_eq!(renamed["summary"]["name"], "Renamed Loop");
+    assert_eq!(renamed["summary"]["sessionStart"], "accumulate");
+
+    let flipped = run_json(
+        &bin,
+        &[
+            "loop",
+            "update",
+            "--project",
+            "ProjectAlpha",
+            "--loop",
+            "accumulating-loop",
+            "--session-start",
+            "fresh",
+        ],
+    );
+    assert_eq!(flipped["summary"]["sessionStart"], "fresh");
+
+    let list = run_json(&bin, &["loop", "list", "--project", "ProjectAlpha"]);
+    assert_eq!(list["loops"][0]["sessionStart"], "fresh");
+}
+
+/// AC-8 - an unrecognized value is a clap error naming the accepted values.
+#[test]
+fn loop_create_rejects_an_unknown_session_start_value() {
+    let tmp = Tmp::new("cli-loop-session-start-invalid");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    project_with_verified_coordinator(tmp.path());
+
+    let error = run_fail(
+        &bin,
+        &[
+            "loop",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--name",
+            "Bad Session Start",
+            "--cron",
+            "0 9 * * *",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--prompt",
+            "Summarize status",
+            "--session-start",
+            "resume",
+        ],
+    );
+    assert!(
+        error.contains("fresh"),
+        "stderr must list `fresh`:\n{error}"
+    );
+    assert!(
+        error.contains("accumulate"),
+        "stderr must list `accumulate`:\n{error}"
+    );
 }
