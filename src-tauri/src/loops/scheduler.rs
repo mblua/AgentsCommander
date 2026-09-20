@@ -303,6 +303,7 @@ impl LoopScheduler {
                 target: None,
                 session_id: None,
                 busy_coordinator_policy: config.policy.busy_coordinator.clone(),
+                session_start: Some(config.policy.session_start),
                 error: None,
                 prompt_snapshot: None,
             },
@@ -357,6 +358,7 @@ impl LoopScheduler {
                 target: None,
                 session_id: None,
                 busy_coordinator_policy: config.policy.busy_coordinator.clone(),
+                session_start: Some(config.policy.session_start),
                 error: None,
                 prompt_snapshot: None,
             },
@@ -429,6 +431,7 @@ impl LoopScheduler {
                 target: report.target.clone(),
                 session_id: report.session_id,
                 busy_coordinator_policy: config.policy.busy_coordinator.clone(),
+                session_start: Some(config.policy.session_start),
                 error: report.error.clone(),
                 prompt_snapshot: report.prompt_snapshot.clone(),
             },
@@ -867,5 +870,140 @@ mod tests {
             revalidate_loop_current(&dir, &config).expect("gone"),
             LoopConfigRevalidation::Gone
         );
+    }
+
+    /// AC-17 fixture - the only app these writers need. They reach
+    /// `append_loop_audit_once`, `write_loop_state_atomic` and
+    /// `emit_transition`, and `emit_loop_change` only calls `app.emit`, which
+    /// is infallible here, so no managed state is required.
+    fn audit_writer_app() -> tauri::App {
+        crate::test_support::test_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build audit writer app")
+    }
+
+    /// AC-17 test 1 - the coalesced-pending writer records the run's real
+    /// `sessionStart`. Every config field is set BEFORE `write_loop_config`:
+    /// the writer revalidates against the file first, so a later edit would
+    /// read `Changed` and no audit row would be written at all.
+    #[tokio::test]
+    async fn records_session_start_on_a_coalesced_pending_run() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let ac_root = project_dir.join(".ac");
+        let mut config = sample_config();
+        config.policy.session_start = crate::config::loops::LoopSessionStart::Accumulate;
+        config.trigger.expr = "* * * * *".to_string();
+        let dir = write_loop_config(&ac_root, &config).expect("write config");
+
+        let app = audit_writer_app();
+        let scheduler = LoopScheduler::new();
+        let mut state = LoopState {
+            pending_due_at: Some(Utc::now() - chrono::Duration::minutes(30)),
+            pending_run_id: Some(Uuid::new_v4()),
+            ..LoopState::default()
+        };
+
+        scheduler
+            .maybe_coalesce_pending(app.handle(), &project_dir, &dir, &config, &mut state)
+            .await
+            .expect("coalesce pending");
+
+        let content = std::fs::read_to_string(dir.join(crate::config::loops::LOOP_AUDIT_FILE))
+            .expect("audit read");
+        let last = content
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .expect("an audit row");
+        let row: serde_json::Value = serde_json::from_str(last).expect("audit row as value");
+        assert_eq!(row["kind"], serde_json::json!("coalescedPending"));
+        assert_eq!(row["sessionStart"], serde_json::json!("accumulate"));
+    }
+
+    /// AC-17 test 2 - the missed-while-closed writer records the real value.
+    #[tokio::test]
+    async fn records_session_start_on_a_missed_while_closed_run() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let ac_root = project_dir.join(".ac");
+        let mut config = sample_config();
+        config.policy.session_start = crate::config::loops::LoopSessionStart::Accumulate;
+        let dir = write_loop_config(&ac_root, &config).expect("write config");
+
+        let app = audit_writer_app();
+        let scheduler = LoopScheduler::new();
+
+        scheduler
+            .record_missed_while_closed(
+                app.handle(),
+                &project_dir,
+                &dir,
+                &config,
+                LoopState::default(),
+                Uuid::new_v4(),
+                Utc::now() - chrono::Duration::hours(1),
+            )
+            .await
+            .expect("record missed while closed");
+
+        let content = std::fs::read_to_string(dir.join(crate::config::loops::LOOP_AUDIT_FILE))
+            .expect("audit read");
+        let last = content
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .expect("an audit row");
+        let row: serde_json::Value = serde_json::from_str(last).expect("audit row as value");
+        assert_eq!(row["kind"], serde_json::json!("missedWhileClosed"));
+        assert_eq!(row["sessionStart"], serde_json::json!("accumulate"));
+    }
+
+    /// AC-17 test 3 - the delivery-report writer records the real value. All
+    /// seven `LoopDeliveryReport` fields are spelled because the struct has no
+    /// `Default`; `completed_at: None` is deliberate.
+    #[tokio::test]
+    async fn records_session_start_on_a_delivery_report() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let ac_root = project_dir.join(".ac");
+        let mut config = sample_config();
+        config.policy.session_start = crate::config::loops::LoopSessionStart::Accumulate;
+        let dir = write_loop_config(&ac_root, &config).expect("write config");
+
+        let app = audit_writer_app();
+        let scheduler = LoopScheduler::new();
+        let now = Utc::now();
+
+        scheduler
+            .apply_delivery_report(
+                app.handle(),
+                &project_dir,
+                &dir,
+                &config,
+                LoopState::default(),
+                LoopDeliveryReport {
+                    kind: LoopAuditKind::Delivered,
+                    message: "delivered".to_string(),
+                    target: None,
+                    session_id: None,
+                    error: None,
+                    prompt_snapshot: None,
+                    completed_at: None,
+                },
+                Uuid::new_v4(),
+                now,
+                now,
+            )
+            .await
+            .expect("apply delivery report");
+
+        let content = std::fs::read_to_string(dir.join(crate::config::loops::LOOP_AUDIT_FILE))
+            .expect("audit read");
+        let last = content
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .expect("an audit row");
+        let row: serde_json::Value = serde_json::from_str(last).expect("audit row as value");
+        assert_eq!(row["kind"], serde_json::json!("delivered"));
+        assert_eq!(row["sessionStart"], serde_json::json!("accumulate"));
     }
 }
