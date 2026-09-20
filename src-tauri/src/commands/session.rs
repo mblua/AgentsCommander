@@ -6473,7 +6473,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct ScriptedSpawnBackend {
+    pub(crate) struct ScriptedSpawnBackend {
         live: Mutex<HashSet<Uuid>>,
         spawned: Mutex<Vec<Uuid>>,
         spawn_count: AtomicUsize,
@@ -6718,13 +6718,13 @@ mod tests {
     }
 
     #[derive(Clone, Copy)]
-    enum SessionTestStoreState {
+    pub(crate) enum SessionTestStoreState {
         Ready,
         Error,
         Missing,
     }
 
-    fn session_test_app_with_store(
+    pub(crate) fn session_test_app_with_store(
         settings: AppSettings,
         session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
         pty_mgr: Arc<Mutex<crate::pty::manager::PtyManager>>,
@@ -6736,9 +6736,16 @@ mod tests {
             shutdown.token().clone(),
         );
         let output_senders = Arc::new(Mutex::new(HashMap::new()));
+        // #2232 phase 4 test 9: the app owns the **single** capture registry and
+        // an outbound network, exactly as `run()` does, so a supervisor-spawned
+        // reader reaches the registry slot and a bot attach can be counted.
+        let captures = Arc::new(crate::capture::registry::CaptureRegistry::new());
         let telegram: crate::telegram::manager::TelegramBridgeState =
             Arc::new(tokio::sync::Mutex::new(
-                crate::telegram::manager::TelegramBridgeManager::new(output_senders),
+                crate::telegram::manager::TelegramBridgeManager::with_captures(
+                    output_senders,
+                    Arc::clone(&captures),
+                ),
             ));
         let store_dir = tempfile::TempDir::new().expect("create target-gate store");
         let message_store = Arc::new(
@@ -6761,6 +6768,8 @@ mod tests {
             .manage(pty_mgr)
             .manage(crate::DetachedSessionsState::default())
             .manage(telegram)
+            .manage(Arc::clone(&captures))
+            .manage(crate::network::OutboundNetwork::new_for_tests(1))
             .manage(crate::session::warnings::new_session_warning_state())
             .manage(Arc::new(crate::pty::menu_guard::MenuGuard::new()))
             .manage(coordinator.clone())
@@ -7019,7 +7028,7 @@ mod tests {
         .await
     }
 
-    async fn create_scripted_session(
+    pub(crate) async fn create_scripted_session(
         app: &tauri::App<tauri::test::MockRuntime>,
         session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
         pty_mgr: &Arc<Mutex<crate::pty::manager::PtyManager>>,
@@ -13273,6 +13282,7 @@ mod tests {
 mod reader_demand_tests {
     use super::co_managed_tests::*;
     use super::*;
+    use crate::capture::key::Cut;
     use crate::capture::registry::CaptureRegistry;
     use crate::network::OutboundNetwork;
     use crate::telegram::manager::{
@@ -13488,72 +13498,536 @@ mod reader_demand_tests {
         assert!(!h.captures.is_open(&orchestrator.to_string()));
     }
 
-    /// Test 9: **restart re-anchors the file and keeps the demand**, asserted on
-    /// the recorded order of calls and not on the end state.
-    ///
-    /// `CaptureRegistry::close` is never called; the demand set is identical
-    /// before and after; the reader is not cancelled and not respawned; the
-    /// session id is the **same** value on both sides, which is what makes the
-    /// round-2 release-then-acquire pair wrong; and the slot reads `Empty` with
-    /// a higher `seq` than before.
+    // ── Test 9: restart re-anchors the file and keeps the demand ──────────
+
+    /// The heavy harness test 9 needs: the existing scripted-session app,
+    /// extended with the shared capture registry and outbound network (the plan
+    /// asks for exactly that), plus a live scripted PTY.
+    struct RestartHarness {
+        app: tauri::App<tauri::test::MockRuntime>,
+        manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        pty: Arc<Mutex<crate::pty::manager::PtyManager>>,
+        captures: Arc<CaptureRegistry>,
+    }
+
+    fn restart_harness() -> RestartHarness {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(crate::commands::session::tests::ScriptedSpawnBackend::default());
+        let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend,
+        )));
+        let app = crate::commands::session::tests::session_test_app_with_store(
+            settings_with_key(),
+            Arc::clone(&manager),
+            Arc::clone(&pty),
+            crate::commands::session::tests::SessionTestStoreState::Ready,
+        );
+        let captures = app.state::<Arc<CaptureRegistry>>().inner().clone();
+        RestartHarness {
+            app,
+            manager,
+            pty,
+            captures,
+        }
+    }
+
+    impl RestartHarness {
+        /// A live scripted session in `cwd` carrying `kind`.
+        async fn live_session(&self, cwd: &std::path::Path, kind: CodingAgentKind) -> Uuid {
+            let info = crate::commands::session::tests::create_scripted_session(
+                &self.app,
+                &self.manager,
+                &self.pty,
+                &cwd.to_string_lossy(),
+            )
+            .await;
+            let id = Uuid::parse_str(&info.id).expect("session id");
+            self.manager
+                .read()
+                .await
+                .set_agent_kind(id, Some(kind))
+                .await;
+            id
+        }
+
+        async fn bridge(&self) -> tauri::State<'_, TelegramBridgeState> {
+            self.app.handle().state::<TelegramBridgeState>()
+        }
+
+        /// Drive the production restart entry point (the innermost of the
+        /// three, so all three inherit it).
+        async fn restart(&self, id: Uuid) -> SessionInfo {
+            let settings = self.app.state::<crate::config::settings::SettingsState>();
+            crate::commands::session::restart_session_inner_with_intent(
+                self.app.handle(),
+                &self.manager,
+                &self.pty,
+                settings.inner(),
+                id,
+                None,
+                None,
+                Some(false),
+                true,
+                TrustedRestartIntent::User,
+                None,
+                crate::config::sessions_persistence::default_creation_gate_enforcement(),
+            )
+            .await
+            .expect("restart succeeds")
+        }
+
+        async fn snapshot(
+            &self,
+            id: Uuid,
+        ) -> (Option<u64>, std::collections::BTreeSet<ReaderConsumer>) {
+            let tg = self.bridge().await;
+            let tg = tg.lock().await;
+            (tg.reader_id(id), tg.reader_demands(id))
+        }
+
+        async fn release_all(&self, id: Uuid) {
+            let shutdown = {
+                let tg = self.bridge().await;
+                let mut tg = tg.lock().await;
+                tg.reader_release_all(id)
+            };
+            if let Some(shutdown) = shutdown {
+                shutdown.abort_now();
+            }
+        }
+    }
+
+    /// One Claude assistant line with an explicit timestamp.
+    fn claude_line(body: &str, ts: chrono::DateTime<chrono::Utc>) -> String {
+        serde_json::json!({
+            "type": "assistant",
+            "timestamp": ts.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "message": {"content": [{"type": "text", "text": body}]}
+        })
+        .to_string()
+    }
+
+    fn append_claude(path: &std::path::Path, body: &str) {
+        use std::io::Write as _;
+        let line = claude_line(body, chrono::Utc::now() - chrono::Duration::seconds(1));
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("append transcript");
+        writeln!(f, "{line}").expect("write transcript line");
+        f.sync_all().expect("sync transcript");
+    }
+
+    /// A >64 KiB Claude transcript whose only assistant record is at the very
+    /// start, far above the 64 KiB tail window (test 9's backfill probe).
+    /// Returns the byte length written.
+    fn large_claude_transcript(path: &std::path::Path, body: &str) -> u64 {
+        use std::io::Write as _;
+        let first = claude_line(body, chrono::Utc::now() - chrono::Duration::seconds(1));
+        let mut f = std::fs::File::create(path).expect("create transcript");
+        writeln!(f, "{first}").expect("first line");
+        let filler = r#"{"type":"user","message":{"content":[{"type":"text","text":"filler"}]}}"#;
+        let mut written = first.len() as u64 + 1;
+        while written < 70 * 1024 {
+            writeln!(f, "{filler}").expect("filler line");
+            written += filler.len() as u64 + 1;
+        }
+        f.sync_all().expect("sync transcript");
+        written
+    }
+
+    fn append_codex(path: &std::path::Path, body: &str) {
+        use std::io::Write as _;
+        let line = serde_json::json!({
+            "timestamp": (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": body}]
+            }
+        })
+        .to_string();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("append rollout");
+        writeln!(f, "{line}").expect("write rollout line");
+        f.sync_all().expect("sync rollout");
+    }
+
+    /// Poll the slot until it holds a record the predicate accepts.
+    async fn wait_for_slot_record(
+        slot: &crate::capture::sink::CaptureSlot,
+        timeout: std::time::Duration,
+        mut accept: impl FnMut(&Arc<crate::capture::record::CapturedRecord>) -> bool,
+    ) -> (u64, Arc<crate::capture::record::CapturedRecord>) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let state = slot.snapshot();
+            if let crate::capture::sink::SlotValue::Valid(record) = state.value {
+                if accept(&record) {
+                    return (state.seq, record);
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no matching slot record within the budget"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Test 9 (Claude, different transcript): drive
+    /// `restart_session_inner_with_intent` with a live reader. The demand set,
+    /// reader identity and registry slot survive; the transcript is
+    /// re-anchored and a >64 KiB new file is read from byte zero as
+    /// `RotationBackfill`, so a record above the tail window is not lost.
     #[tokio::test]
-    async fn a_restart_reanchors_the_file_and_keeps_the_demand() {
+    async fn a_restart_reanchors_a_new_claude_transcript_as_rotation_backfill() {
+        use crate::capture::sink::SlotValue;
+
         let fixture = room_fixture();
         configure_room(fixture.room_path(), true);
-        let h = harness(&fixture);
-        let orchestrator = h.session_in(fixture.coordinator_path()).await;
-        assert!(
-            raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), orchestrator).await
-        );
+        let h = restart_harness();
+        let id = h
+            .live_session(fixture.coordinator_path(), CodingAgentKind::Claude)
+            .await;
+        let projects = fixture.temp_path().join("claude-projects");
+        std::fs::create_dir_all(&projects).expect("projects dir");
+        h.manager
+            .read()
+            .await
+            .set_resolved_claude_projects_dir(id, Some(projects.clone()))
+            .await;
 
-        let key = orchestrator.to_string();
+        // The reader binds to the old file and emits one live record.
+        let old_path = projects.join("old.jsonl");
+        std::fs::write(
+            &old_path,
+            format!(
+                "{}\n",
+                claude_line(
+                    "old preamble",
+                    chrono::Utc::now() - chrono::Duration::seconds(1)
+                )
+            ),
+        )
+        .expect("old transcript");
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), id).await);
+        append_claude(&old_path, "old live");
+        let key = id.to_string();
         let slot = h.captures.slot(&key).expect("endpoints open");
-        // A candidate captured before the restart.
-        slot.invalidate("pre-restart");
+        let (_, pre_record) =
+            wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
+                r.text == "old live"
+            })
+            .await;
+
+        // A pre-restart clone with `seq > 0` and a cut with a sequence
+        // tie-break: both are observable across the restart.
+        let pre_clone = slot.clone();
+        pre_clone.invalidate("pre-restart");
         let seq_before = slot.seq();
-        let (id_before, demands_before) = {
-            let tg = h.bridge().await;
-            let tg = tg.lock().await;
-            (tg.reader_id(orchestrator), tg.reader_demands(orchestrator))
-        };
+        slot.set_cut(Cut {
+            path: pre_record.observed_path.clone(),
+            epoch: pre_record.epoch,
+            len: pre_record.observed_len,
+            reader_seq: Some(pre_record.reader_seq),
+        });
+        let (id_before, demands_before) = h.snapshot(id).await;
 
-        // The re-anchor signal `restart_session_inner_with_intent` sends. The
-        // session id is the same value on both sides: AC preserves the UUID.
-        crate::commands::telegram::reanchor_reader(h.app.handle(), orchestrator).await;
+        // The restarted run writes a new, >64 KiB transcript whose only
+        // assistant record sits above the 64 KiB tail window.
+        let new_path = projects.join("new.jsonl");
+        let new_len = large_claude_transcript(&new_path, "before the tail");
 
-        let (id_after, demands_after, running) = {
-            let tg = h.bridge().await;
-            let tg = tg.lock().await;
-            (
-                tg.reader_id(orchestrator),
-                tg.reader_demands(orchestrator),
-                tg.reader_is_running(orchestrator),
-            )
-        };
-        assert!(running, "the reader is neither cancelled nor respawned");
+        h.restart(id).await;
+
+        let (id_after, demands_after) = h.snapshot(id).await;
         assert_eq!(id_after, id_before, "the same reader, not a new one");
         assert_eq!(demands_after, demands_before, "the demand set is untouched");
         assert!(
             h.captures.is_open(&key),
             "CaptureRegistry::close is never called on a restart"
         );
-        assert!(
-            matches!(
-                slot.snapshot().value,
-                crate::capture::sink::SlotValue::Empty
-            ),
-            "the slot is cleared, so a pre-restart candidate cannot be consumed after it"
+        assert!(matches!(slot.snapshot().value, SlotValue::Empty));
+        assert!(slot.seq() > seq_before, "the slot gets a fresh seq");
+        // The pre-restart clone still observes the registry slot: `close` plus
+        // `open` would have produced a different slot.
+        pre_clone.invalidate("post-restart clone probe");
+        assert_eq!(slot.snapshot().seq, pre_clone.snapshot().seq);
+        assert!(matches!(slot.snapshot().value, SlotValue::Invalid(_)));
+        // The sequence tie-break is superseded before the first new record.
+        assert_eq!(
+            slot.cut().expect("cut registered").reader_seq,
+            None,
+            "the cut's sequence part is superseded at re-anchor"
         );
-        assert!(slot.seq() > seq_before, "with a fresh seq");
 
-        let shutdown = {
-            let tg = h.bridge().await;
-            let mut tg = tg.lock().await;
-            tg.reader_release_all(orchestrator)
-        };
-        if let Some(shutdown) = shutdown {
-            shutdown.abort_now();
+        let (_, record) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "before the tail"
+        })
+        .await;
+        assert_eq!(
+            record.origin,
+            crate::capture::record::RecordOrigin::RotationBackfill,
+            "a different path reads from byte zero as backfill"
+        );
+        assert_eq!(record.epoch, 0, "the new path's in-memory epoch");
+        assert_eq!(record.observed_path, new_path);
+        assert_eq!(record.observed_len, new_len);
+
+        h.release_all(id).await;
+    }
+
+    /// Test 9 (Claude, same transcript): a restart that resolves the same path
+    /// keeps the offset, so old content is not resent and the appended record
+    /// arrives `Live` with the same in-memory epoch.
+    #[tokio::test]
+    async fn a_restart_into_the_same_claude_path_keeps_the_offset_and_never_resends() {
+        use crate::capture::sink::SlotValue;
+
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness();
+        let id = h
+            .live_session(fixture.coordinator_path(), CodingAgentKind::Claude)
+            .await;
+        let projects = fixture.temp_path().join("claude-projects");
+        std::fs::create_dir_all(&projects).expect("projects dir");
+        h.manager
+            .read()
+            .await
+            .set_resolved_claude_projects_dir(id, Some(projects.clone()))
+            .await;
+
+        let path = projects.join("session.jsonl");
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                claude_line(
+                    "old preamble",
+                    chrono::Utc::now() - chrono::Duration::seconds(1)
+                )
+            ),
+        )
+        .expect("transcript");
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), id).await);
+        append_claude(&path, "old live");
+        let key = id.to_string();
+        let slot = h.captures.slot(&key).expect("endpoints open");
+        let (_, old_record) =
+            wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
+                r.text == "old live"
+            })
+            .await;
+        let epoch_before = old_record.epoch;
+        let len_before = old_record.observed_len;
+
+        let seq_before = slot.seq();
+        let (id_before, demands_before) = h.snapshot(id).await;
+        h.restart(id).await;
+        // Give the watcher time to process the re-anchor before appending: the
+        // old code dropped the binding here and re-ran the §J tail scan, which
+        // would publish a duplicate `Preamble`.
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        assert!(
+            matches!(slot.snapshot().value, SlotValue::Empty),
+            "the same path must not resend old content through a tail scan"
+        );
+        let (id_after, demands_after) = h.snapshot(id).await;
+        assert_eq!(id_after, id_before, "the same reader, not a new one");
+        assert_eq!(demands_after, demands_before, "the demand set is untouched");
+        assert!(h.captures.is_open(&key));
+        assert!(slot.seq() > seq_before);
+
+        append_claude(&path, "new live");
+        let (_, record) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "new live"
+        })
+        .await;
+        assert_eq!(record.origin, crate::capture::record::RecordOrigin::Live);
+        assert_eq!(
+            record.epoch, epoch_before,
+            "the same path keeps its in-memory epoch"
+        );
+        assert!(
+            record.record_start.expect("live record") >= len_before,
+            "only appended bytes may be read after a same-path re-anchor"
+        );
+
+        h.release_all(id).await;
+    }
+
+    /// Test 9 (Codex): a restart re-resolves with a fresh search time; the same
+    /// rollout path keeps its offset, so an appended record is `Live` with the
+    /// same in-memory epoch and the cut's sequence part stays superseded.
+    #[tokio::test]
+    async fn a_codex_restart_keeps_the_offset_and_the_cut() {
+        use crate::capture::sink::SlotValue;
+        use std::io::Write as _;
+
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness();
+        let id = h
+            .live_session(fixture.coordinator_path(), CodingAgentKind::Codex)
+            .await;
+        let home = fixture.temp_path().join("codex-home");
+        h.manager
+            .read()
+            .await
+            .set_profile_metadata(
+                id,
+                None,
+                None,
+                Vec::new(),
+                false,
+                Some(home.to_string_lossy().to_string()),
+                None,
+            )
+            .await;
+
+        let now = chrono::Utc::now();
+        let day = home
+            .join("sessions")
+            .join(format!("{:04}", now.format("%Y")))
+            .join(format!("{:02}", now.format("%m")))
+            .join(format!("{:02}", now.format("%d")));
+        std::fs::create_dir_all(&day).expect("codex day dir");
+        let path = day.join("rollout-restart.jsonl");
+        let cwd = fixture.coordinator_path().to_string_lossy().to_string();
+        let meta = serde_json::json!({
+            "timestamp": now.to_rfc3339(),
+            "type": "session_meta",
+            "payload": {"id": "codex-restart", "cwd": cwd, "timestamp": now.to_rfc3339()}
+        });
+        let first = serde_json::json!({
+            "timestamp": (now - chrono::Duration::seconds(1)).to_rfc3339(),
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "codex old"}]
+            }
+        });
+        {
+            let mut f = std::fs::File::create(&path).expect("rollout");
+            writeln!(f, "{meta}").unwrap();
+            writeln!(f, "{first}").unwrap();
+            f.sync_all().unwrap();
         }
+
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), id).await);
+        let key = id.to_string();
+        let slot = h.captures.slot(&key).expect("endpoints open");
+        wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "codex old"
+        })
+        .await;
+        append_codex(&path, "codex live one");
+        let (_, one) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "codex live one"
+        })
+        .await;
+        assert_eq!(one.origin, crate::capture::record::RecordOrigin::Live);
+        let epoch_before = one.epoch;
+        let len_before = one.observed_len;
+
+        let seq_before = slot.seq();
+        slot.set_cut(Cut {
+            path: one.observed_path.clone(),
+            epoch: one.epoch,
+            len: one.observed_len,
+            reader_seq: Some(one.reader_seq),
+        });
+        let (id_before, demands_before) = h.snapshot(id).await;
+        h.restart(id).await;
+        let (id_after, demands_after) = h.snapshot(id).await;
+        assert_eq!(id_after, id_before, "the same reader, not a new one");
+        assert_eq!(demands_after, demands_before, "the demand set is untouched");
+        assert!(h.captures.is_open(&key));
+        assert!(matches!(slot.snapshot().value, SlotValue::Empty));
+        assert!(slot.seq() > seq_before);
+        assert_eq!(
+            slot.cut().expect("cut registered").reader_seq,
+            None,
+            "the cut's sequence part is superseded at re-anchor"
+        );
+
+        // Fresh search time, same path: the offset is retained, so only the
+        // appended record arrives and the in-memory epoch is unbroken.
+        append_codex(&path, "codex live two");
+        let (_, two) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "codex live two"
+        })
+        .await;
+        assert_eq!(two.origin, crate::capture::record::RecordOrigin::Live);
+        assert_eq!(two.epoch, epoch_before);
+        assert!(
+            two.record_start.expect("live record") >= len_before,
+            "the same path must not replay consumed bytes"
+        );
+
+        h.release_all(id).await;
+    }
+
+    /// Test 19: **create/destroy race.** The detached create-time Room raise is
+    /// paused after eligibility resolution; destroying the session during that
+    /// pause leaves no reader task, no demand and no open capture slot.
+    #[tokio::test]
+    async fn a_destroy_during_the_detached_room_raise_leaves_no_reader_state() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        let key = id.to_string();
+
+        let barrier = crate::commands::telegram::reader_demand_seam::install_before_install(&key);
+        let app = h.app.handle().clone();
+        let room = fixture.room_path().to_path_buf();
+        let raise = tokio::spawn(async move { raise_room_reader_demand_in(&app, &room, id).await });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            barrier.reached.notified(),
+        )
+        .await
+        .expect("the detached raise reaches the pause seam");
+
+        // Destroy wins the race while the raise is paused, exactly as the
+        // production destroy path does: remove the row, then release the
+        // session's demands.
+        h.manager
+            .read()
+            .await
+            .destroy_session(id)
+            .await
+            .expect("destroy session");
+        crate::commands::telegram::release_all_reader_demands(h.app.handle(), id).await;
+
+        barrier.release.notify_one();
+        let raised = tokio::time::timeout(std::time::Duration::from_secs(10), raise)
+            .await
+            .expect("the raise resumes")
+            .expect("the raise task joins");
+        assert!(
+            !raised,
+            "a raise whose session died must not leave a running reader"
+        );
+
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(!tg.reader_is_running(id), "the reader is discarded");
+            assert!(tg.reader_demands(id).is_empty(), "no demand remains");
+        }
+        assert!(!h.captures.is_open(&key), "the capture slot is closed");
+        assert!(h.captures.slot(&key).is_none());
     }
 }
 
