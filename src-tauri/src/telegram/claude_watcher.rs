@@ -16,9 +16,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use crate::capture::key::{classify_observation, extend_observation, FileObservation};
+use crate::capture::key::{ReaderAttachment, ReaderObservations};
 use crate::capture::record::{CaptureProvider, CapturedRecord, RecordOrigin};
-use crate::capture::state::{observation_prefix, OBSERVED_PREFIX_CAP};
+use crate::capture::state::head_from_lines;
 use crate::network::OutboundNetwork;
 use crate::telegram::jsonl_kernel::{
     find_latest_jsonl, read_new_lines_with_starts, read_preamble_for_race, POLL_INTERVAL_MS,
@@ -130,88 +130,6 @@ fn extract_assistant_text(line: &str) -> Option<String> {
     extract_assistant_text_with_turn(line).map(|(text, _)| text)
 }
 
-/// #2232 phase 3: what the reader knows about the file it just read, carried on
-/// every record it emits.
-///
-/// The watcher takes **no lock, performs no disk write and reads no**
-/// `state.json`: the observation is built from bytes it has already read, and
-/// `capture::state` evaluates the persisted epoch predicate off this thread. A
-/// watcher whose sender is `None` computes none of it, so a room without the
-/// flag performs zero additional syscalls per poll and the Telegram cadence is
-/// unchanged.
-#[derive(Clone, Debug, Default)]
-struct CaptureAttachment {
-    epoch: u64,
-    observed_path: PathBuf,
-    observed_len: u64,
-    observed_prefix: Vec<u8>,
-}
-
-/// The reader's own per-file epoch, kept in memory for this reader's lifetime.
-///
-/// Returning to a file read earlier recovers its epoch, so moving between files
-/// never advances one. The authoritative, persisted epoch is
-/// [`crate::capture::state::observe`], evaluated by the supervisor from the
-/// three observation fields this attaches; this local view exists so the record
-/// carries a real epoch instead of phase 1's hardcoded `0`.
-///
-/// The cut of section 7 is **not** applied here: it is a property of a consumer
-/// demand, so the sink applies it (`capture::sink::CaptureSlot::offer`) and the
-/// supervisor supersedes its sequence tie-break at reader start and at every
-/// re-anchor.
-#[derive(Debug, Default)]
-struct CaptureObserver {
-    files: std::collections::HashMap<PathBuf, (u64, FileObservation)>,
-}
-
-impl CaptureObserver {
-    /// Record one observation and return the attachment for the records it
-    /// produced. `head` carries the file's first bytes only when the read
-    /// actually covered offset 0; otherwise there is no prefix evidence and
-    /// length alone decides, which is exactly what `classify_observation`
-    /// specifies for a zero-length shared range.
-    fn observe(&mut self, path: &Path, len: u64, head: &[u8]) -> CaptureAttachment {
-        let current = FileObservation::new(len, observation_prefix(head));
-        let entry = self
-            .files
-            .entry(path.to_path_buf())
-            .or_insert_with(|| (0, current.clone()));
-        if classify_observation(&entry.1, &current).advances_epoch() {
-            entry.0 += 1;
-            entry.1 = current;
-        } else {
-            extend_observation(&mut entry.1, &current);
-        }
-        CaptureAttachment {
-            epoch: entry.0,
-            observed_path: path.to_path_buf(),
-            observed_len: entry.1.len,
-            observed_prefix: entry.1.prefix.clone(),
-        }
-    }
-}
-
-/// Rebuild the head of the file from lines the reader already holds, capped at
-/// [`OBSERVED_PREFIX_CAP`].
-///
-/// Only a read that started at offset 0 carries head evidence, and only the
-/// lines that begin inside the cap contribute. This is a fingerprint built from
-/// bytes already in hand; it never reads the file a second time.
-fn head_from_lines(lines: &[(u64, String)], read_start: u64) -> Vec<u8> {
-    if read_start > 0 {
-        return Vec::new();
-    }
-    let mut head = Vec::new();
-    for (start, line) in lines {
-        if usize::try_from(*start).unwrap_or(usize::MAX) >= OBSERVED_PREFIX_CAP {
-            break;
-        }
-        head.extend_from_slice(line.as_bytes());
-        head.push(b'\n');
-    }
-    observation_prefix(&head)
-}
-
 /// Build one [`CapturedRecord`] for an accepted assistant record.
 ///
 /// `reader_seq` is a per-reader counter starting at 0: the record keeps the
@@ -231,7 +149,7 @@ fn capture_record(
     session_id: &str,
     file: &Path,
     reader_seq: &mut u64,
-    attach: &CaptureAttachment,
+    attach: &ReaderAttachment,
 ) -> Arc<CapturedRecord> {
     let turn_identified = turn_id.is_some();
     let text_sha256: [u8; 32] = Sha256::digest(text.as_bytes()).into();
@@ -284,7 +202,7 @@ fn capture_live_lines(
     reader_seq: &mut u64,
     sender: Option<&UnboundedSender<Arc<CapturedRecord>>>,
     origin: RecordOrigin,
-    attach: &CaptureAttachment,
+    attach: &ReaderAttachment,
 ) -> Vec<Arc<CapturedRecord>> {
     let mut records = Vec::new();
     for (record_start, line) in new_lines {
@@ -316,7 +234,7 @@ fn capture_preamble_bodies(
     file: &Path,
     reader_seq: &mut u64,
     sender: Option<&UnboundedSender<Arc<CapturedRecord>>>,
-    attach: &CaptureAttachment,
+    attach: &ReaderAttachment,
 ) -> Vec<Arc<CapturedRecord>> {
     let mut records = Vec::new();
     for text in bodies {
@@ -360,7 +278,7 @@ async fn watch_loop<R: tauri::Runtime>(
     // #2232 phase 3: the reader's own epoch and file observation. Both are
     // computed only when a sink is attached, so a room without the flag keeps
     // the pre-#2232 syscall count.
-    let mut observer = CaptureObserver::default();
+    let mut observer = ReaderObservations::default();
     // The first sweep of a rotated transcript is a backfill, not a live turn
     // (section 8.3). Declared divergence: Telegram does send that content
     // today, so a legitimate first turn can be suppressed downstream.
@@ -424,9 +342,9 @@ async fn watch_loop<R: tauri::Runtime>(
                                         // carries no head evidence: length
                                         // alone decides the epoch here.
                                         let attach = if capture_tx.is_some() {
-                                            observer.observe(p, file_len, &[])
+                                            observer.observe(p, file_len, Vec::new())
                                         } else {
-                                            CaptureAttachment::default()
+                                            ReaderAttachment::default()
                                         };
                                         for record in capture_preamble_bodies(
                                             bodies,
@@ -477,9 +395,9 @@ async fn watch_loop<R: tauri::Runtime>(
                         Ok(new_lines) => {
                             let attach = if capture_tx.is_some() {
                                 let head = head_from_lines(&new_lines, read_start);
-                                observer.observe(path, file_offset, &head)
+                                observer.observe(path, file_offset, head)
                             } else {
-                                CaptureAttachment::default()
+                                ReaderAttachment::default()
                             };
                             let origin = if rotation_backfill_pending && !new_lines.is_empty() {
                                 rotation_backfill_pending = false;
@@ -544,9 +462,9 @@ async fn watch_loop<R: tauri::Runtime>(
         {
             let attach = if capture_tx.is_some() {
                 let head = head_from_lines(&new_lines, read_start);
-                observer.observe(path, file_offset, &head)
+                observer.observe(path, file_offset, head)
             } else {
-                CaptureAttachment::default()
+                ReaderAttachment::default()
             };
             let origin = if rotation_backfill_pending && !new_lines.is_empty() {
                 RecordOrigin::RotationBackfill
@@ -605,7 +523,7 @@ mod tests {
             &mut reader_seq,
             None,
             RecordOrigin::Live,
-            &CaptureAttachment::default(),
+            &ReaderAttachment::default(),
         )
     }
 

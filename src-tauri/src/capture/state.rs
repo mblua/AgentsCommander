@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::capture::key::{
     classify_observation, extend_observation, ConsumptionKey, Cut, FileObservation,
 };
-use crate::capture::record::CaptureProvider;
+use crate::capture::record::{CaptureProvider, CapturedRecord, RecordOrigin};
 use crate::capture::sink::CaptureSlot;
 use crate::config::co_managed::{co_managed_dir, lock_path};
 
@@ -76,6 +76,76 @@ pub fn observation_prefix(bytes: &[u8]) -> Vec<u8> {
     bytes[..bytes.len().min(OBSERVED_PREFIX_CAP)].to_vec()
 }
 
+/// Rebuild the head of a file from lines the reader already holds, capped at
+/// [`OBSERVED_PREFIX_CAP`].
+///
+/// **This reconstruction is the only permitted source of an observation
+/// prefix**, and the pin is not cosmetic. What comes back is each accepted line
+/// followed by one `\n`, which is *not* the file's true first bytes: a `\r\n`
+/// file, or one whose head the reader never saw, reconstructs differently.
+/// Every producer using this one function stays self-consistent, so
+/// [`classify_observation`] compares like with like and is correct. The day any
+/// producer supplies true file bytes instead, the two prefixes differ over the
+/// shared range, the verdict flips to `Replaced`, the epoch advances
+/// spuriously, and every watermark for that path is invalidated. Mixing the two
+/// sources is therefore forbidden; `prefix_source_is_the_reconstruction_only`
+/// is the executable form of this rule.
+///
+/// Only a read that started at offset 0 carries head evidence, and only the
+/// lines that begin inside the cap contribute. This never reads the file again.
+pub fn head_from_lines(lines: &[(u64, String)], read_start: u64) -> Vec<u8> {
+    if read_start > 0 {
+        return Vec::new();
+    }
+    let mut head = Vec::new();
+    for (start, line) in lines {
+        if usize::try_from(*start).unwrap_or(usize::MAX) >= OBSERVED_PREFIX_CAP {
+            break;
+        }
+        head.extend_from_slice(line.as_bytes());
+        head.push(b'\n');
+    }
+    observation_prefix(&head)
+}
+
+/// Is this record a baseline that is consumed but **never routed** (section 8)?
+///
+/// Two of section 8's three baselines are properties of the record itself and
+/// are decided here:
+///
+/// 1. **Preamble**: the §J first-attach scan replays what was already on screen
+///    before the reader existed.
+/// 3. **Rotation backfill**: the Claude reader reads a rotated transcript from
+///    zero, so its first sweep is history, not a new turn. **Declared
+///    divergence**: Telegram does send that content today, so a legitimate
+///    first turn can be suppressed. Deliberate, recorded in `epic.md` 5.1.
+///
+/// The second baseline, the cut, is a property of a consumer demand rather than
+/// of a record, so the sink applies it before the record ever reaches the slot.
+pub fn is_baseline(record: &CapturedRecord) -> bool {
+    matches!(
+        record.origin,
+        RecordOrigin::Preamble | RecordOrigin::RotationBackfill
+    )
+}
+
+/// The authoritative [`ConsumptionKey`] for `record`.
+///
+/// **Phase 7 must build keys through this function, never from
+/// `record.epoch`.** The epoch the watcher stamped on the record is its own
+/// reader-local counter, which restarts at zero with the reader; the persisted
+/// epoch lives here and survives restarts. A key built from the advisory value
+/// would miss the recent set after any restart, and a consumed record would be
+/// acted on a second time.
+pub fn consumption_key(room_root: &Path, record: &CapturedRecord) -> ConsumptionKey {
+    let epoch = observe(
+        room_root,
+        &record.file,
+        FileObservation::new(record.observed_len, record.observed_prefix.clone()),
+    );
+    ConsumptionKey::from_record(record, epoch)
+}
+
 /// What `commit_effect` was asked to do. The text-to-user channel is a real
 /// effect that must be marked consumed, but it does not spend budget.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,12 +189,18 @@ impl EffectPreconditions {
 }
 
 /// What a successful commit reserved.
+///
+/// `routable` is the section 8 answer and the supervisor **must** read it: a
+/// baseline is consumed so it can never be offered again, but it is never acted
+/// on. A commit with `routable == false` spends no budget.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommittedEffect {
     pub session_id: String,
     pub key: ConsumptionKey,
     pub budget_remaining: u32,
     pub kind: EffectKind,
+    /// False for a baseline that is consumed but never routed (section 8).
+    pub routable: bool,
 }
 
 /// Why a commit took nothing.
@@ -171,42 +247,46 @@ struct PersistedRoomState {
     epochs: HashMap<String, EpochEntry>,
     watermarks: HashMap<String, u64>,
     recent: HashMap<String, Vec<ConsumptionKey>>,
+    /// The remaining budget, written for a human reading the file. The
+    /// authoritative value is [`PersistedRoomState::spends`].
     budget: Option<u32>,
+    /// Automatic actions spent since the recharge named by `recharge_stamp`.
+    spends_since_recharge: Option<u32>,
     /// Monotonic counter of recharges, used to reconcile an in-memory recharge
     /// against a `state.json` written by another instance.
     recharge_stamp: u64,
     cut: Option<Cut>,
 }
 
-#[derive(Debug)]
+impl PersistedRoomState {
+    /// The spend count, falling back to one derived from `budget` for a file
+    /// written before the field existed or edited by hand.
+    fn spends(&self) -> u32 {
+        self.spends_since_recharge.unwrap_or_else(|| {
+            BUDGET_CAP.saturating_sub(self.budget.unwrap_or(BUDGET_CAP).min(BUDGET_CAP))
+        })
+    }
+}
+
+// Derivable now that the budget is a spend count: every field's zero value is
+// its correct initial state, including `spends_since_recharge: 0`, which means
+// a full budget.
+#[derive(Debug, Default)]
 struct RoomState {
     epochs: HashMap<PathBuf, EpochEntry>,
     watermarks: HashMap<PathBuf, u64>,
     recent: HashMap<String, VecDeque<ConsumptionKey>>,
-    budget: u32,
+    /// Automatic actions spent since the last recharge, **not** a remaining
+    /// count. Storing the spend rather than the remainder is what lets
+    /// [`reconcile`] merge two instances without losing either a recharge or a
+    /// decrement: both are monotonic within one recharge generation.
+    spends_since_recharge: u32,
     recharge_stamp: u64,
     cut: Option<Cut>,
     dirty: bool,
     loaded: bool,
     last_flush: Option<Instant>,
     flush_scheduled: bool,
-}
-
-impl Default for RoomState {
-    fn default() -> Self {
-        Self {
-            epochs: HashMap::new(),
-            watermarks: HashMap::new(),
-            recent: HashMap::new(),
-            budget: BUDGET_CAP,
-            recharge_stamp: 0,
-            cut: None,
-            dirty: false,
-            loaded: false,
-            last_flush: None,
-            flush_scheduled: false,
-        }
-    }
 }
 
 impl RoomState {
@@ -227,13 +307,15 @@ impl RoomState {
                 .iter()
                 .map(|(session, keys)| (session.clone(), keys.iter().cloned().collect()))
                 .collect(),
-            budget: Some(self.budget),
+            budget: Some(self.budget()),
+            spends_since_recharge: Some(self.spends_since_recharge),
             recharge_stamp: self.recharge_stamp,
             cut: self.cut.clone(),
         }
     }
 
     fn adopt(&mut self, persisted: PersistedRoomState) {
+        let spends = persisted.spends();
         self.epochs = persisted
             .epochs
             .into_iter()
@@ -249,9 +331,22 @@ impl RoomState {
             .into_iter()
             .map(|(session, keys)| (session, keys.into_iter().collect()))
             .collect();
-        self.budget = persisted.budget.unwrap_or(BUDGET_CAP).min(BUDGET_CAP);
+        self.spends_since_recharge = spends;
         self.recharge_stamp = persisted.recharge_stamp;
-        self.cut = persisted.cut;
+        // A restored cut keeps its file, epoch and length, but **never** its
+        // sequence tie-break: the reader that produced those sequences is gone,
+        // and a fresh reader starts at `reader_seq == 0`, so a surviving
+        // comparison would ignore everything it produces. This is the same
+        // supersession the reader performs at every re-anchor, applied at load.
+        self.cut = persisted.cut.map(|mut cut| {
+            cut.supersede_sequence();
+            cut
+        });
+    }
+
+    /// Remaining automatic actions, derived from the spend count.
+    fn budget(&self) -> u32 {
+        BUDGET_CAP.saturating_sub(self.spends_since_recharge)
     }
 
     fn remember(&mut self, session_id: &str, key: ConsumptionKey) {
@@ -447,7 +542,7 @@ pub fn cut(room_root: &Path) -> Option<Cut> {
 // ---------------------------------------------------------------------------
 
 pub fn budget(room_root: &Path) -> u32 {
-    with_room(room_root, |room| room.budget)
+    with_room(room_root, |room| room.budget())
 }
 
 /// Recharge the room's budget back to the cap, in memory only.
@@ -458,7 +553,7 @@ pub fn budget(room_root: &Path) -> u32 {
 /// flush and [`commit_effect`] reconciles the stamp under its own lock.
 pub fn recharge_in_memory(room_root: &Path) {
     with_room(room_root, |room| {
-        room.budget = BUDGET_CAP;
+        room.spends_since_recharge = 0;
         room.recharge_stamp += 1;
         room.dirty = true;
     });
@@ -710,6 +805,13 @@ pub fn commit_effect(
         return Err(AbstainReason::SlotChanged);
     }
 
+    // Section 8: a baseline is consumed but never routed, so an `Automatic`
+    // request over one is demoted here rather than refused. Refusing would leave
+    // it in the slot to be offered again; consuming it without routing is what
+    // the plan asks for, and it spends no budget.
+    let routable = pre.kind == EffectKind::Automatic && !is_baseline(&candidate);
+    let spends_budget = routable;
+
     // Reconcile against a `state.json` another instance may have written since
     // this room was last touched, then apply step 5 in one section.
     let disk = read_persisted(room_root);
@@ -719,7 +821,7 @@ pub fn commit_effect(
         if room.was_consumed(&pre.session_id, expected_key) {
             return Err(AbstainReason::AlreadyConsumed);
         }
-        if pre.kind == EffectKind::Automatic && room.budget == 0 {
+        if spends_budget && room.budget() == 0 {
             return Err(AbstainReason::BudgetExhausted);
         }
 
@@ -732,18 +834,24 @@ pub fn commit_effect(
             *mark = (*mark).max(start);
         }
         room.remember(&pre.session_id, expected_key.clone());
-        if pre.kind == EffectKind::Automatic {
-            room.budget = room.budget.saturating_sub(1);
+        if spends_budget {
+            room.spends_since_recharge = room.spends_since_recharge.saturating_add(1);
         }
         room.dirty = true;
         Ok(CommittedEffect {
             session_id: pre.session_id.clone(),
             key: expected_key.clone(),
-            budget_remaining: room.budget,
+            budget_remaining: room.budget(),
             kind: pre.kind,
+            routable,
         })
     });
 
+    // Beyond section 9 step 5, deliberately: the step-5 section is in memory,
+    // but "at most once" has to survive a crash between step 5 and step 7, and
+    // an in-memory-only mark does not. So the reservation is published inside
+    // the same lock that took it. The cost is one synchronous, already-bounded
+    // write on the effect path; test 20 is what depends on it.
     if outcome.is_ok() {
         let persisted = with_room(room_root, |room| room.to_persisted());
         if write_state_atomic(room_root, &persisted).is_ok() {
@@ -761,10 +869,30 @@ pub fn commit_effect(
 
 /// Merge a `state.json` written elsewhere into the in-memory room.
 ///
-/// The in-memory recharge wins when its stamp is at least the disk stamp, which
-/// is what makes "a busy lock cannot lose the recharge" true; consumption
-/// evidence from disk is always additive, never dropped.
+/// Watermarks and consumption evidence are additive: the higher watermark and
+/// the union of the recent sets always win, because both only ever say "this
+/// was already acted on".
+///
+/// The budget is merged through the **spend count within a recharge
+/// generation**, not through the remaining count. Comparing remainders cannot
+/// work: whichever side is smaller would have to win to be safe, which loses a
+/// recharge, or whichever is larger, which loses a decrement. With a generation
+/// stamp and a monotonic spend count inside it, both survive:
+///
+/// * a higher disk generation means the other instance recharged after this
+///   one, so its generation and its spends are adopted whole;
+/// * the same generation means both sides are counting the same recharge, so
+///   the larger spend count is the true one;
+/// * a higher in-memory generation means this instance recharged after the
+///   file was written, so the file's spends belong to a superseded generation.
+///
+/// The residual is narrow and multi-instance only: a decrement another instance
+/// makes without having yet seen this instance's recharge lands in the older
+/// generation and is dropped. Closing it needs a shared sequencer, which this
+/// phase does not have.
 fn reconcile(room: &mut RoomState, disk: PersistedRoomState) {
+    let disk_spends = disk.spends();
+    let disk_recharge_stamp = disk.recharge_stamp;
     for (path, mark) in disk.watermarks {
         let path = PathBuf::from(path);
         let entry = room.watermarks.entry(path).or_insert(mark);
@@ -777,13 +905,15 @@ fn reconcile(room: &mut RoomState, disk: PersistedRoomState) {
             }
         }
     }
-    if disk.recharge_stamp > room.recharge_stamp {
-        room.recharge_stamp = disk.recharge_stamp;
-        room.budget = disk.budget.unwrap_or(BUDGET_CAP).min(BUDGET_CAP);
-    } else if room.recharge_stamp == disk.recharge_stamp {
-        // Same recharge generation: the smaller budget is the one that already
-        // accounts for an action, so it is the safe value.
-        room.budget = room.budget.min(disk.budget.unwrap_or(BUDGET_CAP));
+    match disk_recharge_stamp.cmp(&room.recharge_stamp) {
+        std::cmp::Ordering::Greater => {
+            room.recharge_stamp = disk_recharge_stamp;
+            room.spends_since_recharge = disk_spends;
+        }
+        std::cmp::Ordering::Equal => {
+            room.spends_since_recharge = room.spends_since_recharge.max(disk_spends);
+        }
+        std::cmp::Ordering::Less => {}
     }
 }
 
@@ -805,7 +935,7 @@ pub(crate) fn forget_room_for_tests(room_root: &Path) {
 #[cfg(test)]
 pub(crate) fn spend_budget_for_tests(room_root: &Path, units: u32) {
     with_room(room_root, |room| {
-        room.budget = room.budget.saturating_sub(units);
+        room.spends_since_recharge = room.spends_since_recharge.saturating_add(units);
         room.dirty = true;
     });
 }
@@ -838,6 +968,16 @@ mod tests {
     }
 
     fn record(file: &Path, text: &str, start: Option<u64>, seq: u64) -> Arc<CapturedRecord> {
+        record_with_origin(file, text, start, seq, RecordOrigin::Live)
+    }
+
+    fn record_with_origin(
+        file: &Path,
+        text: &str,
+        start: Option<u64>,
+        seq: u64,
+        origin: RecordOrigin,
+    ) -> Arc<CapturedRecord> {
         let text_sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(text.as_bytes()).into();
         Arc::new(CapturedRecord {
             session_id: "session-a".to_owned(),
@@ -851,7 +991,7 @@ mod tests {
             provider: CaptureProvider::Claude,
             provider_final: false,
             turn_identified: false,
-            origin: RecordOrigin::Live,
+            origin,
             observed_path: file.to_path_buf(),
             observed_len: 0,
             observed_prefix: Vec::new(),
@@ -1303,7 +1443,7 @@ mod tests {
         let root = room(&temp);
         recharge_in_memory(&root);
         with_room(&root, |room| {
-            room.budget = 1;
+            room.spends_since_recharge = 2;
             room.dirty = true;
         });
         recharge_in_memory(&root);
@@ -1378,5 +1518,315 @@ mod tests {
         }
         let held = with_room(&root, |room| room.recent["session-a"].len());
         assert_eq!(held, RECENT_CAPACITY);
+    }
+
+    // Test 13: preamble and rotation-backfill records are consumed and never
+    // marked routable. Without this a rotated Claude transcript's first sweep
+    // would be acted on automatically, which is the case section 8.3 forbids.
+    #[test]
+    fn a_baseline_is_consumed_but_never_routed() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = room(&temp);
+        let file = temp.path().join("a.jsonl");
+        let slot = CaptureSlot::new();
+
+        for (origin, start) in [
+            (RecordOrigin::Preamble, None),
+            (RecordOrigin::RotationBackfill, Some(0)),
+        ] {
+            let record = record_with_origin(&file, &format!("{origin:?}"), start, 0, origin);
+            let (seq, key) = arm(&slot, Arc::clone(&record), 0);
+
+            let committed = commit_effect(
+                &root,
+                &slot,
+                seq,
+                &key,
+                &preconditions(EffectKind::Automatic),
+            )
+            .expect("a baseline commits, so it can never be offered again");
+
+            assert!(
+                !committed.routable,
+                "{origin:?} must never be routed (section 8)"
+            );
+            assert_eq!(
+                committed.budget_remaining, BUDGET_CAP,
+                "{origin:?} must not spend budget"
+            );
+            // Consumed: the key is remembered, so a re-delivery abstains.
+            assert!(!is_actionable(&root, "session-a", &key, start));
+            slot.try_consume(seq, &key, 0);
+        }
+
+        assert_eq!(budget(&root), BUDGET_CAP);
+        assert!(is_baseline(&record_with_origin(
+            &file,
+            "p",
+            None,
+            0,
+            RecordOrigin::Preamble
+        )));
+        assert!(is_baseline(&record_with_origin(
+            &file,
+            "r",
+            Some(0),
+            0,
+            RecordOrigin::RotationBackfill
+        )));
+        assert!(!is_baseline(&record(&file, "live", Some(0), 0)));
+    }
+
+    /// A live record in the same room still routes and still spends, so test 13
+    /// pins the gate rather than a blanket refusal.
+    #[test]
+    fn a_live_record_is_still_routable_after_a_baseline() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = room(&temp);
+        let file = temp.path().join("a.jsonl");
+        let slot = CaptureSlot::new();
+
+        let backfill =
+            record_with_origin(&file, "history", Some(0), 0, RecordOrigin::RotationBackfill);
+        let (seq, key) = arm(&slot, backfill, 0);
+        commit_effect(
+            &root,
+            &slot,
+            seq,
+            &key,
+            &preconditions(EffectKind::Automatic),
+        )
+        .expect("baseline committed");
+        slot.try_consume(seq, &key, 0);
+
+        let (seq, key) = arm(&slot, record(&file, "a real turn", Some(500), 1), 0);
+        let committed = commit_effect(
+            &root,
+            &slot,
+            seq,
+            &key,
+            &preconditions(EffectKind::Automatic),
+        )
+        .expect("committed");
+        assert!(committed.routable);
+        assert_eq!(committed.budget_remaining, BUDGET_CAP - 1);
+    }
+
+    /// Grinch finding: the authoritative epoch is the one [`observe`] returns,
+    /// and `CapturedRecord.epoch` is the reader's advisory counter. After a
+    /// restart the two disagree, so a key built from the record's own field
+    /// would miss the recent set and the record would be acted on twice.
+    /// [`consumption_key`] is the only correct constructor and phase 7 must use
+    /// it.
+    #[test]
+    fn the_authoritative_epoch_is_the_persisted_one_not_the_records_field() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = room(&temp);
+        let file = temp.path().join("a.jsonl");
+
+        // The room has already seen this file truncated once.
+        observe(&root, &file, obs(100, b"head"));
+        observe(&root, &file, obs(10, b"head"));
+        assert_eq!(epoch_of(&root, &file), 1);
+
+        // A reader that started after that restart stamps its own epoch 0.
+        let mut fresh = record(&file, "turn", Some(20), 0);
+        Arc::get_mut(&mut fresh).expect("sole owner").epoch = 0;
+        Arc::get_mut(&mut fresh).expect("sole owner").observed_len = 20;
+        Arc::get_mut(&mut fresh)
+            .expect("sole owner")
+            .observed_prefix = b"head".to_vec();
+
+        let authoritative = consumption_key(&root, &fresh);
+        assert_eq!(
+            authoritative.epoch, 1,
+            "the persisted epoch survives the reader that produced the record"
+        );
+        assert_ne!(
+            authoritative.epoch, fresh.epoch,
+            "the record's own field is advisory and disagrees after a restart"
+        );
+
+        // Acting through the authoritative key marks THAT key consumed.
+        let slot = CaptureSlot::new();
+        slot.offer(Arc::clone(&fresh), authoritative.epoch);
+        let seq = slot.seq();
+        commit_effect(
+            &root,
+            &slot,
+            seq,
+            &authoritative,
+            &preconditions(EffectKind::Automatic),
+        )
+        .expect("committed");
+
+        // The advisory key is a different key: proof that using it would let the
+        // same record through a second time.
+        let advisory = ConsumptionKey::from_record(&fresh, fresh.epoch);
+        assert_ne!(advisory, authoritative);
+        assert!(!is_actionable(&root, "session-a", &authoritative, Some(20)));
+    }
+
+    /// Grinch finding: a cut restored from `state.json` must not keep the
+    /// sequence tie-break of the reader that is gone. A fresh reader starts at
+    /// `reader_seq == 0`, so a surviving comparison would hide everything it
+    /// produces — exactly the bug section 7 paragraph 2 closes.
+    #[test]
+    fn a_cut_restored_from_disk_loses_its_sequence_tie_break() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = room(&temp);
+        let file = temp.path().join("a.jsonl");
+        std::fs::write(&file, b"x").expect("write");
+        let slot = CaptureSlot::new();
+
+        register_cut(
+            &root,
+            &slot,
+            Cut {
+                path: crate::capture::key::normalise_path(&file),
+                epoch: 0,
+                len: 0,
+                reader_seq: Some(42),
+            },
+        );
+        assert_eq!(
+            flush_room(&root),
+            FlushOutcome::Written,
+            "the cut has to reach disk for this test to mean anything"
+        );
+        assert_eq!(
+            cut(&root).and_then(|c| c.reader_seq),
+            Some(42),
+            "the live cut keeps its tie-break within one reader lifetime"
+        );
+
+        // Restart.
+        forget_room_for_tests(&root);
+        let restored = cut(&root).expect("the cut is persisted");
+        assert_eq!(restored.path, crate::capture::key::normalise_path(&file));
+        assert_eq!(restored.len, 0);
+        assert_eq!(
+            restored.reader_seq, None,
+            "the sequence tie-break must not survive the reader"
+        );
+
+        // And a fresh reader's first record is not hidden by it.
+        let fresh = CaptureSlot::new();
+        fresh.set_cut(restored);
+        assert_eq!(
+            fresh.offer(record(&file, "first after restart", Some(0), 0), 0),
+            crate::capture::sink::OfferOutcome::Published
+        );
+    }
+
+    /// Grinch finding: a decrement another instance made inside the same
+    /// recharge generation must survive reconciliation. The budget is merged
+    /// through the spend count, so neither side's work is discarded.
+    #[test]
+    fn a_second_instances_decrement_is_not_lost_by_reconciliation() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = room(&temp);
+        let file = temp.path().join("a.jsonl");
+
+        // This instance recharges, so generation 1 is current, and spends one.
+        recharge_in_memory(&root);
+        let slot = CaptureSlot::new();
+        let (seq, key) = arm(&slot, record(&file, "mine", Some(10), 0), 0);
+        commit_effect(
+            &root,
+            &slot,
+            seq,
+            &key,
+            &preconditions(EffectKind::Automatic),
+        )
+        .expect("committed");
+        slot.try_consume(seq, &key, 0);
+        assert_eq!(budget(&root), BUDGET_CAP - 1);
+
+        // A second instance, in the SAME generation, spends two more.
+        let mut disk = read_persisted(&root);
+        disk.spends_since_recharge = Some(3);
+        disk.budget = Some(0);
+        write_state_atomic(&root, &disk).expect("seed the other instance's file");
+
+        // This instance reconciles: three spends in generation 1, not one.
+        let (seq, key) = arm(&slot, record(&file, "fourth", Some(20), 1), 0);
+        assert_eq!(
+            commit_effect(
+                &root,
+                &slot,
+                seq,
+                &key,
+                &preconditions(EffectKind::Automatic)
+            ),
+            Err(AbstainReason::BudgetExhausted),
+            "the other instance's decrements must not vanish"
+        );
+        assert_eq!(budget(&root), 0);
+    }
+
+    /// The other direction, already covered by
+    /// `a_recharge_survives_a_state_file_written_by_another_instance`: a
+    /// superseded generation on disk does not undo this instance's recharge.
+    #[test]
+    fn a_superseded_generation_on_disk_does_not_undo_a_recharge() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = room(&temp);
+        std::fs::create_dir_all(co_managed_dir(&root)).expect("dir");
+        write_state_atomic(
+            &root,
+            &PersistedRoomState {
+                budget: Some(0),
+                spends_since_recharge: Some(3),
+                recharge_stamp: 0,
+                ..PersistedRoomState::default()
+            },
+        )
+        .expect("seed");
+        assert_eq!(budget(&root), 0);
+
+        recharge_in_memory(&root);
+        let mut room_snapshot = RoomState {
+            recharge_stamp: 1,
+            ..Default::default()
+        };
+        reconcile(&mut room_snapshot, read_persisted(&root));
+        assert_eq!(room_snapshot.budget(), BUDGET_CAP);
+    }
+
+    /// Grinch finding: the reconstruction in [`head_from_lines`] is the only
+    /// permitted prefix source. This test names that rule and shows what
+    /// happens if it is broken.
+    #[test]
+    fn prefix_source_is_the_reconstruction_only() {
+        let lines = vec![
+            (0u64, "{\"a\":1}".to_string()),
+            (8u64, "{\"b\":2}".to_string()),
+        ];
+        let reconstructed = head_from_lines(&lines, 0);
+        assert_eq!(reconstructed, b"{\"a\":1}\n{\"b\":2}\n".to_vec());
+
+        // A read that did not start at offset 0 carries no head evidence.
+        assert!(head_from_lines(&lines, 4096).is_empty());
+
+        // Self-consistent: the same lines reconstruct identically, so the
+        // verdict is `Append` and the epoch holds.
+        let stored = FileObservation::new(18, reconstructed.clone());
+        let again = FileObservation::new(18, head_from_lines(&lines, 0));
+        assert_eq!(
+            classify_observation(&stored, &again),
+            crate::capture::key::ObservationVerdict::Append
+        );
+
+        // The hazard, made executable: true file bytes with CRLF endings are a
+        // DIFFERENT byte string, so mixing the two sources flips the verdict to
+        // `Replaced`, advances the epoch spuriously and invalidates every
+        // watermark for that path. This is why the reconstruction is pinned.
+        let true_bytes = FileObservation::new(20, b"{\"a\":1}\r\n{\"b\":2}\r\n".to_vec());
+        assert_eq!(
+            classify_observation(&stored, &true_bytes),
+            crate::capture::key::ObservationVerdict::Replaced,
+            "mixing a true-bytes prefix with the reconstruction is forbidden"
+        );
     }
 }

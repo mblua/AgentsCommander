@@ -131,6 +131,67 @@ pub fn extend_observation(stored: &mut FileObservation, current: &FileObservatio
     }
 }
 
+/// What a reader knows about the file it just read, carried on every record it
+/// emits (#2232 phase 3).
+///
+/// One definition, shared by both watchers. It used to be copied verbatim into
+/// each of them, which put two copies of the epoch predicate's caller in the
+/// tree; both readers already name this module, so a single definition here
+/// adds no arc.
+#[derive(Clone, Debug, Default)]
+pub struct ReaderAttachment {
+    pub epoch: u64,
+    pub observed_path: PathBuf,
+    pub observed_len: u64,
+    pub observed_prefix: Vec<u8>,
+}
+
+/// A reader's own per-file epoch, kept in memory for that reader's lifetime.
+///
+/// **Advisory, never authoritative.** `capture::state` owns the persisted
+/// epoch, and only that one survives a restart; this counter restarts at zero
+/// with its reader. It exists so a record carries a plausible epoch instead of
+/// phase 1's hardcoded `0`, and so the reader can answer "did this file change
+/// under me" without a lock or a disk read. Anything that builds a
+/// [`ConsumptionKey`] must take the epoch from `capture::state`.
+///
+/// Returning to a file read earlier recovers its entry, so moving between files
+/// never advances an epoch.
+#[derive(Debug, Default)]
+pub struct ReaderObservations {
+    files: std::collections::HashMap<PathBuf, (u64, FileObservation)>,
+}
+
+impl ReaderObservations {
+    /// Record one observation and return the attachment for the records it
+    /// produced.
+    ///
+    /// `prefix` must already be capped, and must come from the reader's own
+    /// reconstruction of the head; see `capture::state::head_from_lines` for
+    /// why mixing sources is forbidden. An empty `prefix` means "no prefix
+    /// evidence", which [`classify_observation`] resolves to a zero-length
+    /// shared range, so length alone decides.
+    pub fn observe(&mut self, path: &Path, len: u64, prefix: Vec<u8>) -> ReaderAttachment {
+        let current = FileObservation::new(len, prefix);
+        let entry = self
+            .files
+            .entry(path.to_path_buf())
+            .or_insert_with(|| (0, current.clone()));
+        if classify_observation(&entry.1, &current).advances_epoch() {
+            entry.0 += 1;
+            entry.1 = current;
+        } else {
+            extend_observation(&mut entry.1, &current);
+        }
+        ReaderAttachment {
+            epoch: entry.0,
+            observed_path: path.to_path_buf(),
+            observed_len: entry.1.len,
+            observed_prefix: entry.1.prefix.clone(),
+        }
+    }
+}
+
 /// A demand raised over an already-running reader (section 7).
 ///
 /// Records at or below this point were produced before the consumer existed and

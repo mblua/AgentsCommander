@@ -273,44 +273,69 @@ mod tests {
         ConsumptionKey::from_record(record, 0)
     }
 
-    // Test 1: `send_modify` publication under concurrent consume: `seq` is
+    // Test 1: `send_modify` publication under concurrent consume. `seq` is
     // strictly increasing and never repeats over 1000 interleaved operations.
+    //
+    // "Never repeats" is proved by counting, not by sampling: every transition
+    // increments inside the critical section, so the final sequence must equal
+    // the number of transitions exactly — 1000 publications plus one per
+    // applied consume. A `send_replace` implementation, which builds the new
+    // state outside the lock, loses increments here and lands below the count.
     #[test]
     fn seq_is_strictly_increasing_under_concurrent_publish_and_consume() {
+        const PUBLICATIONS: u64 = 1000;
         let slot = CaptureSlot::new();
-        let observed_max = Arc::new(AtomicU64::new(0));
+        let consumed = Arc::new(AtomicU64::new(0));
+
         let publisher = {
             let slot = slot.clone();
             std::thread::spawn(move || {
-                for i in 0..1000u64 {
+                for i in 0..PUBLICATIONS {
                     slot.offer(record("t", Some(i), i, RecordOrigin::Live), 0);
                 }
             })
         };
         let consumer = {
             let slot = slot.clone();
-            let observed_max = Arc::clone(&observed_max);
+            let consumed = Arc::clone(&consumed);
             std::thread::spawn(move || {
+                let mut seen = Vec::with_capacity(4096);
                 let mut last = 0u64;
-                for _ in 0..1000 {
+                while last < PUBLICATIONS {
                     let state = slot.snapshot();
-                    assert!(
-                        state.seq >= last,
-                        "seq went backwards: {last} -> {}",
-                        state.seq
-                    );
-                    last = state.seq;
-                    if let Some(record) = state.value.record().cloned() {
-                        let _ = slot.try_consume(state.seq, &key(&record), 0);
+                    if state.seq != last {
+                        assert!(
+                            state.seq > last,
+                            "seq went backwards or repeated: {last} -> {}",
+                            state.seq
+                        );
+                        seen.push(state.seq);
+                        last = state.seq;
                     }
-                    observed_max.store(last, Ordering::Release);
+                    if let Some(record) = state.value.record().cloned() {
+                        if slot.try_consume(state.seq, &key(&record), 0).is_some() {
+                            consumed.fetch_add(1, Ordering::AcqRel);
+                        }
+                    }
                 }
+                // Every sequence this thread observed was strictly greater than
+                // the one before it, so none repeated.
+                assert!(
+                    seen.windows(2).all(|w| w[0] < w[1]),
+                    "observed sequences are not strictly increasing"
+                );
             })
         };
         publisher.join().expect("publisher");
         consumer.join().expect("consumer");
-        // 1000 publications, plus one increment per applied consume.
-        assert!(slot.seq() >= 1000, "seq = {}", slot.seq());
+
+        let applied = consumed.load(Ordering::Acquire);
+        assert_eq!(
+            slot.seq(),
+            PUBLICATIONS + applied,
+            "every transition must increment exactly once: {PUBLICATIONS} publications \
+             plus {applied} applied consumes"
+        );
     }
 
     // Test 2: a stale `seq` consumes nothing and leaves the slot untouched.
