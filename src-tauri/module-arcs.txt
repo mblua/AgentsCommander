@@ -480,6 +480,7 @@ agentscommander_lib::commands::session -> agentscommander_lib::config::agent_con
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_memory
 agentscommander_lib::commands::session -> agentscommander_lib::config::archive_gate
 agentscommander_lib::commands::session -> agentscommander_lib::config::coding_agent_profiles
+agentscommander_lib::commands::session -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::commands::session -> agentscommander_lib::config::config_seed
 agentscommander_lib::commands::session -> agentscommander_lib::config::coordinator_clocks
 agentscommander_lib::commands::session -> agentscommander_lib::config::root_agent
@@ -712,6 +713,7 @@ agentscommander_lib::loops::delivery -> agentscommander_lib::pty::inject
 agentscommander_lib::loops::delivery -> agentscommander_lib::pty::manager
 agentscommander_lib::loops::delivery -> agentscommander_lib::session::manager
 agentscommander_lib::loops::delivery -> agentscommander_lib::session::purge_guard
+agentscommander_lib::loops::delivery -> agentscommander_lib::session::selection
 agentscommander_lib::loops::delivery -> agentscommander_lib::session::session
 agentscommander_lib::loops::events -> agentscommander_lib::config::loops
 agentscommander_lib::loops::ipc_observer -> agentscommander_lib::config
@@ -1026,9 +1028,11 @@ agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::codex_wa
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::output
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::redact
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::types
+agentscommander_lib::telegram::claude_watcher -> agentscommander_lib::capture::record
 agentscommander_lib::telegram::claude_watcher -> agentscommander_lib::network
 agentscommander_lib::telegram::claude_watcher -> agentscommander_lib::telegram::jsonl_kernel
 agentscommander_lib::telegram::claude_watcher -> agentscommander_lib::telegram::output
+agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::capture::record
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::commands::codex_resolver
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::network
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::telegram::jsonl_kernel
