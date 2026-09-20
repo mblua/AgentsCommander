@@ -2456,6 +2456,827 @@ fn pin_handler<F: Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'st
     f
 }
 
+// ---------------------------------------------------------------------------
+// #2296 — backend quit gate.
+//
+// Closing the main window must not kill the app while another window still
+// holds unsaved work. Every window that owns such work registers as a *gate*;
+// a quit round asks each one and exits only when all of them consent.
+//
+// The whole state machine is synchronous and lives behind one `std::sync::Mutex`
+// that is never held across an await. Every mutating entry point returns the
+// events it wants emitted (`QuitGateEffects`) instead of emitting under the
+// lock, and `quit_gate_run` awaits outside it.
+// ---------------------------------------------------------------------------
+
+/// Unpaused budget a non-force round may spend waiting for its gates.
+///
+/// Strictly beyond main's 10-second wall-clock Force offer, so the user is
+/// always offered Force before the backend gives up on its own.
+pub const QUIT_GATE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The only window allowed to start or force a quit.
+pub const QUIT_GATE_MAIN_LABEL: &str = "main";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum QuitOutcomeKind {
+    Exiting,
+    Aborted,
+    InFlight,
+    Stale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QuitAbortReason {
+    Refused,
+    Timeout,
+    Unregistered,
+    Destroyed,
+    Cancelled,
+}
+
+/// Typed return of `quit_application` and payload of `app_quit_outcome`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuitOutcome {
+    pub outcome: QuitOutcomeKind,
+    pub epoch: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<QuitAbortReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusing_labels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unanswered_labels: Option<Vec<String>>,
+}
+
+impl QuitOutcome {
+    fn bare(outcome: QuitOutcomeKind, epoch: u64) -> Self {
+        Self {
+            outcome,
+            epoch,
+            reason: None,
+            refusing_labels: None,
+            unanswered_labels: None,
+        }
+    }
+
+    pub fn exiting(epoch: u64) -> Self {
+        Self::bare(QuitOutcomeKind::Exiting, epoch)
+    }
+
+    pub fn in_flight(epoch: u64) -> Self {
+        Self::bare(QuitOutcomeKind::InFlight, epoch)
+    }
+
+    pub fn stale(epoch: u64) -> Self {
+        Self::bare(QuitOutcomeKind::Stale, epoch)
+    }
+
+    fn aborted(
+        epoch: u64,
+        reason: QuitAbortReason,
+        refusing: Vec<String>,
+        unanswered: Vec<String>,
+    ) -> Self {
+        Self {
+            outcome: QuitOutcomeKind::Aborted,
+            epoch,
+            reason: Some(reason),
+            refusing_labels: (!refusing.is_empty()).then_some(refusing),
+            unanswered_labels: (!unanswered.is_empty()).then_some(unanswered),
+        }
+    }
+}
+
+/// Typed return of `quit_gate_register`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "status")]
+pub enum QuitGateRegistration {
+    Registered,
+    InFlight { epoch: u64 },
+}
+
+/// Events a state transition asks the caller to emit, outside the lock.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct QuitGateEffects {
+    /// Terminal abort outcome for `main` (`app_quit_outcome`).
+    pub outcome_to_main: Option<QuitOutcome>,
+    /// `app_quit_cancelled` targets: every gate enrolled in the cancelled epoch.
+    pub cancelled_gates: Vec<String>,
+    /// Epoch carried by `cancelled_gates`.
+    pub cancelled_epoch: u64,
+}
+
+impl QuitGateEffects {
+    fn is_empty(&self) -> bool {
+        self.outcome_to_main.is_none() && self.cancelled_gates.is_empty()
+    }
+}
+
+/// Time seam. Ticks are a monotonic offset from gate creation, so the whole
+/// deadline arithmetic is plain `Duration` math and a test clock can step it
+/// exactly. Injected in tests.
+pub trait QuitGateClock: Send + Sync + 'static {
+    fn now(&self) -> Duration;
+    fn sleep_until(&self, at: Duration) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+}
+
+/// Production clock: real monotonic time on the Tokio timer.
+pub struct TokioQuitClock {
+    origin: tokio::time::Instant,
+}
+
+impl Default for TokioQuitClock {
+    fn default() -> Self {
+        Self {
+            origin: tokio::time::Instant::now(),
+        }
+    }
+}
+
+impl QuitGateClock for TokioQuitClock {
+    fn now(&self) -> Duration {
+        self.origin.elapsed()
+    }
+
+    fn sleep_until(&self, at: Duration) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(tokio::time::sleep_until(self.origin + at))
+    }
+}
+
+/// Side-effect seam: event emission and process exit. Injected in tests.
+pub trait QuitGateHost: Send + Sync + 'static {
+    fn emit_to(&self, label: &str, event: &str, payload: serde_json::Value) -> Result<(), String>;
+    fn exit(&self, code: i32);
+}
+
+/// Production host: targeted Tauri emits and `AppHandle::exit`.
+pub struct TauriQuitHost {
+    app: tauri::AppHandle,
+}
+
+impl TauriQuitHost {
+    pub fn new(app: tauri::AppHandle) -> Self {
+        Self { app }
+    }
+}
+
+impl QuitGateHost for TauriQuitHost {
+    fn emit_to(&self, label: &str, event: &str, payload: serde_json::Value) -> Result<(), String> {
+        tauri::Emitter::emit_to(&self.app, label, event, payload).map_err(|e| e.to_string())
+    }
+
+    fn exit(&self, code: i32) {
+        // SINGLE production exit site for the quit gate. Everything else routes
+        // its Exiting decision through `quit_gate_run`, which calls this once
+        // per terminal Exiting (see `try_claim_exit`).
+        self.app.exit(code);
+    }
+}
+
+/// One live quit round.
+struct QuitRound {
+    epoch: u64,
+    /// Every label enrolled by the atomic snapshot, answered or not.
+    snapshot: std::collections::BTreeSet<String>,
+    /// Gates that have not answered yet. Holding the sender *is* the pending
+    /// record; dropping it closes the waiter's receiver.
+    pending: HashMap<String, tokio::sync::oneshot::Sender<bool>>,
+    refusing: std::collections::BTreeSet<String>,
+    busy: HashSet<String>,
+    /// Budget left when paused; authoritative across pause/resume.
+    remaining: Duration,
+    /// `Some` while the clock runs, `None` while a busy gate pauses it.
+    /// Expressed in clock ticks (see `QuitGateClock`).
+    deadline: Option<Duration>,
+}
+
+#[derive(Default)]
+struct QuitGateInner {
+    next_epoch: u64,
+    registered: std::collections::BTreeSet<String>,
+    round: Option<QuitRound>,
+    /// Terminal result of the most recent round. Written before any cleanup so
+    /// a waiter woken by receiver closure reads a decision, never infers one.
+    terminal: Option<(u64, QuitOutcome)>,
+    /// Guards the one-exit rule for the current terminal `Exiting`.
+    exit_claimed: bool,
+}
+
+impl QuitGateInner {
+    fn alloc_epoch(&mut self) -> u64 {
+        self.next_epoch += 1;
+        self.next_epoch
+    }
+
+    fn live_round(&mut self, epoch: u64) -> Option<&mut QuitRound> {
+        match self.round.as_mut() {
+            Some(round) if round.epoch == epoch => Some(round),
+            _ => None,
+        }
+    }
+
+    fn terminal_for(&self, epoch: u64) -> Option<QuitOutcome> {
+        match &self.terminal {
+            Some((e, outcome)) if *e == epoch => Some(outcome.clone()),
+            _ => None,
+        }
+    }
+
+    /// Writes `outcome` as this epoch's terminal result and tears the round
+    /// down. Never replaces an existing terminal for the same epoch.
+    fn finish(&mut self, epoch: u64, outcome: QuitOutcome) -> Option<QuitOutcome> {
+        if self.terminal_for(epoch).is_some() {
+            return None;
+        }
+        self.live_round(epoch)?;
+        // Terminal result first, cleanup second — the ordering the waiter relies on.
+        self.terminal = Some((epoch, outcome.clone()));
+        self.exit_claimed = false;
+        self.round = None;
+        Some(outcome)
+    }
+
+    /// Recomputes the deadline from `remaining` when no busy gate holds it.
+    fn resume_if_idle(round: &mut QuitRound, now: Duration) {
+        if round.busy.is_empty() && round.deadline.is_none() {
+            round.deadline = Some(now + round.remaining);
+        }
+    }
+
+    fn pause(round: &mut QuitRound, now: Duration) {
+        if let Some(deadline) = round.deadline.take() {
+            round.remaining = deadline.saturating_sub(now);
+        }
+    }
+}
+
+/// Managed quit-gate state.
+pub struct QuitGate {
+    inner: Mutex<QuitGateInner>,
+    /// Woken on every state change so the waiter re-reads deadline and terminal.
+    notify: tokio::sync::Notify,
+    clock: Arc<dyn QuitGateClock>,
+}
+
+impl Default for QuitGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl QuitGate {
+    pub fn new() -> Self {
+        Self::with_clock(Arc::new(TokioQuitClock::default()))
+    }
+
+    pub fn with_clock(clock: Arc<dyn QuitGateClock>) -> Self {
+        Self {
+            inner: Mutex::new(QuitGateInner::default()),
+            notify: tokio::sync::Notify::new(),
+            clock,
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, QuitGateInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Builds the abort effects for a terminal outcome of `round`.
+    fn abort_effects(round: &QuitRound, outcome: QuitOutcome) -> QuitGateEffects {
+        QuitGateEffects {
+            cancelled_gates: round.snapshot.iter().cloned().collect(),
+            cancelled_epoch: round.epoch,
+            outcome_to_main: Some(outcome),
+        }
+    }
+
+    /// Aborts the live round `epoch`. No-op for a stale or already terminal one.
+    fn abort(&self, epoch: u64, reason: QuitAbortReason) -> QuitGateEffects {
+        let mut inner = self.lock();
+        let (refusing, mut unanswered) = {
+            let Some(round) = inner.live_round(epoch) else {
+                return QuitGateEffects::default();
+            };
+            let refusing: Vec<String> = round.refusing.iter().cloned().collect();
+            let unanswered: Vec<String> = match reason {
+                QuitAbortReason::Timeout => round.pending.keys().cloned().collect(),
+                _ => Vec::new(),
+            };
+            (refusing, unanswered)
+        };
+        unanswered.sort();
+        let outcome = QuitOutcome::aborted(epoch, reason, refusing, unanswered);
+        let effects = {
+            let round = inner
+                .live_round(epoch)
+                .expect("round checked live above under the same lock");
+            Self::abort_effects(round, outcome.clone())
+        };
+        match inner.finish(epoch, outcome) {
+            Some(_) => {
+                drop(inner);
+                self.notify.notify_waiters();
+                effects
+            }
+            None => QuitGateEffects::default(),
+        }
+    }
+
+    /// Writes terminal `Exiting` once the live round has no unanswered gate.
+    fn finalize_consent_locked(inner: &mut QuitGateInner, epoch: u64) -> bool {
+        let settled = match inner.live_round(epoch) {
+            Some(round) => round.pending.is_empty() && round.refusing.is_empty(),
+            None => false,
+        };
+        if !settled {
+            return false;
+        }
+        inner.finish(epoch, QuitOutcome::exiting(epoch)).is_some()
+    }
+
+    fn finalize_consent(&self, epoch: u64) {
+        let mut inner = self.lock();
+        if Self::finalize_consent_locked(&mut inner, epoch) {
+            drop(inner);
+            self.notify.notify_waiters();
+        }
+    }
+
+    /// True exactly once per terminal `Exiting`, for the single exit site.
+    fn try_claim_exit(&self, epoch: u64) -> bool {
+        let mut inner = self.lock();
+        let is_exiting = matches!(
+            inner.terminal_for(epoch),
+            Some(QuitOutcome {
+                outcome: QuitOutcomeKind::Exiting,
+                ..
+            })
+        );
+        if is_exiting && !inner.exit_claimed {
+            inner.exit_claimed = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    // --- command-facing state transitions ------------------------------------
+
+    /// Enrols `label`. Rejected during an active round: the snapshot is atomic,
+    /// so a late registrant would otherwise be silently ungated.
+    pub fn register(&self, label: &str) -> QuitGateRegistration {
+        let mut inner = self.lock();
+        if let Some(round) = inner.round.as_ref() {
+            return QuitGateRegistration::InFlight { epoch: round.epoch };
+        }
+        inner.registered.insert(label.to_string());
+        QuitGateRegistration::Registered
+    }
+
+    /// Drops `label`'s registration. Aborts the live round only if that gate
+    /// had not already answered — same-epoch consent is final.
+    pub fn unregister(&self, label: &str) -> QuitGateEffects {
+        self.teardown_gate(label, QuitAbortReason::Unregistered)
+    }
+
+    /// Window destroyed: same as unregister, with reason `destroyed`.
+    /// Main's destruction is not an abort — main is never a gate.
+    pub fn window_gone(&self, label: &str) -> QuitGateEffects {
+        self.teardown_gate(label, QuitAbortReason::Destroyed)
+    }
+
+    /// Drops `label`'s registration and, if it was still unanswered, aborts the
+    /// live round under ONE lock acquisition.
+    ///
+    /// The pending sender is removed into a local and dropped only after the
+    /// terminal result has been written, so no waiter can ever observe a closed
+    /// receiver before the decision that explains it.
+    fn teardown_gate(&self, label: &str, reason: QuitAbortReason) -> QuitGateEffects {
+        let mut inner = self.lock();
+        inner.registered.remove(label);
+
+        let now = self.clock.now();
+        let (epoch, pending_sender) = match inner.round.as_mut() {
+            Some(round) => {
+                // Only an UNANSWERED gate aborts the round; same-epoch consent
+                // is final and cannot be revoked by teardown.
+                let sender = round.pending.remove(label);
+                round.busy.remove(label);
+                QuitGateInner::resume_if_idle(round, now);
+                match sender {
+                    Some(sender) => (Some(round.epoch), Some(sender)),
+                    None => (None, None),
+                }
+            }
+            None => (None, None),
+        };
+        let Some(epoch) = epoch else {
+            return QuitGateEffects::default();
+        };
+
+        let refusing: Vec<String> = inner
+            .live_round(epoch)
+            .map(|round| round.refusing.iter().cloned().collect())
+            .unwrap_or_default();
+        let outcome = QuitOutcome::aborted(epoch, reason, refusing, vec![label.to_string()]);
+        let effects = {
+            let round = inner
+                .live_round(epoch)
+                .expect("round checked live above under the same lock");
+            Self::abort_effects(round, outcome.clone())
+        };
+        let finished = inner.finish(epoch, outcome).is_some();
+        // Terminal written; only now may the sender close.
+        drop(pending_sender);
+        drop(inner);
+        if finished {
+            self.notify.notify_waiters();
+            effects
+        } else {
+            QuitGateEffects::default()
+        }
+    }
+
+    /// Gate answer. Stale epoch, duplicate answer and unknown label do nothing.
+    pub fn resolve(&self, label: &str, epoch: u64, consent: bool) -> QuitGateEffects {
+        let mut inner = self.lock();
+        {
+            let Some(round) = inner.live_round(epoch) else {
+                return QuitGateEffects::default();
+            };
+            let Some(sender) = round.pending.remove(label) else {
+                return QuitGateEffects::default();
+            };
+            round.busy.remove(label);
+            let now = self.clock.now();
+            QuitGateInner::resume_if_idle(round, now);
+            // The receiver wakes the waiter; the decision itself always comes
+            // from the terminal slot, never from this value or from closure.
+            let _ = sender.send(consent);
+            if !consent {
+                round.refusing.insert(label.to_string());
+            }
+        }
+        if !consent {
+            // A refusal is terminal immediately, even while a peer is busy.
+            let refusing: Vec<String> = inner
+                .live_round(epoch)
+                .map(|round| round.refusing.iter().cloned().collect())
+                .unwrap_or_default();
+            let outcome =
+                QuitOutcome::aborted(epoch, QuitAbortReason::Refused, refusing, Vec::new());
+            let effects = {
+                let round = inner
+                    .live_round(epoch)
+                    .expect("round checked live above under the same lock");
+                Self::abort_effects(round, outcome.clone())
+            };
+            return match inner.finish(epoch, outcome) {
+                Some(_) => {
+                    drop(inner);
+                    self.notify.notify_waiters();
+                    effects
+                }
+                None => QuitGateEffects::default(),
+            };
+        }
+        QuitGate::finalize_consent_locked(&mut inner, epoch);
+        drop(inner);
+        self.notify.notify_waiters();
+        QuitGateEffects::default()
+    }
+
+    /// Busy progress pauses the timeout and preserves the remaining budget.
+    /// Only the current epoch's busy set can move the clock.
+    pub fn progress(&self, label: &str, epoch: u64, busy: bool) {
+        let mut inner = self.lock();
+        let Some(round) = inner.live_round(epoch) else {
+            return;
+        };
+        if !round.pending.contains_key(label) {
+            return;
+        }
+        let now = self.clock.now();
+        if busy {
+            round.busy.insert(label.to_string());
+            QuitGateInner::pause(round, now);
+        } else {
+            round.busy.remove(label);
+            QuitGateInner::resume_if_idle(round, now);
+        }
+        drop(inner);
+        self.notify.notify_waiters();
+    }
+
+    /// Expires the round if its deadline passed and no gate is busy.
+    fn on_timeout(&self, epoch: u64) -> QuitGateEffects {
+        {
+            let mut inner = self.lock();
+            let now = self.clock.now();
+            let Some(round) = inner.live_round(epoch) else {
+                return QuitGateEffects::default();
+            };
+            // Recheck busy under the lock: a pause may have landed between the
+            // sleep firing and this acquisition.
+            if !round.busy.is_empty() {
+                return QuitGateEffects::default();
+            }
+            match round.deadline {
+                Some(deadline) if now >= deadline => {}
+                _ => return QuitGateEffects::default(),
+            }
+        }
+        self.abort(epoch, QuitAbortReason::Timeout)
+    }
+
+    #[cfg(test)]
+    fn terminal_snapshot_for_test(&self, epoch: u64) -> Option<QuitOutcome> {
+        self.lock().terminal_for(epoch)
+    }
+
+    fn deadline_for(&self, epoch: u64) -> Option<Duration> {
+        let mut inner = self.lock();
+        inner.live_round(epoch).and_then(|round| round.deadline)
+    }
+}
+
+/// Emits the events a transition asked for. Never called with the lock held.
+pub fn apply_quit_gate_effects(host: &dyn QuitGateHost, effects: &QuitGateEffects) {
+    if effects.is_empty() {
+        return;
+    }
+    for label in &effects.cancelled_gates {
+        if let Err(e) = host.emit_to(
+            label,
+            "app_quit_cancelled",
+            serde_json::json!({ "epoch": effects.cancelled_epoch, "label": label }),
+        ) {
+            log::warn!("[quit-gate] app_quit_cancelled emit to {label} failed: {e}");
+        }
+    }
+    if let Some(outcome) = &effects.outcome_to_main {
+        if let Err(e) = host.emit_to(
+            QUIT_GATE_MAIN_LABEL,
+            "app_quit_outcome",
+            serde_json::to_value(outcome).unwrap_or_else(|_| serde_json::json!({})),
+        ) {
+            log::warn!("[quit-gate] app_quit_outcome emit failed: {e}");
+        }
+    }
+}
+
+/// Crate-root hook for the builder's `Destroyed` arm.
+pub fn quit_gate_window_gone(gate: &QuitGate, host: &dyn QuitGateHost, label: &str) {
+    let effects = gate.window_gone(label);
+    apply_quit_gate_effects(host, &effects);
+}
+
+/// Releases the round if the quit task is cancelled or panics mid-await.
+/// Only ever touches its own epoch.
+struct QuitRoundGuard {
+    gate: Arc<QuitGate>,
+    host: Arc<dyn QuitGateHost>,
+    epoch: u64,
+    armed: bool,
+}
+
+impl Drop for QuitRoundGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let effects = self.gate.abort(self.epoch, QuitAbortReason::Cancelled);
+        apply_quit_gate_effects(self.host.as_ref(), &effects);
+    }
+}
+
+/// Runs a quit round to its terminal outcome. `force` takes the epoch to
+/// supersede; a non-force call allocates a fresh one.
+pub async fn quit_gate_run(
+    gate: Arc<QuitGate>,
+    host: Arc<dyn QuitGateHost>,
+    caller_label: &str,
+    force: bool,
+    epoch: Option<u64>,
+    attempt_id: Option<String>,
+) -> Result<QuitOutcome, String> {
+    if caller_label != QUIT_GATE_MAIN_LABEL {
+        return Err(format!(
+            "quit_application is restricted to the '{QUIT_GATE_MAIN_LABEL}' window (caller: {caller_label})"
+        ));
+    }
+
+    if force {
+        // Force must prove it targets the live, nonterminal round before any
+        // exit effect; an omitted or stale epoch cannot authorize exit.
+        let supplied = epoch.unwrap_or(0);
+        let claimed = {
+            let mut inner = gate.lock();
+            if inner.live_round(supplied).is_some() {
+                // Invalidate any stale work still referencing this epoch.
+                inner.next_epoch += 1;
+                // Terminal `Exiting` for the ORIGINAL epoch, written before the
+                // pending senders are dropped, so the superseded waiter returns
+                // `Exiting` with its own epoch and does not exit a second time.
+                inner
+                    .finish(supplied, QuitOutcome::exiting(supplied))
+                    .is_some()
+            } else {
+                false
+            }
+        };
+        if !claimed {
+            return Ok(QuitOutcome::stale(supplied));
+        }
+        gate.notify.notify_waiters();
+        if gate.try_claim_exit(supplied) {
+            host.exit(0);
+        }
+        return Ok(QuitOutcome::exiting(supplied));
+    }
+
+    let attempt_id = attempt_id.unwrap_or_default();
+    if attempt_id.is_empty() {
+        return Err("quit_application requires a nonempty attemptId".to_string());
+    }
+
+    // Atomic install: allocate the epoch, snapshot the registered gates and
+    // install every pending sender under one lock.
+    let (new_epoch, receivers) = {
+        let mut inner = gate.lock();
+        if let Some(round) = inner.round.as_ref() {
+            return Ok(QuitOutcome::in_flight(round.epoch));
+        }
+        let new_epoch = inner.alloc_epoch();
+        let snapshot = inner.registered.clone();
+        let mut pending = HashMap::new();
+        let mut receivers = Vec::new();
+        for label in &snapshot {
+            let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+            pending.insert(label.clone(), tx);
+            receivers.push(rx);
+        }
+        inner.round = Some(QuitRound {
+            epoch: new_epoch,
+            snapshot,
+            pending,
+            refusing: std::collections::BTreeSet::new(),
+            busy: HashSet::new(),
+            remaining: QUIT_GATE_TIMEOUT,
+            deadline: Some(gate.clock.now() + QUIT_GATE_TIMEOUT),
+        });
+        (new_epoch, receivers)
+    };
+
+    let mut guard = QuitRoundGuard {
+        gate: Arc::clone(&gate),
+        host: Arc::clone(&host),
+        epoch: new_epoch,
+        armed: true,
+    };
+
+    // Start event before awaiting any gate, so main can show its progress UI
+    // and its 10-second Force offer for a round that is already installed.
+    if let Err(e) = host.emit_to(
+        QUIT_GATE_MAIN_LABEL,
+        "app_quit_started",
+        serde_json::json!({ "epoch": new_epoch, "attemptId": attempt_id }),
+    ) {
+        log::warn!("[quit-gate] app_quit_started emit failed: {e}");
+        // An unobservable live round is worse than no round: tear it down and
+        // return its own terminal result.
+        guard.armed = false;
+        let effects = gate.abort(new_epoch, QuitAbortReason::Cancelled);
+        apply_quit_gate_effects(host.as_ref(), &effects);
+        let outcome = gate.lock().terminal_for(new_epoch).unwrap_or_else(|| {
+            QuitOutcome::aborted(
+                new_epoch,
+                QuitAbortReason::Cancelled,
+                Vec::new(),
+                Vec::new(),
+            )
+        });
+        return Ok(outcome);
+    }
+
+    let targets: Vec<String> = {
+        let mut inner = gate.lock();
+        inner
+            .live_round(new_epoch)
+            .map(|round| round.snapshot.iter().cloned().collect())
+            .unwrap_or_default()
+    };
+    for label in &targets {
+        if let Err(e) = host.emit_to(
+            label,
+            "app_quit_requested",
+            serde_json::json!({ "epoch": new_epoch, "label": label }),
+        ) {
+            log::warn!("[quit-gate] app_quit_requested emit to {label} failed: {e}");
+        }
+    }
+
+    // A round with no gates consents immediately.
+    gate.finalize_consent(new_epoch);
+
+    let mut receivers: futures_util::stream::FuturesUnordered<_> = receivers.into_iter().collect();
+
+    let outcome = loop {
+        // ENROL FIRST. `Notified` snapshots the notify-waiters counter when it
+        // is CREATED and registers on first poll, so reading the round state
+        // before taking that snapshot opens a window in which a
+        // `notify_waiters()` is dropped on the floor. A lost resume wakeup
+        // would leave this task parked on `pending()` with a stale
+        // `deadline: None` and defeat QUIT_GATE_TIMEOUT entirely.
+        // Pinned by `waiter_enrols_before_reading_round_state`.
+        let notified = gate.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        if let Some(outcome) = gate.lock().terminal_for(new_epoch) {
+            break outcome;
+        }
+        let deadline = gate.deadline_for(new_epoch);
+        let has_receivers = !receivers.is_empty();
+        tokio::select! {
+            _ = &mut notified => {}
+            Some(_) = futures_util::StreamExt::next(&mut receivers), if has_receivers => {}
+            _ = async {
+                match deadline {
+                    Some(deadline) => gate.clock.sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                let effects = gate.on_timeout(new_epoch);
+                apply_quit_gate_effects(host.as_ref(), &effects);
+            }
+        }
+    };
+
+    guard.armed = false;
+    if outcome.outcome == QuitOutcomeKind::Exiting && gate.try_claim_exit(new_epoch) {
+        host.exit(0);
+    }
+    Ok(outcome)
+}
+
+#[tauri::command]
+fn quit_gate_register(
+    window: tauri::WebviewWindow,
+    gate: tauri::State<'_, Arc<QuitGate>>,
+) -> QuitGateRegistration {
+    gate.register(window.label())
+}
+
+#[tauri::command]
+fn quit_gate_unregister(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    gate: tauri::State<'_, Arc<QuitGate>>,
+) {
+    let effects = gate.unregister(window.label());
+    apply_quit_gate_effects(&TauriQuitHost::new(app), &effects);
+}
+
+#[tauri::command]
+fn quit_gate_resolve(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    gate: tauri::State<'_, Arc<QuitGate>>,
+    epoch: u64,
+    consent: bool,
+) {
+    let effects = gate.resolve(window.label(), epoch, consent);
+    apply_quit_gate_effects(&TauriQuitHost::new(app), &effects);
+}
+
+#[tauri::command]
+fn quit_gate_progress(
+    window: tauri::WebviewWindow,
+    gate: tauri::State<'_, Arc<QuitGate>>,
+    epoch: u64,
+    busy: bool,
+) {
+    gate.progress(window.label(), epoch, busy);
+}
+
+#[tauri::command]
+async fn quit_application(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    gate: tauri::State<'_, Arc<QuitGate>>,
+    force: bool,
+    epoch: Option<u64>,
+    attempt_id: Option<String>,
+) -> Result<QuitOutcome, String> {
+    let gate = Arc::clone(gate.inner());
+    let host: Arc<dyn QuitGateHost> = Arc::new(TauriQuitHost::new(app));
+    let label = window.label().to_string();
+    quit_gate_run(gate, host, &label, force, epoch, attempt_id).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
@@ -2810,6 +3631,7 @@ pub fn run(
         .manage(screenshot_hotkey_state) // #714
         .manage(crate::pty::input_activity::new_state()) // #871 substantive-input tracker
         .manage(crate::session::warnings::new_session_warning_state())
+        .manage(Arc::new(QuitGate::new())) // #2296 managed type: Arc<QuitGate>
         .setup(move |app| {
             use tauri::WebviewWindowBuilder;
             use tauri::WebviewUrl;
@@ -3698,6 +4520,11 @@ pub fn run(
                 commands::session::get_active_session,
                 commands::session::get_last_agent_message,
                 session::warnings::drain_session_warnings,
+                quit_gate_register,
+                quit_gate_unregister,
+                quit_gate_resolve,
+                quit_gate_progress,
+                quit_application,
                 commands::session::create_root_agent_session,
                 commands::task::task_get_title,
                 commands::task::task_set_title,
@@ -3863,6 +4690,14 @@ pub fn run(
                     event: tauri::WindowEvent::Destroyed,
                     ..
                 } => {
+                    // #2296 - a gate window that dies without answering must not
+                    // hold a quit round open. Synchronous: it only drops the
+                    // registration, clears busy and (if that gate was still
+                    // unanswered) aborts the round with reason `destroyed`.
+                    if let Some(gate) = app_handle.try_state::<Arc<QuitGate>>() {
+                        let gate = Arc::clone(gate.inner());
+                        quit_gate_window_gone(&gate, &TauriQuitHost::new(app_handle.clone()), &label);
+                    }
                     // #1363 - a destroyed window's terminal-output attachments are released
                     // here, in the backend, without any frontend cooperation. It is what keeps
                     // a window that died without detaching from leaving a session emitting to
@@ -5644,5 +6479,1062 @@ mod tests {
             &settings,
             Some("codex")
         ));
+    }
+}
+
+/// #2296 quit-gate unit tests.
+///
+/// Time is injected through `TestClock`, so every deadline assertion is exact
+/// and the suite never sleeps on wall-clock time. Events and process exit are
+/// injected through `TestHost`.
+#[cfg(test)]
+mod quit_gate_tests {
+    use super::{
+        apply_quit_gate_effects, quit_gate_run, quit_gate_window_gone, QuitAbortReason, QuitGate,
+        QuitGateClock, QuitGateHost, QuitGateRegistration, QuitOutcome, QuitOutcomeKind,
+        QUIT_GATE_TIMEOUT,
+    };
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, Weak};
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct TestHost {
+        events: Mutex<Vec<(String, String, serde_json::Value)>>,
+        exits: AtomicUsize,
+        fail_event: Mutex<Option<String>>,
+        gate: Mutex<Option<Weak<QuitGate>>>,
+        /// Registration attempted from inside the `app_quit_started` emit, to
+        /// prove the round was already installed when the event went out.
+        probe_at_start: Mutex<Option<QuitGateRegistration>>,
+    }
+
+    impl QuitGateHost for TestHost {
+        fn emit_to(
+            &self,
+            label: &str,
+            event: &str,
+            payload: serde_json::Value,
+        ) -> Result<(), String> {
+            if event == "app_quit_started" {
+                let probe = self
+                    .gate
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                    .map(|gate| gate.register("probe-at-start"));
+                *self.probe_at_start.lock().unwrap() = probe;
+            }
+            if self.fail_event.lock().unwrap().as_deref() == Some(event) {
+                return Err(format!("injected emit failure for {event}"));
+            }
+            self.events
+                .lock()
+                .unwrap()
+                .push((label.to_string(), event.to_string(), payload));
+            Ok(())
+        }
+
+        fn exit(&self, _code: i32) {
+            self.exits.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl TestHost {
+        fn exits(&self) -> usize {
+            self.exits.load(Ordering::SeqCst)
+        }
+
+        fn events_named(&self, event: &str) -> Vec<(String, serde_json::Value)> {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, name, _)| name == event)
+                .map(|(label, _, payload)| (label.clone(), payload.clone()))
+                .collect()
+        }
+
+        fn outcome_to_main(&self) -> Option<serde_json::Value> {
+            self.events_named("app_quit_outcome")
+                .into_iter()
+                .last()
+                .map(|(_, payload)| payload)
+        }
+    }
+
+    /// Manually stepped clock. `watch` (not `Notify`) so an `advance` between a
+    /// sleeper's tick read and its await cannot be lost.
+    struct TestClock {
+        ticks: tokio::sync::watch::Sender<Duration>,
+    }
+
+    impl Default for TestClock {
+        fn default() -> Self {
+            Self {
+                ticks: tokio::sync::watch::channel(Duration::ZERO).0,
+            }
+        }
+    }
+
+    impl TestClock {
+        fn advance(&self, by: Duration) {
+            self.ticks.send_modify(|now| *now += by);
+        }
+    }
+
+    impl QuitGateClock for TestClock {
+        fn now(&self) -> Duration {
+            *self.ticks.borrow()
+        }
+
+        fn sleep_until(&self, at: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            let mut rx = self.ticks.subscribe();
+            Box::pin(async move {
+                loop {
+                    if *rx.borrow_and_update() >= at {
+                        return;
+                    }
+                    if rx.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                }
+            })
+        }
+    }
+
+    fn new_gate() -> (
+        Arc<QuitGate>,
+        Arc<TestHost>,
+        Arc<dyn QuitGateHost>,
+        Arc<TestClock>,
+    ) {
+        let clock = Arc::new(TestClock::default());
+        let gate = Arc::new(QuitGate::with_clock(clock.clone()));
+        let host = Arc::new(TestHost::default());
+        *host.gate.lock().unwrap() = Some(Arc::downgrade(&gate));
+        let dyn_host: Arc<dyn QuitGateHost> = host.clone();
+        (gate, host, dyn_host, clock)
+    }
+
+    /// Lets the spawned quit task reach its next await point. The clock only
+    /// moves when a test calls `TestClock::advance`, so yielding is safe.
+    async fn settle() {
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn spawn_quit(
+        gate: &Arc<QuitGate>,
+        host: &Arc<dyn QuitGateHost>,
+        attempt: &str,
+    ) -> tokio::task::JoinHandle<Result<QuitOutcome, String>> {
+        let gate = Arc::clone(gate);
+        let host = Arc::clone(host);
+        let attempt = attempt.to_string();
+        tokio::spawn(
+            async move { quit_gate_run(gate, host, "main", false, None, Some(attempt)).await },
+        )
+    }
+
+    async fn force_quit(
+        gate: &Arc<QuitGate>,
+        host: &Arc<dyn QuitGateHost>,
+        epoch: Option<u64>,
+    ) -> QuitOutcome {
+        quit_gate_run(
+            Arc::clone(gate),
+            Arc::clone(host),
+            "main",
+            true,
+            epoch,
+            None,
+        )
+        .await
+        .expect("force quit from main is never an Err")
+    }
+
+    // --- consent, refusal, timeout -------------------------------------------
+
+    #[tokio::test]
+    async fn all_consent_exits_once() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        gate.register("watchers");
+
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, true));
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("watchers", 1, true));
+
+        let outcome = quit.await.unwrap().unwrap();
+        assert_eq!(outcome, QuitOutcome::exiting(1));
+        assert_eq!(host.exits(), 1);
+        // Terminal Exiting is not an abort: no app_quit_outcome, no cancels.
+        assert!(host.events_named("app_quit_outcome").is_empty());
+        assert!(host.events_named("app_quit_cancelled").is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_registered_gates_exits_immediately() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        let outcome = spawn_quit(&gate, &dyn_host, "attempt-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, QuitOutcome::exiting(1));
+        assert_eq!(host.exits(), 1);
+    }
+
+    #[tokio::test]
+    async fn all_consent_writes_terminal_before_cleanup() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, true));
+        // Cleanup already ran (a new round may be allocated), yet the terminal
+        // slot still reads Exiting — cleanup cannot replace it with Aborted.
+        assert_eq!(
+            gate.terminal_snapshot_for_test(1),
+            Some(QuitOutcome::exiting(1))
+        );
+        assert_eq!(quit.await.unwrap().unwrap(), QuitOutcome::exiting(1));
+        assert_eq!(host.exits(), 1);
+    }
+
+    #[tokio::test]
+    async fn refusal_aborts_immediately_despite_busy_peer() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        gate.register("watchers");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        gate.progress("watchers", 1, true); // peer is mid-save
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, false));
+
+        let outcome = quit.await.unwrap().unwrap();
+        assert_eq!(outcome.outcome, QuitOutcomeKind::Aborted);
+        assert_eq!(outcome.epoch, 1);
+        assert_eq!(outcome.reason, Some(QuitAbortReason::Refused));
+        assert_eq!(
+            outcome.refusing_labels.as_deref(),
+            Some(["spec-board".to_string()].as_slice())
+        );
+        assert_eq!(host.exits(), 0);
+        let emitted = host.outcome_to_main().unwrap();
+        assert_eq!(emitted["outcome"], "Aborted");
+        assert_eq!(emitted["epoch"], 1);
+        assert_eq!(emitted["reason"], "refused");
+        assert_eq!(emitted["refusingLabels"][0], "spec-board");
+    }
+
+    #[tokio::test]
+    async fn cancellation_targets_every_gate_of_the_epoch() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        gate.register("watchers");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("watchers", 1, false));
+        quit.await.unwrap().unwrap();
+
+        let mut targets: Vec<String> = host
+            .events_named("app_quit_cancelled")
+            .into_iter()
+            .map(|(label, payload)| {
+                assert_eq!(payload["epoch"], 1);
+                assert_eq!(payload["label"], label);
+                label
+            })
+            .collect();
+        targets.sort();
+        assert_eq!(targets, vec!["spec-board", "watchers"]);
+    }
+
+    #[tokio::test]
+    async fn no_timeout_at_29999ms_aborts_at_30s() {
+        let (gate, host, dyn_host, clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        clock.advance(Duration::from_millis(29_999));
+        settle().await;
+        assert!(!quit.is_finished(), "must outlast main's 10s Force offer");
+        assert_eq!(gate.terminal_snapshot_for_test(1), None);
+
+        clock.advance(Duration::from_millis(1));
+        let outcome = quit.await.unwrap().unwrap();
+        assert_eq!(outcome.outcome, QuitOutcomeKind::Aborted);
+        assert_eq!(outcome.reason, Some(QuitAbortReason::Timeout));
+        assert_eq!(
+            outcome.unanswered_labels.as_deref(),
+            Some(["spec-board".to_string()].as_slice())
+        );
+        assert_eq!(host.exits(), 0);
+        assert_eq!(QUIT_GATE_TIMEOUT, Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn timeout_labels_are_sorted() {
+        let (gate, _host, dyn_host, clock) = new_gate();
+        gate.register("zeta");
+        gate.register("alpha");
+        gate.register("mid");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        clock.advance(QUIT_GATE_TIMEOUT);
+        let outcome = quit.await.unwrap().unwrap();
+        assert_eq!(
+            outcome.unanswered_labels.as_deref(),
+            Some(["alpha".to_string(), "mid".to_string(), "zeta".to_string()].as_slice())
+        );
+    }
+
+    // --- pause / resume ------------------------------------------------------
+
+    #[tokio::test]
+    async fn busy_pause_preserves_remaining_budget() {
+        let (gate, host, dyn_host, clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        clock.advance(Duration::from_secs(10));
+        settle().await;
+        gate.progress("spec-board", 1, true); // 20s left, clock stops
+
+        clock.advance(Duration::from_secs(300)); // slow save
+        settle().await;
+        assert!(!quit.is_finished(), "a busy gate must not time out");
+
+        gate.progress("spec-board", 1, false); // 20s budget restored
+        clock.advance(Duration::from_millis(19_999));
+        settle().await;
+        assert!(!quit.is_finished());
+
+        clock.advance(Duration::from_millis(1));
+        let outcome = quit.await.unwrap().unwrap();
+        assert_eq!(outcome.reason, Some(QuitAbortReason::Timeout));
+        assert_eq!(host.exits(), 0);
+    }
+
+    #[tokio::test]
+    async fn near_deadline_busy_wins_over_timeout() {
+        let (gate, _host, dyn_host, clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        clock.advance(Duration::from_millis(29_999));
+        settle().await;
+        gate.progress("spec-board", 1, true);
+        clock.advance(Duration::from_secs(600));
+        settle().await;
+        assert!(!quit.is_finished());
+
+        gate.progress("spec-board", 1, false);
+        clock.advance(Duration::from_millis(1));
+        assert_eq!(
+            quit.await.unwrap().unwrap().reason,
+            Some(QuitAbortReason::Timeout)
+        );
+    }
+
+    #[tokio::test]
+    async fn busy_progress_cannot_affect_a_later_epoch() {
+        let (gate, host, dyn_host, clock) = new_gate();
+        gate.register("spec-board");
+        let first = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, false));
+        first.await.unwrap().unwrap();
+
+        gate.register("spec-board");
+        let second = spawn_quit(&gate, &dyn_host, "attempt-2");
+        settle().await;
+        gate.progress("spec-board", 1, true); // stale epoch: ignored
+
+        clock.advance(QUIT_GATE_TIMEOUT);
+        let outcome = second.await.unwrap().unwrap();
+        assert_eq!(outcome.epoch, 2);
+        assert_eq!(outcome.reason, Some(QuitAbortReason::Timeout));
+    }
+
+    // --- resolve validation --------------------------------------------------
+
+    #[tokio::test]
+    async fn stale_double_and_unknown_resolve_do_nothing() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        assert!(gate
+            .resolve("spec-board", 99, true)
+            .outcome_to_main
+            .is_none());
+        assert!(gate.resolve("ghost", 1, false).outcome_to_main.is_none());
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, true));
+        // Duplicate answer, now with a refusal, must not reopen the decision.
+        assert!(gate
+            .resolve("spec-board", 1, false)
+            .outcome_to_main
+            .is_none());
+
+        assert_eq!(quit.await.unwrap().unwrap(), QuitOutcome::exiting(1));
+        assert_eq!(host.exits(), 1);
+    }
+
+    // --- registration lifecycle ----------------------------------------------
+
+    #[tokio::test]
+    async fn registration_is_rejected_during_a_round_and_retried_after() {
+        let (gate, host, dyn_host, clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        assert_eq!(
+            gate.register("watchers"),
+            QuitGateRegistration::InFlight { epoch: 1 }
+        );
+        // The late registrant is excluded from the atomic snapshot, so it is
+        // not an unanswered gate either.
+        clock.advance(QUIT_GATE_TIMEOUT);
+        let outcome = quit.await.unwrap().unwrap();
+        assert_eq!(
+            outcome.unanswered_labels.as_deref(),
+            Some(["spec-board".to_string()].as_slice())
+        );
+
+        // Retry after the epoch terminates now succeeds.
+        assert_eq!(gate.register("watchers"), QuitGateRegistration::Registered);
+        let second = spawn_quit(&gate, &dyn_host, "attempt-2");
+        settle().await;
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("watchers", 2, true));
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 2, true));
+        assert_eq!(second.await.unwrap().unwrap(), QuitOutcome::exiting(2));
+    }
+
+    #[tokio::test]
+    async fn unanswered_unregister_aborts_but_consented_unregister_does_not() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        gate.register("watchers");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        // Consented gate leaves: its consent is final, the round survives.
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("watchers", 1, true));
+        apply_quit_gate_effects(host.as_ref(), &gate.unregister("watchers"));
+        settle().await;
+        assert!(!quit.is_finished());
+
+        // Unanswered gate leaves: abort with `unregistered`.
+        apply_quit_gate_effects(host.as_ref(), &gate.unregister("spec-board"));
+        let outcome = quit.await.unwrap().unwrap();
+        assert_eq!(outcome.reason, Some(QuitAbortReason::Unregistered));
+        assert_eq!(
+            outcome.unanswered_labels.as_deref(),
+            Some(["spec-board".to_string()].as_slice())
+        );
+        assert_eq!(host.exits(), 0);
+    }
+
+    #[tokio::test]
+    async fn unanswered_destruction_aborts_and_consented_destruction_does_not() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        gate.register("watchers");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("watchers", 1, true));
+        quit_gate_window_gone(&gate, host.as_ref(), "watchers");
+        settle().await;
+        assert!(!quit.is_finished());
+
+        // A dirty board destroyed without answering is NOT consent.
+        quit_gate_window_gone(&gate, host.as_ref(), "spec-board");
+        let outcome = quit.await.unwrap().unwrap();
+        assert_eq!(outcome.reason, Some(QuitAbortReason::Destroyed));
+        assert_eq!(
+            outcome.unanswered_labels.as_deref(),
+            Some(["spec-board".to_string()].as_slice())
+        );
+        assert_eq!(host.exits(), 0);
+    }
+
+    #[tokio::test]
+    async fn main_destruction_retains_the_launched_round() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        quit_gate_window_gone(&gate, host.as_ref(), "main");
+        settle().await;
+        assert!(!quit.is_finished(), "main is not a gate; the round stands");
+
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, true));
+        assert_eq!(quit.await.unwrap().unwrap(), QuitOutcome::exiting(1));
+        assert_eq!(host.exits(), 1);
+    }
+
+    #[tokio::test]
+    async fn destroyed_gate_is_dropped_from_the_next_round() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        quit_gate_window_gone(&gate, host.as_ref(), "spec-board");
+
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        assert_eq!(quit.await.unwrap().unwrap(), QuitOutcome::exiting(1));
+        assert_eq!(host.exits(), 1);
+    }
+
+    // --- start event ---------------------------------------------------------
+
+    #[tokio::test]
+    async fn start_event_follows_installation_and_precedes_a_slow_gate() {
+        let (gate, host, dyn_host, clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-xyz");
+        settle().await;
+
+        // Emitted while the round was already installed: the probe registration
+        // made from inside the emit was rejected as InFlight.
+        assert_eq!(
+            *host.probe_at_start.lock().unwrap(),
+            Some(QuitGateRegistration::InFlight { epoch: 1 })
+        );
+        let started = host.events_named("app_quit_started");
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].0, "main");
+        assert_eq!(started[0].1["epoch"], 1);
+        assert_eq!(started[0].1["attemptId"], "attempt-xyz");
+
+        // ...and before the slow gate answers.
+        let requested = host.events_named("app_quit_requested");
+        assert_eq!(requested.len(), 1);
+        assert_eq!(requested[0].0, "spec-board");
+        gate.progress("spec-board", 1, true);
+        clock.advance(Duration::from_secs(120));
+        settle().await;
+        assert!(!quit.is_finished());
+
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, true));
+        assert_eq!(quit.await.unwrap().unwrap(), QuitOutcome::exiting(1));
+    }
+
+    #[tokio::test]
+    async fn failed_start_emit_aborts_the_installed_round() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        *host.fail_event.lock().unwrap() = Some("app_quit_started".to_string());
+        gate.register("spec-board");
+
+        let outcome = spawn_quit(&gate, &dyn_host, "attempt-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.outcome, QuitOutcomeKind::Aborted);
+        assert_eq!(outcome.epoch, 1);
+        assert_eq!(outcome.reason, Some(QuitAbortReason::Cancelled));
+        assert_eq!(host.exits(), 0);
+        // The round is released, so a later attempt can run.
+        assert_eq!(gate.register("watchers"), QuitGateRegistration::Registered);
+    }
+
+    // --- concurrency and epochs ----------------------------------------------
+
+    #[tokio::test]
+    async fn concurrent_non_force_returns_in_flight_matching_the_terminal_outcome() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let first = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        let second = quit_gate_run(
+            Arc::clone(&gate),
+            Arc::clone(&dyn_host),
+            "main",
+            false,
+            None,
+            Some("attempt-2".to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second, QuitOutcome::in_flight(1));
+        // A rejected invoke emits no second start event.
+        assert_eq!(host.events_named("app_quit_started").len(), 1);
+
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, false));
+        let terminal = first.await.unwrap().unwrap();
+        assert_eq!(terminal.epoch, second.epoch);
+        assert_eq!(host.outcome_to_main().unwrap()["epoch"], 1);
+    }
+
+    #[tokio::test]
+    async fn successive_rounds_get_distinct_increasing_epochs() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+
+        let first = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, false));
+        assert_eq!(first.await.unwrap().unwrap().epoch, 1);
+
+        gate.register("spec-board");
+        let second = spawn_quit(&gate, &dyn_host, "attempt-2");
+        settle().await;
+
+        // Late prior-round traffic must not touch the live round.
+        gate.progress("spec-board", 1, true);
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, true));
+        apply_quit_gate_effects(host.as_ref(), &gate.unregister("gone-with-round-1"));
+        settle().await;
+        assert!(!second.is_finished());
+
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 2, true));
+        assert_eq!(second.await.unwrap().unwrap(), QuitOutcome::exiting(2));
+        assert_eq!(host.exits(), 1);
+    }
+
+    // --- force ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn force_supersedes_the_original_waiter_with_one_exit() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        let forced = force_quit(&gate, &dyn_host, Some(1)).await;
+        assert_eq!(forced, QuitOutcome::exiting(1));
+
+        let original = quit.await.unwrap().unwrap();
+        assert_eq!(original, QuitOutcome::exiting(1));
+        assert_eq!(host.exits(), 1, "exit is called exactly once");
+    }
+
+    #[tokio::test]
+    async fn force_wins_while_a_gate_is_busy() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+        gate.progress("spec-board", 1, true); // paused mid-save
+
+        assert_eq!(force_quit(&gate, &dyn_host, Some(1)).await.epoch, 1);
+        assert_eq!(quit.await.unwrap().unwrap(), QuitOutcome::exiting(1));
+        assert_eq!(host.exits(), 1);
+    }
+
+    #[tokio::test]
+    async fn force_after_abort_is_stale_and_never_exits() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, false));
+        quit.await.unwrap().unwrap();
+
+        assert_eq!(
+            force_quit(&gate, &dyn_host, Some(1)).await,
+            QuitOutcome::stale(1)
+        );
+        assert_eq!(host.exits(), 0);
+    }
+
+    #[tokio::test]
+    async fn stale_force_cannot_clear_a_later_live_round() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let first = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, false));
+        first.await.unwrap().unwrap();
+
+        gate.register("spec-board");
+        let second = spawn_quit(&gate, &dyn_host, "attempt-2");
+        settle().await;
+
+        assert_eq!(
+            force_quit(&gate, &dyn_host, Some(1)).await,
+            QuitOutcome::stale(1)
+        );
+        assert_eq!(host.exits(), 0);
+        settle().await;
+        assert!(!second.is_finished(), "round 2 survives a stale Force");
+
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 2, true));
+        assert_eq!(second.await.unwrap().unwrap(), QuitOutcome::exiting(2));
+        assert_eq!(host.exits(), 1);
+    }
+
+    #[tokio::test]
+    async fn force_without_an_epoch_cannot_authorize_exit() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        assert_eq!(
+            force_quit(&gate, &dyn_host, None).await,
+            QuitOutcome::stale(0)
+        );
+        assert_eq!(host.exits(), 0);
+        settle().await;
+        assert!(!quit.is_finished());
+
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, true));
+        quit.await.unwrap().unwrap();
+        assert_eq!(host.exits(), 1);
+    }
+
+    #[tokio::test]
+    async fn force_bumps_the_allocator_so_the_next_round_is_distinct() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+        force_quit(&gate, &dyn_host, Some(1)).await;
+        quit.await.unwrap().unwrap();
+
+        apply_quit_gate_effects(host.as_ref(), &gate.unregister("spec-board"));
+        let next = spawn_quit(&gate, &dyn_host, "attempt-2")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            next.epoch > 1,
+            "epoch {} must be past the forced one",
+            next.epoch
+        );
+        assert_eq!(host.exits(), 2, "the new round exits on its own account");
+    }
+
+    // --- cancellation / drop -------------------------------------------------
+
+    #[tokio::test]
+    async fn dropped_quit_task_releases_the_round_with_a_terminal_outcome() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        quit.abort();
+        settle().await;
+
+        // The dropped task cannot return, but the terminal result is explicit
+        // and observable by main.
+        assert_eq!(
+            gate.terminal_snapshot_for_test(1).map(|o| o.reason),
+            Some(Some(QuitAbortReason::Cancelled))
+        );
+        let emitted = host.outcome_to_main().unwrap();
+        assert_eq!(emitted["outcome"], "Aborted");
+        assert_eq!(emitted["reason"], "cancelled");
+        assert_eq!(emitted["epoch"], 1);
+        assert_eq!(host.exits(), 0);
+
+        // In-flight was released: a fresh round runs with a new epoch.
+        gate.register("spec-board");
+        let second = spawn_quit(&gate, &dyn_host, "attempt-2");
+        settle().await;
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 2, true));
+        assert_eq!(second.await.unwrap().unwrap(), QuitOutcome::exiting(2));
+    }
+
+    // --- authority -----------------------------------------------------------
+
+    #[tokio::test]
+    async fn only_main_may_invoke_quit() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        for force in [false, true] {
+            let err = quit_gate_run(
+                Arc::clone(&gate),
+                Arc::clone(&dyn_host),
+                "spec-board",
+                force,
+                Some(1),
+                Some("attempt-1".to_string()),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("restricted to the 'main' window"), "{err}");
+        }
+        assert_eq!(host.exits(), 0);
+        assert!(host.events_named("app_quit_started").is_empty());
+    }
+
+    #[tokio::test]
+    async fn attempt_id_is_required_for_a_new_round() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        for attempt in [None, Some(String::new())] {
+            let err = quit_gate_run(
+                Arc::clone(&gate),
+                Arc::clone(&dyn_host),
+                "main",
+                false,
+                None,
+                attempt,
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("nonempty attemptId"), "{err}");
+        }
+        assert_eq!(host.exits(), 0);
+    }
+
+    // --- B1 regression: lost resume wakeup ------------------------------------
+
+    /// Documents the primitive the waiter loop depends on.
+    ///
+    /// `Notified` snapshots the notify-waiters counter when it is CREATED, so
+    /// a `notify_waiters()` landing before that snapshot is lost forever while
+    /// one landing after it is observed even before the first poll. That is
+    /// exactly why `quit_gate_run` creates and enables its `Notified` ahead of
+    /// reading the round state instead of after it.
+    #[tokio::test]
+    async fn notified_snapshot_must_be_taken_before_the_state_read() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+
+        // Snapshot taken too late: the notification is already history.
+        notify.notify_waiters();
+        let late = notify.notified();
+        tokio::pin!(late);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut late)
+                .await
+                .is_err(),
+            "a Notified created after notify_waiters must miss it"
+        );
+
+        // Snapshot taken first: observed, even though it had not been polled.
+        let early = notify.notified();
+        tokio::pin!(early);
+        early.as_mut().enable();
+        notify.notify_waiters();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut early)
+                .await
+                .is_ok(),
+            "a Notified created before notify_waiters must observe it"
+        );
+    }
+
+    /// B1 REGRESSION BARRIER.
+    ///
+    /// The lost-wakeup window is a handful of instructions inside one
+    /// synchronous stretch of `quit_gate_run`: between the round-state read and
+    /// the `notified()` counter snapshot. It is not reachable from a black-box
+    /// test — I swept a resume across that window from a second thread for
+    /// thousands of rounds against the buggy ordering and never hit it — so the
+    /// ordering is pinned structurally instead, the way the single-exit site is.
+    ///
+    /// If someone moves the enrolment back below the state read, this fails.
+    #[test]
+    fn waiter_enrols_before_reading_round_state() {
+        let source = include_str!("lib.rs");
+        let production = source
+            .split("mod quit_gate_tests {")
+            .next()
+            .expect("test module marker present");
+
+        let loops: Vec<&str> = production.split("let outcome = loop {").skip(1).collect();
+        assert_eq!(loops.len(), 1, "expected exactly one quit waiter loop");
+        let head = loops[0]
+            .split("tokio::select! {")
+            .next()
+            .expect("waiter loop selects");
+
+        let enrol = head
+            .find("gate.notify.notified()")
+            .expect("waiter loop enrols on the gate notify");
+        let terminal = head
+            .find("terminal_for(new_epoch)")
+            .expect("waiter loop reads the terminal slot");
+        let deadline = head
+            .find("deadline_for(new_epoch)")
+            .expect("waiter loop reads the deadline");
+
+        assert!(
+            enrol < terminal && enrol < deadline,
+            "the Notified snapshot must be taken BEFORE the round-state read, \
+             otherwise a notify_waiters() in between is lost and the waiter \
+             parks forever with a stale deadline"
+        );
+        assert!(
+            head.contains(".enable()"),
+            "the Notified must be enabled up front, not only on first poll"
+        );
+    }
+
+    /// Companion smoke test: pause/resume driven from real threads must always
+    /// leave a round that can still time out. This does NOT reach the B1
+    /// window (see `waiter_enrols_before_reading_round_state`); it guards the
+    /// ordinary multi-threaded pause/resume path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn busy_resume_from_another_thread_still_times_out() {
+        for attempt in 0..200 {
+            let (gate, _host, dyn_host, clock) = new_gate();
+            gate.register("spec-board");
+            let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+
+            // Wait for the atomic install rather than assuming a yield count.
+            while gate.deadline_for(1).is_none() {
+                tokio::task::yield_now().await;
+            }
+
+            gate.progress("spec-board", 1, true);
+            tokio::time::sleep(Duration::from_micros(200)).await;
+
+            let hammer = {
+                let gate = Arc::clone(&gate);
+                let delay = Duration::from_nanos((attempt % 250) * 100);
+                tokio::task::spawn_blocking(move || {
+                    gate.progress("spec-board", 1, true);
+                    let spin_until = std::time::Instant::now() + delay;
+                    while std::time::Instant::now() < spin_until {
+                        std::hint::spin_loop();
+                    }
+                    gate.progress("spec-board", 1, false);
+                })
+            };
+            hammer.await.unwrap();
+
+            // The gate is idle and never answers: only the timeout can end it.
+            clock.advance(QUIT_GATE_TIMEOUT * 2);
+            let outcome = tokio::time::timeout(Duration::from_secs(5), quit)
+                .await
+                .unwrap_or_else(|_| panic!("attempt {attempt}: waiter never timed out"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(outcome.reason, Some(QuitAbortReason::Timeout));
+            assert_eq!(outcome.epoch, 1);
+        }
+    }
+
+    // --- N2 regression: terminal precedes sender drop -------------------------
+
+    /// The waiter must be able to read a terminal result the moment its
+    /// receiver closes, for BOTH teardown paths.
+    #[tokio::test]
+    async fn teardown_writes_the_terminal_before_dropping_the_sender() {
+        for (reason, teardown) in [
+            (QuitAbortReason::Unregistered, false),
+            (QuitAbortReason::Destroyed, true),
+        ] {
+            let (gate, host, dyn_host, _clock) = new_gate();
+            gate.register("spec-board");
+            let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+            settle().await;
+
+            let effects = if teardown {
+                gate.window_gone("spec-board")
+            } else {
+                gate.unregister("spec-board")
+            };
+            // Observed straight after the call returns, before the waiter has
+            // run at all: the decision is already durable.
+            assert_eq!(
+                gate.terminal_snapshot_for_test(1).map(|o| o.reason),
+                Some(Some(reason))
+            );
+            apply_quit_gate_effects(host.as_ref(), &effects);
+
+            let outcome = quit.await.unwrap().unwrap();
+            assert_eq!(outcome.reason, Some(reason));
+            assert_eq!(host.exits(), 0);
+        }
+    }
+
+    #[test]
+    fn outcome_serialization_omits_absent_fields() {
+        let json = serde_json::to_value(QuitOutcome::in_flight(7)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "outcome": "InFlight", "epoch": 7 })
+        );
+        let json = serde_json::to_value(QuitOutcome::aborted(
+            2,
+            QuitAbortReason::Timeout,
+            vec!["b".into(), "a".into()],
+            vec!["c".into()],
+        ))
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "outcome": "Aborted",
+                "epoch": 2,
+                "reason": "timeout",
+                "refusingLabels": ["b", "a"],
+                "unansweredLabels": ["c"],
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(QuitGateRegistration::Registered).unwrap(),
+            serde_json::json!({ "status": "Registered" })
+        );
+    }
+
+    /// The gate owns the only production `AppHandle::exit` call. Guarding it
+    /// here keeps a second exit path from being added silently.
+    #[test]
+    fn exactly_one_production_exit_site() {
+        let source = include_str!("lib.rs");
+        let production = source
+            .split("mod quit_gate_tests {")
+            .next()
+            .expect("test module marker present");
+
+        // Collect the RECEIVER of every `.exit(` call in production code, so a
+        // second exit smuggled in as `app_handle.exit(0)` or `handle.exit(0)`
+        // fails here instead of slipping past a literal match.
+        let receivers: Vec<String> = production
+            .match_indices(".exit(")
+            .map(|(idx, _)| {
+                production[..idx]
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<Vec<char>>()
+                    .into_iter()
+                    .rev()
+                    .collect()
+            })
+            .collect();
+
+        // `app` is the one real `AppHandle::exit`; `host` is the injected seam
+        // that routes every Exiting decision to it.
+        let unexpected: Vec<&String> = receivers
+            .iter()
+            .filter(|recv| recv.as_str() != "app" && recv.as_str() != "host")
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "unexpected exit receivers: {unexpected:?}"
+        );
+        assert_eq!(
+            receivers
+                .iter()
+                .filter(|recv| recv.as_str() == "app")
+                .count(),
+            1,
+            "quit gate must keep exactly one AppHandle::exit site"
+        );
     }
 }
