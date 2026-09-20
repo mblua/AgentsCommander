@@ -921,6 +921,7 @@ agentscommander loop remove  --project MyProject --loop daily-sync
 | `--prompt` / `--prompt-file` | create, update | Prompt text or UTF-8 prompt file. Use exactly one when setting a prompt. |
 | `--busy-coordinator` | create, update | `wait-until-idle`, `force-inject`, or `skip`. |
 | `--force-inject-when-busy` | create, update | Backward-compatible shortcut for `--busy-coordinator force-inject`. |
+| `--session-start` | create, update | `fresh` or `accumulate`. On create, omitted means `fresh`. On update, omitted leaves the current value unchanged. |
 
 Output is JSON for list/create/update/enable/disable. `remove` prints a short message unless `AC_MACHINE_OUTPUT` is set, in which case it prints JSON.
 
