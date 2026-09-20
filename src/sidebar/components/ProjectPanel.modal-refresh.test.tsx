@@ -139,6 +139,7 @@ function loopFixture(): AcLoopSummary {
     workgroup: workgroupName,
     promptPreview: "Short preview",
     busyCoordinator: "skip",
+    sessionStart: "fresh",
     path: `${projectPath}\\.ac\\_loop_${loopId}`,
     configPath: `${projectPath}\\.ac\\_loop_${loopId}\\config.toml`,
     lastCheckedAt: null,

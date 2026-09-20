@@ -36,6 +36,7 @@ const loopSummary: AcLoopSummary = {
   workgroup: "wg-10-dev-team",
   promptPreview: "Short preview",
   busyCoordinator: "skip",
+  sessionStart: "fresh",
   path: "C:\\Project\\.ac\\_loop_weekday-standup",
   configPath: "C:\\Project\\.ac\\_loop_weekday-standup\\config.toml",
   lastCheckedAt: null,
@@ -102,6 +103,13 @@ function changeInput(selector: string, value: string): void {
   if (!input) throw new Error(`Missing input ${selector}`);
   input.value = value;
   input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function setCheckbox(selector: string, checked: boolean): void {
+  const checkbox = document.querySelector<HTMLInputElement>(selector);
+  if (!checkbox) throw new Error(`Missing checkbox ${selector}`);
+  checkbox.checked = checked;
+  checkbox.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 async function clickSave(): Promise<void> {
@@ -195,5 +203,96 @@ describe("EditLoopModal", () => {
     await clickSave();
 
     expect(LoopAPI.update).toHaveBeenCalledWith("C:\\Project", "weekday-standup", {});
+  });
+
+  it("renders the accumulate control checked or unchecked from the loaded session start", async () => {
+    m.getConfig.mockResolvedValue({
+      summary: loopWith({ sessionStart: "accumulate" }),
+      promptBody: "Full prompt body from config",
+    });
+
+    renderModal(loopWith({ sessionStart: "accumulate" }));
+    await settle();
+
+    expect(document.querySelector<HTMLInputElement>('[data-ac-testid="loop.edit.accumulate"]')?.checked).toBe(true);
+
+    dispose?.();
+    dispose = undefined;
+    document.body.innerHTML = "";
+
+    m.getConfig.mockResolvedValue({
+      summary: loopWith({ sessionStart: "fresh" }),
+      promptBody: "Full prompt body from config",
+    });
+
+    renderModal(loopWith({ sessionStart: "fresh" }));
+    await settle();
+
+    expect(document.querySelector<HTMLInputElement>('[data-ac-testid="loop.edit.accumulate"]')?.checked).toBe(false);
+  });
+
+  it("sends no sessionStart key for a name-only edit", async () => {
+    m.getConfig.mockResolvedValue({
+      summary: loopWith({ sessionStart: "accumulate" }),
+      promptBody: "Full prompt body from config",
+    });
+
+    renderModal(loopWith({ sessionStart: "accumulate" }));
+    await settle();
+
+    changeInput('[data-ac-testid="loop.edit.name"]', "Renamed standup");
+    await clickSave();
+
+    expect(LoopAPI.update).toHaveBeenCalledWith("C:\\Project", "weekday-standup", {
+      name: "Renamed standup",
+    });
+  });
+
+  it("sends sessionStart fresh when the accumulate control is unchecked", async () => {
+    m.getConfig.mockResolvedValue({
+      summary: loopWith({ sessionStart: "accumulate" }),
+      promptBody: "Full prompt body from config",
+    });
+
+    renderModal(loopWith({ sessionStart: "accumulate" }));
+    await settle();
+
+    setCheckbox('[data-ac-testid="loop.edit.accumulate"]', false);
+    await clickSave();
+
+    expect(LoopAPI.update).toHaveBeenCalledWith("C:\\Project", "weekday-standup", {
+      sessionStart: "fresh",
+    });
+  });
+
+  it("sends sessionStart accumulate without touching busyCoordinator when the control is checked", async () => {
+    renderModal();
+    await settle();
+
+    setCheckbox('[data-ac-testid="loop.edit.accumulate"]', true);
+    await clickSave();
+
+    expect(LoopAPI.update).toHaveBeenCalledWith("C:\\Project", "weekday-standup", {
+      sessionStart: "accumulate",
+    });
+  });
+
+  it("sends no sessionStart key for a name-only edit when the summary prop is stale", async () => {
+    m.getConfig.mockResolvedValue({
+      summary: loopWith({ sessionStart: "accumulate" }),
+      promptBody: "Full prompt body from config",
+    });
+
+    renderModal(loopWith({ sessionStart: "fresh" }));
+    await settle();
+
+    expect(document.querySelector<HTMLInputElement>('[data-ac-testid="loop.edit.accumulate"]')?.checked).toBe(true);
+
+    changeInput('[data-ac-testid="loop.edit.name"]', "Renamed standup");
+    await clickSave();
+
+    expect(LoopAPI.update).toHaveBeenCalledWith("C:\\Project", "weekday-standup", {
+      name: "Renamed standup",
+    });
   });
 });

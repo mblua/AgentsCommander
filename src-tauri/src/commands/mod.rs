@@ -1,5 +1,6 @@
 pub mod ac_discovery;
 pub mod agent_creator;
+pub mod co_managed;
 pub mod codex_resolver;
 pub mod config;
 pub mod entity_creation;

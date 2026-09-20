@@ -553,8 +553,8 @@ fn issue_1867_isolation_source_contract() {
         (
             "cli_loop.rs",
             include_str!("cli_loop.rs"),
-            3,
-            &[("run_json", 1), ("run_stdout", 1), ("run_fail", 1)],
+            1,
+            &[("run_output", 1)],
             &[],
         ),
         (

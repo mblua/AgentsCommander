@@ -30,6 +30,7 @@ function loop(): AcLoopSummary {
     workgroup: "room-29-git-npm-expert-team",
     promptPreview: "Short preview",
     busyCoordinator: "skip",
+    sessionStart: "fresh",
     path: `${projectPath}\\.ac\\_loop_daily-release`,
     configPath: `${projectPath}\\.ac\\_loop_daily-release\\config.toml`,
     lastCheckedAt: null,

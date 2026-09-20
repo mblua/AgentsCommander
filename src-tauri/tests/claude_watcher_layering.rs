@@ -1234,6 +1234,9 @@ fn analyze_guard(
 fn production_modules() -> BTreeSet<String> {
     [
         CRATE_ID,
+        // #2232 phase 1: the capture record module the watchers now depend on.
+        "agentscommander_lib::capture",
+        "agentscommander_lib::capture::record",
         "agentscommander_lib::config",
         "agentscommander_lib::network",
         "agentscommander_lib::telegram",
@@ -1257,6 +1260,9 @@ fn expected_dependencies() -> BTreeSet<DependencyObservation> {
             TARGET_ROOT_SOURCE,
             "agentscommander_lib::telegram::jsonl_kernel",
         ),
+        // #2232 phase 1: the watcher emits one capture record per accepted
+        // assistant record.
+        (TARGET_ROOT_SOURCE, "agentscommander_lib::capture::record"),
     ]
     .into_iter()
     .map(|(source, module)| DependencyObservation {

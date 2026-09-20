@@ -1,6 +1,7 @@
 pub mod agent_update;
 pub mod agent_version;
 pub mod api;
+pub mod capture;
 pub mod cli;
 pub mod commands;
 pub mod config;
@@ -3744,6 +3745,9 @@ pub fn run(
                 commands::config::agent_update_cancel,
                 commands::config::agent_updates_cancel_all,
                 commands::config::get_agent_update_overview,
+                commands::co_managed::co_managed_get,
+                commands::co_managed::co_managed_set_enabled,
+                commands::co_managed::co_managed_effective_state,
                 commands::repos::search_repos,
                 commands::repos::git_remote_url,
                 commands::telegram::telegram_attach,

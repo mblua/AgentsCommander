@@ -394,6 +394,26 @@ pub struct AppSettings {
     /// Gemini model for voice transcription
     #[serde(default = "default_gemini_model")]
     pub gemini_model: String,
+    /// #2265 Co-managed: Jev (TypeSafe System One) API key. `""` means not configured.
+    #[serde(default)]
+    pub jev_api_key: String,
+    /// #2265 Co-managed: Jev model. Pinned to the version the 0.70/0.15
+    /// thresholds were measured on; a newer model is a deliberate, visible
+    /// change that invalidates those numbers.
+    #[serde(default = "default_jev_model")]
+    pub jev_model: String,
+    /// #2265 Co-managed: Jev endpoint.
+    #[serde(default = "default_jev_endpoint")]
+    pub jev_endpoint: String,
+    /// #2265 Co-managed: Jev request timeout, in seconds.
+    #[serde(default = "default_jev_timeout_secs")]
+    pub jev_timeout_secs: u64,
+    /// #2265 Co-managed: judgment threshold.
+    #[serde(default = "default_jev_threshold")]
+    pub jev_threshold: f32,
+    /// #2265 Co-managed: minimum margin between the top two judgments.
+    #[serde(default = "default_jev_margin")]
+    pub jev_margin: f32,
     /// Auto-execute (send Enter) after voice transcription
     #[serde(default = "default_true")]
     pub voice_auto_execute: bool,
@@ -872,6 +892,26 @@ fn default_gemini_model() -> String {
     "gemini-2.5-flash".to_string()
 }
 
+fn default_jev_model() -> String {
+    "jev-1.13.0".to_string()
+}
+
+fn default_jev_endpoint() -> String {
+    "https://api.typesafe.ai/v1/systemone".to_string()
+}
+
+fn default_jev_timeout_secs() -> u64 {
+    20
+}
+
+fn default_jev_threshold() -> f32 {
+    0.70
+}
+
+fn default_jev_margin() -> f32 {
+    0.15
+}
+
 fn default_restart_resume_orchestrator_prompt() -> String {
     "AgentsCommander was restarted. Continue with the work that was in flight.".to_string()
 }
@@ -1028,6 +1068,12 @@ impl Default for AppSettings {
             voice_to_text_enabled: false,
             gemini_api_key: String::new(),
             gemini_model: default_gemini_model(),
+            jev_api_key: String::new(),
+            jev_model: default_jev_model(),
+            jev_endpoint: default_jev_endpoint(),
+            jev_timeout_secs: default_jev_timeout_secs(),
+            jev_threshold: default_jev_threshold(),
+            jev_margin: default_jev_margin(),
             voice_auto_execute: true,
             voice_auto_execute_delay: default_voice_delay(),
             sidebar_zoom: default_zoom(),
@@ -8486,6 +8532,36 @@ mod tests {
         );
     }
 
+    /// Test 8 (#2265): a settings file written before this change carries no
+    /// `jev*` key and must load with every documented default.
+    #[test]
+    fn jev_fields_default_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": []
+        }"#;
+
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert_eq!(s.jev_api_key, "");
+        assert_eq!(s.jev_model, "jev-1.13.0");
+        assert_eq!(s.jev_endpoint, "https://api.typesafe.ai/v1/systemone");
+        assert_eq!(s.jev_timeout_secs, 20);
+        assert_eq!(s.jev_threshold, 0.70);
+        assert_eq!(s.jev_margin, 0.15);
+    }
+
+    /// Test 9 (#2265): the key default is empty (not a placeholder) and the
+    /// model default is the pinned literal, so a later floating tag is a
+    /// deliberate, visible change.
+    #[test]
+    fn jev_api_key_defaults_empty_and_model_is_pinned() {
+        let s = AppSettings::default();
+        assert_eq!(s.jev_api_key, "");
+        assert_eq!(s.jev_model, "jev-1.13.0");
+        assert_ne!(s.jev_model, "jev-latest");
+    }
+
     #[test]
     fn sounds_enabled_round_trips_through_serde() {
         let mut s = AppSettings::default();
@@ -11095,6 +11171,12 @@ mod tests {
   "gitSweepConcurrency": 1,
   "gitSweepMinIntervalSecs": 10,
   "guideZoom": 1.0,
+  "jevApiKey": "",
+  "jevEndpoint": "https://api.typesafe.ai/v1/systemone",
+  "jevMargin": 0.15000000596046448,
+  "jevModel": "jev-1.13.0",
+  "jevThreshold": 0.699999988079071,
+  "jevTimeoutSecs": 20,
   "logLevel": "info",
   "mainAlwaysOnTop": false,
   "mainGeometry": {

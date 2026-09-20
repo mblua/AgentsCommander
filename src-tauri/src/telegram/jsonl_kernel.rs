@@ -53,9 +53,14 @@ pub(crate) fn find_latest_jsonl(project_dir: &Path) -> Option<PathBuf> {
     best.map(|(p, _)| p)
 }
 
-/// Read new bytes from a file starting at the given byte offset.
-/// Returns parsed complete lines and updates the offset by actual bytes read.
-/// Partial lines are accumulated in `remainder` for the next poll.
+/// Read new lines from a file starting at the given byte offset, keeping each
+/// line's absolute start offset.
+///
+/// Starts are absolute file byte offsets of the **raw** line, computed before
+/// trimming, so `raw[start..]` walks back to the exact bytes in the file. A
+/// line completed by a carried-over remainder takes the absolute offset of that
+/// remainder. Empty (or whitespace-only) lines are still discarded, exactly as
+/// [`read_new_lines`] discards them.
 ///
 /// **H2 truncation reset (commit 5):** on file shrink, set `offset = file_len`
 /// (silent skip to current EOF, NO replay) and clear `remainder`. This
@@ -63,11 +68,11 @@ pub(crate) fn find_latest_jsonl(project_dir: &Path) -> Option<PathBuf> {
 /// to Telegram after operational truncates (logrotate, manual `truncate`,
 /// replacing snapshot, partial-write race). The §J preamble scan is
 /// first-attach-only and does NOT re-apply on truncation.
-pub(crate) fn read_new_lines(
+pub(crate) fn read_new_lines_with_starts(
     path: &Path,
     offset: &mut u64,
     remainder: &mut String,
-) -> std::io::Result<Vec<String>> {
+) -> std::io::Result<Vec<(u64, String)>> {
     let mut file = std::fs::File::open(path)?;
     // Use metadata on the open handle (avoids TOCTOU with path-based metadata)
     let file_len = file.metadata()?.len();
@@ -95,9 +100,13 @@ pub(crate) fn read_new_lines(
     // G2: Track offset by actual bytes read, not reported file length
     *offset += buf.len() as u64;
 
-    // Prepend any partial line from previous read
+    // Prepend any partial line from previous read. The remainder occupies the
+    // bytes immediately before the range just read, so the absolute offset of
+    // the combined buffer is `read_start - remainder.len()`.
+    let mut base = *offset - buf.len() as u64;
     if !remainder.is_empty() {
         let mut combined = std::mem::take(remainder);
+        base -= combined.len() as u64;
         combined.push_str(&buf);
         buf = combined;
     }
@@ -110,7 +119,7 @@ pub(crate) fn read_new_lines(
             let line = &buf[last_newline..i];
             let trimmed = line.trim();
             if !trimmed.is_empty() {
-                lines.push(trimmed.to_string());
+                lines.push((base + last_newline as u64, trimmed.to_string()));
             }
             last_newline = i + 1;
         }
@@ -122,6 +131,28 @@ pub(crate) fn read_new_lines(
     }
 
     Ok(lines)
+}
+
+/// Read new bytes from a file starting at the given byte offset.
+/// Returns parsed complete lines and updates the offset by actual bytes read.
+/// Partial lines are accumulated in `remainder` for the next poll.
+///
+/// Thin wrapper over [`read_new_lines_with_starts`] that drops the offsets.
+///
+/// Called only from test code: both watchers read through
+/// `read_new_lines_with_starts` so they can attach `record_start` to each
+/// capture record (#2232 phase 1), and the kernel and extractor tests pin this
+/// signature.
+#[allow(dead_code)] // called only from test code
+pub(crate) fn read_new_lines(
+    path: &Path,
+    offset: &mut u64,
+    remainder: &mut String,
+) -> std::io::Result<Vec<String>> {
+    Ok(read_new_lines_with_starts(path, offset, remainder)?
+        .into_iter()
+        .map(|(_, line)| line)
+        .collect())
 }
 
 /// §J first-message-race fix. Instead of skipping to EOF on first attach,
@@ -510,5 +541,105 @@ mod tests {
         let (bodies, ids, _file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
         assert_eq!(bodies, vec!["only".to_string()]);
         assert_eq!(ids, vec![None]);
+    }
+
+    // ── #2232 phase 1: absolute line starts ───────────────────────────────
+
+    #[test]
+    fn read_new_lines_with_starts_indexes_the_raw_line_bytes() {
+        // Test 1: offsets index back to the exact raw bytes of each line, with
+        // a blank line and a whitespace-only line between them.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("starts.jsonl");
+        let raw = "{\"a\":1}\n\n   \n{\"b\":2}  \n{\"c\":3}\n";
+        fs::write(&path, raw).unwrap();
+
+        let mut offset = 0u64;
+        let mut remainder = String::new();
+        let lines = read_new_lines_with_starts(&path, &mut offset, &mut remainder).unwrap();
+
+        assert_eq!(
+            lines
+                .iter()
+                .map(|(_, line)| line.as_str())
+                .collect::<Vec<_>>(),
+            vec!["{\"a\":1}", "{\"b\":2}", "{\"c\":3}"]
+        );
+        for (start, line) in &lines {
+            let start = *start as usize;
+            assert!(
+                start == 0 || raw.as_bytes()[start - 1] == b'\n',
+                "offset {start} must sit on a line boundary"
+            );
+            let raw_line = raw[start..].split('\n').next().unwrap();
+            assert_eq!(raw_line.trim(), line, "offset must point at the raw line");
+        }
+        assert_eq!(offset, raw.len() as u64);
+    }
+
+    #[test]
+    fn read_new_lines_with_starts_keeps_the_remainder_start() {
+        // A line completed by the carried remainder takes that remainder's own
+        // absolute offset, not the offset of the newly read bytes.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("starts-remainder.jsonl");
+        let mut raw = String::from("{\"a\":1");
+        fs::write(&path, &raw).unwrap();
+
+        let mut offset = 0u64;
+        let mut remainder = String::new();
+        let first = read_new_lines_with_starts(&path, &mut offset, &mut remainder).unwrap();
+        assert!(first.is_empty(), "a partial line must not produce a record");
+        assert_eq!(offset, raw.len() as u64);
+
+        raw.push_str("}\n{\"b\":2}\n");
+        fs::write(&path, &raw).unwrap();
+        let lines = read_new_lines_with_starts(&path, &mut offset, &mut remainder).unwrap();
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines[0].0, 0,
+            "the completed remainder starts at its own offset"
+        );
+        assert_eq!(lines[0].1, "{\"a\":1}");
+        assert_eq!(lines[1].0, raw.find("{\"b\":2}").unwrap() as u64);
+        assert_eq!(lines[1].1, "{\"b\":2}");
+    }
+
+    #[test]
+    fn read_new_lines_matches_with_starts_bodies() {
+        // Test 2: on the kernel fixtures, `read_new_lines` is the body
+        // projection of `read_new_lines_with_starts` — same lines, same
+        // offset advance, same remainder.
+        let fixtures = [
+            "{\"id\":\"0\",\"content\":\"line0\"}\n{\"id\":\"1\",\"content\":\"line1\"}\n{\"id\":\"2\",\"content\":\"line2\"}\n{\"id\":\"3\",\"content\":\"line3\"}\n{\"id\":\"4\",\"content\":\"line4\"}\n",
+            "{\"a\":1}\n\n   \n{\"b\":2}\n{\"partial\":",
+            "{\"x\":\"é\"}\n\t\n{\"y\":2}\n",
+        ];
+        for raw in fixtures {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("kernel-fixture.jsonl");
+            fs::write(&path, raw).unwrap();
+
+            let mut plain_offset = 0u64;
+            let mut plain_remainder = String::new();
+            let plain = read_new_lines(&path, &mut plain_offset, &mut plain_remainder).unwrap();
+
+            let mut start_offset = 0u64;
+            let mut start_remainder = String::new();
+            let with_starts =
+                read_new_lines_with_starts(&path, &mut start_offset, &mut start_remainder).unwrap();
+
+            assert_eq!(
+                plain,
+                with_starts
+                    .iter()
+                    .map(|(_, line)| line.clone())
+                    .collect::<Vec<_>>(),
+                "raw={raw:?}"
+            );
+            assert_eq!(plain_offset, start_offset, "raw={raw:?}");
+            assert_eq!(plain_remainder, start_remainder, "raw={raw:?}");
+        }
     }
 }
