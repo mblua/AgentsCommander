@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent order prototype — #2306 / #2311</title>
+<style>
+  :root {
+    --sidebar-bg: #0a0a0f;
+    --sidebar-fg: #d0d0d8;
+    --sidebar-fg-dim: #6a6a78;
+    --sidebar-accent: #00d4ff;
+    --sidebar-hover: #12121e;
+    --sidebar-active: #222227;
+    --sidebar-border: rgba(255, 255, 255, 0.06);
+    --sidebar-surface: #0e0e18;
+    --status-exited: #ff3b5c;
+    --status-pending: #eab308;
+    --spacing-xs: 4px;
+    --spacing-sm: 8px;
+    --spacing-md: 12px;
+    --spacing-lg: 16px;
+    --font-ui: "Geist", "Outfit", "General Sans", "Segoe UI", sans-serif;
+    --font-size-sm: 11px;
+    --font-size-md: 13px;
+    --font-size-lg: 14px;
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --transition-fast: 150ms ease-out;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-ui);
+    font-size: var(--font-size-md);
+    color: var(--sidebar-fg);
+    background: var(--sidebar-bg);
+    padding: var(--spacing-lg);
+    line-height: 1.5;
+  }
+
+  .proto-note {
+    max-width: 720px;
+    margin: 0 auto var(--spacing-lg);
+    padding: var(--spacing-md);
+    border: 1px dashed var(--sidebar-border);
+    border-radius: var(--radius-md);
+    color: var(--sidebar-fg-dim);
+    font-size: var(--font-size-sm);
+  }
+  .proto-note h1 { font-size: var(--font-size-lg); color: var(--sidebar-fg); margin-bottom: var(--spacing-xs); }
+  .proto-note ul { margin: var(--spacing-xs) 0 0 var(--spacing-lg); }
+
+  .panel {
+    max-width: 720px;
+    margin: 0 auto;
+    background: var(--sidebar-surface);
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-md);
+  }
+
+  .panel-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-sm);
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--spacing-sm);
+  }
+  .panel-title { font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; font-size: var(--font-size-sm); color: var(--sidebar-fg-dim); }
+
+  .filter-row { display: flex; gap: var(--spacing-sm); align-items: center; flex: 1 1 220px; }
+  .filter-row input {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    padding: 6px var(--spacing-sm);
+    font: inherit;
+  }
+
+  .banner {
+    border-radius: var(--radius-sm);
+    padding: var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    margin-bottom: var(--spacing-sm);
+  }
+  .banner[hidden] { display: none; }
+  .banner-info { background: rgba(0, 212, 255, 0.10); border: 1px solid rgba(0, 212, 255, 0.35); color: var(--sidebar-fg); }
+  .banner-error { background: rgba(255, 59, 92, 0.12); border: 1px solid var(--status-exited); color: var(--sidebar-fg); }
+
+  .agent-list { list-style: none; display: flex; flex-direction: column; gap: var(--spacing-sm); }
+
+  .agent-card {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm);
+    background: var(--sidebar-bg);
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+  }
+  .agent-card[aria-selected="true"] {
+    border-color: var(--sidebar-accent);
+    background: var(--sidebar-active);
+  }
+
+  .agent-id { flex: 1 1 160px; min-width: 0; }
+  .agent-name { font-weight: 600; display: block; overflow-wrap: anywhere; }
+  .agent-role { color: var(--sidebar-fg-dim); font-size: var(--font-size-sm); display: block; overflow-wrap: anywhere; }
+  .agent-pos { color: var(--sidebar-fg-dim); font-size: var(--font-size-sm); font-variant-numeric: tabular-nums; }
+
+  /* Order buttons sit left of the card buttons, as siblings in the same group. */
+  .card-actions { display: flex; align-items: center; gap: var(--spacing-xs); flex-wrap: wrap; }
+
+  button {
+    font: inherit;
+    color: var(--sidebar-fg);
+    background: var(--sidebar-hover);
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    min-width: 34px;
+    min-height: 32px;
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  button:hover:not(:disabled) { background: var(--sidebar-active); border-color: var(--sidebar-accent); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button:focus-visible {
+    outline: 2px solid var(--sidebar-accent);
+    outline-offset: 2px;
+  }
+  .btn-order { color: var(--sidebar-accent); }
+  .btn-danger { color: var(--status-exited); }
+
+  .empty-state {
+    padding: var(--spacing-lg);
+    text-align: center;
+    color: var(--sidebar-fg-dim);
+    border: 1px dashed var(--sidebar-border);
+    border-radius: var(--radius-sm);
+  }
+  .empty-state[hidden] { display: none; }
+
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .proto-controls { max-width: 720px; margin: var(--spacing-md) auto 0; display: flex; gap: var(--spacing-sm); flex-wrap: wrap; }
+
+  @media (max-width: 420px) {
+    body { padding: var(--spacing-sm); }
+    .agent-card { align-items: flex-start; }
+    .agent-id { flex: 1 1 100%; }
+    .card-actions { width: 100%; justify-content: flex-start; }
+  }
+</style>
+</head>
+<body>
+
+<div class="proto-note">
+  <h1>Prototype: agent order controls (issue #2311, epic #2306)</h1>
+  <p>Static visual prototype. No application code, no persistence — the save step is mocked.</p>
+  <ul>
+    <li>Up/down buttons swap rows immediately and keep the selected row selected.</li>
+    <li>First row's Up and last row's Down are disabled.</li>
+    <li>While the filter is active, reordering is disabled and the reason is shown.</li>
+    <li>Toggle the mocked save failure below to see the error state.</li>
+    <li>Resize to a narrow viewport (≤420px) to see the stacked layout.</li>
+  </ul>
+</div>
+
+<section class="panel" aria-labelledby="panel-title">
+  <div class="panel-head">
+    <h2 class="panel-title" id="panel-title">Registered agents</h2>
+    <div class="filter-row">
+      <label class="sr-only" for="agent-filter">Filter agents by name</label>
+      <input id="agent-filter" type="search" placeholder="Filter agents…" autocomplete="off" />
+    </div>
+  </div>
+
+  <p class="banner banner-info" id="filter-notice" hidden>
+    Reordering is disabled while a filter is active. Clear the filter to change the agent order.
+  </p>
+  <p class="banner banner-error" id="save-error" hidden>
+    Could not save the new order. The list was restored to the last saved order. Try again.
+  </p>
+
+  <ul class="agent-list" id="agent-list" aria-labelledby="panel-title"></ul>
+
+  <p class="empty-state" id="empty-state" hidden>No agents match this filter.</p>
+
+  <p class="sr-only" id="live-region" role="status" aria-live="polite"></p>
+</section>
+
+<div class="proto-controls">
+  <button type="button" id="toggle-fail" aria-pressed="false">Mocked save failure: off</button>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var agents = [
+    { id: "a1", name: "architect", role: "System design" },
+    { id: "a2", name: "tech-lead", role: "Coordination" },
+    { id: "a3", name: "dev-webpage-ui", role: "Frontend" },
+    { id: "a4", name: "dev-rust", role: "Backend" },
+    { id: "a5", name: "cli-tester", role: "Verification" }
+  ];
+
+  var selectedId = "a3";
+  var failSave = false;
+
+  var listEl = document.getElementById("agent-list");
+  var filterEl = document.getElementById("agent-filter");
+  var filterNotice = document.getElementById("filter-notice");
+  var saveError = document.getElementById("save-error");
+  var emptyState = document.getElementById("empty-state");
+  var liveRegion = document.getElementById("live-region");
+  var failToggle = document.getElementById("toggle-fail");
+
+  function announce(text) {
+    liveRegion.textContent = text;
+  }
+
+  function visibleAgents() {
+    var q = filterEl.value.trim().toLowerCase();
+    if (!q) return agents.slice();
+    return agents.filter(function (a) {
+      return a.name.toLowerCase().indexOf(q) !== -1 || a.role.toLowerCase().indexOf(q) !== -1;
+    });
+  }
+
+  // Mocked persistence. Returns false when the failure toggle is on.
+  function saveOrder() {
+    return !failSave;
+  }
+
+  function move(index, delta) {
+    var target = index + delta;
+    if (target < 0 || target >= agents.length) return;
+
+    var before = agents.slice();
+    var moved = agents[index];
+    var displaced = agents[target];
+    agents[index] = displaced;
+    agents[target] = moved;
+
+    if (!saveOrder()) {
+      agents = before;
+      saveError.hidden = false;
+      render();
+      announce("Save failed. " + moved.name + " stayed at position " + (index + 1) + " of " + agents.length + ".");
+      focusOrderButton(moved.id, delta);
+      return;
+    }
+
+    saveError.hidden = true;
+    // Selection follows the agent, not the row position: whichever agent was
+    // selected before the swap stays selected after it.
+    render();
+    announce(moved.name + " moved to position " + (target + 1) + " of " + agents.length + ".");
+    focusOrderButton(moved.id, delta);
+  }
+
+  // Keep keyboard focus on the button the user pressed; fall back to its
+  // sibling when the pressed button became disabled at a list edge.
+  function focusOrderButton(agentId, delta) {
+    var dir = delta < 0 ? "up" : "down";
+    var btn = listEl.querySelector('[data-agent="' + agentId + '"][data-dir="' + dir + '"]');
+    if (btn && !btn.disabled) { btn.focus(); return; }
+    var other = listEl.querySelector('[data-agent="' + agentId + '"][data-dir="' + (dir === "up" ? "down" : "up") + '"]');
+    if (other && !other.disabled) other.focus();
+  }
+
+  function orderButton(agent, index, dir, filtered) {
+    var up = dir === "up";
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn-order";
+    btn.dataset.agent = agent.id;
+    btn.dataset.dir = dir;
+    btn.textContent = up ? "↑" : "↓";
+
+    var atEdge = up ? index === 0 : index === agents.length - 1;
+    btn.disabled = filtered || atEdge;
+
+    var label = (up ? "Move " : "Move ") + agent.name + (up ? " up" : " down");
+    if (filtered) {
+      label += " (disabled: clear the filter to reorder)";
+    } else if (atEdge) {
+      label += up ? " (disabled: already first)" : " (disabled: already last)";
+    }
+    btn.setAttribute("aria-label", label);
+    btn.title = label;
+
+    btn.addEventListener("click", function () {
+      move(agents.indexOf(agent), up ? -1 : 1);
+    });
+    return btn;
+  }
+
+  function plainButton(text, agentName, extraClass) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    if (extraClass) b.className = extraClass;
+    b.setAttribute("aria-label", text + " " + agentName);
+    b.addEventListener("click", function () {
+      announce(text + " " + agentName + " is not implemented in this prototype.");
+    });
+    return b;
+  }
+
+  function render() {
+    var filtered = filterEl.value.trim() !== "";
+    var rows = visibleAgents();
+
+    filterNotice.hidden = !filtered;
+    emptyState.hidden = rows.length !== 0;
+
+    listEl.textContent = "";
+
+    rows.forEach(function (agent) {
+      var index = agents.indexOf(agent);
+
+      var li = document.createElement("li");
+      li.className = "agent-card";
+      li.setAttribute("aria-selected", agent.id === selectedId ? "true" : "false");
+
+      var id = document.createElement("div");
+      id.className = "agent-id";
+      var name = document.createElement("span");
+      name.className = "agent-name";
+      name.textContent = agent.name;
+      var role = document.createElement("span");
+      role.className = "agent-role";
+      role.textContent = agent.role;
+      id.appendChild(name);
+      id.appendChild(role);
+
+      var pos = document.createElement("span");
+      pos.className = "agent-pos";
+      pos.textContent = "Position " + (index + 1) + " of " + agents.length;
+
+      var actions = document.createElement("div");
+      actions.className = "card-actions";
+      // Order buttons first, then the existing card buttons, as siblings.
+      actions.appendChild(orderButton(agent, index, "up", filtered));
+      actions.appendChild(orderButton(agent, index, "down", filtered));
+      actions.appendChild(plainButton("Open", agent.name));
+      actions.appendChild(plainButton("Edit", agent.name));
+      actions.appendChild(plainButton("Remove", agent.name, "btn-danger"));
+
+      li.appendChild(id);
+      li.appendChild(pos);
+      li.appendChild(actions);
+      listEl.appendChild(li);
+    });
+  }
+
+  filterEl.addEventListener("input", function () {
+    render();
+    var rows = visibleAgents();
+    announce(rows.length === 0
+      ? "No agents match this filter."
+      : rows.length + (rows.length === 1 ? " agent matches" : " agents match") + " this filter.");
+  });
+
+  failToggle.addEventListener("click", function () {
+    failSave = !failSave;
+    failToggle.setAttribute("aria-pressed", failSave ? "true" : "false");
+    failToggle.textContent = "Mocked save failure: " + (failSave ? "on" : "off");
+    if (!failSave) saveError.hidden = true;
+  });
+
+  render();
+})();
+</script>
+
+</body>
+</html>
