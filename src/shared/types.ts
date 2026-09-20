@@ -1450,6 +1450,8 @@ export type LoopTargetKind = "workgroupCoordinator";
 export type MissedWhileClosedPolicy = "notify";
 export type BusyCoordinatorPolicy = "waitUntilIdle" | "forceInject" | "skip";
 
+export type LoopSessionStart = "fresh" | "accumulate";
+
 export interface LoopLastResult {
   kind: string;
   message: string;
@@ -1465,6 +1467,7 @@ export interface AcLoopSummary {
   workgroup: string;
   promptPreview: string;
   busyCoordinator: BusyCoordinatorPolicy;
+  sessionStart: LoopSessionStart;
   path: string;
   configPath: string;
   lastCheckedAt: string | null;
@@ -1488,6 +1491,7 @@ export interface LoopCreateInput {
   workgroup: string;
   promptBody: string;
   busyCoordinator?: BusyCoordinatorPolicy | null;
+  sessionStart?: LoopSessionStart | null;
   enabled?: boolean | null;
 }
 
@@ -1497,6 +1501,7 @@ export interface LoopUpdateInput {
   workgroup?: string | null;
   promptBody?: string | null;
   busyCoordinator?: BusyCoordinatorPolicy | null;
+  sessionStart?: LoopSessionStart | null;
   enabled?: boolean | null;
 }
 

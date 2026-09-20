@@ -5,9 +5,11 @@ import type { AcWorkgroup } from "../../shared/types";
 import { LoopAPI } from "../../shared/ipc";
 import NewLoopModal from "./NewLoopModal";
 import {
+  accumulateCheckboxFromSessionStart,
   busyPolicyFromForceCheckbox,
   coordinatorOptionsFromWorkgroups,
   hasFiveCronFields,
+  sessionStartFromAccumulateCheckbox,
 } from "./loop-modal-helpers";
 
 const m = vi.hoisted(() => ({
@@ -95,6 +97,13 @@ describe("Loop modal helpers", () => {
   it("maps the force checkbox to the backend busy policy values", () => {
     expect(busyPolicyFromForceCheckbox(false)).toBe("waitUntilIdle");
     expect(busyPolicyFromForceCheckbox(true)).toBe("forceInject");
+  });
+
+  it("round-trips the accumulate checkbox and the session-start values", () => {
+    expect(sessionStartFromAccumulateCheckbox(false)).toBe("fresh");
+    expect(sessionStartFromAccumulateCheckbox(true)).toBe("accumulate");
+    expect(accumulateCheckboxFromSessionStart("fresh")).toBe(false);
+    expect(accumulateCheckboxFromSessionStart("accumulate")).toBe(true);
   });
 });
 
@@ -203,6 +212,67 @@ describe("NewLoopModal", () => {
     expect(LoopAPI.create).toHaveBeenCalledWith(
       "C:\\Project",
       expect.objectContaining({ busyCoordinator: "forceInject" }),
+    );
+
+    dispose();
+  });
+
+  it("creates with sessionStart fresh when the accumulate checkbox is untouched", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () =>
+        NewLoopModal({
+          projectPath: "C:\\Project",
+          workgroups: workgroups(),
+          onClose: () => {},
+        }),
+      root,
+    );
+
+    setInput('[data-ac-testid="loop.new.name"]', "Weekday standup");
+    setInput('[data-ac-testid="loop.new.cron"]', "0 9 * * 1-5");
+    setSelect('[data-ac-testid="loop.new.workgroup"]', "wg-10-dev-team");
+    setInput('[data-ac-testid="loop.new.prompt"]', "Summarize blockers");
+    await makePreviewReady();
+
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="loop.new.create"]')?.click();
+    await settle();
+
+    expect(LoopAPI.create).toHaveBeenCalledWith(
+      "C:\\Project",
+      expect.objectContaining({ sessionStart: "fresh" }),
+    );
+
+    dispose();
+  });
+
+  it("creates with sessionStart accumulate when the accumulate checkbox is checked", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () =>
+        NewLoopModal({
+          projectPath: "C:\\Project",
+          workgroups: workgroups(),
+          onClose: () => {},
+        }),
+      root,
+    );
+
+    setInput('[data-ac-testid="loop.new.name"]', "Weekday standup");
+    setInput('[data-ac-testid="loop.new.cron"]', "0 9 * * 1-5");
+    setSelect('[data-ac-testid="loop.new.workgroup"]', "wg-10-dev-team");
+    setInput('[data-ac-testid="loop.new.prompt"]', "Summarize blockers");
+    setCheckbox('[data-ac-testid="loop.new.accumulate"]', true);
+    await makePreviewReady();
+
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="loop.new.create"]')?.click();
+    await settle();
+
+    expect(LoopAPI.create).toHaveBeenCalledWith(
+      "C:\\Project",
+      expect.objectContaining({ sessionStart: "accumulate", busyCoordinator: "waitUntilIdle" }),
     );
 
     dispose();

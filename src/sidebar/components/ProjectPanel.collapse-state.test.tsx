@@ -29,6 +29,7 @@ function loop(overrides: Partial<AcLoopSummary> = {}): AcLoopSummary {
     workgroup: "wg-2-dev-team",
     promptPreview: "scheduled run",
     busyCoordinator: "skip",
+    sessionStart: "fresh",
     path: `${projectPath}\\.ac\\_loop_standup`,
     configPath: `${projectPath}\\.ac\\_loop_standup\\config.toml`,
     lastCheckedAt: null,
