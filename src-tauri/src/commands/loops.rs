@@ -10,8 +10,8 @@ use crate::config::loops::{
     apply_loop_update_patch, baseline_loop_state, details_from_parts, loop_dir, next_due_after,
     read_loop_config, read_loop_state, sanitize_loop_id, validate_cron_expr, validate_loop_config,
     validate_loop_id, write_loop_config, write_loop_state_atomic, BusyCoordinatorPolicy,
-    LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopTarget, LoopTargetKind,
-    LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
+    LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopSessionStart,
+    LoopTarget, LoopTargetKind, LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
 };
 // #1252: keep private. A `pub use` here would re-expose the emitter and kill the E0603 backstop.
 use crate::loops::events::emit_loop_change;
@@ -29,6 +29,8 @@ pub struct LoopCreateRequest {
     #[serde(default)]
     pub busy_coordinator: Option<BusyCoordinatorPolicy>,
     #[serde(default)]
+    pub session_start: Option<LoopSessionStart>,
+    #[serde(default)]
     pub enabled: Option<bool>,
 }
 
@@ -44,6 +46,8 @@ pub struct LoopUpdateRequest {
     #[serde(default)]
     pub busy_coordinator: Option<BusyCoordinatorPolicy>,
     #[serde(default)]
+    pub session_start: Option<LoopSessionStart>,
+    #[serde(default)]
     pub enabled: Option<bool>,
 }
 
@@ -52,6 +56,36 @@ pub struct LoopUpdateRequest {
 pub struct LoopCronPreview {
     pub next_due_at: Option<chrono::DateTime<Utc>>,
     pub upcoming: Vec<chrono::DateTime<Utc>>,
+}
+
+/// The `LoopPolicy` `create_loop` builds from its request. Extracted from the
+/// handler's inline literal so the mapping is testable: the handlers take
+/// `State<Arc<LoopScheduler>>` and cannot be called from a unit test.
+///
+/// `None` leaves the field at `LoopPolicy::default()`, which is `Fresh`.
+pub(crate) fn policy_from_create_request(request: &LoopCreateRequest) -> LoopPolicy {
+    LoopPolicy {
+        busy_coordinator: request.busy_coordinator.clone().unwrap_or_default(),
+        session_start: request.session_start.unwrap_or_default(),
+        ..LoopPolicy::default()
+    }
+}
+
+/// The `LoopUpdatePatch` `update_loop` builds from its request, extracted for
+/// the same reason.
+///
+/// `None` means "leave unchanged" and must stay `None`: defaulting here would
+/// let an update that never mentions the field rewrite it.
+pub(crate) fn patch_from_update_request(request: LoopUpdateRequest) -> LoopUpdatePatch {
+    LoopUpdatePatch {
+        name: request.name,
+        expr: request.expr,
+        workgroup: request.workgroup,
+        prompt_body: request.prompt_body,
+        busy_coordinator: request.busy_coordinator,
+        session_start: request.session_start,
+        enabled: request.enabled,
+    }
 }
 
 #[tauri::command]
@@ -72,6 +106,7 @@ pub async fn create_loop(
     if dir.exists() {
         return Err(format!("Loop '{}' already exists", id));
     }
+    let policy = policy_from_create_request(&request);
     let prompt_body = validated_prompt(request.prompt_body)?;
     let config = LoopConfigToml {
         loop_def: LoopDef {
@@ -89,10 +124,7 @@ pub async fn create_loop(
             workgroup: request.workgroup,
         },
         prompt: LoopPrompt { body: prompt_body },
-        policy: LoopPolicy {
-            busy_coordinator: request.busy_coordinator.unwrap_or_default(),
-            ..LoopPolicy::default()
-        },
+        policy,
     };
     validate_loop_config(&project_dir, &config)?;
     let dir = write_loop_config(&ac_root, &config)?;
@@ -128,18 +160,7 @@ pub async fn update_loop(
         return Err(format!("Loop '{}' not found", request.id));
     }
     let mut config = read_loop_config(&dir)?;
-    let reset_schedule = apply_loop_update_patch(
-        &mut config,
-        LoopUpdatePatch {
-            name: request.name,
-            expr: request.expr,
-            workgroup: request.workgroup,
-            prompt_body: request.prompt_body,
-            busy_coordinator: request.busy_coordinator,
-            session_start: None,
-            enabled: request.enabled,
-        },
-    )?;
+    let reset_schedule = apply_loop_update_patch(&mut config, patch_from_update_request(request))?;
 
     validate_loop_config(&project_dir, &config)?;
     let dir = write_loop_config(&ac_root, &config)?;
@@ -315,4 +336,156 @@ pub async fn list_unresolved_loop_targets(
     scheduler: State<'_, Arc<LoopScheduler>>,
 ) -> Result<Vec<UnresolvedLoopTarget>, String> {
     Ok(scheduler.unresolved_loop_targets(&app).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::loops::{LoopSessionStart, MissedWhileClosedPolicy};
+
+    /// A stored Loop whose `sessionStart` is `Accumulate`, so an update that
+    /// leaves the field alone is distinguishable from one that defaults it.
+    fn accumulate_config() -> LoopConfigToml {
+        LoopConfigToml {
+            loop_def: LoopDef {
+                id: "daily-sync".to_string(),
+                name: "Daily sync".to_string(),
+                enabled: true,
+            },
+            trigger: LoopTrigger {
+                kind: LoopTriggerKind::Cron,
+                expr: "0 9 * * *".to_string(),
+                timezone: LOOP_TIMEZONE_LOCAL.to_string(),
+            },
+            target: LoopTarget {
+                kind: LoopTargetKind::WorkgroupCoordinator,
+                workgroup: "wg-1-dev-team".to_string(),
+            },
+            prompt: LoopPrompt {
+                body: "Send status".to_string(),
+            },
+            policy: LoopPolicy {
+                session_start: LoopSessionStart::Accumulate,
+                ..LoopPolicy::default()
+            },
+        }
+    }
+
+    /// AC-1 - a create payload from a frontend that predates this phase omits
+    /// the key entirely and must still deserialize, defaulting to `Fresh`.
+    #[test]
+    fn create_request_without_session_start_defaults_to_fresh() {
+        let payload = r#"{"projectPath":"/tmp/project","name":"Daily sync","expr":"0 9 * * *","workgroup":"wg-1-dev-team","promptBody":"Send status"}"#;
+        assert!(
+            !payload.contains("sessionStart"),
+            "the legacy payload must not carry the key, or this test passes for the wrong reason"
+        );
+
+        let request: LoopCreateRequest =
+            serde_json::from_str(payload).expect("legacy create payload deserializes");
+        assert_eq!(request.session_start, None);
+        assert_eq!(
+            policy_from_create_request(&request).session_start,
+            LoopSessionStart::Fresh
+        );
+    }
+
+    /// AC-2 - an explicit choice on create is carried into the policy.
+    #[test]
+    fn create_request_with_accumulate_persists_accumulate() {
+        let payload = r#"{"projectPath":"/tmp/project","name":"Daily sync","expr":"0 9 * * *","workgroup":"wg-1-dev-team","promptBody":"Send status","sessionStart":"accumulate"}"#;
+
+        let request: LoopCreateRequest =
+            serde_json::from_str(payload).expect("create payload deserializes");
+        assert_eq!(request.session_start, Some(LoopSessionStart::Accumulate));
+        assert_eq!(
+            policy_from_create_request(&request).session_start,
+            LoopSessionStart::Accumulate
+        );
+    }
+
+    /// AC-3 - an update that never mentions the field cannot rewrite it.
+    #[test]
+    fn update_request_without_session_start_leaves_the_stored_value() {
+        let payload = r#"{"projectPath":"/tmp/project","id":"daily-sync","name":"Renamed sync"}"#;
+        assert!(!payload.contains("sessionStart"));
+
+        let request: LoopUpdateRequest =
+            serde_json::from_str(payload).expect("legacy update payload deserializes");
+        let patch = patch_from_update_request(request);
+        assert_eq!(patch.session_start, None);
+
+        let mut config = accumulate_config();
+        apply_loop_update_patch(&mut config, patch).expect("patch applies");
+        assert_eq!(config.policy.session_start, LoopSessionStart::Accumulate);
+    }
+
+    /// AC-3b - an explicit `null` is epic 5.1's normal frontend shape and must
+    /// behave exactly like an absent key, not like a default.
+    #[test]
+    fn update_request_with_null_session_start_leaves_the_stored_value() {
+        let payload = r#"{"projectPath":"/tmp/project","id":"daily-sync","sessionStart":null}"#;
+
+        let request: LoopUpdateRequest =
+            serde_json::from_str(payload).expect("null update payload deserializes");
+        let patch = patch_from_update_request(request);
+        assert_eq!(patch.session_start, None);
+
+        let mut config = accumulate_config();
+        apply_loop_update_patch(&mut config, patch).expect("patch applies");
+        assert_eq!(config.policy.session_start, LoopSessionStart::Accumulate);
+    }
+
+    /// AC-4 - an explicit choice on update changes the stored value.
+    #[test]
+    fn update_request_with_fresh_flips_a_stored_accumulate() {
+        let payload = r#"{"projectPath":"/tmp/project","id":"daily-sync","sessionStart":"fresh"}"#;
+
+        let request: LoopUpdateRequest =
+            serde_json::from_str(payload).expect("update payload deserializes");
+        let patch = patch_from_update_request(request);
+        assert_eq!(patch.session_start, Some(LoopSessionStart::Fresh));
+
+        let mut config = accumulate_config();
+        apply_loop_update_patch(&mut config, patch).expect("patch applies");
+        assert_eq!(config.policy.session_start, LoopSessionStart::Fresh);
+    }
+
+    /// AC-5 - an unknown value is a serde error surfaced as the existing
+    /// command error. No new error type and no new message.
+    #[test]
+    fn unknown_session_start_value_fails_to_deserialize() {
+        let create = r#"{"projectPath":"/tmp/project","name":"Daily sync","expr":"0 9 * * *","workgroup":"wg-1-dev-team","promptBody":"Send status","sessionStart":"resume"}"#;
+        assert!(serde_json::from_str::<LoopCreateRequest>(create).is_err());
+
+        let update = r#"{"projectPath":"/tmp/project","id":"daily-sync","sessionStart":"resume"}"#;
+        assert!(serde_json::from_str::<LoopUpdateRequest>(update).is_err());
+    }
+
+    /// AC-6 (zero-effect) - the extraction is a move. For a request that never
+    /// mentions `sessionStart`, both functions reproduce the pre-P2 inline
+    /// literals field by field.
+    #[test]
+    fn extracted_mappings_reproduce_the_pre_phase_literals() {
+        let create_payload = r#"{"projectPath":"/tmp/project","name":"Daily sync","expr":"0 9 * * *","workgroup":"wg-1-dev-team","promptBody":"Send status","busyCoordinator":"forceInject","enabled":false}"#;
+        let create: LoopCreateRequest =
+            serde_json::from_str(create_payload).expect("create payload deserializes");
+        let policy = policy_from_create_request(&create);
+        assert_eq!(policy.busy_coordinator, BusyCoordinatorPolicy::ForceInject);
+        assert_eq!(policy.missed_while_closed, MissedWhileClosedPolicy::Notify);
+        // `enabled` is read by the handler, not by the policy mapping.
+        assert_eq!(create.enabled, Some(false));
+
+        let update_payload = r#"{"projectPath":"/tmp/project","id":"daily-sync","name":"Renamed sync","expr":"30 9 * * *","workgroup":"wg-2-dev-team","promptBody":"Summarize status","busyCoordinator":"skip","enabled":true}"#;
+        let update: LoopUpdateRequest =
+            serde_json::from_str(update_payload).expect("update payload deserializes");
+        let patch = patch_from_update_request(update);
+        assert_eq!(patch.name.as_deref(), Some("Renamed sync"));
+        assert_eq!(patch.expr.as_deref(), Some("30 9 * * *"));
+        assert_eq!(patch.workgroup.as_deref(), Some("wg-2-dev-team"));
+        assert_eq!(patch.prompt_body.as_deref(), Some("Summarize status"));
+        assert_eq!(patch.busy_coordinator, Some(BusyCoordinatorPolicy::Skip));
+        assert_eq!(patch.enabled, Some(true));
+        assert_eq!(patch.session_start, None);
+    }
 }
