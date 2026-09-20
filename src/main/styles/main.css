@@ -45,6 +45,19 @@
   min-height: 0;
 }
 
+/* #2236 D13 — only a mode change animates, symmetrically. The class is added
+ * by the host hook right before the flip and removed on transitionend (or the
+ * 400 ms fallback), so the pulse, hydration, presets and divider steps are
+ * not animated. Suppressed under reduced motion. */
+.main-sidebar-pane.ac-sidebar-animating {
+  transition: width 180ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .main-sidebar-pane.ac-sidebar-animating {
+    transition: none;
+  }
+}
+
 .main-divider {
   flex: 0 0 4px;
   order: 2;
