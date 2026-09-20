@@ -3,27 +3,52 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Agent order prototype — #2306 / #2311</title>
+<title>Agent order prototype — Settings and Step 1 (bug #2311 / epic #2306)</title>
 <style>
+  /* ==========================================================================
+     P0 two-screen agent-order prototype (bug #2311, epic #2306).
+
+     This file is a design mock. There is no application code here, no IPC, no
+     settings schema and no real persistence: every save is simulated in page
+     state. It is only ever revised by hand for visual review.
+
+     Views:
+       Screen A  Settings > Coding Agents        (pinned screenshot 773x491)
+       Screen B  Coding Agent profile assignment > Step 1
+                                                 (pinned screenshot 607x1074)
+     Each screen has a Today and a Proposed state.
+
+     Proposed move controls are shown in BOTH screens for comparison only, not
+     as an approved placement. The user's decision is where they should live:
+     Settings only, Step 1 only, or both.
+
+     Token departure from the app (required by the plan): --sidebar-fg-dim is
+     #6a6a78 in the app, which is 3.71:1 on --sidebar-bg and 3.60:1 on
+     --sidebar-surface at 11px - below the WCAG AA 4.5:1 floor for body text.
+     This prototype uses #8f8fa0 instead: 6.21:1 on #0a0a0f and 6.03:1 on
+     #0e0e18. The app's dim token is not modified by this prototype.
+     ========================================================================== */
   :root {
     --sidebar-bg: #0a0a0f;
     --sidebar-fg: #d0d0d8;
-    /* App token is #6a6a78; at 11px that is 3.71:1 on --sidebar-bg and
-       3.60:1 on --sidebar-surface, below the WCAG AA 4.5:1 floor. This
-       prototype proposes #8f8fa0 instead: 6.21:1 and 6.03:1. */
-    --sidebar-fg-dim: #8f8fa0;
+    --sidebar-fg-dim: #8f8fa0; /* prototype departure from the app's #6a6a78 */
     --sidebar-accent: #00d4ff;
     --sidebar-hover: #12121e;
     --sidebar-active: #222227;
     --sidebar-border: rgba(255, 255, 255, 0.06);
     --sidebar-surface: #0e0e18;
+    --status-active: #00d4ff;
+    --status-running: #3a7bff;
     --status-exited: #ff3b5c;
+    --status-waiting: #22c55e;
     --status-pending: #eab308;
+    --status-blocked: #f97316;
     --spacing-xs: 4px;
     --spacing-sm: 8px;
     --spacing-md: 12px;
     --spacing-lg: 16px;
     --font-ui: "Geist", "Outfit", "General Sans", "Segoe UI", sans-serif;
+    --font-mono: "Cascadia Code", "JetBrains Mono", monospace;
     --font-size-sm: 11px;
     --font-size-md: 13px;
     --font-size-lg: 14px;
@@ -39,139 +64,9 @@
     font-size: var(--font-size-md);
     color: var(--sidebar-fg);
     background: var(--sidebar-bg);
-    padding: var(--spacing-lg);
     line-height: 1.5;
+    padding: 18px;
   }
-
-  .proto-note {
-    max-width: 720px;
-    margin: 0 auto var(--spacing-lg);
-    padding: var(--spacing-md);
-    border: 1px dashed var(--sidebar-border);
-    border-radius: var(--radius-md);
-    color: var(--sidebar-fg-dim);
-    font-size: var(--font-size-sm);
-  }
-  .proto-note h1 { font-size: var(--font-size-lg); color: var(--sidebar-fg); margin-bottom: var(--spacing-xs); }
-  .proto-note ul { margin: var(--spacing-xs) 0 0 var(--spacing-lg); }
-
-  .panel {
-    max-width: 720px;
-    margin: 0 auto;
-    background: var(--sidebar-surface);
-    border: 1px solid var(--sidebar-border);
-    border-radius: var(--radius-md);
-    padding: var(--spacing-md);
-  }
-
-  .panel-head {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--spacing-sm);
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: var(--spacing-sm);
-  }
-  .panel-title { font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; font-size: var(--font-size-sm); color: var(--sidebar-fg-dim); }
-
-  .filter-row { display: flex; gap: var(--spacing-sm); align-items: center; flex: 1 1 220px; }
-  .filter-row input {
-    flex: 1 1 auto;
-    min-width: 0;
-    background: var(--sidebar-bg);
-    color: var(--sidebar-fg);
-    border: 1px solid var(--sidebar-border);
-    border-radius: var(--radius-sm);
-    padding: 6px var(--spacing-sm);
-    font: inherit;
-  }
-
-  .banner {
-    border-radius: var(--radius-sm);
-    padding: var(--spacing-sm);
-    font-size: var(--font-size-sm);
-    margin-bottom: var(--spacing-sm);
-  }
-  .banner[hidden] { display: none; }
-  .banner-info { background: rgba(0, 212, 255, 0.10); border: 1px solid rgba(0, 212, 255, 0.35); color: var(--sidebar-fg); }
-  .banner-error { background: rgba(255, 59, 92, 0.12); border: 1px solid var(--status-exited); color: var(--sidebar-fg); }
-
-  .agent-list { list-style: none; display: flex; flex-direction: column; gap: var(--spacing-sm); }
-
-  .agent-card {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-sm);
-    background: var(--sidebar-bg);
-    border: 1px solid var(--sidebar-border);
-    border-radius: var(--radius-sm);
-  }
-  /* Selection is carried by aria-current on the <li> (valid on any element,
-     unlike aria-selected on a bare listitem) and by the visible "Selected"
-     chip, so it never depends on colour alone. */
-  .btn-select[aria-pressed="true"] {
-    border-color: var(--sidebar-accent);
-    color: var(--sidebar-accent);
-  }
-
-  .agent-card[aria-current="true"] {
-    border-color: var(--sidebar-accent);
-    background: var(--sidebar-active);
-  }
-
-  .selected-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-    padding: 2px var(--spacing-sm);
-    border: 1px solid currentColor;
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--sidebar-accent);
-    white-space: nowrap;
-  }
-  .selected-chip::before { content: "\2713"; }
-
-  .agent-id { flex: 1 1 160px; min-width: 0; }
-  .agent-name { font-weight: 600; display: block; overflow-wrap: anywhere; }
-  .agent-role { color: var(--sidebar-fg-dim); font-size: var(--font-size-sm); display: block; overflow-wrap: anywhere; }
-  .agent-pos { color: var(--sidebar-fg-dim); font-size: var(--font-size-sm); font-variant-numeric: tabular-nums; }
-
-  /* Order buttons sit left of the card buttons, as siblings in the same group. */
-  .card-actions { display: flex; align-items: center; gap: var(--spacing-xs); flex-wrap: wrap; }
-
-  button {
-    font: inherit;
-    color: var(--sidebar-fg);
-    background: var(--sidebar-hover);
-    border: 1px solid var(--sidebar-border);
-    border-radius: var(--radius-sm);
-    padding: 6px 10px;
-    min-width: 34px;
-    min-height: 32px;
-    cursor: pointer;
-    transition: background var(--transition-fast), border-color var(--transition-fast);
-  }
-  button:hover:not(:disabled) { background: var(--sidebar-active); border-color: var(--sidebar-accent); }
-  button:disabled { opacity: 0.4; cursor: not-allowed; }
-  button:focus-visible {
-    outline: 2px solid var(--sidebar-accent);
-    outline-offset: 2px;
-  }
-  .btn-order { color: var(--sidebar-accent); }
-  .btn-danger { color: var(--status-exited); }
-
-  .empty-state {
-    padding: var(--spacing-lg);
-    text-align: center;
-    color: var(--sidebar-fg-dim);
-    border: 1px dashed var(--sidebar-border);
-    border-radius: var(--radius-sm);
-  }
-  .empty-state[hidden] { display: none; }
 
   .sr-only {
     position: absolute;
@@ -183,283 +78,1483 @@
     border: 0;
   }
 
-  .proto-controls { max-width: 720px; margin: var(--spacing-md) auto 0; display: flex; gap: var(--spacing-sm); flex-wrap: wrap; }
+  /* ---------------------------------------------------------------- review chrome */
+  .review-head {
+    max-width: 1440px;
+    margin: 0 auto 18px;
+    padding: var(--spacing-md) var(--spacing-lg);
+    border: 1px dashed rgba(0, 212, 255, 0.4);
+    border-radius: var(--radius-md);
+    background: rgba(0, 212, 255, 0.04);
+  }
+  .review-head h1 { font-size: 16px; line-height: 1.3; margin-bottom: 6px; color: var(--sidebar-fg); }
+  .review-head p { font-size: 12px; color: var(--sidebar-fg-dim); max-width: 110ch; }
+  .review-head p + p { margin-top: 4px; }
+  .review-head strong { color: var(--sidebar-fg); }
+  .decision-line { color: var(--sidebar-fg); }
 
-  @media (max-width: 420px) {
-    body { padding: var(--spacing-sm); }
-    .agent-card { align-items: flex-start; }
-    .agent-id { flex: 1 1 100%; }
-    .card-actions { width: 100%; justify-content: flex-start; }
+  .review-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-sm) var(--spacing-md);
+    align-items: center;
+    margin-top: var(--spacing-md);
+    padding-top: var(--spacing-md);
+    border-top: 1px solid var(--sidebar-border);
+  }
+  .review-toolbar label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--sidebar-fg-dim);
+    cursor: pointer;
+  }
+  .review-toolbar input[type="checkbox"] { accent-color: var(--sidebar-accent); }
+
+  .review-status {
+    margin-top: var(--spacing-sm);
+    font-size: 11px;
+    min-height: 17px;
+    color: var(--sidebar-fg-dim);
+  }
+  .review-status[data-kind="error"] { color: var(--status-exited); }
+  .review-status[data-kind="warn"] { color: var(--status-pending); }
+  .review-status[data-kind="ok"] { color: var(--status-waiting); }
+
+  main { display: flex; flex-direction: column; gap: 18px; align-items: center; }
+
+  .screen-block { max-width: 1440px; width: 100%; display: flex; flex-direction: column; align-items: center; }
+  .screen-nav {
+    width: 100%;
+    max-width: 773px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    margin-bottom: 6px;
+  }
+  .screen-nav h2 { font-size: 13px; font-weight: 700; }
+  .screen-nav .screen-sub { display: block; font-size: 11px; font-weight: 400; color: var(--sidebar-fg-dim); }
+
+  .mode-switch { display: inline-flex; border: 1px solid var(--sidebar-border); border-radius: var(--radius-sm); overflow: hidden; }
+  .mode-switch button {
+    font: inherit; font-size: 11px; font-weight: 600;
+    padding: 5px 14px;
+    border: 0;
+    background: var(--sidebar-surface);
+    color: var(--sidebar-fg-dim);
+    cursor: pointer;
+  }
+  .mode-switch button + button { border-left: 1px solid var(--sidebar-border); }
+  .mode-switch button[aria-pressed="true"] { background: rgba(0, 212, 255, 0.12); color: var(--sidebar-accent); }
+  .mode-switch button:hover:not([aria-pressed="true"]) { color: var(--sidebar-fg); }
+
+  .proto-banner {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+    padding: 4px 10px;
+    border-bottom: 1px dashed rgba(0, 212, 255, 0.35);
+    background: rgba(0, 212, 255, 0.05);
+    color: var(--sidebar-fg-dim);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+  .proto-banner b { color: var(--sidebar-accent); font-weight: 700; letter-spacing: 0.04em; }
+
+  .review-btn {
+    font: inherit;
+    font-size: 11px;
+    padding: 4px 10px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-hover);
+    color: var(--sidebar-fg);
+    cursor: pointer;
+  }
+  .review-btn:hover:not(:disabled) { border-color: var(--sidebar-accent); color: var(--sidebar-accent); }
+  .review-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .review-btn:focus-visible { outline: 2px solid var(--sidebar-accent); outline-offset: 2px; }
+
+  button:focus-visible,
+  input:focus-visible,
+  [role="button"]:focus-visible {
+    outline: 2px solid var(--sidebar-accent);
+    outline-offset: 2px;
+  }
+
+  /* ------------------------------------------------------- app: Settings surface */
+  .settings-mock {
+    width: 773px;
+    max-width: 100%;
+    background: var(--sidebar-surface);
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  }
+
+  .settings-tabs {
+    display: flex;
+    gap: 0;
+    padding: 0;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .settings-tab {
+    flex: 1;
+    padding: var(--spacing-sm) var(--spacing-xs);
+    font-family: var(--font-ui);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--sidebar-fg-dim);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: default;
+    text-align: center;
+  }
+  .settings-tab.active { color: var(--sidebar-fg); border-bottom-color: var(--sidebar-accent); }
+
+  .settings-config-screen {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.62fr);
+    gap: var(--spacing-md);
+    padding: var(--spacing-md);
+    align-items: start;
+  }
+
+  .settings-agents-panel {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.02);
+    overflow: hidden;
+  }
+  .settings-agents-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-sm);
+    border-bottom: 1px solid var(--sidebar-border);
+    background: rgba(255, 255, 255, 0.025);
+  }
+  .settings-agents-panel-title { font-size: var(--font-size-md); font-weight: 700; color: var(--sidebar-fg); }
+  .settings-agents-panel-kicker { font-size: 10px; color: var(--sidebar-fg-dim); }
+  .settings-agents-add {
+    flex: 0 0 auto;
+    font: inherit;
+    font-size: 11px;
+    padding: 4px 9px;
+    border: 1px solid rgba(0, 212, 255, 0.45);
+    border-radius: var(--radius-sm);
+    background: rgba(0, 212, 255, 0.12);
+    color: var(--sidebar-accent);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .settings-agents-panel-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-sm);
+  }
+
+  .settings-agent-row {
+    --agent-color: var(--sidebar-accent);
+    border: 1px solid var(--sidebar-border);
+    border-left: 2px solid var(--agent-color);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .settings-agent-row[aria-current="true"] {
+    background: rgba(0, 212, 255, 0.05);
+    border-color: rgba(0, 212, 255, 0.28);
+    border-left-color: var(--agent-color);
+  }
+  .settings-agent-row-head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    cursor: pointer;
+  }
+  .settings-agent-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+  .settings-agent-row-meta { min-width: 0; }
+  .settings-agent-row-name {
+    font-size: 12px; font-weight: 700; color: var(--sidebar-fg);
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .settings-agent-row-cmd {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--sidebar-fg-dim);
+  }
+  .settings-agent-row-colorline {
+    display: flex; align-items: center; gap: 5px;
+    margin-top: 3px; flex-wrap: wrap;
+  }
+  .settings-agent-swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+
+  .settings-agent-color-input {
+    width: 68px;
+    padding: 1px 4px;
+    border: 1px dashed var(--sidebar-border);
+    border-radius: 3px;
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    font-family: var(--font-mono);
+    font-size: 9px;
+  }
+  .settings-agent-color-input:focus-visible { outline-offset: 0; border-style: solid; }
+
+  .settings-rail-pill {
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 8px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border: 1px solid var(--sidebar-border);
+    color: var(--sidebar-fg-dim);
+  }
+  .settings-rail-pill.left {
+    color: var(--sidebar-accent);
+    border-color: rgba(0, 212, 255, 0.4);
+    background: rgba(0, 212, 255, 0.12);
+  }
+  .settings-rail-pill.available { color: var(--sidebar-fg-dim); }
+
+  .draft-chip {
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--status-pending);
+    border: 1px solid rgba(234, 179, 8, 0.45);
+    border-radius: 999px;
+    padding: 0 5px;
+  }
+
+  .settings-agent-row-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+  .settings-row-btn {
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-hover);
+    color: var(--sidebar-fg);
+    font: inherit;
+    font-size: 10px;
+    padding: 3px 8px;
+    cursor: pointer;
+  }
+  .settings-row-btn:hover:not(:disabled) { border-color: var(--sidebar-accent); color: var(--sidebar-accent); }
+  .settings-row-btn[aria-current="true"] { border-color: var(--sidebar-accent); color: var(--sidebar-accent); }
+  .settings-row-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .settings-agent-row-delete {
+    display: flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; padding: 0;
+    border: none; background: transparent; color: var(--sidebar-fg-dim);
+    cursor: pointer; border-radius: var(--radius-sm);
+  }
+  .settings-agent-row-delete:hover { background: rgba(255, 59, 92, 0.15); color: var(--status-exited); }
+  .settings-agent-chevron {
+    color: var(--sidebar-fg-dim); font-size: 10px; width: 16px; padding: 0;
+    border: none; background: transparent; cursor: pointer; text-align: center;
+  }
+  .settings-agent-chevron:hover { color: var(--sidebar-accent); }
+
+  .move-btn {
+    min-width: 24px; min-height: 24px;
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 0 5px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-hover);
+    color: var(--sidebar-accent);
+    font: inherit; font-size: 12px; line-height: 1;
+    cursor: pointer;
+  }
+  .move-btn:hover:not(:disabled) { border-color: var(--sidebar-accent); background: var(--sidebar-active); }
+  .move-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .settings-actions-block {
+    margin-top: var(--spacing-xs);
+    padding: var(--spacing-sm);
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .settings-actions-title {
+    font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--sidebar-fg-dim); margin-bottom: var(--spacing-xs);
+  }
+  .settings-actions-row { display: flex; flex-wrap: wrap; gap: var(--spacing-xs); }
+
+  .settings-compare-wrap { min-width: 0; display: flex; flex-direction: column; gap: var(--spacing-sm); }
+  .settings-profile-rail {
+    --agent-color: var(--sidebar-accent);
+    border: 1px solid var(--sidebar-border);
+    border-left: 2px solid var(--agent-color);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.02);
+    overflow: hidden;
+  }
+  .settings-profile-rail-header {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: var(--spacing-sm);
+    border-bottom: 1px solid var(--sidebar-border);
+    background: rgba(255, 255, 255, 0.025);
+  }
+  .settings-profile-rail-title { font-size: 11px; font-weight: 700; }
+  .settings-profile-rail-subtitle { font-size: 10px; color: var(--sidebar-fg-dim); }
+  .settings-profile-rail-body { padding: var(--spacing-sm); }
+
+  .settings-profile-card {
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.025);
+    padding: var(--spacing-sm);
+  }
+  .settings-profile-card-head { display: flex; align-items: flex-start; gap: var(--spacing-sm); }
+  .settings-profile-letter-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; flex: 0 0 auto;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 212, 255, 0.4);
+    background: rgba(0, 212, 255, 0.1);
+    color: var(--sidebar-accent);
+    font-size: 11px; font-weight: 700;
+  }
+  .settings-profile-card-heading { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; }
+  .settings-profile-name-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .settings-profile-label {
+    min-width: 0; width: 120px;
+    padding: 3px 6px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    font: inherit; font-size: 11px;
+  }
+  .settings-profile-badge {
+    font-size: 8px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+    border-radius: 999px; padding: 1px 6px;
+    border: 1px solid rgba(0, 212, 255, 0.4);
+    color: var(--sidebar-accent);
+    background: rgba(0, 212, 255, 0.1);
+  }
+  .settings-profile-badge.inherited {
+    color: #e3b341; border-color: rgba(227, 179, 65, 0.45); background: rgba(227, 179, 65, 0.1);
+  }
+  .settings-profile-badge.none { color: var(--sidebar-fg-dim); border-color: var(--sidebar-border); background: transparent; }
+  .settings-profile-card-sub { font-family: var(--font-mono); font-size: 10px; color: var(--sidebar-fg-dim); }
+
+  .settings-hint {
+    margin-top: var(--spacing-xs);
+    font-size: 10px;
+    line-height: 1.4;
+    color: var(--sidebar-fg-dim);
+  }
+  .settings-ownership-reason {
+    margin: var(--spacing-xs) 0 0;
+    padding: 5px 7px;
+    border: 1px solid rgba(234, 179, 8, 0.4);
+    border-radius: var(--radius-sm);
+    background: rgba(234, 179, 8, 0.08);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  /* -------------------------------------------------- app: picker Step 1 surface */
+  .picker-frame { width: 607px; max-width: 100%; display: flex; flex-direction: column; gap: var(--spacing-sm); }
+
+  .picker-viewport {
+    width: 100%;
+    height: 1074px;
+    display: flex;
+    flex-direction: column;
+    background: var(--sidebar-surface);
+    border: 1px solid rgba(0, 212, 255, 0.15);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(0, 212, 255, 0.05);
+  }
+
+  .agent-picker-modal-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    padding: var(--spacing-md);
+    border-bottom: 1px solid var(--sidebar-border);
+    flex: 0 0 auto;
+  }
+  .agent-picker-eyebrow {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--sidebar-fg-dim);
+  }
+  .agent-modal-title { font-size: 13px; color: var(--sidebar-fg); }
+  .agent-picker-context { text-align: right; font-size: 10px; color: var(--sidebar-fg-dim); display: flex; flex-direction: column; }
+  .agent-picker-context strong { color: var(--sidebar-fg); font-size: 11px; }
+
+  .agent-profile-assignment-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+    overflow: hidden;
+  }
+
+  .agent-profile-panel {
+    min-width: 0;
+    display: grid;
+    gap: 10px;
+    align-content: start;
+    padding: 12px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .agent-profile-provider-panel {
+    grid-template-rows: auto auto minmax(0, 1fr);
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .agent-profile-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--spacing-sm); }
+  .agent-profile-panel-title { font-size: 11px; font-weight: 700; color: var(--sidebar-fg); text-transform: uppercase; letter-spacing: 0.04em; }
+  .agent-profile-panel-kicker { color: var(--sidebar-fg-dim); font-size: 10px; line-height: 1.4; }
+  .agent-profile-step {
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em;
+    border: 1px solid rgba(0, 212, 255, 0.4);
+    color: var(--sidebar-accent);
+    background: rgba(0, 212, 255, 0.1);
+    white-space: nowrap;
+  }
+
+  .agent-profile-provider-filter {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+    padding: 6px 7px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .agent-profile-provider-filter label {
+    color: var(--sidebar-fg-dim);
+    font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .agent-profile-provider-filter input {
+    width: 100%; min-width: 0;
+    padding: 4px 7px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 4px;
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    font-family: var(--font-ui);
+    font-size: 11px;
+  }
+  .agent-profile-provider-filter input::placeholder { color: var(--sidebar-fg-dim); }
+  .agent-profile-provider-filter-status { min-width: 0; color: var(--sidebar-fg-dim); font-size: 9px; line-height: 1.35; overflow-wrap: anywhere; }
+  .agent-profile-provider-filter-status[data-state="match"] { color: var(--sidebar-accent); }
+  .agent-profile-provider-filter-status[data-state="empty"] { color: var(--status-pending); }
+
+  .agent-profile-provider-list { display: grid; gap: 8px; min-width: 0; min-height: 0; overflow-y: auto; }
+
+  /* The app's provider card is one <button>. The prototype splits it into a
+     wrapper + an inner select button + separate sibling move buttons so the
+     reorder controls are never nested inside another button (plan rule). The
+     wrapper keeps the card's real visual language. */
+  .agent-profile-provider-card-wrap {
+    --agent-color: var(--sidebar-border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--sidebar-border);
+    border-left-color: var(--agent-color);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.025);
+  }
+  .agent-profile-provider-card-wrap.active {
+    border-color: var(--sidebar-accent);
+    background: rgba(0, 212, 255, 0.08);
+  }
+  .agent-profile-provider-card-wrap:hover:not(.active) { border-color: rgba(0, 212, 255, 0.35); background: rgba(255, 255, 255, 0.05); }
+
+  .agent-profile-provider-card {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--sidebar-fg);
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--font-ui);
+  }
+  .agent-profile-provider-name { display: block; color: var(--sidebar-fg); font-size: 12px; font-weight: 700; }
+  .agent-profile-provider-command { display: block; color: var(--sidebar-fg-dim); font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+  .agent-profile-provider-chip {
+    border: 1px solid rgba(0, 212, 255, 0.24);
+    border-radius: 999px;
+    padding: 2px 6px;
+    color: var(--sidebar-accent);
+    font-size: 9px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .provider-card-moves { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; }
+
+  .picker-filter-reason {
+    margin-top: var(--spacing-xs);
+    padding: 5px 7px;
+    border: 1px solid rgba(234, 179, 8, 0.4);
+    border-radius: var(--radius-sm);
+    background: rgba(234, 179, 8, 0.08);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  .agent-comparison-panel { flex: 0 0 auto; }
+  .agent-comparison-table {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .agent-comparison-table-head,
+  .agent-comparison-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 5px 8px;
+  }
+  .agent-comparison-table-head {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--sidebar-fg-dim);
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .agent-comparison-row + .agent-comparison-row { border-top: 1px solid var(--sidebar-border); }
+  .agent-comparison-row.active { background: rgba(0, 212, 255, 0.06); }
+  .agent-comparison-agent { font-size: 11px; font-weight: 600; }
+  .agent-comparison-agent-sub { font-family: var(--font-mono); font-size: 10px; color: var(--sidebar-fg-dim); overflow-wrap: anywhere; }
+  .agent-comparison-status { font-size: 9px; color: var(--sidebar-fg-dim); white-space: nowrap; }
+
+  .under-fold-note {
+    font-size: 10px;
+    color: var(--sidebar-fg-dim);
+    padding: 0 2px;
+  }
+
+  /* ------------------------------------------------- review-only example blocks */
+  .review-card {
+    width: 100%;
+    max-width: 773px;
+    margin-top: var(--spacing-md);
+    border: 1px dashed rgba(0, 212, 255, 0.4);
+    border-radius: var(--radius-md);
+    background: rgba(0, 212, 255, 0.03);
+    padding: var(--spacing-md);
+  }
+  .review-card h3 { font-size: 12px; margin-bottom: 4px; }
+  .review-card > p { font-size: 11px; color: var(--sidebar-fg-dim); }
+  .label-example-grid { display: flex; flex-direction: column; gap: 6px; margin-top: var(--spacing-sm); }
+  .label-example-row { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; }
+  .label-example-row .tool-name { width: 96px; font-size: 11px; font-weight: 600; }
+  .label-example-row .resolution { font-size: 10px; color: var(--sidebar-fg-dim); }
+  .label-example-row .resolution.warn { color: #e3b341; }
+  .label-example-row input {
+    width: 130px;
+    padding: 3px 6px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    font: inherit; font-size: 11px;
+  }
+
+  .reopen-cover {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 10, 15, 0.86);
+    color: var(--sidebar-accent);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    z-index: 5;
+  }
+  .rel { position: relative; }
+
+  .banner-stack { display: flex; flex-direction: column; }
+  .state-banner {
+    padding: 5px 10px;
+    font-size: 10px;
+    line-height: 1.4;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .state-banner.error { background: rgba(255, 59, 92, 0.1); color: var(--status-exited); }
+  .state-banner.warn { background: rgba(234, 179, 8, 0.08); color: var(--status-pending); }
+  .state-banner.ok { background: rgba(34, 197, 94, 0.08); color: var(--status-waiting); }
+  .state-banner button { margin-left: 6px; }
+  .state-banner .review-btn { font-size: 10px; padding: 2px 7px; }
+
+  @media (max-width: 900px) {
+    .settings-config-screen { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
   }
 </style>
 </head>
 <body>
 
-<div class="proto-note">
-  <h1>Prototype: agent order controls (issue #2311, epic #2306)</h1>
-  <p>Static visual prototype. No application code, no persistence — the save step is mocked.</p>
-  <ul>
-    <li>Up/down buttons swap rows immediately.</li>
-    <li>Press "Select" on any card, then reorder: the same agent stays selected. Selection is shown by a "Selected" chip as well as colour, and is exposed as <code>aria-current</code>.</li>
-    <li>First row's Up and last row's Down are disabled.</li>
-    <li>While the filter is active, reordering is disabled and the reason is shown.</li>
-    <li>Toggle the mocked save failure below to see the error state.</li>
-    <li>Resize to a narrow viewport (≤420px) to see the stacked layout.</li>
-  </ul>
-</div>
+<header class="review-head">
+  <h1>Prototype: coding-tool order — Settings and Step 1 (bug #2311 · epic #2306)</h1>
+  <p><strong>Static design mock.</strong> No application code, no IPC, no schema, no real settings files. Every save below is simulated in in-page state only; reloading the browser resets it.</p>
+  <p><strong>Today</strong> reproduces the current behavior: Settings shows the saved vector order (Claude Code, Codex, Pi, Grok); Step 1 stays alphabetical (Claude Code, Codex, Grok, Pi) and has no move controls. <strong>Proposed</strong> starts both screens in the Settings order and shows up/down move controls in both — shown together only for comparison, not as an approved placement.</p>
+  <p class="decision-line"><strong>Decision for you:</strong> where should move controls live — Settings only, Step 1 only, or both?</p>
+  <p>Mock conditions (persistent <code>settings.local.json</code> ownership, transient save failure, stale expected-neighbour conflict) can be triggered from the toolbar. The disabled-by-ownership state is <em>proposed</em> production behavior: it assumes a read-only backend snapshot flag plus authoritative command rejection, and the current app exposes no such flag.</p>
 
-<section class="panel" aria-labelledby="panel-title">
-  <div class="panel-head">
-    <h2 class="panel-title" id="panel-title">Registered agents</h2>
-    <div class="filter-row">
-      <label class="sr-only" for="agent-filter">Filter agents by name or role</label>
-      <input id="agent-filter" type="search" placeholder="Filter by name or role…" autocomplete="off" />
-    </div>
+  <div class="review-toolbar">
+    <button type="button" class="review-btn" id="reopen-btn" data-focus-key="reopen">Reopen proposed views</button>
+    <label><input type="checkbox" id="ownership-check" /> Mock: settings.local.json owns top-level agents (persistent)</label>
+    <button type="button" class="review-btn" id="ownership-after-load-btn" data-focus-key="ownership-after-load">Simulate ownership starting after load</button>
+    <label><input type="checkbox" id="fail-check" /> Mock: make the next move save fail</label>
+    <button type="button" class="review-btn" id="external-btn" data-focus-key="external">Simulate another writer changing the order</button>
+    <button type="button" class="review-btn" id="reset-btn" data-focus-key="reset">Restore proposed starting order</button>
+    <button type="button" class="review-btn" id="discard-btn" data-focus-key="discard">Discard unsaved colour edits</button>
   </div>
+  <p class="review-status" id="review-status" role="status" aria-live="polite"></p>
+</header>
 
-  <p class="banner banner-info" id="filter-notice" hidden>
-    Reordering is disabled while a filter is active. Clear the filter to change the agent order.
-  </p>
-  <p class="banner banner-error" id="save-error" hidden>
-    Could not save the new order. The list was restored to the last saved order. Try again.
-  </p>
+<main>
+  <!-- ============================== SCREEN A: Settings > Coding Agents -->
+  <section class="screen-block" aria-labelledby="settings-screen-title">
+    <div class="screen-nav">
+      <h2 id="settings-screen-title">Screen A — Settings &gt; Coding Agents
+        <span class="screen-sub">Pinned reference: 2306-settings-coding-agents.png (773×491)</span>
+      </h2>
+      <div class="mode-switch" role="group" aria-label="Settings screen state">
+        <button type="button" data-screen="settings" data-mode="today"
+                id="settings-mode-today" data-focus-key="mode-settings-today" aria-pressed="false">Today</button>
+        <button type="button" data-screen="settings" data-mode="proposed"
+                id="settings-mode-proposed" data-focus-key="mode-settings-proposed" aria-pressed="true">Proposed</button>
+      </div>
+    </div>
+    <div id="settings-frame-root"></div>
+    <div class="review-card" id="label-example-card"></div>
+  </section>
 
-  <ul class="agent-list" id="agent-list" aria-labelledby="panel-title"></ul>
+  <!-- ============================== SCREEN B: Assignment > Step 1 -->
+  <section class="screen-block" aria-labelledby="picker-screen-title">
+    <div class="screen-nav">
+      <h2 id="picker-screen-title">Screen B — Coding Agent profile assignment &gt; Step 1
+        <span class="screen-sub">Pinned reference: 2306-profile-agent-picker.png (607×1074)</span>
+      </h2>
+      <div class="mode-switch" role="group" aria-label="Step 1 screen state">
+        <button type="button" data-screen="picker" data-mode="today"
+                id="picker-mode-today" data-focus-key="mode-picker-today" aria-pressed="false">Today</button>
+        <button type="button" data-screen="picker" data-mode="proposed"
+                id="picker-mode-proposed" data-focus-key="mode-picker-proposed" aria-pressed="true">Proposed</button>
+      </div>
+    </div>
+    <div id="picker-frame-root"></div>
+  </section>
+</main>
 
-  <p class="empty-state" id="empty-state" hidden>No agents match this filter.</p>
-
-  <p class="sr-only" id="live-region" role="status" aria-live="polite"></p>
-</section>
-
-<div class="proto-controls">
-  <button type="button" id="toggle-fail" aria-pressed="false">Mocked save failure: off</button>
-</div>
+<div class="sr-only" role="status" aria-live="polite" id="live-region"></div>
 
 <script>
+"use strict";
 (function () {
-  "use strict";
+  /* -------------------------------------------------------------------- data */
+  // The four registered tools in the user's screenshots, with the colours those
+  // screenshots carry: catalog defaults for Claude Code / Codex / Pi and the
+  // custom-agent default #6366f1 for the custom "Grok" row.
+  var TOOLS = {
+    claude: { id: "claude", label: "Claude Code", command: "claude", color: "#d97706" },
+    codex:  { id: "codex",  label: "Codex",       command: "codex",  color: "#10b981" },
+    pi:     { id: "pi",     label: "Pi",          command: "pi",     color: "#ec4899" },
+    grok:   { id: "grok",   label: "Grok",        command: "grok",   color: "#6366f1" }
+  };
 
-  var agents = [
-    { id: "a1", name: "architect", role: "System design" },
-    { id: "a2", name: "tech-lead", role: "Coordination" },
-    { id: "a3", name: "dev-webpage-ui", role: "Frontend" },
-    { id: "a4", name: "dev-rust", role: "Backend" },
-    { id: "a5", name: "cli-tester", role: "Verification" }
-  ];
+  // Today: the two screens genuinely diverge. Settings keeps the stored vector
+  // order; Step 1 alphabetically sorts today, so Grok and Pi swap.
+  var TODAY_SETTINGS_ORDER = ["claude", "codex", "pi", "grok"];
+  var TODAY_PICKER_ORDER   = ["claude", "codex", "grok", "pi"];
+  // Proposed: both screens start from the Settings vector order.
+  var PROPOSED_START_ORDER = ["claude", "codex", "pi", "grok"];
+  // What the mocked "other writer" writes while this view is open: Grok up one.
+  var EXTERNAL_ORDER       = ["claude", "codex", "grok", "pi"];
 
-  var selectedId = "a3";
-  var failSave = false;
+  // Profile-label example values (letter A). "CODER" is Claude Code's own
+  // label; "GENERAL" is the legacy slot label. Nothing here is deleted.
+  var OWN_LABEL = { claude: "CODER" };
+  var LEGACY_LABEL = "GENERAL";
 
-  var listEl = document.getElementById("agent-list");
-  var filterEl = document.getElementById("agent-filter");
-  var filterNotice = document.getElementById("filter-notice");
-  var saveError = document.getElementById("save-error");
-  var emptyState = document.getElementById("empty-state");
+  /* ------------------------------------------------------------------- state */
+  var state = {
+    mode: { settings: "proposed", picker: "proposed" },
+    railTool: "claude",          // tool on the LEFT comparison rail (selection by id)
+    pickerSelected: "codex",     // active Step 1 card (selection by id)
+    proposedOrder: PROPOSED_START_ORDER.slice(),
+    filterQuery: "",
+    draftColor: {},              // id -> typed hex (unsaved Settings draft)
+    draftLabel: {},              // id -> typed profile label (unsaved Settings draft)
+    ownership: false,            // settings.local.json owns top-level agents
+    ownershipAfterLoad: false,   // ownership began after this view loaded
+    failNextSave: false,
+    pendingRetry: null,          // {id, dir} of the failed move
+    moveError: null,             // {id, dir, message}
+    externalPending: false,      // another writer changed the order; next move is stale
+    conflict: null,              // {message}
+    reopening: false,
+    status: "",
+    statusKind: ""
+  };
+
+  /* ------------------------------------------------------------------ helpers */
+  function esc(value) {
+    return String(value).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+  function attr(value) { return esc(value); }
+  function byId(id) { return TOOLS[id]; }
+  function orderFor(screen) {
+    if (state.mode[screen] === "proposed") return state.proposedOrder.slice();
+    return (screen === "settings" ? TODAY_SETTINGS_ORDER : TODAY_PICKER_ORDER).slice();
+  }
+  function toolIndex(order, id) { return order.indexOf(id); }
+  function labelFor(id) { return TOOLS[id].label; }
+
   var liveRegion = document.getElementById("live-region");
-  var failToggle = document.getElementById("toggle-fail");
-
-  // Clearing first makes screen readers re-announce an identical message,
-  // e.g. moving the same agent up twice.
   var announceTimer = 0;
+  // Clear first so screen readers re-announce an identical message (e.g. the
+  // same boundary/refusal twice in a row).
   function announce(text) {
     window.clearTimeout(announceTimer);
     liveRegion.textContent = "";
     announceTimer = window.setTimeout(function () { liveRegion.textContent = text; }, 50);
   }
 
-  function visibleAgents() {
-    var q = filterEl.value.trim().toLowerCase();
-    if (!q) return agents.slice();
-    return agents.filter(function (a) {
-      return a.name.toLowerCase().indexOf(q) !== -1 || a.role.toLowerCase().indexOf(q) !== -1;
+  function setStatus(text, kind) {
+    state.status = text || "";
+    state.statusKind = kind || "";
+    var el = document.getElementById("review-status");
+    el.textContent = state.status;
+    if (state.statusKind) el.setAttribute("data-kind", state.statusKind);
+    else el.removeAttribute("data-kind");
+  }
+
+  // Full re-render with keyboard focus preserved by data-focus-key, so a move
+  // keeps focus on the pressed control by tool id (plan requirement).
+  function rerender() {
+    var active = document.activeElement;
+    var focusKey = active && active.getAttribute ? active.getAttribute("data-focus-key") : null;
+    render();
+    if (focusKey) {
+      var next = document.querySelector('[data-focus-key="' + focusKey.replace(/"/g, '\\"') + '"]');
+      if (next && !next.disabled) { next.focus(); return; }
+      var owned = document.querySelector(".agent-profile-provider-card-wrap.active");
+      if (owned) {
+        var alive = owned.querySelector('[data-focus-key="' + focusKey.replace(/"/g, '\\"') + '"]');
+        if (alive && !alive.disabled) { alive.focus(); return; }
+      }
+      var fallback = document.querySelector('[data-focus-key="reopen"]');
+      if (fallback) fallback.focus();
+    }
+  }
+
+  function pickerMovesDisabledForFilter() {
+    return state.filterQuery.trim() !== "";
+  }
+  function ownershipDisablesControls() {
+    return state.ownership && !state.ownershipAfterLoad;
+  }
+  function draftCount() {
+    var count = 0;
+    Object.keys(state.draftColor).forEach(function (id) {
+      if (state.draftColor[id] && state.draftColor[id] !== TOOLS[id].color) count += 1;
     });
+    return count;
   }
 
-  // Mocked persistence. Returns false when the failure toggle is on.
-  function saveOrder() {
-    return !failSave;
-  }
+  /* ------------------------------------------------------------- move engine */
+  function moveTool(screen, id, dir) {
+    if (state.mode[screen] !== "proposed") return;
 
-  function move(index, delta) {
-    var target = index + delta;
-    if (target < 0 || target >= agents.length) return;
-
-    var before = agents.slice();
-    var moved = agents[index];
-    var displaced = agents[target];
-    agents[index] = displaced;
-    agents[target] = moved;
-
-    if (!saveOrder()) {
-      agents = before;
-      saveError.hidden = false;
-      render();
-      announce("Save failed. " + moved.name + " stayed at position " + (index + 1) + " of " + agents.length + ".");
-      focusOrderButton(moved.id, delta);
+    // Persistent ownership: controls are rendered disabled, this is a guard.
+    if (ownershipDisablesControls()) {
+      announce("Move controls are unavailable because settings.local.json owns the agent order.");
+      return;
+    }
+    // Ownership that began after this view loaded: the stale snapshot still
+    // shows enabled controls, so the command side refuses and rolls back.
+    if (state.ownershipAfterLoad) {
+      state.moveError = {
+        id: id, dir: dir,
+        message: "Move refused by the command side: settings.local.json began owning the agent order after this view loaded. " +
+                 "No change was saved and the list is back to the last saved order. " +
+                 "Reopen the proposed views to pick up the ownership snapshot."
+      };
+      state.pendingRetry = null;
+      setStatus("Move refused: settings.local.json now owns the agent order. Rolled back, nothing saved.", "error");
+      announce("Move refused. settings.local.json now owns the agent order. The list was rolled back and nothing was saved.");
+      rerender();
+      return;
+    }
+    // Stale expected neighbour: another writer changed the vector since load.
+    if (state.externalPending) {
+      state.proposedOrder = EXTERNAL_ORDER.slice();
+      state.externalPending = false;
+      state.conflict = {
+        message: "Another window changed the saved order while this view was open (Grok moved before Pi). " +
+                 "Your move was checked against the order this view loaded and was not applied. The list now shows the other writer's order."
+      };
+      state.moveError = null;
+      state.pendingRetry = null;
+      setStatus("Stale expected neighbour: adopted the other writer's order.", "warn");
+      announce("Conflict: another window changed the order. Your move was not applied; the list now shows the other writer's order.");
+      rerender();
+      return;
+    }
+    // Transient mock save failure: roll back and offer retry.
+    if (state.failNextSave) {
+      state.failNextSave = false;
+      state.moveError = {
+        id: id, dir: dir,
+        message: "Could not save the new order. The list was restored to the last saved order. Try again."
+      };
+      state.pendingRetry = { id: id, dir: dir };
+      setStatus("Transient save failure: order rolled back. Retry is available.", "error");
+      announce("Save failed. The order was rolled back. Retry is available.");
+      syncToolbar();
+      rerender();
       return;
     }
 
-    saveError.hidden = true;
-    // Selection follows the agent, not the row position: whichever agent was
-    // selected before the swap stays selected after it.
-    render();
-    announce(moved.name + " moved to position " + (target + 1) + " of " + agents.length + ".");
-    focusOrderButton(moved.id, delta);
+    var order = state.proposedOrder.slice();
+    var index = toolIndex(order, id);
+    var target = index + dir;
+    if (index < 0 || target < 0 || target >= order.length) return; // boundary guard
+
+    var moved = order[index];
+    order[index] = order[target];
+    order[target] = moved;
+    state.proposedOrder = order;
+    state.moveError = null;
+    state.pendingRetry = null;
+    state.conflict = null;
+
+    var draftNote = draftCount() > 0
+      ? " Your unsaved colour edit" + (draftCount() === 1 ? " was" : "s were") + " NOT saved by this move."
+      : "";
+    setStatus("Order saved (mock): " + state.proposedOrder.map(labelFor).join(", ") + "." + draftNote,
+              draftCount() > 0 ? "warn" : "ok");
+    announce(labelFor(moved) + " moved " + (dir < 0 ? "up" : "down") + " to position " + (target + 1) +
+             " of " + order.length + "." + draftNote);
+    rerender();
   }
 
-  // Keep keyboard focus on the button the user pressed; fall back to its
-  // sibling when the pressed button became disabled at a list edge.
-  function focusOrderButton(agentId, delta) {
-    var dir = delta < 0 ? "up" : "down";
-    var btn = listEl.querySelector('[data-agent="' + agentId + '"][data-dir="' + dir + '"]');
-    if (btn && !btn.disabled) { btn.focus(); return; }
-    var other = listEl.querySelector('[data-agent="' + agentId + '"][data-dir="' + (dir === "up" ? "down" : "up") + '"]');
-    if (other && !other.disabled) other.focus();
+  function retryMove() {
+    if (!state.pendingRetry) return;
+    var pending = state.pendingRetry;
+    state.pendingRetry = null;
+    state.moveError = null;
+    state.failNextSave = false;
+    syncToolbar();
+    moveTool("settings", pending.id, pending.dir);
+    setStatus("Retry succeeded: the order was saved (mock).", "ok");
   }
 
-  function orderButton(agent, index, dir, filtered) {
-    var up = dir === "up";
-    var btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn-order";
-    btn.dataset.agent = agent.id;
-    btn.dataset.dir = dir;
-    btn.textContent = up ? "↑" : "↓";
-
-    var atEdge = up ? index === 0 : index === agents.length - 1;
-    btn.disabled = filtered || atEdge;
-
-    var label = "Move " + agent.name + (up ? " up" : " down");
-    if (filtered) {
-      label += " (disabled: clear the filter to reorder)";
-    } else if (atEdge) {
-      label += up ? " (disabled: already first)" : " (disabled: already last)";
+  function setMode(screen, mode) {
+    if (state.mode[screen] === mode) return;
+    state.mode[screen] = mode;
+    if (mode === "today") {
+      setStatus("Showing Today for " + (screen === "settings" ? "Settings" : "Step 1") + ": the current behavior.", "");
+    } else {
+      setStatus("Showing Proposed for " + (screen === "settings" ? "Settings" : "Step 1") + ".", "");
     }
-    btn.setAttribute("aria-label", label);
-    btn.title = label;
-
-    btn.addEventListener("click", function () {
-      move(agents.indexOf(agent), up ? -1 : 1);
-    });
-    return btn;
+    rerender();
   }
 
-  // A toggle rather than a button that disables itself: a disabled control
-  // cannot hold focus, and render() rebuilds the row on every selection.
-  function selectButton(agent, selected) {
-    var b = document.createElement("button");
-    b.type = "button";
-    b.className = "btn-select";
-    b.dataset.agent = agent.id;
-    b.dataset.action = "select";
-    b.textContent = "Select";
-    b.setAttribute("aria-pressed", selected ? "true" : "false");
-    b.setAttribute("aria-label", "Select " + agent.name);
-    b.addEventListener("click", function () {
-      if (agent.id === selectedId) return;
-      selectedId = agent.id;
-      render();
-      announce(agent.name + " selected.");
-      focusSelectButton(agent.id);
-    });
-    return b;
+  function setRailTool(id) {
+    state.railTool = id;
+    setStatus("Showing profiles for " + labelFor(id) + " on the LEFT comparison rail. Order unchanged.", "");
+    announce("Showing profiles for " + labelFor(id) + ". The order did not change.");
+    rerender();
   }
 
-  // The pressed button is discarded by render(); put focus on its replacement
-  // so Tab continues from the same place instead of restarting at the top.
-  function focusSelectButton(agentId) {
-    var btn = listEl.querySelector('[data-action="select"][data-agent="' + agentId + '"]');
-    if (btn) btn.focus();
+  function setPickerSelected(id) {
+    state.pickerSelected = id;
+    setStatus("Selected " + labelFor(id) + " in Step 1. Order unchanged.", "");
+    announce("Selected " + labelFor(id) + ".");
+    rerender();
   }
 
-  function plainButton(text, agentName, extraClass) {
-    var b = document.createElement("button");
-    b.type = "button";
-    b.textContent = text;
-    if (extraClass) b.className = extraClass;
-    b.setAttribute("aria-label", text + " " + agentName);
-    b.addEventListener("click", function () {
-      announce(text + " " + agentName + " is not implemented in this prototype.");
+  function setFilter(value) {
+    state.filterQuery = value;
+    renderPicker();
+    var input = document.getElementById("picker-filter");
+    if (input) { input.focus(); input.setSelectionRange(value.length, value.length); }
+  }
+
+  function toggleOwnership(on) {
+    state.ownership = on;
+    if (!on) state.ownershipAfterLoad = false;
+    if (on) {
+      state.ownershipAfterLoad = false;
+      setStatus("Persistent ownership mock ON: proposed move controls are disabled with an accessible reason.", "warn");
+      announce("Move controls disabled: settings.local.json owns the top-level agents setting.");
+    } else {
+      setStatus("Persistent ownership mock OFF: proposed move controls are enabled again.", "");
+    }
+    syncToolbar();
+    rerender();
+  }
+
+  function simulateOwnershipAfterLoad() {
+    state.ownership = true;
+    state.ownershipAfterLoad = true;
+    setStatus("Ownership began after load: the stale snapshot keeps controls enabled; the next move will be refused and rolled back.", "warn");
+    announce("Ownership began after this view loaded. Move controls still look enabled; the command side will refuse the next move.");
+    syncToolbar();
+    rerender();
+  }
+
+  function simulateExternalWriter() {
+    state.externalPending = true;
+    state.conflict = null;
+    setStatus("Another writer moved Grok before Pi. The next move will be checked against a stale expected neighbour.", "warn");
+    announce("Another writer changed the saved order. The next move will conflict with a stale expected neighbour.");
+    syncToolbar();
+    rerender();
+  }
+
+  function restoreProposedOrder() {
+    state.proposedOrder = PROPOSED_START_ORDER.slice();
+    state.moveError = null;
+    state.pendingRetry = null;
+    state.conflict = null;
+    state.externalPending = false;
+    setStatus("Restored the proposed starting order: " + state.proposedOrder.map(labelFor).join(", ") + ".", "ok");
+    announce("Restored the proposed starting order: " + state.proposedOrder.map(labelFor).join(", ") + ".");
+    syncToolbar();
+    rerender();
+  }
+
+  function discardDrafts() {
+    state.draftColor = {};
+    state.draftLabel = {};
+    setStatus("Unsaved colour and label edits discarded. Tool order untouched.", "");
+    announce("Unsaved colour and label edits discarded.");
+    rerender();
+  }
+
+  function reopenProposed() {
+    state.reopening = true;
+    rerender();
+    window.setTimeout(function () {
+      state.reopening = false;
+      if (state.ownershipAfterLoad) {
+        // The mock reopen refreshes the ownership snapshot: controls now render
+        // disabled with the persistent reason.
+        state.ownershipAfterLoad = false;
+      }
+      setStatus("Proposed views reopened from the mock saved order: " +
+                state.proposedOrder.map(labelFor).join(", ") + ".", "ok");
+      announce("Proposed views reopened. The mock saved order survived: " +
+               state.proposedOrder.map(labelFor).join(", ") + ".");
+      syncToolbar();
+      rerender();
+    }, 550);
+  }
+
+  /* -------------------------------------------------------------- rendering */
+  function protoBanner(screenLabel) {
+    return '<div class="proto-banner" role="note"><b>PROTOTYPE</b><span>' +
+      esc(screenLabel) + ' — simulated saving only, no application change. ' +
+      'Nothing here writes settings.json or settings.local.json. Reopening is simulated in this page; a browser reload resets everything.</span></div>';
+  }
+
+  function moveButton(screen, id, dir, order, opts) {
+    var index = toolIndex(order, id);
+    var boundary = dir < 0 ? index === 0 : index === order.length - 1;
+    var disabled = boundary || (opts && opts.disabled);
+    var describedBy = opts && opts.describedBy ? ' aria-describedby="' + attr(opts.describedBy) + '"' : "";
+    var label = (dir < 0 ? "Move " : "Move ") + labelFor(id) + (dir < 0 ? " up" : " down");
+    return '<button type="button" class="move-btn" data-move="' + attr(screen) + '" data-tool="' + attr(id) +
+      '" data-dir="' + dir + '" data-focus-key="move-' + attr(screen) + '-' + attr(id) + '-' + (dir < 0 ? "up" : "down") + '"' +
+      ' aria-label="' + attr(label) + '"' + (disabled ? " disabled" : "") + describedBy + '>' +
+      (dir < 0 ? "\u2191" : "\u2193") + "</button>";
+  }
+
+  function ownershipReasonBlock() {
+    return '<p class="settings-ownership-reason" id="ownership-reason">' +
+      '<strong>Move controls are unavailable.</strong> settings.local.json owns the top-level agents setting, ' +
+      'so this window cannot change the order. Change the overlay outside this feature, then reopen. ' +
+      '(Proposed production behavior: needs a read-only backend snapshot flag plus authoritative command rejection; the current app exposes no such flag.)</p>';
+  }
+
+  function resolveLabelToday(id, firstId) {
+    var own = ownLabel(id);
+    var inherited = firstId ? ownLabel(firstId) : "";
+    return (own || inherited || LEGACY_LABEL || "").trim();
+  }
+  function resolveLabelProposed(id) {
+    var own = ownLabel(id);
+    return (own || LEGACY_LABEL || "").trim();
+  }
+
+  /* --- Screen A: Settings > Coding Agents */
+  function renderSettings() {
+    var order = orderFor("settings");
+    var isProposed = state.mode.settings === "proposed";
+    var ownsDisabled = ownershipDisablesControls();
+    var firstId = order[0];
+
+    var rows = order.map(function (id, i) {
+      var tool = byId(id);
+      var draft = state.draftColor[id];
+      var hex = draft !== undefined ? draft : tool.color;
+      var isRail = state.railTool === id;
+      var editing = draft !== undefined && draft !== tool.color;
+      var moveOpts = {
+        disabled: ownsDisabled,
+        describedBy: ownsDisabled ? "ownership-reason" : ""
+      };
+      return '' +
+        '<div class="settings-agent-row" style="--agent-color:' + attr(tool.color) + '" role="listitem"' +
+          (isRail ? ' aria-current="true"' : "") + ' data-tool="' + attr(id) + '">' +
+          '<div class="settings-agent-row-head" role="button" tabindex="0" data-select-tool="' + attr(id) +
+            '" data-focus-key="row-' + attr(id) + '" aria-label="Show ' + attr(tool.label) + ' on the LEFT comparison rail">' +
+            '<span class="settings-agent-dot" style="background:' + attr(tool.color) + '"></span>' +
+            '<div class="settings-agent-row-meta">' +
+              '<div class="settings-agent-row-name">' + esc(tool.label) +
+                (isRail ? ' <span class="settings-rail-pill left" aria-hidden="true">Selected</span>' : "") +
+              '</div>' +
+              '<div class="settings-agent-row-cmd">' + esc(tool.command) + '</div>' +
+              '<div class="settings-agent-row-colorline">' +
+                '<span class="settings-agent-swatch" style="background:' + attr(hex) + '"></span>' +
+                '<input class="settings-agent-color-input" type="text" spellcheck="false" value="' + attr(hex) + '"' +
+                  ' aria-label="Draft colour for ' + attr(tool.label) + ' (unsaved)"' +
+                  ' data-color-tool="' + attr(id) + '" data-focus-key="color-' + attr(id) + '">' +
+                '<span class="settings-rail-pill ' + (isRail ? "left" : "available") + '">' + (isRail ? "LEFT" : "AVAILABLE") + '</span>' +
+                (editing ? '<span class="draft-chip">Unsaved</span>' : "") +
+              '</div>' +
+            '</div>' +
+            '<div class="settings-agent-row-actions">' +
+              (isProposed
+                ? moveButton("settings", id, -1, order, moveOpts) + moveButton("settings", id, 1, order, moveOpts)
+                : "") +
+              '<button type="button" class="settings-row-btn" data-select-tool="' + attr(id) + '"' +
+                (isRail ? ' aria-current="true"' : "") + ' aria-label="See profiles for ' + attr(tool.label) + '">See profiles</button>' +
+              '<button type="button" class="settings-agent-row-delete" aria-label="Delete ' + attr(tool.label) + '" title="Delete agent">\u{1F5D1}</button>' +
+              '<button type="button" class="settings-agent-chevron" aria-expanded="false" aria-label="Expand agent settings" title="Expand agent settings">\u25B8</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+    }).join("");
+
+    var rail = byId(state.railTool);
+    var railOwn = state.draftLabel[rail.id] !== undefined ? state.draftLabel[rail.id] : (OWN_LABEL[rail.id] || "");
+    var railPlaceholder = isProposed
+      ? (resolveLabelProposed(rail.id) || (rail.id === firstId ? "Baseline" : "Baseline"))
+      : (resolveLabelToday(rail.id, firstId) || (rail.id === firstId ? "Baseline" : "Baseline"));
+
+    var errorBanner = state.moveError
+      ? '<div class="state-banner error">' + esc(state.moveError.message) +
+          (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Retry move</button>' : "") +
+        '</div>'
+      : "";
+    var conflictBanner = state.conflict
+      ? '<div class="state-banner warn">' + esc(state.conflict.message) + '</div>'
+      : "";
+
+    var panel =
+      '<div class="settings-mock rel">' +
+        protoBanner("Settings > Coding Agents") +
+        '<div class="banner-stack">' + errorBanner + conflictBanner + '</div>' +
+        '<div class="settings-tabs" role="presentation">' +
+          '<button type="button" class="settings-tab" disabled>General</button>' +
+          '<button type="button" class="settings-tab active">Coding Agents</button>' +
+        '</div>' +
+        '<div class="settings-config-screen">' +
+          '<aside class="settings-agents-panel" aria-label="Coding Agents">' +
+            '<div class="settings-agents-panel-header">' +
+              '<div>' +
+                '<div class="settings-agents-panel-title">Coding Agents</div>' +
+                '<div class="settings-agents-panel-kicker">Colors and selected comparison pair</div>' +
+              '</div>' +
+              '<button type="button" class="settings-agents-add">Add Agent</button>' +
+            '</div>' +
+            '<div class="settings-agents-panel-body">' +
+              (ownsDisabled ? ownershipReasonBlock() : "") +
+              '<div role="list" aria-label="Registered coding agents">' + rows + '</div>' +
+              '<div class="settings-actions-block">' +
+                '<div class="settings-actions-title">Actions</div>' +
+                '<div class="settings-actions-row">' +
+                  '<button type="button" class="settings-row-btn" disabled title="Not part of this prototype">Swap Rails</button>' +
+                  '<button type="button" class="settings-row-btn danger" disabled title="Not part of this prototype">Delete Agent</button>' +
+                '</div>' +
+              '</div>' +
+              '<p class="settings-hint">' +
+                (isProposed
+                  ? "Proposed: up/down controls beside the row actions move a tool one real adjacent position. First-up and last-down are disabled. A move never changes which tool is LEFT and never saves the colour draft."
+                  : "Today: the saved vector order with no move controls. The divergence from Step 1 (which sorts alphabetically today) is the bug this prototype is about.") +
+              '</p>' +
+            '</div>' +
+          '</aside>' +
+          '<div class="settings-compare-wrap">' +
+            '<div class="settings-profile-rail" style="--agent-color:' + attr(rail.color) + '">' +
+              '<div class="settings-profile-rail-header">' +
+                '<div class="settings-profile-rail-title">' + esc(rail.label) + ' rail</div>' +
+                '<div class="settings-profile-rail-subtitle">LEFT comparison rail · profile card for letter A</div>' +
+              '</div>' +
+              '<div class="settings-profile-rail-body">' +
+                '<article class="settings-profile-card">' +
+                  '<div class="settings-profile-card-head">' +
+                    '<span class="settings-profile-letter-badge" aria-label="Profile letter A">A</span>' +
+                    '<div class="settings-profile-card-heading">' +
+                      '<div class="settings-profile-name-line">' +
+                        '<input class="settings-profile-label" type="text" value="' + attr(railOwn) + '"' +
+                          ' placeholder="' + attr(railPlaceholder) + '"' +
+                          ' aria-label="Profile label for ' + attr(rail.label) + ' letter A (draft)"' +
+                          ' data-label-tool="' + attr(rail.id) + '" data-focus-key="label-' + attr(rail.id) + '">' +
+                        '<span class="settings-profile-badge configured">CONFIGURED</span>' +
+                      '</div>' +
+                      '<div class="settings-profile-card-sub">' + esc(rail.command) + '</div>' +
+                    '</div>' +
+                  '</div>' +
+                  '<p class="settings-hint">Moving rows never changes the LEFT tool or this comparison pair. The placeholder shows label resolution; the full example is below.</p>' +
+                '</article>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        (state.reopening && isProposed ? '<div class="reopen-cover">Reopening proposed view…</div>' : "") +
+      '</div>';
+
+    document.getElementById("settings-frame-root").innerHTML = panel;
+  }
+
+  /* --- review-only label example (the inheritance problem, shown separately) */
+  function ownLabel(id) {
+    return state.draftLabel[id] !== undefined ? state.draftLabel[id] : (OWN_LABEL[id] || "");
+  }
+  function renderLabelExample() {
+    var order = orderFor("settings");
+    var firstId = order[0];
+    var isProposed = state.mode.settings === "proposed";
+    var rows = ["claude", "codex", "pi", "grok"].map(function (id) {
+      var tool = byId(id);
+      var own = ownLabel(id);
+      var placeholder, note, warn = false;
+      if (isProposed) {
+        var resolved = resolveLabelProposed(id);
+        placeholder = resolved || "Baseline";
+        if (own) { note = "own label"; }
+        else if (resolved) { note = "legacy slot label \u201C" + resolved + "\u201D"; }
+        else { note = "no own label, no legacy label \u2192 bare letter A"; }
+      } else {
+        var inheritedOwn = ownLabel(firstId);
+        var resolvedToday = resolveLabelToday(id, firstId);
+        placeholder = resolvedToday || "Baseline";
+        if (own) { note = "own label"; }
+        else if (inheritedOwn) {
+          note = "inherited from the first tool (" + labelFor(firstId) + ") \u2014 the bug";
+          warn = true;
+        } else if (resolvedToday) { note = "legacy slot label"; }
+        else { note = "no label"; }
+      }
+      return '<div class="label-example-row">' +
+        '<span class="tool-name">' + esc(tool.label) + '</span>' +
+        '<input type="text" value="' + attr(own) + '" placeholder="' + attr(placeholder) + '"' +
+          ' aria-label="Profile label for ' + attr(tool.label) + ' letter A, example"' +
+          ' data-label-tool="' + attr(id) + '" data-focus-key="example-label-' + attr(id) + '">' +
+        '<span class="resolution' + (warn ? " warn" : "") + '">' + esc(note) + '</span>' +
+      '</div>';
+    }).join("");
+
+    document.getElementById("label-example-card").innerHTML =
+      '<h3>Profile label example (letter A) — Settings inputs (review-only, separate from the screenshot layout)</h3>' +
+      '<p>' + (isProposed
+        ? 'Proposed fallback everywhere: own label \u2192 legacy slot label \u2192 bare letter. The first tool\u2019s label is never inherited. No stored label is deleted; the legacy slot label still applies to every unlabelled tool.'
+        : 'Today the resolver falls back to the first tool\u2019s label: an unlabelled tool shows Claude Code\u2019s \u201CCODER\u201D (amber). That is the inheritance bug.') + '</p>' +
+      '<p>Example label values only \u2014 the pinned screenshot has no labels configured, so the Step 1 cards keep their bare \u201CA\u201D chips in both Today and Proposed.</p>' +
+      '<div class="label-example-grid">' + rows + '</div>';
+  }
+
+  /* --- Screen B: Coding Agent profile assignment > Step 1 */
+  function renderPicker() {
+    var order = orderFor("picker");
+    var fullOrder = orderFor("picker"); // comparison rows keep the full order
+    var isProposed = state.mode.picker === "proposed";
+    var ownsDisabled = ownershipDisablesControls();
+    var filterActive = pickerMovesDisabledForFilter();
+    var query = state.filterQuery.trim().toLowerCase();
+
+    var visible = order.filter(function (id) {
+      if (!query) return true;
+      var tool = byId(id);
+      return tool.label.toLowerCase().indexOf(query) !== -1 || tool.command.toLowerCase().indexOf(query) !== -1;
     });
-    return b;
+
+    var filterStatus = query === ""
+      ? order.length + " agents"
+      : visible.length === 0
+        ? 'No coding agent matches \u201C' + state.filterQuery.trim() + '\u201D. Clear the filter to see all ' + order.length + '.'
+        : visible.length + " of " + order.length + ' agents match \u201C' + state.filterQuery.trim() + '\u201D.';
+    var filterState = query === "" ? "" : (visible.length === 0 ? ' data-state="empty"' : ' data-state="match"');
+
+    var cards = visible.map(function (id, i) {
+      var tool = byId(id);
+      var active = state.pickerSelected === id;
+      var index = toolIndex(order, id);
+      var boundaryUp = index === 0;
+      var boundaryDown = index === order.length - 1;
+      var moveDisabled = ownsDisabled || filterActive;
+      var describedBy = filterActive ? "filter-reason" : (ownsDisabled ? "ownership-reason" : "");
+      var moveGroup = isProposed
+        ? '<div class="provider-card-moves" role="group" aria-label="Reorder ' + attr(tool.label) + '">' +
+            moveButton("picker", id, -1, order, { disabled: moveDisabled || boundaryUp, describedBy: describedBy }) +
+            moveButton("picker", id, 1, order, { disabled: moveDisabled || boundaryDown, describedBy: describedBy }) +
+          '</div>'
+        : "";
+      return '<div class="agent-profile-provider-card-wrap' + (active ? " active" : "") + '"' +
+          ' style="--agent-color:' + attr(tool.color) + '" data-tool="' + attr(id) + '">' +
+          '<button type="button" class="agent-profile-provider-card" aria-pressed="' + (active ? "true" : "false") + '"' +
+            ' data-select-picker="' + attr(id) + '" data-focus-key="picker-card-' + attr(id) + '"' +
+            ' aria-label="' + attr(tool.label) + ', command ' + attr(tool.command) + (active ? ", selected" : "") + '">' +
+            '<span>' +
+              '<span class="agent-profile-provider-name">' + esc(tool.label) + '</span>' +
+              '<span class="agent-profile-provider-command">' + esc(tool.command) + '</span>' +
+            '</span>' +
+            '<span class="agent-profile-provider-chip" title="Default profile letter A">A</span>' +
+          '</button>' +
+          moveGroup +
+        '</div>';
+    }).join("");
+
+    var emptyState = visible.length === 0
+      ? '<div class="settings-hint">No coding agent matches. The comparison rows below still list all ' + order.length + ' tools in order.</div>'
+      : "";
+
+    var filterReason = (isProposed && filterActive)
+      ? '<p class="picker-filter-reason" id="filter-reason">Step 1 move controls are disabled while the filter is active. Clear the filter to change the order. Settings move controls stay enabled (they are not filtered).</p>'
+      : "";
+    var ownsReason = (isProposed && ownsDisabled) ? ownershipReasonBlock() : "";
+
+    var comparisonRows = fullOrder.map(function (id) {
+      var tool = byId(id);
+      var active = state.pickerSelected === id;
+      return '<div class="agent-comparison-row' + (active ? " active" : "") + '" role="row" data-tool="' + attr(id) + '">' +
+        '<span class="agent-comparison-agent" role="cell">' + esc(tool.label) + '</span>' +
+        '<span class="agent-comparison-agent-sub" role="cell">' + esc(tool.command) + '</span>' +
+        '<span class="agent-comparison-status" role="cell">letter A</span>' +
+      '</div>';
+    }).join("");
+
+    var viewport =
+      '<div class="picker-viewport rel">' +
+        protoBanner("Step 1 — Choose the tool first") +
+        '<div class="banner-stack">' +
+          (state.moveError ? '<div class="state-banner error">' + esc(state.moveError.message) +
+            (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Retry move</button>' : "") +
+            '</div>' : "") +
+          (state.conflict ? '<div class="state-banner warn">' + esc(state.conflict.message) + '</div>' : "") +
+        '</div>' +
+        '<div class="agent-picker-modal-header">' +
+          '<div>' +
+            '<div class="agent-picker-eyebrow">Coding Agent</div>' +
+            '<span class="agent-modal-title">Assign profile for <strong>ac-dev-webpage-ui-v4</strong></span>' +
+          '</div>' +
+          '<div class="agent-picker-context"><strong>dev-webpage-ui</strong><span>room-24-ac-dev-team-v4</span></div>' +
+        '</div>' +
+        '<div class="agent-profile-assignment-body">' +
+          '<aside class="agent-profile-panel agent-profile-provider-panel" aria-label="Coding Agents selector">' +
+            '<div class="agent-profile-panel-head">' +
+              '<div>' +
+                '<div class="agent-profile-panel-title">Coding Agent</div>' +
+                '<div class="agent-profile-panel-kicker">Choose the tool first</div>' +
+              '</div>' +
+              '<span class="agent-profile-step cyan">step 1</span>' +
+            '</div>' +
+            '<div class="agent-profile-provider-filter">' +
+              '<label for="picker-filter">Filter by name or start line</label>' +
+              '<input id="picker-filter" type="search" autocomplete="off" spellcheck="false"' +
+                ' placeholder="name or command + args" value="' + attr(state.filterQuery) + '"' +
+                ' data-focus-key="picker-filter" aria-describedby="picker-filter-status">' +
+              '<div class="agent-profile-provider-filter-status" id="picker-filter-status" role="status" aria-live="polite"' + filterState + '>' + esc(filterStatus) + '</div>' +
+            '</div>' +
+            ownsReason + filterReason +
+            '<div class="agent-profile-provider-list" aria-label="Coding agent choices">' +
+              cards + emptyState +
+            '</div>' +
+          '</aside>' +
+        '</div>' +
+        (state.reopening && isProposed ? '<div class="reopen-cover">Reopening proposed view…</div>' : "") +
+      '</div>';
+
+    var comparison =
+      '<section class="agent-profile-panel agent-comparison-panel" aria-label="Same profile comparison">' +
+        '<div class="agent-profile-panel-head">' +
+          '<div>' +
+            '<div class="agent-profile-panel-title">Same profile comparison</div>' +
+            '<div class="agent-profile-panel-kicker">Letter A across every configured Coding Agent. This list keeps the full order even while the filter hides cards.</div>' +
+          '</div>' +
+        '</div>' +
+        '<p class="settings-hint">' +
+          (isProposed
+            ? 'Proposed: the Step 1 list follows the Settings order and both screens share one mock saved order. A move in either screen updates the other; the filter only hides cards.'
+            : 'Today: the Step 1 list is sorted alphabetically here and has no move controls, so it disagrees with Settings.') +
+        '</p>' +
+        '<div class="agent-comparison-table" role="table" aria-label="Same profile comparison">' +
+          '<div class="agent-comparison-table-head" role="row">' +
+            '<span role="columnheader">Coding Agent</span>' +
+            '<span role="columnheader">Startup line</span>' +
+            '<span role="columnheader">Profile</span>' +
+          '</div>' +
+          '<div role="rowgroup">' + comparisonRows + '</div>' +
+        '</div>' +
+        '<p class="under-fold-note">Shown here for review; in the pinned 607×1074 screenshot this table sits below the fold of the stacked Step 1 layout.</p>' +
+      '</section>';
+
+    document.getElementById("picker-frame-root").innerHTML =
+      '<div class="picker-frame">' + viewport + comparison + '</div>';
+  }
+
+  function renderModeButtons() {
+    ["settings", "picker"].forEach(function (screen) {
+      ["today", "proposed"].forEach(function (mode) {
+        var button = document.getElementById(screen + "-mode-" + mode);
+        if (button) button.setAttribute("aria-pressed", state.mode[screen] === mode ? "true" : "false");
+      });
+    });
+  }
+
+  function syncToolbar() {
+    var ownershipCheck = document.getElementById("ownership-check");
+    var failCheck = document.getElementById("fail-check");
+    var afterLoad = document.getElementById("ownership-after-load-btn");
+    ownershipCheck.checked = state.ownership;
+    failCheck.checked = state.failNextSave;
+    afterLoad.disabled = state.ownership;
   }
 
   function render() {
-    var filtered = filterEl.value.trim() !== "";
-    var rows = visibleAgents();
-
-    emptyState.hidden = rows.length !== 0;
-    // With no rows there is nothing to reorder, so the notice would be noise.
-    filterNotice.hidden = !filtered || rows.length === 0;
-
-    listEl.textContent = "";
-
-    rows.forEach(function (agent) {
-      var index = agents.indexOf(agent);
-
-      var selected = agent.id === selectedId;
-
-      var li = document.createElement("li");
-      li.className = "agent-card";
-      if (selected) li.setAttribute("aria-current", "true");
-
-      var id = document.createElement("div");
-      id.className = "agent-id";
-      var name = document.createElement("span");
-      name.className = "agent-name";
-      name.textContent = agent.name;
-      var role = document.createElement("span");
-      role.className = "agent-role";
-      role.textContent = agent.role;
-      id.appendChild(name);
-      id.appendChild(role);
-
-      var pos = document.createElement("span");
-      pos.className = "agent-pos";
-      pos.textContent = "Position " + (index + 1) + " of " + agents.length;
-
-      if (selected) {
-        var chip = document.createElement("span");
-        chip.className = "selected-chip";
-        chip.textContent = "Selected";
-        id.appendChild(chip);
-      }
-
-      var actions = document.createElement("div");
-      actions.className = "card-actions";
-      // Order buttons first, then the existing card buttons, as siblings.
-      actions.appendChild(orderButton(agent, index, "up", filtered));
-      actions.appendChild(orderButton(agent, index, "down", filtered));
-      actions.appendChild(selectButton(agent, selected));
-      actions.appendChild(plainButton("Open", agent.name));
-      actions.appendChild(plainButton("Edit", agent.name));
-      actions.appendChild(plainButton("Remove", agent.name, "btn-danger"));
-
-      li.appendChild(id);
-      li.appendChild(pos);
-      li.appendChild(actions);
-      listEl.appendChild(li);
-    });
+    renderSettings();
+    renderLabelExample();
+    renderPicker();
+    renderModeButtons();
+    syncToolbar();
   }
 
-  filterEl.addEventListener("input", function () {
-    render();
-    var rows = visibleAgents();
-    announce(rows.length === 0
-      ? "No agents match this filter."
-      : rows.length + (rows.length === 1 ? " agent matches" : " agents match") + " this filter.");
+  /* ------------------------------------------------------------------ wiring */
+  document.addEventListener("click", function (event) {
+    var target = event.target.closest("button, [data-select-tool]");
+    if (!target) return;
+
+    var modeButton = target.closest("[data-screen][data-mode]");
+    if (modeButton) { setMode(modeButton.getAttribute("data-screen"), modeButton.getAttribute("data-mode")); return; }
+
+    if (target.getAttribute("data-action") === "retry") { retryMove(); return; }
+
+    var move = target.closest("[data-move]");
+    if (move) {
+      event.stopPropagation();
+      moveTool(move.getAttribute("data-move"), move.getAttribute("data-tool"), Number(move.getAttribute("data-dir")));
+      return;
+    }
+
+    var selectTool = target.closest("[data-select-tool]");
+    if (selectTool) {
+      event.stopPropagation();
+      setRailTool(selectTool.getAttribute("data-select-tool"));
+      return;
+    }
+
+    var selectPicker = target.closest("[data-select-picker]");
+    if (selectPicker) { setPickerSelected(selectPicker.getAttribute("data-select-picker")); return; }
   });
 
-  failToggle.addEventListener("click", function () {
-    failSave = !failSave;
-    failToggle.setAttribute("aria-pressed", failSave ? "true" : "false");
-    failToggle.textContent = "Mocked save failure: " + (failSave ? "on" : "off");
-    if (!failSave) saveError.hidden = true;
+  // Row heads are role=button divs: Enter/Space select the rail, as in the app.
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    var row = event.target.closest ? event.target.closest(".settings-agent-row-head") : null;
+    if (!row || event.target !== row) return;
+    event.preventDefault();
+    setRailTool(row.getAttribute("data-select-tool"));
   });
 
+  document.addEventListener("input", function (event) {
+    var el = event.target;
+    if (el.id === "picker-filter") { setFilter(el.value); return; }
+    if (el.getAttribute && el.getAttribute("data-color-tool")) {
+      var id = el.getAttribute("data-color-tool");
+      state.draftColor[id] = el.value;
+      var colorline = el.closest(".settings-agent-row-colorline");
+      var swatch = colorline ? colorline.querySelector(".settings-agent-swatch") : null;
+      if (swatch && /^#[0-9a-fA-F]{6}$/.test(el.value)) swatch.style.background = el.value;
+      // Show the unsaved chip immediately without re-rendering (a re-render
+      // would drop the caret while the reviewer is typing).
+      var chip = colorline ? colorline.querySelector(".draft-chip") : null;
+      if (colorline && el.value !== TOOLS[id].color && !chip) {
+        chip = document.createElement("span");
+        chip.className = "draft-chip";
+        chip.textContent = "Unsaved";
+        colorline.appendChild(chip);
+      } else if (colorline && el.value === TOOLS[id].color && chip) {
+        chip.remove();
+      }
+      setStatus("Unsaved Settings colour draft for " + labelFor(id) + " (" + el.value + "). Moves save the order only, never this draft.", "warn");
+      return;
+    }
+    if (el.getAttribute && el.getAttribute("data-label-tool")) {
+      state.draftLabel[el.getAttribute("data-label-tool")] = el.value;
+      setStatus("Unsaved profile-label draft. No stored label is deleted; the order is untouched.", "warn");
+    }
+  });
+
+  document.getElementById("reopen-btn").addEventListener("click", reopenProposed);
+  document.getElementById("reset-btn").addEventListener("click", restoreProposedOrder);
+  document.getElementById("discard-btn").addEventListener("click", discardDrafts);
+  document.getElementById("external-btn").addEventListener("click", simulateExternalWriter);
+  document.getElementById("ownership-after-load-btn").addEventListener("click", simulateOwnershipAfterLoad);
+  document.getElementById("ownership-check").addEventListener("change", function (e) { toggleOwnership(e.currentTarget.checked); });
+  document.getElementById("fail-check").addEventListener("change", function (e) {
+    state.failNextSave = e.currentTarget.checked;
+    setStatus(state.failNextSave ? "The next move save will fail once (mock)." : "Transient save-failure mock off.", state.failNextSave ? "warn" : "");
+  });
+
+  setStatus("Both views start in Proposed. Switch either screen to Today to see the current behavior.", "");
   render();
 })();
 </script>
-
 </body>
 </html>
