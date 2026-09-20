@@ -83,11 +83,25 @@ Each outcome produces a toast in the sidebar:
 
 Every one of them carries the backend's own message when it has one, so the text you see can be more specific than the table above.
 
+## Fresh start or continued conversation
+
+**The default is a fresh start.** Every Loop trigger starts the orchestrator on a conversation with no prior context. Loops created before this change behave the same way: no config file edit, no migration step.
+
+**The control.** Each Loop has a per-Loop setting that switches to continuing the previous conversation instead. In the New Loop and Edit Loop modals it is the `Continue the previous conversation each run` checkbox; on the CLI it is `--session-start fresh|accumulate` on `loop create` and `loop update`. The choice is saved with the Loop and applies to both scheduled runs and `Run Now`, because both go through the same delivery path.
+
+**What a fresh start does to a running orchestrator.** When the orchestrator is already live, a fresh trigger restarts it before injecting the prompt. That is destructive: whatever that session held in context is gone. It is the point of the setting. If you do not want it, turn on the continue-the-previous-conversation control.
+
+**What it does not do.** A fresh trigger never restarts an orchestrator the busy policy protects, and never restarts a Loop that was deleted, disabled or changed while the delivery was pending. Both checks run before the restart.
+
+**When the restart itself fails.** A fresh trigger can end with no orchestrator running: once the old session is torn down, a failure while starting the replacement leaves the Loop's orchestrator closed. The run is recorded as failed, and the next trigger starts a new session from cold.
+
+**Which coding agent starts.** Unchanged: the replica's assigned coding agent, and its last used one when it has no assignment.
+
 ## Busy sessions and respawn
 
 **Busy.** AC checks whether the target orchestrator is busy at the moment the Loop comes due, and the busy policy decides what to do about it:
 
-- **Wait until idle** holds the delivery and marks the Loop pending. AC retries it on later scans and delivers when the orchestrator goes idle. This is the default.
+- **Wait until idle** holds the delivery and marks the Loop pending. AC retries it on later scans and delivers when the orchestrator goes idle. This is the default. After a fresh restart, if the orchestrator does not become ready within 90 seconds, the run is reported as failed with `coordinator did not become idle within 90s after the fresh restart` rather than left pending forever.
 - **Force inject** delivers anyway, interrupting whatever the orchestrator is doing. This is the `Force inject even if orchestrator is busy` checkbox.
 - **Skip** drops this occurrence and waits for the next scheduled one. CLI only.
 
