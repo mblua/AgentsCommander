@@ -5,7 +5,8 @@
 //! an optional unbounded channel that every caller leaves absent in this
 //! phase, so the emit is a no-op in production.
 //!
-//! `provider` is a local enum, deliberately not `session::CodingAgentKind`:
+//! `provider` is a local enum, deliberately not the session crate's
+//! `CodingAgentKind`:
 //! this module must stay a leaf whose dependency set is auditable by eye, and
 //! `CodingAgentKind` names providers (`Pi`, `Muse`, `Antigravity`) that this
 //! module has no capture semantics for. Mapping to the session type happens at
@@ -57,4 +58,10 @@ pub struct CapturedRecord {
     pub provider_final: bool,
     pub turn_identified: bool,
     pub origin: RecordOrigin,
+    // #2232 phase 3: what the watcher already read, carried to the supervisor so the
+    // epoch predicate can run off the watcher thread. Round 2 left these unowned.
+    pub observed_path: std::path::PathBuf,
+    pub observed_len: u64,
+    /// Capped at [`crate::capture::state::OBSERVED_PREFIX_CAP`] bytes.
+    pub observed_prefix: Vec<u8>,
 }
