@@ -370,6 +370,13 @@ agentscommander_lib::commands::ac_discovery -> agentscommander_lib::session::ses
 agentscommander_lib::commands::ac_discovery -> agentscommander_lib::shutdown
 agentscommander_lib::commands::ac_discovery -> agentscommander_lib::web::commands
 agentscommander_lib::commands::agent_creator -> agentscommander_lib::config::agent_creation
+agentscommander_lib::commands::co_managed -> agentscommander_lib::commands::session
+agentscommander_lib::commands::co_managed -> agentscommander_lib::config::ac_root
+agentscommander_lib::commands::co_managed -> agentscommander_lib::config::co_managed
+agentscommander_lib::commands::co_managed -> agentscommander_lib::config::entity_prefix
+agentscommander_lib::commands::co_managed -> agentscommander_lib::config::projects
+agentscommander_lib::commands::co_managed -> agentscommander_lib::config::settings
+agentscommander_lib::commands::co_managed -> agentscommander_lib::path_identity
 agentscommander_lib::commands::codex_resolver -> agentscommander_lib::path_utils
 agentscommander_lib::commands::config -> agentscommander_lib
 agentscommander_lib::commands::config -> agentscommander_lib::agent_update
@@ -479,6 +486,7 @@ agentscommander_lib::commands::session -> agentscommander_lib::config::agent_com
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_config
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_memory
 agentscommander_lib::commands::session -> agentscommander_lib::config::archive_gate
+agentscommander_lib::commands::session -> agentscommander_lib::config::co_managed
 agentscommander_lib::commands::session -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::commands::session -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::commands::session -> agentscommander_lib::config::config_seed
@@ -578,6 +586,7 @@ agentscommander_lib::config::archive_gate -> agentscommander_lib::config::ac_roo
 agentscommander_lib::config::archive_gate -> agentscommander_lib::config::projects
 agentscommander_lib::config::archive_gate -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::config::archive_gate -> agentscommander_lib::config::settings
+agentscommander_lib::config::co_managed -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::config::coding_agent_mutations -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::coding_agent_mutations -> agentscommander_lib::config::settings
 agentscommander_lib::config::coding_agent_mutations -> agentscommander_lib::pty::backend

@@ -4,6 +4,7 @@ import { LoopAPI } from "../../shared/ipc";
 import { projectStore } from "../stores/project";
 import {
   busyPolicyFromForceCheckbox,
+  sessionStartFromAccumulateCheckbox,
   coordinatorOptionsFromWorkgroups,
   formatLoopNextDue,
   hasFiveCronFields,
@@ -28,6 +29,7 @@ const NewLoopModal: Component<{
   const [promptBody, setPromptBody] = createSignal("");
   const [enabled, setEnabled] = createSignal(true);
   const [forceInject, setForceInject] = createSignal(false);
+  const [accumulate, setAccumulate] = createSignal(false);
   const [error, setError] = createSignal("");
   const [creating, setCreating] = createSignal(false);
   const [preview, setPreview] = createSignal<PreviewState>({ status: "idle", message: "" });
@@ -100,6 +102,7 @@ const NewLoopModal: Component<{
         workgroup: selectedWorkgroup(),
         promptBody: promptBody(),
         busyCoordinator: busyPolicyFromForceCheckbox(forceInject()),
+        sessionStart: sessionStartFromAccumulateCheckbox(accumulate()),
         enabled: enabled(),
       });
       await projectStore.reloadProject(props.projectPath);
@@ -218,6 +221,16 @@ const NewLoopModal: Component<{
               data-ac-testid="loop.new.forceInject"
             />
             Force inject even if orchestrator is busy
+          </label>
+
+          <label class="loop-checkbox-field">
+            <input
+              type="checkbox"
+              checked={accumulate()}
+              onChange={(e) => setAccumulate(e.currentTarget.checked)}
+              data-ac-testid="loop.new.accumulate"
+            />
+            Continue the previous conversation each run
           </label>
 
           <Show when={creating()}>
