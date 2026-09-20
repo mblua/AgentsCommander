@@ -2,6 +2,7 @@ import {
   Component,
   For,
   Show,
+  createEffect,
   createMemo,
   createSignal,
   onCleanup,
@@ -18,6 +19,7 @@ import {
 import { isTauri } from "../shared/platform";
 import { centralViewStore } from "../main/stores/centralView";
 import { resourceMonitorStore } from "../shared/stores/resourceMonitor";
+import { FILTER_DEBOUNCE_MS, MAX_PIDS, parsePidFilter } from "../shared/pid-filter";
 import type {
   ResourceAgentGroupSnapshot,
   ResourceGroupState,
@@ -133,6 +135,60 @@ const toggleFilter = (
     next.add(value);
   }
   set(next);
+};
+
+type RmSortField = "default" | "cpu" | "private" | "processes" | "name";
+type RmSortDirection = "asc" | "desc";
+
+interface DebouncedApply {
+  schedule(value: string): void;
+  flush(value: string): void;
+  cancel(): void;
+}
+
+const debouncedApply = (setApplied: (value: string) => void): DebouncedApply => {
+  let handle: ReturnType<typeof setTimeout> | null = null;
+
+  const clear = () => {
+    if (handle !== null) {
+      clearTimeout(handle);
+      handle = null;
+    }
+  };
+
+  return {
+    schedule(value: string) {
+      clear();
+      handle = setTimeout(() => {
+        handle = null;
+        setApplied(value);
+      }, FILTER_DEBOUNCE_MS);
+    },
+    flush(value: string) {
+      clear();
+      setApplied(value);
+    },
+    cancel: clear,
+  };
+};
+
+const processTitle = (process: ResourceProcessSnapshot): string =>
+  typeof process.parentPid === "number"
+    ? `PID ${process.pid} - parent ${process.parentPid}`
+    : `PID ${process.pid}`;
+
+const sortMetric = (
+  group: ResourceAgentGroupSnapshot,
+  field: RmSortField,
+): number | null => {
+  if (field === "cpu") {
+    return typeof group.cpuPercent === "number" ? group.cpuPercent : null;
+  }
+  if (field === "private") {
+    return typeof group.privateBytes === "number" ? group.privateBytes : null;
+  }
+  if (field === "processes") return group.processCount;
+  return null;
 };
 
 const Titlebar: Component = () => {
@@ -296,7 +352,9 @@ interface ResourceMonitorAppProps {
 }
 
 const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
-  const [expandedGroupId, setExpandedGroupId] = createSignal<string | null>(null);
+  const [expandedGroupIds, setExpandedGroupIds] = createSignal<Set<string>>(
+    new Set()
+  );
   const [killTarget, setKillTarget] =
     createSignal<ResourceAgentGroupSnapshot | null>(null);
   const [killError, setKillError] = createSignal("");
@@ -314,9 +372,29 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     setKillTarget(group);
   };
 
-  const closeKillModal = () => {
+  let modalEl: HTMLDivElement | undefined;
+
+  const restoreFocus = (sessionId: string) => {
+    queueMicrotask(() => {
+      const killButton = document.querySelector<HTMLElement>(
+        `[data-ac-testid="resourceMonitor.group.${sessionId}.kill"]`
+      );
+      if (killButton) {
+        killButton.focus();
+        return;
+      }
+      document
+        .querySelector<HTMLElement>(
+          '[data-ac-testid="resourceMonitor.groups.heading"]'
+        )
+        ?.focus();
+    });
+  };
+
+  const closeKillModal = (sessionId: string) => {
     setKillTarget(null);
     setKillError("");
+    restoreFocus(sessionId);
   };
 
   const isVerifying = (group: ResourceAgentGroupSnapshot): boolean =>
@@ -360,6 +438,9 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
 
   const snapshot = () => resourceMonitorStore.snapshot;
   const groups = createMemo(() => snapshot()?.groups ?? []);
+  const processTotal = createMemo(() =>
+    groups().reduce((total, group) => total + group.processCount, 0)
+  );
 
   const [statusFilter, setStatusFilter] = createSignal<RmStatusFilter>("all");
   const [projectFilter, setProjectFilter] = createSignal<Set<string>>(new Set());
@@ -367,6 +448,23 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     new Set()
   );
   const [roleFilter, setRoleFilter] = createSignal<Set<string>>(new Set());
+
+  const [pidFilterText, setPidFilterText] = createSignal("");
+  const [appliedPidText, setAppliedPidText] = createSignal("");
+  const [searchText, setSearchText] = createSignal("");
+  const [appliedSearch, setAppliedSearch] = createSignal("");
+  const [sortField, setSortField] = createSignal<RmSortField>("default");
+  const [sortDirection, setSortDirection] = createSignal<RmSortDirection>("desc");
+
+  const pidDebounce = debouncedApply(setAppliedPidText);
+  const searchDebounce = debouncedApply(setAppliedSearch);
+  onCleanup(() => {
+    pidDebounce.cancel();
+    searchDebounce.cancel();
+  });
+
+  const parsedPidFilter = createMemo(() => parsePidFilter(appliedPidText()));
+  const appliedPidSet = createMemo(() => new Set(parsedPidFilter().pids));
 
   const projectOptions = createMemo(() =>
     distinct(groups().map((g) => g.project))
@@ -376,33 +474,247 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
   );
   const roleOptions = createMemo(() => distinct(groups().map((g) => g.agent)));
 
-  const filteredGroups = createMemo(() => {
-    const status = statusFilter();
-    const projects = projectFilter();
-    const wgs = workgroupFilter();
-    const roles = roleFilter();
-    return groups().filter((g) => {
-      if (status === "active" && !isActiveGroup(g)) return false;
-      if (status === "inactive" && isActiveGroup(g)) return false;
-      if (projects.size > 0 && !(g.project && projects.has(g.project)))
-        return false;
-      if (wgs.size > 0 && !(g.workgroup && wgs.has(g.workgroup))) return false;
-      if (roles.size > 0 && !(g.agent && roles.has(g.agent))) return false;
+  const matchesSearch = (
+    group: ResourceAgentGroupSnapshot,
+    needle: string,
+  ): boolean => {
+    const fields = [group.name, group.agent, group.workgroup, group.project];
+    if (fields.some((field) => (field ?? "").toLowerCase().includes(needle))) {
       return true;
+    }
+    return group.processes.some((process) =>
+      (process.name ?? process.exeName ?? "").toLowerCase().includes(needle)
+    );
+  };
+
+  const matchesNonPidFilters = (group: ResourceAgentGroupSnapshot): boolean => {
+    const status = statusFilter();
+    if (status === "active" && !isActiveGroup(group)) return false;
+    if (status === "inactive" && isActiveGroup(group)) return false;
+    const projects = projectFilter();
+    if (projects.size > 0 && !(group.project && projects.has(group.project))) {
+      return false;
+    }
+    const wgs = workgroupFilter();
+    if (wgs.size > 0 && !(group.workgroup && wgs.has(group.workgroup))) {
+      return false;
+    }
+    const roles = roleFilter();
+    if (roles.size > 0 && !(group.agent && roles.has(group.agent))) return false;
+    const query = appliedSearch();
+    if (query.length > 0 && !matchesSearch(group, query.toLowerCase())) {
+      return false;
+    }
+    return true;
+  };
+
+  const matchesPidSet = (
+    group: ResourceAgentGroupSnapshot,
+    pids: Set<number>,
+  ): boolean => {
+    if (pids.size === 0) return true;
+    if (typeof group.rootPid === "number" && pids.has(group.rootPid)) return true;
+    return group.processes.some((process) => pids.has(process.pid));
+  };
+
+  const nonPidFilteredGroups = createMemo(() =>
+    groups().filter((group) => matchesNonPidFilters(group))
+  );
+
+  const filteredGroups = createMemo(() =>
+    nonPidFilteredGroups().filter((group) =>
+      matchesPidSet(group, appliedPidSet())
+    )
+  );
+
+  let pinnedIndex = new Map<string, number>();
+  let lastSortSignature = "";
+  let lastFilterSignature = "";
+
+  const applySort = (
+    list: ResourceAgentGroupSnapshot[]
+  ): ResourceAgentGroupSnapshot[] => {
+    const field = sortField();
+    if (field === "default") return list;
+    const direction = sortDirection();
+    return [...list].sort((a, b) => {
+      if (field === "name") {
+        const compared = a.name.localeCompare(b.name);
+        if (compared !== 0) return direction === "desc" ? -compared : compared;
+        return a.sessionId.localeCompare(b.sessionId);
+      }
+      const left = sortMetric(a, field);
+      const right = sortMetric(b, field);
+      if (typeof left === "number" && typeof right === "number") {
+        if (left !== right) {
+          const compared = left - right;
+          return direction === "desc" ? -compared : compared;
+        }
+      } else if (typeof left === "number") {
+        return -1;
+      } else if (typeof right === "number") {
+        return 1;
+      }
+      return a.sessionId.localeCompare(b.sessionId);
     });
+  };
+
+  const sortedGroups = createMemo(() => {
+    const filtered = filteredGroups();
+    const field = sortField();
+    const direction = sortDirection();
+    const expanded = expandedGroupIds();
+    const filterSignature = JSON.stringify([
+      statusFilter(),
+      [...projectFilter()].sort(),
+      [...workgroupFilter()].sort(),
+      [...roleFilter()].sort(),
+      appliedPidText(),
+      appliedSearch(),
+    ]);
+    const sortSignature = `${field}|${direction}`;
+
+    let ordered = applySort(filtered);
+
+    if (
+      sortSignature !== lastSortSignature ||
+      filterSignature !== lastFilterSignature
+    ) {
+      pinnedIndex = new Map();
+      lastSortSignature = sortSignature;
+      lastFilterSignature = filterSignature;
+    }
+
+    const present = new Set(ordered.map((group) => group.sessionId));
+    for (const sessionId of Array.from(pinnedIndex.keys())) {
+      if (!present.has(sessionId) || !expanded.has(sessionId)) {
+        pinnedIndex.delete(sessionId);
+      }
+    }
+
+    if (field !== "default" && pinnedIndex.size > 0) {
+      const pinned = Array.from(pinnedIndex.entries()).sort(
+        (a, b) => a[1] - b[1]
+      );
+      const pinnedIds = new Set(pinned.map(([sessionId]) => sessionId));
+      const byId = new Map(ordered.map((group) => [group.sessionId, group]));
+      const rest = ordered.filter((group) => !pinnedIds.has(group.sessionId));
+      for (const [sessionId, index] of pinned) {
+        const group = byId.get(sessionId);
+        if (!group) continue;
+        rest.splice(Math.min(index, rest.length), 0, group);
+      }
+      ordered = rest;
+    }
+
+    for (const sessionId of expanded) {
+      if (pinnedIndex.has(sessionId)) continue;
+      const index = ordered.findIndex((group) => group.sessionId === sessionId);
+      if (index >= 0) pinnedIndex.set(sessionId, index);
+    }
+
+    return ordered;
   });
+
+  const pidStats = createMemo(() => {
+    const pids = appliedPidSet();
+    let matchedProcesses = 0;
+    let rootOnlyGroups = 0;
+    if (pids.size === 0) return { matchedProcesses, rootOnlyGroups };
+    for (const group of sortedGroups()) {
+      const processMatches = group.processes.filter((process) =>
+        pids.has(process.pid)
+      ).length;
+      matchedProcesses += processMatches;
+      const rootMatches =
+        typeof group.rootPid === "number" && pids.has(group.rootPid);
+      if (rootMatches && processMatches === 0) rootOnlyGroups += 1;
+    }
+    return { matchedProcesses, rootOnlyGroups };
+  });
+
+  const counterText = createMemo(() => {
+    let text = `Showing ${sortedGroups().length} of ${groups().length} agents`;
+    if (appliedPidSet().size > 0) {
+      const { matchedProcesses, rootOnlyGroups } = pidStats();
+      text += ` - ${matchedProcesses} matching ${
+        matchedProcesses === 1 ? "process" : "processes"
+      }`;
+      if (rootOnlyGroups > 0) {
+        text += `, ${rootOnlyGroups} matched by root PID only`;
+      }
+    }
+    return text;
+  });
+
   const filtersActive = createMemo(
     () =>
       statusFilter() !== "all" ||
       projectFilter().size > 0 ||
       workgroupFilter().size > 0 ||
-      roleFilter().size > 0
+      roleFilter().size > 0 ||
+      parsedPidFilter().pids.length > 0 ||
+      appliedSearch().length > 0
   );
+
+  const pidOnlyFilter = createMemo(
+    () =>
+      parsedPidFilter().pids.length > 0 &&
+      statusFilter() === "all" &&
+      projectFilter().size === 0 &&
+      workgroupFilter().size === 0 &&
+      roleFilter().size === 0 &&
+      appliedSearch().length === 0
+  );
+
+  const pidNotice = createMemo(() => {
+    const parsed = parsedPidFilter();
+    const parts: string[] = [];
+    if (parsed.rejected.length > 0) {
+      parts.push(`Unrecognized PID: ${parsed.rejected.join(", ")}.`);
+    }
+    if (parsed.truncated) {
+      parts.push(`Only the first ${MAX_PIDS} PIDs are applied.`);
+    }
+    if (parts.length === 0) return null;
+    return { text: parts.join(" "), error: parsed.pids.length === 0 };
+  });
+
+  const coverageNotice = createMemo(
+    () =>
+      parsedPidFilter().pids.length > 0 &&
+      nonPidFilteredGroups().some((group) => !group.descendantsObserved)
+  );
+
+  const chipState = (pid: number): "matched" | "unmatched" => {
+    for (const group of groups()) {
+      if (typeof group.rootPid === "number" && group.rootPid === pid) {
+        return "matched";
+      }
+      if (group.processes.some((process) => process.pid === pid)) {
+        return "matched";
+      }
+    }
+    return "unmatched";
+  };
+
+  const removePid = (pid: number) => {
+    const remaining = parsedPidFilter()
+      .pids.filter((value) => value !== pid)
+      .join(", ");
+    setPidFilterText(remaining);
+    pidDebounce.flush(remaining);
+  };
+
   const clearFilters = () => {
     setStatusFilter("all");
     setProjectFilter(new Set<string>());
     setWorkgroupFilter(new Set<string>());
     setRoleFilter(new Set<string>());
+    setPidFilterText("");
+    setSearchText("");
+    pidDebounce.flush("");
+    searchDebounce.flush("");
   };
 
   const statusClass = createMemo(() => {
@@ -415,7 +727,72 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     overallLabel(snapshot()?.overallState ?? "unknown")
   );
   const toggleGroup = (sessionId: string) => {
-    setExpandedGroupId((current) => (current === sessionId ? null : sessionId));
+    setExpandedGroupIds((current) => {
+      const next = new Set(current);
+      if (next.has(sessionId)) {
+        next.delete(sessionId);
+      } else {
+        next.add(sessionId);
+      }
+      return next;
+    });
+  };
+
+  let lastAppliedPidSignature = "";
+  createEffect(() => {
+    const signature = parsedPidFilter().pids.join(",");
+    if (signature === lastAppliedPidSignature) return;
+    lastAppliedPidSignature = signature;
+    const pids = appliedPidSet();
+    if (pids.size === 0) return;
+    const matching = groups()
+      .filter((group) => matchesPidSet(group, pids))
+      .map((group) => group.sessionId);
+    if (matching.length === 0) return;
+    setExpandedGroupIds((current) => {
+      const next = new Set(current);
+      for (const sessionId of matching) next.add(sessionId);
+      return next;
+    });
+  });
+
+  const handleSortFieldChange = (field: RmSortField) => {
+    setSortField(field);
+    setSortDirection(field === "name" ? "asc" : "desc");
+  };
+
+  const toggleSortDirection = () => {
+    if (sortField() === "default") return;
+    setSortDirection((current) => (current === "desc" ? "asc" : "desc"));
+  };
+
+  createEffect(() => {
+    if (killInFlight() && killTarget() && modalEl) modalEl.focus();
+  });
+
+  const handleModalKeyDown = (event: KeyboardEvent) => {
+    const target = killTarget();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (killInFlight() || !target) return;
+      closeKillModal(target.sessionId);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusables = modalEl
+      ? Array.from(modalEl.querySelectorAll<HTMLElement>("button:not([disabled])"))
+      : [];
+    event.preventDefault();
+    if (focusables.length === 0) {
+      modalEl?.focus();
+      return;
+    }
+    const current = document.activeElement as HTMLElement | null;
+    const index = current ? focusables.indexOf(current) : -1;
+    const next = event.shiftKey
+      ? focusables[index <= 0 ? focusables.length - 1 : index - 1]
+      : focusables[(index + 1) % focusables.length];
+    next?.focus();
   };
 
   const openResourcesSettings = () => {
@@ -437,7 +814,8 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
       });
       if (result.finalized) {
         setKillResult(null);
-        setKillTarget(null);
+        await resourceMonitorStore.refresh();
+        closeKillModal(target.sessionId);
       } else {
         setKillResult({
           sessionId: result.sessionId,
@@ -445,8 +823,8 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
           message: result.message,
           blockedBySecurity: result.blockedBySecurity,
         });
+        await resourceMonitorStore.refresh();
       }
-      await resourceMonitorStore.refresh();
     } catch (err) {
       setKillError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -540,6 +918,14 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
           </div>
           <div
             class="rm-status-tile"
+            data-ac-testid="resourceMonitor.summary.processCount"
+            data-ac-role="metric"
+          >
+            <span class="rm-tile-label">Processes</span>
+            <strong>{processTotal()}</strong>
+          </div>
+          <div
+            class="rm-status-tile"
             data-ac-testid="resourceMonitor.summary.appPrivateBytes"
             data-ac-role="metric"
           >
@@ -547,6 +933,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
             <strong>{formatBytes(snapshot()?.appPrivateBytes)}</strong>
             <span
               class="rm-automation-metric"
+              aria-hidden="true"
               data-ac-testid="resourceMonitor.summary.appWorkingSetBytes"
               data-ac-role="metric"
             >
@@ -565,34 +952,50 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
         </section>
 
         <Show when={snapshot()?.monitorEnabled === false}>
-          <div class="rm-banner rm-banner-muted">Resource monitoring is disabled.</div>
+          <div
+            class="rm-banner rm-banner-muted"
+            role="status"
+            aria-live="polite"
+          >
+            Resource monitoring is disabled.
+          </div>
         </Show>
 
         <Show when={resourceMonitorStore.error}>
-          <div class="rm-banner rm-banner-error">
+          <div
+            class="rm-banner rm-banner-error"
+            role="status"
+            aria-live="polite"
+          >
             Snapshot failed: {resourceMonitorStore.error}
           </div>
         </Show>
 
         <Show when={resourceMonitorStore.stale && snapshot()}>
-          <div class="rm-banner rm-banner-muted">
+          <div
+            class="rm-banner rm-banner-muted"
+            role="status"
+            aria-live="polite"
+          >
             Showing last snapshot from {formatTimestamp(snapshot()?.capturedAt)}.
           </div>
         </Show>
 
         <section class="rm-groups">
           <div class="rm-section-header">
-            <h2>Agents</h2>
+            <h2 tabindex="-1" data-ac-testid="resourceMonitor.groups.heading">
+              Agents
+            </h2>
             <div class="rm-section-header-meta">
-              <Show when={filtersActive()}>
-                <span
-                  class="rm-filter-count"
-                  data-ac-testid="resourceMonitor.filter.count"
-                  data-ac-role="text"
-                >
-                  Showing {filteredGroups().length} of {groups().length}
-                </span>
-              </Show>
+              <span
+                class="rm-filter-count"
+                data-ac-testid="resourceMonitor.filter.count"
+                data-ac-role="text"
+                role="status"
+                aria-live="polite"
+              >
+                {counterText()}
+              </span>
               <span
                 data-ac-testid="resourceMonitor.summary.timestamp"
                 data-ac-role="text"
@@ -730,21 +1133,215 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
               </div>
             </Show>
 
-            <Show when={filtersActive()}>
-              <button
-                type="button"
-                class="rm-filter-clear"
-                onClick={clearFilters}
-                data-ac-testid="resourceMonitor.filter.clear"
-                data-ac-role="button"
+            <div
+              class="rm-filter-group rm-filter-pid"
+              role="group"
+              aria-label="Filter by PID"
+              data-ac-testid="resourceMonitor.filter.pid"
+              data-ac-role="group"
+            >
+              <label class="rm-filter-label" for="rm-filter-pid-input">
+                PID
+              </label>
+              <input
+                id="rm-filter-pid-input"
+                type="text"
+                class="rm-filter-pid-input"
+                value={pidFilterText()}
+                placeholder="4242, 5120"
+                disabled={snapshot()?.monitorEnabled === false}
+                title={
+                  snapshot()?.monitorEnabled === false
+                    ? "Resource monitoring is disabled"
+                    : "Filter agents by process ID"
+                }
+                aria-describedby="rm-filter-pid-help"
+                aria-invalid={parsedPidFilter().rejected.length > 0}
+                onInput={(event) => {
+                  const value = event.currentTarget.value;
+                  setPidFilterText(value);
+                  pidDebounce.schedule(value);
+                }}
+                data-ac-testid="resourceMonitor.filter.pid.input"
+                data-ac-role="input"
+              />
+              <span class="rm-filter-help" id="rm-filter-pid-help">
+                Comma, semicolon or space separated
+              </span>
+              <Show when={pidFilterText().length > 0}>
+                <button
+                  type="button"
+                  class="rm-filter-input-clear"
+                  onClick={() => {
+                    setPidFilterText("");
+                    pidDebounce.flush("");
+                  }}
+                  aria-label="Clear PID filter"
+                  data-ac-testid="resourceMonitor.filter.pid.clear"
+                  data-ac-role="button"
+                >
+                  &#x2715;
+                </button>
+              </Show>
+              <For each={parsedPidFilter().pids}>
+                {(pid) => (
+                  <button
+                    type="button"
+                    class="rm-pid-chip"
+                    classList={{
+                      "is-unmatched": chipState(pid) === "unmatched",
+                    }}
+                    onClick={() => removePid(pid)}
+                    aria-label={`Remove PID ${pid}`}
+                    title={
+                      chipState(pid) === "unmatched"
+                        ? "Not present in the observed processes of this snapshot"
+                        : undefined
+                    }
+                    data-ac-testid={`resourceMonitor.filter.pid.chip.${pid}`}
+                    data-ac-role="button"
+                    data-ac-state={chipState(pid)}
+                  >
+                    <span>{pid}</span>
+                  </button>
+                )}
+              </For>
+              <Show when={pidNotice()}>
+                {(notice) => (
+                  <span
+                    class="rm-filter-notice"
+                    classList={{ "is-error": notice().error }}
+                    role="status"
+                    aria-live="polite"
+                    data-ac-testid="resourceMonitor.filter.pid.error"
+                    data-ac-role="status"
+                  >
+                    {notice().text}
+                  </span>
+                )}
+              </Show>
+            </div>
+
+            <div
+              class="rm-filter-group rm-filter-search"
+              role="group"
+              aria-label="Search agents"
+              data-ac-testid="resourceMonitor.filter.search"
+              data-ac-role="group"
+            >
+              <label class="rm-filter-label" for="rm-filter-search-input">
+                Search
+              </label>
+              <input
+                id="rm-filter-search-input"
+                type="text"
+                class="rm-filter-search-input"
+                value={searchText()}
+                placeholder="name, room, project"
+                disabled={snapshot()?.monitorEnabled === false}
+                title={
+                  snapshot()?.monitorEnabled === false
+                    ? "Resource monitoring is disabled"
+                    : "Search agents and their processes"
+                }
+                onInput={(event) => {
+                  const value = event.currentTarget.value;
+                  setSearchText(value);
+                  searchDebounce.schedule(value);
+                }}
+                data-ac-testid="resourceMonitor.filter.search.input"
+                data-ac-role="input"
+              />
+              <Show when={searchText().length > 0}>
+                <button
+                  type="button"
+                  class="rm-filter-input-clear"
+                  onClick={() => {
+                    setSearchText("");
+                    searchDebounce.flush("");
+                  }}
+                  aria-label="Clear search"
+                  data-ac-testid="resourceMonitor.filter.search.clear"
+                  data-ac-role="button"
+                >
+                  &#x2715;
+                </button>
+              </Show>
+            </div>
+
+            <div class="rm-filter-actions">
+              <div
+                class="rm-sort"
+                role="group"
+                aria-label="Sort agents"
+                data-ac-testid="resourceMonitor.sort"
+                data-ac-role="group"
               >
-                Clear filters
-              </button>
-            </Show>
+                <label class="rm-filter-label" for="rm-sort-field">
+                  Sort
+                </label>
+                <select
+                  id="rm-sort-field"
+                  class="rm-sort-field"
+                  value={sortField()}
+                  onChange={(event) =>
+                    handleSortFieldChange(
+                      event.currentTarget.value as RmSortField
+                    )
+                  }
+                  data-ac-testid="resourceMonitor.sort.field"
+                  data-ac-role="input"
+                >
+                  <option value="default">Default</option>
+                  <option value="cpu">CPU</option>
+                  <option value="private">Private</option>
+                  <option value="processes">Processes</option>
+                  <option value="name">Name</option>
+                </select>
+                <button
+                  type="button"
+                  class="rm-sort-direction"
+                  disabled={sortField() === "default"}
+                  onClick={toggleSortDirection}
+                  aria-label="Sort direction"
+                  data-ac-testid="resourceMonitor.sort.direction"
+                  data-ac-role="button"
+                  data-ac-state={
+                    sortField() === "default" ? "disabled" : sortDirection()
+                  }
+                >
+                  {sortDirection() === "desc" ? "\u2193" : "\u2191"}
+                </button>
+              </div>
+              <Show when={filtersActive()}>
+                <button
+                  type="button"
+                  class="rm-filter-clear"
+                  onClick={clearFilters}
+                  data-ac-testid="resourceMonitor.filter.clear"
+                  data-ac-role="button"
+                >
+                  Clear filters
+                </button>
+              </Show>
+            </div>
           </div>
 
+          <Show when={coverageNotice()}>
+            <div
+              class="rm-banner rm-banner-muted"
+              role="status"
+              aria-live="polite"
+              data-ac-testid="resourceMonitor.filter.coverage"
+              data-ac-role="status"
+            >
+              Some process trees are only partially observed; a PID may be
+              missing from this snapshot.
+            </div>
+          </Show>
+
           <Show
-            when={filteredGroups().length > 0}
+            when={sortedGroups().length > 0}
             fallback={
               <div
                 class="rm-empty"
@@ -762,15 +1359,28 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                   ? "Loading snapshot..."
                   : groups().length === 0
                     ? "No active agents"
-                    : "No agents match the filters"}
+                    : pidOnlyFilter()
+                      ? `No process in this snapshot matches PID ${parsedPidFilter().pids.join(
+                          ", "
+                        )}${
+                          resourceMonitorStore.stale
+                            ? ` Snapshot captured at ${formatTimestamp(
+                                snapshot()?.capturedAt
+                              )}`
+                            : ""
+                        }`
+                      : "No agents match the filters"}
               </div>
             }
           >
             <div class="rm-group-list">
-              <For each={filteredGroups()}>
+              <For each={sortedGroups()}>
                 {(group) => (
                   <div
                     class={`rm-group-row state-${groupSeverity(group)}`}
+                    classList={{
+                      "is-expanded": expandedGroupIds().has(group.sessionId),
+                    }}
                     data-ac-testid={`resourceMonitor.group.${group.sessionId}`}
                     data-ac-role="group"
                     data-ac-state={groupSeverity(group)}
@@ -778,20 +1388,32 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                     <button
                       class="rm-group-main"
                       onClick={() => toggleGroup(group.sessionId)}
-                      aria-expanded={expandedGroupId() === group.sessionId}
+                      aria-expanded={expandedGroupIds().has(group.sessionId)}
                       data-ac-testid={`resourceMonitor.group.${group.sessionId}.toggle`}
                       data-ac-role="button"
                     >
                       <span class="rm-expander">
-                        {expandedGroupId() === group.sessionId ? "v" : ">"}
+                        {expandedGroupIds().has(group.sessionId) ? "v" : ">"}
                       </span>
                       <span class="rm-group-identity">
-                        <span
-                          class="rm-group-name"
-                          data-ac-testid={`resourceMonitor.group.${group.sessionId}.name`}
-                          data-ac-role="cell"
-                        >
-                          {group.name}
+                        <span class="rm-group-identity-line">
+                          <span
+                            class="rm-group-name"
+                            data-ac-testid={`resourceMonitor.group.${group.sessionId}.name`}
+                            data-ac-role="cell"
+                          >
+                            {group.name}
+                          </span>
+                          <Show when={!group.descendantsObserved}>
+                            <span
+                              class="rm-partial-pill"
+                              title="Not all descendants were observed in this snapshot"
+                              data-ac-testid={`resourceMonitor.group.${group.sessionId}.partial`}
+                              data-ac-role="status"
+                            >
+                              Partial
+                            </span>
+                          </Show>
                         </span>
                         <span
                           class="rm-group-origin"
@@ -832,7 +1454,6 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                         {formatBytes(group.privateBytes)}
                       </span>
                       <span
-                        class="rm-automation-metric"
                         data-ac-testid={`resourceMonitor.group.${group.sessionId}.workingSetBytes`}
                         data-ac-role="cell"
                       >
@@ -846,6 +1467,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                       </span>
                       <span
                         class={`rm-network-pill network-${group.networkState}`}
+                        title={group.networkSummary || group.networkState}
                         data-ac-testid={`resourceMonitor.group.${group.sessionId}.network`}
                         data-ac-role="cell"
                         data-ac-state={group.networkState}
@@ -867,7 +1489,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                       {killActionLabel(group)}
                     </button>
 
-                    <Show when={expandedGroupId() === group.sessionId}>
+                    <Show when={expandedGroupIds().has(group.sessionId)}>
                       <div
                         class="rm-process-list"
                         data-ac-testid={`resourceMonitor.group.${group.sessionId}.processList`}
@@ -897,10 +1519,28 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                           {(process) => (
                             <div
                               class="rm-process-row"
+                              classList={{
+                                "is-pid-match": appliedPidSet().has(process.pid),
+                              }}
+                              title={processTitle(process)}
                               data-ac-testid={`resourceMonitor.group.${group.sessionId}.process.${process.pid}`}
                               data-ac-role="row"
+                              data-ac-state={
+                                appliedPidSet().has(process.pid)
+                                  ? "pid-match"
+                                  : undefined
+                              }
                             >
                               <span
+                                classList={{
+                                  "is-tree": (process.depth ?? 0) > 0,
+                                }}
+                                style={{
+                                  "padding-left": `${12 * Math.min(
+                                    process.depth ?? 0,
+                                    6
+                                  )}px`,
+                                }}
                                 data-ac-testid={`resourceMonitor.group.${group.sessionId}.process.${process.pid}.name`}
                                 data-ac-role="cell"
                               >
@@ -999,9 +1639,27 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
 
       <Show when={killTarget()} keyed>
         {(target) => (
-          <div class="rm-modal-backdrop" data-ac-testid="resourceMonitor.killConfirm">
-            <div class="rm-modal" role="dialog" aria-modal="true">
-              <h2>
+          <div
+            class="rm-modal-backdrop"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) event.preventDefault();
+            }}
+            data-ac-testid="resourceMonitor.killConfirm"
+          >
+            <div
+              class="rm-modal"
+              role="dialog"
+              aria-modal="true"
+              tabindex="-1"
+              aria-labelledby="rm-kill-modal-title"
+              ref={(element) => {
+                modalEl = element;
+              }}
+              onKeyDown={handleModalKeyDown}
+              data-ac-testid="resourceMonitor.killConfirm.dialog"
+              data-ac-role="dialog"
+            >
+              <h2 id="rm-kill-modal-title">
                 {target.state === "quarantined" ? "Force-kill agent" : "Kill agent"}
               </h2>
               <p
@@ -1067,9 +1725,12 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
               </Show>
               <div class="rm-modal-actions">
                 <button
+                  ref={(element) => {
+                    queueMicrotask(() => element.focus());
+                  }}
                   class="rm-action-btn"
                   disabled={killInFlight()}
-                  onClick={closeKillModal}
+                  onClick={() => closeKillModal(target.sessionId)}
                   data-ac-testid="resourceMonitor.killConfirm.cancel"
                   data-ac-role="button"
                 >
