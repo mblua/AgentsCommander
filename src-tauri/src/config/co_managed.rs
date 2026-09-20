@@ -6,9 +6,10 @@
 //! `serde`, `serde_json` and `std`. Every SCC-owned value the effective state
 //! needs (the API key, the orchestrator flag, the capture-support flag) arrives
 //! as a **parameter**; the reading is done by the caller
-//! (`commands::session::co_managed_effective_state_for_session`), which is
-//! already an SCC member. Do not reference `config::settings`, `config::teams`,
-//! `phone::`, `session::` or `commands::` from this file.
+//! (the gathering function `co_managed_effective_state_for_session`, which
+//! lives in the session command module and is already an SCC member). Do not
+//! reference the settings, teams, phone, session or command modules from this
+//! file: phase 2 acceptance criterion 7 greps for exactly those paths here.
 //!
 //! On-disk contract, under `<room-root>/.co-managed/`:
 //!
@@ -79,9 +80,9 @@ pub enum OffReason {
 
 /// Walk up from `path` to the nearest Room root, `room-<N>-*`.
 ///
-/// This mirrors the rule `phone::messaging::workgroup_root` uses, reimplemented
-/// here because that function is an SCC member and this module may not call it.
-/// The `<N>` run is decimal digits, exactly as `messaging::is_wg_dir` requires.
+/// This mirrors the rule the messaging module's `workgroup_root` uses,
+/// reimplemented here because that function is an SCC member and this module may
+/// not call it. The `<N>` run is decimal digits, exactly as `is_wg_dir` requires.
 pub fn room_root_for_path(path: &Path) -> Option<PathBuf> {
     path.ancestors()
         .find(|ancestor| {
@@ -249,10 +250,14 @@ struct CoManagedLock {
 
 fn acquire_lock(dir: &Path) -> Result<CoManagedLock, String> {
     let path = dir.join(LOCK_FILE_NAME);
+    // The lock file is a pure advisory token: it carries no content, and a
+    // concurrent holder may have it open, so it is created if absent but never
+    // truncated (`suspicious_open_options`).
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&path)
         .map_err(|e| format!("coManagedLockOpenFailed: {}: {}", path.display(), e))?;
 

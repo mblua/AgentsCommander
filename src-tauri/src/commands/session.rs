@@ -67,7 +67,7 @@ fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> ExistingRoot
 /// needs (`config::settings` for the key, `config::teams` for the orchestrator,
 /// `commands::telegram::derive_reader` for the reader kind) are internal to the
 /// SCC, and the call down into the leaf cannot grow it either. Putting the
-/// reading in `commands::co_managed` and letting this module call it would give
+/// reading in the Co-managed command module and letting this module call it would give
 /// that command module an incoming arc from an SCC member and absorb it into
 /// the cycle (phase 2 section 4.1).
 ///
@@ -13180,7 +13180,7 @@ mod tests {
 
 /// #2265 phase 2, test 15: the gathering function answers from an SCC member.
 ///
-/// A later refactor that moves the body back into `commands::co_managed` breaks
+/// A later refactor that moves the body back into the Co-managed command module breaks
 /// these tests rather than only the module-cycle gate.
 #[cfg(test)]
 mod co_managed_tests {
