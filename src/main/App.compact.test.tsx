@@ -14,6 +14,7 @@ import {
 import {
   railNudgePx,
   restoreWidthPx,
+  setRailNudgePx,
   setSidebarCompactMode,
   sidebarCompact,
 } from "../shared/sidebar-compact";
@@ -226,6 +227,27 @@ describe("MainApp compact host (#2236)", () => {
         new CustomEvent("main-sidebar-width-change", { detail: { width: 580 } }),
       );
       expect(restoreWidthPx()).toBe(520);
+
+      // The shipped resize re-clamp moves the hidden live width to 500 while
+      // the snapshot stays 520, so a live-signal restore cannot pass. The
+      // window is restored before expanding so the snapshot itself clamps to
+      // 520, not to the 800-wide upper bound.
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        writable: true,
+        value: 800,
+      });
+      window.dispatchEvent(new Event("resize"));
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        writable: true,
+        value: 1400,
+      });
+
+      // A live nudge before the expand makes the cleared-nudge assertion mean
+      // something: a hook that skips setRailNudgePx(0) leaves it at 16.
+      setRailNudgePx(16);
+      expect(paneWidth(app.host)).toBe("calc(var(--ac-rail-width) + 16px)");
 
       setSidebarCompactMode(false);
       expect(paneWidth(app.host)).toBe("520px");
