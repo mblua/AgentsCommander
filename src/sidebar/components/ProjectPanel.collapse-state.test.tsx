@@ -13,34 +13,11 @@ import {
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { defaultGroupsConfig } from "../stores/workgroup-groups";
-import type { AcDiscoveryResult, AcLoopSummary } from "../../shared/types";
+import type { AcDiscoveryResult } from "../../shared/types";
+import { loopSummaryFixture as loop } from "./loop-summary-fixture";
 
 const projectPath = "C:\\Project";
 const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
-
-function loop(overrides: Partial<AcLoopSummary> = {}): AcLoopSummary {
-  return {
-    id: "loop-standup",
-    name: "Weekday standup",
-    enabled: true,
-    expr: "0 9 * * 1-5",
-    timezone: "local",
-    targetKind: "workgroupCoordinator",
-    workgroup: "wg-2-dev-team",
-    promptPreview: "scheduled run",
-    busyCoordinator: "skip",
-    path: `${projectPath}\\.ac\\_loop_standup`,
-    configPath: `${projectPath}\\.ac\\_loop_standup\\config.toml`,
-    lastCheckedAt: null,
-    lastDueAt: null,
-    lastDeliveredAt: null,
-    lastResult: null,
-    pendingDueAt: null,
-    lastMissedClosedAt: null,
-    nextDueAt: null,
-    ...overrides,
-  };
-}
 
 function projectDiscovery(taskTitle: string): AcDiscoveryResult {
   return discovery({

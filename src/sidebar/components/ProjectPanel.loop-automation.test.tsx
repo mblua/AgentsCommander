@@ -30,6 +30,7 @@ function disabledLoop(): AcLoopSummary {
     workgroup: workgroupName,
     promptPreview: "Short preview",
     busyCoordinator: "skip",
+    sessionStart: "fresh",
     path: `${projectPath}\\.ac\\_loop_weekday-standup`,
     configPath: `${projectPath}\\.ac\\_loop_weekday-standup\\config.toml`,
     lastCheckedAt: null,

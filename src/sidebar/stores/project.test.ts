@@ -503,6 +503,7 @@ describe("projectStore", () => {
         workgroup: "wg-1-team",
         promptPreview: "preview",
         busyCoordinator: "skip",
+        sessionStart: "fresh",
         path: `${PROJECT_PATH}\\.ac\\_loop_standup`,
         configPath: `${PROJECT_PATH}\\.ac\\_loop_standup\\config.toml`,
         lastCheckedAt: null,
