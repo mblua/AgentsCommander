@@ -780,6 +780,153 @@ mod tests {
         assert!(!control_eval.is_blocked);
     }
 
+    // #2251 - the three captures transcribed as the rows the scanner evaluates.
+    // claude (room-shared/2250-claude-menu.png): the footer line of the numbered selection
+    // menu, its words on one row. opencode permission
+    // (room-shared/2250-opencode-permission-menu.png): the title line of the
+    // external-directory permission dialog. opencode Always allow
+    // (room-shared/2251-opencode-always-allow-menu.png, SHA-256 D5FD25FB...): the
+    // confirmation sentence of the nested Always allow dialog. The captures' leading cells
+    // are not reproduced; the patterns' `[^A-Za-z0-9]*` prefix absorbs them.
+    const CAPTURED_2251_CLAUDE_FOOTER: &str =
+        "Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel";
+    const CAPTURED_2251_OPENCODE_PERMISSION: &str = "Permission required";
+    const CAPTURED_2251_OPENCODE_ALWAYS: &str =
+        "This will allow the following patterns until OpenCode is restarted";
+
+    // #2251 - the exact published patterns under proof; must equal the file's bytes.
+    const CLAUDE_2251_PATTERN: &str = r"^[^A-Za-z0-9]*Enter to select\b.{1,64}Esc to cancel\b";
+    const OPENCODE_PERMISSION_2251_PATTERN: &str = r"^[^A-Za-z0-9]*Permission required\b";
+    const OPENCODE_ALWAYS_2251_PATTERN: &str =
+        r"^[^A-Za-z0-9]*This will allow the following patterns until OpenCode is restarted\b";
+
+    // #2251 - per pattern, the captured rows it must NOT match. They include the other
+    // states' rows, the one-end truncations of its own captured row, and rows that other
+    // entries legitimately own (for example `Esc to cancel · Tab to amend`, the existing
+    // #2248 claude footer), so they are negative controls for THIS pattern, not "non-menu"
+    // rows in general. The bullet row is the reviewer's false-positive test for a title
+    // anchor.
+    const CAPTURED_2251_CLAUDE_NEGATIVES: &[&str] = &[
+        "Enter to select",
+        "Esc to cancel \u{00b7} Tab to amend",
+        "6. Chat about this",
+        "Access external directory",
+        "Always allow",
+        "- Always allow the user to pick",
+        "This will allow the following patterns",
+    ];
+    const CAPTURED_2251_OPENCODE_PERMISSION_NEGATIVES: &[&str] = &[
+        "Permission",
+        "Access external directory",
+        "Always allow",
+        "- Always allow the user to pick",
+        "This will allow the following patterns",
+        "Allow always",
+    ];
+    const CAPTURED_2251_OPENCODE_ALWAYS_NEGATIVES: &[&str] = &[
+        "Always allow",
+        "- Always allow the user to pick",
+        "This will allow the following patterns",
+        "Confirm",
+        "Cancel",
+        "Allow once",
+        "Allow always",
+        "Reject",
+        "Access external directory",
+        "Build",
+        "GLM-5.2",
+    ];
+
+    #[test]
+    fn the_published_2251_entries_block_the_captured_rows_and_ignore_their_neighbours() {
+        let published = include_str!(
+            "../../../../remote-resources/blocking-menus/v1/settings-blocking-menus.json"
+        );
+        let file = crate::config::settings::validate_remote_blocking_menus_file(published)
+            .expect("the published remote file passes the validator");
+
+        let cases: [(&str, &str, &str, &str, &[&str]); 3] = [
+            (
+                "claude",
+                CLAUDE_2251_PATTERN,
+                CAPTURED_2251_CLAUDE_FOOTER,
+                "claude is waiting for you to answer a selection menu in this terminal",
+                CAPTURED_2251_CLAUDE_NEGATIVES,
+            ),
+            (
+                "opencode",
+                OPENCODE_PERMISSION_2251_PATTERN,
+                CAPTURED_2251_OPENCODE_PERMISSION,
+                "opencode is waiting for you to answer a permission prompt in this terminal",
+                CAPTURED_2251_OPENCODE_PERMISSION_NEGATIVES,
+            ),
+            (
+                "opencode",
+                OPENCODE_ALWAYS_2251_PATTERN,
+                CAPTURED_2251_OPENCODE_ALWAYS,
+                "opencode is waiting for you to confirm the Always allow menu in this terminal",
+                CAPTURED_2251_OPENCODE_ALWAYS_NEGATIVES,
+            ),
+        ];
+
+        for (stem, pattern, captured, notification, negatives) in cases {
+            let config = file.by_command[stem]
+                .iter()
+                .filter_map(|entry| entry.valid())
+                .find(|config| config.pattern == pattern)
+                .unwrap_or_else(|| panic!("the published {stem} array carries the #2251 pattern"));
+            assert_eq!(config.notification, notification);
+            let regex = regex::Regex::new(&config.pattern).expect("the pattern compiles");
+            assert!(
+                regex.is_match(captured),
+                "{stem}: the captured row must match"
+            );
+            for row in negatives {
+                assert!(
+                    !regex.is_match(row),
+                    "{stem}: a negative row must not match: {row}"
+                );
+            }
+        }
+
+        // End to end through the scanner: the published bytes installed as the remote cache
+        // block each captured row for its stem and resolve the published notification. The
+        // two opencode cases share the stem and differ only in the row under test.
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("settings-blocking-menus.remote.json"),
+            published,
+        )
+        .unwrap();
+        let guard = MenuGuard::with_store(BlockingMenusStore::load_from_settings_path(
+            &temp.path().join("settings.json"),
+        ));
+        for (stem, _, captured, notification, negatives) in cases {
+            let entries = guard.entries_for(&agent(&format!("{stem}-2251"), stem, None));
+            let blocked = guard.evaluate_logical_rows(
+                Uuid::new_v4(),
+                &[LogicalRow {
+                    start: 0,
+                    end: 0,
+                    text: captured.to_string(),
+                }],
+                &entries,
+            );
+            assert!(blocked.is_blocked, "{stem}: the captured row blocks");
+            assert_eq!(blocked.matched_notification.as_deref(), Some(notification));
+            let clean = guard.evaluate_logical_rows(
+                Uuid::new_v4(),
+                &[LogicalRow {
+                    start: 0,
+                    end: 0,
+                    text: negatives[0].to_string(),
+                }],
+                &entries,
+            );
+            assert!(!clean.is_blocked, "{stem}: a negative row stays clean");
+        }
+    }
+
     #[test]
     fn a_legacy_array_on_the_agent_wins_over_both_files() {
         let temp = tempfile::TempDir::new().unwrap();

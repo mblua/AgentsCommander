@@ -32,6 +32,12 @@
         "notification": "claude is waiting for you to answer a permission prompt in this terminal",
         "enabled": true,
         "capturedAgainst": "claude 2.1.268 / Linux"
+      },
+      {
+        "pattern": "^[^A-Za-z0-9]*Enter to select\\b.{1,64}Esc to cancel\\b",
+        "notification": "claude is waiting for you to answer a selection menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "claude / Windows"
       }
     ],
     "codex": [
@@ -70,6 +76,20 @@
         "notification": "codex is waiting for you to answer a pending question in this terminal",
         "enabled": true,
         "capturedAgainst": "codex 0.154.0 / Windows"
+      }
+    ],
+    "opencode": [
+      {
+        "pattern": "^[^A-Za-z0-9]*This will allow the following patterns until OpenCode is restarted\\b",
+        "notification": "opencode is waiting for you to confirm the Always allow menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "opencode / Windows"
+      },
+      {
+        "pattern": "^[^A-Za-z0-9]*Permission required\\b",
+        "notification": "opencode is waiting for you to answer a permission prompt in this terminal",
+        "enabled": true,
+        "capturedAgainst": "opencode / Windows"
       }
     ],
     "pi": [
