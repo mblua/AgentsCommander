@@ -59,6 +59,96 @@ fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> ExistingRoot
     }
 }
 
+/// Gather every SCC-owned value the Co-managed effective state needs and call
+/// the leaf `config::co_managed::effective_state` (#2265, epic #2232).
+///
+/// **The home of this function is a layering requirement, not a preference.**
+/// `commands::session` is already inside the 88-member SCC, so the arcs it
+/// needs (`config::settings` for the key, `config::teams` for the orchestrator,
+/// `commands::telegram::derive_reader` for the reader kind) are internal to the
+/// SCC, and the call down into the leaf cannot grow it either. Putting the
+/// reading in the Co-managed command module and letting this module call it would give
+/// that command module an incoming arc from an SCC member and absorb it into
+/// the cycle (phase 2 section 4.1).
+///
+/// `derive_reader` is called read-only for its return value and is not modified;
+/// the session memo's container homes are passed through unchanged, because
+/// `None` would falsely reject a supported container.
+pub(crate) async fn co_managed_effective_state_for_session<R: Runtime>(
+    app: &AppHandle<R>,
+    room_root: &std::path::Path,
+    session_id: &str,
+) -> Result<crate::config::co_managed::CoManagedState, String> {
+    let session = {
+        let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let id =
+            Uuid::parse_str(session_id).map_err(|e| format!("coManagedSessionIdInvalid: {e}"))?;
+        let guard = manager.read().await;
+        guard
+            .get_session(id)
+            .await
+            .ok_or_else(|| "coManagedSessionNotFound".to_string())?
+    };
+
+    let is_orchestrator = room_root
+        .parent()
+        .and_then(|ac_root| {
+            crate::config::teams::resolve_wg_coordinator_replica(ac_root, room_root)
+        })
+        .map(|resolved| {
+            co_managed_same_directory(
+                &resolved.replica_dir,
+                std::path::Path::new(&session.working_directory),
+            )
+        })
+        .unwrap_or(false);
+
+    let reader = crate::commands::telegram::derive_reader(
+        &session.shell,
+        &session.shell_args,
+        &session.working_directory,
+        session.backend_kind,
+        session.agent_kind,
+        session.resolved_claude_projects_dir.clone(),
+        session.effective_codex_home.as_deref(),
+    );
+    let capture_supported = matches!(reader, Ok(Some(_)));
+
+    let api_key = {
+        let settings = app.state::<SettingsState>();
+        let guard = settings.read().await;
+        guard.jev_api_key.clone()
+    };
+
+    Ok(crate::config::co_managed::effective_state(
+        room_root,
+        &api_key,
+        is_orchestrator,
+        capture_supported,
+        co_managed_provider_label(session.agent_kind),
+    ))
+}
+
+/// The provider name that reaches `OffReason::UnsupportedProvider`; it matches
+/// `CodingAgentKind`'s snake_case wire form.
+fn co_managed_provider_label(kind: Option<CodingAgentKind>) -> &'static str {
+    match kind {
+        Some(CodingAgentKind::Claude) => "claude",
+        Some(CodingAgentKind::Codex) => "codex",
+        Some(CodingAgentKind::Antigravity) => "antigravity",
+        Some(CodingAgentKind::Pi) => "pi",
+        Some(CodingAgentKind::Muse) => "muse",
+        None => "none",
+    }
+}
+
+fn co_managed_same_directory(left: &std::path::Path, right: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => crate::path_identity::paths_equivalent(&left, &right),
+        _ => crate::path_identity::paths_equivalent(left, right),
+    }
+}
+
 /// #1032 + #1171 - start sampling a freshly spawned session, with both engines.
 ///
 /// **Sessions with no agent are never registered**, and that rule lives HERE, once, for both:
@@ -13085,5 +13175,294 @@ mod tests {
         );
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].session_id, second);
+    }
+}
+
+/// #2265 phase 2, test 15: the gathering function answers from an SCC member.
+///
+/// A later refactor that moves the body back into the Co-managed command module breaks
+/// these tests rather than only the module-cycle gate.
+#[cfg(test)]
+mod co_managed_tests {
+    use super::*;
+    use crate::config::co_managed::{self, CoManagedState, OffReason};
+
+    const TEAM_CONFIG: &str = r#"{"agents":["_agent_coordinator","_agent_member"],"coordinator":"_agent_coordinator","repos":[]}"#;
+
+    struct RoomFixture {
+        _temp: tempfile::TempDir,
+        room: PathBuf,
+        coordinator: PathBuf,
+        member: PathBuf,
+    }
+
+    fn replica_config(agent: &str) -> String {
+        format!(r#"{{"identity":"../../_agent_{agent}","context":[],"repos":[]}}"#)
+    }
+
+    fn room_fixture() -> RoomFixture {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let ac_root = temp.path().join("project-a").join(".ac");
+        let room = ac_root.join("room-1-dev-team");
+        let coordinator = room.join("__agent_coordinator");
+        let member = room.join("__agent_member");
+        for path in [
+            &coordinator,
+            &member,
+            &ac_root.join("_agent_coordinator"),
+            &ac_root.join("_agent_member"),
+            &ac_root.join("_team_dev-team"),
+        ] {
+            std::fs::create_dir_all(path).expect("fixture dir");
+        }
+        std::fs::write(
+            ac_root.join("_team_dev-team").join("config.json"),
+            TEAM_CONFIG,
+        )
+        .expect("team config");
+        std::fs::write(
+            coordinator.join("config.json"),
+            replica_config("coordinator"),
+        )
+        .expect("coordinator config");
+        std::fs::write(member.join("config.json"), replica_config("member"))
+            .expect("member config");
+        RoomFixture {
+            _temp: temp,
+            room,
+            coordinator,
+            member,
+        }
+    }
+
+    fn configure_room(room: &std::path::Path, enabled: bool) {
+        std::fs::create_dir_all(co_managed::co_managed_dir(room)).expect("co-managed dir");
+        std::fs::write(room.join("catalog.json"), "{}").expect("catalog");
+        std::fs::write(
+            co_managed::config_path(room),
+            format!(r#"{{"enabled":{enabled},"catalogPath":"catalog.json"}}"#),
+        )
+        .expect("config.json");
+    }
+
+    fn test_app(
+        settings: AppSettings,
+        manager: Arc<tokio::sync::RwLock<SessionManager>>,
+    ) -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(manager)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build co-managed session test app")
+    }
+
+    fn settings_with_key() -> AppSettings {
+        AppSettings {
+            jev_api_key: "test-key".to_string(),
+            ..AppSettings::default()
+        }
+    }
+
+    async fn add_session(
+        manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+        cwd: &std::path::Path,
+        backend_kind: SessionBackendKind,
+        agent_kind: CodingAgentKind,
+    ) -> Uuid {
+        let session = {
+            let guard = manager.read().await;
+            guard
+                .create_session(
+                    "bash".to_string(),
+                    Vec::new(),
+                    cwd.to_string_lossy().to_string(),
+                    None,
+                    None,
+                    Vec::new(),
+                    false,
+                    backend_kind,
+                )
+                .await
+                .expect("create session")
+        };
+        {
+            let guard = manager.read().await;
+            guard.set_agent_kind(session.id, Some(agent_kind)).await;
+        }
+        session.id
+    }
+
+    async fn effective(
+        app: &tauri::App<tauri::test::MockRuntime>,
+        room: &std::path::Path,
+        session_id: Uuid,
+    ) -> CoManagedState {
+        co_managed_effective_state_for_session(app.handle(), room, &session_id.to_string())
+            .await
+            .expect("gathering function answers")
+    }
+
+    #[tokio::test]
+    async fn orchestrator_answers_ready_and_room_flag_off() {
+        let fixture = room_fixture();
+        configure_room(&fixture.room, true);
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let app = test_app(settings_with_key(), Arc::clone(&manager));
+        let projects_dir = fixture._temp.path().join("claude-projects");
+        std::fs::create_dir_all(&projects_dir).expect("projects dir");
+
+        let id = add_session(
+            &manager,
+            &fixture.coordinator,
+            SessionBackendKind::LocalProcess,
+            CodingAgentKind::Claude,
+        )
+        .await;
+        manager
+            .read()
+            .await
+            .set_resolved_claude_projects_dir(id, Some(projects_dir.clone()))
+            .await;
+
+        assert_eq!(
+            effective(&app, &fixture.room, id).await,
+            CoManagedState::Ready
+        );
+
+        configure_room(&fixture.room, false);
+        assert_eq!(
+            effective(&app, &fixture.room, id).await,
+            CoManagedState::Off {
+                reason: OffReason::RoomFlagOff
+            }
+        );
+
+        // A member session in the same room is never the orchestrator.
+        configure_room(&fixture.room, true);
+        let member = add_session(
+            &manager,
+            &fixture.member,
+            SessionBackendKind::LocalProcess,
+            CodingAgentKind::Claude,
+        )
+        .await;
+        manager
+            .read()
+            .await
+            .set_resolved_claude_projects_dir(member, Some(projects_dir))
+            .await;
+        assert_eq!(
+            effective(&app, &fixture.room, member).await,
+            CoManagedState::Off {
+                reason: OffReason::NotAnOrchestrator
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn container_sessions_require_their_resolved_homes() {
+        let fixture = room_fixture();
+        configure_room(&fixture.room, true);
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let app = test_app(settings_with_key(), Arc::clone(&manager));
+        let claude_home = fixture._temp.path().join("claude-home");
+        let codex_home = fixture._temp.path().join("codex-home");
+        std::fs::create_dir_all(&claude_home).expect("claude home");
+        std::fs::create_dir_all(&codex_home).expect("codex home");
+
+        let claude = add_session(
+            &manager,
+            &fixture.coordinator,
+            SessionBackendKind::ContainerTransport,
+            CodingAgentKind::Claude,
+        )
+        .await;
+        manager
+            .read()
+            .await
+            .set_resolved_claude_projects_dir(claude, Some(claude_home))
+            .await;
+        assert_eq!(
+            effective(&app, &fixture.room, claude).await,
+            CoManagedState::Ready
+        );
+
+        let claude_bare = add_session(
+            &manager,
+            &fixture.coordinator,
+            SessionBackendKind::ContainerTransport,
+            CodingAgentKind::Claude,
+        )
+        .await;
+        manager
+            .read()
+            .await
+            .set_resolved_claude_projects_dir(claude_bare, None)
+            .await;
+        assert_eq!(
+            effective(&app, &fixture.room, claude_bare).await,
+            CoManagedState::Off {
+                reason: OffReason::UnsupportedProvider {
+                    agent: "claude".to_string()
+                }
+            }
+        );
+
+        let codex = add_session(
+            &manager,
+            &fixture.coordinator,
+            SessionBackendKind::ContainerTransport,
+            CodingAgentKind::Codex,
+        )
+        .await;
+        manager
+            .read()
+            .await
+            .set_profile_metadata(
+                codex,
+                None,
+                None,
+                Vec::new(),
+                false,
+                Some(codex_home.to_string_lossy().to_string()),
+                None,
+            )
+            .await;
+        assert_eq!(
+            effective(&app, &fixture.room, codex).await,
+            CoManagedState::Ready
+        );
+
+        let codex_bare = add_session(
+            &manager,
+            &fixture.coordinator,
+            SessionBackendKind::ContainerTransport,
+            CodingAgentKind::Codex,
+        )
+        .await;
+        assert_eq!(
+            effective(&app, &fixture.room, codex_bare).await,
+            CoManagedState::Off {
+                reason: OffReason::UnsupportedProvider {
+                    agent: "codex".to_string()
+                }
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_session_is_an_error() {
+        let fixture = room_fixture();
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let app = test_app(settings_with_key(), Arc::clone(&manager));
+
+        let error = co_managed_effective_state_for_session(
+            app.handle(),
+            &fixture.room,
+            &Uuid::new_v4().to_string(),
+        )
+        .await
+        .expect_err("a missing session must not answer Ready");
+        assert!(error.contains("coManagedSessionNotFound"), "{error}");
     }
 }
