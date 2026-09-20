@@ -104,6 +104,67 @@ jobs:
           env-vars: 'ImageOS'
           save-if: 'false'
 
+
+      - name: Inventory restored gate-debug target
+        id: gate_debug_inventory
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 10
+        run: |
+          set +e
+          set -o pipefail
+          log="$GITHUB_WORKSPACE/cache-inventory.log"
+          {
+            echo "inventory-version=2 job=$GITHUB_JOB run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT sha=$GITHUB_SHA"
+            echo '## windows-family artifacts: path, bytes, mtime'
+            if [ -d target/debug/deps ]; then
+              find target/debug/deps -maxdepth 1 -type f \( -name 'libwindows-*' -o -name 'libwindows_*' \) -printf '%p\t%s\t%T@\n' | LC_ALL=C sort || echo 'PROBE_ERROR artifacts'
+              echo "windows_lib_count=$(find target/debug/deps -maxdepth 1 -type f \( -name 'libwindows-*' -o -name 'libwindows_*' \) | wc -l | tr -d ' ')"
+              echo "windows_rlib_count=$(find target/debug/deps -maxdepth 1 -type f \( -name 'libwindows-*.rlib' -o -name 'libwindows_*.rlib' \) | wc -l | tr -d ' ')"
+              echo "deps_file_count=$(find target/debug/deps -type f | wc -l | tr -d ' ')"
+              echo '## windows-family depfiles: unit-hash path, first line with package source/version'
+              find target/debug/deps -maxdepth 1 -type f \( -name 'windows-*.d' -o -name 'windows_*.d' \) -print0 |
+                while IFS= read -r -d '' f; do
+                  if first=$(head -n 1 "$f"); then
+                    printf '%s\t%s\n' "$f" "$first"
+                  else
+                    echo "PROBE_ERROR depfile-map $f"
+                  fi
+                done | LC_ALL=C sort || echo 'PROBE_ERROR depfiles'
+              echo "windows_depfile_count=$(find target/debug/deps -maxdepth 1 -type f \( -name 'windows-*.d' -o -name 'windows_*.d' \) | wc -l | tr -d ' ')"
+            else
+              echo 'MISSING target/debug/deps'; echo 'windows_lib_count=0'; echo 'windows_rlib_count=0'; echo 'windows_depfile_count=0'; echo 'deps_file_count=0'
+            fi
+            echo '## windows-family fingerprint files: path, bytes, mtime'
+            if [ -d target/debug/.fingerprint ]; then
+              find target/debug/.fingerprint -maxdepth 1 -type d \( -name 'windows-*' -o -name 'windows_*' \) -print0 |
+                while IFS= read -r -d '' dir; do
+                  find "$dir" -type f -printf '%p\t%s\t%T@\n' || echo "PROBE_ERROR fingerprint $dir"
+                done | LC_ALL=C sort || echo 'PROBE_ERROR fingerprints'
+              echo "windows_fingerprint_count=$(find target/debug/.fingerprint -maxdepth 1 -type d \( -name 'windows-*' -o -name 'windows_*' \) | wc -l | tr -d ' ')"
+            else
+              echo 'MISSING target/debug/.fingerprint'; echo 'windows_fingerprint_count=0'
+            fi
+            echo '## target bytes'; if [ -d target ]; then du -sb target || echo 'PROBE_ERROR du'; else echo 'MISSING target'; fi
+            echo '## zero-length files anywhere under target'
+            if [ -d target ]; then find target -type f -size 0 -print | LC_ALL=C sort || echo 'PROBE_ERROR zero-length'; else echo 'MISSING target'; fi
+            echo '## free space'; df -h . || echo 'PROBE_ERROR df'
+          } > "$log" 2>&1 || true
+          cat "$log" || true
+          exit 0
+
+      - name: Upload gate-debug inventory
+        if: ${{ always() && steps.gate_debug_inventory.conclusion != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        timeout-minutes: 5
+        with:
+          name: gate-debug-inventory-rust-regression-${{ github.run_id }}-${{ github.run_attempt }}
+          path: cache-inventory.log
+          retention-days: 90
+          if-no-files-found: error
+
       - name: cargo check
         working-directory: src-tauri
         run: cargo check --locked --all-targets
@@ -2488,6 +2549,68 @@ jobs:
           shared-key: 'gate-${{ matrix.mode }}'
           env-vars: 'ImageOS'
           save-if: 'false'
+
+
+      - name: Inventory restored gate-debug target
+        id: gate_debug_inventory
+        if: matrix.mode == 'debug'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 10
+        run: |
+          set +e
+          set -o pipefail
+          log="$GITHUB_WORKSPACE/cache-inventory.log"
+          {
+            echo "inventory-version=2 job=$GITHUB_JOB run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT sha=$GITHUB_SHA"
+            echo '## windows-family artifacts: path, bytes, mtime'
+            if [ -d target/debug/deps ]; then
+              find target/debug/deps -maxdepth 1 -type f \( -name 'libwindows-*' -o -name 'libwindows_*' \) -printf '%p\t%s\t%T@\n' | LC_ALL=C sort || echo 'PROBE_ERROR artifacts'
+              echo "windows_lib_count=$(find target/debug/deps -maxdepth 1 -type f \( -name 'libwindows-*' -o -name 'libwindows_*' \) | wc -l | tr -d ' ')"
+              echo "windows_rlib_count=$(find target/debug/deps -maxdepth 1 -type f \( -name 'libwindows-*.rlib' -o -name 'libwindows_*.rlib' \) | wc -l | tr -d ' ')"
+              echo "deps_file_count=$(find target/debug/deps -type f | wc -l | tr -d ' ')"
+              echo '## windows-family depfiles: unit-hash path, first line with package source/version'
+              find target/debug/deps -maxdepth 1 -type f \( -name 'windows-*.d' -o -name 'windows_*.d' \) -print0 |
+                while IFS= read -r -d '' f; do
+                  if first=$(head -n 1 "$f"); then
+                    printf '%s\t%s\n' "$f" "$first"
+                  else
+                    echo "PROBE_ERROR depfile-map $f"
+                  fi
+                done | LC_ALL=C sort || echo 'PROBE_ERROR depfiles'
+              echo "windows_depfile_count=$(find target/debug/deps -maxdepth 1 -type f \( -name 'windows-*.d' -o -name 'windows_*.d' \) | wc -l | tr -d ' ')"
+            else
+              echo 'MISSING target/debug/deps'; echo 'windows_lib_count=0'; echo 'windows_rlib_count=0'; echo 'windows_depfile_count=0'; echo 'deps_file_count=0'
+            fi
+            echo '## windows-family fingerprint files: path, bytes, mtime'
+            if [ -d target/debug/.fingerprint ]; then
+              find target/debug/.fingerprint -maxdepth 1 -type d \( -name 'windows-*' -o -name 'windows_*' \) -print0 |
+                while IFS= read -r -d '' dir; do
+                  find "$dir" -type f -printf '%p\t%s\t%T@\n' || echo "PROBE_ERROR fingerprint $dir"
+                done | LC_ALL=C sort || echo 'PROBE_ERROR fingerprints'
+              echo "windows_fingerprint_count=$(find target/debug/.fingerprint -maxdepth 1 -type d \( -name 'windows-*' -o -name 'windows_*' \) | wc -l | tr -d ' ')"
+            else
+              echo 'MISSING target/debug/.fingerprint'; echo 'windows_fingerprint_count=0'
+            fi
+            echo '## target bytes'; if [ -d target ]; then du -sb target || echo 'PROBE_ERROR du'; else echo 'MISSING target'; fi
+            echo '## zero-length files anywhere under target'
+            if [ -d target ]; then find target -type f -size 0 -print | LC_ALL=C sort || echo 'PROBE_ERROR zero-length'; else echo 'MISSING target'; fi
+            echo '## free space'; df -h . || echo 'PROBE_ERROR df'
+          } > "$log" 2>&1 || true
+          cat "$log" || true
+          exit 0
+
+      - name: Upload gate-debug inventory
+        if: ${{ always() && matrix.mode == 'debug' && steps.gate_debug_inventory.conclusion != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        timeout-minutes: 5
+        with:
+          name: gate-debug-inventory-issue-1850-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          path: cache-inventory.log
+          retention-days: 90
+          if-no-files-found: error
 
       - name: "IS #1850 real-profile build (${{ matrix.mode }})"
         shell: pwsh
