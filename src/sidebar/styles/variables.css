@@ -51,6 +51,10 @@
   --radius-sm: 4px;
   --radius-md: 6px;
 
+  /* Layout - #2236 D1/D3: the compact rail width, the single CSS owner of
+     the number the group rail, the compact pane and the toggle read. */
+  --ac-rail-width: 68px;
+
   /* #1796 - selected-row rail. App.tsx and SettingsModal publish the first two as
      inline custom properties on <html>, which beat these. --ac-rail-delta is how
      much wider the rail is than the width the winning rule used to draw, so
