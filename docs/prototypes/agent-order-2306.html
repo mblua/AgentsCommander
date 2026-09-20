@@ -111,6 +111,11 @@
   /* Selection is carried by aria-current on the <li> (valid on any element,
      unlike aria-selected on a bare listitem) and by the visible "Selected"
      chip, so it never depends on colour alone. */
+  .btn-select[aria-pressed="true"] {
+    border-color: var(--sidebar-accent);
+    color: var(--sidebar-accent);
+  }
+
   .agent-card[aria-current="true"] {
     border-color: var(--sidebar-accent);
     background: var(--sidebar-active);
@@ -255,9 +260,11 @@
 
   // Clearing first makes screen readers re-announce an identical message,
   // e.g. moving the same agent up twice.
+  var announceTimer = 0;
   function announce(text) {
+    window.clearTimeout(announceTimer);
     liveRegion.textContent = "";
-    window.setTimeout(function () { liveRegion.textContent = text; }, 50);
+    announceTimer = window.setTimeout(function () { liveRegion.textContent = text; }, 50);
   }
 
   function visibleAgents() {
@@ -337,21 +344,32 @@
     return btn;
   }
 
+  // A toggle rather than a button that disables itself: a disabled control
+  // cannot hold focus, and render() rebuilds the row on every selection.
   function selectButton(agent, selected) {
     var b = document.createElement("button");
     b.type = "button";
     b.className = "btn-select";
+    b.dataset.agent = agent.id;
+    b.dataset.action = "select";
     b.textContent = "Select";
-    b.disabled = selected;
-    b.setAttribute("aria-label", selected
-      ? agent.name + " is the selected agent"
-      : "Select " + agent.name);
+    b.setAttribute("aria-pressed", selected ? "true" : "false");
+    b.setAttribute("aria-label", "Select " + agent.name);
     b.addEventListener("click", function () {
+      if (agent.id === selectedId) return;
       selectedId = agent.id;
       render();
       announce(agent.name + " selected.");
+      focusSelectButton(agent.id);
     });
     return b;
+  }
+
+  // The pressed button is discarded by render(); put focus on its replacement
+  // so Tab continues from the same place instead of restarting at the top.
+  function focusSelectButton(agentId) {
+    var btn = listEl.querySelector('[data-action="select"][data-agent="' + agentId + '"]');
+    if (btn) btn.focus();
   }
 
   function plainButton(text, agentName, extraClass) {
