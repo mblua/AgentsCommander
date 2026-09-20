@@ -9,6 +9,9 @@ use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::capture::key::{normalise_path, Cut};
+use crate::capture::record::CapturedRecord;
+use crate::capture::sink::CaptureSlot;
 use crate::config::settings::TelegramNetworkPollErrorLogging;
 use crate::network::{NetworkBackoff, OutboundNetwork};
 use crate::pty::manager::PtyManager;
@@ -588,6 +591,146 @@ pub struct BridgeHandle {
     pub tasks: Vec<JoinHandle<()>>,
 }
 
+/// The Telegram destination a reader sends to (#2232 phase 4 section 6).
+///
+/// This is the Claude watcher's own target type under the supervisor's name.
+/// The watchers must stay outside the 88-member SCC (section 10), so the arc
+/// runs supervisor → watcher only and never the reverse; `codex_watcher`
+/// declares its own equivalent, which this module converts to at spawn time.
+pub use super::claude_watcher::BotTarget as ReaderDest;
+
+/// Everything a freshly spawned reader hands back to the supervisor.
+pub struct ReaderTask {
+    pub cancel: CancellationToken,
+    pub tasks: Vec<JoinHandle<()>>,
+    pub dest: tokio::sync::watch::Sender<Option<ReaderDest>>,
+    pub reanchor: tokio::sync::watch::Sender<u64>,
+    /// The reader's last observation, kept as a ready-made [`Cut`] so a demand
+    /// raised over the running reader can record one (section 5, phase 3
+    /// section 7) without stopping or re-reading anything.
+    pub frontier: Arc<Mutex<Option<Cut>>>,
+}
+
+/// Drain the reader's capture channel into the session's slot.
+///
+/// This is the last link of the phase-3 chain: without it the reader emits
+/// records that reach nothing, which is the "merge green, production emits
+/// nothing" failure phase 4 exists to close (acceptance criterion 8).
+fn spawn_capture_pump(
+    slot: CaptureSlot,
+    mut rx: mpsc::UnboundedReceiver<Arc<CapturedRecord>>,
+    cancel: CancellationToken,
+    frontier: Arc<Mutex<Option<Cut>>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                next = rx.recv() => {
+                    let Some(record) = next else { break };
+                    if let Ok(mut guard) = frontier.lock() {
+                        *guard = Some(Cut {
+                            path: normalise_path(&record.observed_path),
+                            epoch: record.epoch,
+                            len: record.observed_len,
+                            reader_seq: Some(record.reader_seq),
+                        });
+                    }
+                    let epoch = record.epoch;
+                    slot.offer(record, epoch);
+                }
+            }
+        }
+    })
+}
+
+/// Spawn the transcript reader for one session, outside any bridge.
+///
+/// This is the phase-4 supervisor entry point: the reader no longer lives in
+/// [`BridgeHandle::tasks`], so a room can ask for one without a bot (`dest ==
+/// None`) and a bot can attach over one that is already running (by sending a
+/// new destination through the returned `watch`). `sink` is the live
+/// `CaptureRegistry` sender — passing `Some(tx)` here is what makes phases 1
+/// and 3 reachable from production (acceptance criterion 8).
+pub fn spawn_reader<R: tauri::Runtime>(
+    kind: SessionReaderKind,
+    session_id: Uuid,
+    dest: Option<ReaderDest>,
+    network: OutboundNetwork,
+    app_handle: tauri::AppHandle<R>,
+    sink: Option<mpsc::UnboundedSender<Arc<CapturedRecord>>>,
+    capture: Option<(CaptureSlot, mpsc::UnboundedReceiver<Arc<CapturedRecord>>)>,
+) -> ReaderTask {
+    let cancel = CancellationToken::new();
+    let frontier: Arc<Mutex<Option<Cut>>> = Arc::new(Mutex::new(None));
+    let (dest_tx, dest_rx) = tokio::sync::watch::channel(dest);
+    let (reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
+    let session_id_str = session_id.to_string();
+
+    let task = match kind {
+        SessionReaderKind::Claude { project_dir } => super::claude_watcher::spawn_watch_task(
+            project_dir,
+            network,
+            dest_rx,
+            reanchor_rx,
+            session_id_str,
+            cancel.clone(),
+            app_handle,
+            sink,
+        ),
+        SessionReaderKind::Codex {
+            search_root,
+            cwd,
+            attach_time,
+        } => {
+            let bot_target = dest_rx
+                .borrow()
+                .clone()
+                .map(|d| super::codex_watcher::BotTarget {
+                    token: d.token,
+                    chat_id: d.chat_id,
+                });
+            super::codex_watcher::spawn_watch_task(
+                search_root,
+                cwd,
+                attach_time,
+                network,
+                bot_target,
+                session_id_str,
+                cancel.clone(),
+                app_handle,
+                sink,
+            )
+        }
+    };
+
+    let mut tasks = vec![task];
+    if let Some((slot, rx)) = capture {
+        // The cut is superseded at reader start, before the first record is
+        // processed (phase 3 section 7).
+        slot.supersede_cut_sequence();
+        tasks.push(spawn_capture_pump(
+            slot,
+            rx,
+            cancel.clone(),
+            Arc::clone(&frontier),
+        ));
+    }
+
+    ReaderTask {
+        cancel,
+        tasks,
+        dest: dest_tx,
+        reanchor: reanchor_tx,
+        frontier,
+    }
+}
+
+/// Spawn the bot-side bridge tasks for one session.
+///
+/// `reader_mode` is `true` when the session has a transcript reader: the PTY
+/// 6-phase pipeline is then skipped, and the reader itself is owned by the
+/// supervisor, not by this handle (#2232 phase 4).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_bridge<R: tauri::Runtime>(
     bot_token: String,
@@ -597,7 +740,7 @@ pub fn spawn_bridge<R: tauri::Runtime>(
     pty_mgr: Arc<Mutex<PtyManager>>,
     network: OutboundNetwork,
     app_handle: tauri::AppHandle<R>,
-    reader: Option<SessionReaderKind>,
+    reader_mode: bool,
     agent_kind: Option<CodingAgentKind>,
 ) -> BridgeHandle {
     let cancel = CancellationToken::new();
@@ -606,49 +749,19 @@ pub fn spawn_bridge<R: tauri::Runtime>(
 
     let session_id_str = session_id.to_string();
 
-    match reader {
-        Some(SessionReaderKind::Claude { project_dir }) => {
-            drop(rx);
-            tasks.push(super::claude_watcher::spawn_watch_task(
-                project_dir,
-                network.clone(),
-                bot_token.clone(),
-                chat_id,
-                session_id_str.clone(),
-                cancel.clone(),
-                app_handle.clone(),
-            ));
-        }
-        Some(SessionReaderKind::Codex {
-            search_root,
-            cwd,
-            attach_time,
-        }) => {
-            drop(rx);
-            tasks.push(super::codex_watcher::spawn_watch_task(
-                search_root,
-                cwd,
-                attach_time,
-                network.clone(),
-                bot_token.clone(),
-                chat_id,
-                session_id_str.clone(),
-                cancel.clone(),
-                app_handle.clone(),
-            ));
-        }
-        None => {
-            tasks.push(tokio::spawn(output_task(
-                rx,
-                network.clone(),
-                bot_token.clone(),
-                chat_id,
-                session_id_str.clone(),
-                cancel.clone(),
-                app_handle.clone(),
-                agent_kind,
-            )));
-        }
+    if reader_mode {
+        drop(rx);
+    } else {
+        tasks.push(tokio::spawn(output_task(
+            rx,
+            network.clone(),
+            bot_token.clone(),
+            chat_id,
+            session_id_str.clone(),
+            cancel.clone(),
+            app_handle.clone(),
+            agent_kind,
+        )));
     }
 
     // Poll task: Telegram getUpdates -> write to PTY stdin (runs in BOTH modes)

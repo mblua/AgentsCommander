@@ -44,17 +44,34 @@ const FILE_MTIME_GRACE_SECS: i64 = 5 * 60;
 /// resumes from week-old sessions. See plan §15 §A for the empirical record.
 const DAY_WALK_DEPTH: i64 = 7;
 
+/// Where a reader sends Telegram messages (#2232 phase 4 section 4.1).
+///
+/// One `Option<BotTarget>` and not two separate `Option`s: a single `Option`
+/// makes a half-configured send **unrepresentable**, which two `Option`s would
+/// only make a convention.
+///
+/// The struct is declared here, beside the spawn function, and deliberately
+/// **not** shared with `claude_watcher`: section 10 forbids either watcher
+/// gaining a reference the other does not already have, and
+/// `claude_watcher_layering` equality-pins the Claude watcher's dependency set.
+/// Two three-line structs are cheaper than an arc between the watchers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BotTarget {
+    pub token: String,
+    pub chat_id: i64,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_watch_task<R: tauri::Runtime>(
     search_root: PathBuf,
     expected_cwd: String,
     attach_time: DateTime<Utc>,
     network: OutboundNetwork,
-    bot_token: String,
-    chat_id: i64,
+    bot_target: Option<BotTarget>,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
+    sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         watch_loop(
@@ -62,11 +79,11 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
             expected_cwd,
             attach_time,
             network,
-            bot_token,
-            chat_id,
+            bot_target,
             session_id.clone(),
             cancel,
             app.clone(),
+            sink,
         )
         .await;
         log::info!("[CODEX_EXIT] Watcher task ended for session {}", session_id);
@@ -391,14 +408,33 @@ async fn watch_loop<R: tauri::Runtime>(
     expected_cwd: String,
     attach_time: DateTime<Utc>,
     network: OutboundNetwork,
-    token: String,
-    chat_id: i64,
+    bot_target: Option<BotTarget>,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
+    sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) {
-    let mut logger = BridgeLogger::new(&session_id);
-    let mut diag = DiagLogger::new();
+    // #2232 phase 4 section 8: with no bot demand no diagnostic is built, so
+    // `BridgeLogger::new` — which truncates the **global** diagnostic files
+    // (`telegram/output.rs:140`) — is never called for a room-only reader.
+    let (token, chat_id) = match &bot_target {
+        Some(target) => (target.token.clone(), target.chat_id),
+        None => (String::new(), 0),
+    };
+    let mut logger = bot_target
+        .as_ref()
+        .map(|_| BridgeLogger::new(&session_id));
+    let mut diag = bot_target.as_ref().map(|_| DiagLogger::new());
+    // Log through the bridge logger only when one exists. With no bot demand
+    // there is no logger, so `CODEX_EXTRACT` is not written and no global log
+    // file is touched (#2232 phase 4 section 8).
+    macro_rules! bridge_log {
+        ($tag:expr, $msg:expr) => {
+            if let Some(bridge_logger) = logger.as_mut() {
+                bridge_logger.log($tag, &session_id, $msg);
+            }
+        };
+    }
     let mut buffer = String::new();
     let mut last_buffer_add = Instant::now();
     let flush_delay = Duration::from_millis(FLUSH_DELAY_MS);
@@ -407,7 +443,9 @@ async fn watch_loop<R: tauri::Runtime>(
     // but no sink is attached yet — phase 4 passes a real sender into this
     // watcher. With `None` the emit is a no-op and the Telegram path stays
     // byte-identical.
-    let capture_tx: Option<UnboundedSender<Arc<CapturedRecord>>> = None;
+    // #2232 phase 4 section 4.2: the supervisor passes the live sender in, so a
+    // room-only reader emits into `CaptureRegistry` with no bot anywhere.
+    let capture_tx: Option<UnboundedSender<Arc<CapturedRecord>>> = sink;
     let mut reader_seq: u64 = 0;
     // #2232 phase 3: the reader's own epoch and file observation, computed only
     // when a sink is attached. Codex re-anchors at the new file's EOF on
@@ -422,14 +460,13 @@ async fn watch_loop<R: tauri::Runtime>(
     let mut line_remainder = String::new();
     let mut search_warned = false;
 
-    logger.log(
+    bridge_log!(
         "CODEX_INIT",
-        &session_id,
         &format!(
             "search_root={} expected_cwd={}",
             search_root.display(),
             expected_cwd
-        ),
+        )
     );
 
     let mut poll_interval = tokio::time::interval(Duration::from_millis(POLL_INTERVAL_MS));
@@ -478,26 +515,25 @@ async fn watch_loop<R: tauri::Runtime>(
                                             capture_tx.as_ref(),
                                             &attach,
                                         ) {
-                                            logger.log("CODEX_PREAMBLE", &session_id, &record.text);
-                                            buffer.push_str(&record.text);
-                                            buffer.push('\n');
-                                            last_buffer_add = Instant::now();
+                                            bridge_log!("CODEX_PREAMBLE", &record.text);
+                                            if bot_target.is_some() {
+                                                buffer.push_str(&record.text);
+                                                buffer.push('\n');
+                                                last_buffer_add = Instant::now();
+                                            }
                                         }
                                         file_offset = file_len;
-                                        logger.log("CODEX_FILE", &session_id,
-                                            &format!("bound to {}, preamble done, offset={}", found.display(), file_offset));
+                                        bridge_log!("CODEX_FILE", &format!("bound to {}, preamble done, offset={}", found.display(), file_offset));
                                     }
                                     Err(e) => {
-                                        logger.log("CODEX_ERR", &session_id,
-                                            &format!("preamble scan failed: {}", e));
+                                        bridge_log!("CODEX_ERR", &format!("preamble scan failed: {}", e));
                                         file_offset = std::fs::metadata(&found).ok().map(|m| m.len()).unwrap_or(0);
                                     }
                                 }
                             } else {
                                 // Rotation. Re-anchor at the new file's current EOF.
                                 file_offset = std::fs::metadata(&found).ok().map(|m| m.len()).unwrap_or(0);
-                                logger.log("CODEX_ROTATE", &session_id,
-                                    &format!("rotated to {}, offset={}", found.display(), file_offset));
+                                bridge_log!("CODEX_ROTATE", &format!("rotated to {}, offset={}", found.display(), file_offset));
                             }
                             current_file = Some(found);
                         }
@@ -509,8 +545,7 @@ async fn watch_loop<R: tauri::Runtime>(
                         }
                         current_file_mtime = new_mtime;
                     } else if !search_warned {
-                        logger.log("CODEX_WAIT", &session_id,
-                            "no rollout matching cwd found yet");
+                        bridge_log!("CODEX_WAIT", "no rollout matching cwd found yet");
                         search_warned = true;
                     }
                 }
@@ -534,10 +569,12 @@ async fn watch_loop<R: tauri::Runtime>(
                                 RecordOrigin::Live,
                                 &attach,
                             ) {
-                                logger.log("CODEX_EXTRACT", &session_id, &record.text);
-                                buffer.push_str(&record.text);
-                                buffer.push('\n');
-                                last_buffer_add = Instant::now();
+                                bridge_log!("CODEX_EXTRACT", &record.text);
+                                if bot_target.is_some() {
+                                    buffer.push_str(&record.text);
+                                    buffer.push('\n');
+                                    last_buffer_add = Instant::now();
+                                }
                             }
                             let new_mtime = std::fs::metadata(path).ok()
                                 .and_then(|m| m.modified().ok());
@@ -547,7 +584,7 @@ async fn watch_loop<R: tauri::Runtime>(
                             current_file_mtime = new_mtime;
                         }
                         Err(e) => {
-                            logger.log("CODEX_ERR", &session_id, &e.to_string());
+                            bridge_log!("CODEX_ERR", &e.to_string());
                             log::error!("[CODEX_ERR] Read error for session {}: {}", session_id, e);
                             let _ = app.emit(
                                 "telegram_bridge_error",
@@ -563,11 +600,15 @@ async fn watch_loop<R: tauri::Runtime>(
                 if !buffer.is_empty() {
                     let elapsed = last_buffer_add.elapsed();
                     if elapsed >= flush_delay || buffer.len() > FLUSH_BYTES {
-                        flush_buffer(
-                            &mut buffer, &network, &token, chat_id,
-                            &session_id, &app, &mut logger, &mut diag,
-                            true,
-                        ).await;
+                        if let (Some(bridge_logger), Some(diag_logger)) =
+                            (logger.as_mut(), diag.as_mut())
+                        {
+                            flush_buffer(
+                                &mut buffer, &network, &token, chat_id,
+                                &session_id, &app, bridge_logger, diag_logger,
+                                true,
+                            ).await;
+                        }
                     }
                 }
             }
@@ -595,24 +636,28 @@ async fn watch_loop<R: tauri::Runtime>(
                 RecordOrigin::Live,
                 &attach,
             ) {
-                buffer.push_str(&record.text);
-                buffer.push('\n');
+                if bot_target.is_some() {
+                    buffer.push_str(&record.text);
+                    buffer.push('\n');
+                }
             }
         }
     }
     if !buffer.is_empty() {
-        flush_buffer(
-            &mut buffer,
-            &network,
-            &token,
-            chat_id,
-            &session_id,
-            &app,
-            &mut logger,
-            &mut diag,
-            true,
-        )
-        .await;
+        if let (Some(bridge_logger), Some(diag_logger)) = (logger.as_mut(), diag.as_mut()) {
+            flush_buffer(
+                &mut buffer,
+                &network,
+                &token,
+                chat_id,
+                &session_id,
+                &app,
+                bridge_logger,
+                diag_logger,
+                true,
+            )
+            .await;
+        }
     }
 }
 

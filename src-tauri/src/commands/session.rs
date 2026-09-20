@@ -129,6 +129,69 @@ pub(crate) async fn co_managed_effective_state_for_session<R: Runtime>(
     ))
 }
 
+/// Raise the **Room** demand for `session_id`, in `room_root`, if and only if
+/// Co-managed is effective for it (#2232 phase 4 section 5.1).
+///
+/// One call to the phase-2 gathering function decides: it already encodes
+/// orchestrator-only, flag-on, key-present, catalog-present and
+/// provider-supported. A room without the flag therefore raises nothing and
+/// behaves exactly as today. Returns `true` when a reader is running afterwards.
+///
+/// Every caller reaches the supervisor through this SCC-member function, never
+/// through `commands::co_managed`, which keeps **outgoing arcs only**.
+pub(crate) async fn raise_room_reader_demand_in<R: Runtime>(
+    app: &AppHandle<R>,
+    room_root: &std::path::Path,
+    session_id: Uuid,
+) -> bool {
+    match co_managed_effective_state_for_session(app, room_root, &session_id.to_string()).await {
+        Ok(crate::config::co_managed::CoManagedState::Ready) => {
+            crate::commands::telegram::raise_reader_demand(
+                app,
+                session_id,
+                crate::telegram::manager::ReaderConsumer::Room,
+                None,
+            )
+            .await
+        }
+        _ => false,
+    }
+}
+
+/// Resolve the session's own room and raise the Room demand there, if any.
+pub(crate) async fn raise_room_reader_demand<R: Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) -> bool {
+    let cwd = {
+        let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let guard = manager.read().await;
+        match guard.get_session(session_id).await {
+            Some(session) => session.working_directory,
+            None => return false,
+        }
+    };
+    let Some(room_root) =
+        crate::config::co_managed::room_root_for_path(std::path::Path::new(&cwd))
+    else {
+        return false;
+    };
+    raise_room_reader_demand_in(app, &room_root, session_id).await
+}
+
+/// Release the Room demand. The reader stops only when it was the last one.
+pub(crate) async fn release_room_reader_demand<R: Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) {
+    crate::commands::telegram::release_reader_demand(
+        app,
+        session_id,
+        crate::telegram::manager::ReaderConsumer::Room,
+    )
+    .await;
+}
+
 /// The provider name that reaches `OffReason::UnsupportedProvider`; it matches
 /// `CodingAgentKind`'s snake_case wire form.
 fn co_managed_provider_label(kind: Option<CodingAgentKind>) -> &'static str {
@@ -2580,6 +2643,18 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
 
         register_session_samplers(app, id, agent_id.clone());
 
+        // #2232 phase 4 section 5.1: the session exists and its room is known,
+        // so evaluate the gathering function once and raise the Room demand
+        // only when it answers `Ready`. Detached, because the session-manager
+        // read guard above is still live on this path and the gathering
+        // function takes its own.
+        {
+            let app_for_demand = app.clone();
+            tauri::async_runtime::spawn(async move {
+                raise_room_reader_demand(&app_for_demand, id).await;
+            });
+        }
+
         // Auto-inject optional non-credential bootstrap text for agent sessions
         // after PTY spawn. Credentials are already present in child environment
         // variables; no credentials are written through PTY.
@@ -3577,6 +3652,9 @@ pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
     // to be shown.
     for session_id in outcome.destroyed_ids.iter().copied() {
         purge_session_side_state(transaction.app(), session_id);
+        // #2232 phase 4 section 5: destroy releases **both** demands, which
+        // cancels the reader and closes the session's `CaptureRegistry` entry.
+        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
     }
 
     for row in committed.changed_rows.iter().filter(|row| {
@@ -3996,7 +4074,8 @@ pub(crate) async fn restart_session_inner_with_intent<R: tauri::Runtime>(
     communication_override: Option<SessionCommunication>,
     enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
 ) -> Result<SessionInfo, String> {
-    app.state::<SelectionCoordinator>()
+    let restarted = app
+        .state::<SelectionCoordinator>()
         .restart_lifecycle(RestartJobRequest {
             session_id: uuid,
             agent_id,
@@ -4007,7 +4086,18 @@ pub(crate) async fn restart_session_inner_with_intent<R: tauri::Runtime>(
             communication_override,
             enforcement,
         })
-        .await
+        .await?;
+
+    // #2232 phase 4 section 5.2: AC preserves the session UUID across a
+    // restart, so there is no new id to acquire. The demand set is **untouched**
+    // — no release, no re-raise, no `CaptureRegistry::close` — and only the
+    // transcript **file** is re-anchored: the reader resolves the path again,
+    // the cut's sequence part is superseded and the slot is cleared to `Empty`
+    // with a fresh `seq`. This is the innermost of the three restart
+    // functions, so all three inherit it.
+    crate::commands::telegram::reanchor_reader(app, uuid).await;
+
+    Ok(restarted)
 }
 
 struct RestartTeardownError {

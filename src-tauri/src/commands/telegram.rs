@@ -12,8 +12,8 @@ use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
-use crate::telegram::bridge::SessionReaderKind;
-use crate::telegram::manager::TelegramBridgeState;
+use crate::telegram::bridge::{self, ReaderDest, SessionReaderKind};
+use crate::telegram::manager::{ReaderConsumer, ReaderEntry, TelegramBridgeState};
 use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
 
 /// Derive which session-reader pipeline to spawn for a given session.
@@ -93,6 +93,131 @@ pub(crate) fn derive_reader(
     }
 }
 
+/// Resolve the reader pipeline of a live session, or `None` when it has none.
+async fn reader_kind_for_session<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) -> Option<SessionReaderKind> {
+    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let session = {
+        let mgr = session_mgr.read().await;
+        mgr.get_session(session_id).await?
+    };
+    derive_reader(
+        &session.shell,
+        &session.shell_args,
+        &session.working_directory,
+        session.backend_kind,
+        session.agent_kind,
+        session.resolved_claude_projects_dir.clone(),
+        session.effective_codex_home.as_deref(),
+    )
+    .ok()
+    .flatten()
+}
+
+/// Raise `consumer`'s demand on `session_id`'s transcript reader (#2232 phase 4
+/// section 5).
+///
+/// Idempotent, and **adding a demand never restarts a running reader**: the new
+/// consumer joins it and a cut is recorded at the reader's frontier. When no
+/// reader is running one is spawned here, with the live `CaptureRegistry`
+/// sender, which is the link that makes phases 1 and 3 reachable from
+/// production.
+///
+/// Returns `true` when a reader is running for the session afterwards.
+pub(crate) async fn raise_reader_demand<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    consumer: ReaderConsumer,
+    dest: Option<ReaderDest>,
+) -> bool {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return false;
+    };
+    // Fast path taken without resolving anything: the reader is already there.
+    {
+        let mut tg = tg_state.lock().await;
+        if tg.reader_is_running(session_id) {
+            return tg.reader_demand_add(session_id, consumer, dest);
+        }
+    }
+
+    let Some(kind) = reader_kind_for_session(app, session_id).await else {
+        return false;
+    };
+    let network = app.state::<OutboundNetwork>().inner().clone();
+
+    let mut tg = tg_state.lock().await;
+    // Re-check under the lock: another demand may have spawned it meanwhile.
+    if tg.reader_is_running(session_id) {
+        return tg.reader_demand_add(session_id, consumer, dest);
+    }
+    let (capture, rx) = tg.captures().open(&session_id.to_string());
+    let reader_id = tg.next_reader_id();
+    let spawned = bridge::spawn_reader(
+        kind,
+        session_id,
+        dest,
+        network,
+        app.clone(),
+        Some(capture.tx.clone()),
+        rx.map(|rx| (capture.slot.clone(), rx)),
+    );
+    tg.reader_install(session_id, ReaderEntry::new(reader_id, spawned), consumer);
+    true
+}
+
+/// Release `consumer`'s demand. The reader stops only when it was the last one.
+///
+/// The drain order is emitted with `TelegramBridgeState` **released**, within
+/// the existing 2 s budget (section 9): awaiting inside the state lock is what
+/// makes a slow chat block unrelated sessions.
+pub(crate) async fn release_reader_demand<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    consumer: ReaderConsumer,
+) {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return;
+    };
+    let shutdown = {
+        let mut tg = tg_state.lock().await;
+        tg.reader_demand_release(session_id, consumer)
+    };
+    if let Some(shutdown) = shutdown {
+        shutdown.spawn_wait_or_abort();
+    }
+}
+
+/// Release **every** demand for a session. Destroy and shutdown do this; a
+/// persistence rollback releases only the bot demand (section 5).
+pub(crate) async fn release_all_reader_demands<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return;
+    };
+    let shutdown = {
+        let mut tg = tg_state.lock().await;
+        tg.reader_release_all(session_id)
+    };
+    if let Some(shutdown) = shutdown {
+        shutdown.spawn_wait_or_abort();
+    }
+}
+
+/// Re-anchor the reader's transcript **file** after a restart, keeping the
+/// demand set untouched (section 5.2).
+pub(crate) async fn reanchor_reader<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid) {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return;
+    };
+    let tg = tg_state.lock().await;
+    tg.reader_reanchor(session_id);
+}
+
 pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
@@ -165,6 +290,11 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
             .ok_or_else(|| format!("Bot not found: {}", bot_id))?
     };
 
+    // #2232 phase 4: the reader no longer lives in the bridge. The bridge owns
+    // the bot-side tasks; the reader is raised as a **Bot demand** below, which
+    // starts one if none is running and otherwise attaches over the live one.
+    let reader_mode = reader.is_some();
+
     let info = {
         let mgr = session_mgr.read().await;
         let mut tg = tg_mgr.lock().await;
@@ -175,7 +305,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
                 pty_mgr.inner().clone(),
                 network.clone(),
                 app.clone(),
-                reader,
+                reader_mode,
                 agent_kind,
             )
             .map_err(|e| e.to_string())?;
@@ -202,10 +332,26 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
             if let Some(shutdown) = shutdown {
                 shutdown.spawn_wait_or_abort();
             }
+            // A rollback releases **only** the bot demand (section 5); a room
+            // demand, if any, keeps the reader running.
+            release_reader_demand(app, session_id, ReaderConsumer::Bot).await;
             return Err(err_msg);
         }
         info
     };
+
+    if reader_mode {
+        raise_reader_demand(
+            app,
+            session_id,
+            ReaderConsumer::Bot,
+            Some(ReaderDest {
+                token: bot.token.clone(),
+                chat_id: bot.chat_id,
+            }),
+        )
+        .await;
+    }
 
     let _ = app.emit("telegram_bridge_attached", info.clone());
     Ok(info)
@@ -263,6 +409,10 @@ pub async fn telegram_detach(
     if let Some(shutdown) = shutdown.take() {
         shutdown.spawn_wait_or_abort();
     }
+
+    // #2232 phase 4: detaching releases the **bot** demand. A room demand, if
+    // any, keeps the reader running with Telegram sends stopped.
+    release_reader_demand(&app, uuid, ReaderConsumer::Bot).await;
 
     let _ = app.emit(
         "telegram_bridge_detached",
