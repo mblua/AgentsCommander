@@ -838,12 +838,20 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
   let previousAppliedPidKey = "";
   createEffect(() => {
     const pids = appliedPids();
+    const observed = groups();
     const key = [...pids].join(",");
     if (key === previousAppliedPidKey) return;
+
+    // The key is recorded only once there is actually a snapshot to match the
+    // set against. A PID applied before the first snapshot lands would
+    // otherwise burn the key against an empty group list, and the snapshot
+    // arriving a moment later would find the key already seen and never
+    // auto-expand anything.
+    if (observed.length === 0) return;
     previousAppliedPidKey = key;
     if (pids.size === 0) return;
 
-    const matching = groups().filter((g) => groupMatchesPids(g, pids));
+    const matching = observed.filter((g) => groupMatchesPids(g, pids));
     if (matching.length === 0) return;
     setExpandedGroupIds((current) => {
       const next = new Set(current);

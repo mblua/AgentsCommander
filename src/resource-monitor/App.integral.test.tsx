@@ -721,6 +721,45 @@ describe("#2245 Resource Monitor integral view", () => {
     }
   });
 
+  // 17b — the auto-expansion race found reviewing 2df94e2.
+  it("auto-expands when the matching snapshot arrives after the PID was applied", async () => {
+    // The precondition is "the applied PID set changed while there was nothing
+    // to match it against". An empty group list is the deterministic form of
+    // that: the store's snapshot signal is module-level and survives between
+    // tests in this file, so asserting a literal null snapshot would make this
+    // test depend on running first.
+    const empty = baseSnapshot();
+    empty.groups = [];
+    const harness = makeHarness(empty);
+    const rendered = await renderApp(harness);
+    try {
+      expect(order(rendered.root)).toHaveLength(0);
+      expect(resourceMonitorStore.snapshot?.groups ?? []).toHaveLength(0);
+
+      await typePid(rendered.root, "4242");
+      // Nothing to expand yet, and nothing is claimed about the PID either.
+      expect(order(rendered.root)).toHaveLength(0);
+
+      // Now the groups land. The applied set has not changed since, so an
+      // implementation that recorded the set as "already handled" against the
+      // empty list never expands anything from here on.
+      harness.state.current = baseSnapshot();
+      await advance(harness);
+
+      expect(order(rendered.root)).toEqual(["session-a"]);
+      expect(
+        must(rendered.root, "resourceMonitor.group.session-a.toggle").getAttribute(
+          "aria-expanded"
+        )
+      ).toBe("true");
+      expect(
+        maybe(rendered.root, "resourceMonitor.group.session-a.process.4242")
+      ).not.toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   // 18
   it("sorts by CPU and keeps an unknown last in both directions", async () => {
     const harness = makeHarness();

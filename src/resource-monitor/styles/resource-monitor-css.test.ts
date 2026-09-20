@@ -216,26 +216,51 @@ const METRIC_LEG_SELECTORS = [
   ".rm-process-row > span:not(:first-child)",
 ];
 
-// Every selector this change introduces. Criterion 33 is scoped to these,
-// because the stylesheet already carries rgba() literals in untouched bytes.
-const NEW_SELECTORS = [
-  ".rm-group-identity-line",
-  ".rm-partial-pill",
-  ".rm-filter-pid-input",
-  ".rm-filter-search-input",
-  ".rm-filter-input-clear",
-  ".rm-filter-help",
-  ".rm-filter-pid-error",
-  ".rm-filter-coverage",
-  ".rm-pid-chip",
-  ".rm-pid-chip-name",
-  ".rm-filter-trailing",
-  ".rm-sort",
-  ".rm-sort-field",
-  ".rm-sort-direction",
-  ".rm-process-depth",
-  ".rm-process-row.is-pid-match",
-  ".rm-process-pid-match",
+const COLOUR_LITERALS = ["#", "rgb(", "rgba(", "hsl("];
+
+const hasColourLiteral = (body: string): boolean =>
+  COLOUR_LITERALS.some((literal) => body.includes(literal));
+
+/**
+ * The rules that carried a colour literal BEFORE this change, and the only ones
+ * allowed to carry one after it.
+ *
+ * Criterion 33 is written as a closed-form whole-file equality against this
+ * list rather than as a hand-kept roster of added selectors. A roster is the
+ * wrong shape: it silently omits whatever the author forgets, and this change
+ * adds rules in several forms a roster tends to miss — state and attribute
+ * variants (`.rm-pid-chip.is-unmatched`, `.rm-filter-pid-input:disabled`,
+ * `.rm-filter-pid-error[data-ac-state="error"]`), the two grouped
+ * `:focus-visible` rules, the two flex legs, `.rm-process-row:nth-of-type(even)`,
+ * `.rm-group-row.is-expanded > .rm-group-main`, the `@media` reduced-motion
+ * rule and the five `@container` rules. With the equality below, EVERY rule in
+ * the file, in either family and in whatever form it is spelled, is covered by
+ * default, and a literal added to any of them fails by naming that selector.
+ *
+ * The stylesheet cannot simply ban literals outright: these twenty rules are
+ * untouched pre-existing bytes that legitimately carry rgba() and hex values.
+ */
+const LEGACY_COLOUR_LITERAL_SELECTORS = [
+  ".rm-action-btn",
+  ".rm-action-btn:hover:not(:disabled)",
+  ".rm-action-danger",
+  ".rm-action-danger:hover:not(:disabled)",
+  ".rm-banner-error",
+  ".rm-banner-muted",
+  ".rm-filter-chip",
+  ".rm-filter-chip.is-active",
+  ".rm-filter-chip:hover",
+  ".rm-filter-clear:hover",
+  ".rm-filter-seg-btn.is-active",
+  ".rm-filter-segment",
+  ".rm-kill-btn:hover:not(:disabled)",
+  ".rm-modal",
+  ".rm-modal-backdrop",
+  ".rm-network-pill",
+  ".rm-network-pill.network-observed",
+  ".rm-network-pill.network-unknown",
+  ".rm-process-empty, .rm-empty, .rm-process-error, .rm-warning-line",
+  ".rm-titlebar-btn-close:hover",
 ];
 
 describe("#2245 resource-monitor.css byte contract", () => {
@@ -342,10 +367,11 @@ describe("#2245 resource-monitor.css byte contract", () => {
     for (const rule of inBlock) {
       expect(rule.body).not.toContain("calc(100% - 58px)");
       expect(rule.selector).not.toContain("nth-child");
-      if (rule.selectors.includes(".rm-kill-btn")) {
-        expect(declaredValue(rule, "width")).toBe("");
-      }
     }
+    // No `width` on .rm-kill-btn inside the block, asserted as the absence of
+    // the rule itself: the button takes its width from the outer 64px track at
+    // every width. (A per-rule width check here would be unreachable, since
+    // declaredValue throws on an absent property.)
     expect(inBlock.some((r) => r.selectors.includes(".rm-kill-btn"))).toBe(false);
 
     const templated = new Set(
@@ -507,14 +533,43 @@ describe("#2245 resource-monitor.css byte contract", () => {
 
   // 33
   it("uses only var(--...) tokens for colour in every rule it adds", () => {
-    for (const selector of NEW_SELECTORS) {
-      const rule = baseRule(selector);
-      for (const literal of ["#", "rgb(", "rgba(", "hsl("]) {
-        expect(
-          rule.body.includes(literal),
-          `${selector} carries the colour literal ${literal}`
-        ).toBe(false);
-      }
+    // Every rule in the file, both families, no selector filter. The equality
+    // is what makes this cover added rules by default instead of by roster.
+    const carrying = ALL_RULES.filter((r) => hasColourLiteral(r.body)).map(
+      (r) => r.selector
+    );
+
+    expect(new Set(carrying)).toEqual(new Set(LEGACY_COLOUR_LITERAL_SELECTORS));
+
+    // Non-vacuity, in both directions. Left: the scan really did look at every
+    // rule, so an empty or partial parse cannot satisfy the equality. Right:
+    // every allowlist entry is still a real literal-bearing rule, so a stale
+    // entry cannot quietly widen the permission.
+    expect(ALL_RULES.length).toBe(BASE_RULES.length + CONDITIONAL_RULES.length);
+    expect(ALL_RULES.length).toBeGreaterThanOrEqual(100);
+    expect(carrying).toHaveLength(LEGACY_COLOUR_LITERAL_SELECTORS.length);
+    for (const selector of LEGACY_COLOUR_LITERAL_SELECTORS) {
+      const rule = ALL_RULES.find((r) => r.selector === selector);
+      if (!rule) throw new Error(`stale colour allowlist entry: ${selector}`);
+      expect(hasColourLiteral(rule.body)).toBe(true);
+    }
+
+    // And the rules this change adds are on the other side of that equality:
+    // spot-checked here by name so the intent survives a future refactor of
+    // the allowlist above.
+    for (const selector of [
+      ".rm-pid-chip",
+      ".rm-pid-chip.is-unmatched",
+      ".rm-partial-pill",
+      ".rm-sort-direction",
+      ".rm-filter-coverage",
+      ".rm-process-row.is-pid-match",
+      ".rm-group-row.is-expanded > .rm-group-main",
+    ]) {
+      expect(
+        hasColourLiteral(baseRule(selector).body),
+        `${selector} carries a colour literal`
+      ).toBe(false);
     }
   });
 });
