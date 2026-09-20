@@ -1236,7 +1236,11 @@ fn production_modules() -> BTreeSet<String> {
         CRATE_ID,
         // #2232 phase 1: the capture record module the watchers now depend on.
         "agentscommander_lib::capture",
+        // #2232 phase 3: the epoch predicate and the observation prefix cap the
+        // watcher now names, so the record carries a real epoch.
+        "agentscommander_lib::capture::key",
         "agentscommander_lib::capture::record",
+        "agentscommander_lib::capture::state",
         "agentscommander_lib::config",
         "agentscommander_lib::network",
         "agentscommander_lib::telegram",
@@ -1263,6 +1267,13 @@ fn expected_dependencies() -> BTreeSet<DependencyObservation> {
         // #2232 phase 1: the watcher emits one capture record per accepted
         // assistant record.
         (TARGET_ROOT_SOURCE, "agentscommander_lib::capture::record"),
+        // #2232 phase 3: the pure epoch predicate. The watcher evaluates it
+        // over bytes it has already read; it takes no lock and writes nothing.
+        (TARGET_ROOT_SOURCE, "agentscommander_lib::capture::key"),
+        // #2232 phase 3: the observation prefix cap `N` and its pure helper.
+        // Both are constants and a byte slice; `capture::state`'s disk and lock
+        // work stays on the supervisor thread.
+        (TARGET_ROOT_SOURCE, "agentscommander_lib::capture::state"),
     ]
     .into_iter()
     .map(|(source, module)| DependencyObservation {
