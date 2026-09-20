@@ -290,7 +290,7 @@ const createHarness = (initial: ResourceSnapshot): Harness => {
 const waitForRows = async (harness: Harness, count: number): Promise<void> => {
   await harness.ready;
   await waitFor(() => {
-    expect(harness.root.querySelectorAll(".rm-group-row").length).toBe(count);
+    expect(harness.root.querySelectorAll(".rm-group-row")).toHaveLength(count);
   });
 };
 
@@ -1066,6 +1066,63 @@ describe("ResourceMonitorApp integral view", () => {
     }
   });
 
+  it("19f: keeps numeric pin order when more than nine indices are involved", async () => {
+    const manyGroups = Array.from({ length: 12 }, (_, index) =>
+      fakeGroup({
+        sessionId: `session-${index + 1}`,
+        name: `unit-${index + 1}`,
+        rootPid: 1000 + index,
+        processCount: index + 1,
+        cpuPercent: index + 1,
+      })
+    );
+    const harness = createHarness(fakeSnapshot(manyGroups));
+    try {
+      await waitForRows(harness, 12);
+      selectOption(sortField(harness.root), "cpu");
+      await waitFor(() => {
+        expect(renderedOrder(harness.root)).toEqual([
+          "session-12",
+          "session-11",
+          "session-10",
+          "session-9",
+          "session-8",
+          "session-7",
+          "session-6",
+          "session-5",
+          "session-4",
+          "session-3",
+          "session-2",
+          "session-1",
+        ]);
+      });
+      click(must(harness.root, "resourceMonitor.group.session-10.toggle"));
+      click(must(harness.root, "resourceMonitor.group.session-2.toggle"));
+
+      await harness.advance((snapshot) => {
+        for (const group of snapshot.groups) {
+          group.cpuPercent = 13 - Number(group.sessionId.replace("session-", ""));
+        }
+      });
+      expect(renderedOrder(harness.root)).toEqual([
+        "session-1",
+        "session-3",
+        "session-10",
+        "session-4",
+        "session-5",
+        "session-6",
+        "session-7",
+        "session-8",
+        "session-9",
+        "session-11",
+        "session-2",
+        "session-12",
+      ]);
+    } finally {
+      harness.cleanup();
+    }
+  });
+
   it("20: the Processes tile sums all groups and follows the tile order", async () => {
     const harness = createHarness(baseSnapshot());
     try {
@@ -1153,8 +1210,8 @@ describe("ResourceMonitorApp integral view", () => {
       expect(match).not.toBeNull();
       const matched = Number(match![1]);
       expect(
-        harness.root.querySelectorAll('[data-ac-state="pid-match"]').length
-      ).toBe(matched);
+        harness.root.querySelectorAll('[data-ac-state="pid-match"]')
+      ).toHaveLength(matched);
     } finally {
       harness.cleanup();
     }
