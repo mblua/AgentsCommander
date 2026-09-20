@@ -424,7 +424,7 @@ describe("ResourceMonitorApp automation hooks", () => {
         rendered.root.querySelector('[data-ac-testid="resourceMonitor.group.session-2"]')
       ).not.toBeNull();
 
-      // "Showing X of Y" indicator appears only while a filter is active.
+      // "Showing X of Y agents" indicator reads the filtered count while a filter is active.
       expect(
         rendered.root.querySelector('[data-ac-testid="resourceMonitor.filter.count"]')
           ?.textContent
@@ -454,7 +454,7 @@ describe("ResourceMonitorApp automation hooks", () => {
         rendered.root.querySelector('[data-ac-testid="resourceMonitor.group.session-2"]')
       ).not.toBeNull();
 
-      // Clear filters resets everything and hides the indicator.
+      // Clear filters resets everything; the indicator returns to the total.
       click(
         rendered.root.querySelector('[data-ac-testid="resourceMonitor.filter.clear"]')!
       );
@@ -463,7 +463,8 @@ describe("ResourceMonitorApp automation hooks", () => {
       });
       expect(
         rendered.root.querySelector('[data-ac-testid="resourceMonitor.filter.count"]')
-      ).toBeNull();
+          ?.textContent
+      ).toContain("Showing 3 of 3 agents");
     } finally {
       rendered.cleanup();
     }
