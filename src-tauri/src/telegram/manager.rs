@@ -484,6 +484,292 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
+    // ── #2232 phase 4 section 5: the demand registry ──────────────────────
+
+    /// A reader whose task parks forever, so cancellation is observable and
+    /// nothing races the assertions.
+    fn test_reader(cancel: CancellationToken) -> ReaderTask {
+        let (dest, _dest_rx) = watch::channel(None);
+        let (reanchor, _reanchor_rx) = watch::channel(0u64);
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move { task_cancel.cancelled().await });
+        ReaderTask {
+            cancel,
+            tasks: vec![task],
+            dest,
+            reanchor,
+            frontier: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn test_manager(captures: &Arc<CaptureRegistry>) -> TelegramBridgeManager {
+        TelegramBridgeManager::with_captures(
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::clone(captures),
+        )
+    }
+
+    /// Install a reader for `session_id` held by `consumer`, with its capture
+    /// endpoints open, exactly as the supervisor does.
+    fn install(
+        manager: &mut TelegramBridgeManager,
+        session_id: Uuid,
+        consumer: ReaderConsumer,
+    ) -> CancellationToken {
+        let _ = manager.captures().open(&session_id.to_string());
+        let cancel = CancellationToken::new();
+        let reader_id = manager.next_reader_id();
+        manager.reader_install(
+            session_id,
+            ReaderEntry::new(reader_id, test_reader(cancel.clone())),
+            consumer,
+        );
+        cancel
+    }
+
+    /// Test 5: adding a Room demand to a session that already has a Bot demand
+    /// does **not** restart the reader — its identity continues unbroken and
+    /// the task is never cancelled, which is what keeps `reader_seq` running.
+    #[tokio::test]
+    async fn adding_a_room_demand_over_a_bot_demand_never_restarts_the_reader() {
+        let captures = Arc::new(CaptureRegistry::new());
+        let mut manager = test_manager(&captures);
+        let session_id = Uuid::new_v4();
+        let cancel = install(&mut manager, session_id, ReaderConsumer::Bot);
+        let before = manager.reader_id(session_id).expect("reader installed");
+
+        assert!(manager.reader_demand_add(session_id, ReaderConsumer::Room, None));
+
+        assert_eq!(
+            manager.reader_id(session_id),
+            Some(before),
+            "the reader identity must continue unbroken"
+        );
+        assert!(!cancel.is_cancelled(), "the reader task must not be stopped");
+        assert_eq!(
+            manager.reader_demands(session_id),
+            [ReaderConsumer::Bot, ReaderConsumer::Room]
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        );
+        assert!(captures.is_open(&session_id.to_string()));
+    }
+
+    /// Test 6: adding the **same** demand twice registers one demand, so
+    /// releasing it once stops the reader. Re-attaching a persisted bot and a
+    /// local auto-attach both land here (section 5).
+    #[tokio::test]
+    async fn a_repeated_bot_demand_is_one_demand_and_one_release_stops_the_reader() {
+        let captures = Arc::new(CaptureRegistry::new());
+        let mut manager = test_manager(&captures);
+        let session_id = Uuid::new_v4();
+        let cancel = install(&mut manager, session_id, ReaderConsumer::Bot);
+        let reader_id = manager.reader_id(session_id);
+
+        assert!(manager.reader_demand_add(session_id, ReaderConsumer::Bot, None));
+        assert_eq!(
+            manager.reader_demands(session_id),
+            [ReaderConsumer::Bot].into_iter().collect::<BTreeSet<_>>(),
+            "a repeated demand is still one demand"
+        );
+        assert_eq!(manager.reader_id(session_id), reader_id, "no restart");
+
+        let shutdown = manager
+            .reader_demand_release(session_id, ReaderConsumer::Bot)
+            .expect("the only demand was released");
+        assert!(cancel.is_cancelled());
+        assert!(!manager.reader_is_running(session_id));
+        shutdown.abort_now();
+    }
+
+    /// Test 7: releasing the Bot demand while a Room demand remains keeps the
+    /// reader running and stops Telegram sends — the destination goes to
+    /// `None`, which is what the watcher reads.
+    #[tokio::test]
+    async fn releasing_the_bot_demand_keeps_a_room_reader_and_stops_telegram() {
+        let captures = Arc::new(CaptureRegistry::new());
+        let mut manager = test_manager(&captures);
+        let session_id = Uuid::new_v4();
+        let cancel = install(&mut manager, session_id, ReaderConsumer::Room);
+        let mut dest_rx = manager
+            .readers
+            .get(&session_id)
+            .expect("reader installed")
+            .dest
+            .subscribe();
+        assert!(manager.reader_demand_add(
+            session_id,
+            ReaderConsumer::Bot,
+            Some(ReaderDest {
+                token: "token".into(),
+                chat_id: 42,
+            })
+        ));
+        assert_eq!(
+            dest_rx.borrow_and_update().as_ref().map(|d| d.chat_id),
+            Some(42)
+        );
+
+        assert!(
+            manager
+                .reader_demand_release(session_id, ReaderConsumer::Bot)
+                .is_none(),
+            "a surviving room demand keeps the reader"
+        );
+
+        assert!(!cancel.is_cancelled());
+        assert!(manager.reader_is_running(session_id));
+        assert!(
+            dest_rx.borrow_and_update().is_none(),
+            "Telegram sends must stop when the bot demand goes"
+        );
+        assert!(captures.is_open(&session_id.to_string()));
+    }
+
+    /// Test 8: releasing the **last** demand cancels the reader, drops its
+    /// state and calls `CaptureRegistry::close`.
+    #[tokio::test]
+    async fn releasing_the_last_demand_cancels_the_reader_and_closes_the_capture() {
+        let captures = Arc::new(CaptureRegistry::new());
+        let mut manager = test_manager(&captures);
+        let session_id = Uuid::new_v4();
+        let cancel = install(&mut manager, session_id, ReaderConsumer::Room);
+        assert!(captures.is_open(&session_id.to_string()));
+
+        let shutdown = manager
+            .reader_demand_release(session_id, ReaderConsumer::Room)
+            .expect("the last demand returns a shutdown");
+
+        assert!(cancel.is_cancelled());
+        assert!(!manager.reader_is_running(session_id));
+        assert!(
+            !captures.is_open(&session_id.to_string()),
+            "the registry entry must be dropped with the reader"
+        );
+        // The existing 2 s budget, awaited outside the state.
+        shutdown.wait_or_abort().await;
+    }
+
+    /// Test 10: a rollback releases **only** the Bot demand; the Room demand
+    /// survives, so the reader keeps running.
+    #[tokio::test]
+    async fn a_rollback_releases_only_the_bot_demand() {
+        let captures = Arc::new(CaptureRegistry::new());
+        let mut manager = test_manager(&captures);
+        let session_id = Uuid::new_v4();
+        let cancel = install(&mut manager, session_id, ReaderConsumer::Room);
+        assert!(manager.reader_demand_add(session_id, ReaderConsumer::Bot, None));
+
+        assert!(manager
+            .reader_demand_release(session_id, ReaderConsumer::Bot)
+            .is_none());
+
+        assert_eq!(
+            manager.reader_demands(session_id),
+            [ReaderConsumer::Room].into_iter().collect::<BTreeSet<_>>()
+        );
+        assert!(!cancel.is_cancelled());
+        assert!(captures.is_open(&session_id.to_string()));
+    }
+
+    /// Test 12: the drain acknowledgement is awaited with the state released. A
+    /// deliberately slow acknowledgement does not block a second session's
+    /// operation, because the release hands the shutdown **back** rather than
+    /// awaiting it under the lock.
+    #[tokio::test]
+    async fn a_slow_drain_does_not_block_another_session() {
+        let captures = Arc::new(CaptureRegistry::new());
+        let manager = Arc::new(tokio::sync::Mutex::new(test_manager(&captures)));
+        let slow = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        {
+            let mut guard = manager.lock().await;
+            let _ = guard.captures().open(&slow.to_string());
+            let reader_id = guard.next_reader_id();
+            let cancel = CancellationToken::new();
+            let (dest, _dest_rx) = watch::channel(None);
+            let (reanchor, _reanchor_rx) = watch::channel(0u64);
+            // A task that ignores cancellation: the acknowledgement never comes.
+            let task = tokio::spawn(async { std::future::pending::<()>().await });
+            guard.reader_install(
+                slow,
+                ReaderEntry::new(
+                    reader_id,
+                    ReaderTask {
+                        cancel,
+                        tasks: vec![task],
+                        dest,
+                        reanchor,
+                        frontier: Arc::new(Mutex::new(None)),
+                    },
+                ),
+                ReaderConsumer::Room,
+            );
+            install(&mut guard, other, ReaderConsumer::Room);
+        }
+
+        let shutdown = {
+            let mut guard = manager.lock().await;
+            guard
+                .reader_demand_release(slow, ReaderConsumer::Room)
+                .expect("last demand")
+        };
+        // The drain runs outside `TelegramBridgeState`.
+        let drain = tokio::spawn(async move { shutdown.wait_or_abort().await });
+
+        let started = Instant::now();
+        let second = tokio::time::timeout(Duration::from_millis(250), async {
+            let mut guard = manager.lock().await;
+            guard.reader_demand_add(other, ReaderConsumer::Bot, None)
+        })
+        .await;
+        assert_eq!(
+            second,
+            Ok(true),
+            "the second session must not wait on the slow drain"
+        );
+        assert!(started.elapsed() < Duration::from_millis(250));
+        drain.await.expect("drain task joins after its own budget");
+    }
+
+    /// Section 5.2: a re-anchor keeps the demand set, never closes the capture
+    /// entry, and leaves the slot `Empty` with a **higher** `seq`.
+    #[tokio::test]
+    async fn a_reanchor_keeps_the_demands_and_clears_the_slot() {
+        let captures = Arc::new(CaptureRegistry::new());
+        let mut manager = test_manager(&captures);
+        let session_id = Uuid::new_v4();
+        let cancel = install(&mut manager, session_id, ReaderConsumer::Room);
+        let slot = captures.slot(&session_id.to_string()).expect("slot open");
+        slot.invalidate("pre-restart candidate");
+        let before_seq = slot.seq();
+        let before_demands = manager.reader_demands(session_id);
+        let before_id = manager.reader_id(session_id);
+        let mut reanchor_rx = manager
+            .readers
+            .get(&session_id)
+            .expect("reader installed")
+            .reanchor
+            .subscribe();
+        let before_signal = *reanchor_rx.borrow_and_update();
+
+        assert!(manager.reader_reanchor(session_id));
+
+        assert_eq!(manager.reader_demands(session_id), before_demands);
+        assert_eq!(manager.reader_id(session_id), before_id, "no respawn");
+        assert!(!cancel.is_cancelled(), "the reader is not cancelled");
+        assert!(
+            captures.is_open(&session_id.to_string()),
+            "CaptureRegistry::close is never called on a restart"
+        );
+        assert!(matches!(
+            slot.snapshot().value,
+            crate::capture::sink::SlotValue::Empty
+        ));
+        assert!(slot.seq() > before_seq, "the slot gets a fresh seq");
+        assert!(*reanchor_rx.borrow_and_update() > before_signal);
+    }
+
     #[tokio::test]
     async fn cancel_all_drains_bridge_state_and_returns_shutdowns() {
         let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
