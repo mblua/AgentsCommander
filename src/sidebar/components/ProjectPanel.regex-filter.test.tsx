@@ -17,6 +17,7 @@ import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import type { AcLoopSummary, AgentConfig } from "../../shared/types";
+import { loopSummaryFixture as loop } from "./loop-summary-fixture";
 
 const projectPath = "C:\\Project";
 const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
@@ -54,31 +55,6 @@ function projectDiscovery() {
       },
     ],
   });
-}
-
-function loop(overrides: Partial<AcLoopSummary> = {}): AcLoopSummary {
-  return {
-    id: "loop-standup",
-    name: "Weekday standup",
-    enabled: true,
-    expr: "0 9 * * 1-5",
-    timezone: "local",
-    targetKind: "workgroupCoordinator",
-    workgroup: "wg-2-dev-team",
-    promptPreview: "scheduled run",
-    busyCoordinator: "skip",
-    sessionStart: "fresh",
-    path: `${projectPath}\\.ac\\_loop_standup`,
-    configPath: `${projectPath}\\.ac\\_loop_standup\\config.toml`,
-    lastCheckedAt: null,
-    lastDueAt: null,
-    lastDeliveredAt: null,
-    lastResult: null,
-    pendingDueAt: null,
-    lastMissedClosedAt: null,
-    nextDueAt: null,
-    ...overrides,
-  };
 }
 
 function discoveryWithLoops(loops: AcLoopSummary[]) {

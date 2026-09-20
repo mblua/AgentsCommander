@@ -81,6 +81,47 @@ async function makePreviewReady(): Promise<void> {
   await settle();
 }
 
+/**
+ * Fills the new-loop form, submits it and asserts the `LoopAPI.create` payload.
+ *
+ * Data only: the checkbox list is iterated, never branched on, and every
+ * differing value stays literal at the call site. See
+ * `docs/testing/test-code-duplication.md`.
+ */
+async function expectCreateCalledWith({
+  checkboxes,
+  expected,
+}: {
+  checkboxes: ReadonlyArray<{ selector: string; checked: boolean }>;
+  expected: Record<string, unknown>;
+}): Promise<void> {
+  const root = document.createElement("div");
+  document.body.append(root);
+  const dispose = render(
+    () =>
+      NewLoopModal({
+        projectPath: "C:\\Project",
+        workgroups: workgroups(),
+        onClose: () => {},
+      }),
+    root,
+  );
+
+  setInput('[data-ac-testid="loop.new.name"]', "Weekday standup");
+  setInput('[data-ac-testid="loop.new.cron"]', "0 9 * * 1-5");
+  setSelect('[data-ac-testid="loop.new.workgroup"]', "wg-10-dev-team");
+  setInput('[data-ac-testid="loop.new.prompt"]', "Summarize blockers");
+  for (const { selector, checked } of checkboxes) setCheckbox(selector, checked);
+  await makePreviewReady();
+
+  document.querySelector<HTMLButtonElement>('[data-ac-testid="loop.new.create"]')?.click();
+  await settle();
+
+  expect(LoopAPI.create).toHaveBeenCalledWith("C:\\Project", expect.objectContaining(expected));
+
+  dispose();
+}
+
 describe("Loop modal helpers", () => {
   it("validates five-field cron expressions and coordinator options", () => {
     expect(hasFiveCronFields("0 9 * * 1-5")).toBe(true);
@@ -151,130 +192,36 @@ describe("NewLoopModal", () => {
   });
 
   it("creates with waitUntilIdle when force inject is unchecked", async () => {
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () =>
-        NewLoopModal({
-          projectPath: "C:\\Project",
-          workgroups: workgroups(),
-          onClose: () => {},
-        }),
-      root,
-    );
-
-    setInput('[data-ac-testid="loop.new.name"]', "Weekday standup");
-    setInput('[data-ac-testid="loop.new.cron"]', "0 9 * * 1-5");
-    setSelect('[data-ac-testid="loop.new.workgroup"]', "wg-10-dev-team");
-    setInput('[data-ac-testid="loop.new.prompt"]', "Summarize blockers");
-    await makePreviewReady();
-
-    document.querySelector<HTMLButtonElement>('[data-ac-testid="loop.new.create"]')?.click();
-    await settle();
-
-    expect(LoopAPI.create).toHaveBeenCalledWith(
-      "C:\\Project",
-      expect.objectContaining({
+    await expectCreateCalledWith({
+      checkboxes: [],
+      expected: {
         name: "Weekday standup",
         expr: "0 9 * * 1-5",
         workgroup: "wg-10-dev-team",
         promptBody: "Summarize blockers",
         busyCoordinator: "waitUntilIdle",
-      }),
-    );
-
-    dispose();
+      },
+    });
   });
 
   it("creates with forceInject when the force checkbox is checked", async () => {
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () =>
-        NewLoopModal({
-          projectPath: "C:\\Project",
-          workgroups: workgroups(),
-          onClose: () => {},
-        }),
-      root,
-    );
-
-    setInput('[data-ac-testid="loop.new.name"]', "Weekday standup");
-    setInput('[data-ac-testid="loop.new.cron"]', "0 9 * * 1-5");
-    setSelect('[data-ac-testid="loop.new.workgroup"]', "wg-10-dev-team");
-    setInput('[data-ac-testid="loop.new.prompt"]', "Summarize blockers");
-    setCheckbox('[data-ac-testid="loop.new.forceInject"]', true);
-    await makePreviewReady();
-
-    document.querySelector<HTMLButtonElement>('[data-ac-testid="loop.new.create"]')?.click();
-    await settle();
-
-    expect(LoopAPI.create).toHaveBeenCalledWith(
-      "C:\\Project",
-      expect.objectContaining({ busyCoordinator: "forceInject" }),
-    );
-
-    dispose();
+    await expectCreateCalledWith({
+      checkboxes: [{ selector: '[data-ac-testid="loop.new.forceInject"]', checked: true }],
+      expected: { busyCoordinator: "forceInject" },
+    });
   });
 
   it("creates with sessionStart fresh when the accumulate checkbox is untouched", async () => {
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () =>
-        NewLoopModal({
-          projectPath: "C:\\Project",
-          workgroups: workgroups(),
-          onClose: () => {},
-        }),
-      root,
-    );
-
-    setInput('[data-ac-testid="loop.new.name"]', "Weekday standup");
-    setInput('[data-ac-testid="loop.new.cron"]', "0 9 * * 1-5");
-    setSelect('[data-ac-testid="loop.new.workgroup"]', "wg-10-dev-team");
-    setInput('[data-ac-testid="loop.new.prompt"]', "Summarize blockers");
-    await makePreviewReady();
-
-    document.querySelector<HTMLButtonElement>('[data-ac-testid="loop.new.create"]')?.click();
-    await settle();
-
-    expect(LoopAPI.create).toHaveBeenCalledWith(
-      "C:\\Project",
-      expect.objectContaining({ sessionStart: "fresh" }),
-    );
-
-    dispose();
+    await expectCreateCalledWith({
+      checkboxes: [],
+      expected: { sessionStart: "fresh" },
+    });
   });
 
   it("creates with sessionStart accumulate when the accumulate checkbox is checked", async () => {
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () =>
-        NewLoopModal({
-          projectPath: "C:\\Project",
-          workgroups: workgroups(),
-          onClose: () => {},
-        }),
-      root,
-    );
-
-    setInput('[data-ac-testid="loop.new.name"]', "Weekday standup");
-    setInput('[data-ac-testid="loop.new.cron"]', "0 9 * * 1-5");
-    setSelect('[data-ac-testid="loop.new.workgroup"]', "wg-10-dev-team");
-    setInput('[data-ac-testid="loop.new.prompt"]', "Summarize blockers");
-    setCheckbox('[data-ac-testid="loop.new.accumulate"]', true);
-    await makePreviewReady();
-
-    document.querySelector<HTMLButtonElement>('[data-ac-testid="loop.new.create"]')?.click();
-    await settle();
-
-    expect(LoopAPI.create).toHaveBeenCalledWith(
-      "C:\\Project",
-      expect.objectContaining({ sessionStart: "accumulate", busyCoordinator: "waitUntilIdle" }),
-    );
-
-    dispose();
+    await expectCreateCalledWith({
+      checkboxes: [{ selector: '[data-ac-testid="loop.new.accumulate"]', checked: true }],
+      expected: { sessionStart: "accumulate", busyCoordinator: "waitUntilIdle" },
+    });
   });
 });
