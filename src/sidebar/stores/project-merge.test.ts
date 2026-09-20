@@ -38,6 +38,7 @@ function makeLoop(id: string, overrides: Partial<AcLoopSummary> = {}): AcLoopSum
     workgroup: "wg-1-team",
     promptPreview: "preview",
     busyCoordinator: "skip",
+    sessionStart: "fresh",
     path: `${PROJECT_PATH}\\.ac\\_loop_${id}`,
     configPath: `${PROJECT_PATH}\\.ac\\_loop_${id}\\config.toml`,
     lastCheckedAt: null,

@@ -1,4 +1,4 @@
-import type { AcWorkgroup, BusyCoordinatorPolicy } from "../../shared/types";
+import type { AcWorkgroup, BusyCoordinatorPolicy, LoopSessionStart } from "../../shared/types";
 
 export interface LoopCoordinatorOption {
   workgroup: string;
@@ -37,6 +37,14 @@ export function busyPolicyForEdit(
 ): BusyCoordinatorPolicy {
   if (initialPolicy === "skip" && !forceCheckboxTouched) return "skip";
   return busyPolicyFromForceCheckbox(forceInject);
+}
+
+export function sessionStartFromAccumulateCheckbox(accumulate: boolean): LoopSessionStart {
+  return accumulate ? "accumulate" : "fresh";
+}
+
+export function accumulateCheckboxFromSessionStart(value: LoopSessionStart): boolean {
+  return value === "accumulate";
 }
 
 export function formatLoopNextDue(nextDueAt: string | null | undefined): string {
