@@ -545,7 +545,10 @@ mod tests {
             Some(before),
             "the reader identity must continue unbroken"
         );
-        assert!(!cancel.is_cancelled(), "the reader task must not be stopped");
+        assert!(
+            !cancel.is_cancelled(),
+            "the reader task must not be stopped"
+        );
         assert_eq!(
             manager.reader_demands(session_id),
             [ReaderConsumer::Bot, ReaderConsumer::Room]

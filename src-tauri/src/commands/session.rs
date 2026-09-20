@@ -138,7 +138,7 @@ pub(crate) async fn co_managed_effective_state_for_session<R: Runtime>(
 /// behaves exactly as today. Returns `true` when a reader is running afterwards.
 ///
 /// Every caller reaches the supervisor through this SCC-member function, never
-/// through `commands::co_managed`, which keeps **outgoing arcs only**.
+/// through the Co-managed command module, which keeps **outgoing arcs only**.
 pub(crate) async fn raise_room_reader_demand_in<R: Runtime>(
     app: &AppHandle<R>,
     room_root: &std::path::Path,
@@ -13264,6 +13264,299 @@ mod tests {
     }
 }
 
+/// #2232 phase 4: the reader supervisor, its demands and the production wiring.
+///
+/// These tests drive the same SCC-member entry points production uses —
+/// `raise_room_reader_demand_in`, `release_room_reader_demand` and the
+/// supervisor in `commands::telegram` — over the phase-2 room fixture.
+#[cfg(test)]
+mod reader_demand_tests {
+    use super::co_managed_tests::*;
+    use super::*;
+    use crate::capture::registry::CaptureRegistry;
+    use crate::network::OutboundNetwork;
+    use crate::telegram::manager::{
+        OutputSenderMap, ReaderConsumer, TelegramBridgeManager, TelegramBridgeState,
+    };
+    use std::collections::HashMap;
+
+    struct Harness {
+        app: tauri::App<tauri::test::MockRuntime>,
+        manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        captures: Arc<CaptureRegistry>,
+        projects_dir: PathBuf,
+    }
+
+    fn harness(fixture: &RoomFixture) -> Harness {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let captures = Arc::new(CaptureRegistry::new());
+        let senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+        let bridge_state: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
+            TelegramBridgeManager::with_captures(senders, Arc::clone(&captures)),
+        ));
+        let projects_dir = fixture.temp_path().join("claude-projects");
+        std::fs::create_dir_all(&projects_dir).expect("projects dir");
+        let app = tauri::test::mock_builder()
+            .manage(Arc::new(tokio::sync::RwLock::new(settings_with_key())))
+            .manage(Arc::clone(&manager))
+            .manage(bridge_state)
+            .manage(OutboundNetwork::new_for_tests(1))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build phase 4 supervisor test app");
+        Harness {
+            app,
+            manager,
+            captures,
+            projects_dir,
+        }
+    }
+
+    impl Harness {
+        async fn session_in(&self, cwd: &std::path::Path) -> Uuid {
+            let id = add_session_for_tests(
+                &self.manager,
+                cwd,
+                SessionBackendKind::LocalProcess,
+                CodingAgentKind::Claude,
+            )
+            .await;
+            self.manager
+                .read()
+                .await
+                .set_resolved_claude_projects_dir(id, Some(self.projects_dir.clone()))
+                .await;
+            id
+        }
+
+        async fn bridge(&self) -> tauri::State<'_, TelegramBridgeState> {
+            self.app.handle().state::<TelegramBridgeState>()
+        }
+    }
+
+    /// Test 15: **Room demand scope.** A session in a room whose
+    /// `effective_state` is `Off { RoomFlagOff }` raises **no** Room demand and
+    /// no reader is spawned for it; the orchestrator session of a room with the
+    /// flag on raises one. This protects "rooms without the flag behave as
+    /// today".
+    #[tokio::test]
+    async fn only_a_ready_session_raises_the_room_demand() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), false);
+        let h = harness(&fixture);
+        let orchestrator = h.session_in(fixture.coordinator_path()).await;
+
+        // Flag off: no demand, no reader, no capture entry.
+        assert!(
+            !raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), orchestrator).await
+        );
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(!tg.reader_is_running(orchestrator));
+            assert!(tg.reader_demands(orchestrator).is_empty());
+        }
+        assert!(!h.captures.is_open(&orchestrator.to_string()));
+
+        // Flag on: the orchestrator raises one; a member session never does.
+        configure_room(fixture.room_path(), true);
+        let member = h.session_in(fixture.member_path()).await;
+        assert!(!raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), member).await);
+        assert!(
+            raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), orchestrator).await
+        );
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(tg.reader_is_running(orchestrator));
+            assert!(!tg.reader_is_running(member));
+            assert_eq!(
+                tg.reader_demands(orchestrator)
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                vec![ReaderConsumer::Room]
+            );
+        }
+        // Acceptance criterion 8: the reader was spawned through the supervisor
+        // with the live registry sender, so the session's endpoints are open.
+        assert!(h.captures.is_open(&orchestrator.to_string()));
+        assert!(h.captures.sender(&orchestrator.to_string()).is_some());
+
+        let shutdown = {
+            let tg = h.bridge().await;
+            let mut tg = tg.lock().await;
+            tg.reader_release_all(orchestrator)
+        };
+        if let Some(shutdown) = shutdown {
+            shutdown.abort_now();
+        }
+    }
+
+    /// Acceptance criterion 8: a reader spawned through the supervisor delivers
+    /// a record into `CaptureRegistry`'s **slot**, not merely into a channel.
+    /// This is the link that makes phases 1 and 3 reachable from production.
+    #[tokio::test]
+    async fn a_supervised_reader_puts_a_record_in_the_registry_slot() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let orchestrator = h.session_in(fixture.coordinator_path()).await;
+
+        assert!(
+            raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), orchestrator).await
+        );
+        let slot = h
+            .captures
+            .slot(&orchestrator.to_string())
+            .expect("the supervisor opened the session's endpoints");
+        let before = slot.seq();
+
+        // A transcript appears in the resolved projects dir and the reader
+        // picks it up on its own poll.
+        let transcript = h.projects_dir.join("session.jsonl");
+        std::fs::write(
+            &transcript,
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "type": "assistant",
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "message": {"content": [{"type": "text", "text": "supervised body"}]}
+                })
+            ),
+        )
+        .expect("write transcript");
+
+        let mut rx = slot.subscribe();
+        let published = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if rx.changed().await.is_err() {
+                    return None;
+                }
+                let state = rx.borrow_and_update().clone();
+                if let crate::capture::sink::SlotValue::Valid(record) = state.value {
+                    return Some((state.seq, record));
+                }
+            }
+        })
+        .await
+        .expect("a supervised reader must reach the slot");
+
+        let (seq, record) = published.expect("the slot channel stays open");
+        assert!(seq > before);
+        assert_eq!(record.text, "supervised body");
+        assert_eq!(record.session_id, orchestrator.to_string());
+
+        let shutdown = {
+            let tg = h.bridge().await;
+            let mut tg = tg.lock().await;
+            tg.reader_release_all(orchestrator)
+        };
+        if let Some(shutdown) = shutdown {
+            shutdown.abort_now();
+        }
+    }
+
+    /// Test 16: **live toggle.** With an orchestrator session already running
+    /// and no reader, turning the flag on raises the Room demand and a reader
+    /// starts; turning it off releases it and the reader stops. Epic section
+    /// 3.2 is explicitly about already-running sessions.
+    #[tokio::test]
+    async fn toggling_the_flag_on_a_live_session_starts_and_stops_the_reader() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), false);
+        let h = harness(&fixture);
+        let orchestrator = h.session_in(fixture.coordinator_path()).await;
+
+        configure_room(fixture.room_path(), true);
+        assert!(
+            raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), orchestrator).await
+        );
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(tg.reader_is_running(orchestrator));
+        }
+
+        configure_room(fixture.room_path(), false);
+        release_room_reader_demand(h.app.handle(), orchestrator).await;
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(!tg.reader_is_running(orchestrator));
+            assert!(tg.reader_demands(orchestrator).is_empty());
+        }
+        assert!(!h.captures.is_open(&orchestrator.to_string()));
+    }
+
+    /// Test 9: **restart re-anchors the file and keeps the demand**, asserted on
+    /// the recorded order of calls and not on the end state.
+    ///
+    /// `CaptureRegistry::close` is never called; the demand set is identical
+    /// before and after; the reader is not cancelled and not respawned; the
+    /// session id is the **same** value on both sides, which is what makes the
+    /// round-2 release-then-acquire pair wrong; and the slot reads `Empty` with
+    /// a higher `seq` than before.
+    #[tokio::test]
+    async fn a_restart_reanchors_the_file_and_keeps_the_demand() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let orchestrator = h.session_in(fixture.coordinator_path()).await;
+        assert!(
+            raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), orchestrator).await
+        );
+
+        let key = orchestrator.to_string();
+        let slot = h.captures.slot(&key).expect("endpoints open");
+        // A candidate captured before the restart.
+        slot.invalidate("pre-restart");
+        let seq_before = slot.seq();
+        let (id_before, demands_before) = {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            (tg.reader_id(orchestrator), tg.reader_demands(orchestrator))
+        };
+
+        // The re-anchor signal `restart_session_inner_with_intent` sends. The
+        // session id is the same value on both sides: AC preserves the UUID.
+        crate::commands::telegram::reanchor_reader(h.app.handle(), orchestrator).await;
+
+        let (id_after, demands_after, running) = {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            (
+                tg.reader_id(orchestrator),
+                tg.reader_demands(orchestrator),
+                tg.reader_is_running(orchestrator),
+            )
+        };
+        assert!(running, "the reader is neither cancelled nor respawned");
+        assert_eq!(id_after, id_before, "the same reader, not a new one");
+        assert_eq!(demands_after, demands_before, "the demand set is untouched");
+        assert!(
+            h.captures.is_open(&key),
+            "CaptureRegistry::close is never called on a restart"
+        );
+        assert!(
+            matches!(
+                slot.snapshot().value,
+                crate::capture::sink::SlotValue::Empty
+            ),
+            "the slot is cleared, so a pre-restart candidate cannot be consumed after it"
+        );
+        assert!(slot.seq() > seq_before, "with a fresh seq");
+
+        let shutdown = {
+            let tg = h.bridge().await;
+            let mut tg = tg.lock().await;
+            tg.reader_release_all(orchestrator)
+        };
+        if let Some(shutdown) = shutdown {
+            shutdown.abort_now();
+        }
+    }
+}
+
 /// #2265 phase 2, test 15: the gathering function answers from an SCC member.
 ///
 /// A later refactor that moves the body back into the Co-managed command module breaks
@@ -13275,18 +13568,38 @@ mod co_managed_tests {
 
     const TEAM_CONFIG: &str = r#"{"agents":["_agent_coordinator","_agent_member"],"coordinator":"_agent_coordinator","repos":[]}"#;
 
-    struct RoomFixture {
+    pub(crate) struct RoomFixture {
         _temp: tempfile::TempDir,
         room: PathBuf,
         coordinator: PathBuf,
         member: PathBuf,
     }
 
+    // Accessors, so the phase-4 supervisor tests can share this fixture without
+    // reaching into its fields (#2232 phase 4).
+    impl RoomFixture {
+        pub(crate) fn temp_path(&self) -> &std::path::Path {
+            self._temp.path()
+        }
+
+        pub(crate) fn room_path(&self) -> &std::path::Path {
+            &self.room
+        }
+
+        pub(crate) fn coordinator_path(&self) -> &std::path::Path {
+            &self.coordinator
+        }
+
+        pub(crate) fn member_path(&self) -> &std::path::Path {
+            &self.member
+        }
+    }
+
     fn replica_config(agent: &str) -> String {
         format!(r#"{{"identity":"../../_agent_{agent}","context":[],"repos":[]}}"#)
     }
 
-    fn room_fixture() -> RoomFixture {
+    pub(crate) fn room_fixture() -> RoomFixture {
         let temp = tempfile::tempdir().expect("temp dir");
         let ac_root = temp.path().join("project-a").join(".ac");
         let room = ac_root.join("room-1-dev-team");
@@ -13321,7 +13634,7 @@ mod co_managed_tests {
         }
     }
 
-    fn configure_room(room: &std::path::Path, enabled: bool) {
+    pub(crate) fn configure_room(room: &std::path::Path, enabled: bool) {
         std::fs::create_dir_all(co_managed::co_managed_dir(room)).expect("co-managed dir");
         std::fs::write(room.join("catalog.json"), "{}").expect("catalog");
         std::fs::write(
@@ -13342,11 +13655,20 @@ mod co_managed_tests {
             .expect("build co-managed session test app")
     }
 
-    fn settings_with_key() -> AppSettings {
+    pub(crate) fn settings_with_key() -> AppSettings {
         AppSettings {
             jev_api_key: "test-key".to_string(),
             ..AppSettings::default()
         }
+    }
+
+    pub(crate) async fn add_session_for_tests(
+        manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+        cwd: &std::path::Path,
+        backend_kind: SessionBackendKind,
+        agent_kind: CodingAgentKind,
+    ) -> Uuid {
+        add_session(manager, cwd, backend_kind, agent_kind).await
     }
 
     async fn add_session(

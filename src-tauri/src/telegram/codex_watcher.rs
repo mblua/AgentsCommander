@@ -689,6 +689,156 @@ mod tests {
     /// 76d5a755f02e62242c6b8ce7804a5ebf9322e66d14785d0109dba45dd6f70498).
     const REAL_CURRENT_CODEX_FINAL: &str = r#"{"timestamp":"2026-09-13T18:28:25.938Z","ordinal":12,"type":"response_item","payload":{"type":"message","id":"msg_07770767cb7cb624016aa6eb4a72d487d2bcf644a579754670","role":"assistant","content":[{"type":"output_text","text":"sanitized assistant reply"}],"phase":"final_answer","internal_chat_message_metadata_passthrough":{"turn_id":"01a09c07-0ad4-7710-9c1d-ce3f8dd0aaac","create_time":1789324104.823481,"content_item_kinds":["unknown"]}}}"#;
 
+    // ── #2232 phase 4: the room-only reader (tests 14 and 17) ────────────
+
+    /// A `search_root` holding today's partition with one rollout whose
+    /// `session_meta.cwd` matches, plus one fresh `final_answer` record.
+    fn room_only_fixture(cwd: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let today = tmp
+            .path()
+            .join(format!("{:04}", now.format("%Y")))
+            .join(format!("{:02}", now.format("%m")))
+            .join(format!("{:02}", now.format("%d")));
+        let ts = now.to_rfc3339();
+        let path = write_rollout(&today, "rollout-room-only.jsonl", cwd, &ts);
+        let fresh_ts = (now - chrono::Duration::seconds(1)).to_rfc3339();
+        let fresh = REAL_CURRENT_CODEX_FINAL.replace("2026-09-13T18:28:25.938Z", &fresh_ts);
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "{}", fresh).unwrap();
+        f.sync_all().unwrap();
+        (tmp, path)
+    }
+
+    fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build codex watcher test app")
+    }
+
+    /// The three global diagnostic files `BridgeLogger::new` and
+    /// `DiagLogger::new` truncate (`telegram/output.rs:140`). `None` when this
+    /// process has no config dir, in which case the constructors write nothing
+    /// at all and the size check is trivially satisfied.
+    fn global_log_sizes() -> Vec<(PathBuf, u64)> {
+        let Some(dir) = crate::config::config_dir() else {
+            return Vec::new();
+        };
+        ["telegram-bridge.log", "diag-raw.log", "diag-sent.log"]
+            .into_iter()
+            .map(|name| {
+                let path = dir.join(name);
+                let len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                (path, len)
+            })
+            .collect()
+    }
+
+    /// Test 14: **room-only Codex reader, no bot anywhere.** Records reach the
+    /// sink, no `BridgeLogger` is constructed, no HTTP request is attempted and
+    /// the global log files' sizes are unchanged. This is the executable form
+    /// of "never requires a bot".
+    #[tokio::test]
+    async fn a_room_only_codex_reader_emits_records_with_no_bot_anywhere() {
+        let work = tempfile::tempdir().unwrap();
+        let cwd = work.path().to_string_lossy().replace('\\', "\\\\");
+        let (_fixture, _path) = room_only_fixture(&cwd);
+        let search_root = _fixture.path().to_path_buf();
+        let before = global_log_sizes();
+
+        let app = mock_app();
+        let network = OutboundNetwork::new_for_tests(1);
+        let cancel = CancellationToken::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let task = spawn_watch_task(
+            search_root,
+            work.path().to_string_lossy().to_string(),
+            Utc::now(),
+            network.clone(),
+            None, // no bot target: the room is the only consumer
+            "room-only-session".to_string(),
+            cancel.clone(),
+            app.handle().clone(),
+            Some(tx),
+        );
+
+        let record = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("a room-only reader must still deliver records")
+            .expect("the sink stays open while the reader runs");
+        assert_eq!(record.text, "sanitized assistant reply");
+        assert_eq!(record.provider, CaptureProvider::Codex);
+        assert_eq!(record.session_id, "room-only-session");
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+
+        assert!(
+            network.acquired_labels_for_tests().is_empty(),
+            "no HTTP request may be attempted without a bot target"
+        );
+        for (path, len) in before {
+            let now = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            assert_eq!(
+                now,
+                len,
+                "{} must not be truncated by a room-only reader",
+                path.display()
+            );
+        }
+    }
+
+    /// Test 17: **no per-poll cost for a room without the flag.** A watcher run
+    /// with `sink == None` performs zero `.co-managed/` filesystem operations —
+    /// no lock acquisition, no `state.json` open — because the observation is
+    /// computed only when a sink is attached. This pins phase 3 section 6.1
+    /// from the watcher side.
+    #[tokio::test]
+    async fn a_watcher_without_a_sink_touches_no_co_managed_state() {
+        let work = tempfile::tempdir().unwrap();
+        let cwd = work.path().to_string_lossy().replace('\\', "\\\\");
+        let (_fixture, _path) = room_only_fixture(&cwd);
+        let search_root = _fixture.path().to_path_buf();
+
+        let app = mock_app();
+        let network = OutboundNetwork::new_for_tests(1);
+        let cancel = CancellationToken::new();
+
+        let task = spawn_watch_task(
+            search_root,
+            work.path().to_string_lossy().to_string(),
+            Utc::now(),
+            network.clone(),
+            None,
+            "no-sink-session".to_string(),
+            cancel.clone(),
+            app.handle().clone(),
+            None, // no sink: a room without the flag
+        );
+
+        // Several poll intervals, so the file is bound and read repeatedly.
+        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS * 4)).await;
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+
+        for root in [work.path(), _fixture.path()] {
+            let co_managed = root.join(".co-managed");
+            assert!(
+                !co_managed.exists(),
+                "{} must not be created by a watcher with no sink",
+                co_managed.display()
+            );
+            assert!(!co_managed.join("state.json").exists());
+            assert!(!co_managed.join("state.lock").exists());
+        }
+        assert!(
+            network.acquired_labels_for_tests().is_empty(),
+            "no bot target, so no send is attempted"
+        );
+    }
+
     /// Payload of a valid current-format record.
     fn valid_final_payload() -> serde_json::Value {
         serde_json::json!({

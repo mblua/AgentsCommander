@@ -326,7 +326,6 @@ fn capture_preamble_bodies(
     records
 }
 
-#[allow(clippy::too_many_arguments)]
 /// The §6 attach/detach transition: **discard the pending buffer, switch the
 /// destination, run the preamble**, in that order.
 ///
@@ -384,6 +383,7 @@ fn apply_destination_change(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn watch_loop<R: tauri::Runtime>(
     project_dir: PathBuf,
     network: OutboundNetwork,
@@ -796,6 +796,78 @@ mod tests {
             .into_iter()
             .filter_map(|(_, line)| extract_assistant_text(&line))
             .collect()
+    }
+
+    /// Test 11 (Claude half; the Codex half lives in `codex_watcher`): with no
+    /// Bot demand no `JSONL_EXTRACT` line is written and **no global log file
+    /// is truncated**. Each file's size is asserted unchanged, not merely that
+    /// no line matched — `BridgeLogger::new` truncates on construction
+    /// (`telegram/output.rs:140`), so "not constructed" is the only safe state.
+    #[tokio::test]
+    async fn a_room_only_claude_reader_truncates_no_global_log_and_still_emits() {
+        let dir = tempfile::tempdir().expect("projects dir");
+        let now = Utc::now();
+        std::fs::write(
+            dir.path().join("session.jsonl"),
+            format!("{}\n", stamped_line("room-only body", now)),
+        )
+        .expect("write transcript");
+
+        let before: Vec<(PathBuf, u64)> = match crate::config::config_dir() {
+            Some(config) => ["telegram-bridge.log", "diag-raw.log", "diag-sent.log"]
+                .into_iter()
+                .map(|name| {
+                    let path = config.join(name);
+                    let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    (path, len)
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build claude watcher test app");
+        let network = crate::network::OutboundNetwork::new_for_tests(1);
+        let cancel = CancellationToken::new();
+        let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
+        let (_reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let task = spawn_watch_task(
+            dir.path().to_path_buf(),
+            network.clone(),
+            dest_rx,
+            reanchor_rx,
+            "room-only-claude".to_string(),
+            cancel.clone(),
+            app.handle().clone(),
+            Some(tx),
+        );
+
+        let record = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("a room-only reader must still deliver records")
+            .expect("the sink stays open while the reader runs");
+        assert_eq!(record.text, "room-only body");
+
+        cancel.cancel();
+        drop(dest_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+
+        assert!(
+            network.acquired_labels_for_tests().is_empty(),
+            "no HTTP request may be attempted without a bot demand"
+        );
+        for (path, len) in before {
+            let after = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            assert_eq!(
+                after,
+                len,
+                "{} must not be truncated by a room-only reader",
+                path.display()
+            );
+        }
     }
 
     /// Test 4: preamble line starts index back to the exact raw bytes,

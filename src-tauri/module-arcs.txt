@@ -386,6 +386,7 @@ agentscommander_lib::commands::co_managed -> agentscommander_lib::config::entity
 agentscommander_lib::commands::co_managed -> agentscommander_lib::config::projects
 agentscommander_lib::commands::co_managed -> agentscommander_lib::config::settings
 agentscommander_lib::commands::co_managed -> agentscommander_lib::path_identity
+agentscommander_lib::commands::co_managed -> agentscommander_lib::session::manager
 agentscommander_lib::commands::codex_resolver -> agentscommander_lib::path_utils
 agentscommander_lib::commands::config -> agentscommander_lib
 agentscommander_lib::commands::config -> agentscommander_lib::agent_update
@@ -1034,6 +1035,9 @@ agentscommander_lib::session::session -> agentscommander_lib::session::profile
 agentscommander_lib::telegram::api -> agentscommander_lib::errors
 agentscommander_lib::telegram::api -> agentscommander_lib::network
 agentscommander_lib::telegram::api -> agentscommander_lib::telegram::redact
+agentscommander_lib::telegram::bridge -> agentscommander_lib::capture::key
+agentscommander_lib::telegram::bridge -> agentscommander_lib::capture::record
+agentscommander_lib::telegram::bridge -> agentscommander_lib::capture::sink
 agentscommander_lib::telegram::bridge -> agentscommander_lib::commands::pty
 agentscommander_lib::telegram::bridge -> agentscommander_lib::commands::voice
 agentscommander_lib::telegram::bridge -> agentscommander_lib::config::settings
@@ -1061,6 +1065,8 @@ agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::commands::c
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::network
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::telegram::jsonl_kernel
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::telegram::output
+agentscommander_lib::telegram::manager -> agentscommander_lib::capture::key
+agentscommander_lib::telegram::manager -> agentscommander_lib::capture::registry
 agentscommander_lib::telegram::manager -> agentscommander_lib::errors
 agentscommander_lib::telegram::manager -> agentscommander_lib::network
 agentscommander_lib::telegram::manager -> agentscommander_lib::pty::manager
