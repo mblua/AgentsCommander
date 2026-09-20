@@ -372,6 +372,15 @@ const securityHintVisible = (
   result?.sessionId === group.sessionId &&
   Boolean(result?.blockedBySecurity);
 
+const nextFocusableIndex = (
+  index: number,
+  length: number,
+  backwards: boolean,
+): number => {
+  if (backwards) return index <= 0 ? length - 1 : index - 1;
+  return (index + 1) % length;
+};
+
 const killModalTitle = (state: ResourceGroupState): string =>
   state === "quarantined" ? "Force-kill agent" : "Kill agent";
 
@@ -943,10 +952,9 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     }
     const current = document.activeElement as HTMLElement | null;
     const index = current ? focusables.indexOf(current) : -1;
-    const next = event.shiftKey
-      ? focusables[index <= 0 ? focusables.length - 1 : index - 1]
-      : focusables[(index + 1) % focusables.length];
-    next?.focus();
+    focusables[
+      nextFocusableIndex(index, focusables.length, event.shiftKey)
+    ]?.focus();
   };
 
   const openResourcesSettings = () => {
