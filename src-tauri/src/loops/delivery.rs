@@ -1805,9 +1805,12 @@ mod tests {
         };
         for id in ["codex", "muse"] {
             let command = loop_command_for(&settings, id);
-            assert!(
-                !loop_spawn_skip_auto_resume(false, &command),
-                "fixture agent must keep the Accumulate rule false, id={id}"
+            let expected_accumulate =
+                id == "muse" && cfg!(any(target_os = "macos", target_os = "linux"));
+            assert_eq!(
+                loop_spawn_skip_auto_resume(false, &command),
+                expected_accumulate,
+                "Accumulate rule, id={id}"
             );
             assert!(
                 spawn_skip_auto_resume(LoopSessionStart::Fresh, false, &command),
