@@ -2,6 +2,38 @@
   "schemaVersion": 1,
   "note": "Published from main to every installed AgentsCommander that downloads blocking-menu patterns. Generate it from src-tauri/resources/blocking-menus/settings-blocking-menus.json plus additions: for every stem named here, this array replaces the shipped array whole. Installed copies replace this note with their download record.",
   "byCommand": {
+    "claude": [
+      {
+        "pattern": "API Error: Can['’]t reach the API server",
+        "notification": "claude cannot reach the API (DNS/network); check the connection in this terminal",
+        "enabled": true,
+        "capturedAgainst": "claude / Windows"
+      },
+      {
+        "pattern": "^\\s*Claude in Chrome extension detected",
+        "notification": "claude is waiting for you to answer the Chrome extension menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "claude / Windows"
+      },
+      {
+        "pattern": "^[^A-Za-z0-9]*API Error: \\d{3}\\b",
+        "notification": "claude got an HTTP error response from the API; check this terminal",
+        "enabled": true,
+        "capturedAgainst": "claude / Windows"
+      },
+      {
+        "pattern": "^[^A-Za-z0-9]*Dangerous rm operation\\b",
+        "notification": "claude is waiting for you to approve a dangerous rm operation in this terminal",
+        "enabled": true,
+        "capturedAgainst": "claude 2.1.268 / Windows"
+      },
+      {
+        "pattern": "^\\s*Esc to cancel\\b.{1,5}Tab to amend\\b",
+        "notification": "claude is waiting for you to answer a permission prompt in this terminal",
+        "enabled": true,
+        "capturedAgainst": "claude 2.1.268 / Linux"
+      }
+    ],
     "codex": [
       {
         "pattern": "^\\s*Do you trust the contents of this directory\\?",
@@ -14,6 +46,30 @@
         "notification": "codex is waiting for you to answer the hooks-review menu in this terminal",
         "enabled": true,
         "capturedAgainst": "codex 0.153.2 / Windows"
+      },
+      {
+        "pattern": "^[^A-Za-z0-9]*\\d+\\.\\s*Keep current model\\b",
+        "notification": "codex is waiting for you to answer the rate-limit model-switch menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "codex 0.153.4 / Windows"
+      },
+      {
+        "pattern": "^[^A-Za-z0-9]*\\d+\\.\\s*Skip until next version\\b",
+        "notification": "codex is waiting for you to answer the update-available menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "codex 0.153.4 / Windows"
+      },
+      {
+        "pattern": "^[^A-Za-z0-9]*You['’]ve hit your usage limit\\b",
+        "notification": "codex has hit its usage limit and cannot continue until it resets; check this terminal",
+        "enabled": true,
+        "capturedAgainst": "codex 0.154.0 / Windows"
+      },
+      {
+        "pattern": "^[^A-Za-z0-9]*alt \\+ \\S+ to answer\\b",
+        "notification": "codex is waiting for you to answer a pending question in this terminal",
+        "enabled": true,
+        "capturedAgainst": "codex 0.154.0 / Windows"
       }
     ],
     "pi": [

@@ -18,7 +18,21 @@ A helper must not hide the case matrix:
 - It takes **only data** (a named-options object) and does not branch on its options.
 - The differing values appear **literally at the call site**.
 
-`expectNoGroupForTeam` in `src/sidebar/stores/sessions.grouped.test.ts` is the reference shape.
+```ts
+type SkippedInput = { id: string; name: string; path: string };
+
+function assertSessionVisible({ id, name, path }: SkippedInput): void {
+  sessionsStore.setSessions([session({ id, name, workingDirectory: path })]);
+  sessionsStore.setTeams([]);
+
+  const visible = sessionsStore.filteredSessions.map((s) => s.id);
+  expect(visible).toEqual([id]);
+}
+
+// The differing values stay literal at the call site.
+assertSessionVisible({ id: "s-a", name: "wg-1/a", path: "C:\\Project\\a" });
+assertSessionVisible({ id: "s-x", name: "wg-9/x", path: "C:\\Project\\x" });
+```
 
 ## Thresholds and commands
 
