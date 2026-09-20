@@ -2784,37 +2784,6 @@ impl QuitGate {
         }
     }
 
-    /// Aborts with an explicitly named unanswered gate (unregister / destroy).
-    fn abort_unanswered(
-        &self,
-        epoch: u64,
-        reason: QuitAbortReason,
-        label: &str,
-    ) -> QuitGateEffects {
-        let mut inner = self.lock();
-        let refusing: Vec<String> = {
-            let Some(round) = inner.live_round(epoch) else {
-                return QuitGateEffects::default();
-            };
-            round.refusing.iter().cloned().collect()
-        };
-        let outcome = QuitOutcome::aborted(epoch, reason, refusing, vec![label.to_string()]);
-        let effects = {
-            let round = inner
-                .live_round(epoch)
-                .expect("round checked live above under the same lock");
-            Self::abort_effects(round, outcome.clone())
-        };
-        match inner.finish(epoch, outcome) {
-            Some(_) => {
-                drop(inner);
-                self.notify.notify_waiters();
-                effects
-            }
-            None => QuitGateEffects::default(),
-        }
-    }
-
     /// Writes terminal `Exiting` once the live round has no unanswered gate.
     fn finalize_consent_locked(inner: &mut QuitGateInner, epoch: u64) -> bool {
         let settled = match inner.live_round(epoch) {
@@ -2869,60 +2838,64 @@ impl QuitGate {
     /// Drops `label`'s registration. Aborts the live round only if that gate
     /// had not already answered — same-epoch consent is final.
     pub fn unregister(&self, label: &str) -> QuitGateEffects {
-        let epoch = {
-            let mut inner = self.lock();
-            inner.registered.remove(label);
-            match inner.round.as_mut() {
-                Some(round) => {
-                    // Only an UNANSWERED gate aborts the round; same-epoch
-                    // consent is final and cannot be revoked by teardown.
-                    if round.pending.remove(label).is_some() {
-                        let epoch = round.epoch;
-                        round.busy.remove(label);
-                        let now = self.clock.now();
-                        QuitGateInner::resume_if_idle(round, now);
-                        Some(epoch)
-                    } else {
-                        round.busy.remove(label);
-                        None
-                    }
-                }
-                None => None,
-            }
-        };
-        match epoch {
-            Some(epoch) => self.abort_unanswered(epoch, QuitAbortReason::Unregistered, label),
-            None => QuitGateEffects::default(),
-        }
+        self.teardown_gate(label, QuitAbortReason::Unregistered)
     }
 
     /// Window destroyed: same as unregister, with reason `destroyed`.
     /// Main's destruction is not an abort — main is never a gate.
     pub fn window_gone(&self, label: &str) -> QuitGateEffects {
-        let epoch = {
-            let mut inner = self.lock();
-            inner.registered.remove(label);
-            match inner.round.as_mut() {
-                Some(round) => {
-                    // Only an UNANSWERED gate aborts the round; same-epoch
-                    // consent is final and cannot be revoked by teardown.
-                    if round.pending.remove(label).is_some() {
-                        let epoch = round.epoch;
-                        round.busy.remove(label);
-                        let now = self.clock.now();
-                        QuitGateInner::resume_if_idle(round, now);
-                        Some(epoch)
-                    } else {
-                        round.busy.remove(label);
-                        None
-                    }
+        self.teardown_gate(label, QuitAbortReason::Destroyed)
+    }
+
+    /// Drops `label`'s registration and, if it was still unanswered, aborts the
+    /// live round under ONE lock acquisition.
+    ///
+    /// The pending sender is removed into a local and dropped only after the
+    /// terminal result has been written, so no waiter can ever observe a closed
+    /// receiver before the decision that explains it.
+    fn teardown_gate(&self, label: &str, reason: QuitAbortReason) -> QuitGateEffects {
+        let mut inner = self.lock();
+        inner.registered.remove(label);
+
+        let now = self.clock.now();
+        let (epoch, pending_sender) = match inner.round.as_mut() {
+            Some(round) => {
+                // Only an UNANSWERED gate aborts the round; same-epoch consent
+                // is final and cannot be revoked by teardown.
+                let sender = round.pending.remove(label);
+                round.busy.remove(label);
+                QuitGateInner::resume_if_idle(round, now);
+                match sender {
+                    Some(sender) => (Some(round.epoch), Some(sender)),
+                    None => (None, None),
                 }
-                None => None,
             }
+            None => (None, None),
         };
-        match epoch {
-            Some(epoch) => self.abort_unanswered(epoch, QuitAbortReason::Destroyed, label),
-            None => QuitGateEffects::default(),
+        let Some(epoch) = epoch else {
+            return QuitGateEffects::default();
+        };
+
+        let refusing: Vec<String> = inner
+            .live_round(epoch)
+            .map(|round| round.refusing.iter().cloned().collect())
+            .unwrap_or_default();
+        let outcome = QuitOutcome::aborted(epoch, reason, refusing, vec![label.to_string()]);
+        let effects = {
+            let round = inner
+                .live_round(epoch)
+                .expect("round checked live above under the same lock");
+            Self::abort_effects(round, outcome.clone())
+        };
+        let finished = inner.finish(epoch, outcome).is_some();
+        // Terminal written; only now may the sender close.
+        drop(pending_sender);
+        drop(inner);
+        if finished {
+            self.notify.notify_waiters();
+            effects
+        } else {
+            QuitGateEffects::default()
         }
     }
 
@@ -3211,14 +3184,24 @@ pub async fn quit_gate_run(
     let mut receivers: futures_util::stream::FuturesUnordered<_> = receivers.into_iter().collect();
 
     let outcome = loop {
+        // ENROL FIRST. `Notified` snapshots the notify-waiters counter when it
+        // is CREATED and registers on first poll, so reading the round state
+        // before taking that snapshot opens a window in which a
+        // `notify_waiters()` is dropped on the floor. A lost resume wakeup
+        // would leave this task parked on `pending()` with a stale
+        // `deadline: None` and defeat QUIT_GATE_TIMEOUT entirely.
+        // Pinned by `waiter_enrols_before_reading_round_state`.
+        let notified = gate.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
         if let Some(outcome) = gate.lock().terminal_for(new_epoch) {
             break outcome;
         }
         let deadline = gate.deadline_for(new_epoch);
         let has_receivers = !receivers.is_empty();
-        let notified = gate.notify.notified();
         tokio::select! {
-            _ = notified => {}
+            _ = &mut notified => {}
             Some(_) = futures_util::StreamExt::next(&mut receivers), if has_receivers => {}
             _ = async {
                 match deadline {
@@ -7315,6 +7298,169 @@ mod quit_gate_tests {
         assert_eq!(host.exits(), 0);
     }
 
+    // --- B1 regression: lost resume wakeup ------------------------------------
+
+    /// Documents the primitive the waiter loop depends on.
+    ///
+    /// `Notified` snapshots the notify-waiters counter when it is CREATED, so
+    /// a `notify_waiters()` landing before that snapshot is lost forever while
+    /// one landing after it is observed even before the first poll. That is
+    /// exactly why `quit_gate_run` creates and enables its `Notified` ahead of
+    /// reading the round state instead of after it.
+    #[tokio::test]
+    async fn notified_snapshot_must_be_taken_before_the_state_read() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+
+        // Snapshot taken too late: the notification is already history.
+        notify.notify_waiters();
+        let late = notify.notified();
+        tokio::pin!(late);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut late)
+                .await
+                .is_err(),
+            "a Notified created after notify_waiters must miss it"
+        );
+
+        // Snapshot taken first: observed, even though it had not been polled.
+        let early = notify.notified();
+        tokio::pin!(early);
+        early.as_mut().enable();
+        notify.notify_waiters();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut early)
+                .await
+                .is_ok(),
+            "a Notified created before notify_waiters must observe it"
+        );
+    }
+
+    /// B1 REGRESSION BARRIER.
+    ///
+    /// The lost-wakeup window is a handful of instructions inside one
+    /// synchronous stretch of `quit_gate_run`: between the round-state read and
+    /// the `notified()` counter snapshot. It is not reachable from a black-box
+    /// test — I swept a resume across that window from a second thread for
+    /// thousands of rounds against the buggy ordering and never hit it — so the
+    /// ordering is pinned structurally instead, the way the single-exit site is.
+    ///
+    /// If someone moves the enrolment back below the state read, this fails.
+    #[test]
+    fn waiter_enrols_before_reading_round_state() {
+        let source = include_str!("lib.rs");
+        let production = source
+            .split("mod quit_gate_tests {")
+            .next()
+            .expect("test module marker present");
+
+        let loops: Vec<&str> = production.split("let outcome = loop {").skip(1).collect();
+        assert_eq!(loops.len(), 1, "expected exactly one quit waiter loop");
+        let head = loops[0]
+            .split("tokio::select! {")
+            .next()
+            .expect("waiter loop selects");
+
+        let enrol = head
+            .find("gate.notify.notified()")
+            .expect("waiter loop enrols on the gate notify");
+        let terminal = head
+            .find("terminal_for(new_epoch)")
+            .expect("waiter loop reads the terminal slot");
+        let deadline = head
+            .find("deadline_for(new_epoch)")
+            .expect("waiter loop reads the deadline");
+
+        assert!(
+            enrol < terminal && enrol < deadline,
+            "the Notified snapshot must be taken BEFORE the round-state read, \
+             otherwise a notify_waiters() in between is lost and the waiter \
+             parks forever with a stale deadline"
+        );
+        assert!(
+            head.contains(".enable()"),
+            "the Notified must be enabled up front, not only on first poll"
+        );
+    }
+
+    /// Companion smoke test: pause/resume driven from real threads must always
+    /// leave a round that can still time out. This does NOT reach the B1
+    /// window (see `waiter_enrols_before_reading_round_state`); it guards the
+    /// ordinary multi-threaded pause/resume path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn busy_resume_from_another_thread_still_times_out() {
+        for attempt in 0..200 {
+            let (gate, _host, dyn_host, clock) = new_gate();
+            gate.register("spec-board");
+            let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+
+            // Wait for the atomic install rather than assuming a yield count.
+            while gate.deadline_for(1).is_none() {
+                tokio::task::yield_now().await;
+            }
+
+            gate.progress("spec-board", 1, true);
+            tokio::time::sleep(Duration::from_micros(200)).await;
+
+            let hammer = {
+                let gate = Arc::clone(&gate);
+                let delay = Duration::from_nanos((attempt % 250) * 100);
+                tokio::task::spawn_blocking(move || {
+                    gate.progress("spec-board", 1, true);
+                    let spin_until = std::time::Instant::now() + delay;
+                    while std::time::Instant::now() < spin_until {
+                        std::hint::spin_loop();
+                    }
+                    gate.progress("spec-board", 1, false);
+                })
+            };
+            hammer.await.unwrap();
+
+            // The gate is idle and never answers: only the timeout can end it.
+            clock.advance(QUIT_GATE_TIMEOUT * 2);
+            let outcome = tokio::time::timeout(Duration::from_secs(5), quit)
+                .await
+                .unwrap_or_else(|_| panic!("attempt {attempt}: waiter never timed out"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(outcome.reason, Some(QuitAbortReason::Timeout));
+            assert_eq!(outcome.epoch, 1);
+        }
+    }
+
+    // --- N2 regression: terminal precedes sender drop -------------------------
+
+    /// The waiter must be able to read a terminal result the moment its
+    /// receiver closes, for BOTH teardown paths.
+    #[tokio::test]
+    async fn teardown_writes_the_terminal_before_dropping_the_sender() {
+        for (reason, teardown) in [
+            (QuitAbortReason::Unregistered, false),
+            (QuitAbortReason::Destroyed, true),
+        ] {
+            let (gate, host, dyn_host, _clock) = new_gate();
+            gate.register("spec-board");
+            let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+            settle().await;
+
+            let effects = if teardown {
+                gate.window_gone("spec-board")
+            } else {
+                gate.unregister("spec-board")
+            };
+            // Observed straight after the call returns, before the waiter has
+            // run at all: the decision is already durable.
+            assert_eq!(
+                gate.terminal_snapshot_for_test(1).map(|o| o.reason),
+                Some(Some(reason))
+            );
+            apply_quit_gate_effects(host.as_ref(), &effects);
+
+            let outcome = quit.await.unwrap().unwrap();
+            assert_eq!(outcome.reason, Some(reason));
+            assert_eq!(host.exits(), 0);
+        }
+    }
+
     #[test]
     fn outcome_serialization_omits_absent_fields() {
         let json = serde_json::to_value(QuitOutcome::in_flight(7)).unwrap();
@@ -7354,8 +7500,39 @@ mod quit_gate_tests {
             .split("mod quit_gate_tests {")
             .next()
             .expect("test module marker present");
+
+        // Collect the RECEIVER of every `.exit(` call in production code, so a
+        // second exit smuggled in as `app_handle.exit(0)` or `handle.exit(0)`
+        // fails here instead of slipping past a literal match.
+        let receivers: Vec<String> = production
+            .match_indices(".exit(")
+            .map(|(idx, _)| {
+                production[..idx]
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<Vec<char>>()
+                    .into_iter()
+                    .rev()
+                    .collect()
+            })
+            .collect();
+
+        // `app` is the one real `AppHandle::exit`; `host` is the injected seam
+        // that routes every Exiting decision to it.
+        let unexpected: Vec<&String> = receivers
+            .iter()
+            .filter(|recv| recv.as_str() != "app" && recv.as_str() != "host")
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "unexpected exit receivers: {unexpected:?}"
+        );
         assert_eq!(
-            production.matches("self.app.exit(").count(),
+            receivers
+                .iter()
+                .filter(|recv| recv.as_str() == "app")
+                .count(),
             1,
             "quit gate must keep exactly one AppHandle::exit site"
         );
