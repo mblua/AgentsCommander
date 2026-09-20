@@ -303,7 +303,7 @@ function splitTopLevelCommas(tokens) {
 
 function isPredicateTerminator(token) {
   return token === undefined
-    || (token.type === 'punct' && (token.value === ')' || token.value === ','));
+    || (token.type === 'punct' && (token.value === ')' || token.value === ',' || token.value === '='));
 }
 
 function scanPredicateTokens(tokens, source, file, hits) {
@@ -519,7 +519,11 @@ export function collectEntries({ listDir }) {
     }
   };
   walk('');
-  files.sort();
+  files.sort((a, b) => {
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+  });
   return { files, walkerErrors };
 }
 
@@ -713,19 +717,22 @@ function selfTestCases() {
       });
       expectHit(hits, 'S1', 'src/legacy.rs', 1);
     }],
-    ['case 48: every clippy cfg token variant fails S2, the string does not', () => {
+    ['case 48: every clippy cfg token variant fails S2 with its exact text, the string does not', () => {
       const variants = [
-        ['cfg(not(clippy))', '#[cfg(not(clippy))]\nfn a() {}\n'],
-        ['cfg_attr(clippy, ...)', '#[cfg_attr(clippy, allow(dead_code))]\n'],
-        ['not(r#clippy)', '#[cfg(not(r#clippy))]\n'],
-        ['not(clippy /*x*/)', '#[cfg(not(clippy /*x*/))]\n'],
-        ['not(clippy,)', '#[cfg(not(clippy,))]\n'],
-        ['nested cfg_attr(feature = "x", cfg(not(clippy)))', '#[cfg_attr(feature = "x", cfg(not(clippy)))]\n'],
+        ['cfg(not(clippy))', '#[cfg(not(clippy))]\nfn a() {}\n', 'clippy'],
+        ['cfg_attr(clippy, ...)', '#[cfg_attr(clippy, allow(dead_code))]\n', 'clippy'],
+        ['not(r#clippy)', '#[cfg(not(r#clippy))]\n', 'r#clippy'],
+        ['not(clippy /*x*/)', '#[cfg(not(clippy /*x*/))]\n', 'clippy'],
+        ['not(clippy,)', '#[cfg(not(clippy,))]\n', 'clippy'],
+        ['nested cfg_attr(feature = "x", cfg(not(clippy)))', '#[cfg_attr(feature = "x", cfg(not(clippy)))]\n', 'clippy'],
+        ['cfg(clippy = "y")', '#[cfg(clippy = "y")]\n', 'clippy'],
+        ['cfg(not(clippy = "y"))', '#[cfg(not(clippy = "y"))]\n', 'clippy'],
+        ['cfg_attr(not(clippy = "y"), ...)', '#[cfg_attr(not(clippy = "y"), allow(dead_code))]\n', 'clippy'],
       ];
-      for (const [label, text] of variants) {
+      for (const [label, text, expectedText] of variants) {
         const hits = runFixture(['src/variant.rs'], { 'src/variant.rs': text });
-        if (!hits.some((hit) => hit.rule === 'S2')) {
-          throw new Error(`expected S2 for ${label}, got ${JSON.stringify(hits)}`);
+        if (!hits.some((hit) => hit.rule === 'S2' && hit.text === expectedText)) {
+          throw new Error(`expected S2 text ${JSON.stringify(expectedText)} for ${label}, got ${JSON.stringify(hits)}`);
         }
       }
       const stringHits = runFixture(['src/string.rs'], {
