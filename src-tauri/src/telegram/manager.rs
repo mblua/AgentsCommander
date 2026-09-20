@@ -14,7 +14,7 @@ use crate::errors::AppError;
 use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
 use crate::session::profile::CodingAgentKind;
-use crate::telegram::bridge::{self, BridgeHandle, ReaderDest, ReaderTask};
+use crate::telegram::bridge::{self, BridgeHandle, ReaderDest, ReaderDestSender, ReaderTask};
 use crate::telegram::types::{BridgeInfo, BridgeStatus, TelegramBotConfig};
 
 /// Who is asking for a session's transcript reader (#2232 phase 4 section 5).
@@ -42,7 +42,7 @@ pub struct ReaderEntry {
     pub reader_id: u64,
     cancel: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
-    dest: watch::Sender<Option<ReaderDest>>,
+    dest: ReaderDestSender,
     reanchor: watch::Sender<u64>,
     frontier: Arc<Mutex<Option<Cut>>>,
     demands: BTreeSet<ReaderConsumer>,
@@ -218,8 +218,10 @@ impl TelegramBridgeManager {
     ///
     /// Idempotent, and the reader is never restarted: the new consumer simply
     /// joins it. For [`ReaderConsumer::Bot`] the destination is switched, which
-    /// is what runs the three §6 transitions inside the reader task. Returns
-    /// `false` when no reader is running for `session_id`.
+    /// is what runs the three §6 transitions inside the reader task. Repeating
+    /// the same Bot destination is **not** a transition: no watch update, no
+    /// preamble and no buffer discard (section 5). Returns `false` when no
+    /// reader is running for `session_id`.
     pub fn reader_demand_add(
         &mut self,
         session_id: Uuid,
@@ -242,7 +244,13 @@ impl TelegramBridgeManager {
             }
         }
         if consumer == ReaderConsumer::Bot {
-            let _ = entry.dest.send(dest);
+            // A repeated demand with the same destination is a no-op: sending
+            // it again would make the watcher discard its pending buffer and
+            // re-run the preamble for no reason.
+            let unchanged = !joined && entry.dest.current() == dest;
+            if !unchanged {
+                entry.dest.send(dest);
+            }
         }
         true
     }
@@ -261,9 +269,11 @@ impl TelegramBridgeManager {
         consumer: ReaderConsumer,
     ) -> Option<BridgeShutdown> {
         let entry = self.readers.get_mut(&session_id)?;
-        entry.demands.remove(&consumer);
-        if consumer == ReaderConsumer::Bot {
-            let _ = entry.dest.send(None);
+        let removed = entry.demands.remove(&consumer);
+        // Releasing an **absent** Bot demand must not send a `None` transition:
+        // the reader keeps sending until its demand is genuinely released.
+        if consumer == ReaderConsumer::Bot && removed {
+            entry.dest.send(None);
         }
         if !entry.demands.is_empty() {
             return None;
@@ -496,7 +506,7 @@ mod tests {
         ReaderTask {
             cancel,
             tasks: vec![task],
-            dest,
+            dest: ReaderDestSender::Claude(dest),
             reanchor,
             frontier: Arc::new(Mutex::new(None)),
         }
@@ -701,7 +711,7 @@ mod tests {
                     ReaderTask {
                         cancel,
                         tasks: vec![task],
-                        dest,
+                        dest: ReaderDestSender::Claude(dest),
                         reanchor,
                         frontier: Arc::new(Mutex::new(None)),
                     },
@@ -815,5 +825,75 @@ mod tests {
         for shutdown in shutdowns {
             shutdown.abort_now();
         }
+    }
+
+    /// Test 20: **idempotent Bot transition.** Re-adding the same Bot target
+    /// sends no watch update (so the watcher runs no preamble and discards no
+    /// pending buffer); changing the target sends exactly one; releasing a Bot
+    /// demand that is not held sends no `None`.
+    #[tokio::test]
+    async fn a_repeated_bot_transition_is_not_a_watch_update() {
+        let captures = Arc::new(CaptureRegistry::new());
+        let mut manager = test_manager(&captures);
+        let session_id = Uuid::new_v4();
+        let _cancel = install(&mut manager, session_id, ReaderConsumer::Room);
+        let target = ReaderDest {
+            token: "token".into(),
+            chat_id: 7,
+        };
+        let other = ReaderDest {
+            token: "token".into(),
+            chat_id: 8,
+        };
+        let mut transitions = manager
+            .readers
+            .get(&session_id)
+            .expect("reader installed")
+            .dest
+            .subscribe();
+
+        // The first Bot demand is one transition.
+        assert!(manager.reader_demand_add(session_id, ReaderConsumer::Bot, Some(target.clone())));
+        assert!(transitions.has_changed().unwrap());
+        assert_eq!(
+            transitions.borrow_and_update().clone(),
+            Some(target.clone())
+        );
+
+        // The same demand with the same destination is not a transition.
+        assert!(manager.reader_demand_add(session_id, ReaderConsumer::Bot, Some(target)));
+        assert!(
+            !transitions.has_changed().unwrap(),
+            "a repeated Bot demand must send no watch update"
+        );
+
+        // The same demand with a changed destination is exactly one transition.
+        assert!(manager.reader_demand_add(session_id, ReaderConsumer::Bot, Some(other.clone())));
+        assert!(transitions.has_changed().unwrap());
+        assert_eq!(transitions.borrow_and_update().clone(), Some(other.clone()));
+        assert!(
+            !transitions.has_changed().unwrap(),
+            "one update per destination change"
+        );
+
+        // Releasing the Bot demand sends `None` once.
+        assert!(manager
+            .reader_demand_release(session_id, ReaderConsumer::Bot)
+            .is_none());
+        assert!(transitions.has_changed().unwrap());
+        assert_eq!(transitions.borrow_and_update().clone(), None);
+
+        // Releasing it again is absent, so it sends no second `None`.
+        assert!(manager
+            .reader_demand_release(session_id, ReaderConsumer::Bot)
+            .is_none());
+        assert!(
+            !transitions.has_changed().unwrap(),
+            "an absent Bot release must send no `None`"
+        );
+        assert!(
+            manager.reader_is_running(session_id),
+            "the Room demand keeps it"
+        );
     }
 }

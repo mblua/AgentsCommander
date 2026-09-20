@@ -8,7 +8,7 @@
 // Uses Kernel A (offset-based append-only JSONL) from `jsonl_kernel.rs` once
 // `find_session_file` selects the right rollout.
 
-use std::io::Read as IoRead;
+use std::io::{Read as IoRead, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -26,7 +26,8 @@ use crate::capture::state::head_from_lines;
 use crate::commands::codex_resolver::canonicalize_cwd_for_codex;
 use crate::network::OutboundNetwork;
 use crate::telegram::jsonl_kernel::{
-    read_new_lines_with_starts, read_preamble_for_race, POLL_INTERVAL_MS, ROTATION_STALE_SECS,
+    read_new_lines_with_starts, read_preamble_for_race, POLL_INTERVAL_MS, PREAMBLE_MAX_BYTES,
+    RACE_GRACE_SECS, ROTATION_STALE_SECS,
 };
 use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
 
@@ -67,7 +68,8 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
     expected_cwd: String,
     attach_time: DateTime<Utc>,
     network: OutboundNetwork,
-    bot_target: Option<BotTarget>,
+    dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
+    reanchor: tokio::sync::watch::Receiver<u64>,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
@@ -79,7 +81,8 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
             expected_cwd,
             attach_time,
             network,
-            bot_target,
+            dest,
+            reanchor,
             session_id.clone(),
             cancel,
             app.clone(),
@@ -88,6 +91,52 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
         .await;
         log::info!("[CODEX_EXIT] Watcher task ended for session {}", session_id);
     })
+}
+
+/// The §6 live-attach preamble window of `path`, as `(start, body)` pairs.
+///
+/// The Codex-local variant of the Claude helper: starts are computed on the
+/// **raw bytes plus the window offset**, never on the decoded text, so
+/// `raw[start..]` walks back to the exact file bytes. The seek point is
+/// resynced past a partial line unless the window starts at offset 0.
+fn read_preamble_with_starts(
+    path: &Path,
+    attach_time: DateTime<Utc>,
+) -> std::io::Result<Vec<(u64, String)>> {
+    let initial_len = std::fs::metadata(path)?.len();
+    let window_start = initial_len.saturating_sub(PREAMBLE_MAX_BYTES);
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(window_start))?;
+    let mut buf: Vec<u8> = Vec::new();
+    file.read_to_end(&mut buf)?;
+
+    // Drop everything before the first `\n` unless the window starts at 0: the
+    // seek point almost certainly lands mid-line. `base` is the absolute file
+    // offset of the first byte of `bytes`.
+    let (bytes, base): (&[u8], u64) = if window_start == 0 {
+        (&buf, 0)
+    } else {
+        match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => (&buf[i + 1..], window_start + i as u64 + 1),
+            None => return Ok(Vec::new()),
+        }
+    };
+
+    let cutoff = attach_time - chrono::Duration::seconds(RACE_GRACE_SECS);
+    let mut out = Vec::new();
+    let mut cursor: usize = 0;
+    for raw in bytes.split_inclusive(|&b| b == b'\n') {
+        let line_start = base + cursor as u64;
+        cursor += raw.len();
+        let decoded = String::from_utf8_lossy(raw);
+        let line = decoded.trim_end_matches('\n').trim_end_matches('\r');
+        if let Some((ts, _id, body)) = codex_preamble_extractor(line) {
+            if ts >= cutoff {
+                out.push((line_start, body));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Extractor for `read_preamble_for_race`: pairs each emitted body with the
@@ -402,25 +451,46 @@ fn find_session_file(
     best.map(|(p, _)| p)
 }
 
+/// Process-wide lock for tests that read or write the three global diagnostic
+/// files (`telegram-bridge.log`, `diag-raw.log`, `diag-sent.log`).
+///
+/// `telegram::output` is preserved byte-for-byte this phase, and cargo runs
+/// every lib test in one process, so a logger-constructing test would race the
+/// room-only tests that assert those files are untouched. The lock lives here,
+/// a `#[cfg(test)]` item outside the tests module, so the Claude watcher can
+/// share it without a production arc.
+#[cfg(test)]
+pub(crate) async fn lock_global_diagnostic_files() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn watch_loop<R: tauri::Runtime>(
     search_root: PathBuf,
     expected_cwd: String,
     attach_time: DateTime<Utc>,
     network: OutboundNetwork,
-    bot_target: Option<BotTarget>,
+    dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
+    reanchor: tokio::sync::watch::Receiver<u64>,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) {
+    let mut dest_rx = dest;
+    let mut reanchor_rx = reanchor;
+    // The task owns the current target and follows `changed()` itself
+    // (section 4.1): a bot can attach over a room-only reader, and a detach
+    // stops sends without stopping capture.
+    let mut bot_target: Option<BotTarget> = dest_rx.borrow_and_update().clone();
     // #2232 phase 4 section 8: with no bot demand no diagnostic is built, so
     // `BridgeLogger::new` — which truncates the **global** diagnostic files
-    // (`telegram/output.rs:140`) — is never called for a room-only reader.
-    let (token, chat_id) = match &bot_target {
-        Some(target) => (target.token.clone(), target.chat_id),
-        None => (String::new(), 0),
-    };
+    // (`telegram/output.rs:140`) — is never called for a room-only reader. On a
+    // hot attach the loggers are born at that moment, which is when they are
+    // truncated on attach today.
     let mut logger = bot_target.as_ref().map(|_| BridgeLogger::new(&session_id));
     let mut diag = bot_target.as_ref().map(|_| DiagLogger::new());
     // Log through the bridge logger only when one exists. With no bot demand
@@ -457,6 +527,13 @@ async fn watch_loop<R: tauri::Runtime>(
     let mut file_offset: u64 = 0;
     let mut line_remainder = String::new();
     let mut search_warned = false;
+    // Section 5.2: a re-anchor re-resolves with a **fresh search time**, so a
+    // rolled-over backup or a resumed rollout from a previous day is found
+    // again; `reanchor_pending` forces one immediate rescan and distinguishes
+    // the same-path case (offset retained) from the different-path one
+    // (existing EOF rotation policy).
+    let mut search_anchor = attach_time;
+    let mut reanchor_pending = false;
 
     bridge_log!(
         "CODEX_INIT",
@@ -471,30 +548,112 @@ async fn watch_loop<R: tauri::Runtime>(
     poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        // `biased`: a destination change or a re-anchor signal is processed
+        // before the next file poll, never after it (sections 5.2 and 6).
         tokio::select! {
+            biased;
             _ = cancel.cancelled() => break,
+
+            // §6: the destination is consulted only when it changes, and the
+            // three transitions run **inside the reader task**, with no
+            // `await` between them. Section 4.1: this is what lets a bot
+            // attach over a room-only reader and detach again while capture
+            // continues.
+            changed = dest_rx.changed() => {
+                if changed.is_err() {
+                    // The supervisor dropped the sender: the reader is going away.
+                    break;
+                }
+                let new_target = dest_rx.borrow_and_update().clone();
+                let attaching = new_target.is_some();
+                // The loggers are born at the moment of a hot attach, which is
+                // when they are truncated on attach today, so what is
+                // observable does not change (§8); a detach drops them.
+                if attaching {
+                    if logger.is_none() {
+                        logger = Some(BridgeLogger::new(&session_id));
+                    }
+                    if diag.is_none() {
+                        diag = Some(DiagLogger::new());
+                    }
+                } else {
+                    logger = None;
+                    diag = None;
+                }
+
+                // The three transitions, in order and with no `await` between:
+                // 1. discard the pending buffer;
+                // 2. switch the destination;
+                // 3. run the preamble (live attach only).
+                buffer.clear();
+                bot_target = new_target;
+                if attaching {
+                    if let Some(ref path) = current_file {
+                        match read_preamble_with_starts(path, Utc::now()) {
+                            Ok(lines) => {
+                                for (start, body) in lines {
+                                    // Only the lines below the reader's current
+                                    // offset; the normal loop sends the rest.
+                                    if start < file_offset {
+                                        bridge_log!("CODEX_PREAMBLE", &body);
+                                        buffer.push_str(&body);
+                                        buffer.push('\n');
+                                        last_buffer_add = Instant::now();
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("[CODEX_ERR] live-attach preamble read failed: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // §5.2: a restart keeps the demand set untouched and re-anchors
+            // the rollout **file**. A fresh search time re-resolves the path;
+            // the file is not dropped, so the next poll distinguishes the
+            // same-path case (offset retained) from a different path (EOF
+            // rotation policy).
+            changed = reanchor_rx.changed() => {
+                if changed.is_ok() {
+                    let _ = *reanchor_rx.borrow_and_update();
+                    search_anchor = Utc::now();
+                    reanchor_pending = true;
+                    bridge_log!("CODEX_REANCHOR", "restart: re-resolving rollout file");
+                }
+            }
+
             _ = poll_interval.tick() => {
                 // M5: re-scan only when we don't have a current file, the tracked
-                // file has been unlinked, or the file's mtime has not advanced
+                // file has been unlinked, the file's mtime has not advanced
                 // for ROTATION_STALE_SECS wall-clock seconds (i.e. it might have
-                // been rotated out from under us). `last_mtime_advance` is
-                // updated below when we observe the file's current mtime grow.
-                let need_rescan = match &current_file {
-                    None => true,
-                    Some(p) if !p.exists() => true,
-                    Some(_) => last_mtime_advance.elapsed().as_secs() >= ROTATION_STALE_SECS,
-                };
+                // been rotated out from under us), or a re-anchor asked for one.
+                // `last_mtime_advance` is updated below when we observe the
+                // file's current mtime grow.
+                let need_rescan = reanchor_pending
+                    || match &current_file {
+                        None => true,
+                        Some(p) if !p.exists() => true,
+                        Some(_) => last_mtime_advance.elapsed().as_secs() >= ROTATION_STALE_SECS,
+                    };
 
                 if need_rescan {
-                    if let Some(found) = find_session_file(&search_root, &expected_cwd, attach_time) {
-                        if Some(&found) != current_file.as_ref() {
-                            // First bind OR rotation. On first bind, run the §J
-                            // preamble scan to emit any final assistant answer from
-                            // the file's tail with timestamp >= attach_time - 5s.
-                            // Then set offset = file_len.
+                    if let Some(found) = find_session_file(&search_root, &expected_cwd, search_anchor) {
+                        let same_as_current = current_file.as_ref() == Some(&found);
+                        if reanchor_pending || !same_as_current {
+                            // First bind, rotation, or a re-anchor.
+                            //  - first bind: run the §J preamble scan to emit
+                            //    any final assistant answer from the file's
+                            //    tail with timestamp >= attach_time - 5s, then
+                            //    set offset = file_len;
+                            //  - same-path re-anchor: retain the offset and
+                            //    read only appended bytes (truncation is the
+                            //    kernel's H2 silent skip);
+                            //  - different path: existing EOF rotation policy.
                             let first_bind = current_file.is_none();
-                            line_remainder.clear();
                             if first_bind {
+                                line_remainder.clear();
                                 match read_preamble_for_race(&found, attach_time, codex_preamble_extractor) {
                                     Ok((bodies, _ids, file_len)) => {
                                         // The §J scan reads the tail, so it
@@ -528,12 +687,21 @@ async fn watch_loop<R: tauri::Runtime>(
                                         file_offset = std::fs::metadata(&found).ok().map(|m| m.len()).unwrap_or(0);
                                     }
                                 }
+                            } else if same_as_current {
+                                // Same-path re-anchor: the offset is retained
+                                // and only appended bytes are read. If the file
+                                // was truncated below it, the kernel's H2
+                                // silent skip re-anchors at EOF, exactly as
+                                // Codex rotation always has.
+                                bridge_log!("CODEX_REANCHOR", "same rollout path, offset retained");
                             } else {
-                                // Rotation. Re-anchor at the new file's current EOF.
+                                // Different path: existing EOF rotation policy.
+                                line_remainder.clear();
                                 file_offset = std::fs::metadata(&found).ok().map(|m| m.len()).unwrap_or(0);
                                 bridge_log!("CODEX_ROTATE", &format!("rotated to {}, offset={}", found.display(), file_offset));
                             }
                             current_file = Some(found);
+                            reanchor_pending = false;
                         }
                         let new_mtime = current_file.as_ref()
                             .and_then(|p| std::fs::metadata(p).ok())
@@ -598,14 +766,16 @@ async fn watch_loop<R: tauri::Runtime>(
                 if !buffer.is_empty() {
                     let elapsed = last_buffer_add.elapsed();
                     if elapsed >= flush_delay || buffer.len() > FLUSH_BYTES {
-                        if let (Some(bridge_logger), Some(diag_logger)) =
-                            (logger.as_mut(), diag.as_mut())
+                        if let (Some(target), Some(bridge_logger), Some(diag_logger)) =
+                            (bot_target.as_ref(), logger.as_mut(), diag.as_mut())
                         {
                             flush_buffer(
-                                &mut buffer, &network, &token, chat_id,
+                                &mut buffer, &network, &target.token, target.chat_id,
                                 &session_id, &app, bridge_logger, diag_logger,
                                 true,
                             ).await;
+                        } else {
+                            buffer.clear();
                         }
                     }
                 }
@@ -642,12 +812,14 @@ async fn watch_loop<R: tauri::Runtime>(
         }
     }
     if !buffer.is_empty() {
-        if let (Some(bridge_logger), Some(diag_logger)) = (logger.as_mut(), diag.as_mut()) {
+        if let (Some(target), Some(bridge_logger), Some(diag_logger)) =
+            (bot_target.as_ref(), logger.as_mut(), diag.as_mut())
+        {
             flush_buffer(
                 &mut buffer,
                 &network,
-                &token,
-                chat_id,
+                &target.token,
+                target.chat_id,
                 &session_id,
                 &app,
                 bridge_logger,
@@ -741,6 +913,8 @@ mod tests {
     /// of "never requires a bot".
     #[tokio::test]
     async fn a_room_only_codex_reader_emits_records_with_no_bot_anywhere() {
+        // Serialized against every other test that touches the global logs.
+        let _logs = lock_global_diagnostic_files().await;
         let work = tempfile::tempdir().unwrap();
         let cwd = work.path().to_string_lossy().replace('\\', "\\\\");
         let (_fixture, _path) = room_only_fixture(&cwd);
@@ -751,13 +925,18 @@ mod tests {
         let network = OutboundNetwork::new_for_tests(1);
         let cancel = CancellationToken::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // The supervisor always holds this sender open for the reader's
+        // lifetime; a dropped sender means the reader is going away.
+        let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
+        let (_reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
 
         let task = spawn_watch_task(
             search_root,
             work.path().to_string_lossy().to_string(),
             Utc::now(),
             network.clone(),
-            None, // no bot target: the room is the only consumer
+            dest_rx,
+            reanchor_rx,
             "room-only-session".to_string(),
             cancel.clone(),
             app.handle().clone(),
@@ -773,6 +952,7 @@ mod tests {
         assert_eq!(record.session_id, "room-only-session");
 
         cancel.cancel();
+        drop(dest_tx);
         let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 
         assert!(
@@ -797,6 +977,8 @@ mod tests {
     /// from the watcher side.
     #[tokio::test]
     async fn a_watcher_without_a_sink_touches_no_co_managed_state() {
+        // Serialized against every other test that touches the global logs.
+        let _logs = lock_global_diagnostic_files().await;
         let work = tempfile::tempdir().unwrap();
         let cwd = work.path().to_string_lossy().replace('\\', "\\\\");
         let (_fixture, _path) = room_only_fixture(&cwd);
@@ -805,13 +987,16 @@ mod tests {
         let app = mock_app();
         let network = OutboundNetwork::new_for_tests(1);
         let cancel = CancellationToken::new();
+        let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
+        let (_reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
 
         let task = spawn_watch_task(
             search_root,
             work.path().to_string_lossy().to_string(),
             Utc::now(),
             network.clone(),
-            None,
+            dest_rx,
+            reanchor_rx,
             "no-sink-session".to_string(),
             cancel.clone(),
             app.handle().clone(),
@@ -821,6 +1006,7 @@ mod tests {
         // Several poll intervals, so the file is bound and read repeatedly.
         tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS * 4)).await;
         cancel.cancel();
+        drop(dest_tx);
         let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 
         for root in [work.path(), _fixture.path()] {
@@ -1886,5 +2072,256 @@ mod tests {
 
         assert_eq!(expected, observed);
         assert_eq!(reader_seq, 2);
+    }
+
+    // ── #2232 phase 4: hot attach, re-anchor and the local preamble (tests 4,
+    // 9-codex and 18) ───────────────────────────────────────────────────────
+
+    /// Append one fresh `final_answer` line whose timestamp is `now - 1s`, so
+    /// both the §J grace window and the live read path accept it.
+    fn append_final(path: &Path, body: &str) -> std::io::Result<()> {
+        let ts = (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+        let line = current_final_record_with_ts(body, Some(&ts));
+        let mut f = fs::OpenOptions::new().append(true).open(path)?;
+        writeln!(f, "{}", line)?;
+        f.sync_all()
+    }
+
+    async fn recv_record(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Arc<CapturedRecord>>,
+    ) -> Arc<CapturedRecord> {
+        tokio::time::timeout(Duration::from_secs(20), rx.recv())
+            .await
+            .expect("a record must reach the sink")
+            .expect("the sink stays open")
+    }
+
+    fn message_permits(network: &OutboundNetwork) -> usize {
+        network
+            .acquired_labels_for_tests()
+            .iter()
+            .filter(|label| **label == "telegram.send_message")
+            .count()
+    }
+
+    async fn wait_for_message_permits(network: &OutboundNetwork, at_least: usize) {
+        let deadline = Instant::now() + Duration::from_secs(25);
+        while message_permits(network) < at_least {
+            assert!(
+                Instant::now() < deadline,
+                "no telegram.send_message attempt within budget"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Test 4 (Codex half): the local start-indexed hot preamble returns starts
+    /// that walk back to the exact raw bytes, including a line containing a
+    /// multi-byte character and a line ending in CRLF. The same fixture shape
+    /// as the Claude half exercises both local variants.
+    #[test]
+    fn codex_preamble_line_starts_index_back_to_the_exact_raw_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout-preamble.jsonl");
+        let now = Utc::now();
+        let bodies = ["first", "caf\u{e9} \u{2705} second", "third"];
+        let mut raw: Vec<u8> = Vec::new();
+        let mut starts = Vec::new();
+        let mut offset = 0u64;
+        for (i, body) in bodies.iter().enumerate() {
+            let ts = (now - chrono::Duration::milliseconds(100)).to_rfc3339();
+            let line = current_final_record_with_ts(body, Some(&ts));
+            let bytes = if i == 1 {
+                format!("{line}\r\n")
+            } else {
+                format!("{line}\n")
+            };
+            starts.push(offset);
+            offset += bytes.len() as u64;
+            raw.extend_from_slice(bytes.as_bytes());
+        }
+        fs::write(&path, &raw).unwrap();
+
+        let lines = read_preamble_with_starts(&path, now).expect("preamble scan");
+        assert_eq!(lines.len(), bodies.len());
+        for ((start, body), (expected_start, expected_body)) in
+            lines.iter().zip(starts.iter().zip(bodies.iter()))
+        {
+            assert_eq!(start, expected_start, "body={body}");
+            let tail = &raw[*start as usize..];
+            let end = tail.iter().position(|&b| b == b'\n').expect("terminated");
+            let re_read = String::from_utf8(tail[..end].to_vec())
+                .unwrap()
+                .trim_end_matches('\r')
+                .to_string();
+            assert_eq!(
+                extract_assistant_final(&re_read).as_deref(),
+                Some(*expected_body)
+            );
+            assert_eq!(body.as_str(), *expected_body);
+        }
+    }
+
+    /// Test 18: **Codex hot attach/detach.** A room-only reader takes a bot
+    /// through the destination watch without restarting; the attached line is
+    /// sent exactly once; a detach stops Telegram while capture continues; a
+    /// pending buffer never flushes to a detached reader.
+    #[tokio::test]
+    async fn a_codex_hot_attach_sends_once_and_a_detach_stops_without_restarting() {
+        // This test constructs the loggers on attach; keep the global log files
+        // to itself while the room-only tests assert they are untouched.
+        let _logs = lock_global_diagnostic_files().await;
+        let work = tempfile::tempdir().unwrap();
+        let cwd = work.path().to_string_lossy().replace('\\', "\\\\");
+        let (fixture, path) = room_only_fixture(&cwd);
+        let search_root = fixture.path().to_path_buf();
+
+        let app = mock_app();
+        let network = OutboundNetwork::new_for_tests(1);
+        let cancel = CancellationToken::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
+        let (_reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
+
+        let task = spawn_watch_task(
+            search_root,
+            work.path().to_string_lossy().to_string(),
+            Utc::now(),
+            network.clone(),
+            dest_rx,
+            reanchor_rx,
+            "hot-attach-session".to_string(),
+            cancel.clone(),
+            app.handle().clone(),
+            Some(tx),
+        );
+
+        // Room-only first bind: the tail record is captured, nothing is sent.
+        let first = recv_record(&mut rx).await;
+        assert_eq!(first.origin, RecordOrigin::Preamble);
+        assert_eq!(message_permits(&network), 0);
+
+        // Attach the bot over the running reader. No restart: the task stays up.
+        dest_tx
+            .send(Some(BotTarget {
+                token: "test-token".into(),
+                chat_id: 7,
+            }))
+            .expect("the reader watch stays open");
+        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS * 2)).await;
+        assert!(!task.is_finished(), "attach must not restart the reader");
+
+        // A line appended after the attach is sent exactly once.
+        append_final(&path, "live after attach").unwrap();
+        let live = recv_record(&mut rx).await;
+        assert_eq!(live.text, "live after attach");
+        assert_eq!(live.origin, RecordOrigin::Live);
+        wait_for_message_permits(&network, 1).await;
+
+        // Detach while the reader keeps capturing. A record buffered around the
+        // detach must never be flushed to the detached reader.
+        append_final(&path, "buffered before detach").unwrap();
+        let buffered = recv_record(&mut rx).await;
+        assert_eq!(buffered.text, "buffered before detach");
+        dest_tx.send(None).expect("the reader watch stays open");
+        append_final(&path, "after detach").unwrap();
+        let after = recv_record(&mut rx).await;
+        assert_eq!(after.text, "after detach");
+
+        tokio::time::sleep(Duration::from_millis(FLUSH_DELAY_MS * 2)).await;
+        assert_eq!(
+            message_permits(&network),
+            1,
+            "only the attached line may be sent; the pending buffer is discarded"
+        );
+
+        cancel.cancel();
+        drop(dest_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+    }
+
+    /// Test 9 (Codex half): a re-anchor re-resolves with a fresh search time.
+    /// The same path retains its offset, so an appended record is `Live` and
+    /// keeps the reader's in-memory epoch; a different path keeps the existing
+    /// EOF rotation policy, so records already in the new file are not replayed.
+    #[tokio::test]
+    async fn a_codex_reanchor_retains_the_same_offset_and_rotates_at_eof() {
+        let work = tempfile::tempdir().unwrap();
+        let cwd = work.path().to_string_lossy().replace('\\', "\\\\");
+        let (fixture, path) = room_only_fixture(&cwd);
+        let search_root = fixture.path().to_path_buf();
+
+        let app = mock_app();
+        let network = OutboundNetwork::new_for_tests(1);
+        let cancel = CancellationToken::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
+        let (reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
+
+        let task = spawn_watch_task(
+            search_root,
+            work.path().to_string_lossy().to_string(),
+            Utc::now(),
+            network.clone(),
+            dest_rx,
+            reanchor_rx,
+            "reanchor-session".to_string(),
+            cancel.clone(),
+            app.handle().clone(),
+            Some(tx),
+        );
+
+        let first = recv_record(&mut rx).await;
+        assert_eq!(first.origin, RecordOrigin::Preamble);
+
+        // Same path: the offset is retained, so only appended bytes arrive and
+        // the in-memory epoch continues unbroken.
+        append_final(&path, "live one").unwrap();
+        let live = recv_record(&mut rx).await;
+        assert_eq!(live.text, "live one");
+        assert_eq!(live.origin, RecordOrigin::Live);
+        assert_eq!(live.observed_path, path);
+
+        reanchor_tx.send_modify(|seq| *seq = seq.wrapping_add(1));
+        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS * 2)).await;
+        append_final(&path, "live two").unwrap();
+        let live_two = recv_record(&mut rx).await;
+        assert_eq!(live_two.text, "live two");
+        assert_eq!(
+            live_two.origin,
+            RecordOrigin::Live,
+            "the same path never replays"
+        );
+        assert_eq!(
+            live_two.epoch, live.epoch,
+            "the same path keeps its in-memory epoch"
+        );
+
+        // Different path: the existing EOF rotation policy applies, so a
+        // record already in the new file is not delivered.
+        let now = Utc::now();
+        let day = fixture
+            .path()
+            .join(format!("{:04}", now.format("%Y")))
+            .join(format!("{:02}", now.format("%m")))
+            .join(format!("{:02}", now.format("%d")));
+        let other = write_rollout(&day, "rollout-second.jsonl", &cwd, &now.to_rfc3339());
+        append_final(&other, "already present at reanchor").unwrap();
+        reanchor_tx.send_modify(|seq| *seq = seq.wrapping_add(1));
+        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS * 2)).await;
+        append_final(&other, "after rotation").unwrap();
+        let rotated = recv_record(&mut rx).await;
+        assert_eq!(rotated.text, "after rotation", "the new file binds at EOF");
+        assert_eq!(rotated.origin, RecordOrigin::Live);
+        assert_eq!(rotated.observed_path, other);
+        assert!(rotated.observed_len > 0);
+        assert_eq!(
+            rotated.epoch, 0,
+            "a new path starts its own in-memory epoch"
+        );
+
+        cancel.cancel();
+        drop(dest_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
     }
 }

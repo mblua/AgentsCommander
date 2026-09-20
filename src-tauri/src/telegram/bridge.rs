@@ -603,12 +603,91 @@ pub use super::claude_watcher::BotTarget as ReaderDest;
 pub struct ReaderTask {
     pub cancel: CancellationToken,
     pub tasks: Vec<JoinHandle<()>>,
-    pub dest: tokio::sync::watch::Sender<Option<ReaderDest>>,
+    pub dest: ReaderDestSender,
     pub reanchor: tokio::sync::watch::Sender<u64>,
     /// The reader's last observation, kept as a ready-made [`Cut`] so a demand
     /// raised over the running reader can record one (section 5, phase 3
     /// section 7) without stopping or re-reading anything.
     pub frontier: Arc<Mutex<Option<Cut>>>,
+}
+
+/// The supervisor's send side of a reader's destination watch (#2232 phase 4).
+///
+/// Each watcher declares its own `BotTarget` (section 4.1/§10), so the
+/// supervisor keeps one sender per watcher flavour rather than sharing a type
+/// across them. The demand registry only ever attaches (`Some`) or detaches
+/// (`None`); this type makes both transitions available without the registry
+/// naming either watcher's target type.
+#[derive(Debug)]
+pub enum ReaderDestSender {
+    Claude(tokio::sync::watch::Sender<Option<super::claude_watcher::BotTarget>>),
+    Codex(tokio::sync::watch::Sender<Option<super::codex_watcher::BotTarget>>),
+}
+
+impl ReaderDestSender {
+    /// Publish a destination transition to the reader task. A send error means
+    /// the reader is already gone, which the demand release accounts for.
+    pub fn send(&self, dest: Option<ReaderDest>) {
+        match self {
+            Self::Claude(tx) => {
+                let _ = tx.send(dest);
+            }
+            Self::Codex(tx) => {
+                let _ = tx.send(dest.map(codex_bot_target));
+            }
+        }
+    }
+
+    /// The destination the reader currently holds. The idempotency check of
+    /// section 5 compares against this before sending, so repeating the same
+    /// Bot demand produces no watch update at all.
+    pub fn current(&self) -> Option<ReaderDest> {
+        match self {
+            Self::Claude(tx) => tx.borrow().clone(),
+            Self::Codex(tx) => tx.borrow().clone().map(|target| ReaderDest {
+                token: target.token,
+                chat_id: target.chat_id,
+            }),
+        }
+    }
+
+    /// Test-only: observe future transitions through one uniform receiver.
+    ///
+    /// The Codex tier forwards through a small watcher task so a test never
+    /// needs to name `codex_watcher::BotTarget`; production only sends and
+    /// reads the current value.
+    #[cfg(test)]
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<Option<ReaderDest>> {
+        match self {
+            Self::Claude(tx) => tx.subscribe(),
+            Self::Codex(tx) => {
+                let (out_tx, out_rx) = tokio::sync::watch::channel(self.current());
+                let mut inner = tx.subscribe();
+                tauri::async_runtime::spawn(async move {
+                    while inner.changed().await.is_ok() {
+                        let next = inner.borrow_and_update().clone().map(|target| ReaderDest {
+                            token: target.token,
+                            chat_id: target.chat_id,
+                        });
+                        if out_tx.send(next).is_err() {
+                            break;
+                        }
+                    }
+                });
+                out_rx
+            }
+        }
+    }
+}
+
+/// Convert the supervisor's destination into the Codex watcher's own target
+/// type. Both carry exactly the same two credentials; the split exists only to
+/// keep the watchers from naming each other (section 10).
+fn codex_bot_target(dest: ReaderDest) -> super::codex_watcher::BotTarget {
+    super::codex_watcher::BotTarget {
+        token: dest.token,
+        chat_id: dest.chat_id,
+    }
 }
 
 /// Drain the reader's capture channel into the session's slot.
@@ -663,44 +742,47 @@ pub fn spawn_reader<R: tauri::Runtime>(
 ) -> ReaderTask {
     let cancel = CancellationToken::new();
     let frontier: Arc<Mutex<Option<Cut>>> = Arc::new(Mutex::new(None));
-    let (dest_tx, dest_rx) = tokio::sync::watch::channel(dest);
     let (reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
     let session_id_str = session_id.to_string();
 
-    let task = match kind {
-        SessionReaderKind::Claude { project_dir } => super::claude_watcher::spawn_watch_task(
-            project_dir,
-            network,
-            dest_rx,
-            reanchor_rx,
-            session_id_str,
-            cancel.clone(),
-            app_handle,
-            sink,
-        ),
+    // Each watcher gets its own live destination `watch`, not a snapshot taken
+    // at spawn: a bot attaching over a running reader must reach the task
+    // through the channel (section 4.1). Codex receives its own `BotTarget`
+    // flavour of the same value.
+    let (task, dest) = match kind {
+        SessionReaderKind::Claude { project_dir } => {
+            let (dest_tx, dest_rx) = tokio::sync::watch::channel(dest);
+            let task = super::claude_watcher::spawn_watch_task(
+                project_dir,
+                network,
+                dest_rx,
+                reanchor_rx,
+                session_id_str,
+                cancel.clone(),
+                app_handle,
+                sink,
+            );
+            (task, ReaderDestSender::Claude(dest_tx))
+        }
         SessionReaderKind::Codex {
             search_root,
             cwd,
             attach_time,
         } => {
-            let bot_target = dest_rx
-                .borrow()
-                .clone()
-                .map(|d| super::codex_watcher::BotTarget {
-                    token: d.token,
-                    chat_id: d.chat_id,
-                });
-            super::codex_watcher::spawn_watch_task(
+            let (dest_tx, dest_rx) = tokio::sync::watch::channel(dest.map(codex_bot_target));
+            let task = super::codex_watcher::spawn_watch_task(
                 search_root,
                 cwd,
                 attach_time,
                 network,
-                bot_target,
+                dest_rx,
+                reanchor_rx,
                 session_id_str,
                 cancel.clone(),
                 app_handle,
                 sink,
-            )
+            );
+            (task, ReaderDestSender::Codex(dest_tx))
         }
     };
 
@@ -720,7 +802,7 @@ pub fn spawn_reader<R: tauri::Runtime>(
     ReaderTask {
         cancel,
         tasks,
-        dest: dest_tx,
+        dest,
         reanchor: reanchor_tx,
         frontier,
     }
