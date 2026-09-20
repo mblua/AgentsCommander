@@ -177,6 +177,88 @@
   .review-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .review-btn:focus-visible { outline: 2px solid var(--sidebar-accent); outline-offset: 2px; }
 
+  /* Review-only highlight mode. Amber numbered badges mark proposed product
+     behavior that is not visible in the two confirmed screenshots; grey/first
+     tags mark prototype-only scaffolding. Nothing here changes behavior. */
+  .proto-tag {
+    display: inline-block;
+    margin-left: 5px;
+    padding: 0 5px;
+    border: 1px dashed var(--sidebar-fg-dim);
+    border-radius: 999px;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--sidebar-fg-dim);
+    white-space: nowrap;
+  }
+  .change-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    margin-left: 4px;
+    border: 1px solid var(--status-pending);
+    border-radius: 999px;
+    background: rgba(234, 179, 8, 0.15);
+    color: var(--status-pending);
+    font-size: 9px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .change-target { outline: 1px dashed rgba(234, 179, 8, 0.55); outline-offset: 2px; border-radius: 4px; }
+  .change-legend {
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px dashed var(--status-pending);
+    border-radius: var(--radius-sm);
+    background: rgba(234, 179, 8, 0.05);
+  }
+  .change-legend[hidden] { display: none; }
+  .change-legend h2 { font-size: 12px; margin-bottom: 4px; }
+  .change-legend > p { font-size: 11px; color: var(--sidebar-fg-dim); margin-bottom: 6px; }
+  .legend-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--sidebar-fg-dim);
+    padding: 2px 0;
+  }
+  .legend-item > span { flex: 1 1 auto; }
+  .legend-item b { color: var(--sidebar-fg); font-weight: 600; }
+  .legend-item .review-btn { flex: 0 0 auto; font-size: 10px; padding: 1px 7px; }
+  .scaffold-note { margin-top: var(--spacing-sm); font-size: 11px; color: var(--sidebar-fg-dim); }
+  .scaffold-note .proto-tag { margin-left: 0; margin-right: 4px; }
+  .settings-agent-order-chip {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--status-running);
+    border: 1px solid rgba(58, 123, 255, 0.4);
+    border-radius: 3px;
+    padding: 0 4px;
+    white-space: nowrap;
+  }
+  .mock-json {
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm);
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.5;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
   button:focus-visible,
   input:focus-visible,
   [role="button"]:focus-visible {
@@ -740,6 +822,7 @@
   <p>Las condiciones mock (propiedad persistente de <code>settings.local.json</code>, fallo de guardado transitorio, conflicto por vecino esperado obsoleto) se activan desde la barra. El estado deshabilitado por propiedad es el comportamiento <em>propuesto</em> de producción: asume un flag de snapshot de backend de solo lectura más el rechazo autoritativo del comando, y la aplicación actual no expone ese flag.</p>
 
   <div class="review-toolbar">
+    <label><input type="checkbox" id="highlight-check" /> Resaltar cambios de producto (solo revisión)</label>
     <button type="button" class="review-btn" id="reopen-btn" data-focus-key="reopen">Reabrir vistas propuestas</button>
     <label><input type="checkbox" id="ownership-check" /> Mock: settings.local.json es dueño de «agents» de nivel superior (persistente)</label>
     <button type="button" class="review-btn" id="ownership-after-load-btn" data-focus-key="ownership-after-load">Simular que la propiedad empieza después de cargar</button>
@@ -747,7 +830,23 @@
     <button type="button" class="review-btn" id="external-btn" data-focus-key="external">Simular que otro escritor cambia el orden</button>
     <button type="button" class="review-btn" id="reset-btn" data-focus-key="reset">Restaurar el orden inicial propuesto</button>
     <button type="button" class="review-btn" id="discard-btn" data-focus-key="discard">Descartar ediciones de color sin guardar</button>
+    <span class="proto-tag">Solo prototipo</span>
   </div>
+  <p class="scaffold-note"><span class="proto-tag">Solo prototipo</span>Barra de revisión, selector Actual/Propuesto, «Reabrir vistas propuestas», controles mock, editor de color y ejemplo de etiquetas: andamiaje de revisión, no UI del producto. Nada aquí escribe settings reales.</p>
+  <section class="change-legend" id="change-legend" hidden aria-labelledby="change-legend-title">
+    <h2 id="change-legend-title">Cambios de producto más allá de las capturas confirmadas</h2>
+    <p>Estos comportamientos no se ven en las dos capturas que confirmaste. Con el resaltado activo, cada punto lleva su número en ámbar sobre la pantalla correspondiente.</p>
+    <div class="legend-item"><span class="change-badge">1</span><span><b>Step 1 usa el orden compartido</b> y deja de ordenar alfabéticamente.</span><button type="button" class="review-btn" data-repro="order">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">2</span><span><b>Mover guarda el orden de inmediato y de forma acotada</b>: sin botón Save y sin reescribir toda la configuración.</span></div>
+    <div class="legend-item"><span class="change-badge">3</span><span><b>Mover no guarda el borrador de Settings</b>: una edición de color sin guardar sobrevive al movimiento.</span><button type="button" class="review-btn" data-repro="draft">Reproducir ejemplo</button></div>
+    <div class="legend-item"><span class="change-badge">4</span><span><b>Reglas de movimiento y teclado</b>: una posición adyacente; primero-arriba y último-abajo deshabilitados; Tab/Enter/Espacio; foco, selección y rail conservados por id de herramienta.</span><button type="button" class="review-btn" data-repro="rules">Probar foco</button></div>
+    <div class="legend-item"><span class="change-badge">5</span><span><b>Regla de filtro</b>: el filtro oculta tarjetas de Step 1 y desactiva solo sus movimientos; Settings sigue habilitado; la comparación mantiene el orden completo.</span><button type="button" class="review-btn" data-repro="filter">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">6</span><span><b>Propiedad de settings.local.json</b>: los controles de movimiento se deshabilitan con un motivo accesible (comportamiento propuesto; depende de un flag de backend que la app hoy no expone).</span><button type="button" class="review-btn" data-repro="ownership">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">7</span><span><b>Propiedad iniciada después de cargar</b>: el lado del comando rechaza el movimiento y revierte.</span><button type="button" class="review-btn" data-repro="ownership-after">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">8</span><span><b>Fallo de guardado transitorio</b>: el orden se revierte y se ofrece reintento.</span><button type="button" class="review-btn" data-repro="failure">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">9</span><span><b>Vecino esperado obsoleto</b>: se adopta el orden del otro escritor y se explica; el movimiento pedido no se aplica.</span><button type="button" class="review-btn" data-repro="conflict">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">10</span><span><b>Valor numérico <code>order</code> por herramienta</b> en <code>settings.json.agents[]</code> (entero, base 0): un solo orden global; un movimiento desde Settings o Step 1 actualiza los valores y ambas vistas; al guardar se normaliza a 0..n−1; si el campo falta se deriva del array y si un valor es inválido se cae a la posición del array y se avisa.</span><button type="button" class="review-btn" data-repro="order-field">Ver ejemplo</button></div>
+  </section>
   <p class="review-status" id="review-status" role="status" aria-live="polite"></p>
 </header>
 
@@ -764,6 +863,7 @@
         <button type="button" data-screen="settings" data-mode="proposed"
                 id="settings-mode-proposed" data-focus-key="mode-settings-proposed" aria-pressed="true">Propuesto</button>
       </div>
+      <span class="proto-tag">Solo prototipo</span>
     </div>
     <div id="settings-frame-root"></div>
     <div class="review-card" id="label-example-card"></div>
@@ -781,8 +881,18 @@
         <button type="button" data-screen="picker" data-mode="proposed"
                 id="picker-mode-proposed" data-focus-key="mode-picker-proposed" aria-pressed="true">Propuesto</button>
       </div>
+      <span class="proto-tag">Solo prototipo</span>
     </div>
     <div id="picker-frame-root"></div>
+  </section>
+
+  <!-- ============================== SIMULATED PERSISTENCE SHAPE -->
+  <section class="screen-block" aria-labelledby="order-json-title">
+    <div class="review-card" id="order-json-card">
+      <h3 id="order-json-title">Persistencia simulada — <code>settings.json.agents[].order</code> <span class="proto-tag">Solo prototipo</span><span class="change-badge" id="order-json-badge" hidden>10</span></h3>
+      <p>Un solo orden global. Cada herramienta lleva el entero base 0 que define su posición; un movimiento desde Settings o desde Step 1 actualiza estos valores y ambas vistas de inmediato. Si el archivo no trae el campo, el orden se deriva del array; al guardar se normaliza a 0..n−1; un valor inválido cae a la posición del array y avisa. Los valores corresponden al orden compartido propuesto. <strong>Simulado: el prototipo no escribe ningún archivo real.</strong></p>
+      <pre class="mock-json" id="order-json-body" aria-label="Fragmento simulado de settings.json"></pre>
+    </div>
   </section>
 </main>
 
@@ -822,6 +932,7 @@
     railTool: "claude",          // tool on the LEFT comparison rail (selection by id)
     pickerSelected: "codex",     // active Step 1 card (selection by id)
     proposedOrder: PROPOSED_START_ORDER.slice(),
+    orderValues: { claude: 0, codex: 1, pi: 2, grok: 3 }, // proposed settings.json.agents[].order (zero-based)
     filterQuery: "",
     draftColor: {},              // id -> typed hex (unsaved Settings draft)
     draftLabel: {},              // id -> typed profile label (unsaved Settings draft)
@@ -833,6 +944,7 @@
     externalPending: false,      // another writer changed the order; next move is stale
     conflict: null,              // {message}
     reopening: false,
+    highlight: false,            // review-only: show amber badges + legend
     status: "",
     statusKind: ""
   };
@@ -852,6 +964,14 @@
   function toolIndex(order, id) { return order.indexOf(id); }
   function labelFor(id) { return TOOLS[id].label; }
 
+  // Proposed persistence shape: each tool carries a zero-based `order` integer.
+  // A move updates the values; the authorized save normalizes to 0..n-1, which
+  // for adjacent swaps is just the array index again.
+  function normalizeOrderValues() {
+    state.orderValues = {};
+    state.proposedOrder.forEach(function (id, i) { state.orderValues[id] = i; });
+  }
+
   var liveRegion = document.getElementById("live-region");
   var announceTimer = 0;
   // Clear first so screen readers re-announce an identical message (e.g. the
@@ -869,6 +989,18 @@
     el.textContent = state.status;
     if (state.statusKind) el.setAttribute("data-kind", state.statusKind);
     else el.removeAttribute("data-kind");
+  }
+
+  // Review-only highlight helpers. They return "" unless the highlight toggle
+  // is on, so the default view stays close to the confirmed screenshots.
+  function changeBadge() {
+    if (!state.highlight) return "";
+    var nums = Array.prototype.slice.call(arguments);
+    return ' <span class="change-badge" title="Cambio de producto ' + nums.join(", ") + '">' +
+      nums.join("\u00B7") + "</span>";
+  }
+  function hlClass() {
+    return state.highlight ? " change-target" : "";
   }
 
   // Full re-render with keyboard focus preserved by data-focus-key, so a move
@@ -920,7 +1052,8 @@
         id: id, dir: dir,
         message: "Movimiento rechazado por el lado del comando: settings.local.json empezó a ser dueño del orden de los agentes después de cargar esta vista. " +
                  "No se guardó ningún cambio y la lista volvió al último orden guardado. " +
-                 "Reabrí las vistas propuestas para tomar el snapshot de propiedad."
+                 "Reabrí las vistas propuestas para tomar el snapshot de propiedad.",
+        kind: "ownership-after-load"
       };
       state.pendingRetry = null;
       setStatus("Movimiento rechazado: settings.local.json ahora es dueño del orden de los agentes. Revertido, nada guardado.", "error");
@@ -931,6 +1064,7 @@
     // Stale expected neighbour: another writer changed the vector since load.
     if (state.externalPending) {
       state.proposedOrder = EXTERNAL_ORDER.slice();
+      normalizeOrderValues();
       state.externalPending = false;
       state.conflict = {
         message: "Otra ventana cambió el orden guardado mientras esta vista estaba abierta (Grok se movió antes que Pi). " +
@@ -948,7 +1082,8 @@
       state.failNextSave = false;
       state.moveError = {
         id: id, dir: dir,
-        message: "No se pudo guardar el nuevo orden. La lista volvió al último orden guardado. Probá de nuevo."
+        message: "No se pudo guardar el nuevo orden. La lista volvió al último orden guardado. Probá de nuevo.",
+        kind: "save-failure"
       };
       state.pendingRetry = { id: id, dir: dir };
       setStatus("Fallo de guardado transitorio: orden revertido. Hay reintento disponible.", "error");
@@ -967,6 +1102,7 @@
     order[index] = order[target];
     order[target] = moved;
     state.proposedOrder = order;
+    normalizeOrderValues();
     state.moveError = null;
     state.pendingRetry = null;
     state.conflict = null;
@@ -1060,6 +1196,7 @@
 
   function restoreProposedOrder() {
     state.proposedOrder = PROPOSED_START_ORDER.slice();
+    normalizeOrderValues();
     state.moveError = null;
     state.pendingRetry = null;
     state.conflict = null;
@@ -1076,6 +1213,45 @@
     setStatus("Se descartaron las ediciones de color y etiqueta sin guardar. El orden de las herramientas no se tocó.", "");
     announce("Se descartaron las ediciones de color y etiqueta sin guardar.");
     rerender();
+  }
+
+  // Review-only helper: reproduces the state a highlight legend item describes.
+  function reproduce(kind) {
+    if (kind === "order") { setMode("picker", "proposed"); }
+    else if (kind === "draft") {
+      if (!state.draftColor.pi || state.draftColor.pi === TOOLS.pi.color) state.draftColor.pi = "#ff00aa";
+      state.mode.settings = "proposed";
+      moveTool("settings", "pi", -1);
+    }
+    else if (kind === "rules") {
+      var btn = document.querySelector('#settings-frame-root [data-move]:not([disabled])') ||
+                document.querySelector('#picker-frame-root [data-move]:not([disabled])');
+      if (btn) {
+        btn.focus();
+        setStatus("Foco puesto en un control de movimiento: Tab/Enter/Espacio lo activan; el foco se conserva por id tras mover.", "");
+        announce("Foco en un control de movimiento. Tab, Enter o Espacio lo activan.");
+      } else {
+        setStatus("No hay controles de movimiento habilitados en este estado.", "warn");
+      }
+    }
+    else if (kind === "filter") { setFilter("grok"); }
+    else if (kind === "ownership") { toggleOwnership(true); }
+    else if (kind === "ownership-after") { simulateOwnershipAfterLoad(); }
+    else if (kind === "failure") {
+      state.failNextSave = true;
+      syncToolbar();
+      setStatus("El próximo movimiento fallará una vez (mock).", "warn");
+      announce("El próximo movimiento fallará una vez.");
+    }
+    else if (kind === "conflict") { simulateExternalWriter(); }
+    else if (kind === "order-field") {
+      var card = document.getElementById("order-json-card");
+      if (card) {
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+        setStatus("Ejemplo de persistencia: cada herramienta muestra su valor order (simulado, sin escribir archivos).", "");
+        announce("Ejemplo de persistencia simulado con los valores order actuales.");
+      }
+    }
   }
 
   function reopenProposed() {
@@ -1117,8 +1293,8 @@
   }
 
   function ownershipReasonBlock() {
-    return '<p class="settings-ownership-reason" id="ownership-reason">' +
-      '<strong>Los controles de movimiento no están disponibles.</strong> settings.local.json es dueño del ajuste agents de nivel superior, ' +
+    return '<p class="settings-ownership-reason' + hlClass() + '" id="ownership-reason">' +
+      '<strong>Los controles de movimiento no están disponibles.</strong>' + changeBadge("6") + ' settings.local.json es dueño del ajuste agents de nivel superior, ' +
       'así que esta ventana no puede cambiar el orden. Cambiá el overlay fuera de esta función y reabrí. ' +
       '(Comportamiento propuesto de producción: requiere un flag de snapshot de backend de solo lectura más el rechazo autoritativo del comando; la aplicación actual no expone ese flag.)</p>';
   }
@@ -1163,9 +1339,15 @@
               '<div class="settings-agent-row-cmd">' + esc(tool.command) + '</div>' +
               '<div class="settings-agent-row-colorline">' +
                 '<span class="settings-agent-swatch" style="background:' + attr(hex) + '"></span>' +
-                '<input class="settings-agent-color-input" type="text" spellcheck="false" value="' + attr(hex) + '"' +
+                '<input class="settings-agent-color-input' + (isProposed && i === 0 ? hlClass() : "") + '" type="text" spellcheck="false" value="' + attr(hex) + '"' +
                   ' aria-label="Color en borrador para ' + attr(tool.label) + ' (sin guardar)"' +
                   ' data-color-tool="' + attr(id) + '" data-focus-key="color-' + attr(id) + '">' +
+                (isProposed && i === 0 ? changeBadge("3") : "") +
+                (i === 0 ? '<span class="proto-tag">Solo prototipo</span>' : "") +
+                (isProposed
+                  ? '<span class="settings-agent-order-chip' + (i === 0 ? hlClass() : "") + '" title="Campo propuesto settings.json.agents[].order">order ' + state.orderValues[id] + '</span>' +
+                    (i === 0 ? changeBadge("10") : "")
+                  : "") +
                 '<span class="settings-rail-pill ' + (isRail ? "left" : "available") + '">' + (isRail ? "LEFT" : "AVAILABLE") + '</span>' +
                 (editing ? '<span class="draft-chip">Sin guardar</span>' : "") +
               '</div>' +
@@ -1190,12 +1372,13 @@
       : (resolveLabelToday(rail.id, firstId) || (rail.id === firstId ? "Baseline" : "Baseline"));
 
     var errorBanner = state.moveError
-      ? '<div class="state-banner error">' + esc(state.moveError.message) +
+      ? '<div class="state-banner error' + hlClass() + '">' + esc(state.moveError.message) +
+          (state.moveError.kind === "ownership-after-load" ? changeBadge("7") : changeBadge("8")) +
           (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Reintentar movimiento</button>' : "") +
         '</div>'
       : "";
     var conflictBanner = state.conflict
-      ? '<div class="state-banner warn">' + esc(state.conflict.message) + '</div>'
+      ? '<div class="state-banner warn' + hlClass() + '">' + esc(state.conflict.message) + changeBadge("9") + '</div>'
       : "";
 
     var panel =
@@ -1211,7 +1394,7 @@
             '<div class="settings-agents-panel-header">' +
               '<div>' +
                 '<div class="settings-agents-panel-title">Coding Agents</div>' +
-                '<div class="settings-agents-panel-kicker">Colors and selected comparison pair</div>' +
+                '<div class="settings-agents-panel-kicker">Colors and selected comparison pair' + (isProposed ? changeBadge("2", "4") : "") + '</div>' +
               '</div>' +
               '<button type="button" class="settings-agents-add">Add Agent</button>' +
             '</div>' +
@@ -1304,7 +1487,7 @@
     }).join("");
 
     document.getElementById("label-example-card").innerHTML =
-      '<h3>Ejemplo de etiqueta de perfil (letra A) — inputs de Settings (solo revisión, fuera del layout de la captura)</h3>' +
+      '<h3>Ejemplo de etiqueta de perfil (letra A) — inputs de Settings (solo revisión, fuera del layout de la captura) <span class="proto-tag">Solo prototipo</span></h3>' +
       '<p>' + (isProposed
         ? 'Fallback propuesto en todas partes: etiqueta propia \u2192 etiqueta heredada del slot \u2192 letra sola. La etiqueta de la primera herramienta nunca se hereda. No se borra ninguna etiqueta guardada; la etiqueta heredada del slot sigue aplicándose a toda herramienta sin etiqueta.'
         : 'Hoy el resolvedor cae a la etiqueta de la primera herramienta: una herramienta sin etiqueta muestra \u201CCODER\u201D de Claude Code (ámbar). Ese es el bug de herencia.') + '</p>' +
@@ -1343,9 +1526,10 @@
       var moveDisabled = ownsDisabled || filterActive;
       var describedBy = filterActive ? "filter-reason" : (ownsDisabled ? "ownership-reason" : "");
       var moveGroup = isProposed
-        ? '<div class="provider-card-moves" role="group" aria-label="Reordenar ' + attr(tool.label) + '">' +
+        ? '<div class="provider-card-moves' + (i === 0 ? hlClass() : "") + '" role="group" aria-label="Reordenar ' + attr(tool.label) + '">' +
             moveButton("picker", id, -1, order, { disabled: moveDisabled || boundaryUp, describedBy: describedBy }) +
             moveButton("picker", id, 1, order, { disabled: moveDisabled || boundaryDown, describedBy: describedBy }) +
+            (i === 0 ? changeBadge("2", "4") : "") +
           '</div>'
         : "";
       return '<div class="agent-profile-provider-card-wrap' + (active ? " active" : "") + '"' +
@@ -1368,7 +1552,7 @@
       : "";
 
     var filterReason = (isProposed && filterActive)
-      ? '<p class="picker-filter-reason" id="filter-reason">Los controles de movimiento de Step 1 están deshabilitados mientras el filtro está activo. Limpiá el filtro para cambiar el orden. Los controles de movimiento de Settings siguen habilitados (no se filtran).</p>'
+      ? '<p class="picker-filter-reason' + hlClass() + '" id="filter-reason">Los controles de movimiento de Step 1 están deshabilitados mientras el filtro está activo. Limpiá el filtro para cambiar el orden. Los controles de movimiento de Settings siguen habilitados (no se filtran).' + changeBadge("5") + '</p>'
       : "";
     var ownsReason = (isProposed && ownsDisabled) ? ownershipReasonBlock() : "";
 
@@ -1386,10 +1570,11 @@
       '<div class="picker-viewport rel">' +
         protoBanner("Step 1 — Choose the tool first") +
         '<div class="banner-stack">' +
-          (state.moveError ? '<div class="state-banner error">' + esc(state.moveError.message) +
+          (state.moveError ? '<div class="state-banner error' + hlClass() + '">' + esc(state.moveError.message) +
+            (state.moveError.kind === "ownership-after-load" ? changeBadge("7") : changeBadge("8")) +
             (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Reintentar movimiento</button>' : "") +
             '</div>' : "") +
-          (state.conflict ? '<div class="state-banner warn">' + esc(state.conflict.message) + '</div>' : "") +
+          (state.conflict ? '<div class="state-banner warn' + hlClass() + '">' + esc(state.conflict.message) + changeBadge("9") + '</div>' : "") +
         '</div>' +
         '<div class="agent-picker-modal-header">' +
           '<div>' +
@@ -1403,12 +1588,12 @@
             '<div class="agent-profile-panel-head">' +
               '<div>' +
                 '<div class="agent-profile-panel-title">Coding Agent</div>' +
-                '<div class="agent-profile-panel-kicker">Choose the tool first</div>' +
+                '<div class="agent-profile-panel-kicker">Choose the tool first' + (isProposed ? changeBadge("1") : "") + '</div>' +
               '</div>' +
               '<span class="agent-profile-step cyan">step 1</span>' +
             '</div>' +
-            '<div class="agent-profile-provider-filter">' +
-              '<label for="picker-filter">Filter by name or start line</label>' +
+            '<div class="agent-profile-provider-filter' + hlClass() + '">' +
+              '<label for="picker-filter">Filter by name or start line' + changeBadge("5") + '</label>' +
               '<input id="picker-filter" type="search" autocomplete="off" spellcheck="false"' +
                 ' placeholder="name or command + args" value="' + attr(state.filterQuery) + '"' +
                 ' data-focus-key="picker-filter" aria-describedby="picker-filter-status">' +
@@ -1464,23 +1649,45 @@
     var ownershipCheck = document.getElementById("ownership-check");
     var failCheck = document.getElementById("fail-check");
     var afterLoad = document.getElementById("ownership-after-load-btn");
+    var highlightCheck = document.getElementById("highlight-check");
     ownershipCheck.checked = state.ownership;
     failCheck.checked = state.failNextSave;
     afterLoad.disabled = state.ownership;
+    highlightCheck.checked = state.highlight;
+    document.getElementById("change-legend").hidden = !state.highlight;
   }
 
   function render() {
     renderSettings();
     renderLabelExample();
     renderPicker();
+    renderOrderJson();
     renderModeButtons();
     syncToolbar();
+  }
+
+  function renderOrderJson() {
+    var badge = document.getElementById("order-json-badge");
+    var card = document.getElementById("order-json-card");
+    var body = document.getElementById("order-json-body");
+    if (!badge || !card || !body) return;
+    badge.hidden = !state.highlight;
+    card.classList.toggle("change-target", state.highlight);
+    var rows = state.proposedOrder.map(function (id, i) {
+      var tool = byId(id);
+      return '    { "label": "' + tool.label + '", "command": "' + tool.command + '", "order": ' + i + ' }' +
+        (i < state.proposedOrder.length - 1 ? "," : "");
+    });
+    body.textContent = '{\n  "agents": [\n' + rows.join("\n") + '\n  ]\n}';
   }
 
   /* ------------------------------------------------------------------ wiring */
   document.addEventListener("click", function (event) {
     var target = event.target.closest("button, [data-select-tool]");
     if (!target) return;
+
+    var repro = target.closest("[data-repro]");
+    if (repro) { reproduce(repro.getAttribute("data-repro")); return; }
 
     var modeButton = target.closest("[data-screen][data-mode]");
     if (modeButton) { setMode(modeButton.getAttribute("data-screen"), modeButton.getAttribute("data-mode")); return; }
@@ -1543,6 +1750,13 @@
     }
   });
 
+  document.getElementById("highlight-check").addEventListener("change", function (e) {
+    state.highlight = e.currentTarget.checked;
+    setStatus(state.highlight
+      ? "Modo de resaltado activo: números ámbar = cambios de producto propuestos; el andamiaje está marcado como «Solo prototipo»."
+      : "Modo de resaltado desactivado.", "");
+    rerender();
+  });
   document.getElementById("reopen-btn").addEventListener("click", reopenProposed);
   document.getElementById("reset-btn").addEventListener("click", restoreProposedOrder);
   document.getElementById("discard-btn").addEventListener("click", discardDrafts);
