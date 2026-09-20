@@ -414,3 +414,188 @@ fn loop_existing_id_commands_reject_transformed_ids() {
         }
     }
 }
+
+/// AC-9 - the new flag is discoverable. Added beside the existing help test
+/// rather than by editing it.
+#[test]
+fn loop_create_help_describes_session_start() {
+    let tmp = Tmp::new("cli-loop-help-session-start");
+    let bin = copy_binary_into(tmp.path());
+
+    let help = run_stdout(&bin, &["loop", "create", "--help"]);
+    assert!(help.contains("--session-start"));
+    assert!(help.contains("fresh"));
+    assert!(help.contains("accumulate"));
+}
+
+/// AC-5 - the persist-and-read-back path through the real binary.
+#[test]
+fn loop_create_persists_session_start_accumulate() {
+    let tmp = Tmp::new("cli-loop-session-start-create");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    project_with_verified_coordinator(tmp.path());
+
+    let created = run_json(
+        &bin,
+        &[
+            "loop",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--name",
+            "Accumulating Loop",
+            "--cron",
+            "0 9 * * *",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--prompt",
+            "Summarize status",
+            "--session-start",
+            "accumulate",
+        ],
+    );
+    assert_eq!(created["summary"]["sessionStart"], "accumulate");
+
+    let list = run_json(&bin, &["loop", "list", "--project", "ProjectAlpha"]);
+    assert_eq!(list["loops"][0]["id"], "accumulating-loop");
+    assert_eq!(list["loops"][0]["sessionStart"], "accumulate");
+}
+
+/// AC-6 - create without the flag. This is the binary-level proof of the whole
+/// epic's `Fresh` default, so it passes no `--session-start` at all.
+#[test]
+fn loop_create_without_the_flag_defaults_to_fresh() {
+    let tmp = Tmp::new("cli-loop-session-start-default");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    project_with_verified_coordinator(tmp.path());
+
+    let created = run_json(
+        &bin,
+        &[
+            "loop",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--name",
+            "Default Loop",
+            "--cron",
+            "0 10 * * *",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--prompt",
+            "Summarize status",
+        ],
+    );
+    assert_eq!(created["summary"]["sessionStart"], "fresh");
+
+    let list = run_json(&bin, &["loop", "list", "--project", "ProjectAlpha"]);
+    assert_eq!(list["loops"][0]["id"], "default-loop");
+    assert_eq!(list["loops"][0]["sessionStart"], "fresh");
+}
+
+/// AC-7 - omitted means leave unchanged, and an explicit value changes it.
+#[test]
+fn loop_update_leaves_session_start_untouched_unless_given() {
+    let tmp = Tmp::new("cli-loop-session-start-update");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    project_with_verified_coordinator(tmp.path());
+
+    run_json(
+        &bin,
+        &[
+            "loop",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--name",
+            "Accumulating Loop",
+            "--cron",
+            "0 9 * * *",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--prompt",
+            "Summarize status",
+            "--session-start",
+            "accumulate",
+        ],
+    );
+
+    // An update that mentions only --name must not rewrite the field.
+    let renamed = run_json(
+        &bin,
+        &[
+            "loop",
+            "update",
+            "--project",
+            "ProjectAlpha",
+            "--loop",
+            "accumulating-loop",
+            "--name",
+            "Renamed Loop",
+        ],
+    );
+    assert_eq!(renamed["summary"]["name"], "Renamed Loop");
+    assert_eq!(renamed["summary"]["sessionStart"], "accumulate");
+
+    let flipped = run_json(
+        &bin,
+        &[
+            "loop",
+            "update",
+            "--project",
+            "ProjectAlpha",
+            "--loop",
+            "accumulating-loop",
+            "--session-start",
+            "fresh",
+        ],
+    );
+    assert_eq!(flipped["summary"]["sessionStart"], "fresh");
+
+    let list = run_json(&bin, &["loop", "list", "--project", "ProjectAlpha"]);
+    assert_eq!(list["loops"][0]["sessionStart"], "fresh");
+}
+
+/// AC-8 - an unrecognized value is a clap error naming the accepted values.
+#[test]
+fn loop_create_rejects_an_unknown_session_start_value() {
+    let tmp = Tmp::new("cli-loop-session-start-invalid");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    project_with_verified_coordinator(tmp.path());
+
+    let error = run_fail(
+        &bin,
+        &[
+            "loop",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--name",
+            "Bad Session Start",
+            "--cron",
+            "0 9 * * *",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--prompt",
+            "Summarize status",
+            "--session-start",
+            "resume",
+        ],
+    );
+    assert!(
+        error.contains("fresh"),
+        "stderr must list `fresh`:\n{error}"
+    );
+    assert!(
+        error.contains("accumulate"),
+        "stderr must list `accumulate`:\n{error}"
+    );
+}
