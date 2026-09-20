@@ -233,6 +233,7 @@ fn update(args: LoopUpdateArgs) -> Result<(), String> {
             workgroup: args.workgroup,
             prompt_body,
             busy_coordinator,
+            session_start: None,
             enabled: None,
         },
     )?;

@@ -41,6 +41,22 @@ pub enum BusyCoordinatorPolicy {
     Skip,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LoopSessionStart {
+    Fresh,
+    Accumulate,
+}
+
+// Explicit, not derived: Fresh is a product decision (a Loop starts a new
+// conversation) and must read as one at the definition site.
+#[allow(clippy::derivable_impls)]
+impl Default for LoopSessionStart {
+    fn default() -> Self {
+        LoopSessionStart::Fresh
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopConfigToml {
     #[serde(rename = "loop")]
@@ -59,6 +75,7 @@ pub struct LoopUpdatePatch {
     pub workgroup: Option<String>,
     pub prompt_body: Option<String>,
     pub busy_coordinator: Option<BusyCoordinatorPolicy>,
+    pub session_start: Option<LoopSessionStart>,
     pub enabled: Option<bool>,
 }
 
@@ -96,6 +113,8 @@ pub struct LoopPolicy {
     pub missed_while_closed: MissedWhileClosedPolicy,
     #[serde(default)]
     pub busy_coordinator: BusyCoordinatorPolicy,
+    #[serde(default)]
+    pub session_start: LoopSessionStart,
 }
 
 impl Default for LoopPolicy {
@@ -103,6 +122,7 @@ impl Default for LoopPolicy {
         Self {
             missed_while_closed: MissedWhileClosedPolicy::Notify,
             busy_coordinator: BusyCoordinatorPolicy::WaitUntilIdle,
+            session_start: LoopSessionStart::Fresh,
         }
     }
 }
@@ -151,6 +171,7 @@ pub struct LoopAuditEntry {
     pub target: Option<String>,
     pub session_id: Option<Uuid>,
     pub busy_coordinator_policy: BusyCoordinatorPolicy,
+    pub session_start: Option<LoopSessionStart>,
     pub error: Option<String>,
     pub prompt_snapshot: Option<String>,
 }
@@ -167,6 +188,7 @@ pub struct AcLoopSummary {
     pub workgroup: String,
     pub prompt_preview: String,
     pub busy_coordinator: BusyCoordinatorPolicy,
+    pub session_start: LoopSessionStart,
     pub path: String,
     pub config_path: String,
     pub last_checked_at: Option<DateTime<Utc>>,
@@ -288,6 +310,7 @@ pub fn loop_delivery_config_matches(current: &LoopConfigToml, expected: &LoopCon
         && current.prompt.body == expected.prompt.body
         && current.policy.missed_while_closed == expected.policy.missed_while_closed
         && current.policy.busy_coordinator == expected.policy.busy_coordinator
+        && current.policy.session_start == expected.policy.session_start
 }
 
 pub fn write_loop_config(ac_root: &Path, config: &LoopConfigToml) -> Result<PathBuf, String> {
@@ -588,6 +611,12 @@ pub fn apply_loop_update_patch(
             reset_schedule = true;
         }
     }
+    if let Some(session_start) = patch.session_start {
+        if config.policy.session_start != session_start {
+            config.policy.session_start = session_start;
+            reset_schedule = true;
+        }
+    }
     if let Some(enabled) = patch.enabled {
         if config.loop_def.enabled != enabled {
             config.loop_def.enabled = enabled;
@@ -609,6 +638,7 @@ pub fn summary_from_parts(dir: &Path, config: &LoopConfigToml, state: &LoopState
         workgroup: config.target.workgroup.clone(),
         prompt_preview: prompt_preview(&config.prompt.body),
         busy_coordinator: config.policy.busy_coordinator.clone(),
+        session_start: config.policy.session_start,
         path: dir.to_string_lossy().to_string(),
         config_path: dir.join(LOOP_CONFIG_FILE).to_string_lossy().to_string(),
         last_checked_at: state.last_checked_at,
@@ -826,6 +856,109 @@ mod tests {
         assert_eq!(config.trigger.expr, "30 9 * * 1-5");
     }
 
+    /// AC-1 - a legacy persisted config (no `sessionStart` key) loads as
+    /// `Fresh`; the fixture is asserted not to carry the key so the test cannot
+    /// pass for the wrong reason.
+    #[test]
+    fn legacy_config_without_session_start_loads_fresh() {
+        let fixture = r#"
+[loop]
+id = "legacy-loop"
+name = "Legacy loop"
+enabled = true
+
+[trigger]
+kind = "cron"
+expr = "0 9 * * *"
+timezone = "local"
+
+[target]
+kind = "workgroupCoordinator"
+workgroup = "wg-1-dev-team"
+
+[prompt]
+body = "Send status"
+
+[policy]
+busyCoordinator = "waitUntilIdle"
+"#;
+        assert!(!fixture.contains("sessionStart"));
+
+        let parsed: LoopConfigToml = toml::from_str(fixture).expect("legacy config parses");
+        assert_eq!(parsed.policy.session_start, LoopSessionStart::Fresh);
+        assert_eq!(
+            parsed.policy.busy_coordinator,
+            BusyCoordinatorPolicy::WaitUntilIdle
+        );
+    }
+
+    /// AC-2 - the struct default is `Fresh` and both variants keep their wire
+    /// spellings across a serialize/deserialize round trip.
+    #[test]
+    fn loop_session_start_defaults_to_fresh_and_round_trips() {
+        assert_eq!(LoopPolicy::default().session_start, LoopSessionStart::Fresh);
+        for (variant, wire) in [
+            (LoopSessionStart::Fresh, "\"fresh\""),
+            (LoopSessionStart::Accumulate, "\"accumulate\""),
+        ] {
+            let encoded = serde_json::to_string(&variant).expect("serialize session start");
+            assert_eq!(encoded, wire);
+            let decoded: LoopSessionStart =
+                serde_json::from_str(&encoded).expect("deserialize session start");
+            assert_eq!(decoded, variant);
+        }
+
+        let toml = toml::to_string(&sample_config()).expect("toml");
+        assert!(toml.contains("sessionStart = \"fresh\""), "{toml}");
+    }
+
+    /// AC-11 - `None` leaves the stored value untouched; `Some(Accumulate)`
+    /// applies exactly like `busy_coordinator` and the summary reflects it.
+    #[test]
+    fn loop_update_patch_applies_session_start_like_busy_coordinator() {
+        let mut config = sample_config();
+        assert_eq!(config.policy.session_start, LoopSessionStart::Fresh);
+
+        let reset = apply_loop_update_patch(
+            &mut config,
+            LoopUpdatePatch {
+                session_start: None,
+                ..LoopUpdatePatch::default()
+            },
+        )
+        .expect("no-op patch");
+        assert!(!reset);
+        assert_eq!(config.policy.session_start, LoopSessionStart::Fresh);
+
+        let reset = apply_loop_update_patch(
+            &mut config,
+            LoopUpdatePatch {
+                session_start: Some(LoopSessionStart::Accumulate),
+                ..LoopUpdatePatch::default()
+            },
+        )
+        .expect("session start patch");
+        assert!(reset);
+        assert_eq!(config.policy.session_start, LoopSessionStart::Accumulate);
+
+        let tmp = fixture_project();
+        let summary = summary_from_parts(&tmp.path().join(".ac"), &config, &LoopState::default());
+        assert_eq!(summary.session_start, LoopSessionStart::Accumulate);
+    }
+
+    /// AC-14 - a `sessionStart`-only edit is visible to the delivery
+    /// revalidation, and equal configs still match.
+    #[test]
+    fn loop_delivery_config_matches_pins_session_start() {
+        let current = sample_config();
+        assert!(loop_delivery_config_matches(&current, &current.clone()));
+
+        let mut expected = current.clone();
+        expected.policy.session_start = LoopSessionStart::Accumulate;
+        assert!(!loop_delivery_config_matches(&current, &expected));
+        assert!(!loop_delivery_config_matches(&expected, &current));
+    }
+
     #[test]
     fn storage_writes_config_state_and_dedupes_audit() {
         let tmp = fixture_project();
@@ -855,6 +988,7 @@ mod tests {
             target: Some("proj:wg-1-dev-team/tech-lead".to_string()),
             session_id: None,
             busy_coordinator_policy: BusyCoordinatorPolicy::WaitUntilIdle,
+            session_start: Some(LoopSessionStart::Fresh),
             error: None,
             prompt_snapshot: None,
         };
@@ -885,6 +1019,7 @@ mod tests {
             target: Some("proj:wg-1-dev-team/tech-lead".to_string()),
             session_id: None,
             busy_coordinator_policy: BusyCoordinatorPolicy::WaitUntilIdle,
+            session_start: Some(LoopSessionStart::Fresh),
             error: None,
             prompt_snapshot: None,
         };
@@ -915,5 +1050,65 @@ mod tests {
         assert_eq!(loops[0].id, "weekday-standup");
         assert_eq!(loops[0].prompt_preview, "Summarize status");
         assert!(loops[0].last_checked_at.is_none());
+    }
+
+    /// AC-15 - a legacy audit row (written before `sessionStart` existed)
+    /// parses, and re-serializes the field as JSON `null` rather than as any
+    /// concrete value the run may never have used. The test names no Rust
+    /// field, so it compiles against both shapes and fails at runtime.
+    #[test]
+    fn legacy_audit_row_without_session_start_parses_as_not_recorded() {
+        let line = r#"{"runId":"6a7cfa8e-0e0a-4a0f-9d1e-2f3d9a1b4c55","loopId":"daily-sync","projectPath":"/tmp/project","kind":"pendingBusy","dueAt":"2025-01-01T09:00:00Z","startedAt":"2025-01-01T09:00:01Z","completedAt":null,"target":"proj:wg-1-dev-team/tech-lead","sessionId":null,"busyCoordinatorPolicy":"waitUntilIdle","error":null,"promptSnapshot":null}"#;
+
+        assert!(
+            !line.contains("sessionStart"),
+            "the legacy fixture must not carry the key, or this test passes for the wrong reason"
+        );
+
+        let parsed = serde_json::from_str::<LoopAuditEntry>(line).expect("legacy audit row parses");
+
+        assert_eq!(
+            serde_json::to_value(&parsed)
+                .expect("re-serialize")
+                .get("sessionStart"),
+            Some(&serde_json::Value::Null),
+            "an absent key must read back as not recorded, never as a concrete default"
+        );
+    }
+
+    /// AC-16 - a legacy audit row still takes part in the append-once dedupe,
+    /// so no duplicate row is appended and the file is never rewritten.
+    #[test]
+    fn legacy_audit_row_still_deduplicates_an_append() {
+        let tmp = fixture_project();
+        let ac_root = tmp.path().join(".ac");
+        let config = sample_config();
+        let dir = write_loop_config(&ac_root, &config).expect("write config");
+
+        let legacy = format!(
+            r#"{{"runId":"6a7cfa8e-0e0a-4a0f-9d1e-2f3d9a1b4c55","loopId":"{}","projectPath":"/tmp/project","kind":"pendingBusy","dueAt":"2025-01-01T09:00:00Z","startedAt":"2025-01-01T09:00:01Z","completedAt":null,"target":null,"sessionId":null,"busyCoordinatorPolicy":"waitUntilIdle","error":null,"promptSnapshot":null}}"#,
+            config.loop_def.id
+        );
+        assert!(!legacy.contains("sessionStart"));
+        let audit_path = dir.join(LOOP_AUDIT_FILE);
+        std::fs::write(&audit_path, format!("{}\n", legacy)).expect("write legacy audit line");
+
+        let mut value: serde_json::Value =
+            serde_json::from_str(&legacy).expect("legacy line as value");
+        value
+            .as_object_mut()
+            .expect("object")
+            .insert("sessionStart".to_string(), serde_json::json!("fresh"));
+        let entry: LoopAuditEntry = serde_json::from_value(value).expect("entry to append");
+
+        append_loop_audit_once(&dir, &entry).expect("append against a legacy audit file");
+
+        let content = std::fs::read_to_string(&audit_path).expect("audit read");
+        assert_eq!(
+            content.lines().count(),
+            1,
+            "the legacy row must be seen by the dedupe, so nothing is appended"
+        );
+        assert_eq!(content, format!("{}\n", legacy), "no row may be rewritten");
     }
 }
