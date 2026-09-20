@@ -927,6 +927,135 @@ mod tests {
         }
     }
 
+    // #2292 - the published claude mid-response disconnect entry. The captured row
+    // (room-shared/2292-claude-midresponse-api-error.png) is a single terminal row; the
+    // pattern's `[^A-Za-z0-9]*` prefix absorbs any leading gutter the capture trimmed.
+    const CLAUDE_2292_PATTERN: &str =
+        r"^[^A-Za-z0-9]*API Error: Connection lost mid-response\b";
+    const CAPTURED_2292_NOTICE: &str =
+        "API Error: Connection lost mid-response. The response above may be incomplete.";
+    const CLAUDE_2292_NOTIFICATION: &str =
+        "claude lost the API connection mid-response; its response may be incomplete; check this terminal";
+
+    // #2292 - the six published claude entries that must survive the addition byte-identical.
+    const CLAUDE_PATTERNS_BEFORE_2292: [&str; 6] = [
+        r"API Error: Can['’]t reach the API server",
+        r"^\s*Claude in Chrome extension detected",
+        r"^[^A-Za-z0-9]*API Error: \d{3}\b",
+        r"^[^A-Za-z0-9]*Dangerous rm operation\b",
+        r"^\s*Esc to cancel\b.{1,5}Tab to amend\b",
+        r"^[^A-Za-z0-9]*Enter to select\b.{1,64}Esc to cancel\b",
+    ];
+
+    // #2292 - rows the new entry must NOT trigger: the two existing API-error rows, one-end
+    // truncations of its own row, the message without its prefix, and an alphanumeric-prefixed
+    // quote.
+    const CAPTURED_2292_NEGATIVES: &[&str] = &[
+        "API Error: Can['’]t reach the API server",
+        "API Error: 500 Internal Server Error",
+        "API Error: Connection lost",
+        "Connection lost mid-response",
+        "The response above may be incomplete.",
+        "Note: API Error: Connection lost mid-response.",
+    ];
+
+    #[test]
+    fn the_published_2292_entry_blocks_the_captured_notice_and_ignores_its_neighbours() {
+        let published = include_str!(
+            "../../../../remote-resources/blocking-menus/v1/settings-blocking-menus.json"
+        );
+        let file = crate::config::settings::validate_remote_blocking_menus_file(published)
+            .expect("the published remote file passes the validator");
+
+        let claude = &file.by_command["claude"];
+        for pattern in CLAUDE_PATTERNS_BEFORE_2292 {
+            assert!(
+                claude
+                    .iter()
+                    .any(|entry| entry.valid().is_some_and(|c| c.pattern == pattern)),
+                "the new entry must not replace an existing claude pattern: {pattern}"
+            );
+        }
+
+        let config = claude
+            .iter()
+            .filter_map(|entry| entry.valid())
+            .find(|config| config.pattern == CLAUDE_2292_PATTERN)
+            .expect("the published claude array carries the #2292 pattern");
+        assert_eq!(config.notification, CLAUDE_2292_NOTIFICATION);
+
+        let regex = regex::Regex::new(&config.pattern).expect("the pattern compiles");
+        assert!(
+            regex.is_match(CAPTURED_2292_NOTICE),
+            "the captured row must match"
+        );
+        for gutter in [
+            format!("\u{25CF} {}", CAPTURED_2292_NOTICE),
+            format!("\u{2502} {}", CAPTURED_2292_NOTICE),
+        ] {
+            assert!(regex.is_match(&gutter), "a guttered row must match: {gutter:?}");
+        }
+        for row in CAPTURED_2292_NEGATIVES {
+            assert!(!regex.is_match(row), "a negative row must not match: {row:?}");
+        }
+
+        // End to end through the scanner: published bytes installed as the remote cache block
+        // the captured row for the claude stem, while the shipped-only guard has no claude
+        // entries at all (control).
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("settings-blocking-menus.remote.json"),
+            published,
+        )
+        .unwrap();
+        let guard = MenuGuard::with_store(BlockingMenusStore::load_from_settings_path(
+            &temp.path().join("settings.json"),
+        ));
+        let entries = guard.entries_for(&agent("claude-2292", "claude", None));
+        let blocked = guard.evaluate_logical_rows(
+            Uuid::new_v4(),
+            &[LogicalRow {
+                start: 0,
+                end: 0,
+                text: CAPTURED_2292_NOTICE.to_string(),
+            }],
+            &entries,
+        );
+        assert!(blocked.is_blocked, "the captured row blocks");
+        assert_eq!(
+            blocked.matched_notification.as_deref(),
+            Some(CLAUDE_2292_NOTIFICATION)
+        );
+
+        let clean = guard.evaluate_logical_rows(
+            Uuid::new_v4(),
+            &[LogicalRow {
+                start: 0,
+                end: 0,
+                text: CAPTURED_2292_NEGATIVES[0].to_string(),
+            }],
+            &entries,
+        );
+        assert!(!clean.is_blocked, "a negative row stays clean");
+
+        let control = MenuGuard::new();
+        let control_entries = control.entries_for(&agent("claude-2292-control", "claude", None));
+        assert!(
+            control_entries.is_empty(),
+            "the shipped baseline has no claude entries"
+        );
+        let control_eval = control.evaluate_logical_rows(
+            Uuid::new_v4(),
+            &[LogicalRow {
+                start: 0,
+                end: 0,
+                text: CAPTURED_2292_NOTICE.to_string(),
+            }],
+            &control_entries,
+        );
+        assert!(!control_eval.is_blocked);
+    }
+
     #[test]
     fn a_legacy_array_on_the_agent_wins_over_both_files() {
         let temp = tempfile::TempDir::new().unwrap();
