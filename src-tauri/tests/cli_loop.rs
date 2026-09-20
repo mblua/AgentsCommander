@@ -1,5 +1,40 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard};
+
+/// Excludes one test's open write descriptor on a freshly copied binary from
+/// overlapping another test's fork/exec.
+///
+/// These tests run in parallel and each copies the binary into its own temp dir
+/// before exec'ing it. `Command::spawn` forks, and the child inherits the write
+/// descriptor another thread still holds on *its* copy; exec'ing a binary that
+/// any process holds open for writing fails with `ETXTBSY`. Covering both the
+/// copy and the spawn closes that window. The lock is released before output is
+/// collected, so the binary runs themselves still overlap.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The single spawn site. Holds the lock across `spawn` only.
+fn run_output(bin: &Path, args: &[&str]) -> Output {
+    let mut command = command_for_binary(bin);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    child.wait_with_output().expect("collect output")
+}
 
 fn command_for_binary(bin: &Path) -> Command {
     let mut command = Command::new(bin);
@@ -34,7 +69,10 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    {
+        let _guard = spawn_lock();
+        std::fs::copy(src, &dst).expect("copy binary");
+    }
     dst
 }
 
@@ -87,7 +125,7 @@ fn project_with_verified_coordinator(tmp: &Path) -> PathBuf {
 }
 
 fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let out = run_output(bin, args);
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -99,7 +137,7 @@ fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_stdout(bin: &Path, args: &[&str]) -> String {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let out = run_output(bin, args);
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -111,7 +149,7 @@ fn run_stdout(bin: &Path, args: &[&str]) -> String {
 }
 
 fn run_fail(bin: &Path, args: &[&str]) -> String {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let out = run_output(bin, args);
     assert!(
         !out.status.success(),
         "expected failure\nstdout: {}\nstderr: {}",
