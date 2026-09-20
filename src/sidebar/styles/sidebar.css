@@ -3753,9 +3753,9 @@ html.light-theme .settings-hint-error {
 }
 
 .workgroup-group-rail {
-  flex: 0 0 68px;
-  min-width: 68px;
-  max-width: 68px;
+  flex: 0 0 var(--ac-rail-width);
+  min-width: var(--ac-rail-width);
+  max-width: var(--ac-rail-width);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -3915,7 +3915,7 @@ html.light-theme .settings-hint-error {
    laid out inline so the symbol sits to the LEFT of the title and NEVER
    overlaps it. The title truncates with an ellipsis (nowrap) rather than
    wrapping or splitting mid-word — that is how the #742 no-mid-word-split
-   guarantee is now kept once a symbol shares the line on the 68px rail. */
+   guarantee is now kept once a symbol shares the line on the group rail. */
 .workgroup-group-rail-title-line {
   display: flex;
   align-items: center;
@@ -9338,6 +9338,36 @@ html.light-theme .onboarding-card.selected {
    ============================================================================= */
 .root-agent-banner.active {
   background: var(--sidebar-active);
+  position: relative;
+  isolation: isolate;
+}
+
+.root-agent-banner.active::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+  background-image:
+    linear-gradient(var(--ac-selected-rail-color), var(--ac-selected-rail-color)),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0)),
+    linear-gradient(90deg, rgba(128, 166, 255, 0.34) 0%, rgba(128, 166, 255, 0.10) 55%,
+                    rgba(128, 166, 255, 0.05) 100%);
+  background-repeat: no-repeat, no-repeat, no-repeat;
+  background-size:
+    var(--ac-selected-rail-width) 100%,
+    calc(var(--ac-selected-rail-width) * 1.9) 100%,
+    100% 100%;
+  background-position: left top, var(--ac-selected-rail-width) top, left top;
+}
+
+[data-sidebar-style="noir-minimal"] .root-agent-banner.active::before { left: -3px; }
+[data-sidebar-style="command-center"] .root-agent-banner.active::before { left: -4px; }
+/* card-sections: border 1px AND margin 4px 8px. width:100% makes the border box [8, W+8], so the
+   two inline offsets are NOT the same number: -(1+8) on the left, +(8-1) on the right.        */
+[data-sidebar-style="card-sections"] .root-agent-banner.active::before {
+  inset-block: -1px; left: -9px; right: 7px;
 }
 
 /* ===== Role template picker (#271) ===== */
