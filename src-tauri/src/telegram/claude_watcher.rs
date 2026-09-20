@@ -450,7 +450,11 @@ async fn watch_loop<R: tauri::Runtime>(
     poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        // `biased`: the destination change and the re-anchor signal are
+        // processed before the next file poll, never after it (sections 5.2
+        // and 6).
         tokio::select! {
+            biased;
             _ = cancel.cancelled() => break,
 
             // §6: the destination is consulted only when it changes, and the
@@ -498,19 +502,47 @@ async fn watch_loop<R: tauri::Runtime>(
             }
 
             // §5.2: a restart keeps the demand set untouched and re-anchors the
-            // transcript **file**. Dropping the binding makes the next poll
-            // resolve the path again and open the epoch entry for whatever that
-            // resolution now returns; the supervisor supersedes the cut's
-            // sequence part and clears the slot.
+            // transcript **file**. The path is resolved again and compared with
+            // the binding:
+            //  - same path: retain the offset and read appended bytes only; if
+            //    the file was truncated below that offset, reset to zero and
+            //    mark the reread as backfill;
+            //  - different path: read from byte zero as `RotationBackfill`,
+            //    even beyond 64 KiB — never the cold-attach tail scan;
+            //  - no path: stay armed, so the reader keeps its binding and the
+            //    next poll resolves again.
             changed = reanchor_rx.changed() => {
                 if changed.is_ok() {
                     let _ = *reanchor_rx.borrow_and_update();
-                    current_file = None;
-                    current_file_mtime = None;
-                    file_offset = 0;
-                    line_remainder.clear();
-                    rotation_backfill_pending = false;
-                    bridge_log!("JSONL_REANCHOR", "restart: re-resolving transcript file");
+                    let resolved = find_latest_jsonl(&project_dir);
+                    match (current_file.as_ref(), resolved) {
+                        (Some(current), Some(found)) if *current == found => {
+                            let len = std::fs::metadata(&found)
+                                .map(|m| m.len())
+                                .unwrap_or(0);
+                            if len < file_offset {
+                                file_offset = 0;
+                                line_remainder.clear();
+                                rotation_backfill_pending = true;
+                                bridge_log!("JSONL_REANCHOR", "same file truncated: rereading from byte zero as backfill");
+                            } else {
+                                bridge_log!("JSONL_REANCHOR", "same file: offset retained");
+                            }
+                        }
+                        (_, Some(found)) => {
+                            current_file = Some(found);
+                            current_file_mtime = current_file.as_ref()
+                                .and_then(|p| std::fs::metadata(p).ok())
+                                .and_then(|m| m.modified().ok());
+                            file_offset = 0;
+                            line_remainder.clear();
+                            rotation_backfill_pending = true;
+                            bridge_log!("JSONL_REANCHOR", "different file: reading from byte zero as backfill");
+                        }
+                        (_, None) => {
+                            bridge_log!("JSONL_REANCHOR", "no transcript yet: staying armed");
+                        }
+                    }
                 }
             }
 
@@ -805,6 +837,9 @@ mod tests {
     /// (`telegram/output.rs:140`), so "not constructed" is the only safe state.
     #[tokio::test]
     async fn a_room_only_claude_reader_truncates_no_global_log_and_still_emits() {
+        // Serialized against the Codex hot-attach test, which constructs the
+        // loggers and writes to the same global files.
+        let _logs = crate::telegram::codex_watcher::lock_global_diagnostic_files().await;
         let dir = tempfile::tempdir().expect("projects dir");
         let now = Utc::now();
         std::fs::write(

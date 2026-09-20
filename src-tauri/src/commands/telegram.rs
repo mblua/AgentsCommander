@@ -116,6 +116,19 @@ async fn reader_kind_for_session<R: tauri::Runtime>(
     .flatten()
 }
 
+/// True while `session_id` still exists in the session manager.
+///
+/// Used by the detached create-time raise (section 5.1): if a destroy won the
+/// race while the raise was resolving, the freshly installed reader must be
+/// discarded instead of leaking for a session that is already gone.
+async fn session_is_live<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid) -> bool {
+    let Some(session_mgr) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+        return true;
+    };
+    let mgr = session_mgr.read().await;
+    mgr.get_session(session_id).await.is_some()
+}
+
 /// Raise `consumer`'s demand on `session_id`'s transcript reader (#2232 phase 4
 /// section 5).
 ///
@@ -146,6 +159,10 @@ pub(crate) async fn raise_reader_demand<R: tauri::Runtime>(
     let Some(kind) = reader_kind_for_session(app, session_id).await else {
         return false;
     };
+    // Test-only rendezvous after eligibility resolution and before install
+    // (phase 4 test 19): the create/destroy race is paused here.
+    #[cfg(test)]
+    reader_demand_seam::hit_before_install(&session_id.to_string()).await;
     let network = app.state::<OutboundNetwork>().inner().clone();
 
     let mut tg = tg_state.lock().await;
@@ -165,7 +182,64 @@ pub(crate) async fn raise_reader_demand<R: tauri::Runtime>(
         rx.map(|rx| (capture.slot.clone(), rx)),
     );
     tg.reader_install(session_id, ReaderEntry::new(reader_id, spawned), consumer);
+    drop(tg);
+
+    // Section 5.1: the detached create-time raise rechecks session liveness
+    // after install. If a destroy won the race while this raise was paused, the
+    // reader is discarded and its capture slot closed instead of leaking until
+    // shutdown. The check is deliberately outside `TelegramBridgeState`: the
+    // destroy path takes the session lock and then this state, so awaiting the
+    // session lock while holding this state would invert that order.
+    if !session_is_live(app, session_id).await {
+        release_all_reader_demands(app, session_id).await;
+        return false;
+    }
     true
+}
+
+#[cfg(test)]
+pub(crate) mod reader_demand_seam {
+    //! Test-only rendezvous inside [`super::raise_reader_demand`].
+    //!
+    //! Armed for one session id; the raise signals `reached` and then awaits
+    //! `release`. Phase 4 test 19 uses it to destroy a session while the
+    //! detached create-time raise sits between eligibility resolution and
+    //! install.
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    pub(crate) struct ReaderDemandBarrier {
+        pub(crate) reached: Notify,
+        pub(crate) release: Notify,
+    }
+
+    type BarrierMap = Mutex<Option<HashMap<String, Arc<ReaderDemandBarrier>>>>;
+
+    static BEFORE_INSTALL: BarrierMap = Mutex::new(None);
+
+    pub(crate) fn install_before_install(key: &str) -> Arc<ReaderDemandBarrier> {
+        let barrier = Arc::new(ReaderDemandBarrier::default());
+        BEFORE_INSTALL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashMap::new)
+            .insert(key.to_string(), Arc::clone(&barrier));
+        barrier
+    }
+
+    pub(crate) async fn hit_before_install(key: &str) {
+        let barrier = BEFORE_INSTALL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .and_then(|map| map.remove(key));
+        if let Some(barrier) = barrier {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
+    }
 }
 
 /// Release `consumer`'s demand. The reader stops only when it was the last one.
