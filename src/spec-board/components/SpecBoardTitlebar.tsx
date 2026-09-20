@@ -11,7 +11,10 @@ const SpecBoardTitlebar: Component = () => {
       <div class="spec-board-titlebar-controls">
         <button onClick={(e) => { e.stopPropagation(); appWindow.minimize(); }}>&#x2014;</button>
         <button onClick={(e) => { e.stopPropagation(); appWindow.toggleMaximize(); }}>&#x25A1;</button>
-        <button onClick={(e) => { e.stopPropagation(); appWindow.close(); }}>&#x2715;</button>
+        <button
+          data-ac-testid="specBoard.titlebar.close"
+          onClick={(e) => { e.stopPropagation(); appWindow.close(); }}
+        >&#x2715;</button>
       </div>
     </div>
   );
