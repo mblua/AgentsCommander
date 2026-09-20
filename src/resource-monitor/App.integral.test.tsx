@@ -167,6 +167,34 @@ const tieSnapshot = (): ResourceSnapshot => {
   return snapshot;
 };
 
+/** Twelve groups, so recorded pin indices run past 9 and a string ordering of
+ *  them ("10" < "2") is distinguishable from a numeric one. CPU descends by
+ *  index, so the CPU-desc order is n-00 .. n-11 and each group's recorded pin
+ *  index equals its own number. */
+const numericPinSnapshot = (): ResourceSnapshot => {
+  const snapshot = baseSnapshot();
+  snapshot.groups = Array.from({ length: 12 }, (_, index) => ({
+    sessionId: `n-${String(index).padStart(2, "0")}`,
+    name: `numeric-${index}`,
+    workgroup: "wg-numeric",
+    agent: "dev-numeric",
+    project: "ProjNumeric",
+    rootPid: 7000 + index,
+    state: "running" as const,
+    descendantsObserved: true,
+    processCount: 1,
+    privateBytes: MB,
+    workingSetBytes: MB,
+    // Distinct values, so nothing here rests on the sessionId tie-break.
+    cpuPercent: 120 - index * 10,
+    networkState: "observed" as const,
+    networkSummary: "Observed",
+    killAllowed: true,
+    processes: [process(8000 + index)],
+  }));
+  return snapshot;
+};
+
 const DEFAULT_KILL_RESULT = {
   sessionId: "session-a",
   state: "terminated",
@@ -955,6 +983,53 @@ describe("#2245 Resource Monitor integral view", () => {
         s.groups[1].cpuPercent = 50;
       });
       expect(order(rendered.root)).toEqual(["p-5", "p-4", "p-3", "p-2", "p-1"]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // 19f — pin indices are ordered numerically, not as strings.
+  it("reinserts pins in numeric index order past index 9", async () => {
+    const harness = makeHarness(numericPinSnapshot());
+    const rendered = await renderApp(harness);
+    try {
+      await sortBy(rendered.root, "cpu");
+      const all = Array.from({ length: 12 }, (_, i) => `n-${String(i).padStart(2, "0")}`);
+      expect(order(rendered.root)).toEqual(all);
+
+      // Expand every row. Nothing reorders between clicks, so each group is
+      // registered at its own index and the recorded indices run 0..11 — which
+      // is the only way indices past 9 ever exist to be compared.
+      for (const sessionId of all) {
+        click(must(rendered.root, `resourceMonitor.group.${sessionId}.toggle`));
+      }
+      await Promise.resolve();
+      // Joined rather than compared as arrays: a twelve-element array diff
+      // prints as "Array(12)" and says nothing about which rows moved.
+      expect(order(rendered.root).join(" ")).toBe(all.join(" "));
+
+      // Keep the rows recorded at 2, 3, 10 and 11, and reverse their metric so
+      // the sorted order is the exact opposite of the recorded order. Every
+      // pin now clamps, and the clamp is where the comparator shows: each
+      // insertion index is min(recorded, current length), so the ORDER the
+      // pins are walked in decides the result.
+      await advance(harness, (s) => {
+        s.groups = s.groups.filter((g) =>
+          ["n-02", "n-03", "n-10", "n-11"].includes(g.sessionId)
+        );
+        const byId = new Map(s.groups.map((g) => [g.sessionId, g]));
+        byId.get("n-11")!.cpuPercent = 90;
+        byId.get("n-10")!.cpuPercent = 80;
+        byId.get("n-03")!.cpuPercent = 70;
+        byId.get("n-02")!.cpuPercent = 60;
+      });
+
+      // Three outcomes are distinguishable here, which is what makes this
+      // test strong in both directions:
+      //   numeric pins (2, 3, 10, 11)      -> n-02, n-03, n-10, n-11  <- correct
+      //   string pins  ("10","11","2","3") -> n-10, n-11, n-02, n-03
+      //   no pinning at all (plain sorted) -> n-11, n-10, n-03, n-02
+      expect(order(rendered.root)).toEqual(["n-02", "n-03", "n-10", "n-11"]);
     } finally {
       rendered.cleanup();
     }
