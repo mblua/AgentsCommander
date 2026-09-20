@@ -8,7 +8,10 @@
   :root {
     --sidebar-bg: #0a0a0f;
     --sidebar-fg: #d0d0d8;
-    --sidebar-fg-dim: #6a6a78;
+    /* App token is #6a6a78; at 11px that is 3.71:1 on --sidebar-bg and
+       3.60:1 on --sidebar-surface, below the WCAG AA 4.5:1 floor. This
+       prototype proposes #8f8fa0 instead: 6.21:1 and 6.03:1. */
+    --sidebar-fg-dim: #8f8fa0;
     --sidebar-accent: #00d4ff;
     --sidebar-hover: #12121e;
     --sidebar-active: #222227;
@@ -105,10 +108,27 @@
     border: 1px solid var(--sidebar-border);
     border-radius: var(--radius-sm);
   }
-  .agent-card[aria-selected="true"] {
+  /* Selection is carried by aria-current on the <li> (valid on any element,
+     unlike aria-selected on a bare listitem) and by the visible "Selected"
+     chip, so it never depends on colour alone. */
+  .agent-card[aria-current="true"] {
     border-color: var(--sidebar-accent);
     background: var(--sidebar-active);
   }
+
+  .selected-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    padding: 2px var(--spacing-sm);
+    border: 1px solid currentColor;
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--sidebar-accent);
+    white-space: nowrap;
+  }
+  .selected-chip::before { content: "\2713"; }
 
   .agent-id { flex: 1 1 160px; min-width: 0; }
   .agent-name { font-weight: 600; display: block; overflow-wrap: anywhere; }
@@ -174,7 +194,8 @@
   <h1>Prototype: agent order controls (issue #2311, epic #2306)</h1>
   <p>Static visual prototype. No application code, no persistence — the save step is mocked.</p>
   <ul>
-    <li>Up/down buttons swap rows immediately and keep the selected row selected.</li>
+    <li>Up/down buttons swap rows immediately.</li>
+    <li>Press "Select" on any card, then reorder: the same agent stays selected. Selection is shown by a "Selected" chip as well as colour, and is exposed as <code>aria-current</code>.</li>
     <li>First row's Up and last row's Down are disabled.</li>
     <li>While the filter is active, reordering is disabled and the reason is shown.</li>
     <li>Toggle the mocked save failure below to see the error state.</li>
@@ -186,8 +207,8 @@
   <div class="panel-head">
     <h2 class="panel-title" id="panel-title">Registered agents</h2>
     <div class="filter-row">
-      <label class="sr-only" for="agent-filter">Filter agents by name</label>
-      <input id="agent-filter" type="search" placeholder="Filter agents…" autocomplete="off" />
+      <label class="sr-only" for="agent-filter">Filter agents by name or role</label>
+      <input id="agent-filter" type="search" placeholder="Filter by name or role…" autocomplete="off" />
     </div>
   </div>
 
@@ -232,8 +253,11 @@
   var liveRegion = document.getElementById("live-region");
   var failToggle = document.getElementById("toggle-fail");
 
+  // Clearing first makes screen readers re-announce an identical message,
+  // e.g. moving the same agent up twice.
   function announce(text) {
-    liveRegion.textContent = text;
+    liveRegion.textContent = "";
+    window.setTimeout(function () { liveRegion.textContent = text; }, 50);
   }
 
   function visibleAgents() {
@@ -298,7 +322,7 @@
     var atEdge = up ? index === 0 : index === agents.length - 1;
     btn.disabled = filtered || atEdge;
 
-    var label = (up ? "Move " : "Move ") + agent.name + (up ? " up" : " down");
+    var label = "Move " + agent.name + (up ? " up" : " down");
     if (filtered) {
       label += " (disabled: clear the filter to reorder)";
     } else if (atEdge) {
@@ -311,6 +335,23 @@
       move(agents.indexOf(agent), up ? -1 : 1);
     });
     return btn;
+  }
+
+  function selectButton(agent, selected) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn-select";
+    b.textContent = "Select";
+    b.disabled = selected;
+    b.setAttribute("aria-label", selected
+      ? agent.name + " is the selected agent"
+      : "Select " + agent.name);
+    b.addEventListener("click", function () {
+      selectedId = agent.id;
+      render();
+      announce(agent.name + " selected.");
+    });
+    return b;
   }
 
   function plainButton(text, agentName, extraClass) {
@@ -329,17 +370,20 @@
     var filtered = filterEl.value.trim() !== "";
     var rows = visibleAgents();
 
-    filterNotice.hidden = !filtered;
     emptyState.hidden = rows.length !== 0;
+    // With no rows there is nothing to reorder, so the notice would be noise.
+    filterNotice.hidden = !filtered || rows.length === 0;
 
     listEl.textContent = "";
 
     rows.forEach(function (agent) {
       var index = agents.indexOf(agent);
 
+      var selected = agent.id === selectedId;
+
       var li = document.createElement("li");
       li.className = "agent-card";
-      li.setAttribute("aria-selected", agent.id === selectedId ? "true" : "false");
+      if (selected) li.setAttribute("aria-current", "true");
 
       var id = document.createElement("div");
       id.className = "agent-id";
@@ -356,11 +400,19 @@
       pos.className = "agent-pos";
       pos.textContent = "Position " + (index + 1) + " of " + agents.length;
 
+      if (selected) {
+        var chip = document.createElement("span");
+        chip.className = "selected-chip";
+        chip.textContent = "Selected";
+        id.appendChild(chip);
+      }
+
       var actions = document.createElement("div");
       actions.className = "card-actions";
       // Order buttons first, then the existing card buttons, as siblings.
       actions.appendChild(orderButton(agent, index, "up", filtered));
       actions.appendChild(orderButton(agent, index, "down", filtered));
+      actions.appendChild(selectButton(agent, selected));
       actions.appendChild(plainButton("Open", agent.name));
       actions.appendChild(plainButton("Edit", agent.name));
       actions.appendChild(plainButton("Remove", agent.name, "btn-danger"));
