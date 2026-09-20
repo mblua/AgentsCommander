@@ -2121,4 +2121,53 @@ mod tests {
                 .await;
         }
     }
+
+    /// AC-18 - the stale pre-check runs BEFORE any teardown. The fixture is
+    /// `make_restartable_loop_app`, the one app on which a restart would
+    /// otherwise succeed, so empty `kills()` and `spawned()` prove the correct
+    /// path never reached the restart rather than that the restart failed.
+    #[tokio::test]
+    async fn stale_loop_is_reported_before_any_teardown() {
+        let (_tmp, config, project, replica) = loop_delivery_fixture();
+        let ac_root = project.join(".ac");
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(LoopSpawnBackend::default());
+        let app = make_restartable_loop_app(
+            Arc::clone(&session_mgr),
+            Arc::clone(&backend),
+            AppSettings::default(),
+        );
+
+        let old_id =
+            seed_live_manager_session(&app, &session_mgr, &backend, &replica.to_string_lossy())
+                .await;
+        mark_session_idle(&session_mgr, old_id).await;
+
+        // Make the on-disk Loop stale while the in-memory config stays current:
+        // `revalidate_loop_current` then reports `Disabled`.
+        let mut disabled = config.clone();
+        disabled.loop_def.enabled = false;
+        write_loop_config(&ac_root, &disabled).expect("write disabled loop config");
+
+        let report =
+            deliver_loop_prompt(app.handle(), &project, &config, Uuid::new_v4(), Utc::now()).await;
+
+        assert_eq!(report.kind, LoopAuditKind::DeliveryFailed);
+        assert_eq!(report.session_id, Some(old_id));
+        assert!(report.prompt_snapshot.is_none());
+        assert!(session_mgr.read().await.get_session(old_id).await.is_some());
+        assert!(backend.has_session(old_id));
+        assert!(
+            backend.kills().is_empty(),
+            "the stale check must return before the restart tears the old session down"
+        );
+        assert!(
+            backend.spawned().is_empty(),
+            "no replacement session may be spawned for a stale Loop"
+        );
+
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .close_and_join()
+            .await;
+    }
 }

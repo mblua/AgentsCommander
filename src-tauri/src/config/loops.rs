@@ -171,7 +171,7 @@ pub struct LoopAuditEntry {
     pub target: Option<String>,
     pub session_id: Option<Uuid>,
     pub busy_coordinator_policy: BusyCoordinatorPolicy,
-    pub session_start: LoopSessionStart,
+    pub session_start: Option<LoopSessionStart>,
     pub error: Option<String>,
     pub prompt_snapshot: Option<String>,
 }
@@ -988,7 +988,7 @@ busyCoordinator = "waitUntilIdle"
             target: Some("proj:wg-1-dev-team/tech-lead".to_string()),
             session_id: None,
             busy_coordinator_policy: BusyCoordinatorPolicy::WaitUntilIdle,
-            session_start: LoopSessionStart::Fresh,
+            session_start: Some(LoopSessionStart::Fresh),
             error: None,
             prompt_snapshot: None,
         };
@@ -1019,7 +1019,7 @@ busyCoordinator = "waitUntilIdle"
             target: Some("proj:wg-1-dev-team/tech-lead".to_string()),
             session_id: None,
             busy_coordinator_policy: BusyCoordinatorPolicy::WaitUntilIdle,
-            session_start: LoopSessionStart::Fresh,
+            session_start: Some(LoopSessionStart::Fresh),
             error: None,
             prompt_snapshot: None,
         };
@@ -1050,5 +1050,65 @@ busyCoordinator = "waitUntilIdle"
         assert_eq!(loops[0].id, "weekday-standup");
         assert_eq!(loops[0].prompt_preview, "Summarize status");
         assert!(loops[0].last_checked_at.is_none());
+    }
+
+    /// AC-15 - a legacy audit row (written before `sessionStart` existed)
+    /// parses, and re-serializes the field as JSON `null` rather than as any
+    /// concrete value the run may never have used. The test names no Rust
+    /// field, so it compiles against both shapes and fails at runtime.
+    #[test]
+    fn legacy_audit_row_without_session_start_parses_as_not_recorded() {
+        let line = r#"{"runId":"6a7cfa8e-0e0a-4a0f-9d1e-2f3d9a1b4c55","loopId":"daily-sync","projectPath":"/tmp/project","kind":"pendingBusy","dueAt":"2025-01-01T09:00:00Z","startedAt":"2025-01-01T09:00:01Z","completedAt":null,"target":"proj:wg-1-dev-team/tech-lead","sessionId":null,"busyCoordinatorPolicy":"waitUntilIdle","error":null,"promptSnapshot":null}"#;
+
+        assert!(
+            !line.contains("sessionStart"),
+            "the legacy fixture must not carry the key, or this test passes for the wrong reason"
+        );
+
+        let parsed = serde_json::from_str::<LoopAuditEntry>(line).expect("legacy audit row parses");
+
+        assert_eq!(
+            serde_json::to_value(&parsed)
+                .expect("re-serialize")
+                .get("sessionStart"),
+            Some(&serde_json::Value::Null),
+            "an absent key must read back as not recorded, never as a concrete default"
+        );
+    }
+
+    /// AC-16 - a legacy audit row still takes part in the append-once dedupe,
+    /// so no duplicate row is appended and the file is never rewritten.
+    #[test]
+    fn legacy_audit_row_still_deduplicates_an_append() {
+        let tmp = fixture_project();
+        let ac_root = tmp.path().join(".ac");
+        let config = sample_config();
+        let dir = write_loop_config(&ac_root, &config).expect("write config");
+
+        let legacy = format!(
+            r#"{{"runId":"6a7cfa8e-0e0a-4a0f-9d1e-2f3d9a1b4c55","loopId":"{}","projectPath":"/tmp/project","kind":"pendingBusy","dueAt":"2025-01-01T09:00:00Z","startedAt":"2025-01-01T09:00:01Z","completedAt":null,"target":null,"sessionId":null,"busyCoordinatorPolicy":"waitUntilIdle","error":null,"promptSnapshot":null}}"#,
+            config.loop_def.id
+        );
+        assert!(!legacy.contains("sessionStart"));
+        let audit_path = dir.join(LOOP_AUDIT_FILE);
+        std::fs::write(&audit_path, format!("{}\n", legacy)).expect("write legacy audit line");
+
+        let mut value: serde_json::Value =
+            serde_json::from_str(&legacy).expect("legacy line as value");
+        value
+            .as_object_mut()
+            .expect("object")
+            .insert("sessionStart".to_string(), serde_json::json!("fresh"));
+        let entry: LoopAuditEntry = serde_json::from_value(value).expect("entry to append");
+
+        append_loop_audit_once(&dir, &entry).expect("append against a legacy audit file");
+
+        let content = std::fs::read_to_string(&audit_path).expect("audit read");
+        assert_eq!(
+            content.lines().count(),
+            1,
+            "the legacy row must be seen by the dedupe, so nothing is appended"
+        );
+        assert_eq!(content, format!("{}\n", legacy), "no row may be rewritten");
     }
 }
