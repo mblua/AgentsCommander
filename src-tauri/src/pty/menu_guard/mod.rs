@@ -930,8 +930,7 @@ mod tests {
     // #2292 - the published claude mid-response disconnect entry. The captured row
     // (room-shared/2292-claude-midresponse-api-error.png) is a single terminal row; the
     // pattern's `[^A-Za-z0-9]*` prefix absorbs any leading gutter the capture trimmed.
-    const CLAUDE_2292_PATTERN: &str =
-        r"^[^A-Za-z0-9]*API Error: Connection lost mid-response\b";
+    const CLAUDE_2292_PATTERN: &str = r"^[^A-Za-z0-9]*API Error: Connection lost mid-response\b";
     const CAPTURED_2292_NOTICE: &str =
         "API Error: Connection lost mid-response. The response above may be incomplete.";
     const CLAUDE_2292_NOTIFICATION: &str =
@@ -993,10 +992,16 @@ mod tests {
             format!("\u{25CF} {}", CAPTURED_2292_NOTICE),
             format!("\u{2502} {}", CAPTURED_2292_NOTICE),
         ] {
-            assert!(regex.is_match(&gutter), "a guttered row must match: {gutter:?}");
+            assert!(
+                regex.is_match(&gutter),
+                "a guttered row must match: {gutter:?}"
+            );
         }
         for row in CAPTURED_2292_NEGATIVES {
-            assert!(!regex.is_match(row), "a negative row must not match: {row:?}");
+            assert!(
+                !regex.is_match(row),
+                "a negative row must not match: {row:?}"
+            );
         }
 
         // End to end through the scanner: published bytes installed as the remote cache block
