@@ -170,6 +170,19 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         idle.touch_silence(session_id);
     }
 
+    // (#2232 phase 3, section 10.1) The automatic-action budget recharge has
+    // exactly one call site, this one, and it reuses the source filter computed
+    // one screen above rather than adding an event: `coordinator_clock_updated`
+    // carries no source and fires for Telegram and web alike, so the specified
+    // exclusion was unbuildable through it. Injection and auto-resume never
+    // reach this function, so they cannot recharge.
+    if recharges_capture_budget(substantive, &source) {
+        if let Some(room_root) = room_root_of_orchestrator(app, session_id).await {
+            crate::capture::state::recharge_in_memory(&room_root);
+            crate::capture::state::schedule_flush(&room_root);
+        }
+    }
+
     // (#630/#631 + #698) Apply both user-input state transitions and persist them
     // atomically. On the FIRST substantive post-boundary submission we re-arm the
     // resume intent, and every user write still lowers any visible raise-hand
@@ -287,6 +300,37 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
             log::warn!("[coordinator-clocks] fresh-intent clear save failed: {}", e);
         }
     }
+}
+
+/// (#2232 phase 3) Does this user input recharge the room's automatic-action
+/// budget?
+///
+/// Human keystrokes only. Web and inbound Telegram (`CompleteMessage`) are
+/// excluded **by construction**, so anyone with chat access, including a bot,
+/// or any client of the web server, cannot keep an automatic chain alive
+/// forever; that is what keeps the bound a terminating construction. It is a
+/// technical decision and is revisable by the user. `substantive` is the
+/// existing `classify_substantive` criterion, not a second one.
+fn recharges_capture_budget(substantive: bool, source: &UserInputSource<'_>) -> bool {
+    substantive && matches!(source, UserInputSource::Terminal(_))
+}
+
+/// (#2232 phase 3) The room root of the orchestrator terminal `session_id` was
+/// typed into, or `None` when the session is not an orchestrator.
+///
+/// The resolution is async and happens **before** the leaf call, so
+/// `capture::state::recharge_in_memory` stays a synchronous, lock-free leaf and
+/// `commands::pty` keeps an SCC-to-leaf arc that cannot grow the SCC.
+async fn room_root_of_orchestrator<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) -> Option<std::path::PathBuf> {
+    let cwd = {
+        let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
+        let cwd = mgr.read().await.coordinator_cwd(session_id).await;
+        cwd
+    };
+    crate::config::co_managed::room_root_for_path(std::path::Path::new(&cwd?))
 }
 
 /// (#871) Run the substantive-submission classifier for a raw keystroke chunk.
@@ -2179,5 +2223,188 @@ mod tests {
             !session_printed_since(app.handle(), Uuid::new_v4(), Instant::now()),
             "no managed detector must fail closed, never open"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // #2232 phase 3, section 10.1: the budget recharge source filter.
+    // ---------------------------------------------------------------------
+
+    /// A coordinator session whose cwd sits inside a real `room-<N>-*` root, so
+    /// `room_root_of_orchestrator` resolves to a temp directory this test owns.
+    async fn capture_budget_fixture(
+        temp: &tempfile::TempDir,
+    ) -> (FreshIntentFixture, std::path::PathBuf) {
+        let room = temp.path().join("room-2232-dev-team");
+        let replica = room.join("__agent_tech-lead");
+        std::fs::create_dir_all(&replica).expect("replica dir");
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+        let app = user_input_test_app(session_mgr.clone(), clocks.clone());
+        let cwd = replica.to_string_lossy().into_owned();
+        let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
+        let session = {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "codex".to_string(),
+                Vec::new(),
+                cwd,
+                None,
+                None,
+                Vec::<SessionRepo>::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create coordinator session")
+        };
+        crate::capture::state::forget_room_for_tests(&room);
+        (
+            FreshIntentFixture {
+                app,
+                session_mgr,
+                clocks,
+                session_id: session.id,
+                fqn,
+            },
+            room,
+        )
+    }
+
+    /// Spend the room's whole budget, so a recharge is observable.
+    fn exhaust_budget(room: &std::path::Path) {
+        crate::capture::state::spend_budget_for_tests(room, crate::capture::state::BUDGET_CAP);
+        assert_eq!(crate::capture::state::budget(room), 0);
+    }
+
+    /// Test 17, assertion 1: substantive terminal input recharges to the cap.
+    #[tokio::test]
+    async fn substantive_terminal_input_recharges_the_budget() {
+        let temp = tempfile::tempdir().expect("temp");
+        let (f, room) = capture_budget_fixture(&temp).await;
+        exhaust_budget(&room);
+
+        note_user_message_to_session(
+            f.app.handle(),
+            f.session_id,
+            UserInputSource::Terminal(b"do the thing\r"),
+        )
+        .await;
+
+        assert_eq!(
+            crate::capture::state::budget(&room),
+            crate::capture::state::BUDGET_CAP
+        );
+    }
+
+    /// Test 17, assertion 2: the same text from the web does **not** recharge.
+    #[tokio::test]
+    async fn substantive_web_input_does_not_recharge_the_budget() {
+        let temp = tempfile::tempdir().expect("temp");
+        let (f, room) = capture_budget_fixture(&temp).await;
+        exhaust_budget(&room);
+
+        note_user_message_to_session(
+            f.app.handle(),
+            f.session_id,
+            UserInputSource::Web(b"do the thing\r"),
+        )
+        .await;
+
+        assert_eq!(crate::capture::state::budget(&room), 0);
+    }
+
+    /// Test 17, assertion 3: inbound Telegram, which arrives as a complete
+    /// message, does **not** recharge. This is what stops anyone with chat
+    /// access, including a bot, keeping an automatic chain alive forever.
+    #[tokio::test]
+    async fn a_complete_message_does_not_recharge_the_budget() {
+        let temp = tempfile::tempdir().expect("temp");
+        let (f, room) = capture_budget_fixture(&temp).await;
+        exhaust_budget(&room);
+
+        note_user_message_to_session(
+            f.app.handle(),
+            f.session_id,
+            UserInputSource::CompleteMessage,
+        )
+        .await;
+
+        assert_eq!(crate::capture::state::budget(&room), 0);
+    }
+
+    /// Test 17, assertion 4: a lone control key on the terminal is not
+    /// substantive, so it does **not** recharge.
+    #[tokio::test]
+    async fn a_non_substantive_terminal_write_does_not_recharge_the_budget() {
+        let temp = tempfile::tempdir().expect("temp");
+        let (f, room) = capture_budget_fixture(&temp).await;
+        exhaust_budget(&room);
+
+        for chunk in [b"\x1b[A".as_slice(), b"\r".as_slice(), b"\x03".as_slice()] {
+            note_user_message_to_session(
+                f.app.handle(),
+                f.session_id,
+                UserInputSource::Terminal(chunk),
+            )
+            .await;
+            assert_eq!(crate::capture::state::budget(&room), 0, "chunk={chunk:?}");
+        }
+    }
+
+    /// Test 27: on a current-thread runtime, substantive terminal input still
+    /// progresses while another holder keeps the room's advisory lock. The room
+    /// lookup is async and the recharge is a lock-free in-memory leaf, so
+    /// neither can block the reactor.
+    #[test]
+    fn substantive_terminal_input_progresses_while_the_room_lock_is_held() {
+        let temp = tempfile::tempdir().expect("temp");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("current-thread runtime");
+        runtime.block_on(async {
+            let (f, room) = capture_budget_fixture(&temp).await;
+            exhaust_budget(&room);
+
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+            let holder_room = room.clone();
+            let holder = std::thread::spawn(move || {
+                let _guard = crate::capture::state::hold_room_lock_for_tests(&holder_room);
+                held_tx.send(()).expect("signal held");
+                release_rx.recv().expect("release");
+            });
+            held_rx.recv().expect("lock held");
+
+            let started = Instant::now();
+            note_user_message_to_session(
+                f.app.handle(),
+                f.session_id,
+                UserInputSource::Terminal(b"do the thing\r"),
+            )
+            .await;
+            let elapsed = started.elapsed();
+
+            // The reactor is still live: a timer set after the call completes.
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                tokio::time::sleep(std::time::Duration::from_millis(1)),
+            )
+            .await
+            .expect("the reactor kept running");
+
+            release_tx.send(()).expect("release");
+            holder.join().expect("holder");
+
+            assert_eq!(
+                crate::capture::state::budget(&room),
+                crate::capture::state::BUDGET_CAP
+            );
+            assert!(
+                elapsed < std::time::Duration::from_millis(500),
+                "the input path waited {elapsed:?} on a held file lock"
+            );
+        });
     }
 }
