@@ -8,12 +8,12 @@ use tokio::time::{timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::capture::key::Cut;
 use crate::capture::registry::CaptureRegistry;
 use crate::errors::AppError;
 use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
 use crate::session::profile::CodingAgentKind;
-use crate::capture::key::Cut;
 use crate::telegram::bridge::{self, BridgeHandle, ReaderDest, ReaderTask};
 use crate::telegram::types::{BridgeInfo, BridgeStatus, TelegramBotConfig};
 
@@ -260,9 +260,7 @@ impl TelegramBridgeManager {
         session_id: Uuid,
         consumer: ReaderConsumer,
     ) -> Option<BridgeShutdown> {
-        let Some(entry) = self.readers.get_mut(&session_id) else {
-            return None;
-        };
+        let entry = self.readers.get_mut(&session_id)?;
         entry.demands.remove(&consumer);
         if consumer == ReaderConsumer::Bot {
             let _ = entry.dest.send(None);

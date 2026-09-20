@@ -171,8 +171,7 @@ pub(crate) async fn raise_room_reader_demand<R: Runtime>(
             None => return false,
         }
     };
-    let Some(room_root) =
-        crate::config::co_managed::room_root_for_path(std::path::Path::new(&cwd))
+    let Some(room_root) = crate::config::co_managed::room_root_for_path(std::path::Path::new(&cwd))
     else {
         return false;
     };
@@ -180,10 +179,7 @@ pub(crate) async fn raise_room_reader_demand<R: Runtime>(
 }
 
 /// Release the Room demand. The reader stops only when it was the last one.
-pub(crate) async fn release_room_reader_demand<R: Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-) {
+pub(crate) async fn release_room_reader_demand<R: Runtime>(app: &AppHandle<R>, session_id: Uuid) {
     crate::commands::telegram::release_reader_demand(
         app,
         session_id,

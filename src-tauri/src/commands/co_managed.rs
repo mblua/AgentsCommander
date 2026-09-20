@@ -101,11 +101,10 @@ pub async fn co_managed_set_enabled<R: tauri::Runtime>(
 ) -> Result<CoManagedConfig, String> {
     let root = canonical_room_root(&app, &room_root).await?;
     let write_root = root.clone();
-    let config = tauri::async_runtime::spawn_blocking(move || {
-        co_managed::set_enabled(&write_root, enabled)
-    })
-    .await
-    .map_err(|e| format!("coManagedSetEnabledTaskFailed: {e}"))??;
+    let config =
+        tauri::async_runtime::spawn_blocking(move || co_managed::set_enabled(&write_root, enabled))
+            .await
+            .map_err(|e| format!("coManagedSetEnabledTaskFailed: {e}"))??;
 
     for session_id in live_sessions_in_room(&app, &root).await {
         if enabled {
@@ -123,8 +122,9 @@ async fn live_sessions_in_room<R: tauri::Runtime>(
     app: &AppHandle<R>,
     room_root: &std::path::Path,
 ) -> Vec<uuid::Uuid> {
-    let Some(manager) =
-        app.try_state::<std::sync::Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>()
+    let Some(manager) = app
+        .try_state::<std::sync::Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>(
+        )
     else {
         return Vec::new();
     };

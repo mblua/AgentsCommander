@@ -421,9 +421,7 @@ async fn watch_loop<R: tauri::Runtime>(
         Some(target) => (target.token.clone(), target.chat_id),
         None => (String::new(), 0),
     };
-    let mut logger = bot_target
-        .as_ref()
-        .map(|_| BridgeLogger::new(&session_id));
+    let mut logger = bot_target.as_ref().map(|_| BridgeLogger::new(&session_id));
     let mut diag = bot_target.as_ref().map(|_| DiagLogger::new());
     // Log through the bridge logger only when one exists. With no bot demand
     // there is no logger, so `CODEX_EXTRACT` is not written and no global log

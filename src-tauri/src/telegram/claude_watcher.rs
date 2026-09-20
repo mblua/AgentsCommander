@@ -346,7 +346,9 @@ async fn watch_loop<R: tauri::Runtime>(
     // (`telegram/output.rs:140`) — is never called for a room-only reader. On a
     // hot attach the loggers are born at that moment, which is when they are
     // truncated on attach today.
-    let mut logger = current_dest.as_ref().map(|_| BridgeLogger::new(&session_id));
+    let mut logger = current_dest
+        .as_ref()
+        .map(|_| BridgeLogger::new(&session_id));
     let mut diag = current_dest.as_ref().map(|_| DiagLogger::new());
     // Log through the bridge logger only when one exists, so `JSONL_EXTRACT`
     // is not written for a room-only reader (section 8).
