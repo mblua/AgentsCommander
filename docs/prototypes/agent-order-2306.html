@@ -1445,8 +1445,8 @@
     var rail = byId(state.railTool);
     var railOwn = state.draftLabel[rail.id] !== undefined ? state.draftLabel[rail.id] : (OWN_LABEL[rail.id] || "");
     var railPlaceholder = isProposed
-      ? (resolveLabelProposed(rail.id) || (rail.id === firstId ? "Baseline" : "Baseline"))
-      : (resolveLabelToday(rail.id, firstId) || (rail.id === firstId ? "Baseline" : "Baseline"));
+      ? (resolveLabelProposed(rail.id) || "Baseline")
+      : (resolveLabelToday(rail.id, firstId) || "Baseline");
 
     var errorBanner = state.moveError
       ? '<div class="state-banner error' + hlClass() + '">' + esc(state.moveError.message) +
