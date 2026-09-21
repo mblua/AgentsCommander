@@ -26,6 +26,17 @@
  * The self-test runs entirely in memory through the same pure functions the
  * scan uses; every file, byte and environment read is injectable.
  *
+ * #2255 (phase 3 of #2234) - the capture pipeline and the verdict.
+ *
+ * `--capture` reads a `cargo clippy --message-format=json` stream, checks the
+ * environment and the capture's integrity, asserts the threshold from both the
+ * configuration and the data, normalises paths, collapses records to distinct
+ * primary spans, rebuilds each site's id and anchor with phase 2's rule, and
+ * compares the observed anchors against the baseline as multisets. `--report`
+ * prints notices and returns 0; the enforcing mode prints `::error::`
+ * annotations with a remedial line and returns 1. `--emit` writes the observed
+ * anchors, and only after every check before the comparison has passed.
+ *
  * See docs/quality/cognitive-complexity-gate.md (added in phase 8).
  */
 
@@ -45,14 +56,27 @@ const S1_RE = /cognitive_complexity|cognitive-complexity/g;
 
 const USAGE = `Usage: node scripts/check-cognitive-complexity.mjs --self-test
        node scripts/check-cognitive-complexity.mjs --scan-sources
-       node scripts/check-cognitive-complexity.mjs --platform <platform>
+       node scripts/check-cognitive-complexity.mjs --capture <file> --clippy-exit <n> \\
+             --platform <platform> --rustc-version <v> [--report] [--emit <file>] \\
+             [--workspace-root <dir>] [--commit <sha>]
 
-Runs the in-memory self-test of the cognitive-complexity detector, or scans the
-repository for Clippy cognitive-complexity suppression routes (rules S1 to S4).
+Runs the in-memory self-test of the cognitive-complexity detector, scans the
+repository for Clippy cognitive-complexity suppression routes (rules S1 to S4),
+or reads a Clippy JSON capture and applies the baseline ratchet.
 
-  --self-test         Run the in-memory self-test (9 cases); touches no file.
+  --self-test         Run the in-memory self-test; touches no file.
   --scan-sources      Walk the repository (skipping target/, node_modules/,
                       dist/ and .git/) and fail on any S1-S4 hit.
+  --capture <file>    Read the JSON capture and compare it to the baseline.
+  --clippy-exit <n>   The exit code of the clippy run that produced <file>.
+  --rustc-version <v> The rustc release the capture was produced with.
+  --report            Print findings as notices and return 0; an absent
+                      baseline is an empty baseline, and no error annotation is
+                      ever emitted.
+  --emit <file>       Write the observed anchors after a successful read.
+  --workspace-root <dir> The root that relative file_name values are read
+                      under; defaults to the repository root.
+  --commit <sha>      The commit recorded in the --emit document.
   --platform <p>      Declare the platform: windows, linux or macos.
   --help              Print this usage and exit 0.`;
 
@@ -554,7 +578,24 @@ function runScan({ listDir, readSource, readBytes, stdout, stderr, getEnv }) {
 }
 
 export function parseArgs(argv) {
-  const flags = { help: false, selfTest: false, scanSources: false, platform: undefined };
+  const flags = {
+    help: false,
+    selfTest: false,
+    scanSources: false,
+    platform: undefined,
+    capture: undefined,
+    clippyExit: undefined,
+    rustcVersion: undefined,
+    report: false,
+    emit: undefined,
+    workspaceRoot: undefined,
+    commit: undefined,
+  };
+  const value = (index, name) => {
+    const next = argv[index + 1];
+    if (next === undefined || next.startsWith('--')) throw new UsageError(`${name} requires a value`);
+    return next;
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--self-test') {
@@ -563,13 +604,37 @@ export function parseArgs(argv) {
       flags.scanSources = true;
     } else if (arg === '--help') {
       flags.help = true;
+    } else if (arg === '--report') {
+      flags.report = true;
     } else if (arg === '--platform') {
-      const value = argv[i + 1];
-      if (value === undefined) throw new UsageError('--platform requires a value: windows, linux or macos');
-      if (!PLATFORMS.includes(value)) {
-        throw new UsageError(`--platform must be one of windows, linux or macos, got ${JSON.stringify(value)}`);
+      const value_ = argv[i + 1];
+      if (value_ === undefined) throw new UsageError('--platform requires a value: windows, linux or macos');
+      if (!PLATFORMS.includes(value_)) {
+        throw new UsageError(`--platform must be one of windows, linux or macos, got ${JSON.stringify(value_)}`);
       }
-      flags.platform = value;
+      flags.platform = value_;
+      i += 1;
+    } else if (arg === '--capture') {
+      flags.capture = value(i, '--capture');
+      i += 1;
+    } else if (arg === '--clippy-exit') {
+      const raw = value(i, '--clippy-exit');
+      if (!/^-?[0-9]+$/.test(raw)) {
+        throw new UsageError(`--clippy-exit must be an integer, got ${JSON.stringify(raw)}`);
+      }
+      flags.clippyExit = Number(raw);
+      i += 1;
+    } else if (arg === '--rustc-version') {
+      flags.rustcVersion = value(i, '--rustc-version');
+      i += 1;
+    } else if (arg === '--emit') {
+      flags.emit = value(i, '--emit');
+      i += 1;
+    } else if (arg === '--workspace-root') {
+      flags.workspaceRoot = value(i, '--workspace-root');
+      i += 1;
+    } else if (arg === '--commit') {
+      flags.commit = value(i, '--commit');
       i += 1;
     } else {
       throw new UsageError(`unknown argument: ${arg}`);
@@ -579,8 +644,27 @@ export function parseArgs(argv) {
   const modes = [];
   if (flags.selfTest) modes.push('self-test');
   if (flags.scanSources) modes.push('scan-sources');
+  if (flags.capture !== undefined) modes.push('capture');
   if (modes.length !== 1) {
-    throw new UsageError('exactly one mode is required: --self-test or --scan-sources');
+    throw new UsageError('exactly one mode is required: --self-test, --scan-sources or --capture');
+  }
+  if (modes[0] === 'capture') {
+    if (flags.platform === undefined) {
+      throw new UsageError('--capture requires --platform windows, linux or macos');
+    }
+    if (flags.clippyExit === undefined) throw new UsageError('--capture requires --clippy-exit <n>');
+    if (flags.rustcVersion === undefined) throw new UsageError('--capture requires --rustc-version <v>');
+    return {
+      mode: 'capture',
+      captureFile: flags.capture,
+      clippyExit: flags.clippyExit,
+      platform: flags.platform,
+      rustcVersion: flags.rustcVersion,
+      report: flags.report,
+      emit: flags.emit,
+      workspaceRoot: flags.workspaceRoot,
+      commit: flags.commit,
+    };
   }
   return { mode: modes[0], platform: flags.platform };
 }
@@ -605,6 +689,29 @@ export function main(argv, io = {}) {
     return 0;
   }
   if (options.mode === 'self-test') return selfTest({ stdout, stderr });
+  if (options.mode === 'capture') {
+    try {
+      return runCapture(options, {
+        stderr,
+        getEnv,
+        readCaptureText: io.readCaptureText,
+        readWorkspace: io.readWorkspace,
+        readWorkspaceBytes: io.readWorkspaceBytes,
+        existsWorkspace: io.existsWorkspace,
+        writeText: io.writeText,
+      });
+    } catch (error) {
+      if (
+        error instanceof CaptureError
+        || error instanceof ConfigError
+        || error instanceof ThresholdError
+      ) {
+        stderr(`${error.code}: ${error.message}`);
+        return 1;
+      }
+      throw error;
+    }
+  }
   return runScan({
     listDir: io.listDir ?? defaultListDir,
     readSource: io.readSource ?? defaultReadSource,
@@ -659,6 +766,24 @@ export class CaptureError extends Error {
     super(message);
     this.name = 'CAPTURE';
     this.code = 'CAPTURE';
+  }
+}
+
+/** A failure of the gate's own configuration. */
+export class ConfigError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'CONFIG';
+    this.code = 'CONFIG';
+  }
+}
+
+/** A cognitive-complexity message that does not carry the pinned denominator. */
+export class ThresholdError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'THRESHOLD';
+    this.code = 'THRESHOLD';
   }
 }
 
@@ -1105,6 +1230,424 @@ export function anchorFor(path, line, column, readSource = defaultReadSource) {
 }
 
 // ---------------------------------------------------------------------------
+// The capture pipeline and the verdict (#2255, phase 3 of #2234)
+//
+// `--capture` never guesses: it reprints every non-cognitive diagnostic first
+// so a broken build still shows its human output, then checks the environment,
+// returns Clippy's own exit code when Clippy failed, and only then reads the
+// capture as a complete record (parseable, ending in `build-finished`) whose
+// outcome must agree with a zero exit. The threshold is asserted from the
+// clippy.toml that Clippy actually reads, then from the denominator inside each
+// cognitive message. Paths are normalised against the workspace root, records
+// are collapsed to distinct primary spans so the lib / lib-test duplicate pair
+// counts once, and phase 2's `idFor` and `anchorFor` rebuild the identity.
+// The verdict compares anchor multisets, so an equal-count replacement is one
+// NEW plus one STALE rather than a pass. `--report` prints `::notice::` lines
+// and returns 0; the enforcing mode prints `::error::` annotations with the
+// remedial line and returns 1 on any NEW or STALE. `--emit` writes the
+// observed anchors in both modes, and only when every earlier step passed.
+// ---------------------------------------------------------------------------
+
+const COGNITIVE_CODE = 'clippy::cognitive_complexity';
+const BASELINE_FILE = 'cognitive-complexity.baseline.json';
+const COGNITIVE_MESSAGE_RE = /^the function has a cognitive complexity of \((\d+)\/(\d+)\)$/;
+const ANCHOR_RE = /^[0-9a-f]{12}$/;
+const NEW_REMEDIAL =
+  'Reduce the function to 25 or below. The baseline records debt at adoption and may not grow.';
+const STALE_REMEDIAL =
+  "Remove this entry from cognitive-complexity.baseline.json in the same pull request if the debt is gone; if instead the site's header changed, its anchor moved and the ratchet has no re-anchoring path, so reduce the function to 25 or below.";
+
+/** Collapses `.` and `..`; null when a `..` escapes above the start. */
+function normaliseSegments(pathText) {
+  const segments = [];
+  for (const segment of pathText.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      if (segments.length === 0) return null;
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return segments.join('/');
+}
+
+/**
+ * The workspace-relative POSIX path of a capture `file_name`, or a CAPTURE
+ * error when the path is absolute outside the root or climbs above it.
+ */
+function normaliseCapturePath(fileName, workspaceRoot) {
+  const slashed = String(fileName).replace(/\\/g, '/');
+  const root = String(workspaceRoot).replace(/\\/g, '/').replace(/\/+$/, '');
+  const absolute = slashed.startsWith('/') || /^[A-Za-z]:\//.test(slashed);
+  let relative = slashed;
+  if (absolute) {
+    if (root === '' || !(slashed === root || slashed.startsWith(`${root}/`))) {
+      throw new CaptureError(
+        `capture path escapes the workspace root ${JSON.stringify(workspaceRoot)}: ${JSON.stringify(fileName)}`,
+      );
+    }
+    relative = slashed.slice(root.length).replace(/^\/+/, '');
+  }
+  const normalised = normaliseSegments(relative);
+  if (normalised === null) {
+    throw new CaptureError(
+      `capture path escapes the workspace root ${JSON.stringify(workspaceRoot)}: ${JSON.stringify(fileName)}`,
+    );
+  }
+  return normalised;
+}
+
+/** Validates section 4's schema, then the threshold and toolchain agreement. */
+function validateBaseline(document, rustcVersion) {
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    throw new ConfigError('baseline must be a JSON object');
+  }
+  if (document.version !== 1) {
+    throw new ConfigError(`baseline version must be 1, got ${JSON.stringify(document.version)}`);
+  }
+  if (document.threshold !== 25) {
+    throw new ConfigError(`baseline threshold must be 25, got ${JSON.stringify(document.threshold)}`);
+  }
+  if (document.toolchain !== rustcVersion) {
+    throw new ConfigError(
+      `baseline toolchain must be ${JSON.stringify(rustcVersion)}, got ${JSON.stringify(document.toolchain)}`,
+    );
+  }
+  if (!Array.isArray(document.entries)) {
+    throw new ConfigError('baseline entries must be an array');
+  }
+  let previousId = null;
+  for (const entry of document.entries) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new ConfigError('baseline entries must be objects');
+    }
+    if (typeof entry.id !== 'string' || entry.id === '') {
+      throw new ConfigError('baseline entry id must be a non-empty string');
+    }
+    if (previousId !== null && entry.id <= previousId) {
+      throw new ConfigError(
+        `baseline entries must be sorted by id and unique; ${JSON.stringify(entry.id)} follows ${JSON.stringify(previousId)}`,
+      );
+    }
+    previousId = entry.id;
+    const sites = entry.sites;
+    if (sites === null || typeof sites !== 'object' || Array.isArray(sites)) {
+      throw new ConfigError(`baseline entry ${entry.id} sites must be an object`);
+    }
+    const platforms = Object.keys(sites);
+    if (platforms.length === 0) {
+      throw new ConfigError(`baseline entry ${entry.id} sites must not be empty`);
+    }
+    for (const platform of platforms) {
+      if (!PLATFORMS.includes(platform)) {
+        throw new ConfigError(`baseline entry ${entry.id} has unknown platform ${JSON.stringify(platform)}`);
+      }
+      const anchors = sites[platform];
+      if (!Array.isArray(anchors) || anchors.length === 0) {
+        throw new ConfigError(`baseline entry ${entry.id}.sites.${platform} must be a non-empty array`);
+      }
+      for (let index = 0; index < anchors.length; index += 1) {
+        if (typeof anchors[index] !== 'string' || !ANCHOR_RE.test(anchors[index])) {
+          throw new ConfigError(
+            `baseline anchor ${JSON.stringify(anchors[index])} in ${entry.id}.sites.${platform} must be 12 lowercase hex characters`,
+          );
+        }
+        if (index > 0 && anchors[index] < anchors[index - 1]) {
+          throw new ConfigError(`baseline entry ${entry.id}.sites.${platform} must be sorted`);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The `--capture` mode, in the order of section 5. Returns an exit code; every
+ * failure throws a typed error that `main` prints as `<CODE>: <message>`.
+ */
+export function runCapture(options, io = {}) {
+  const stderr = io.stderr ?? ((text) => console.error(text));
+  const getEnv = io.getEnv ?? ((name) => process.env[name]);
+  const workspaceRoot = options.workspaceRoot ?? ROOT;
+  const readCaptureText = io.readCaptureText ?? ((file) => fs.readFileSync(file, 'utf8'));
+  const readWorkspace =
+    io.readWorkspace ?? ((file) => fs.readFileSync(path.join(workspaceRoot, file), 'utf8'));
+  const readWorkspaceBytes =
+    io.readWorkspaceBytes ?? ((file) => fs.readFileSync(path.join(workspaceRoot, file)));
+  const existsWorkspace = io.existsWorkspace ?? ((file) => fs.existsSync(path.join(workspaceRoot, file)));
+  const writeText = io.writeText ?? ((file, text) => fs.writeFileSync(file, text));
+
+  // 1. Render first, before anything can fail, so a broken build still shows
+  // its diagnostics. Cognitive messages are left to the verdict's own lines.
+  let captureText = null;
+  let readError = null;
+  try {
+    captureText = readCaptureText(options.captureFile);
+  } catch (error) {
+    readError = error;
+  }
+  const records = [];
+  let parseError = null;
+  if (typeof captureText === 'string') {
+    for (const line of captureText.split('\n')) {
+      if (!line.startsWith('{')) continue;
+      try {
+        records.push(JSON.parse(line));
+      } catch {
+        parseError = line;
+        break;
+      }
+    }
+  }
+  for (const record of records) {
+    if (record?.reason !== 'compiler-message') continue;
+    if (record.message?.code?.code === COGNITIVE_CODE) continue;
+    const rendered = record.message?.rendered;
+    const text =
+      typeof rendered === 'string' && rendered.length > 0 ? rendered : record.message?.message;
+    if (typeof text === 'string' && text.length > 0) stderr(text);
+  }
+
+  // 2. Environment. Either variable silences the whole run while leaving exit 0.
+  if (getEnv('CLIPPY_CONF_DIR') !== undefined) {
+    throw new ConfigError('CLIPPY_CONF_DIR is set; it silences the cognitive-complexity lint');
+  }
+  for (const name of ['RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS']) {
+    const value = getEnv(name);
+    if (typeof value === 'string' && (value.includes('cap-lints') || value.includes('cognitive'))) {
+      throw new ConfigError(
+        `${name} contains ${JSON.stringify(value)}; it silences the cognitive-complexity lint`,
+      );
+    }
+  }
+
+  // 3. Clippy's own failure is the answer; the ratchet is not consulted.
+  if (options.clippyExit !== 0) {
+    stderr(`cognitive gate not evaluated: clippy exited ${options.clippyExit}`);
+    return options.clippyExit;
+  }
+
+  // 4. Integrity first, then outcome. An empty capture is never "clean".
+  if (readError !== null) {
+    const reason = readError instanceof Error ? readError.message : String(readError);
+    throw new CaptureError(`cannot read ${options.captureFile}: ${reason}`);
+  }
+  if (captureText.length === 0) {
+    throw new CaptureError(`${options.captureFile} is empty`);
+  }
+  if (parseError !== null) {
+    throw new CaptureError(
+      `${options.captureFile} has a line starting with '{' that does not parse: ${JSON.stringify(parseError.slice(0, 120))}`,
+    );
+  }
+  // A terminal build-finished is what makes the capture a complete record:
+  // records after it mean a second run was truncated into the same file.
+  const finished = records[records.length - 1];
+  if (finished?.reason !== 'build-finished') {
+    throw new CaptureError(`${options.captureFile} has no terminal build-finished record`);
+  }
+  if (finished.success !== true) {
+    throw new CaptureError(
+      `${options.captureFile} reports build-finished success ${JSON.stringify(finished.success)} while clippy exited 0`,
+    );
+  }
+
+  // 5. Threshold file. Clippy 1.97.1 gives a root .clippy.toml precedence.
+  if (existsWorkspace('.clippy.toml')) {
+    throw new ConfigError('root .clippy.toml exists and takes precedence over clippy.toml; remove it');
+  }
+  let tomlBytes;
+  try {
+    tomlBytes = readWorkspaceBytes('clippy.toml');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(`cannot read root clippy.toml: ${reason}`);
+  }
+  let tomlText;
+  try {
+    tomlText = new TextDecoder('utf-8', { fatal: true }).decode(tomlBytes);
+  } catch {
+    throw new ConfigError('root clippy.toml is not valid UTF-8');
+  }
+  const tomlProblem = validateRootClippyToml(tomlText);
+  if (tomlProblem !== null) throw new ConfigError(tomlProblem.message);
+
+  // 6. Baseline. An absent document is only legal under --report.
+  let baselineDocument;
+  let baselineText = null;
+  try {
+    baselineText = readWorkspace(BASELINE_FILE);
+  } catch {
+    baselineText = null;
+  }
+  if (baselineText === null) {
+    if (!options.report) throw new CaptureError(`${BASELINE_FILE} not found`);
+    baselineDocument = {
+      version: 1,
+      issue: 2234,
+      threshold: 25,
+      toolchain: options.rustcVersion,
+      capturedFrom: null,
+      capturedAt: null,
+      entries: [],
+    };
+  } else {
+    let parsed;
+    try {
+      parsed = JSON.parse(baselineText);
+    } catch {
+      throw new ConfigError(`${BASELINE_FILE} is not valid JSON`);
+    }
+    validateBaseline(parsed, options.rustcVersion);
+    baselineDocument = parsed;
+  }
+
+  // 7. Threshold in the data: every cognitive message carries the pinned 25.
+  const cognitiveRecords = records.filter(
+    (record) =>
+      record?.reason === 'compiler-message' && record.message?.code?.code === COGNITIVE_CODE,
+  );
+  for (const record of cognitiveRecords) {
+    const message = record.message?.message;
+    const match = typeof message === 'string' ? COGNITIVE_MESSAGE_RE.exec(message) : null;
+    if (match === null || match[2] !== '25') {
+      throw new ThresholdError(
+        `cognitive-complexity message does not carry the pinned denominator 25: ${JSON.stringify(message)}`,
+      );
+    }
+  }
+
+  // 8 and 9. Normalise the path, then collapse to distinct primary spans. The
+  // whole span is the separating key: (file, line_start) merges two sites that
+  // share a line but are separated by column.
+  const sites = new Map();
+  for (const record of cognitiveRecords) {
+    const span = (record.message.spans ?? []).find((candidate) => candidate?.is_primary === true);
+    if (span === undefined) {
+      throw new CaptureError(
+        `cognitive-complexity message carries no primary span: ${JSON.stringify(record.message.message)}`,
+      );
+    }
+    const file = normaliseCapturePath(span.file_name, workspaceRoot);
+    const key = [file, span.line_start, span.line_end, span.column_start, span.column_end].join('\u0000');
+    if (sites.has(key)) continue;
+    const selection = Array.isArray(span.text) ? span.text[0] : undefined;
+    const sliceText =
+      selection === undefined
+        ? undefined
+        : selection.text.slice(selection.highlight_start - 1, selection.highlight_end - 1);
+    sites.set(key, {
+      file,
+      line: span.line_start,
+      column: span.column_start,
+      sliceText,
+      rendered: typeof record.message.rendered === 'string' ? record.message.rendered : null,
+    });
+  }
+
+  // 10 and 11. Phase 2's identity rule, exactly, and the sorted anchors per id.
+  const observed = new Map();
+  const renderedByAnchor = new Map();
+  for (const site of sites.values()) {
+    const id = idFor(site.file, site.line, site.column, site.sliceText, readWorkspace);
+    const anchor = anchorFor(site.file, site.line, site.column, readWorkspace);
+    if (!observed.has(id)) observed.set(id, []);
+    observed.get(id).push(anchor);
+    const anchorKey = `${id}\u0000${anchor}`;
+    if (!renderedByAnchor.has(anchorKey)) renderedByAnchor.set(anchorKey, site.rendered);
+  }
+  for (const anchors of observed.values()) anchors.sort();
+
+  // 14. Emission, after steps 2 to 11 all passed and before the verdict.
+  if (options.emit !== undefined) {
+    const entries = [...observed.keys()]
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+      .map((id) => ({ id, anchors: observed.get(id) }));
+    const document = {
+      platform: options.platform,
+      commit: options.commit ?? null,
+      rustcVersion: options.rustcVersion,
+      entries,
+    };
+    writeText(options.emit, `${JSON.stringify(document, null, 2)}\n`);
+  }
+
+  // 12. Anchor multisets, not counts: an equal-count replacement is refused.
+  const baselineById = new Map(baselineDocument.entries.map((entry) => [entry.id, entry]));
+  const ids = [...new Set([...observed.keys(), ...baselineById.keys()])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const newFindings = [];
+  const staleFindings = [];
+  for (const id of ids) {
+    const observedAnchors = observed.get(id) ?? [];
+    const entry = baselineById.get(id);
+    const baselineAnchors = entry === undefined ? undefined : entry.sites[options.platform];
+    const remaining = new Map();
+    for (const anchor of baselineAnchors ?? []) {
+      remaining.set(anchor, (remaining.get(anchor) ?? 0) + 1);
+    }
+    for (const anchor of observedAnchors) {
+      const count = remaining.get(anchor) ?? 0;
+      if (count === 0) {
+        newFindings.push({
+          id,
+          anchor,
+          observed: observedAnchors.length,
+          baseline: baselineAnchors === undefined ? 'absent' : baselineAnchors.length,
+          rendered: renderedByAnchor.get(`${id}\u0000${anchor}`) ?? null,
+        });
+      } else {
+        remaining.set(anchor, count - 1);
+      }
+    }
+    if (baselineAnchors !== undefined) {
+      for (const [anchor, count] of remaining) {
+        if (count > 0) {
+          staleFindings.push({
+            id,
+            anchor,
+            observed: observedAnchors.length === 0 ? 'none' : observedAnchors.length,
+            baseline: baselineAnchors.length,
+          });
+        }
+      }
+    }
+  }
+
+  // 13. Report mode never emits an Actions error annotation and never fails.
+  const underActions = getEnv('GITHUB_ACTIONS') === 'true';
+  if (options.report) {
+    const prefix = underActions ? '::notice::' : '';
+    for (const finding of newFindings) {
+      if (finding.rendered !== null) stderr(finding.rendered);
+      stderr(
+        `${prefix}NEW cognitive complexity above 25: ${finding.id}#${finding.anchor} (observed ${finding.observed}, baseline ${finding.baseline}) on ${options.platform}`,
+      );
+    }
+    for (const finding of staleFindings) {
+      stderr(
+        `${prefix}STALE baseline entry: ${finding.id}#${finding.anchor} (baseline ${finding.baseline}, observed ${finding.observed}) on ${options.platform}`,
+      );
+    }
+    return 0;
+  }
+  const prefix = underActions ? '::error::' : '';
+  for (const finding of newFindings) {
+    if (finding.rendered !== null) stderr(finding.rendered);
+    stderr(
+      `${prefix}NEW cognitive complexity above 25: ${finding.id}#${finding.anchor} (observed ${finding.observed}, baseline ${finding.baseline}) on ${options.platform}`,
+    );
+    stderr(NEW_REMEDIAL);
+  }
+  for (const finding of staleFindings) {
+    stderr(
+      `${prefix}STALE baseline entry: ${finding.id}#${finding.anchor} (baseline ${finding.baseline}, observed ${finding.observed}) on ${options.platform}`,
+    );
+    stderr(STALE_REMEDIAL);
+  }
+  return newFindings.length > 0 || staleFindings.length > 0 ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
 // In-memory self-test
 // ---------------------------------------------------------------------------
 
@@ -1210,6 +1753,154 @@ function expectEqual(actual, expected, label) {
 function expectDifferent(left, right, label) {
   if (left === right) throw new Error(`${label}: expected two different values, got ${left}`);
 }
+
+// Phase 3 capture fixtures. Every read, the environment and the emission write
+// are injectable, so the self-test exercises main() itself over the same
+// in-memory tree a real capture uses.
+const CAPTURE_FILE = 'capture.jsonl';
+const TEST_WORKSPACE_ROOT = 'C:/ws';
+
+function jsonl(...records) {
+  return `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
+}
+
+function buildFinished(success = true) {
+  return { reason: 'build-finished', success };
+}
+
+function messageRecord({
+  file,
+  line,
+  column,
+  slice,
+  message,
+  code,
+  level = 'error',
+  rendered,
+  endLine,
+  endColumn,
+  text,
+}) {
+  const spanText = text ?? slice;
+  return {
+    reason: 'compiler-message',
+    target: { name: 'app', kind: ['lib'], src_path: file },
+    message: {
+      rendered: rendered ?? `error: ${message}\n  --> ${file}:${line}:${column}\n`,
+      level,
+      message,
+      code: code === undefined ? null : { code, explanation: null },
+      spans: [
+        {
+          file_name: file,
+          line_start: line,
+          line_end: endLine ?? line,
+          column_start: column,
+          column_end: endColumn ?? column + (spanText === undefined ? 1 : spanText.length),
+          is_primary: true,
+          text:
+            spanText === undefined
+              ? []
+              : [
+                  {
+                    text: spanText,
+                    highlight_start: 1,
+                    highlight_end: spanText.length + 1,
+                  },
+                ],
+        },
+      ],
+    },
+  };
+}
+
+function cognitiveRecord({ message = 'the function has a cognitive complexity of (31/25)', ...rest }) {
+  return messageRecord({ ...rest, message, code: COGNITIVE_CODE });
+}
+
+function baselineJson(entries, overrides = {}) {
+  return JSON.stringify({
+    version: 1,
+    issue: 2234,
+    threshold: 25,
+    toolchain: '1.97.1',
+    capturedFrom: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+    capturedAt: '2026-01-01T00:00:00Z',
+    entries,
+    ...overrides,
+  });
+}
+
+function otherAnchor(...exclude) {
+  for (const digit of '0123456789abcdef') {
+    const candidate = digit.repeat(12);
+    if (!exclude.includes(candidate)) return candidate;
+  }
+  throw new Error('no unused anchor candidate');
+}
+
+function captureFixture({ capture = '', workspace = {}, env = {} } = {}) {
+  const captureFiles = { [CAPTURE_FILE]: capture };
+  const stdoutLines = [];
+  const stderrLines = [];
+  const writes = new Map();
+  const reader = (file) => {
+    if (!(file in workspace)) {
+      const error = new Error(`ENOENT: no such file in the fixture workspace: ${file}`);
+      error.code = 'ENOENT';
+      throw error;
+    }
+    return workspace[file];
+  };
+  const io = {
+    stdout: (text) => stdoutLines.push(text),
+    stderr: (text) => stderrLines.push(text),
+    getEnv: (name) => env[name],
+    readCaptureText: (file) => {
+      if (!(file in captureFiles)) {
+        const error = new Error(`ENOENT: no such capture: ${file}`);
+        error.code = 'ENOENT';
+        throw error;
+      }
+      return captureFiles[file];
+    },
+    readWorkspace: reader,
+    readWorkspaceBytes: (file) => Buffer.from(reader(file), 'utf8'),
+    existsWorkspace: (file) => file in workspace,
+    writeText: (file, text) => writes.set(file, text),
+  };
+  const baseArgs = [
+    '--capture',
+    CAPTURE_FILE,
+    '--clippy-exit',
+    '0',
+    '--platform',
+    'windows',
+    '--rustc-version',
+    '1.97.1',
+    '--workspace-root',
+    TEST_WORKSPACE_ROOT,
+  ];
+  return {
+    workspace,
+    reader,
+    state: { stdout: stdoutLines, stderr: stderrLines, writes },
+    run: (extra = []) => main([...baseArgs, ...extra], io),
+  };
+}
+
+function stderrText(fixture) {
+  return fixture.state.stderr.join('\n');
+}
+
+function findingLines(fixture, kind) {
+  const marker = kind === 'NEW' ? 'NEW cognitive complexity above 25:' : 'STALE baseline entry:';
+  return fixture.state.stderr.filter((line) => line.includes(marker));
+}
+
+const HEAVY_SOURCE = 'fn heavy() {\n    if a { }\n}\n';
+const TWO_SITES_SOURCE =
+  'impl A {\n    fn m(&self) { if x {} }\n    fn m(&self, x: u32) { if y {} }\n}\n';
 
 // The four comments and pinned assignment of the phase-1 root clippy.toml.
 const PINNED_CLIPPY_TOML = [
@@ -1651,6 +2342,645 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       if (!/^[0-9a-f]{12}$/.test(anchor)) throw new Error(`expected 12 hex characters, got ${JSON.stringify(anchor)}`);
       const expected = sha256(Buffer.from(`f() ${'x'.repeat(396)}`, 'utf8')).slice(0, 12);
       expectEqual(anchor, expected, 'capped anchor');
+    }],
+    ['case 1: observed set equals the baseline for this platform', () => {
+      const workspace = { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src\\a.rs', line: 1, column: 1, slice: 'heavy' }),
+          cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished(),
+        ),
+        workspace,
+      });
+      workspace['cognitive-complexity.baseline.json'] = baselineJson([
+        {
+          id: 'rust:src/a.rs::heavy',
+          sites: { windows: [anchorFor('src/a.rs', 1, 1, fixture.reader)] },
+        },
+      ]);
+      expectEqual(fixture.run(), 0, 'a matching anchor passes');
+      expectEqual(fixture.state.stderr.length, 0, 'a pass prints nothing');
+    }],
+    ['case 2: an observed id absent from the baseline is a NEW in enforcing mode', () => {
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished(),
+        ),
+        workspace: { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
+        env: { GITHUB_ACTIONS: 'true' },
+      });
+      fixture.workspace['cognitive-complexity.baseline.json'] = baselineJson([]);
+      expectEqual(fixture.run(), 1, 'a NEW exits 1');
+      const lines = findingLines(fixture, 'NEW');
+      if (lines.length !== 1) throw new Error(`expected one NEW line, got ${JSON.stringify(lines)}`);
+      if (!lines[0].startsWith('::error::')) {
+        throw new Error(`expected the ::error:: annotation, got ${lines[0]}`);
+      }
+      if (!fixture.state.stderr.includes(NEW_REMEDIAL)) {
+        throw new Error('the remedial line was not printed');
+      }
+    }],
+    ['case 3: two sites observed against one baselined anchor is a NEW', () => {
+      const first = sourceSite(TWO_SITES_SOURCE, 'm(&self)');
+      const second = sourceSite(TWO_SITES_SOURCE, 'm(&self, x: u32)');
+      const workspace = { 'src/two.rs': TWO_SITES_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/two.rs', line: first.line, column: first.column, slice: 'm' }),
+          cognitiveRecord({ file: 'src/two.rs', line: second.line, column: second.column, slice: 'm' }),
+          buildFinished(),
+        ),
+        workspace,
+      });
+      const secondAnchor = anchorFor('src/two.rs', second.line, second.column, fixture.reader);
+      workspace['cognitive-complexity.baseline.json'] = baselineJson([
+        {
+          id: 'rust:src/two.rs::impl:A::m',
+          sites: { windows: [anchorFor('src/two.rs', first.line, first.column, fixture.reader)] },
+        },
+      ]);
+      expectEqual(fixture.run(), 1, 'the second site is a NEW');
+      const lines = findingLines(fixture, 'NEW');
+      if (lines.length !== 1 || !lines[0].includes(`#${secondAnchor}`)) {
+        throw new Error(`expected one NEW for ${secondAnchor}, got ${JSON.stringify(lines)}`);
+      }
+    }],
+    ['case 4: a baselined anchor with nothing observed is a STALE', () => {
+      const fixture = captureFixture({
+        capture: jsonl(buildFinished()),
+        workspace: {
+          'clippy.toml': PINNED_CLIPPY_TOML,
+          'cognitive-complexity.baseline.json': baselineJson([
+            { id: 'rust:src/gone.rs::heavy', sites: { windows: ['a'.repeat(12)] } },
+          ]),
+        },
+      });
+      expectEqual(fixture.run(), 1, 'a STALE exits 1');
+      const lines = findingLines(fixture, 'STALE');
+      if (lines.length !== 1 || !lines[0].includes('rust:src/gone.rs::heavy#aaaaaaaaaaaa')) {
+        throw new Error(`expected one STALE, got ${JSON.stringify(lines)}`);
+      }
+    }],
+    ['case 5: two baselined anchors with one observed is a STALE', () => {
+      const workspace = { 'src/one.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/one.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished(),
+        ),
+        workspace,
+      });
+      const anchor = anchorFor('src/one.rs', 1, 1, fixture.reader);
+      const missing = otherAnchor(anchor);
+      workspace['cognitive-complexity.baseline.json'] = baselineJson([
+        { id: 'rust:src/one.rs::heavy', sites: { windows: [anchor, missing].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) } },
+      ]);
+      expectEqual(fixture.run(), 1, 'the unobserved anchor is a STALE');
+      const lines = findingLines(fixture, 'STALE');
+      if (lines.length !== 1 || !lines[0].includes(`#${missing}`)) {
+        throw new Error(`expected one STALE for ${missing}, got ${JSON.stringify(lines)}`);
+      }
+    }],
+    ['case 6: a windows-only entry ignored on linux is not a finding', () => {
+      const fixture = captureFixture({
+        capture: jsonl(buildFinished()),
+        workspace: {
+          'clippy.toml': PINNED_CLIPPY_TOML,
+          'cognitive-complexity.baseline.json': baselineJson([
+            { id: 'rust:src/x.rs::heavy', sites: { windows: ['a'.repeat(12)] } },
+          ]),
+        },
+      });
+      expectEqual(fixture.run(['--platform', 'linux']), 0, 'an unobserved id with no linux array is ignored');
+      expectEqual(fixture.state.stderr.length, 0, 'ignored means no output');
+    }],
+    ['case 7: the same entry evaluated on windows is a STALE', () => {
+      const fixture = captureFixture({
+        capture: jsonl(buildFinished()),
+        workspace: {
+          'clippy.toml': PINNED_CLIPPY_TOML,
+          'cognitive-complexity.baseline.json': baselineJson([
+            { id: 'rust:src/x.rs::heavy', sites: { windows: ['a'.repeat(12)] } },
+          ]),
+        },
+      });
+      expectEqual(fixture.run(), 1, 'windows sees the entry');
+      if (findingLines(fixture, 'STALE').length !== 1) throw new Error('expected one STALE');
+    }],
+    ['case 8: asymmetric platform arrays are representable', () => {
+      const workspace = { 'src/eight.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/eight.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished(),
+        ),
+        workspace,
+      });
+      const anchor = anchorFor('src/eight.rs', 1, 1, fixture.reader);
+      workspace['cognitive-complexity.baseline.json'] = baselineJson([
+        {
+          id: 'rust:src/eight.rs::heavy',
+          sites: { windows: ['1'.repeat(12), '2'.repeat(12)], linux: [anchor] },
+        },
+      ]);
+      expectEqual(fixture.run(['--platform', 'linux']), 0, 'linux sees only its own array');
+    }],
+    ['case 9: a capture without a terminal build-finished record is CAPTURE', () => {
+      const fixture = captureFixture({
+        capture: jsonl(cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' })),
+        workspace: {},
+      });
+      expectEqual(fixture.run(), 1, 'a truncated capture fails');
+      if (!stderrText(fixture).includes('CAPTURE')) {
+        throw new Error(`expected CAPTURE, got ${stderrText(fixture)}`);
+      }
+      const followed = captureFixture({
+        capture: jsonl(
+          buildFinished(),
+          cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+        ),
+        workspace: { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      expectEqual(followed.run(['--report']), 1, 'a non-terminal build-finished fails');
+      if (!stderrText(followed).includes('CAPTURE')) {
+        throw new Error(`expected CAPTURE, got ${stderrText(followed)}`);
+      }
+    }],
+    ['case 10: build-finished success:false is CAPTURE', () => {
+      const fixture = captureFixture({ capture: jsonl(buildFinished(false)), workspace: {} });
+      expectEqual(fixture.run(), 1, 'a contradictory outcome fails');
+      if (!stderrText(fixture).includes('CAPTURE')) {
+        throw new Error(`expected CAPTURE, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 11: an empty capture is CAPTURE, never clean', () => {
+      const fixture = captureFixture({
+        capture: '',
+        workspace: {
+          'clippy.toml': PINNED_CLIPPY_TOML,
+          'cognitive-complexity.baseline.json': baselineJson([
+            { id: 'rust:src/a.rs::heavy', sites: { windows: ['a'.repeat(12)] } },
+          ]),
+        },
+      });
+      expectEqual(fixture.run(), 1, 'an empty capture is never clean');
+      if (!stderrText(fixture).includes('CAPTURE')) {
+        throw new Error(`expected CAPTURE, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 12: a line starting with { that does not parse is CAPTURE', () => {
+      const fixture = captureFixture({
+        capture: `${jsonl(buildFinished())}{not json\n`,
+        workspace: {},
+      });
+      expectEqual(fixture.run(), 1, 'an unparseable line fails');
+      if (!stderrText(fixture).includes('CAPTURE')) {
+        throw new Error(`expected CAPTURE, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 13: report mode never swallows an integrity error', () => {
+      const fixture = captureFixture({
+        capture: jsonl(cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' })),
+        workspace: {},
+      });
+      expectEqual(fixture.run(['--report']), 1, 'report mode still fails');
+      if (!stderrText(fixture).includes('CAPTURE')) {
+        throw new Error(`expected CAPTURE, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 14: a missing baseline without --report is CAPTURE', () => {
+      const fixture = captureFixture({
+        capture: jsonl(buildFinished()),
+        workspace: { 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      expectEqual(fixture.run(), 1, 'a missing baseline fails');
+      if (!stderrText(fixture).includes('CAPTURE: cognitive-complexity.baseline.json not found')) {
+        throw new Error(`expected the exact CAPTURE message, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 15: report mode with no baseline is an empty baseline and a notice', () => {
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished(),
+        ),
+        workspace: { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
+        env: { GITHUB_ACTIONS: 'true' },
+      });
+      if (fixture.run(['--report', '--emit', 'observed.json']) !== 0) {
+        throw new Error('report mode must exit 0');
+      }
+      const lines = findingLines(fixture, 'NEW');
+      if (lines.length !== 1 || !lines[0].includes('rust:src/a.rs::heavy#')) {
+        throw new Error(`expected the observed id as one NEW, got ${JSON.stringify(lines)}`);
+      }
+      if (!lines.every((line) => line.startsWith('::notice::'))) {
+        throw new Error('every NEW must be a notice');
+      }
+      if (stderrText(fixture).includes('::error::')) {
+        throw new Error('report mode emitted an error annotation');
+      }
+      if (stderrText(fixture).includes('Reduce the function')) {
+        throw new Error('report mode printed the remedial line');
+      }
+      const emission = fixture.state.writes.get('observed.json');
+      if (emission === undefined) throw new Error('the emission was not written');
+      const parsed = JSON.parse(emission);
+      if (
+        !Array.isArray(parsed.entries)
+        || parsed.entries.length !== 1
+        || parsed.entries[0].id !== 'rust:src/a.rs::heavy'
+      ) {
+        throw new Error(`unexpected emission ${emission}`);
+      }
+    }],
+    ['case 16: a message with a denominator other than 25 is THRESHOLD', () => {
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({
+            file: 'src/a.rs',
+            line: 1,
+            column: 1,
+            slice: 'heavy',
+            message: 'the function has a cognitive complexity of (31/40)',
+          }),
+          buildFinished(),
+        ),
+        workspace: {
+          'src/a.rs': HEAVY_SOURCE,
+          'clippy.toml': PINNED_CLIPPY_TOML,
+          'cognitive-complexity.baseline.json': baselineJson([]),
+        },
+      });
+      expectEqual(fixture.run(), 1, 'the wrong denominator fails');
+      if (!stderrText(fixture).includes('THRESHOLD')) {
+        throw new Error(`expected THRESHOLD, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 17: a clippy.toml with another threshold is CONFIG', () => {
+      const fixture = captureFixture({
+        capture: jsonl(buildFinished()),
+        workspace: { 'clippy.toml': 'cognitive-complexity-threshold = 40\n' },
+      });
+      expectEqual(fixture.run(), 1, 'a moved threshold fails');
+      if (!stderrText(fixture).includes('CONFIG')) {
+        throw new Error(`expected CONFIG, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 18: CLIPPY_CONF_DIR set is CONFIG', () => {
+      const fixture = captureFixture({
+        capture: jsonl(buildFinished()),
+        workspace: {
+          'clippy.toml': PINNED_CLIPPY_TOML,
+          'cognitive-complexity.baseline.json': baselineJson([]),
+        },
+        env: { CLIPPY_CONF_DIR: 'docs' },
+      });
+      expectEqual(fixture.run(), 1, 'a config directory fails');
+      if (!stderrText(fixture).includes('CONFIG')) {
+        throw new Error(`expected CONFIG, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 19: RUSTFLAGS and CARGO_ENCODED_RUSTFLAGS are both checked', () => {
+      const first = captureFixture({
+        capture: jsonl(buildFinished()),
+        workspace: {},
+        env: { RUSTFLAGS: '--cap-lints allow' },
+      });
+      expectEqual(first.run(), 1, 'RUSTFLAGS cap-lints is CONFIG');
+      if (!stderrText(first).includes('CONFIG')) throw new Error('expected CONFIG for RUSTFLAGS');
+      const second = captureFixture({
+        capture: jsonl(buildFinished()),
+        workspace: {},
+        env: { CARGO_ENCODED_RUSTFLAGS: '-A\u001fcognitive' },
+      });
+      expectEqual(second.run(), 1, 'CARGO_ENCODED_RUSTFLAGS cognitive is CONFIG');
+      if (!stderrText(second).includes('CONFIG')) {
+        throw new Error('expected CONFIG for CARGO_ENCODED_RUSTFLAGS');
+      }
+    }],
+    ['case 20: a rustc version differing from the baseline toolchain is CONFIG', () => {
+      const fixture = captureFixture({
+        capture: jsonl(buildFinished()),
+        workspace: {
+          'clippy.toml': PINNED_CLIPPY_TOML,
+          'cognitive-complexity.baseline.json': baselineJson([]),
+        },
+      });
+      expectEqual(fixture.run(['--rustc-version', '9.9.9']), 1, 'a toolchain mismatch fails');
+      if (!stderrText(fixture).includes('CONFIG')) {
+        throw new Error(`expected CONFIG, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 21: a failed clippy returns its code and the ratchet is not consulted', () => {
+      const rendered = 'error[E0308]: mismatched types\n  --> src/a.rs:1:6\n';
+      const fixture = captureFixture({
+        capture: jsonl(
+          messageRecord({
+            file: 'src/a.rs',
+            line: 1,
+            column: 6,
+            slice: 'heavy',
+            message: 'mismatched types',
+            code: 'E0308',
+            rendered,
+          }),
+        ),
+        workspace: {},
+      });
+      expectEqual(
+        fixture.run(['--clippy-exit', '101', '--emit', 'never.json']),
+        101,
+        'clippy code is returned',
+      );
+      const renderedIndex = fixture.state.stderr.findIndex((line) => line.includes('error[E0308]'));
+      const gateIndex = fixture.state.stderr.findIndex((line) =>
+        line.includes('cognitive gate not evaluated: clippy exited 101'));
+      if (renderedIndex === -1 || gateIndex === -1 || renderedIndex >= gateIndex) {
+        throw new Error(
+          `expected the rendered diagnostic first, got ${JSON.stringify(fixture.state.stderr)}`,
+        );
+      }
+      if (findingLines(fixture, 'NEW').length !== 0 || findingLines(fixture, 'STALE').length !== 0) {
+        throw new Error('the ratchet was consulted on a failed clippy run');
+      }
+      if (fixture.state.writes.size !== 0) throw new Error('a failed clippy run wrote an emission');
+    }],
+    ['case 22: every baseline schema violation is CONFIG', () => {
+      const id = 'rust:src/a.rs::heavy';
+      const valid = 'a'.repeat(12);
+      const variants = [
+        [
+          'duplicate id',
+          baselineJson([
+            { id, sites: { windows: [valid] } },
+            { id, sites: { windows: [otherAnchor(valid)] } },
+          ]),
+        ],
+        ['sites not an object', baselineJson([{ id, sites: [valid] }])],
+        ['empty anchor array', baselineJson([{ id, sites: { windows: [] } }])],
+        ['anchor not 12 lowercase hex', baselineJson([{ id, sites: { windows: ['A'.repeat(12)] } }])],
+        [
+          'unsorted array',
+          baselineJson([{ id, sites: { windows: ['f'.repeat(12), '0'.repeat(12)] } }]),
+        ],
+        ['unknown platform key', baselineJson([{ id, sites: { freebsd: [valid] } }])],
+        ['version 2', baselineJson([], { version: 2 })],
+      ];
+      for (const [label, text] of variants) {
+        const fixture = captureFixture({
+          capture: jsonl(buildFinished()),
+          workspace: { 'clippy.toml': PINNED_CLIPPY_TOML, 'cognitive-complexity.baseline.json': text },
+        });
+        expectEqual(fixture.run(), 1, `${label} is CONFIG`);
+        if (!stderrText(fixture).includes('CONFIG')) {
+          throw new Error(`expected CONFIG for ${label}, got ${stderrText(fixture)}`);
+        }
+      }
+    }],
+    ['case 23: --emit writes nothing before the comparison gate has passed', () => {
+      const unparseable = captureFixture({
+        capture: `${jsonl(buildFinished())}{not json\n`,
+        workspace: {},
+      });
+      expectEqual(unparseable.run(['--emit', 'never.json']), 1, 'an unparseable capture fails');
+      if (unparseable.state.writes.size !== 0) {
+        throw new Error('an unparseable capture wrote an emission');
+      }
+      const threshold = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({
+            file: 'src/a.rs',
+            line: 1,
+            column: 1,
+            slice: 'heavy',
+            message: 'the function has a cognitive complexity of (31/40)',
+          }),
+          buildFinished(),
+        ),
+        workspace: { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
+        env: { GITHUB_ACTIONS: 'true' },
+      });
+      expectEqual(threshold.run(['--report', '--emit', 'never.json']), 1, 'a threshold failure fails');
+      if (threshold.state.writes.size !== 0) {
+        throw new Error('a threshold failure wrote an emission');
+      }
+    }],
+    ['case 24: a backslash and a forward-slash path are one id', () => {
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src-tauri\\src\\a.rs', line: 1, column: 1, slice: 'heavy' }),
+          cognitiveRecord({ file: 'src-tauri/src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished(),
+        ),
+        workspace: { 'src-tauri/src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      expectEqual(fixture.run(['--report']), 0, 'report mode returns 0');
+      const lines = findingLines(fixture, 'NEW');
+      if (lines.length !== 1 || !lines[0].includes('rust:src-tauri/src/a.rs::heavy#')) {
+        throw new Error(`expected one id, got ${JSON.stringify(lines)}`);
+      }
+    }],
+    ['case 25: an absolute path inside the root is relativised, outside it is CAPTURE', () => {
+      const inside = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'C:\\ws\\src\\a.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished(),
+        ),
+        workspace: { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      expectEqual(inside.run(['--report']), 0, 'report mode returns 0');
+      const lines = findingLines(inside, 'NEW');
+      if (lines.length !== 1 || !lines[0].includes('rust:src/a.rs::heavy#')) {
+        throw new Error(`expected the relativised id, got ${JSON.stringify(lines)}`);
+      }
+      const outside = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'C:/other/src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished(),
+        ),
+        workspace: { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      expectEqual(outside.run(), 1, 'an escaping path is CAPTURE');
+      if (!stderrText(outside).includes('CAPTURE')) {
+        throw new Error(`expected CAPTURE, got ${stderrText(outside)}`);
+      }
+    }],
+    ['case 26: two records with the identical primary span are one site', () => {
+      const record = cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' });
+      const fixture = captureFixture({
+        capture: jsonl(record, record, buildFinished()),
+        workspace: { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      expectEqual(fixture.run(['--report']), 0, 'report mode returns 0');
+      if (findingLines(fixture, 'NEW').length !== 1) {
+        throw new Error('the lib / lib-test pair must collapse to one site');
+      }
+    }],
+    ['case 27: the same id on two lines is two sites', () => {
+      const first = sourceSite(TWO_SITES_SOURCE, 'm(&self)');
+      const second = sourceSite(TWO_SITES_SOURCE, 'm(&self, x: u32)');
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/two.rs', line: first.line, column: first.column, slice: 'm' }),
+          cognitiveRecord({ file: 'src/two.rs', line: second.line, column: second.column, slice: 'm' }),
+          buildFinished(),
+        ),
+        workspace: { 'src/two.rs': TWO_SITES_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      expectEqual(fixture.run(['--report']), 0, 'report mode returns 0');
+      const lines = findingLines(fixture, 'NEW');
+      if (lines.length !== 2 || !lines.every((line) => line.includes('::impl:A::m#'))) {
+        throw new Error(`expected two sites of one id, got ${JSON.stringify(lines)}`);
+      }
+    }],
+    ['case 28: the two closure slice shapes become one id with two sites', () => {
+      const source = 'fn f() {\n    let a = |x: u32| { x };\n    let b = | { y };\n}\n';
+      const first = sourceSite(source, '|x: u32|');
+      const second = sourceSite(source, '|', 3);
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({
+            file: 'src/closures.rs',
+            line: first.line,
+            column: first.column,
+            slice: '|x: u32|',
+          }),
+          cognitiveRecord({ file: 'src/closures.rs', line: second.line, column: second.column, slice: '|' }),
+          buildFinished(),
+        ),
+        workspace: { 'src/closures.rs': source, 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      expectEqual(fixture.run(['--report']), 0, 'report mode returns 0');
+      const lines = findingLines(fixture, 'NEW');
+      const ids = new Set(lines.map((line) => line.slice(line.indexOf(': ') + 2).split('#')[0]));
+      if (lines.length !== 2 || ids.size !== 1 || ![...ids][0].endsWith('::fn:f::{closure}')) {
+        throw new Error(`expected one closure id with two sites, got ${JSON.stringify(lines)}`);
+      }
+    }],
+    ['case 70: two sites sharing a line are separated by their columns', () => {
+      const source =
+        'fn alpha() {} fn beta() {}\nfn f() { let a = |x| { x }; let b = |y| { y }; }\n';
+      const alpha = sourceSite(source, 'alpha');
+      const beta = sourceSite(source, 'beta');
+      const closureX = sourceSite(source, '|x|');
+      const closureY = sourceSite(source, '|y|');
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/line.rs', line: alpha.line, column: alpha.column, slice: 'alpha' }),
+          cognitiveRecord({ file: 'src/line.rs', line: alpha.line, column: alpha.column, slice: 'alpha' }),
+          cognitiveRecord({ file: 'src/line.rs', line: beta.line, column: beta.column, slice: 'beta' }),
+          cognitiveRecord({ file: 'src/line.rs', line: beta.line, column: beta.column, slice: 'beta' }),
+          cognitiveRecord({
+            file: 'src/line.rs',
+            line: closureX.line,
+            column: closureX.column,
+            slice: '|x|',
+          }),
+          cognitiveRecord({
+            file: 'src/line.rs',
+            line: closureX.line,
+            column: closureX.column,
+            slice: '|x|',
+          }),
+          cognitiveRecord({
+            file: 'src/line.rs',
+            line: closureY.line,
+            column: closureY.column,
+            slice: '|y|',
+          }),
+          cognitiveRecord({
+            file: 'src/line.rs',
+            line: closureY.line,
+            column: closureY.column,
+            slice: '|y|',
+          }),
+          buildFinished(),
+        ),
+        workspace: { 'src/line.rs': source, 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      expectEqual(fixture.run(['--report']), 0, 'report mode returns 0');
+      const lines = findingLines(fixture, 'NEW');
+      const alphaLines = lines.filter((line) => line.includes('::alpha#'));
+      const betaLines = lines.filter((line) => line.includes('::beta#'));
+      if (alphaLines.length !== 1 || betaLines.length !== 1) {
+        throw new Error(`expected one site for each same-line function, got ${JSON.stringify(lines)}`);
+      }
+      const closures = lines.filter((line) => line.includes('::fn:f::{closure}#'));
+      if (closures.length !== 2) {
+        throw new Error(`expected two sites for the same-line closures, got ${JSON.stringify(lines)}`);
+      }
+    }],
+    ['case 75: an equal-count anchor replacement is one NEW and one STALE', () => {
+      const first = sourceSite(TWO_SITES_SOURCE, 'm(&self)');
+      const second = sourceSite(TWO_SITES_SOURCE, 'm(&self, x: u32)');
+      const workspace = { 'src/rc1.rs': TWO_SITES_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/rc1.rs', line: first.line, column: first.column, slice: 'm' }),
+          cognitiveRecord({ file: 'src/rc1.rs', line: second.line, column: second.column, slice: 'm' }),
+          buildFinished(),
+        ),
+        workspace,
+      });
+      const observed = anchorFor('src/rc1.rs', first.line, first.column, fixture.reader);
+      const replacement = anchorFor('src/rc1.rs', second.line, second.column, fixture.reader);
+      const missing = otherAnchor(observed, replacement);
+      workspace['cognitive-complexity.baseline.json'] = baselineJson([
+        { id: 'rust:src/rc1.rs::impl:A::m', sites: { windows: [observed, missing].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) } },
+      ]);
+      expectEqual(fixture.run(), 1, 'R-C1 is refused');
+      const newLines = findingLines(fixture, 'NEW');
+      const staleLines = findingLines(fixture, 'STALE');
+      if (newLines.length !== 1 || !newLines[0].includes(`#${replacement}`)) {
+        throw new Error(`expected one NEW for ${replacement}, got ${JSON.stringify(newLines)}`);
+      }
+      if (staleLines.length !== 1 || !staleLines[0].includes(`#${missing}`)) {
+        throw new Error(`expected one STALE for ${missing}, got ${JSON.stringify(staleLines)}`);
+      }
+    }],
+    ['case 76: identical anchors match by multiplicity', () => {
+      const source = 'fn f() {\n    let a = |x: u32| { x };\n    let b = |x: u32| { x };\n}\n';
+      const first = sourceSite(source, '|x: u32|', 1);
+      const second = sourceSite(source, '|x: u32|', 2);
+      const captureText = jsonl(
+        cognitiveRecord({ file: 'src/dup.rs', line: first.line, column: first.column, slice: '|x: u32|' }),
+        cognitiveRecord({ file: 'src/dup.rs', line: second.line, column: second.column, slice: '|x: u32|' }),
+        buildFinished(),
+      );
+      const reader = (file) => {
+        if (file !== 'src/dup.rs') throw new Error(`unexpected workspace read ${file}`);
+        return source;
+      };
+      const anchor = anchorFor('src/dup.rs', first.line, first.column, reader);
+      const matches = captureFixture({
+        capture: captureText,
+        workspace: { 'src/dup.rs': source, 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      matches.workspace['cognitive-complexity.baseline.json'] = baselineJson([
+        {
+          id: 'rust:src/dup.rs::fn:f::{closure}',
+          sites: { windows: [anchor, anchor] },
+        },
+      ]);
+      expectEqual(matches.run(), 0, 'R-C1 residual passes with multiplicity');
+      const replacement = otherAnchor(anchor);
+      const changed = captureFixture({
+        capture: captureText,
+        workspace: { 'src/dup.rs': source, 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      changed.workspace['cognitive-complexity.baseline.json'] = baselineJson([
+        {
+          id: 'rust:src/dup.rs::fn:f::{closure}',
+          sites: { windows: [anchor, replacement].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) },
+        },
+      ]);
+      expectEqual(changed.run(), 1, 'a changed second site is refused');
+      if (findingLines(changed, 'NEW').length !== 1 || findingLines(changed, 'STALE').length !== 1) {
+        throw new Error(`expected one NEW and one STALE, got ${JSON.stringify(changed.state.stderr)}`);
+      }
     }],
   ];
 }

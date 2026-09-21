@@ -1047,7 +1047,8 @@ pub fn validate_wg_fqn(value: &str) -> Result<(), ProtocolError> {
     }
     let (workgroup, agent) = local.split_once('/').ok_or(ProtocolError::Invalid)?;
     let rest = workgroup
-        .strip_prefix("wg-")
+        .strip_prefix("room-")
+        .or_else(|| workgroup.strip_prefix("wg-"))
         .ok_or(ProtocolError::Invalid)?;
     let (digits, team) = rest.split_once('-').ok_or(ProtocolError::Invalid)?;
     if digits.is_empty()
@@ -1177,6 +1178,146 @@ mod tests {
         assert!(validate_screen(&screen).is_ok());
         screen.lines[0].cells[1].text = "x".to_string();
         assert!(validate_screen(&screen).is_err());
+    }
+
+    fn valid_model() -> TerminalScreenModel {
+        TerminalScreenModel {
+            captured_at: "2026-09-21T14:00:45.123Z".to_string(),
+            session: TerminalSnapshotSession {
+                id: "00000000-0000-4000-8000-000000000230".to_string(),
+                backend: TerminalBackendKind::ContainerTransport,
+            },
+            screen: TerminalScreen {
+                dimensions: TerminalDimensions {
+                    rows: 1,
+                    columns: 1,
+                },
+                sequence: 0,
+                active_buffer: TerminalActiveBuffer::Normal,
+                cursor: TerminalCursor {
+                    row: 0,
+                    column: 0,
+                    visible: true,
+                    in_bounds: true,
+                },
+                parser_errors: 0,
+                lines: vec![TerminalLine {
+                    wrapped: false,
+                    cells: vec![cell()],
+                }],
+            },
+            fidelity: TerminalSnapshotFidelity::version_one(false),
+        }
+    }
+
+    #[test]
+    fn room_and_legacy_fqns_validate_in_target_requester_and_json() {
+        const REQUEST_ID: &str = "00000000-0000-4000-8000-000000000231";
+        const ROOM_REQUESTER: &str = "AgentsCommander_iac:room-25-ac-dev-team-v4/ac-tech-lead-v4";
+        const ROOM_TARGET: &str = "AgentsCommander_iac:room-25-ac-dev-team-v4/ac-dev-rust-v4";
+        const LEGACY_REQUESTER: &str = "project:wg-1-team/coordinator";
+        const LEGACY_TARGET: &str = "project:wg-1-team/member";
+
+        for fqn in [ROOM_REQUESTER, ROOM_TARGET, LEGACY_REQUESTER, LEGACY_TARGET] {
+            assert!(validate_wg_fqn(fqn).is_ok(), "must accept {fqn:?}");
+            assert!(
+                validate_requester_identity(fqn, false).is_ok(),
+                "must accept {fqn:?}"
+            );
+            assert!(validate_target_syntax(fqn).is_ok(), "must accept {fqn:?}");
+        }
+
+        let model = valid_model();
+        let document = TerminalSnapshotDocument::from_model(
+            REQUEST_ID.to_string(),
+            ROOM_REQUESTER.to_string(),
+            ROOM_TARGET.to_string(),
+            &model,
+        );
+        assert!(document.validate().is_ok());
+
+        let metadata = TerminalSnapshotPngMetadata {
+            schema_version: SCHEMA_VERSION,
+            request_id: REQUEST_ID.to_string(),
+            captured_at: model.captured_at.clone(),
+            requester: ROOM_REQUESTER.to_string(),
+            target: ROOM_TARGET.to_string(),
+            session: model.session.clone(),
+            screen: TerminalPngScreenMetadata {
+                dimensions: model.screen.dimensions,
+                sequence: model.screen.sequence,
+                active_buffer: model.screen.active_buffer,
+                cursor: model.screen.cursor,
+                parser_errors: model.screen.parser_errors,
+            },
+            fidelity: model.fidelity.clone(),
+            format: TerminalSnapshotFormat::Png,
+            png: TerminalPngInfo {
+                bytes: 17,
+                pixel_width: 26,
+                pixel_height: 36,
+            },
+            renderer: TerminalRendererMetadata::version_one(0),
+        };
+        assert!(metadata.validate().is_ok());
+
+        let request = TerminalSnapshotApiRequest {
+            api_version: API_VERSION.to_string(),
+            request_id: REQUEST_ID.to_string(),
+            to: ROOM_TARGET.to_string(),
+            format: TerminalSnapshotFormat::Json,
+        };
+        assert!(request.validate().is_ok());
+
+        let bytes = crate::to_ascii_json(&document, MAX_JSON_BYTES).expect("encode document");
+        let decoded = crate::decode_bounded::<TerminalSnapshotDocument>(&bytes, MAX_JSON_BYTES)
+            .expect("decode room document");
+        assert_eq!(decoded.requester, ROOM_REQUESTER);
+        assert_eq!(decoded.target, ROOM_TARGET);
+        assert!(decoded.validate().is_ok());
+
+        let legacy = TerminalSnapshotDocument::from_model(
+            REQUEST_ID.to_string(),
+            LEGACY_REQUESTER.to_string(),
+            LEGACY_TARGET.to_string(),
+            &model,
+        );
+        let legacy_bytes =
+            crate::to_ascii_json(&legacy, MAX_JSON_BYTES).expect("encode legacy document");
+        let legacy_decoded =
+            crate::decode_bounded::<TerminalSnapshotDocument>(&legacy_bytes, MAX_JSON_BYTES)
+                .expect("decode legacy document");
+        assert!(legacy_decoded.validate().is_ok());
+    }
+
+    #[test]
+    fn malformed_room_fqns_stay_rejected() {
+        for invalid in [
+            "",
+            "room-25-ac-dev-team-v4/ac-dev-rust-v4",
+            "project:rom-25-ac-dev-team-v4/ac-dev-rust-v4",
+            "project:rooms-25-ac-dev-team-v4/ac-dev-rust-v4",
+            "project:Room-25-ac-dev-team-v4/ac-dev-rust-v4",
+            "project:roomx-25-ac-dev-team-v4/ac-dev-rust-v4",
+            "project:room-ac-dev-team-v4/ac-dev-rust-v4",
+            "project:room--ac-dev-team-v4/ac-dev-rust-v4",
+            "project:room-2a-ac-dev-team-v4/ac-dev-rust-v4",
+            "project:room-٢٥-ac-dev-team-v4/ac-dev-rust-v4",
+            "project:room-25-/ac-dev-rust-v4",
+            "project:room-25-ac-dev-team-v4/",
+            "project:room-25-ac-dev-team-v4/ac-dev/rust-v4",
+            "project:room-25-ac-dev-team-v4",
+            "project:room-25-ac-dev-team-v4:ac-dev-rust-v4",
+            "project:room-25-ac-dev_team-v4/ac-dev-rust-v4",
+            "project:room-25-ac-dev-team-v4/ac-dev.rust-v4",
+            "pro/ject:room-25-ac-dev-team-v4/ac-dev-rust-v4",
+            "project:wg--team/member",
+            "project:wg-1-team/member:extra",
+        ] {
+            assert!(validate_wg_fqn(invalid).is_err(), "must reject {invalid:?}");
+        }
+        let oversized = format!("project:room-1-{}/agent", "t".repeat(1_024));
+        assert!(validate_wg_fqn(&oversized).is_err());
     }
 
     fn canary_model() -> TerminalScreenModel {
