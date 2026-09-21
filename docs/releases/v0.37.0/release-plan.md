@@ -5,7 +5,7 @@ Status: `REVIEW_REQUIRED`. This generated bundle is not approval to implement, t
 Repository: `mblua/AgentsCommander`  
 Release issue: https://github.com/mblua/AgentsCommander/issues/2331  
 Candidate: `0.37.0` / `v0.37.0`  
-Planning base: `82bc821cd3a5206b2743b2a6c4a6820ef5c8d8c4`  
+Planning base: `63ceae2765e1c63760561e0be77bece777d3fe9b`  
 Predecessor: `v0.36.0`
 
 ## 1. Exact review identity
@@ -60,8 +60,8 @@ The hardening allowlist is closed at the release workflow plus these evidence pa
 
 ## 2. Frozen read-only facts
 
-- Git remote main and GitHub API agree at `82bc821cd3a5206b2743b2a6c4a6820ef5c8d8c4`.
-- Ordered planning-base parents: [92c9dc6610419b90f8a1b33c9b8b11afa9350a2d, 41705f81f68dcacebcfd29327a1565e74f2483ca].
+- Git remote main and GitHub API agree at `63ceae2765e1c63760561e0be77bece777d3fe9b`.
+- Ordered planning-base parents: [82bc821cd3a5206b2743b2a6c4a6820ef5c8d8c4, 16047669bc692f5edcabdb9dbc90f4d2b7dc0c02].
 - Base `.github/workflows/release.yml` blob: `1813662691aea512b4c8c087a388b0e9e87e66fa`; content SHA-256: `8c032478e665a51f17de2c061e793dacafe3351312fa2c0eadc7a8103a6e04db`.
 - Predecessor annotated object: `52aca156ca758faa658d05fe9f2d4957d6c7a99e`; peeled commit: `4007c00793b66ac2daef11fe7bf5a119b8131d4b`.
 - Predecessor immutable GitHub Release id: `391490080`.
@@ -137,6 +137,7 @@ Approved scope:
 - fix: fix(quit): add main-window quit gate (refs #2296) ([#2296](https://github.com/mblua/AgentsCommander/issues/2296), [PR #2310](https://github.com/mblua/AgentsCommander/pull/2310))
 - fix: fix(#2300): exempt quit_application from IPC overdue alerts ([#2300](https://github.com/mblua/AgentsCommander/issues/2300), [PR #2320](https://github.com/mblua/AgentsCommander/pull/2320))
 - maintenance: style(rust): format menu guard tests merged in #2292 (#2301) ([#2301](https://github.com/mblua/AgentsCommander/issues/2301), [PR #2303](https://github.com/mblua/AgentsCommander/pull/2303))
+- maintenance: test: serialize copied CLI copy and spawn in phase A (refs #2322) ([#2322](https://github.com/mblua/AgentsCommander/issues/2322), [PR #2324](https://github.com/mblua/AgentsCommander/pull/2324))
 
 ## 3. One mandatory order
 
@@ -157,7 +158,7 @@ No implementation, PR, merge, tag, or publication occurs before steps 1-5. There
 
 ## 4. Planning-base gate
 
-Before implementation, independently query remote main through raw Git and the GitHub ref API. Both must equal `82bc821cd3a5206b2743b2a6c4a6820ef5c8d8c4`; the GitHub commit API must return the ordered parent list [92c9dc6610419b90f8a1b33c9b8b11afa9350a2d, 41705f81f68dcacebcfd29327a1565e74f2483ca]; the contents API must return workflow blob `1813662691aea512b4c8c087a388b0e9e87e66fa`. Any mismatch is `FROZEN_INPUT_CHANGED`: discard the bundle and run the generator again from a new config/output path.
+Before implementation, independently query remote main through raw Git and the GitHub ref API. Both must equal `63ceae2765e1c63760561e0be77bece777d3fe9b`; the GitHub commit API must return the ordered parent list [82bc821cd3a5206b2743b2a6c4a6820ef5c8d8c4, 16047669bc692f5edcabdb9dbc90f4d2b7dc0c02]; the contents API must return workflow blob `1813662691aea512b4c8c087a388b0e9e87e66fa`. Any mismatch is `FROZEN_INPUT_CHANGED`: discard the bundle and run the generator again from a new config/output path.
 
 This gate is not reused after required merges. Later gates bind `FINAL_CANDIDATE_MAIN` instead.
 
@@ -182,7 +183,7 @@ The allowlist is closed: no wildcard and no other changed path is permitted. Its
 For the selected merge method, record `HARDENING_HEAD` only after exact-head review. After protected merge, require a two-parent merge commit and assert the ordered parent vector is exactly:
 
 ```text
-[82bc821cd3a5206b2743b2a6c4a6820ef5c8d8c4, HARDENING_HEAD]
+[63ceae2765e1c63760561e0be77bece777d3fe9b, HARDENING_HEAD]
 ```
 
 Set `HARDENING_MERGE_SHA` to that merge commit. A squash, rebase, reversed parent order, extra parent, or intervening main commit invalidates this bundle.
