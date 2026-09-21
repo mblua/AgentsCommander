@@ -261,7 +261,10 @@ pub(crate) fn purge_session_side_state<R: tauri::Runtime>(app: &AppHandle<R>, se
     reset_substantive_input(app, session_id);
 }
 
-/// #871 - clear a session's substantive-input marker.
+/// #871 - clear a session's substantive-input marker. (#2336) Also clears the
+/// session's typing-hold entry, so the destroy and restart teardown paths drop
+/// the manual padlock, the natural clock and every counted held ID with the
+/// tracker they already reset.
 ///
 /// Extracted by #1171 so it has ONE definition rather than the two inline copies the destroy
 /// and restart cleanups each carried. It is a map removal, so calling it twice for the same
@@ -272,6 +275,11 @@ fn reset_substantive_input<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uu
     if let Some(activity) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
         activity
             .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .reset(session_id);
+    }
+    if let Some(hold) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
+        hold.lock()
             .unwrap_or_else(|error| error.into_inner())
             .reset(session_id);
     }

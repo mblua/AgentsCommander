@@ -57,6 +57,15 @@ Automated test:
 cargo test --test cli_test_reset long_path_target_deletes_only_allowed_directories -- --nocapture
 ```
 
+The automated test prints a skip and returns only when it cannot create the long
+path (platform long-path support unavailable). A spawn failure of the copied
+binary is now a test failure, not a skip: the `--help` probe panics with the
+spawn error instead of printing a skip and returning, so a copied binary that
+cannot be launched cannot masquerade as a skipped long-path check. On Windows
+the probe and the reset run use the copied binary's canonicalized (verbatim
+`\\?\`) path, because `CreateProcessW` cannot reach a plain program path past
+the legacy `MAX_PATH` limit.
+
 Manual fallback if the automated test prints a skip:
 
 1. Create `$Root` and `$Outside` as described above.

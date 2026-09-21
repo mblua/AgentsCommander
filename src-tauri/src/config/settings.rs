@@ -238,6 +238,17 @@ pub enum MainSidebarSide {
     Right,
 }
 
+/// #2348 - saved display state of the unified main window. Deliberately only two
+/// states: minimized and fullscreen are unrepresentable, so an odd window state
+/// can never be persisted as a placement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MainWindowDisplayState {
+    #[default]
+    Normal,
+    Maximized,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TelegramPollFailureLogLevel {
@@ -451,6 +462,12 @@ pub struct AppSettings {
     /// Saved geometry for the unified main window. Introduced in 0.8.0.
     #[serde(default)]
     pub main_geometry: Option<WindowGeometry>,
+    /// #2348 - saved display state for the unified main window. Defaulted to
+    /// `Normal` so a pre-#2348 file loads unchanged. Whole-settings writers
+    /// preserve a present on-disk value; only the narrow placement command
+    /// (`commands::window::set_main_window_placement`) may change it.
+    #[serde(default)]
+    pub main_window_display_state: MainWindowDisplayState,
     /// Width of the sidebar pane inside the main window, in logical pixels.
     /// Clamped to [200, 600] at drag time and on load.
     #[serde(default = "default_main_sidebar_width")]
@@ -737,6 +754,13 @@ pub struct AppSettings {
     /// #1646 / #1647 - master kill switch for proactive detection of terminal blocking menus.
     #[serde(default = "default_true")]
     pub menu_guard_enabled: bool,
+    /// #2336 - seconds the automatic typing hold stays active after the last
+    /// qualifying keystroke in a session. Default 30; accepted range 1..=3600,
+    /// rejected outside it by `validate_and_repair_settings` so a Settings update
+    /// cannot persist a value that would make the hold nonsensical. Read live at
+    /// each hold evaluation, so an edit takes effect without a restart.
+    #[serde(default = "default_typing_hold_seconds")]
+    pub typing_hold_seconds: u32,
 }
 
 /// #1171 - one entry of the root `watchers` map, or whatever the user wrote there.
@@ -1040,6 +1064,17 @@ fn default_agent_process_kill_private_bytes() -> u64 {
     12 * 1024 * 1024 * 1024
 }
 
+/// #2336 - default `typing_hold_seconds`.
+pub const DEFAULT_TYPING_HOLD_SECONDS: u32 = 30;
+/// #2336 - accepted `typing_hold_seconds` bounds; outside them the Settings API
+/// rejects the update and the live value is left unchanged.
+pub const TYPING_HOLD_SECONDS_MIN: u32 = 1;
+pub const TYPING_HOLD_SECONDS_MAX: u32 = 3600;
+
+fn default_typing_hold_seconds() -> u32 {
+    DEFAULT_TYPING_HOLD_SECONDS
+}
+
 fn default_resource_keep_last_snapshot() -> bool {
     true
 }
@@ -1093,6 +1128,7 @@ impl Default for AppSettings {
             sidebar_geometry: None,
             terminal_geometry: None,
             main_geometry: None,
+            main_window_display_state: MainWindowDisplayState::default(),
             main_sidebar_width: default_main_sidebar_width(),
             main_sidebar_side: MainSidebarSide::default(),
             main_always_on_top: false,
@@ -1155,6 +1191,7 @@ impl Default for AppSettings {
             watchers: BTreeMap::new(),
             watchers_geometry: None,
             menu_guard_enabled: true,
+            typing_hold_seconds: default_typing_hold_seconds(),
         }
     }
 }
@@ -2325,7 +2362,23 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
     validate_screenshot_hotkey(&settings.screenshot_capture_hotkey)?;
     validate_sidebar_compact_hotkey(&settings.sidebar_compact_hotkey)?;
     validate_api_server_settings(settings)?;
+    validate_typing_hold_settings(settings)?;
     validate_resource_settings(settings)
+}
+
+/// #2336 - reject a settings update whose typing-hold window is outside the
+/// accepted range. Called on every save path, so the invalid candidate is
+/// discarded before `save_settings` and the persisted (and live) value stays
+/// untouched.
+pub fn validate_typing_hold_settings(settings: &AppSettings) -> Result<(), String> {
+    let seconds = settings.typing_hold_seconds;
+    if !(TYPING_HOLD_SECONDS_MIN..=TYPING_HOLD_SECONDS_MAX).contains(&seconds) {
+        return Err(format!(
+            "typingHoldSeconds must be between {} and {} (got {})",
+            TYPING_HOLD_SECONDS_MIN, TYPING_HOLD_SECONDS_MAX, seconds
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn parse_api_server_socket_addr(bind: &str, port: u16) -> Result<SocketAddr, String> {
@@ -3219,6 +3272,11 @@ const FIELD_PROJECT_PATHS_REL: &str = "projectPathsRelativeToInstance";
 const FIELD_ARCHIVED: &str = "archivedProjectPaths";
 const FIELD_ARCHIVED_REL: &str = "archivedProjectPathsRelativeToInstance";
 const FIELD_TERMINAL_SNAPSHOTS_ENABLED: &str = "terminalSnapshotsEnabled";
+/// #2348 - the two keys owned by `commands::window::set_main_window_placement`.
+/// A whole-settings `Preserve` write copies a PRESENT disk value for each key
+/// independently, and never removes one that disk does not have.
+const FIELD_MAIN_GEOMETRY: &str = "mainGeometry";
+const FIELD_MAIN_DISPLAY_STATE: &str = "mainWindowDisplayState";
 
 /// #1737 (D7a) - top-level settings keys whose authority is the on-disk file, not
 /// the in-memory struct, and which `settings.local.json` therefore may not override.
@@ -3268,6 +3326,9 @@ pub(crate) const OVERLAY_DERIVED_ID_CLOSURES: &[DerivedIdClosure] = &[DerivedIdC
 pub(crate) const OVERLAY_KEY_AGENTS: &str = "agents";
 pub(crate) const OVERLAY_KEY_MAIN_ALWAYS_ON_TOP: &str = "mainAlwaysOnTop";
 pub(crate) const OVERLAY_KEY_MAIN_GEOMETRY: &str = "mainGeometry";
+/// #2348 - the placement command refuses while the overlay owns this key or
+/// `mainGeometry`, because `restore_base` is the last writer over the base file.
+pub(crate) const OVERLAY_KEY_MAIN_DISPLAY_STATE: &str = "mainWindowDisplayState";
 pub(crate) const OVERLAY_KEY_MAIN_ZOOM: &str = "mainZoom";
 pub(crate) const OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE: &str = "restoreCoordinatorWakeState";
 #[allow(dead_code)] // read only from test code: the suppressions name the five constants individually
@@ -3635,6 +3696,22 @@ pub(crate) enum ProjectWriteMode {
 enum TerminalSnapshotGateWriteMode {
     Preserve,
     Explicit(bool),
+}
+
+/// #2348 - the main-window placement write mode, parallel to
+/// `TerminalSnapshotGateWriteMode`. `Preserve` is for every whole-settings
+/// caller: a present disk value wins per key, while an absent one does not erase
+/// the caller value (the load-time `terminalGeometry` -> `mainGeometry`
+/// migration synthesizes a value the disk object may not have). `Explicit` is
+/// used only by the narrow placement command and writes both keys from its own
+/// arguments.
+#[derive(Debug, Clone)]
+enum MainWindowPlacementWriteMode {
+    Preserve,
+    Explicit {
+        geometry: WindowGeometry,
+        display_state: MainWindowDisplayState,
+    },
 }
 
 /// A slot value for a retained (unresolved/conflict/missing) raw field: string
@@ -4733,6 +4810,43 @@ fn try_lock_settings_file(_file: &std::fs::File) -> Result<bool, SettingsSaveRea
 #[cfg(not(any(unix, windows)))]
 fn unlock_settings_file(_file: &std::fs::File) {}
 
+/// #2348 - serialize one placement component with the same error shape as the
+/// whole-object serializer, so a (theoretically impossible) serialization failure
+/// aborts the save instead of writing a partial pair.
+fn serialize_settings_component<T: serde::Serialize>(
+    value: &T,
+    path: &Path,
+) -> Result<Value, SettingsSaveError> {
+    serde_json::to_value(value).map_err(|source| {
+        let outward = format!("Failed to serialize settings: {source}");
+        SettingsSaveError::json(
+            SettingsSaveStage::Serialize,
+            path,
+            None,
+            source,
+            SettingsSaveLegacyOutward::Serialize(outward),
+        )
+    })
+}
+
+/// #2348 - central `Preserve` handling for the placement pair. A present disk
+/// VALUE is authoritative; a missing key and an explicit `null` both mean "no
+/// disk truth" (the same reading `read_project_paths_from_disk` uses for the
+/// `Option` fields), so neither erases a caller value synthesized by the
+/// load-time `terminalGeometry` -> `mainGeometry` migration. Split out so each
+/// key's disk-present/absent x caller-present/absent combinations are testable
+/// without building an `AppSettings`.
+fn preserve_main_window_placement_keys(out: &mut Map<String, Value>, disk: &Map<String, Value>) {
+    for key in [FIELD_MAIN_GEOMETRY, FIELD_MAIN_DISPLAY_STATE] {
+        match disk.get(key) {
+            None | Some(Value::Null) => {}
+            Some(value) => {
+                out.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+}
+
 /// The #1077 project-aware atomic writer. Builds the output object per `mode`,
 /// writes it atomically, then re-decodes the exact written value so the returned
 /// `AppSettings` carries fresh runtime projections + hidden state (never the
@@ -4748,6 +4862,7 @@ fn save_settings_value(
         path,
         mode,
         TerminalSnapshotGateWriteMode::Preserve,
+        MainWindowPlacementWriteMode::Preserve,
     )
 }
 
@@ -4759,6 +4874,7 @@ fn save_settings_value_locked(
     path: &Path,
     mode: ProjectWriteMode,
     terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
+    main_window_placement_mode: MainWindowPlacementWriteMode,
 ) -> Result<AppSettings, SettingsSaveError> {
     let base = production_instance_base();
     let disk_gate_stage = match &mode {
@@ -4913,6 +5029,34 @@ fn save_settings_value_locked(
         FIELD_TERMINAL_SNAPSHOTS_ENABLED.to_string(),
         Value::Bool(terminal_snapshots_enabled),
     );
+
+    // #2348: main-window placement is owned by the narrow placement command.
+    // `Preserve` never regresses it: for each key independently, a PRESENT disk
+    // value is authoritative, and an absent disk key leaves the caller value
+    // alone. Deliberately NOT `copy_or_remove`: an absent legacy `mainGeometry`
+    // must not erase the value the load-time migration synthesized in memory.
+    // `Explicit` writes the pair exactly as the placement command received it.
+    // Runs before `restore_base`, which stays the last writer over the base file.
+    match main_window_placement_mode {
+        MainWindowPlacementWriteMode::Preserve => {
+            if let Some(disk) = &disk {
+                preserve_main_window_placement_keys(&mut out, disk);
+            }
+        }
+        MainWindowPlacementWriteMode::Explicit {
+            geometry,
+            display_state,
+        } => {
+            out.insert(
+                FIELD_MAIN_GEOMETRY.to_string(),
+                serialize_settings_component(&geometry, path)?,
+            );
+            out.insert(
+                FIELD_MAIN_DISPLAY_STATE.to_string(),
+                serialize_settings_component(&display_state, path)?,
+            );
+        }
+    }
 
     // #1737: the effective view the caller must adopt for overlay-owned paths. `out`
     // is not a usable source: in Reconcile mode it was seeded from the disk object,
@@ -5244,6 +5388,7 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
         path,
         ProjectWriteMode::Preserve,
         TerminalSnapshotGateWriteMode::Explicit(enabled),
+        MainWindowPlacementWriteMode::Preserve,
     ) {
         Ok(written) => written,
         Err(error) => {
@@ -5286,6 +5431,54 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
         serde_json::from_value(value).map_err(|_| "settings_invalid".to_string())?;
     settings.project_path_state = Arc::new(state);
     Ok(settings)
+}
+
+/// #2348 - the sole persistence owner for the main-window placement pair. The
+/// caller holds the managed settings write guard while this function serializes
+/// every AC process with the settings file lock. Returns the re-decoded settings
+/// the caller must adopt.
+pub(crate) fn set_main_window_placement(
+    current: &AppSettings,
+    geometry: &WindowGeometry,
+    display_state: MainWindowDisplayState,
+) -> Result<AppSettings, String> {
+    let path = settings_path().ok_or_else(|| "main_window_placement_save_failed".to_string())?;
+    set_main_window_placement_at_path(current, &path, geometry, display_state)
+}
+
+pub(crate) fn set_main_window_placement_at_path(
+    current: &AppSettings,
+    path: &Path,
+    geometry: &WindowGeometry,
+    display_state: MainWindowDisplayState,
+) -> Result<AppSettings, String> {
+    // #1737 (D7c): `restore_base` is the last writer over the base file, so a
+    // placement write beneath an overlay that owns either placement key would be
+    // silently reverted. Refuse with the stable signal instead of pretending.
+    if current
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_MAIN_GEOMETRY)
+        || current
+            .local_overlay_state
+            .owns_top_level(OVERLAY_KEY_MAIN_DISPLAY_STATE)
+    {
+        return Err("main_window_placement_overlay_pinned".to_string());
+    }
+    let _lock =
+        SettingsFileLock::acquire(path, std::time::Duration::from_secs(2)).map_err(|error| {
+            report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+        })?;
+    save_settings_value_locked(
+        current,
+        path,
+        ProjectWriteMode::Preserve,
+        TerminalSnapshotGateWriteMode::Preserve,
+        MainWindowPlacementWriteMode::Explicit {
+            geometry: geometry.clone(),
+            display_state,
+        },
+    )
+    .map_err(|error| report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings))
 }
 
 fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>, String> {
@@ -6685,6 +6878,7 @@ mod tests {
             &path,
             super::ProjectWriteMode::Preserve,
             super::TerminalSnapshotGateWriteMode::Preserve,
+            super::MainWindowPlacementWriteMode::Preserve,
         )
         .unwrap_err();
 
@@ -7900,6 +8094,73 @@ mod tests {
         assert!(super::validate_and_repair_settings(&mut s).is_ok());
         assert_eq!(s.sidebar_compact_hotkey, "Ctrl+Shift+B");
         assert_eq!(s.screenshot_capture_hotkey, "Ctrl+P");
+    }
+
+    #[test]
+    fn typing_hold_seconds_defaults_to_30_when_absent() {
+        // #2336 an old settings file without the key deserializes to 30.
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("typingHoldSeconds");
+        let parsed: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.typing_hold_seconds, 30);
+
+        let json = serde_json::to_string(&AppSettings::default()).unwrap();
+        assert!(json.contains("\"typingHoldSeconds\":30"), "{json}");
+    }
+
+    #[test]
+    fn validate_and_repair_accepts_typing_hold_bounds_and_rejects_out_of_range() {
+        for seconds in [
+            super::TYPING_HOLD_SECONDS_MIN,
+            30,
+            super::TYPING_HOLD_SECONDS_MAX,
+        ] {
+            let mut s = AppSettings {
+                typing_hold_seconds: seconds,
+                ..AppSettings::default()
+            };
+            assert!(
+                super::validate_typing_hold_settings(&s).is_ok(),
+                "{seconds}"
+            );
+            assert!(
+                super::validate_and_repair_settings(&mut s).is_ok(),
+                "{seconds}"
+            );
+        }
+        for seconds in [0, super::TYPING_HOLD_SECONDS_MAX + 1] {
+            let s = AppSettings {
+                typing_hold_seconds: seconds,
+                ..AppSettings::default()
+            };
+            let err = super::validate_typing_hold_settings(&s).unwrap_err();
+            assert!(err.contains("typingHoldSeconds"), "{err}");
+            let mut repaired = s.clone();
+            assert!(
+                super::validate_and_repair_settings(&mut repaired).is_err(),
+                "{seconds}"
+            );
+        }
+    }
+
+    /// #2336 - the Settings update path rejects an out-of-range typing-hold
+    /// window and leaves the live value unchanged: the error returns before the
+    /// save, so the persisted (and live) window stays at the old value. The
+    /// valid 1/3600 boundaries are covered by the validation test above.
+    #[tokio::test]
+    async fn invalid_typing_hold_settings_update_leaves_live_settings_unchanged() {
+        let original = AppSettings::default();
+        assert_eq!(original.typing_hold_seconds, 30);
+        let state: super::SettingsState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(original.clone()));
+
+        let mut invalid = original;
+        invalid.typing_hold_seconds = 0;
+        let err = crate::commands::config::persist_protected_settings_update(&state, invalid)
+            .await
+            .expect_err("out-of-range typing hold must be rejected");
+        assert!(err.contains("typingHoldSeconds"), "{err}");
+        assert_eq!(state.read().await.typing_hold_seconds, 30);
     }
 
     /// #2015: shared pre-v2 fixture: `letters.A.name` plus
@@ -11250,6 +11511,7 @@ mod tests {
   "activityLogEnabled": true,
   "mainZoom": 1.25,
   "mainGeometry": { "x": 1.0, "y": 2.0, "width": 300.0, "height": 400.0 },
+  "mainWindowDisplayState": "normal",
   "watchers": {
     "w1": {
       "mode": "state",
@@ -11376,6 +11638,7 @@ mod tests {
   "mainResourceMonitorAttached": false,
   "mainSidebarSide": "right",
   "mainSidebarWidth": 240.0,
+  "mainWindowDisplayState": "normal",
   "mainZoom": 1.25,
   "maxConcurrentAgentProcesses": 32,
   "menuGuardEnabled": true,
@@ -11415,6 +11678,7 @@ mod tests {
   "terminalSnapshotsEnabled": false,
   "terminalZoom": 1.0,
   "themeLight": false,
+  "typingHoldSeconds": 30,
   "voiceAutoExecute": true,
   "voiceAutoExecuteDelay": 15,
   "voiceToTextEnabled": false,
@@ -13850,5 +14114,206 @@ mod tests {
             round_trip.branch_staleness_interval_secs,
             defaults.branch_staleness_interval_secs
         );
+    }
+
+    /// #2348 - main-window placement persistence: serde, the central present-only
+    /// `Preserve` table, the legacy-migration one-save regression, and overlay
+    /// base-preservation for the new key.
+    mod issue_2348_main_window_placement {
+        use super::super::*;
+        use serde_json::json;
+
+        fn seed_json(path: &std::path::Path, value: &Value) {
+            std::fs::write(path, serde_json::to_string_pretty(value).unwrap()).unwrap();
+        }
+
+        fn disk_object(path: &std::path::Path) -> Map<String, Value> {
+            let raw = std::fs::read_to_string(path).unwrap();
+            serde_json::from_str::<Value>(&raw)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone()
+        }
+
+        #[test]
+        fn issue_2348_display_state_serde_is_lowercase_and_defaults_to_normal() {
+            assert_eq!(
+                MainWindowDisplayState::default(),
+                MainWindowDisplayState::Normal
+            );
+            assert_eq!(
+                serde_json::to_value(MainWindowDisplayState::Normal).unwrap(),
+                json!("normal")
+            );
+            assert_eq!(
+                serde_json::to_value(MainWindowDisplayState::Maximized).unwrap(),
+                json!("maximized")
+            );
+            assert_eq!(
+                serde_json::from_value::<MainWindowDisplayState>(json!("maximized")).unwrap(),
+                MainWindowDisplayState::Maximized
+            );
+            // Minimized and fullscreen must stay unrepresentable.
+            assert!(serde_json::from_value::<MainWindowDisplayState>(json!("minimized")).is_err());
+            assert!(serde_json::from_value::<MainWindowDisplayState>(json!("fullscreen")).is_err());
+        }
+
+        #[test]
+        fn issue_2348_absent_field_loads_as_normal_and_a_save_round_trips_it() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            seed_json(
+                &path,
+                &json!({
+                    "defaultShell": "test-shell",
+                    "defaultShellArgs": [],
+                    "agents": [],
+                    "rootToken": "fixed-token",
+                }),
+            );
+
+            let loaded = load_settings_from_path(&path);
+            assert_eq!(
+                loaded.main_window_display_state,
+                MainWindowDisplayState::Normal
+            );
+            assert!(loaded.main_geometry.is_none());
+
+            let written = save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            assert_eq!(
+                written.main_window_display_state,
+                MainWindowDisplayState::Normal
+            );
+            let disk = disk_object(&path);
+            assert_eq!(disk[FIELD_MAIN_DISPLAY_STATE], json!("normal"));
+            assert_eq!(disk[FIELD_MAIN_GEOMETRY], Value::Null);
+        }
+
+        #[test]
+        fn issue_2348_preserve_copies_only_present_disk_keys_independently_for_both_keys() {
+            for key in [FIELD_MAIN_GEOMETRY, FIELD_MAIN_DISPLAY_STATE] {
+                let caller = json!("caller");
+                let disk_value = json!("disk");
+
+                // disk present / caller present -> disk replaces caller.
+                let mut out = Map::from_iter([(key.to_string(), caller.clone())]);
+                let disk = Map::from_iter([(key.to_string(), disk_value.clone())]);
+                preserve_main_window_placement_keys(&mut out, &disk);
+                assert_eq!(out.get(key), Some(&disk_value), "{key} disk/caller");
+
+                // disk present / caller absent -> disk is inserted.
+                let mut out = Map::new();
+                let disk = Map::from_iter([(key.to_string(), disk_value.clone())]);
+                preserve_main_window_placement_keys(&mut out, &disk);
+                assert_eq!(out.get(key), Some(&disk_value), "{key} disk only");
+
+                // disk absent / caller present -> caller value remains.
+                let mut out = Map::from_iter([(key.to_string(), caller.clone())]);
+                preserve_main_window_placement_keys(&mut out, &Map::new());
+                assert_eq!(out.get(key), Some(&caller), "{key} caller only");
+
+                // disk absent / caller absent -> key remains absent.
+                let mut out = Map::new();
+                preserve_main_window_placement_keys(&mut out, &Map::new());
+                assert!(!out.contains_key(key), "{key} neither side");
+
+                // An explicit null carries no placement truth: it must not erase
+                // the caller's value (the load-time migration regression guard).
+                let mut out = Map::from_iter([(key.to_string(), caller.clone())]);
+                let disk = Map::from_iter([(key.to_string(), Value::Null)]);
+                preserve_main_window_placement_keys(&mut out, &disk);
+                assert_eq!(out.get(key), Some(&caller), "{key} null disk");
+            }
+        }
+
+        #[test]
+        fn issue_2348_legacy_terminal_geometry_migration_survives_an_unrelated_save() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            seed_json(
+                &path,
+                &json!({
+                    "defaultShell": "test-shell",
+                    "defaultShellArgs": [],
+                    "agents": [],
+                    "rootToken": "legacy-token",
+                    "terminalGeometry": { "x": 11.0, "y": 22.0, "width": 333.0, "height": 444.0 },
+                }),
+            );
+
+            let loaded = load_settings_from_path(&path);
+            let migrated = loaded
+                .main_geometry
+                .as_ref()
+                .expect("the loader must seed mainGeometry from legacy terminalGeometry");
+            assert_eq!((migrated.x, migrated.y), (11.0, 22.0));
+            assert_eq!((migrated.width, migrated.height), (333.0, 444.0));
+            assert_eq!(
+                loaded.main_window_display_state,
+                MainWindowDisplayState::Normal
+            );
+
+            // An otherwise-unrelated whole-settings save must not drop the value the
+            // load-time migration synthesized into memory: the disk file has no
+            // mainGeometry, so the present-only Preserve rule must leave the caller's.
+            let written = save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            let written_geometry = written
+                .main_geometry
+                .as_ref()
+                .expect("the re-decoded settings must still carry the migrated geometry");
+            assert_eq!((written_geometry.x, written_geometry.y), (11.0, 22.0));
+            let disk = disk_object(&path);
+            assert_eq!(disk[FIELD_MAIN_GEOMETRY]["width"], json!(333.0));
+            assert_eq!(disk[FIELD_MAIN_DISPLAY_STATE], json!("normal"));
+        }
+
+        #[test]
+        fn issue_2348_overlay_owned_placement_keys_keep_the_base_values_on_a_save() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            seed_json(
+                &path,
+                &json!({
+                    "defaultShell": "test-shell",
+                    "defaultShellArgs": [],
+                    "agents": [],
+                    "rootToken": "base-token",
+                    "mainGeometry": { "x": 1.0, "y": 2.0, "width": 300.0, "height": 400.0 },
+                    "mainWindowDisplayState": "maximized",
+                }),
+            );
+            seed_json(
+                &temp.path().join("settings.local.json"),
+                &json!({
+                    "mainGeometry": { "x": 9.0, "y": 8.0, "width": 700.0, "height": 600.0 },
+                    "mainWindowDisplayState": "normal",
+                }),
+            );
+
+            let loaded = load_settings_from_path(&path);
+            assert!(loaded
+                .local_overlay_state
+                .owns_top_level(OVERLAY_KEY_MAIN_GEOMETRY));
+            assert!(loaded
+                .local_overlay_state
+                .owns_top_level(OVERLAY_KEY_MAIN_DISPLAY_STATE));
+            assert_eq!(
+                loaded.main_window_display_state,
+                MainWindowDisplayState::Normal
+            );
+
+            let written = save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            // Base file keeps the base values; memory keeps the overlay's effective values.
+            let disk = disk_object(&path);
+            assert_eq!(disk[FIELD_MAIN_GEOMETRY]["x"], json!(1.0));
+            assert_eq!(disk[FIELD_MAIN_DISPLAY_STATE], json!("maximized"));
+            assert_eq!(
+                written.main_window_display_state,
+                MainWindowDisplayState::Normal
+            );
+            let effective = written.main_geometry.as_ref().unwrap();
+            assert_eq!((effective.x, effective.y), (9.0, 8.0));
+        }
     }
 }
