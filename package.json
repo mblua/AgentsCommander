@@ -1,6 +1,6 @@
 {
   "name": "agentscommander",
-  "version": "0.36.0",
+  "version": "0.37.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -31,6 +31,9 @@
     "record:arcs:self": "node scripts/02-module-arc-record.mjs --self-test",
     "check:served-paths": "node scripts/check-served-paths.mjs",
     "check:served-paths:self": "node scripts/check-served-paths.mjs --self-test",
+    "cog:self": "node scripts/check-cognitive-complexity.mjs --self-test",
+    "cog:scan": "node scripts/check-cognitive-complexity.mjs --scan-sources",
+    "cog:baseline": "node scripts/check-cognitive-complexity.mjs --baseline-diff",
     "test:watch": "vitest",
     "smoke:cli-release-windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/smoke-cli-release-windows.ps1",
     "smoke:profile-matrix": "node scripts/smoke-profile-matrix-preview.mjs",

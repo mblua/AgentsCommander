@@ -2463,6 +2463,20 @@ pub(crate) fn err_is_pty_session_missing(e: &str) -> bool {
     e.contains("Session not found:")
 }
 
+/// #1883 — pure severity classifier for a PTY injection failure. A menu-guard
+/// deferral is a recoverable "not yet" (the dispatcher releases the lease and
+/// retries), so it is logged at debug and never reaches the Application Error
+/// sink; every other error keeps the existing ERROR severity. Returns the log
+/// level plus the outcome word for the line; the caller propagates the error
+/// string unchanged.
+fn classify_injection_error(error: &str) -> (log::Level, &'static str) {
+    if crate::pty::menu_guard::is_menu_guard_deferred_error(error) {
+        (log::Level::Debug, "deferred")
+    } else {
+        (log::Level::Error, "FAILED")
+    }
+}
+
 /// §224 D.3 — pure filter: session infos by exact-FQN match on
 /// `working_directory`. Extracted from `find_all_sessions` so the predicate
 /// can be unit-tested without a live `SessionManager` / `AppHandle`.
@@ -9124,8 +9138,11 @@ impl MailboxPoller {
             crate::pty::inject::inject_text_into_session(app, session_id, resolved.text)
                 .await
                 .map_err(|e| {
-                    log::error!(
-                        "[mailbox] PTY injection FAILED msg={} session={} logical={} resolved={}: {}",
+                    let (level, outcome) = classify_injection_error(&e);
+                    log::log!(
+                        level,
+                        "[mailbox] PTY injection {} msg={} session={} logical={} resolved={}: {}",
+                        outcome,
                         msg.id,
                         session_id,
                         command,
@@ -9266,8 +9283,11 @@ impl MailboxPoller {
         crate::pty::inject::inject_text_into_session(app, session_id, &payload)
             .await
             .map_err(|e| {
-                log::error!(
-                    "[mailbox] PTY injection FAILED session={} msg={}: {}",
+                let (level, outcome) = classify_injection_error(&e);
+                log::log!(
+                    level,
+                    "[mailbox] PTY injection {} session={} msg={}: {}",
+                    outcome,
                     session_id,
                     msg.id,
                     e
@@ -13366,6 +13386,7 @@ mod tests {
         live: std::sync::Mutex<HashSet<Uuid>>,
         writes: std::sync::Mutex<Vec<(Uuid, Vec<u8>)>>,
         fail_spawn: std::sync::atomic::AtomicBool,
+        fail_write: std::sync::atomic::AtomicBool,
     }
 
     impl MailboxMockPtyBackend {
@@ -13414,6 +13435,13 @@ mod tests {
             id: Uuid,
             data: &[u8],
         ) -> Result<(), crate::errors::AppError> {
+            // #1883 — test-only failure switch so both mailbox injection sites
+            // can exercise the real-error path end to end.
+            if self.fail_write.load(Ordering::SeqCst) {
+                return Err(crate::errors::AppError::PtyError(
+                    "synthetic write failure".to_string(),
+                ));
+            }
             self.writes.lock().unwrap().push((id, data.to_vec()));
             Ok(())
         }
@@ -15822,6 +15850,21 @@ mod tests {
             .downcast_ref::<MailboxMockPtyBackend>()
             .expect("mailbox mock PTY backend")
             .writes_for(id)
+    }
+
+    /// #1883 — test-only write-failure switch. `MailboxFixture` keeps no backend
+    /// handle (`make_mailbox_app` discards it), so this downcast helper mirrors
+    /// `register_mock_pty_route` / `mock_pty_writes_for`.
+    fn set_mock_pty_write_failure<R: tauri::Runtime>(app: &tauri::AppHandle<R>, fail: bool) {
+        let pty_mgr = app.state::<Arc<std::sync::Mutex<PtyManager>>>();
+        let manager = pty_mgr.lock().unwrap();
+        let backend = manager.backend_for_kind(SessionBackendKind::LocalProcess);
+        backend
+            .as_any()
+            .downcast_ref::<MailboxMockPtyBackend>()
+            .expect("mailbox mock PTY backend")
+            .fail_write
+            .store(fail, Ordering::SeqCst);
     }
 
     fn write_wake_outbox_message(sender_cwd: &Path, msg_id: &str) -> PathBuf {
@@ -23792,6 +23835,33 @@ mod tests {
         );
     }
 
+    /// #1883 — the classifier is the single severity decision for both
+    /// injection sites: only the canonical deferral prefix downgrades to
+    /// debug; everything else stays ERROR so real failures keep feeding the
+    /// Application Error sink.
+    #[test]
+    fn classify_injection_error_defers_menu_guard_and_fails_everything_else() {
+        assert_eq!(
+            classify_injection_error(
+                "menu_guard_deferred: session 2ced5ccf-1234-5678-9abc-def012345678 is blocked by interactive menu"
+            ),
+            (log::Level::Debug, "deferred")
+        );
+        // Positive control: a real PTY write failure stays ERROR.
+        assert_eq!(
+            classify_injection_error(
+                "PTY write failed: Session not found: 2ced5ccf-1234-5678-9abc-def012345678"
+            ),
+            (log::Level::Error, "FAILED")
+        );
+        // The predicate is prefix-based: the token elsewhere in the text is
+        // not a deferral.
+        assert_eq!(
+            classify_injection_error("PTY write failed: menu_guard_deferred note"),
+            (log::Level::Error, "FAILED")
+        );
+    }
+
     // ── Anti-spoof / canonicalization pure-logic tests (AR2-tests 22, 23 + DR2-5) ──
 
     /// §DR7 / AR2-tests #22: legacy-unqualified msg.from is accepted when its
@@ -24502,6 +24572,171 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_str(&delivered[0]).unwrap();
         assert_eq!(payload["command"], "clear");
         assert_eq!(payload["id"], message.id);
+    }
+
+    /// #1883 — both mailbox injection sites must log a menu-guard deferral at
+    /// debug (never into the #264 Application Error sink) and every real PTY
+    /// write failure at ERROR. One test, one sequential drain per phase, so the
+    /// process-wide sink is observed without racing another drainer.
+    #[tokio::test]
+    async fn both_injection_sites_defer_silently_and_report_real_pty_failures() {
+        crate::logging::init_logger();
+        // #1883 — hold the shared sink-drain lock for the whole test so no
+        // other library test drainer (the sync loggate test uses
+        // `blocking_lock()`) can steal these canaries between log and drain.
+        let _drain_guard = crate::logging::ERROR_SINK_TEST_DRAIN_LOCK.lock().await;
+        crate::logging::error_sink().drain();
+
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+
+        let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::new());
+        assert!(fixture.app.manage(Arc::clone(&menu_guard)));
+
+        let site_a_session = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "1883-site-a",
+            "pi.cmd",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, site_a_session);
+        let site_b_session = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "1883-site-b",
+            "pi.cmd",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, site_b_session);
+
+        let entries = vec![crate::config::settings::BlockingMenuEntry::Valid(
+            crate::config::settings::BlockingMenuConfig {
+                pattern: "trust".to_string(),
+                notification: "dialog".to_string(),
+                enabled: true,
+                captured_against: None,
+            },
+        )];
+        let rows = [crate::pty::watchers::frame::LogicalRow {
+            text: "Do you trust the author?".to_string(),
+            start: 0,
+            end: 0,
+        }];
+        for session_id in [site_a_session, site_b_session] {
+            menu_guard.evaluate_logical_rows(session_id, &rows, &entries);
+            assert!(menu_guard.is_blocked(session_id));
+        }
+
+        let poller = MailboxPoller::new();
+
+        // Leg A — site A (logical command branch) defers silently.
+        let mut defer_a = logical_command_message("clear", "");
+        defer_a.id = "1883-a-defer".to_string();
+        let err_a = poller
+            .inject_into_pty(
+                &app,
+                site_a_session,
+                &defer_a,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .expect_err("menu-blocked logical command must defer");
+        assert!(
+            crate::pty::menu_guard::is_menu_guard_deferred_error(&err_a),
+            "site A must defer with the canonical prefix: {err_a}"
+        );
+        assert!(mock_pty_writes_for(&app, site_a_session).is_empty());
+
+        // Leg B — site B (standard wake branch) defers silently.
+        let mut defer_b = wake_message_to_target();
+        defer_b.id = "1883-b-defer".to_string();
+        let err_b = poller
+            .inject_into_pty(
+                &app,
+                site_b_session,
+                &defer_b,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .expect_err("menu-blocked standard wake must defer");
+        assert!(
+            crate::pty::menu_guard::is_menu_guard_deferred_error(&err_b),
+            "site B must defer with the canonical prefix: {err_b}"
+        );
+        assert!(mock_pty_writes_for(&app, site_b_session).is_empty());
+
+        // Neither deferral may reach the Application Error sink (debug is
+        // filtered out at the default info level, so nothing is captured).
+        let defer_entries = crate::logging::error_sink().drain();
+        for canary in ["1883-a-defer", "1883-b-defer"] {
+            assert!(
+                !defer_entries
+                    .iter()
+                    .any(|entry| entry.message.contains(canary)),
+                "deferral {canary} reached Application Error: {defer_entries:?}"
+            );
+        }
+
+        // Positive control — both sites must still raise a real PTY write
+        // failure at ERROR. Clear the guard so the injector reaches the write.
+        for session_id in [site_a_session, site_b_session] {
+            menu_guard.evaluate_logical_rows(session_id, &[], &[]);
+            assert!(!menu_guard.is_blocked(session_id));
+        }
+        set_mock_pty_write_failure(&app, true);
+
+        let mut fail_a = logical_command_message("clear", "");
+        fail_a.id = "1883-a-fail".to_string();
+        let err_a = poller
+            .inject_into_pty(
+                &app,
+                site_a_session,
+                &fail_a,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .expect_err("real PTY write failure must surface");
+        assert!(
+            !crate::pty::menu_guard::is_menu_guard_deferred_error(&err_a),
+            "a real write failure must not be classified as deferred: {err_a}"
+        );
+        assert!(err_a.contains("PTY write failed"), "{err_a}");
+
+        let mut fail_b = wake_message_to_target();
+        fail_b.id = "1883-b-fail".to_string();
+        let err_b = poller
+            .inject_into_pty(
+                &app,
+                site_b_session,
+                &fail_b,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .expect_err("real PTY write failure must surface");
+        assert!(
+            !crate::pty::menu_guard::is_menu_guard_deferred_error(&err_b),
+            "a real write failure must not be classified as deferred: {err_b}"
+        );
+        assert!(err_b.contains("PTY write failed"), "{err_b}");
+
+        let fail_entries = crate::logging::error_sink().drain();
+        for canary in ["1883-a-fail", "1883-b-fail"] {
+            assert!(
+                fail_entries.iter().any(|entry| {
+                    entry.level == "ERROR"
+                        && entry.message.contains(canary)
+                        && entry.message.contains("[mailbox] PTY injection FAILED")
+                }),
+                "site {canary} must log FAILED at ERROR; captured: {fail_entries:?}"
+            );
+        }
     }
 
     async fn assert_wired_clear_and_compact_submission(clear_shell: &str, compact_shell: &str) {

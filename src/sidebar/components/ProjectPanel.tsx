@@ -381,8 +381,7 @@ function runningCoordinatorPeers(wg: AcWorkgroup, replica: AcAgentReplica): AcAg
  *  order `ci-running` then `stale` so the className string is deterministic and
  *  assertable. `unknown`, `idle` and `current` carry NO class: a user without `gh`,
  *  or with the feature off, sees exactly today's UI, and a marker for "we do not
- *  know" would be permanent noise on most rows. The distinction lives in the
- *  tooltip, not in colour. */
+ *  know" would be permanent noise on most rows. */
 function remoteActivityClasses(sourcePath: string): string {
   const activity = remoteActivityStore.forPath(sourcePath);
   if (!activity) return "";
