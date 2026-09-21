@@ -2,7 +2,13 @@ import { Component, onCleanup } from "solid-js";
 import { specBoardStore, setSpecBoardStore } from "../stores/spec-board";
 import { SpecBoardAPI } from "../../shared/ipc";
 
-const SpecBoardEditor: Component = () => {
+interface SpecBoardEditorProps {
+  /** Second guard (the wrapper's `inert` is the first): true until quit-gate
+   *  registration succeeds. */
+  editingLocked?: boolean;
+}
+
+const SpecBoardEditor: Component<SpecBoardEditorProps> = (props) => {
   let debounceTimer: any;
 
   const handleInput = (e: Event) => {
@@ -39,9 +45,11 @@ const SpecBoardEditor: Component = () => {
   return (
     <div class="spec-board-editor">
       <textarea
+        data-ac-testid="specBoard.editor.textarea"
         value={specBoardStore.content}
         onInput={handleInput}
         spellcheck={false}
+        disabled={props.editingLocked === true}
       />
     </div>
   );
