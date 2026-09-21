@@ -1561,7 +1561,7 @@ export function runCapture(options, io = {}) {
   // 14. Emission, after steps 2 to 11 all passed and before the verdict.
   if (options.emit !== undefined) {
     const entries = [...observed.keys()]
-      .sort()
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
       .map((id) => ({ id, anchors: observed.get(id) }));
     const document = {
       platform: options.platform,
@@ -1574,7 +1574,7 @@ export function runCapture(options, io = {}) {
 
   // 12. Anchor multisets, not counts: an equal-count replacement is refused.
   const baselineById = new Map(baselineDocument.entries.map((entry) => [entry.id, entry]));
-  const ids = [...new Set([...observed.keys(), ...baselineById.keys()])].sort();
+  const ids = [...new Set([...observed.keys(), ...baselineById.keys()])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const newFindings = [];
   const staleFindings = [];
   for (const id of ids) {
@@ -2435,7 +2435,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const anchor = anchorFor('src/one.rs', 1, 1, fixture.reader);
       const missing = otherAnchor(anchor);
       workspace['cognitive-complexity.baseline.json'] = baselineJson([
-        { id: 'rust:src/one.rs::heavy', sites: { windows: [anchor, missing].sort() } },
+        { id: 'rust:src/one.rs::heavy', sites: { windows: [anchor, missing].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) } },
       ]);
       expectEqual(fixture.run(), 1, 'the unobserved anchor is a STALE');
       const lines = findingLines(fixture, 'STALE');
@@ -2929,7 +2929,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const replacement = anchorFor('src/rc1.rs', second.line, second.column, fixture.reader);
       const missing = otherAnchor(observed, replacement);
       workspace['cognitive-complexity.baseline.json'] = baselineJson([
-        { id: 'rust:src/rc1.rs::impl:A::m', sites: { windows: [observed, missing].sort() } },
+        { id: 'rust:src/rc1.rs::impl:A::m', sites: { windows: [observed, missing].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) } },
       ]);
       expectEqual(fixture.run(), 1, 'R-C1 is refused');
       const newLines = findingLines(fixture, 'NEW');
@@ -2974,7 +2974,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       changed.workspace['cognitive-complexity.baseline.json'] = baselineJson([
         {
           id: 'rust:src/dup.rs::fn:f::{closure}',
-          sites: { windows: [anchor, replacement].sort() },
+          sites: { windows: [anchor, replacement].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) },
         },
       ]);
       expectEqual(changed.run(), 1, 'a changed second site is refused');
