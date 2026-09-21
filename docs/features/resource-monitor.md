@@ -30,16 +30,21 @@ The monitor also needs the platform to support process-tree enforcement. Where t
 
 The window is titled `Resource Monitor` and has three controls in its header: `Refresh` takes a fresh sample immediately, `Settings` opens the `Resources` tab of the Settings dialog, and `Detach` (see the next section) appears only when the monitor is embedded in the main window.
 
-A strip of four tiles summarizes the whole app:
+A strip of five tiles summarizes the whole app:
 
 | Tile | What it shows |
 |---|---|
 | `State` | The overall state, folding in the network state. |
 | `Active Agents` | Active agent groups against the configured maximum. |
+| `Processes` | The number of processes across every agent group in the snapshot. The filters do not change it. |
 | `App Private` | AC's own private bytes, with the working set alongside. |
 | `Network` | The network state and its summary line. |
 
-Below that, the `Agents` section lists the groups. A filter bar narrows the list by status (all, active or inactive), by project, by room and by agent role; while any filter is on, the header reads `Showing <n> of <total>`. The header also carries `Last update <time>`. Selecting a group row expands it to the processes inside that group, and a group whose kill is allowed can be terminated from here after a confirmation.
+Below that, the `Agents` section lists the groups. A filter bar narrows the list by status (all, active or inactive), by project, by room, by agent role, by PID, and by a free text search. The PID filter takes a single PID or a comma-separated list of up to 32; tokens it cannot read are named back to you as ignored, not dropped in silence. The panel reports only what the snapshot observed: it never says a PID does not exist, only that it is absent from what was observed.
+
+The header carries one counter, and only one. It is always on screen and always reads `Showing <n> of <total> agents`; with no filter on, the two numbers are the same. While a PID filter is applied, that same line also reports how many processes matched and, separately, how many groups matched by root PID only. The root-PID-only clause appears only when that count is greater than zero. The header also carries `Last update <time>`.
+
+Selecting a group row expands it to the processes inside that group, and more than one group can stay open at once. Processes are indented by their depth in the process tree. A group whose descendants were not all observed carries a `partial` marker. A sort control orders the list by CPU, private bytes, process count or name, with a direction toggle beside it; an expanded row keeps its place while the list re-sorts under it on each new snapshot, and moves to its new sorted position only when you change the sort field or the direction. A group whose kill is allowed can be terminated from here after a confirmation.
 
 The list refreshes on a timer: every 2 seconds while active and every 10 seconds when idle, dropping to 15 seconds when `resourceBackoffPolling` is on. When a sample fails, the window shows `Snapshot failed: <error>`; with `resourceKeepLastSnapshot` on it keeps the previous reading on screen under `Showing last snapshot from <time>.` instead of blanking.
 
