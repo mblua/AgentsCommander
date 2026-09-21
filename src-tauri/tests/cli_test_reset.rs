@@ -56,6 +56,25 @@ fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
     dst
 }
 
+/// Returns a path that `Command` can actually launch for a copied binary.
+///
+/// On Windows, `CreateProcessW` cannot resolve a plain program path past the
+/// legacy `MAX_PATH` limit, and Rust's `Command` deliberately forwards long
+/// paths unchanged, so a plain long path fails to spawn with
+/// `ERROR_PATH_NOT_FOUND`. `canonicalize` yields the verbatim (`\\?\C:\...`)
+/// form, which CreateProcessW accepts; on Unix the path is already usable.
+fn spawnable_binary_path(bin: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        std::fs::canonicalize(bin)
+            .unwrap_or_else(|e| panic!("canonicalize long-path binary {}: {e}", bin.display()))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        bin.to_path_buf()
+    }
+}
+
 fn testable_reset_identity_lock() -> MutexGuard<'static, ()> {
     TESTABLE_RESET_IDENTITY_LOCK
         .lock()
@@ -308,7 +327,7 @@ fn long_path_target_deletes_only_allowed_directories() {
         );
         return;
     }
-    let bin = copy_binary_as(&base, "agentscommander_testeable.exe");
+    let bin = spawnable_binary_path(&copy_binary_as(&base, "agentscommander_testeable.exe"));
     let mut probe = Command::new(&bin);
     probe
         .arg("--help")
