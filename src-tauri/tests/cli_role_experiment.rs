@@ -1,9 +1,28 @@
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 
 const FAKE_EXECUTOR_TEST_ENV: &str = "AGENTSCOMMANDER_ROLE_EXPERIMENT_TEST_FAKE_EXECUTOR";
+
+/// Excludes one test's open write descriptor on a freshly copied binary from
+/// overlapping another test's fork/exec.
+///
+/// These tests run in parallel and each copies the binary into its own temp dir
+/// before exec'ing it. `Command::spawn` forks, and the child inherits the write
+/// descriptor another thread still holds on *its* copy; exec'ing a binary that
+/// any process holds open for writing fails with `ETXTBSY`. Covering both the
+/// copy and the spawn closes that window. The lock is released before output is
+/// collected, so the binary runs themselves still overlap.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn command_for_binary(bin: &Path) -> Command {
     let mut command = Command::new(bin);
@@ -38,7 +57,10 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    {
+        let _guard = spawn_lock();
+        std::fs::copy(src, &dst).expect("copy binary");
+    }
     dst
 }
 
@@ -86,7 +108,17 @@ fn project_with_source(tmp: &Path) -> PathBuf {
 }
 
 fn run(bin: &Path, args: &[&str]) -> (i32, serde_json::Value, String) {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let mut command = command_for_binary(bin);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let json: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("stdout json: {}\n{}", e, stdout));
@@ -105,11 +137,18 @@ fn run_ok(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_fake(bin: &Path, args: &[&str]) -> (i32, serde_json::Value, String) {
-    let out = command_for_binary(bin)
+    let mut command = command_for_binary(bin);
+    command
         .env(FAKE_EXECUTOR_TEST_ENV, "1")
         .args(args)
-        .output()
-        .expect("spawn");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let json: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("stdout json: {}\n{}", e, stdout));
