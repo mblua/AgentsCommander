@@ -690,23 +690,40 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
       expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).toBe("ac-discovery-badge branch");
       expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(false);
 
-      // `idle` - checked, nothing running. The tooltip is the gate: that suffix can
-      // only be there after the store update reached the DOM.
+      // `idle` - the chip may not print CI text. The gate is a real transition:
+      // `running` must first tint the row and print its title, so the neutral title
+      // below is measured after a visible change, never against the initial DOM.
+      publishCi("running");
+      await waitFor(() =>
+        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).toContain("ci-running")
+      );
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(true);
+      expect(chip(rendered.root, "workgroups", ORCHESTRATOR).title).toBe(
+        `${ciRepoPath()} (status unknown) - CI running`
+      );
       publishCi("idle");
       await waitFor(() =>
-        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).title).toContain(
-          "no CI activity for this commit"
-        )
+        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).not.toContain("ci-running")
       );
       expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(false);
+      expect(chip(rendered.root, "workgroups", ORCHESTRATOR).title).toBe(
+        `${ciRepoPath()} (status unknown)`
+      );
 
-      // `unknown` - no answer is not an answer. Same gating shape.
+      // `unknown` - no answer is not an answer. Same running-to-neutral gate.
+      publishCi("running");
+      await waitFor(() =>
+        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).toContain("ci-running")
+      );
+      expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(true);
       publishCi("unknown");
       await waitFor(() =>
-        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).title).not.toContain("no CI activity")
+        expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).not.toContain("ci-running")
       );
       expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(false);
-      expect(chip(rendered.root, "workgroups", ORCHESTRATOR).className).not.toContain("ci-running");
+      expect(chip(rendered.root, "workgroups", ORCHESTRATOR).title).toBe(
+        `${ciRepoPath()} (status unknown)`
+      );
     } finally {
       rendered.cleanup();
     }

@@ -6,17 +6,12 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
-### Fixed
-
-- **CI activity on a repository's default branch no longer rings the chip or notifies the orchestrator.** A resolved default branch reports idle whatever GitHub answers, so it adds no room CI activity and sends no `ci-started` or `ci-finished` notice; an unresolved default branch is unchanged. The chip tooltip no longer claims `no CI activity for this commit`, because an absent CI suffix cannot tell idle from unknown. ([#2326](https://github.com/mblua/AgentsCommander/issues/2326))
-
 ## 0.37.0
 
 ### Fixed
 
 - **`list-peers-lean --snapshot-targets` no longer aborts on a neighbouring directory it cannot verify.** A linked or junctioned room, a stale `__agent_*` replica, or a sibling project directory that fails identity verification is now skipped and counted instead of failing the whole command with `Error: unsafe_path` and exit 1. The counts are reported on stderr as integers only (`snapshot_targets_note skipped_project_children=… skipped_rooms=… skipped_replicas=…`), a `[]` result now says why on stderr, and a genuinely rejected `--root` names the rule that rejected it. Every emitted target still passes the same unchanged identity verification, and stdout JSON is unchanged. ([#2228](https://github.com/mblua/AgentsCommander/issues/2228), [#2223](https://github.com/mblua/AgentsCommander/issues/2223))
 - **`terminal-snapshot` now says which argument it rejected and why.** Every CLI-originated rejection adds `field=` (when exactly one argument is at fault, from `token`, `root`, `to`, `format`, `output`, `timeout`) and `reason=` to the `terminal_snapshot_error` line, so the six previously identical `invalid_request` failures are distinguishable. `code=` values, exit codes, stdout and the HTTP API are unchanged, and the new tokens are fixed literals that never carry a path or a token. ([#2227](https://github.com/mblua/AgentsCommander/issues/2227), [#2223](https://github.com/mblua/AgentsCommander/issues/2223))
-
 ## 0.36.0
 
 ### Added

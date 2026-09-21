@@ -350,12 +350,11 @@ describe("#2064 badge title remote-activity suffixes", () => {
   });
 
   it("title_suffixes_per_state", () => {
-    // Section 6's five rows. CI `unknown` is SILENT on purpose: it is the majority
-    // case and it has nothing to say.
+    // Section 6's five rows. CI `idle` and `unknown` are both SILENT on purpose:
+    // neither can claim a CI run for this commit, and the payload carries no
+    // suppression reason to tell them apart.
     expect(cleanTitle(activity({ ci: "running" }))).toBe(`${REPO} - CI running`);
-    expect(cleanTitle(activity({ ci: "idle" }))).toBe(
-      `${REPO} - no CI activity for this commit`
-    );
+    expect(cleanTitle(activity({ ci: "idle" }))).toBe(REPO);
     expect(cleanTitle(activity({ ci: "unknown" }))).toBe(REPO);
     expect(cleanTitle(activity({ staleness: "stale", behindBy: 3 }))).toBe(
       `${REPO} - base is 3 commits ahead`

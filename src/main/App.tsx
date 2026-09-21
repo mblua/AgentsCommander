@@ -42,6 +42,15 @@ import {
   MAIN_TERMINAL_MIN_WIDTH,
   clampMainSidebarWidth,
 } from "../shared/sidebar-layout";
+import {
+  createPulseWidthSeams,
+  railNudgePx,
+  registerCompactHost,
+  restoreWidthPx,
+  setRailNudgePx,
+  setRestoreWidthPx,
+  sidebarCompact,
+} from "../shared/sidebar-compact";
 import "./styles/main.css";
 import "../shared/styles/external-link-confirm.css";
 
@@ -51,6 +60,8 @@ const SIDEBAR_PULSE_DELTA_PX = 16;
 const SIDEBAR_PULSE_DWELL_MS = 200;
 const SIDEBAR_PULSE_LEG_TIMEOUT_MS = 2000;
 const SIDEBAR_PULSE_REQUEST_TIMEOUT_MS = 8000;
+
+const SIDEBAR_ANIMATION_FALLBACK_MS = 400;
 
 // #2297 phase 3 - main close handshake.
 const QUIT_RETRY_GRACE_MS = 2000;
@@ -254,6 +265,18 @@ const MainApp: Component = () => {
   let sidebarInitializationSettled = false;
   let disposed = false;
   let pulseOwner: SidebarPulseOwner | null = null;
+  let endActiveDividerDrag: (() => void) | null = null;
+  let sidebarAnimationTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // #2236 phase 7 — the pulse's seven width couplings go through these named
+  // seams. Expanded mode delegates to the host accessors unchanged; compact
+  // mode reads and writes the rail nudge instead of the hidden live width.
+  const seams = createPulseWidthSeams({
+    readExpanded: sidebarWidth,
+    writeExpanded: setSidebarWidth,
+    clampExpanded: (px) => clampMainSidebarWidth(px, window.innerWidth),
+    paneStyleWidth: () => sidebarPaneRef.style.width,
+  });
 
   const cancelOwnerWait = (owner: SidebarPulseOwner): void => {
     const wait = owner.wait;
@@ -293,8 +316,8 @@ const MainApp: Component = () => {
       owner.originalWidth !== null &&
       owner.nudgedWidth !== null
     ) {
-      if (sidebarWidth() === owner.nudgedWidth) {
-        setSidebarWidth(owner.originalWidth);
+      if (seams.readPulseWidth() === owner.nudgedWidth) {
+        seams.writePulseWidth(owner.originalWidth);
       }
       owner.ownsTemporaryWidth = false;
     }
@@ -403,7 +426,7 @@ const MainApp: Component = () => {
     if (splitterSaveTimeout !== null || splitterPersistenceInFlightCount > 0) {
       return { kind: "stop", status: "cancelled", reason: "persistence_owned" };
     }
-    if (sidebarWidth() !== expectedWidth) {
+    if (seams.readPulseWidth() !== expectedWidth) {
       return { kind: "stop", status: "cancelled", reason: "width_changed" };
     }
 
@@ -562,7 +585,7 @@ const MainApp: Component = () => {
     owner.started = true;
 
     try {
-      const originalWidth = sidebarWidth();
+      const originalWidth = seams.readPulseWidth();
       if (!Number.isFinite(originalWidth) || originalWidth < 0) {
         failPulseForInvalidNumbers(owner);
         return;
@@ -581,9 +604,8 @@ const MainApp: Component = () => {
         originalLive.sample.completedObserverAck,
       );
 
-      const inwardCandidate = clampMainSidebarWidth(
+      const inwardCandidate = seams.clampPulseWidth(
         originalWidth - SIDEBAR_PULSE_DELTA_PX,
-        window.innerWidth,
       );
       let direction: SidebarPulseDirection;
       let nudgedWidth: number;
@@ -591,9 +613,8 @@ const MainApp: Component = () => {
         direction = "inward";
         nudgedWidth = inwardCandidate;
       } else {
-        const outwardCandidate = clampMainSidebarWidth(
+        const outwardCandidate = seams.clampPulseWidth(
           originalWidth + SIDEBAR_PULSE_DELTA_PX,
-          window.innerWidth,
         );
         if (outwardCandidate !== originalWidth + SIDEBAR_PULSE_DELTA_PX) {
           finishPulse(owner, "skipped", "clamped");
@@ -623,7 +644,7 @@ const MainApp: Component = () => {
       const expansionBaselineObservedEpoch =
         expansionBoundary.sample.observedObserverEpoch;
 
-      setSidebarWidth(nudgedWidth);
+      seams.writePulseWidth(nudgedWidth);
       owner.ownsTemporaryWidth = true;
 
       const expandedOutcome = await waitForPulseLeg(
@@ -693,7 +714,7 @@ const MainApp: Component = () => {
       }
       const restoreBaselineObservedEpoch = restoreBoundary.sample.observedObserverEpoch;
 
-      setSidebarWidth(originalWidth);
+      seams.writePulseWidth(originalWidth);
       owner.ownsTemporaryWidth = false;
 
       const restoredOutcome = await waitForPulseLeg(
@@ -736,7 +757,7 @@ const MainApp: Component = () => {
       }
       if (
         !sameLayoutGeometry(finalLive.sample, originalGeometry) ||
-        sidebarPaneRef.style.width !== `${originalWidth}px`
+        !seams.pulseWidthIsApplied(originalWidth)
       ) {
         finishPulse(owner, "cancelled", "width_changed");
         return;
@@ -841,7 +862,7 @@ const MainApp: Component = () => {
     if (
       owner.ownsTemporaryWidth &&
       owner.nudgedWidth !== null &&
-      sidebarWidth() !== owner.nudgedWidth
+      seams.readPulseWidth() !== owner.nudgedWidth
     ) {
       finishPulse(owner, "cancelled", "width_changed");
       return;
@@ -849,7 +870,60 @@ const MainApp: Component = () => {
     finishPulse(owner, "cancelled", reason);
   };
 
+  const clearSidebarAnimationTimer = (): void => {
+    if (sidebarAnimationTimer !== null) {
+      clearTimeout(sidebarAnimationTimer);
+      sidebarAnimationTimer = null;
+    }
+  };
+
+  const stopSidebarAnimation = (): void => {
+    clearSidebarAnimationTimer();
+    sidebarPaneRef.classList.remove("ac-sidebar-animating");
+  };
+
+  // Epic D13 — the transient class carries the only width transition, so the
+  // pulse, hydration, presets and divider steps never animate. The fallback is
+  // disarmed on the transitionend path and on cleanup: a nulled handle is not
+  // a disarmed timer.
+  const startSidebarAnimation = (): void => {
+    clearSidebarAnimationTimer();
+    sidebarPaneRef.classList.add("ac-sidebar-animating");
+    sidebarAnimationTimer = setTimeout(
+      stopSidebarAnimation,
+      SIDEBAR_ANIMATION_FALLBACK_MS,
+    );
+  };
+
+  const onSidebarPaneTransitionEnd = (event: TransitionEvent): void => {
+    if (event.target !== sidebarPaneRef) {
+      return;
+    }
+    stopSidebarAnimation();
+  };
+
+  // Epic D21/D22 — the host hook. It runs pre-flip, so the cancel, the
+  // snapshot and the restore all read the mode the user is leaving.
+  onCleanup(
+    registerCompactHost({
+      onBeforeModeChange: (next) => {
+        if (dragging()) endActiveDividerDrag?.();
+        cancelPulseForMutation("width_changed");
+        if (next) {
+          setRestoreWidthPx(sidebarWidth());
+        } else {
+          setSidebarWidth(
+            clampMainSidebarWidth(restoreWidthPx(), window.innerWidth),
+          );
+          setRailNudgePx(0);
+        }
+        startSidebarAnimation();
+      },
+    }),
+  );
+
   const onPointerDown = (e: PointerEvent) => {
+    if (sidebarCompact()) return;
     cancelPulseForMutation("dragging");
     e.preventDefault();
     const divider = e.currentTarget as HTMLElement;
@@ -858,20 +932,29 @@ const MainApp: Component = () => {
     document.body.style.cursor = "col-resize";
     setDragging(true);
 
+    const dragTarget = divider;
+    const dragPointerId = e.pointerId;
     const onMove = (m: PointerEvent) => {
       const rawWidth = sideAtDragStart === "left"
         ? m.clientX
         : window.innerWidth - m.clientX;
       setSidebarWidth(clampMainSidebarWidth(rawWidth, window.innerWidth));
     };
-    const onUp = (u: PointerEvent) => {
-      try { divider.releasePointerCapture(u.pointerId); } catch { /* already released */ }
+    const onUp = () => {
+      endActiveDividerDrag?.();
+    };
+    // Exactly one teardown, shared by the ordinary pointerup path and the
+    // pre-flip hook. The id is captured at pointerdown because the hook has no
+    // event to read it from.
+    endActiveDividerDrag = () => {
+      try { dragTarget.releasePointerCapture(dragPointerId); } catch { /* already released */ }
       document.body.style.cursor = "";
+      dragTarget.removeEventListener("pointermove", onMove);
+      dragTarget.removeEventListener("pointerup", onUp);
+      dragTarget.removeEventListener("pointercancel", onUp);
       setDragging(false);
-      divider.removeEventListener("pointermove", onMove);
-      divider.removeEventListener("pointerup", onUp);
-      divider.removeEventListener("pointercancel", onUp);
       persistWidth(sidebarWidth());
+      endActiveDividerDrag = null;
     };
     divider.addEventListener("pointermove", onMove);
     divider.addEventListener("pointerup", onUp);
@@ -879,6 +962,7 @@ const MainApp: Component = () => {
   };
 
   const onDividerKeyDown = (e: KeyboardEvent) => {
+    if (sidebarCompact()) return;
     if (
       e.key !== "ArrowLeft" &&
       e.key !== "ArrowRight" &&
@@ -1301,6 +1385,9 @@ const MainApp: Component = () => {
     const width = (event as CustomEvent<{ width?: number }>).detail?.width;
     if (typeof width === "number") {
       cancelPulseForMutation("width_changed");
+      // Epic D22 — while compact the collapse-time snapshot stays
+      // authoritative: neither the live width nor `restoreWidthPx` moves.
+      if (sidebarCompact()) return;
       setSidebarWidth(clampMainSidebarWidth(width, window.innerWidth));
     }
   };
@@ -1325,6 +1412,9 @@ const MainApp: Component = () => {
         document.documentElement.classList.toggle("light-theme", settings.themeLight);
         const saved = settings.mainSidebarWidth ?? DEFAULT_MAIN_SIDEBAR_WIDTH;
         setSidebarWidth(clampMainSidebarWidth(saved, window.innerWidth));
+        // A collapse before hydration would otherwise snapshot the 440 default
+        // and later restore it over the user's stored width (epic D22).
+        if (sidebarCompact()) setRestoreWidthPx(sidebarWidth());
         setSidebarSide(settings.mainSidebarSide === "left" ? "left" : DEFAULT_SIDEBAR_SIDE);
         centralViewStore.setInitialView(
           settings.mainResourceMonitorAttached ? "resourceMonitor" : "terminal"
@@ -1412,6 +1502,7 @@ const MainApp: Component = () => {
     window.removeEventListener("resize", onWindowResize);
     window.removeEventListener("main-sidebar-width-change", onSidebarWidthChange);
     window.removeEventListener("main-sidebar-side-change", onSidebarSideChange);
+    stopSidebarAnimation();
   });
 
   return (
@@ -1432,7 +1523,12 @@ const MainApp: Component = () => {
         <div
           class="main-sidebar-pane"
           ref={sidebarPaneRef!}
-          style={{ width: `${sidebarWidth()}px` }}
+          style={{
+            width: sidebarCompact()
+              ? `calc(var(--ac-rail-width) + ${railNudgePx()}px)`
+              : `${sidebarWidth()}px`,
+          }}
+          onTransitionEnd={onSidebarPaneTransitionEnd}
         >
           <SidebarApp embedded railSide={sidebarSide()} />
         </div>
@@ -1444,11 +1540,12 @@ const MainApp: Component = () => {
           role="separator"
           aria-orientation="vertical"
           aria-label={`Resize ${sidebarSide()} sidebar`}
-          aria-valuenow={Math.round(sidebarWidth())}
-          aria-valuetext={`${Math.round(sidebarWidth())} pixels, sidebar on ${sidebarSide()}`}
+          aria-disabled={sidebarCompact()}
+          aria-valuenow={Math.round(sidebarCompact() ? restoreWidthPx() : sidebarWidth())}
+          aria-valuetext={`${Math.round(sidebarCompact() ? restoreWidthPx() : sidebarWidth())} pixels, sidebar on ${sidebarSide()}`}
           aria-valuemin={MAIN_SIDEBAR_MIN_WIDTH}
           aria-valuemax={MAIN_SIDEBAR_MAX_WIDTH}
-          tabindex="0"
+          tabindex={sidebarCompact() ? -1 : 0}
           data-ac-testid="main.splitter"
           data-ac-role="separator"
           data-ac-state={dragging() ? "dragging" : "idle"}

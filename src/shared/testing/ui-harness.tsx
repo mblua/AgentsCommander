@@ -25,6 +25,22 @@ import { railCollapseStore } from "../../sidebar/stores/rail-collapse";
 import { codingAgentsStore } from "../../sidebar/stores/coding-agents";
 import { terminalStore } from "../../terminal/stores/terminal";
 import { __resetHomeStoreForTests } from "../../main/stores/home";
+import {
+  DEFAULT_SIDEBAR_COMPACT_HOTKEY,
+  registerCompactHost,
+  setPulseSeamOverridesForTests,
+  setRailNudgePx,
+  setRestoreWidthPx,
+  setSidebarCompactHotkey,
+  setSidebarCompactMode,
+  type CompactHostHooks,
+  type PulseWidthSeams,
+} from "../sidebar-compact";
+
+// #2236 phase 7 — the pulse seam override is module-level state like the
+// compact signals, so tests install and clear it only through the harness.
+export { setPulseSeamOverridesForTests };
+export type { PulseWidthSeams };
 
 export function renderWithFakeTransport(
   component: () => JSX.Element,
@@ -273,7 +289,34 @@ export function bridge(overrides: Partial<BridgeInfo> = {}): BridgeInfo {
   };
 }
 
+// #2236 — the compact signal, the nudge and the restore snapshot are
+// module-level signals that outlive a render exactly like the stores below, so
+// a leaked compact mode would silently disable a later file's expanded-mode
+// controls. The registrations are tracked here so a leaked host is released
+// before the flip; the flip itself still goes through the public entry point.
+const compactHostReleases: Array<() => void> = [];
+
+export function registerCompactHostForTests(hooks?: CompactHostHooks): () => void {
+  const release = registerCompactHost(hooks);
+  compactHostReleases.push(release);
+  return release;
+}
+
+export function resetSidebarCompactForTests(): void {
+  while (compactHostReleases.length > 0) {
+    compactHostReleases.pop()?.();
+  }
+  const release = registerCompactHost();
+  setSidebarCompactMode(false);
+  release();
+  setRailNudgePx(0);
+  setRestoreWidthPx(0);
+  setSidebarCompactHotkey(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
+  setPulseSeamOverridesForTests(null);
+}
+
 export function resetUiStoresForTests(): void {
+  resetSidebarCompactForTests();
   projectStore.clear();
   // #943 B2 - the volatile layer outlives a render, so without this a test that
   // lands a branch event leaks its repoBranch/repoBranchByPath into the next test

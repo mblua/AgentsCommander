@@ -119,11 +119,11 @@ The panel updates from the `ac_discovery_branch_updated` event, so a branch you 
 
 Two markers can appear on a repo chip. Neither changes the chip's background.
 
-A **thin yellow ring** around the chip means at least one GitHub Actions run for the repository's current branch, on the exact commit it sits on, is not `completed`. A non-default branch that points at the default branch's tip never shows the ring. AC never reads a run's `conclusion`, so the ring says nothing about pass or fail.
+A **thin yellow ring** around the chip means at least one GitHub Actions run for the repository's current branch, on the exact commit it sits on, is not `completed`. The ring never appears on the repository's resolved default branch, even when a run there is unfinished, and never on a non-default branch that points at the default branch's tip. If AC cannot resolve which branch is the default, the branch is treated as any other and the ring applies. AC never reads a run's `conclusion`, so the ring says nothing about pass or fail.
 
 An **orange bar on the chip's left edge** means the repository's default branch holds at least one commit this `HEAD` does not, that is, `behind_by > 0`. A branch cut from the tip is ahead, not stale.
 
-No marker means unknown, idle or current. AC does not put "we have no answer" and "the answer is nothing to report" in different colours, so the tooltip carries the difference: it appends `CI running`, `no CI activity for this commit`, or `base is N commits ahead` when it has an answer.
+No marker means unknown, idle or current. The tooltip appends `CI running` while a run is unfinished, and `base is N commits ahead` when the branch is stale. It adds no CI text otherwise, so the tooltip cannot tell you whether AC found no run, could not ask, or suppressed the answer on a default branch.
 
 Known limits, so a missing marker does not puzzle you:
 
@@ -171,7 +171,7 @@ The value persists per window. `mainZoom`, `terminalZoom`, `sidebarZoom` and `gu
 |---|---|
 | `gitSweepConcurrency` | How many repositories the git sweeper inspects at once. `1` by default, clamped to 1 through 4. |
 | `gitSweepMinIntervalSecs` | Lower bound in seconds on one sweeper round. `10` by default, clamped to 1 through 3600. |
-| `ciActivityEnabled` | Whether the remote-activity sweeper asks GitHub whether a run for the repo's current branch at its exact `HEAD` is unfinished. A branch that is not the default branch but points at the default branch's tip reports no CI activity. `true` by default. |
+| `ciActivityEnabled` | Whether the remote-activity sweeper asks GitHub whether a run for the repo's current branch at its exact `HEAD` is unfinished. A resolved default branch always reports no CI activity, and sends the orchestrator no `ci-started` or `ci-finished` notice; so does a non-default branch that points at the default branch's tip. An unresolved default branch keeps the ordinary behaviour. `true` by default. |
 | `ciActivityNotifyOrchestrator` | Whether a CI state change injects a notice into the room orchestrator. `true` by default. |
 | `branchStalenessEnabled` | Whether the sweeper asks whether the default branch holds commits this checkout does not. `true` by default. |
 | `branchStalenessNotifyOrchestrator` | Whether a staleness answer injects a notice into the room orchestrator. `true` by default. |

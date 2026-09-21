@@ -1,0 +1,3061 @@
+{
+  "contracts": {
+    "candidateState": {
+      "preTag": "absence-required-and-unambiguous",
+      "workflowAndRerun": "exact-existing-object-and-peeled-required"
+    },
+    "changelog": {
+      "duplicateAllowed": false,
+      "semanticAssertions": "version-side-scope-changelog-declarations-all-required",
+      "transformation": "move-exact-unreleased-body-once"
+    },
+    "evidenceAvailability": {
+      "directory": "docs/releases/v0.37.0",
+      "exactPaths": [
+        "docs/releases/v0.37.0/CHANGELOG.release.md",
+        "docs/releases/v0.37.0/candidate-assets.v1.json",
+        "docs/releases/v0.37.0/input-manifest.v1.json",
+        "docs/releases/v0.37.0/predecessor-assets.v1.json",
+        "docs/releases/v0.37.0/release-authority-v1.txt",
+        "docs/releases/v0.37.0/release-body.md",
+        "docs/releases/v0.37.0/release-plan.md",
+        "docs/releases/v0.37.0/SHA256SUMS"
+      ],
+      "hardeningAllowlist": [
+        ".github/workflows/release.yml",
+        "docs/releases/v0.37.0/CHANGELOG.release.md",
+        "docs/releases/v0.37.0/candidate-assets.v1.json",
+        "docs/releases/v0.37.0/input-manifest.v1.json",
+        "docs/releases/v0.37.0/predecessor-assets.v1.json",
+        "docs/releases/v0.37.0/release-authority-v1.txt",
+        "docs/releases/v0.37.0/release-body.md",
+        "docs/releases/v0.37.0/release-plan.md",
+        "docs/releases/v0.37.0/SHA256SUMS"
+      ],
+      "source": "candidate-tree"
+    },
+    "executionOrder": [
+      "exact-evidence",
+      "wg33-pass",
+      "exact-byte-certification",
+      "exact-hash-human-approval",
+      "context-purge",
+      "cold-hardening-implement-review-protected-merge",
+      "version-evidence-review-protected-merge",
+      "final-authority-and-gates",
+      "annotated-tag-push",
+      "github-npm-executable-verification"
+    ],
+    "permissions": {
+      "assetUpload": "job-local-contents-write",
+      "attestationVerification": "attestations:read-with-explicit-GH_TOKEN",
+      "default": [
+        "contents:read"
+      ],
+      "directUploaderPermission": "contents:write-no-id-token",
+      "directUploaders": [
+        "build",
+        "checksums",
+        "publish-github"
+      ],
+      "oidcJobs": [
+        "publish-npm"
+      ]
+    },
+    "releaseFlow": {
+      "draftFirst": true,
+      "macosBuilds": "one-per-architecture-reused-for-all-assets",
+      "makeLatestType": "string",
+      "predecessor": "dynamic-immediate-normal-semver-with-object-peeled-release-ledger",
+      "publicImmutableBeforeNpm": true,
+      "trigger": "generic-normal-semver"
+    },
+    "reviewAuthority": {
+      "administrator": "mblua",
+      "mode": "documented-admin-self-review-exception",
+      "reviewer": null,
+      "rule": "admin authority may replace only unavailable self-review after every exact-head required check and version-sync pass; it may never bypass failure"
+    },
+    "reviewSet": {
+      "artifactBytes": {
+        "bom": "forbidden",
+        "encoding": "utf-8",
+        "finalLf": "exactly-one",
+        "jsonCanonicalization": "recursive-key-sort-by-ecmascript-utf16-order-json-stringify-two-space-indent-plus-one-lf",
+        "lineEndings": "lf-0a-only",
+        "normalization": "none-exact-emitted-bytes"
+      },
+      "fileDigest": {
+        "algorithm": "sha256",
+        "encoding": "lowercase-hex-ascii-64"
+      },
+      "fileOrder": [
+        "CHANGELOG.release.md",
+        "candidate-assets.v1.json",
+        "input-manifest.v1.json",
+        "predecessor-assets.v1.json",
+        "release-body.md",
+        "release-plan.md"
+      ],
+      "positiveVector": {
+        "fileOrder": [
+          "alpha.txt",
+          "beta.json"
+        ],
+        "files": [
+          {
+            "contentBase64": "YWxwaGEK",
+            "name": "alpha.txt",
+            "sha256": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060"
+          },
+          {
+            "contentBase64": "e30K",
+            "name": "beta.json",
+            "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        ],
+        "reviewSetSha256": "9d3945ec3d10e79abc60f28fd95e94cfb9d7f6b95ade412ea7bac4c138956ff8",
+        "serializedRecordsBase64": "YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MCAgYWxwaGEudHh0CmNhM2QxNjNiYWIwNTUzODE4MjcyMjYxNDA1NjhmM2JlZjdlYWFjMTg3Y2ViZDc2ODc4ZTBiNjNlOWU0NDIzNTYgIGJldGEuanNvbgo="
+      },
+      "recordSerialization": {
+        "construction": "file-digest-ascii || separator || filename-utf8 || terminator",
+        "filenameEncoding": "utf-8",
+        "interRecordBytes": "none-beyond-each-record-terminator",
+        "lengthPrefix": "none",
+        "postamble": "none",
+        "preamble": "none",
+        "separatorHex": "2020",
+        "terminatorHex": "0a"
+      },
+      "reviewSetDigest": {
+        "algorithm": "sha256",
+        "encoding": "lowercase-hex-ascii-64",
+        "input": "concatenated-record-bytes-in-fileOrder"
+      },
+      "schema": "prepare-agentscommander-release/review-set/v1"
+    },
+    "schema": "prepare-agentscommander-release/contracts/v1",
+    "tagIdentity": {
+      "eventShaBinds": "peeled-commit",
+      "githubShaBinds": "peeled-commit",
+      "headBinds": "peeled-commit",
+      "postPushAssertions": "executable-exact-two-record-comparison",
+      "remoteTagObjectBinds": "annotated-object",
+      "rerunState": "exact-existing-annotated-object-and-peeled-records",
+      "updateDeletionBinding": "object-and-peeled-reverification"
+    },
+    "toolchain": {
+      "ghCli": "exact-version-archive-sha256-install-self-check",
+      "node": "22",
+      "npm": "11.6.2",
+      "npmOidc": "publish-npm-only",
+      "publishToken": "must-be-absent",
+      "registryUrl": "https://registry.npmjs.org"
+    },
+    "topology": {
+      "ancestryAloneAccepted": false,
+      "finalCandidateGate": "VERSION_MERGE_SHA",
+      "hardeningParents": [
+        "484637b85d6b29085c9f7b36d66a49bdb4762889",
+        "HARDENING_HEAD"
+      ],
+      "mergeMethod": "merge-commit",
+      "planningBaseGate": "484637b85d6b29085c9f7b36d66a49bdb4762889",
+      "versionParents": [
+        "HARDENING_MERGE_SHA",
+        "VERSION_HEAD"
+      ]
+    }
+  },
+  "evidence": {
+    "authority": {
+      "collaborators": [
+        {
+          "canPull": true,
+          "canPush": true,
+          "isAdmin": true,
+          "login": "mblua",
+          "roleName": "admin"
+        }
+      ],
+      "reviewContract": {
+        "bypassActors": [
+          {
+            "actorId": 5,
+            "actorType": "RepositoryRole",
+            "bypassMode": "always"
+          }
+        ],
+        "currentUserCanBypass": "always",
+        "requiredApprovals": 1,
+        "requiredChecks": [
+          "SonarCloud Code Analysis",
+          "frontend-regression",
+          "lockfile-drift",
+          "rust-fmt",
+          "rust-regression",
+          "rust-regression-linux",
+          "rust-regression-macos",
+          "terminal-snapshot-portable (macos-15)",
+          "terminal-snapshot-portable (macos-15-intel)",
+          "terminal-snapshot-portable (ubuntu-latest)",
+          "terminal-snapshot-portable (windows-latest)",
+          "test-debt",
+          "validate-branch-name",
+          "windows-release-cli-smoke"
+        ],
+        "rulesetIds": [
+          15279066
+        ],
+        "strictStatusChecks": true
+      },
+      "rulesets": [
+        {
+          "bypassActors": [
+            {
+              "actorId": 5,
+              "actorType": "RepositoryRole",
+              "bypassMode": "always"
+            }
+          ],
+          "conditions": {
+            "ref_name": {
+              "exclude": [],
+              "include": [
+                "~DEFAULT_BRANCH"
+              ]
+            }
+          },
+          "currentUserCanBypass": "always",
+          "enforcement": "active",
+          "id": 15279066,
+          "name": "main: require PR + branch-name check",
+          "rules": [
+            {
+              "type": "deletion"
+            },
+            {
+              "type": "non_fast_forward"
+            },
+            {
+              "parameters": {
+                "allowed_merge_methods": [
+                  "merge",
+                  "squash",
+                  "rebase"
+                ],
+                "dismiss_stale_reviews_on_push": false,
+                "require_code_owner_review": false,
+                "require_extra_approval_for_unattributed_changes": true,
+                "require_last_push_approval": false,
+                "required_approving_review_count": 1,
+                "required_review_thread_resolution": false,
+                "required_reviewers": []
+              },
+              "type": "pull_request"
+            },
+            {
+              "parameters": {
+                "do_not_enforce_on_create": false,
+                "required_status_checks": [
+                  {
+                    "context": "validate-branch-name",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "lockfile-drift",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "rust-regression",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "frontend-regression",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "rust-regression-linux",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "rust-regression-macos",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "terminal-snapshot-portable (windows-latest)",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "terminal-snapshot-portable (ubuntu-latest)",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "terminal-snapshot-portable (macos-15)",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "terminal-snapshot-portable (macos-15-intel)",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "windows-release-cli-smoke",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "test-debt",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "rust-fmt",
+                    "integration_id": 15368
+                  },
+                  {
+                    "context": "SonarCloud Code Analysis",
+                    "integration_id": 12526
+                  }
+                ],
+                "strict_required_status_checks_policy": true
+              },
+              "type": "required_status_checks"
+            }
+          ],
+          "target": "branch"
+        },
+        {
+          "bypassActors": [],
+          "conditions": {
+            "ref_name": {
+              "exclude": [],
+              "include": [
+                "refs/tags/frozen/1271-configured-shell-must-govern-d68495086e168e5258500832b2ef45b4337ed21a"
+              ]
+            }
+          },
+          "currentUserCanBypass": "never",
+          "enforcement": "active",
+          "id": 20606154,
+          "name": "Protect frozen #1271 validation fixture",
+          "rules": [
+            {
+              "type": "update"
+            },
+            {
+              "type": "deletion"
+            }
+          ],
+          "target": "tag"
+        }
+      ],
+      "viewer": "mblua"
+    },
+    "candidate": {
+      "expectedAssets": [
+        {
+          "name": "Agents.Commander-0.37.0-1.x86_64.rpm",
+          "producer": "linux-x86_64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "Agents.Commander_0.37.0_aarch64.dmg",
+          "producer": "macos-aarch64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "Agents.Commander_0.37.0_amd64.AppImage",
+          "producer": "linux-x86_64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "Agents.Commander_0.37.0_amd64.deb",
+          "producer": "linux-x86_64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "Agents.Commander_0.37.0_x64-setup.exe",
+          "producer": "windows",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "Agents.Commander_0.37.0_x64.dmg",
+          "producer": "macos-x86_64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "Agents.Commander_aarch64.app.tar.gz",
+          "producer": "macos-aarch64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "Agents.Commander_x64.app.tar.gz",
+          "producer": "macos-x86_64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "SHASUMS256.txt",
+          "producer": "checksums",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "agentscommander-0.37.0-windows-x86_64-portable.zip",
+          "producer": "windows",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "agentscommander-linux-x86_64",
+          "producer": "linux-x86_64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "agentscommander-mac-aarch64",
+          "producer": "macos-aarch64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "agentscommander-mac-aarch64.app.tar.gz",
+          "producer": "macos-aarch64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "agentscommander-mac-x86_64",
+          "producer": "macos-x86_64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "agentscommander-mac-x86_64.app.tar.gz",
+          "producer": "macos-x86_64",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "agentscommander-testeable-windows-x86_64.exe",
+          "producer": "windows",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        },
+        {
+          "name": "agentscommander-windows-x86_64.exe",
+          "producer": "windows",
+          "sha256": null,
+          "size": null,
+          "state": "required"
+        }
+      ],
+      "npmPresent": false,
+      "releaseMatches": 0,
+      "tag": "v0.37.0",
+      "tagRecords": []
+    },
+    "changelog": {
+      "blobSha": "e8ff1d20aa6182cb17331bbfbe56e21070ebb0d7",
+      "contentSha256": "229208fded7070a3ae4f67d49983fa595f6f00df43d9e64da8be562eba95abb4",
+      "text": "# Changelog\n\nAll notable user-facing changes are tracked here and in [GitHub Releases](https://github.com/mblua/AgentsCommander/releases).\n\nThis file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) shape: one section per release in reverse-chronological order. Each entry groups changes under **Added / Changed / Removed / Fixed / Security** where useful.\n\n## Unreleased\n\n### Fixed\n\n- **`list-peers-lean --snapshot-targets` no longer aborts on a neighbouring directory it cannot verify.** A linked or junctioned room, a stale `__agent_*` replica, or a sibling project directory that fails identity verification is now skipped and counted instead of failing the whole command with `Error: unsafe_path` and exit 1. The counts are reported on stderr as integers only (`snapshot_targets_note skipped_project_children=… skipped_rooms=… skipped_replicas=…`), a `[]` result now says why on stderr, and a genuinely rejected `--root` names the rule that rejected it. Every emitted target still passes the same unchanged identity verification, and stdout JSON is unchanged. ([#2228](https://github.com/mblua/AgentsCommander/issues/2228), [#2223](https://github.com/mblua/AgentsCommander/issues/2223))\n- **`terminal-snapshot` now says which argument it rejected and why.** Every CLI-originated rejection adds `field=` (when exactly one argument is at fault, from `token`, `root`, `to`, `format`, `output`, `timeout`) and `reason=` to the `terminal_snapshot_error` line, so the six previously identical `invalid_request` failures are distinguishable. `code=` values, exit codes, stdout and the HTTP API are unchanged, and the new tokens are fixed literals that never carry a path or a token. ([#2227](https://github.com/mblua/AgentsCommander/issues/2227), [#2223](https://github.com/mblua/AgentsCommander/issues/2223))\n\n## 0.36.0\n\n### Added\n\n- **The \"Update available\" toast has a Copy button** that copies the upgrade command to the clipboard. The toast stays open so the command remains readable, and repeated copies reuse one confirmation toast instead of stacking. ([#2135](https://github.com/mblua/AgentsCommander/issues/2135))\n\n### Fixed\n\n- **The CI ring no longer blanks for minutes under GitHub's secondary rate limit.** The remote sweeper reserves every `gh` call against a 30-calls-per-minute budget, prioritizes repositories with confirmed running CI, and backs off a secondary 403 from 60 s instead of jumping to the 900 s cap. ([#2152](https://github.com/mblua/AgentsCommander/issues/2152))\n- **Blind-gap notices no longer fire on healthy polling rounds.** The gap threshold rises to 600 s and the default branch-staleness interval drops to 260 s, so the notice means two consecutive lost checks. Installs that already persist `branchStalenessIntervalSecs: 300` keep that value. ([#2149](https://github.com/mblua/AgentsCommander/issues/2149))\n- **CI activity counts only runs on the repository's current branch**, matched by exact name, so a branch sitting on the default branch's tip reports no CI and sends no notice. ([#2126](https://github.com/mblua/AgentsCommander/issues/2126))\n- **No branch-stale notice on the default branch itself.** The repo chip still shows the orange bar with its behind-count, and an orchestrator row takes the working wash while its repo chip shows CI running. ([#2131](https://github.com/mblua/AgentsCommander/issues/2131))\n- **The CI working tint also reaches the Orchestrators strip**, so one orchestrator can no longer appear tinted in the room tree and untinted in the strip. ([#2151](https://github.com/mblua/AgentsCommander/issues/2151))\n- **Short status-line bursts after a long silence no longer keep idle sessions awake.** Output following at least 60 s of silence is held as a pending burst and counts as activity only once it reaches 1024 bytes or lasts 3 s, so auto-close and busy/idle edges ignore a coding agent's periodic update check. The per-agent `idleBurst` settings are overridable in `agents.local.json`. ([#2124](https://github.com/mblua/AgentsCommander/issues/2124))\n- **Internal system notices survive case-skewed project paths.** A project path spelled with different letter case than the folder on disk no longer drops context alerts and remote-activity notices; filesystem identity still decides the match. ([#2113](https://github.com/mblua/AgentsCommander/issues/2113))\n- **The project `.ac/.gitignore` ignores `seed-manifest.toml`**, migrating the previous un-ignore block while preserving user bytes. ([#2090](https://github.com/mblua/AgentsCommander/issues/2090))\n- **Documentation corrections** for the seed manifest, portable readme storage after the configuration-directory change, macOS screenshot support, and the remote-activity settings, chip signals and notices. ([#2112](https://github.com/mblua/AgentsCommander/issues/2112), [#2080](https://github.com/mblua/AgentsCommander/issues/2080), [#2087](https://github.com/mblua/AgentsCommander/issues/2087), [#2085](https://github.com/mblua/AgentsCommander/issues/2085))\n- **Frontend static-analysis findings were cleared and two test suites made deterministic**, with no behavior change. ([#2108](https://github.com/mblua/AgentsCommander/issues/2108), [#2011](https://github.com/mblua/AgentsCommander/issues/2011), [#1582](https://github.com/mblua/AgentsCommander/issues/1582))\n## 0.35.0\n\n### Added\n\n- **Room repositories show remote CI and branch staleness.** When the GitHub CLI (`gh`) is available, a background sweeper checks whether CI is running on each room repository's exact HEAD and whether its default branch has commits the branch lacks. The repo chip shows a yellow ring while CI runs and an orange left bar when the branch is stale; an unknown state changes nothing, and without `gh` the feature stays inert. ([#2064](https://github.com/mblua/AgentsCommander/issues/2064), [#2082](https://github.com/mblua/AgentsCommander/issues/2082), [#2084](https://github.com/mblua/AgentsCommander/issues/2084))\n- **The room orchestrator receives remote-activity notices** when CI starts, when CI finishes and when the branch goes stale, with editable message texts. ([#2083](https://github.com/mblua/AgentsCommander/issues/2083))\n- **Screenshot capture works on macOS**, with a Screen Recording permission check at capture time and Retina-aware overlay sizing. Real-Mac acceptance is still pending. ([#2086](https://github.com/mblua/AgentsCommander/issues/2086))\n- **A global npm install on Linux creates a desktop menu entry.** `agentscommander.desktop` is written under `$XDG_DATA_HOME/applications` (or `~/.local/share/applications`) with the packaged icon. It is skipped for local installs and with `AGENTSCOMMANDER_NO_SHORTCUT=1`, never fails the install, and must be removed by hand. ([#2066](https://github.com/mblua/AgentsCommander/issues/2066))\n\n### Removed\n\n- **The `portable.txt` marker no longer affects configuration selection.** Unsuffixed executables use `$HOME/.agentscommander`; suffixed executables use their adjacent `.agentscommander_<suffix>` directory and refuse to start when it is not writable. `AGENTSCOMMANDER_CONFIG_DIR` still wins. ([#1932](https://github.com/mblua/AgentsCommander/issues/1932))\n\n### Fixed\n\n- **TASK.md lock acquisition retries transient Windows access-denied and sharing-violation errors** under its existing deadline instead of failing. ([#1579](https://github.com/mblua/AgentsCommander/issues/1579))\n- **Container shutdown workers are reclaimed after a shutdown overruns its deadline** instead of leaking. ([#1581](https://github.com/mblua/AgentsCommander/issues/1581))\n- **CI runs every cargo invocation with `--locked`**, and several static-analysis findings were cleared without behavior changes. ([#2075](https://github.com/mblua/AgentsCommander/issues/2075), [#2088](https://github.com/mblua/AgentsCommander/issues/2088), [#2095](https://github.com/mblua/AgentsCommander/issues/2095), [#2102](https://github.com/mblua/AgentsCommander/issues/2102), [#2107](https://github.com/mblua/AgentsCommander/issues/2107), [#2109](https://github.com/mblua/AgentsCommander/issues/2109))\n- A regression test now guards Delete Profile against deleting a held slot. ([#2061](https://github.com/mblua/AgentsCommander/issues/2061))\n## 0.34.0\n\n### Added\n\n- **`settings.json` saves keep a bounded backup history.** Every successful save archives the bytes it replaced into five rotating slots, `settings.backup.1.json` through `settings.backup.5.json`, beside `settings.json` in the same configuration directory. Slot 1 holds the version the most recent save replaced; slot 5 is the oldest kept. ([#2058](https://github.com/mblua/AgentsCommander/issues/2058))\n- **A global npm install on Windows creates a per-user Start Menu shortcut.** `AgentsCommander.lnk` targets the installed executable and uses its icon. It is skipped for local installs and when `AGENTSCOMMANDER_NO_SHORTCUT=1` is set, never fails the install, and must be removed by hand because npm runs no uninstall scripts. ([#2053](https://github.com/mblua/AgentsCommander/issues/2053))\n- **A global npm install on macOS makes the app reachable from Launchpad and Spotlight** through a `~/Applications/AgentsCommander.app` alias to the extracted bundle. It needs no elevation, is skipped for local installs and with `AGENTSCOMMANDER_NO_SHORTCUT=1`, leaves an unrelated application of the same name untouched, and never fails the install. ([#2065](https://github.com/mblua/AgentsCommander/issues/2065))\n- **The project global context template seeds an Answering section.** The previous template is recognized and replaced with a backup on scan, so generated standalone templates stay retirable. ([#2031](https://github.com/mblua/AgentsCommander/issues/2031))\n\n### Changed\n\n- **Left click on an offline Agent Matrix row no longer opens the session launch flow.** It shows a notice explaining that replicas, not the matrix, are what gets launched, and that the matrix folder is available from the row's right-click menu. ([#2046](https://github.com/mblua/AgentsCommander/issues/2046))\n- **The sidebar lock chip shows only the lock icon**, without the KEEP label. ([#2030](https://github.com/mblua/AgentsCommander/issues/2030))\n- **The Coding Agent profile modal scrolls its Profile and Same Profile columns independently.** ([#2038](https://github.com/mblua/AgentsCommander/issues/2038))\n- **Documentation updates**: the configuration-directory guides, the macOS and Linux support tiers, the deprecation of the legacy `codingAgentProfiles` settings, the OCA-008 tombstones for enabled Grok and disabled Muse, and Team wording in the use-case recipes. ([#1936](https://github.com/mblua/AgentsCommander/issues/1936), [#2017](https://github.com/mblua/AgentsCommander/issues/2017), [#2019](https://github.com/mblua/AgentsCommander/issues/2019), [#2009](https://github.com/mblua/AgentsCommander/issues/2009), [#2032](https://github.com/mblua/AgentsCommander/issues/2032))\n\n### Fixed\n\n- **A distinct submission is no longer silently deduplicated** when a critical-admission key outlives the completion the caller observes. ([#1580](https://github.com/mblua/AgentsCommander/issues/1580))\n- **Assign-and-lock on a replica no longer fails with `stalePreview`.** ([#2051](https://github.com/mblua/AgentsCommander/issues/2051))\n- **Delete Profile no longer removes configured profiles from other coding agents.** ([#2057](https://github.com/mblua/AgentsCommander/issues/2057))\n- **The sidebar Ungrouped counter agrees with the Ungrouped panel list.** ([#2036](https://github.com/mblua/AgentsCommander/issues/2036))\n- **npm publication no longer fails right after a successful publish** when the registry's `latest` dist-tag lags. ([#2042](https://github.com/mblua/AgentsCommander/issues/2042))\n- **Reseed tests are deterministic under concurrent same-binary runs.** ([#2001](https://github.com/mblua/AgentsCommander/issues/2001))\n- **CI uploads artifacts with a Node 24 release of `actions/upload-artifact`.** ([#2040](https://github.com/mblua/AgentsCommander/issues/2040))\n## 0.33.0\n\n### Added\n\n- **Coding-agent selections for replicas can be locked.** Assignments offer ordinary and assign-and-lock scopes with reviewed conflict decisions, independent lock removal, KEEP badges and an explicit Save default for future replicas. Replica creation preserves existing selections and applies Matrix defaults only when a replica config is first created. Selection ownership is retained through restart completion, and re-applying the same locked pair is an unchanged write. ([#1939](https://github.com/mblua/AgentsCommander/issues/1939), [#1940](https://github.com/mblua/AgentsCommander/issues/1940), [#1941](https://github.com/mblua/AgentsCommander/issues/1941), [#1942](https://github.com/mblua/AgentsCommander/issues/1942), [#1943](https://github.com/mblua/AgentsCommander/issues/1943), [#2010](https://github.com/mblua/AgentsCommander/issues/2010))\n- **The managed coding-agent catalog is persisted with local overrides.** User edits in `agents.local.json` win and survive restart; the catalog is seeded on first run even when no project is registered, and legacy, edited, foreign or corrupt files are never rewritten. ([#1968](https://github.com/mblua/AgentsCommander/issues/1968), [#1969](https://github.com/mblua/AgentsCommander/issues/1969), [#2021](https://github.com/mblua/AgentsCommander/issues/2021))\n- **Grok Build (`grok`) is available in the coding-agent catalog.** ([#1999](https://github.com/mblua/AgentsCommander/issues/1999))\n\n### Changed\n\n- **The Coding Agent assignment modal has a new layout**: three columns, a selection lock bar, Matrix default and Apply to controls, and profile comparison rows that show the launch line. ([#2014](https://github.com/mblua/AgentsCommander/issues/2014))\n- **Suffixed executables refuse to start when their adjacent `.agentscommander_<suffix>` configuration directory is not writable**, before any durable write and without a HOME fallback. Unsuffixed executables keep `HOME/.agentscommander`, and explicit overrides are retained. ([#1935](https://github.com/mblua/AgentsCommander/issues/1935))\n- **Muse is disabled in the coding-agent catalog.** ([#1999](https://github.com/mblua/AgentsCommander/issues/1999))\n- **The npm package README recommends global installation.** ([#1955](https://github.com/mblua/AgentsCommander/issues/1955))\n\n### Removed\n\n- **The legacy pre-v2 `codingAgentProfiles` settings migration was removed.** It ran on every load and dropped profile labels. ([#2018](https://github.com/mblua/AgentsCommander/issues/2018))\n\n### Fixed\n\n- **The npm launcher starts the app on macOS** by resolving the executable inside the installed `.app` bundle. ([#2016](https://github.com/mblua/AgentsCommander/issues/2016))\n- **Profile labels survive restart.** ([#2018](https://github.com/mblua/AgentsCommander/issues/2018))\n- **Current Codex final answers are forwarded to Telegram.** ([#1997](https://github.com/mblua/AgentsCommander/issues/1997))\n- **Injected messages are submitted in Hermes, OpenCode and Grok.** ([#1999](https://github.com/mblua/AgentsCommander/issues/1999))\n- **npm release verification installs the Linux runtime before running the CLI.** ([#1988](https://github.com/mblua/AgentsCommander/issues/1988))\n- Several intermittent test fixtures are now deterministic. ([#1466](https://github.com/mblua/AgentsCommander/issues/1466), [#1984](https://github.com/mblua/AgentsCommander/issues/1984), [#1996](https://github.com/mblua/AgentsCommander/issues/1996), [#1998](https://github.com/mblua/AgentsCommander/issues/1998))\n## 0.32.0\n\n### Added\n\n- **Linux/X11 screenshot capture is available**, with documented capture commands and native build dependencies. ([#1915](https://github.com/mblua/AgentsCommander/issues/1915), [#1916](https://github.com/mblua/AgentsCommander/issues/1916))\n- **Muse sessions can resume the latest workspace session automatically** on supported local macOS/Linux launches. Explicit fresh starts and configured arguments retain their own behavior. ([#1873](https://github.com/mblua/AgentsCommander/issues/1873))\n- **Blocking-menu patterns now have shipped, local and remote files.** Existing settings arrays are exported once into the local overlay without overwriting operator entries. An enabled-by-default Settings checkbox controls the background startup download, throttled to once per 24 hours. Downloaded files are validated before replacing the cache; failures retain the prior copy, and new patterns apply on the next start. Local overrides take precedence. ([#1905](https://github.com/mblua/AgentsCommander/issues/1905), [#1925](https://github.com/mblua/AgentsCommander/issues/1925))\n- **Coding-agent catalog availability and diagnostics are visible in Settings and Quick Configuration**, with a Reload catalog action and guards against stale selections when the primary project changes. Catalog consumers and the startup updater use persisted catalog data without a bundled fallback. ([#1963](https://github.com/mblua/AgentsCommander/issues/1963), [#1964](https://github.com/mblua/AgentsCommander/issues/1964), [#1965](https://github.com/mblua/AgentsCommander/issues/1965), [#1966](https://github.com/mblua/AgentsCommander/issues/1966), [#1967](https://github.com/mblua/AgentsCommander/issues/1967))\n\n### Changed\n\n- **Normal executables now store configuration in the user's home directory, under `.agentscommander`.** An explicit `AGENTSCOMMANDER_CONFIG_DIR` still wins. Unsuffixed executables no longer select an adjacent portable directory, and no old configuration is discovered, copied or migrated automatically. Preserve the active configuration before updating and select its location explicitly when needed. Suffixed instances retain their existing location rules. ([#1868](https://github.com/mblua/AgentsCommander/issues/1868))\n- **The Root Agent banner uses its right-click menu for actions**, removing the five hover buttons while retaining the Telegram indicator. ([#1896](https://github.com/mblua/AgentsCommander/issues/1896))\n- **Documentation now covers native Linux package installation, platform-specific shell guidance, the Orchestrator alias, and outbound network calls.** The obsolete codebase-memory cache-directory recommendation was removed. ([#1840](https://github.com/mblua/AgentsCommander/issues/1840), [#1951](https://github.com/mblua/AgentsCommander/issues/1951), [#1900](https://github.com/mblua/AgentsCommander/issues/1900), [#1924](https://github.com/mblua/AgentsCommander/issues/1924), [#1897](https://github.com/mblua/AgentsCommander/issues/1897))\n- **The Cargo package is named `agentscommander`.** Native regression CI separates focused release builds from test execution, aligns cache targets, and checks the served-path inventory. ([#1934](https://github.com/mblua/AgentsCommander/issues/1934), [#1929](https://github.com/mblua/AgentsCommander/issues/1929), [#1974](https://github.com/mblua/AgentsCommander/issues/1974), [#1946](https://github.com/mblua/AgentsCommander/issues/1946))\n\n### Fixed\n\n- **Concurrent local configuration writes are serialized across processes** to protect persisted settings. ([#1938](https://github.com/mblua/AgentsCommander/issues/1938))\n- **Integration tests isolate unsuffixed binaries from the user's configuration.** The built-in coding-agent support table consistently controls catalog filtering and seeding. ([#1867](https://github.com/mblua/AgentsCommander/issues/1867), [#1912](https://github.com/mblua/AgentsCommander/issues/1912))\n\n### Security\n\n- Updated the container base images to Node `22.23.2-trixie-slim` and Debian `13.6-slim`. ([#1931](https://github.com/mblua/AgentsCommander/pull/1931), [#1933](https://github.com/mblua/AgentsCommander/pull/1933))\n## 0.31.0\n\n### Added\n\n- **Agents resume automatically after an app restart.** Settings > General gains an **On app restart** section with two checkboxes and two editable restart prompts. When enabled, AgentsCommander restores the saved sessions, wakes the replicas that were working when the app closed, waits until each one is ready for input, and types the configured prompt into it once, so a team picks up where it left off without anyone retyping into every terminal. The existing `Orchestrator wake state` control moves into that section. ([#1793](https://github.com/mblua/AgentsCommander/issues/1793), [#1801](https://github.com/mblua/AgentsCommander/issues/1801), [#1802](https://github.com/mblua/AgentsCommander/issues/1802), [#1803](https://github.com/mblua/AgentsCommander/issues/1803), [#1804](https://github.com/mblua/AgentsCommander/issues/1804))\n- **The bar that marks the selected sidebar row now has user-settable width and colour.** Two new fields in Settings set the rail width (up to 14px) and its colour; both are persisted, published to the DOM and validated in the modal. The factory colour is now `#630707`. ([#1796](https://github.com/mblua/AgentsCommander/issues/1796), [#1828](https://github.com/mblua/AgentsCommander/issues/1828), [#1829](https://github.com/mblua/AgentsCommander/issues/1829), [#1830](https://github.com/mblua/AgentsCommander/issues/1830), [#1831](https://github.com/mblua/AgentsCommander/issues/1831), [#1844](https://github.com/mblua/AgentsCommander/issues/1844))\n- **Muse Code joins the embedded coding-agent catalog** as a beta preset: command `muse`, macOS and Linux hosts only, no config seed and no update commands. ([#1860](https://github.com/mblua/AgentsCommander/issues/1860))\n- **`agentscommander --version` (and `-V`) prints the CLI version.** The npm clean-install check in the release pipeline relies on it, and that pipeline's post-publish verification now tolerates registry propagation delays and compares the provenance registry URL canonically. ([#1826](https://github.com/mblua/AgentsCommander/issues/1826))\n- **The Golden Rule block seeded to every room replica now lists six shared filesystem locations:** the project-level `plans`, `tools`, `errors` and `project-shared` directories under the project `.ac` root (read and write), plus the room's `TASK.md` (read-only) and `room-shared/` (read and write). AgentsCommander creates the directories; an already-materialized context picks them up with no migration. ([#1795](https://github.com/mblua/AgentsCommander/issues/1795))\n- **New documentation page for running Claude Code with the third-party `codebase-memory-mcp` server**, directly or through an AgentsCommander profile cell. The earlier \"why not MCP\" stance is removed from the README and the FAQ. ([#1882](https://github.com/mblua/AgentsCommander/issues/1882))\n\n### Changed\n\n- **The Root Agent's right-click menu reaches parity with the replica rows.** Every session-row context menu is now rendered by one catalogue component, so the same items, separators and dismissal behaviour apply everywhere. ([#1871](https://github.com/mblua/AgentsCommander/issues/1871))\n\n### Fixed\n\n- **Blocked-menu notices no longer get lost.** Each session's communication state is reconciled from the 5-second listing poll, so a raised hand and a blocked menu no longer overwrite each other and a dropped event, a reconnect or a window reload heals within seconds ([#1856](https://github.com/mblua/AgentsCommander/issues/1856)); blocked menus surface as one pinned, aggregated toast carrying the latest notice text and requesting taskbar attention ([#1857](https://github.com/mblua/AgentsCommander/issues/1857)); the blocked-menu chip has its own glyph and colour, distinct from a raised hand, and the toast action button is styled ([#1858](https://github.com/mblua/AgentsCommander/issues/1858)); and collapsed projects, teams and orchestrator groups, as well as the sidebar filter, roll the blocked state up so it stays visible ([#1859](https://github.com/mblua/AgentsCommander/issues/1859)).\n- **`test-reset --confirm-testeable` now names the process holding the single-instance mutex** (PID, image name, path and handle) instead of only reporting `testable_gui_active`, and the panic paths that leaked a testable process are closed. Windows only. ([#1773](https://github.com/mblua/AgentsCommander/issues/1773))\n- **`npm test` can no longer exit non-zero while every test passes.** A debounced settings-preview call fired against an incomplete mock after the test finished. ([#1797](https://github.com/mblua/AgentsCommander/issues/1797))\n## 0.30.5\n\n### Changed\n\n- **Releases publish to npm again: the release pipeline was repaired and hardened end to end during its first full execution.** The guard no longer probes a repository setting its workflow token can never read ([#1811](https://github.com/mblua/AgentsCommander/issues/1811)), every build step now runs on the macOS runners' bash 3.2 ([#1813](https://github.com/mblua/AgentsCommander/issues/1813)), the windows runner's own `NPM_CONFIG_PREFIX` no longer aborts the npm-registry guard and bundle assets are matched by their GitHub-sanitized upload names with explicit fail-closed errors ([#1815](https://github.com/mblua/AgentsCommander/issues/1815)), the single bundler updater archive satisfies every ledger `.app.tar.gz` alias and the draft coordinator absorbs the releases-list read-after-write race ([#1817](https://github.com/mblua/AgentsCommander/issues/1817)), and a fresh run purges stale draft assets before its byte-exact uploads ([#1819](https://github.com/mblua/AgentsCommander/issues/1819)). Version 0.30.4 exists only as a GitHub Release: its npm publication was blocked by a toolchain-contract mismatch in release verification, so this version supersedes it on npm and the registry goes 0.30.3 → 0.30.5.\n\n### Fixed\n\n- **A session no longer keeps the amber pending-review dot forever while the backend considers it active.** The sidebar's waiting mirror is reconciled from the backend session list on every poll, so a latched `pendingReview` state the backend no longer reports now clears instead of surviving polling and application restarts. ([#1779](https://github.com/mblua/AgentsCommander/issues/1779))\n\n## 0.30.4\n\n### Added\n\n- **New `self-handoff-and-restart` CLI subcommand.** An agent can hand off through `SELF-HANDOFF.md` and come back on a genuinely new process running the **same configured coding agent** with the **same profile letter**, instead of an in-process `/clear` or a borrowed `self-handoff-and-switch`. Available to Room replicas, origin Agent Matrix agents, and the Root Agent; it does not change the replica's Selection-UI coding-agent or profile assignment, and adds no message-format field. ([#1632](https://github.com/mblua/AgentsCommander/issues/1632))\n\n### Changed\n\n- **Workgroups are now Rooms.** AgentsCommander creates `room-<N>-<team>` directories instead of `wg-<N>-<team>`, and every surface a person or an agent reads calls the concept a Room. **Nothing on disk is renamed, moved, converted or deleted:** every existing `wg-*` directory is still discovered, listed, addressed, operated and deleted exactly as before, and its inter-agent message filenames keep their `wg<N>` short token. Room and legacy Workgroup slot numbers are independent, so a project that already holds `wg-1-<team>` gets `room-1-<team>` next. The CLI gains the canonical names `room`, `purge-room` and `--room`; `workgroup`, `purge-wg`, `--wg` and `--workgroup` remain accepted as deprecated aliases that parse to the identical value and produce identical side effects, exit codes and output, and a later release will remove them. Persisted config keys, event names, IPC command names, refresh reason codes, the outbox `action` value and the `%WORKGROUP%` injected-message token are unchanged, so nothing in flight breaks. ([#1614](https://github.com/mblua/AgentsCommander/issues/1614))\n- **Startup coding-agent updates are cancellable, and the update overlay is all English.** Every unfinished row of the startup update timeline carries its own `Cancel` control, and a `Cancel all` control stops the whole pass; a row that is still `Verifying...` counts as unfinished and keeps both. Cancelling stops the step that is running, terminates its process tree, waits for those processes to be gone and prevents the steps after it; it leaves rows that already finished exactly as they are, and it does not reverse an updater command that had already completed. The prompt, the timeline and the cancel controls now share the card, so you can cancel an update while a first-time question is still open: Enter on a focused cancel control cancels without answering, while every other Enter and every Escape still answers `No`. Finished rows now state what actually happened instead of only success or failure: `Ready - <old> -> <new>`, `<version> (Nothing to update)`, `Update completed - Version could not be verified`, `Failed - <reason>` or `Cancelled`, and a cancelled row counts as completed rather than failed and raises no failure notification. The Settings > Coding Agents **Status** column is unchanged: it still reports `Updating...`, `Updated`, `Update failed`, or `-` when this AC start recorded no result for that command. ([#1672](https://github.com/mblua/AgentsCommander/issues/1672))\n## 0.30.3\n\n### Changed\n\n- **Releases now publish to npm via OIDC Trusted Publishing.** `publish-npm` pins npm to 11.6.2, because OIDC trusted publishing requires npm >= 11.5.1 and the Node 22 runner ships 10.9.8. The `NPM_AGENTSCOMMANDER` token is retained as a fallback for this release only; npm prefers OIDC and falls back to a token, so the migration carries no risk to the release itself. No application change: this version is functionally identical to 0.30.2. ([#1563](https://github.com/mblua/AgentsCommander/issues/1563))\n\n## 0.30.2\n\n### Added\n\n- **Web server: the bind address is now editable from the titlebar popover.** The PORT row grew into a BIND section (ADDR + PORT). The address chooser offers `Localhost only (127.0.0.1)`, `All interfaces (0.0.0.0)` (which discloses that any device on your network can reach the server), every detected IPv4 with its adapter name (virtual and tunnel adapters grouped and collapsed), and a validated manual entry. A stored address that is no longer on the machine stays visible as a disabled `Unavailable` row. Applying an address restarts a running server, starts a stopped-but-enabled one, and only saves otherwise. ([#1453](https://github.com/mblua/AgentsCommander/issues/1453))\n\n### Changed\n\n- **The context-alert message injected into a coordinator's terminal is now operator-editable**, and its visible prefix changes from `[AgentsCommander context alert]` to `[AC context alert]`. The wording lives in `injected-messages.toml`, next to the executable in the config directory, alongside a read-only `injected-messages.default.toml` reference. Markdown is preserved byte for byte, the placeholders are `%MEMBER%`, `%WORKGROUP%`, `%THRESHOLDS%` and the optional `%OBSERVED%`, and an entry you have edited is never overwritten by an upgrade. `injected-messages reseed --id <id>` (or `--all`) restores a shipped default, taking a timestamped backup first. ([#1157](https://github.com/mblua/AgentsCommander/issues/1157))\n\n### Fixed\n\n- **`close-session` no longer reports a false timeout on graceful closes.** The CLI's delivery-confirmation wait was hardcoded to 30s while a graceful close takes ~30s per session, so 97.9% of graceful closes exited 1 as \"delivery confirmation timeout\" despite succeeding moments later. The CLI now runs a single wait for the daemon's response (still fast-failing on rejection), budgets `--timeout` + 60 seconds (default 90s, matching `send --confirm-timeout`), and when the wait expires it exits 2 (\"outcome unknown\": the close keeps running server-side) instead of a fabricated exit 1. Timeout messages now print both UUIDs with correct labels (`request` vs `message`). ([#1440](https://github.com/mblua/AgentsCommander/issues/1440))\n- **Web server bind failures are no longer invisible.** The status payload now carries the failed address, port and verbatim OS error; the popover explains the failure in plain language (`Stopped · bind failed`, amber dot) instead of a bare `Stopped`. ([#1453](https://github.com/mblua/AgentsCommander/issues/1453))\n- **The titlebar web server toggle now follows runtime state.** A failed bind no longer shows a contradictory `Stop Server`, and starting the server only persists the \"enable web server\" setting once the server has actually started, so a failed attempt no longer turns it on for every future launch. The `Enable web server` checkbox in Settings remains the way to change that setting directly. ([#1453](https://github.com/mblua/AgentsCommander/issues/1453))\n- **Settings no longer reports a web server that failed to start as `Running`.** The Start button in Settings now reflects the actual result of the start attempt. ([#1453](https://github.com/mblua/AgentsCommander/issues/1453))\n\n## 0.30.1\n\n### Changed\n\n- Advanced all desktop, Cargo, root/npm wrapper, lockfile, Tauri, and installer Release references to 0.30.1.\n- Routed v0.30.1 through the repository's enabled immutable-Release path.\n- Prepared `@mblua/agentscommander@0.30.1` for a separate protected OIDC publication after immutable Release verification.\n\n## 0.30.0\n\n### Added\n\n- Activated v1 seed-manifest emission for project, team, and workgroup flows ([#1109](https://github.com/mblua/AgentsCommander/pull/1109)).\n- Added per-agent activity intervals and application lifecycle records in `activity.jsonl` ([#1152](https://github.com/mblua/AgentsCommander/pull/1152)).\n- Seeded a per-instance `.gitignore` for generated instance files ([#1165](https://github.com/mblua/AgentsCommander/pull/1165)).\n- Added configurable regex watchers over PTY output with an activity window ([#1174](https://github.com/mblua/AgentsCommander/pull/1174)).\n- Added rotation of an origin Agent Matrix `memory/` directory when a fresh session spawns ([#1181](https://github.com/mblua/AgentsCommander/pull/1181)).\n- Added a user-editable registry for PTY-injected message templates ([#1203](https://github.com/mblua/AgentsCommander/pull/1203)).\n- Added a cross-platform checker for `SKILL.md` structure ([#1222](https://github.com/mblua/AgentsCommander/pull/1222)).\n- Added authorized terminal snapshots in JSON and PNG through the API and CLI ([#1238](https://github.com/mblua/AgentsCommander/pull/1238)).\n- Made the Non-stop pseudo-group favoritable from the groups rail ([#1260](https://github.com/mblua/AgentsCommander/pull/1260)).\n- Displayed the active screenshot shortcut in the sidebar ([#1275](https://github.com/mblua/AgentsCommander/pull/1275)).\n- Added a setting to disable `activity.jsonl` generation, with generation off by default ([#1300](https://github.com/mblua/AgentsCommander/pull/1300)).\n- Added a warning when Default Shell is not configured as a complete executable path ([#1314](https://github.com/mblua/AgentsCommander/pull/1314)).\n- Added an authenticated API endpoint for native-window screenshots ([#1316](https://github.com/mblua/AgentsCommander/pull/1316)).\n- Added ordered per-agent update commands and the startup auto-update flow ([#1324](https://github.com/mblua/AgentsCommander/pull/1324), [#1326](https://github.com/mblua/AgentsCommander/pull/1326), [#1328](https://github.com/mblua/AgentsCommander/pull/1328)).\n- Added `window-list` and `window-screenshot` CLI verbs for native window capture ([#1333](https://github.com/mblua/AgentsCommander/pull/1333)).\n- Added a per-agent auto-update dropdown to Coding Agent profiles ([#1345](https://github.com/mblua/AgentsCommander/pull/1345)).\n- Added a dedicated collapsible Coordinator Quick-Access section ([#1354](https://github.com/mblua/AgentsCommander/pull/1354)).\n- Added shell-specific RTK hooks, including PowerShell tool coverage ([#1426](https://github.com/mblua/AgentsCommander/pull/1426)).\n- Added a statusline branch to Claude context suggestions ([#1435](https://github.com/mblua/AgentsCommander/pull/1435)).\n- Added native-tool usage records to the RTK savings database ([#1465](https://github.com/mblua/AgentsCommander/pull/1465)).\n- Added an artifact registry as the source for per-instance `.gitignore` generation ([#1470](https://github.com/mblua/AgentsCommander/pull/1470)).\n- Exposed the web server bind address and startup failures in the UI ([#1475](https://github.com/mblua/AgentsCommander/pull/1475)).\n\n### Changed\n\n- Unified coding-agent badge styling across sidebar rows ([#1168](https://github.com/mblua/AgentsCommander/pull/1168)).\n- Removed the unused phone feature and unreachable `sync_workgroup_repos` command ([#1201](https://github.com/mblua/AgentsCommander/pull/1201)).\n- Renamed watcher toolbar controls to match the product vocabulary ([#1207](https://github.com/mblua/AgentsCommander/pull/1207)).\n- Moved the activity log checkbox below the Log level hint in settings ([#1308](https://github.com/mblua/AgentsCommander/pull/1308)).\n- Bounded terminal output admission to prevent renderer saturation ([#1312](https://github.com/mblua/AgentsCommander/pull/1312)).\n- Moved the coding-agent catalog into project `.ac` data and recorded per-agent auto-update metadata ([#1322](https://github.com/mblua/AgentsCommander/pull/1322)).\n- Added the `{{AGENT_REPOS}}` and `# Agent Repos` context vocabulary while retaining the frozen alias ([#1430](https://github.com/mblua/AgentsCommander/pull/1430)).\n\n### Fixed\n\n- Made Coding Agents row clicks honor 1-rail mode ([#1099](https://github.com/mblua/AgentsCommander/pull/1099)).\n- Prevented phantom resource-monitor cap exhaustion on non-Windows platforms ([#1145](https://github.com/mblua/AgentsCommander/pull/1145)).\n- Gated the file-in-use classifier by platform ([#1150](https://github.com/mblua/AgentsCommander/pull/1150)).\n- Recovered orphaned quarantined Windows resource groups ([#1159](https://github.com/mblua/AgentsCommander/pull/1159)).\n- Kept the watcher activity polling chain running after refreshes ([#1212](https://github.com/mblua/AgentsCommander/pull/1212)).\n- Bounded the watcher mount chain and armed polling unconditionally ([#1226](https://github.com/mblua/AgentsCommander/pull/1226)).\n- Accepted the coordinator entry in `team_members` instead of rejecting the team configuration ([#1247](https://github.com/mblua/AgentsCommander/pull/1247)).\n- Excluded Alert me sessions from the Ungrouped sidebar group ([#1278](https://github.com/mblua/AgentsCommander/pull/1278)).\n- Matched the Codex profile to the context-first Coding Agent row layout ([#1288](https://github.com/mblua/AgentsCommander/pull/1288)).\n- Stopped the orphan-session warning loop in session persistence ([#1296](https://github.com/mblua/AgentsCommander/pull/1296)).\n- Moved Git status polling off the async runtime and deduplicated requests ([#1303](https://github.com/mblua/AgentsCommander/pull/1303)).\n- Launched Windows agent commands through the configured Default Shell ([#1311](https://github.com/mblua/AgentsCommander/pull/1311)).\n- Limited automatic updates to registered coding agents ([#1336](https://github.com/mblua/AgentsCommander/pull/1336)).\n- Moved startup restore work off the main thread so the auto-update prompt can render ([#1344](https://github.com/mblua/AgentsCommander/pull/1344)).\n- Replayed bounded PTY output history when terminal views are rebuilt ([#1376](https://github.com/mblua/AgentsCommander/pull/1376)).\n- Required rendered content before a cold-spawn wake is considered settled ([#1390](https://github.com/mblua/AgentsCommander/pull/1390)).\n- Registered the screenshot global hotkey at the start of setup to avoid the startup race ([#1402](https://github.com/mblua/AgentsCommander/pull/1402)).\n- Retained diagnostics when saving settings fails ([#1400](https://github.com/mblua/AgentsCommander/pull/1400)).\n- Restored PTY broadcast push delivery ([#1432](https://github.com/mblua/AgentsCommander/pull/1432)).\n- Made `close-session` wait once for the daemon response ([#1447](https://github.com/mblua/AgentsCommander/pull/1447)).\n- Reconciled the screen-parser grid at attach and healed the embedded viewport ([#1450](https://github.com/mblua/AgentsCommander/pull/1450)).\n- Made kill verification corpse-aware so terminated processes reach the Terminated state ([#1449](https://github.com/mblua/AgentsCommander/pull/1449)).\n- Guaranteed that the PTY attach seed starts on a line boundary ([#1464](https://github.com/mblua/AgentsCommander/pull/1464)).\n- Ignored RTK runtime artifacts under Agent Matrix directories ([#1473](https://github.com/mblua/AgentsCommander/pull/1473)).\n- Sequenced local TASK writes against session snapshots by owning workgroup ([#1477](https://github.com/mblua/AgentsCommander/pull/1477)).\n- Used loopback URLs when opening a browser for wildcard web-server binds ([#1485](https://github.com/mblua/AgentsCommander/pull/1485)).\n- Logged a warning when seed rendering panics during terminal-output activation ([#1460](https://github.com/mblua/AgentsCommander/pull/1460)).\n- Stopped replica config seeding from persisting `replica_config_file` rows in `seed-manifest.toml`, while retaining support for reading and later pruning legacy rows ([#1487](https://github.com/mblua/AgentsCommander/pull/1487)).\n\n### Security\n\n- Warned in settings that API keys and bot tokens are stored in plaintext ([#1353](https://github.com/mblua/AgentsCommander/pull/1353)).\n\n## 0.20.0 – 2026-07-23\n\nLarge release covering everything merged since `0.10.0` (616 commits across ~110 PRs). Headlines: **containerized coding agents** (Docker / \"Camino 2\" backend), an **in-daemon Control Plane API**, a **coding-agent catalog overhaul** (Hermes / Cursor CLI / Pi), **live context-usage visibility** (CTX badges + alerts), **workgroup UI Groups** (Telegram-style sidebar rail), a **single self-contained web-server executable**, plus a deep PTY/terminal reliability and settings-persistence hardening pass.\n\n### Added\n\n- **Containerized coding agents (Docker / \"Camino 2\" backend)**: run coding agents inside Docker containers. New PTY session-backend refactor, async spawn routing, container transport backend + session-transport endpoint, a `session-bridge` crate + Docker runtime, and a DB-backed `MessageStore` + dispatcher. Adds an `ac-claude-ready` prebuilt image, a UI+CLI container runtime selector per agent, read-write mounting of enabled repos into container sessions, and container auth via copied host credentials. ([#819](https://github.com/mblua/AgentsCommander/issues/819): #823, #826, #829, #832, #834; #865, #868, #930, #935)\n- **In-daemon Control Plane API server**: an HTTP control-plane API hosted in the daemon (starting with `send` + `list-peers-lean`), an enable/disable toggle, a bind/port editor, an in-app API-client mint command with Settings UI, and backend hardening. ([#791](https://github.com/mblua/AgentsCommander/issues/791), #838, #846, #853, #872)\n- **Coding-agent catalog overhaul**: removed the Gemini CLI preset; added **Hermes**, **Cursor CLI**, and **Pi**; externalized the catalog to a seeded, editable backend JSON (2 phases); and added scriptable coding-agent config management via CLI. ([#766](https://github.com/mblua/AgentsCommander/issues/766), #769, #786)\n- **Pi Coding Agent support**: auto-resume, use as a self-handoff-and-switch source, logical-clear → `/new` mapping, and a suggested context-badge pattern. (#1069, #1081, #1059, #1054)\n- **Live context-usage visibility (CTX)**: a per-session context-usage scrape off the vt100 mirror, a sidebar **CTX badge** with a configurable Settings pattern, team context-usage alerts, and per-peer CTX percent exposed in `list-peers` / `list-peers-lean`. (#1032, #1033, #1056, #1088)\n- **Workgroup UI Groups**: a Telegram-style sidebar rail that filters projects into groups, with reorder, auto-focus, edit-in-context-menu, live web↔desktop sync, and a raise-hand indicator on the group tab. ([#737](https://github.com/mblua/AgentsCommander/issues/737), #808, #810, #851, #822, #763)\n- **Project seed manifest & config seeding**: a staged project seed-manifest system (core, plumbing, lifecycle-removal outcomes, conformance/scale harness), context-publication outcomes, `%USER_HOME%` expansion in seeded content, and plaintext env values (masking only `PASSWORD*` keys). (#1038, #1060, #1062, #1063, #1064, #1061, #924, #1052)\n- **Single self-contained web-server executable**: the frontend `dist` is embedded into the binary. (#796)\n- **Sidebar & workflow tools**: sidebar rail favorites + collapsible categories, archive/unarchive projects, a coordinator repo \"Browse Main / Browse Branch\" submenu, a delete-agent context-menu action, a reusable CodingAgentQuickConfiguration modal, a titlebar zoom (%) stepper, a browser web-server titlebar menu, and a Sidebar left/right option. (#965, #881, #943, #843, #975, #863, #835, #840)\n- **Active-agent screenshot capture.** (#714)\n- **\"Non-stop\" / \"Alert me!\" watchdog group** with Telegram / sound alerts on a working-vs-total disparity. (#777, #799)\n- **CLI**: `purge-wg` one-shot workgroup purge; coordinator-scoped exact PTY text injection (including Root→coordinator); `send --confirm-timeout` with the default raised to 90s. (#885, #1057, #782)\n- **Persisted raise-hand indicator** across app restarts, plus raise-hand group rules. (#747, #775)\n\n### Changed\n\n- **Agent template / context-lifecycle minimization** ([#1005](https://github.com/mblua/AgentsCommander/issues/1005) S1–S6): trimmed the messaging, GOLDEN RULE / write-restriction, skills-intro, and root/coordinator templates; added coordinator self-clear, durable fresh-conversation intent, and a settled live-wake path before injection.\n- **Agent boundary hardening**: restrict agent reads to allowed zones (GOLDEN RULE), move the cross-workgroup boundary into the coordinator context, stop the Root Agent from consuming the global context template, and protect user-set task titles. (#923, #1030, #979, #738)\n- **Coding-agent UX**: rail selection by row click, a 1/2-rail toggle for the Coding Agents screen, profile cards expanded by default, last Coding Agent + Profile shown on powered-off tiles, and onboarding that fits all options without scrolling. (#895, #1095, #790, #733, #768)\n- **Removed the RTK (Rust Token Killer) integration.** (#928)\n- **Docs**: document the factory-default seed tier, expose code-signing and privacy links on releases, and correct the Windows signing status. (#876, #754, #719)\n- **Repo hygiene**: stop tracking `_logbooks/`, gitignore/untrack `plans/` and remove `_prototypes/`, purge explanatory comments from 56 TS/TSX files, and add a workgroup build-artifact reclaim script. (#990, #1048, #1046, #932)\n\n### Fixed\n\n- **Terminal reliability (the black/blank terminal)**: never gate live PTY output behind the snapshot round-trip; spawn the PTY at real size and never resize an unrendered child; PTY spawn diagnostics; cancel-safe local PTY spawn; and PTY spawn offloaded off the async runtime. (#955, #973, #942, #847, #839)\n- **Settings persistence**: disk-authoritative project paths (stop the GUI clobbering CLI writes), a unique per-writer temp filename, keeping project lists disk-authoritative to stop silent session deletion, and atomic + retried git-guard writes. (#778, #774, #888, #836)\n- **Container transport**: surface real startup failures, require an explicit image, redact secrets from diagnostics, translate host↔container env paths, guard the bind mount, strip the Windows verbatim prefix from mount sources, stop the stray Docker console window on Windows startup, Camino 2 hardening, and WSS TLS. (#892, #894, #993, #992, #831, #1017)\n- **Sidebar / UI**: fixed first-click loss from sidebar DOM recreation, keep sidebar modals open across refresh, reset scroll to the selected project, refresh the agent list on partial-delete failure, align context-menu glyphs, close the replica context menu on pointer leave, highlight only the active project's group, align project-header search controls, keep the group rail drag alive after pointer-capture loss, and correct APPLY-TO scope counters. (#748, #710, #941, #856, #987, #977, #860, #816, #815, #800)\n- **Titlebar zoom**: handle fire-and-forget zoom-apply rejections and harden against a leaked `initZoom` document listener. (#1083, #1093)\n- **API server**: fix the `0.0.0.0`-bind status false-negative + readiness await, and use distinct newtypes for Web/Api handles (startup panic). (#878, #794)\n- **Coordinator / CLI robustness**: prevent auto-close terminal hijack, preserve Restart-Session fresh intent against non-substantive PTY writes, ignore the team-config coordination lock, compact Git scope warnings, persist absolute + instance-relative project paths, hide the TASK section for the Root Agent, read the on-disk `--get-output` response before checking timeout, normalize Windows verbatim cwd, add a Telegram auto-close exemption, and skip the create-gate for the restart replacement create. (#1027, #871, #1070, #1072, #1077, #771, #729, #730, #817, #1101)\n- **Web/desktop parity**: route web coding-agent profile commands and sync project group changes live between web and desktop. (#859, #822)\n- **Repaired the agency-agents-roles skill** the indexer was silently dropping. (#909)\n- **Hardened the send/messaging slice** and extracted a shared WG-replica walk-up helper. (#724, #726)\n- **CI**: always report the lockfile-drift check and make test-debt comment-masking string-aware. (#1022, #801)\n\n### Security\n\n- **Restrict agent reads to allowed zones (GOLDEN RULE enforcement).** (#923)\n- **Redact secrets from container transport diagnostics.** (#904)\n- **Decouple domain logic from UI presentation values** to reduce accidental exposure surface. (#882)\n\n## 0.9.0 – 2026-06-15\n\nFeature release: **Project Loops** (scheduled, recurring agent runs), a public marketing-copy overhaul around the \"compound your coding agents\" message, OpenCode documented as usable (provider-agnostic), and a large test/CI regression-hardening pass.\n\n### Added\n\n- **Project Loops**: scheduled, recurring agent runs. Define a cron-style schedule that re-triggers a coordinator, workgroup, or agent; ships the scheduler backend, the sidebar UI, and scheduler safety guards. ([#354](https://github.com/mblua/AgentsCommander/issues/354))\n- **Agency template install in the New Agent modal**: browse and install [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents) role templates directly from the create-agent flow, wired over the embedded WebSocket. ([#465](https://github.com/mblua/AgentsCommander/issues/465))\n- **Semantic GUI automation bridge**: a CLI and UI context-click automation surface for deterministic, scriptable GUI interactions. ([#499](https://github.com/mblua/AgentsCommander/issues/499))\n- **External link confirmation for terminal links**: clicking an external link in an xterm session now asks for confirmation before opening, in both desktop and browser modes. ([#474](https://github.com/mblua/AgentsCommander/issues/474))\n- **Deterministic GUI test mode**: a fake-transport mode that makes browser and GUI flows reproducible in CI.\n\n### Changed\n\n- **Public marketing copy overhaul**: README and docs now lead with the \"compound your coding agents\" message: bring any coding agent at full power, put a Fusion team on a Loop, and let scheduled runs compound toward the best answer. Positioned around \"only adds, never subtracts.\" ([#520](https://github.com/mblua/AgentsCommander/issues/520))\n- **OpenCode documented as supported (provider-agnostic)**: OpenCode can be run today via the custom coding-agent path and pointed at any provider or model. A first-class tuned profile (its own `CodingAgentKind`, resume tokens, idle tuning) remains planned. ([#315](https://github.com/mblua/AgentsCommander/issues/315))\n- **Profile modal layout**: enlarged desktop layout and fixed intermediate stacking. ([#471](https://github.com/mblua/AgentsCommander/issues/471))\n- **Test and CI regression-hardening pass**: PR regression gates, GUI regression suites, PTY lifecycle coverage, mailbox wake-routing tests, close-session integration fixtures, CLI behavior contract tests, and a Windows release CLI smoke test. ([#475](https://github.com/mblua/AgentsCommander/issues/475), [#479](https://github.com/mblua/AgentsCommander/issues/479), [#485](https://github.com/mblua/AgentsCommander/issues/485))\n\n### Fixed\n\n- **Coordinator repo badges for discovered workgroups**: workgroups discovered on disk now show their repo badge correctly. ([#500](https://github.com/mblua/AgentsCommander/issues/500))\n- **Outbound network port exhaustion**: hardened outbound network resource handling and fixed bridge shutdown and poll backoff so repeated outbound requests no longer exhaust ports. ([#501](https://github.com/mblua/AgentsCommander/issues/501), [#502](https://github.com/mblua/AgentsCommander/issues/502))\n- **Frontend websocket rejections**: fixed spurious rejection of valid frontend WebSocket connections. ([#480](https://github.com/mblua/AgentsCommander/issues/480), [#491](https://github.com/mblua/AgentsCommander/issues/491))\n- **Project Loops scheduler races**: scheduler safety hardening, stale-prompt pre-write race, stale-delivery revalidation, enable and disable UI refresh, and delete-modal concurrency.\n\n### Security\n\n- **Hardened destructive filesystem delete paths**: tightened guards around destructive delete operations and closed review gaps found during the hardening pass. ([#512](https://github.com/mblua/AgentsCommander/issues/512))\n\n## 0.8.43 — 2026-05-27\n\nPublic-push release: repo cleanup, documentation rewrite scaffolding, and factual corrections to public copy. See umbrella issue [#313](https://github.com/mblua/AgentsCommander/issues/313).\n\n### Added\n\n- `ROADMAP.md` at repo root — Shipped / Planned / Considering tracked publicly, with links to GitHub issues.\n- `SECURITY.md` at repo root — vulnerability reporting policy + supported versions + 90-day coordinated disclosure.\n- `CHANGELOG.md` at repo root — this file.\n- `.github/ISSUE_TEMPLATE/` — `bug_report.yml`, `feature_request.yml`, and `config.yml` (directs Q&A to GitHub Discussions).\n- `.github/PULL_REQUEST_TEMPLATE.md` — short checklist for contributors.\n\n### Changed\n\n- Documentation: `ROLE_AC_BUILDER.md` moved to `docs/agent-matrix-conventions.md`.\n- `.gitignore`: added `_logbooks/`; replaced hand-listed workgroup entries with a single workspace workgroup glob.\n- README factual fixes:\n  - Supported coding agents corrected to **Claude Code · Codex · Gemini** (was: Claude Code · Codex · OpenCode — OpenCode is not yet supported; tracked in [#315](https://github.com/mblua/AgentsCommander/issues/315)).\n  - Window-model description updated to reflect the unified main window (the old \"Sidebar and Terminal are independent windows\" description was pre-unification).\n  - Settings tab name \"Dark Factory\" referenced as **\"Teams\"** in public copy. Internal code rename is tracked in [#314](https://github.com/mblua/AgentsCommander/issues/314).\n  - Release-tag example updated from the stale `v0.4.9` to the current `0.8.x` line.\n\n### Removed\n\n- Obsolete artifact files at repo root: `DIAG-telegram-emission.md`, `FIXES_CODEX.md`, `PLAN-telegram-bridge.md`, `agentscommander-prompt.md`, and the `_test_dark_factory/` stub directory.\n- Spanish-language and obsolete plan files from `docs/`: `Descripcion.md`, `home-es.md`, `PLAN_dark_factory.md`, `PLAN_OrganigramaDF.md`, `PROMPT_Etapa2_OrganigramaDF.md`.\n\n### Notes\n\n- Full README rewrite, new docs prose (quickstart, concepts, comparison, troubleshooting, faq, glossary, style-guide, use-cases, integrations, agents, features, reference), Acknowledgments section, and visual assets ship in follow-up commits on the same `chore/313-public-push` branch.\n\n## Earlier releases\n\nFor all releases before `0.8.43`, see the auto-generated changelog on the [GitHub Releases](https://github.com/mblua/AgentsCommander/releases) page.\n",
+      "unreleasedBodySha256": "55f0a5cdd4b8fb46a54b345492bd709907fbd2965ffbfb02061c6014e009cf6e"
+    },
+    "collectors": [
+      {
+        "id": "candidate-absence",
+        "kind": "git+github-api+https",
+        "operations": [
+          {
+            "argv": [
+              "-C",
+              "<repositoryPath>",
+              "ls-remote",
+              "--tags",
+              "origin"
+            ],
+            "tool": "git"
+          },
+          {
+            "argv": [
+              "api",
+              "--paginate",
+              "--slurp",
+              "repos/mblua/AgentsCommander/releases?per_page=100"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "GET",
+              "https://registry.npmjs.org/%40mblua%2Fagentscommander",
+              "require versions[0.37.0] absent"
+            ],
+            "tool": "https"
+          }
+        ],
+        "resultSha256": "204382c7b16198cb4d9f50ef12dfb0997fea9677c4ad074e6fc36b2656db5382",
+        "target": "v0.37.0"
+      },
+      {
+        "id": "changelog",
+        "kind": "github-api",
+        "operations": [
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/contents/CHANGELOG.md?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          }
+        ],
+        "resultSha256": "50d139dcfaaef85e0be31f16c065d826efcf6c4d0d6357a34f5cd0044db40ef7",
+        "target": "CHANGELOG.md"
+      },
+      {
+        "id": "git-origin",
+        "kind": "git",
+        "operations": [
+          {
+            "argv": [
+              "-C",
+              "<repositoryPath>",
+              "remote",
+              "get-url",
+              "origin"
+            ],
+            "tool": "git"
+          }
+        ],
+        "resultSha256": "9d568430a8acd05d018176dac028ee95194f97225693924d42ce59f35e3ca182",
+        "target": "origin"
+      },
+      {
+        "id": "github-cli",
+        "kind": "github-api",
+        "operations": [
+          {
+            "argv": [
+              "api",
+              "repos/cli/cli/releases/latest"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "-H",
+              "Accept: application/octet-stream",
+              "repos/cli/cli/releases/assets/565857083"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "--paginate",
+              "--slurp",
+              "repos/cli/cli/security-advisories?state=published&per_page=100"
+            ],
+            "tool": "gh"
+          }
+        ],
+        "resultSha256": "e56f52aee622d5d53fae566bb4122e2c066314faedd2fac2fd5534229fde7419",
+        "target": "cli/cli"
+      },
+      {
+        "id": "github-repository",
+        "kind": "github-api",
+        "operations": [
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander"
+            ],
+            "tool": "gh"
+          }
+        ],
+        "resultSha256": "d10e618c31d0c59c4314e3516503288ae9f0a595fb273b6e798198a3bc6c2a59",
+        "target": "repos/mblua/AgentsCommander"
+      },
+      {
+        "id": "npm-registry",
+        "kind": "https",
+        "operations": [
+          {
+            "argv": [
+              "GET",
+              "https://registry.npmjs.org/%40mblua%2Fagentscommander",
+              "Accept: application/json"
+            ],
+            "tool": "https"
+          }
+        ],
+        "resultSha256": "67974c2b0655773c391f26566dc30f7c891057285314b229ca6992d196064390",
+        "target": "https://registry.npmjs.org/%40mblua%2Fagentscommander"
+      },
+      {
+        "id": "predecessor",
+        "kind": "git+github-api",
+        "operations": [
+          {
+            "argv": [
+              "-C",
+              "<repositoryPath>",
+              "ls-remote",
+              "--tags",
+              "origin"
+            ],
+            "tool": "git"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/git/tags/52aca156ca758faa658d05fe9f2d4957d6c7a99e"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/releases/tags/v0.36.0"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "--paginate",
+              "--slurp",
+              "repos/mblua/AgentsCommander/releases/391490080/assets?per_page=100"
+            ],
+            "tool": "gh"
+          }
+        ],
+        "resultSha256": "944ae0c577fb87b741dd9550a257bcd373c4857fc1274be549c59f5beb494303",
+        "target": "v0.36.0"
+      },
+      {
+        "id": "release-scope",
+        "kind": "github-api",
+        "operations": [
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2331"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2074"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2193"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/c8e3a9599b0684b7f7af052722b7acdd87f00215...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2129"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2174"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/f09aa02bddbf0abccec513e481ec0a9f84bb77fb...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2141"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2189"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/c741a3faf29642b17955090f8cf8014b8a3343c8...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2146"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2217"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/72c3e6dca7caa652c675a498e13715a92af8faae...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2148"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2242"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/ef165460c67a5d34160e68faf4796d22f9679423...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2155"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2166"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/7e085462b706e857b86d6ea03adf44c3d36640b9...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2156"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2191"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/4f95780c948ccabd6424725036ad9bc7110780b2...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2162"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2207"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/347dcf178b5eb619d729d2260423274fa53a4b42...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2171"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2221"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/3f0350e40178b9488b1e3514843ec1a2e6b2f133...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2173"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2175"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/8c401187bc9a054b31e86deed8476e5caf06c9cf...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2176"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2200"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/6ee4596431f64c632ea25c0c4ec0aee085b81f73...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2179"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2187"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/82b31ff822f3fb7d73da76fc3ef54948dcd8d57e...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2180"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2198"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/427fa0e86703c50ed5f9b57b0c1a2dc7c21715c4...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2181"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2208"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/597acd6eb5e79da92b56c25be29ce498f1b193a5...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2182"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2209"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/bbd2c00e5c078d3a1d6c267b198ed26461f67299...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2183"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2196"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/2d6ab4b7e6ac1bedec0f3ed3d4fec2f13ad08d86...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2185"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2186"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/596890294d8be78b822021067f1b38a6fd128221...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2188"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2197"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/7a46fa11a2f1c6ef04cc54446254b0e3d2f6dc52...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2190"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2192"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/a0a22939d7bff01a219e9502e3275988ba02fb92...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2202"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2215"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/c8daffd94afb15812f373c9a60579197169f4434...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2210"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2211"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/dde7133c16aabdb5950c8bf107f4dd77e1c2c14e...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2212"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2220"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/47d1f47ffc2293ea1d29d22da414803d2b6a8e98...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2213"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2243"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/0543ac1b9ff015479e617054f96fc4c35d30b40b...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2218"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2229"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/34e2f34af6d5365fd43b50015aa497beb1a6b0bf...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2219"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2302"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/ac2097b63774138f5c45be79af34cc8238d3cf3e...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2222"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2226"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/780974ee21a6480bc95b1aa9c0e9d9f9518fcfa7...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2227"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2230"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/42c20a4865c11a16b36bab02d54eabdaffaa9615...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2228"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2231"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/345238bb4668744e23a7fbc5c524b104b113f7c7...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2237"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2252"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/b7a558185428597eedf2d568c4ca089fbbafe5e3...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2238"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2262"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/d6f527ee0e4aeee5c49e3b7c85cefb07d351e3c9...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2239"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2286"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/3eaef899fca422e615861ad8531337b80345274c...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2240"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2290"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/9b340e4748461212aa8ce9fdf92916effd266921...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2241"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2307"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/670d6af5ff1e0deae7e8a2044c53c75a2a3cafad...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2248"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2249"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/06139d9001c13d01405b303f98721715816245c4...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2251"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2263"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/5fbadbf226f4936dc761ad7515d67153807785d5...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2264"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2299"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/6222c2fa329b393ccf0e76c8c43c4233bdf49b1e...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2265"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2305"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/110023f729ead4410cb9d1fa0035376f004c517e...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2266"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2308"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/7b292894d59348b6c424486c71a6627df749c046...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2277"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2295"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/92c9dc6610419b90f8a1b33c9b8b11afa9350a2d...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2291"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2293"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/bd296651261447464847033e7d00462565792211...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2292"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2298"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/d108dea52801b782179aa84e8c557467914534c0...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2296"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2310"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/a8724906fe54ac636bd5e9115fd5a2d973e9f1cc...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2297"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2330"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/90bf6bb01b2a58e57525139cc903da0ba5ca7004...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2300"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2320"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/82bc821cd3a5206b2743b2a6c4a6820ef5c8d8c4...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2301"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2303"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/8b15376fb177a9aaf2e8d040954cc71d7e6ede2f...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2311"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2339"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/1da51fa7042eae7a2d2869c38341cc69a00982eb...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/issues/2322"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/pulls/2324"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/compare/63ceae2765e1c63760561e0be77bece777d3fe9b...484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          }
+        ],
+        "resultSha256": "e128055afb8374adbe356d5a6f5a278e0fe3252a64abd8ba6b92175fc98d40c0",
+        "target": "https://github.com/mblua/AgentsCommander/issues/2331"
+      },
+      {
+        "id": "release-workflow",
+        "kind": "github-api",
+        "operations": [
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/contents/.github/workflows/release.yml?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/actions/checkout/git/commits/fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/actions/setup-node/git/commits/a0853c24544627f65ddf259abe73b1d18a591444"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/actions/upload-artifact/git/commits/043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/dtolnay/rust-toolchain/git/commits/4360b52568e2003a75bf9bc1d59f33a8e3fc893c"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/swatinem/rust-cache/git/commits/6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/tauri-apps/tauri-action/git/commits/84b9d35b5fc46c1e45415bdb6144030364f7ebc5"
+            ],
+            "tool": "gh"
+          }
+        ],
+        "resultSha256": "137e40c427f4a9815645e446ccf344dd384db6a6aa233c3f48f954468cfec653",
+        "target": ".github/workflows/release.yml"
+      },
+      {
+        "id": "remote-main",
+        "kind": "git+github-api",
+        "operations": [
+          {
+            "argv": [
+              "-C",
+              "<repositoryPath>",
+              "ls-remote",
+              "origin",
+              "refs/heads/main"
+            ],
+            "tool": "git"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/git/ref/heads/main"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/git/commits/484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          }
+        ],
+        "resultSha256": "0989bc1d654c362f4f533f519173ac7f9b7d8749d33e26d00fc0c520d3782445",
+        "target": "refs/heads/main"
+      },
+      {
+        "id": "repository-authority",
+        "kind": "github-api",
+        "operations": [
+          {
+            "argv": [
+              "api",
+              "--paginate",
+              "--slurp",
+              "repos/mblua/AgentsCommander/rulesets?includes_parents=true&per_page=100"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/rulesets/15279066"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/rulesets/20606154"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "user"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "--paginate",
+              "--slurp",
+              "repos/mblua/AgentsCommander/collaborators?affiliation=all&per_page=100"
+            ],
+            "tool": "gh"
+          }
+        ],
+        "resultSha256": "1ca2fb31f1789ec0370054e4cbe0e943ea0dd0e21ee6fda787b0c6e423e55052",
+        "target": "repos/mblua/AgentsCommander/rulesets"
+      },
+      {
+        "id": "version-surfaces",
+        "kind": "github-api",
+        "operations": [
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/contents/package.json?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/contents/package-lock.json?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/contents/npm/package.json?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/contents/npm/install.js?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/contents/src-tauri/Cargo.toml?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/contents/Cargo.lock?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          },
+          {
+            "argv": [
+              "api",
+              "repos/mblua/AgentsCommander/contents/src-tauri/tauri.conf.json?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
+            ],
+            "tool": "gh"
+          }
+        ],
+        "resultSha256": "208ef6755963da41f23ab39874c4d47455a5c8da0728674333cbe4f2d509f93d",
+        "target": "package/version files"
+      }
+    ],
+    "ghCli": {
+      "archive": "gh_2.101.0_linux_amd64.tar.gz",
+      "archiveAssetId": 565857134,
+      "archiveUrl": "https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_amd64.tar.gz",
+      "checksumAssetId": 565857083,
+      "immutable": true,
+      "releaseId": 389212818,
+      "releasePublishedAt": "2026-09-15T14:24:34Z",
+      "releaseTag": "v2.101.0",
+      "securityReview": {
+        "advisories": [
+          {
+            "ghsaId": "GHSA-2m9h-r57g-45pj",
+            "publishedAt": "2024-12-03T23:34:08Z",
+            "severity": "low",
+            "summary": "Downloading malicious GitHub Actions workflow artifact results in path traversal vulnerability",
+            "updatedAt": "2024-12-03T23:34:08Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "go",
+                "packageName": "github.com/cli/cli/v2",
+                "patchedVersion": "2.63.1",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": "<= 2.63.0"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-3m3g-3wcr-px46",
+            "publishedAt": "2026-07-31T02:10:36Z",
+            "severity": "medium",
+            "summary": "Terminal escape sequence injection in multiple `gh` commands",
+            "updatedAt": "2026-07-31T02:10:37Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "go",
+                "packageName": "github.com/cli/cli/v2",
+                "patchedVersion": "2.97.0",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": "<= v2.96.0"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-4fjg-2h4q-fwg3",
+            "publishedAt": "2026-07-31T02:10:49Z",
+            "severity": "low",
+            "summary": "Unescaped variable components in request URLs could allow path traversal in GitHub CLI",
+            "updatedAt": "2026-07-31T02:10:50Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "go",
+                "packageName": "github.com/cli/cli/v2",
+                "patchedVersion": "2.97.0",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": "<=v2.96.0"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-8cg3-r6g9-fpg2",
+            "publishedAt": "2026-07-02T21:35:42Z",
+            "severity": "medium",
+            "summary": "Connecting to a malicious Codespace via `gh codespace jupyter` could allow command execution on the user's computer",
+            "updatedAt": "2026-07-15T07:28:33Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "go",
+                "packageName": "github.com/cli/cli/v2",
+                "patchedVersion": "2.96.0",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": ">= v2.10.0"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-8xvp-7hj6-mcj9",
+            "publishedAt": "2026-05-27T18:32:27Z",
+            "severity": "high",
+            "summary": "Incorrect authorization header in API requests to TUF repository mirrors via `gh attestation`, `gh release verify`, and `gh release verify-asset` commands",
+            "updatedAt": "2026-05-27T18:32:28Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "go",
+                "packageName": "github.com/cli/cli/v2",
+                "patchedVersion": "2.93.0",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": "<= v2.92.0"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-cg6r-mpgc-h9mm",
+            "publishedAt": "2026-07-31T02:11:07Z",
+            "severity": "low",
+            "summary": "Partial token disclosure in `gh auth status` output",
+            "updatedAt": "2026-07-31T02:11:08Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "go",
+                "packageName": "github.com/cli/cli/v2",
+                "patchedVersion": "2.97.0",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": "<= v2.96.0"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-crc3-h8v6-qh57",
+            "publishedAt": "2026-05-13T15:20:46Z",
+            "severity": "low",
+            "summary": "GitHub Actions log output in `gh run view` allows terminal escape sequence injection",
+            "updatedAt": "2026-05-13T19:29:57Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "go",
+                "packageName": "gh",
+                "patchedVersion": "2.92.0",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": "> v1.6.0"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-fgw4-v983-mgp8",
+            "publishedAt": "2025-02-14T16:12:40Z",
+            "severity": "medium",
+            "summary": "`gh attestation verify` returns incorrect exit code during verification when predicate types mismatch",
+            "updatedAt": "2025-02-14T16:12:40Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "go",
+                "packageName": "gh",
+                "patchedVersion": "2.67.0",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": ">= v2.49.0"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-fqfh-778m-2v32",
+            "publishedAt": "2020-11-11T15:38:55Z",
+            "severity": "medium",
+            "summary": "GitHub CLI can execute a git binary from the current directory",
+            "updatedAt": "2020-11-11T15:38:55Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "",
+                "packageName": "gh",
+                "patchedVersion": "1.2.1",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": "< 1.2.1"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-jwcm-9g39-pmcw",
+            "publishedAt": "2024-11-27T21:14:00Z",
+            "severity": "medium",
+            "summary": "Recursive repository cloning can leak authentication tokens to non-GitHub submodule hosts",
+            "updatedAt": "2024-11-27T21:14:00Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "go",
+                "packageName": "github.com/cli/cli/v2",
+                "patchedVersion": "2.63.0",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": "<= 2.62.0"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-mm27-mwq9-fr5g",
+            "publishedAt": "2026-07-31T02:11:23Z",
+            "severity": "low",
+            "summary": "Attestation verification bypass via unescaped regex metacharacters in SAN matching",
+            "updatedAt": "2026-07-31T02:11:24Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "go",
+                "packageName": "github.com/cli/cli/v2",
+                "patchedVersion": "2.97.0",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": "<=2.96.0"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-p2h2-3vg9-4p87",
+            "publishedAt": "2024-11-14T16:13:24Z",
+            "severity": "high",
+            "summary": "Connecting to a malicious Codespaces via GH CLI could allow command execution on the user's computer",
+            "updatedAt": "2024-11-14T16:13:24Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "",
+                "packageName": "gh",
+                "patchedVersion": "2.62.0",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": "<= 2.61.0"
+              }
+            ],
+            "withdrawnAt": null
+          },
+          {
+            "ghsaId": "GHSA-vfhh-p7hm-pxfh",
+            "publishedAt": "2026-08-20T22:24:36Z",
+            "severity": "low",
+            "summary": "`gh codespace ports forward` exposes forwarded services on all network interfaces by default",
+            "updatedAt": "2026-08-20T22:24:37Z",
+            "vulnerabilities": [
+              {
+                "ecosystem": "go",
+                "packageName": "github.com/cli/cli/v2",
+                "patchedVersion": "2.98.0",
+                "vulnerableFunctions": [],
+                "vulnerableVersionRange": ">=v2.28.0"
+              }
+            ],
+            "withdrawnAt": null
+          }
+        ],
+        "advisoryInventorySha256": "bb1d3ee43aa572f3987ae993fde28a7dc1eb78e891e02bafb8c2366b974a5e7d",
+        "minimumPatchedVersion": "2.98.0",
+        "publishedAdvisoryCount": 13,
+        "reviewedAt": "2026-09-21T04:39:49Z",
+        "verdict": "selected-version-at-or-above-every-published-patch"
+      },
+      "sha256": "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8",
+      "version": "2.101.0"
+    },
+    "health": {
+      "git": "ok",
+      "github": "ok",
+      "npm": "ok"
+    },
+    "npm": {
+      "candidatePresent": false,
+      "latest": "0.36.0",
+      "package": "@mblua/agentscommander",
+      "versions": [
+        "0.8.50",
+        "0.9.16",
+        "0.10.0",
+        "0.30.2",
+        "0.30.3",
+        "0.30.5",
+        "0.31.0",
+        "0.32.0",
+        "0.33.0",
+        "0.34.0",
+        "0.35.0",
+        "0.36.0"
+      ]
+    },
+    "predecessor": {
+      "peeledCommit": "4007c00793b66ac2daef11fe7bf5a119b8131d4b",
+      "release": {
+        "assetCount": 17,
+        "assets": [
+          {
+            "id": 572698108,
+            "name": "Agents.Commander-0.36.0-1.x86_64.rpm",
+            "sha256": "5f9642c84f546d36edc8690435f77907dc796f0a5b7ebe922a7ecbd1e2b5f1d5",
+            "size": 27368439,
+            "state": "uploaded"
+          },
+          {
+            "id": 572706682,
+            "name": "Agents.Commander_0.36.0_aarch64.dmg",
+            "sha256": "01ab952c1619d59f2f06b36b5eede976fbc68ec09f2889e195eee8b440aa8dd7",
+            "size": 27174078,
+            "state": "uploaded"
+          },
+          {
+            "id": 572698217,
+            "name": "Agents.Commander_0.36.0_amd64.AppImage",
+            "sha256": "2762be852868d0b932bb6a3045c1c0cffb79730e3104e4fc99f14bc9ddec39ee",
+            "size": 104274424,
+            "state": "uploaded"
+          },
+          {
+            "id": 572698390,
+            "name": "Agents.Commander_0.36.0_amd64.deb",
+            "sha256": "296a712f625881798dd912536b96989064e1b12a0d0f40fa8fc048397be29243",
+            "size": 27366254,
+            "state": "uploaded"
+          },
+          {
+            "id": 572702259,
+            "name": "Agents.Commander_0.36.0_x64-setup.exe",
+            "sha256": "53aa004fec2d466d42ff599e2c8ad20f3862ad7659ee56d1c4330a6763587794",
+            "size": 16348757,
+            "state": "uploaded"
+          },
+          {
+            "id": 572704463,
+            "name": "Agents.Commander_0.36.0_x64.dmg",
+            "sha256": "94e33cbb04b09262d2722f0d2984eef42a138eaffb4bf972d726dbb1a5f4071e",
+            "size": 27981963,
+            "state": "uploaded"
+          },
+          {
+            "id": 572706867,
+            "name": "Agents.Commander_aarch64.app.tar.gz",
+            "sha256": "0eb0a47b77b28c13bfc8a8963c045fc190c3519194eda477fbaf80002fa953de",
+            "size": 24888593,
+            "state": "uploaded"
+          },
+          {
+            "id": 572704642,
+            "name": "Agents.Commander_x64.app.tar.gz",
+            "sha256": "febcf1bab0e1ebbc1a27a3f5a1126f07f8f0f6146d1317a5d15043860968ff56",
+            "size": 25741644,
+            "state": "uploaded"
+          },
+          {
+            "id": 572709108,
+            "name": "SHASUMS256.txt",
+            "sha256": "3dd8010650ff8cd2ed5498d8f18589c66106083c00eb08c262c6def0211fe147",
+            "size": 1632,
+            "state": "uploaded"
+          },
+          {
+            "id": 572702446,
+            "name": "agentscommander-0.36.0-windows-x86_64-portable.zip",
+            "sha256": "b344bf63bb985f42e038c0027f0487b80b7affb56afacd1448278aa8aaa9c194",
+            "size": 23039325,
+            "state": "uploaded"
+          },
+          {
+            "id": 572698519,
+            "name": "agentscommander-linux-x86_64",
+            "sha256": "3e63576e99aa98c63e1bf9c76f9de3b3996d187db829e777c032f1813a6f18c5",
+            "size": 79144160,
+            "state": "uploaded"
+          },
+          {
+            "id": 572707093,
+            "name": "agentscommander-mac-aarch64",
+            "sha256": "d94f04e6b88112d387b3b858b76172294c8e3af02aa8fcaf9eee9a910be4b9e6",
+            "size": 61299216,
+            "state": "uploaded"
+          },
+          {
+            "id": 572707342,
+            "name": "agentscommander-mac-aarch64.app.tar.gz",
+            "sha256": "0eb0a47b77b28c13bfc8a8963c045fc190c3519194eda477fbaf80002fa953de",
+            "size": 24888593,
+            "state": "uploaded"
+          },
+          {
+            "id": 572704764,
+            "name": "agentscommander-mac-x86_64",
+            "sha256": "0688f183cb786abf59e0964983068fb15bd21017c4dfa0b6ae32f91203ce2917",
+            "size": 64010344,
+            "state": "uploaded"
+          },
+          {
+            "id": 572704942,
+            "name": "agentscommander-mac-x86_64.app.tar.gz",
+            "sha256": "febcf1bab0e1ebbc1a27a3f5a1126f07f8f0f6146d1317a5d15043860968ff56",
+            "size": 25741644,
+            "state": "uploaded"
+          },
+          {
+            "id": 572702677,
+            "name": "agentscommander-testeable-windows-x86_64.exe",
+            "sha256": "b360d7c7ee3935618a91b3baf09ad0912441f0c4a123cf93274b1a6bf0c0a990",
+            "size": 64200704,
+            "state": "uploaded"
+          },
+          {
+            "id": 572702852,
+            "name": "agentscommander-windows-x86_64.exe",
+            "sha256": "b360d7c7ee3935618a91b3baf09ad0912441f0c4a123cf93274b1a6bf0c0a990",
+            "size": 64200704,
+            "state": "uploaded"
+          }
+        ],
+        "draft": false,
+        "id": 391490080,
+        "immutable": true,
+        "prerelease": false
+      },
+      "tag": "v0.36.0",
+      "tagMessageSha256": "f01c419479e916a677e7508dd565b4a65bf386b25324927393e707ea25aa599e",
+      "tagObject": "52aca156ca758faa658d05fe9f2d4957d6c7a99e",
+      "version": "0.36.0"
+    },
+    "releaseIssue": {
+      "id": 5521432309,
+      "locked": false,
+      "number": 2331,
+      "state": "open",
+      "title": "release: publish AgentsCommander v0.37.0",
+      "url": "https://github.com/mblua/AgentsCommander/issues/2331"
+    },
+    "remoteMain": {
+      "branch": "main",
+      "parents": [
+        "1da51fa7042eae7a2d2869c38341cc69a00982eb"
+      ],
+      "sha": "484637b85d6b29085c9f7b36d66a49bdb4762889"
+    },
+    "repository": {
+      "defaultBranch": "main",
+      "fullName": "mblua/AgentsCommander"
+    },
+    "schema": "prepare-agentscommander-release/discovery-snapshot/v1",
+    "scope": [
+      {
+        "issue": 2074,
+        "issueState": "closed",
+        "mergeCommit": "c8e3a9599b0684b7f7af052722b7acdd87f00215",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2193
+      },
+      {
+        "issue": 2129,
+        "issueState": "closed",
+        "mergeCommit": "f09aa02bddbf0abccec513e481ec0a9f84bb77fb",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2174
+      },
+      {
+        "issue": 2141,
+        "issueState": "closed",
+        "mergeCommit": "c741a3faf29642b17955090f8cf8014b8a3343c8",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2189
+      },
+      {
+        "issue": 2146,
+        "issueState": "closed",
+        "mergeCommit": "72c3e6dca7caa652c675a498e13715a92af8faae",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2217
+      },
+      {
+        "issue": 2148,
+        "issueState": "closed",
+        "mergeCommit": "ef165460c67a5d34160e68faf4796d22f9679423",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2242
+      },
+      {
+        "issue": 2155,
+        "issueState": "closed",
+        "mergeCommit": "7e085462b706e857b86d6ea03adf44c3d36640b9",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2166
+      },
+      {
+        "issue": 2156,
+        "issueState": "closed",
+        "mergeCommit": "4f95780c948ccabd6424725036ad9bc7110780b2",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2191
+      },
+      {
+        "issue": 2162,
+        "issueState": "closed",
+        "mergeCommit": "347dcf178b5eb619d729d2260423274fa53a4b42",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2207
+      },
+      {
+        "issue": 2171,
+        "issueState": "closed",
+        "mergeCommit": "3f0350e40178b9488b1e3514843ec1a2e6b2f133",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2221
+      },
+      {
+        "issue": 2173,
+        "issueState": "closed",
+        "mergeCommit": "8c401187bc9a054b31e86deed8476e5caf06c9cf",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2175
+      },
+      {
+        "issue": 2176,
+        "issueState": "closed",
+        "mergeCommit": "6ee4596431f64c632ea25c0c4ec0aee085b81f73",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2200
+      },
+      {
+        "issue": 2179,
+        "issueState": "closed",
+        "mergeCommit": "82b31ff822f3fb7d73da76fc3ef54948dcd8d57e",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2187
+      },
+      {
+        "issue": 2180,
+        "issueState": "closed",
+        "mergeCommit": "427fa0e86703c50ed5f9b57b0c1a2dc7c21715c4",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2198
+      },
+      {
+        "issue": 2181,
+        "issueState": "closed",
+        "mergeCommit": "597acd6eb5e79da92b56c25be29ce498f1b193a5",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2208
+      },
+      {
+        "issue": 2182,
+        "issueState": "closed",
+        "mergeCommit": "bbd2c00e5c078d3a1d6c267b198ed26461f67299",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2209
+      },
+      {
+        "issue": 2183,
+        "issueState": "closed",
+        "mergeCommit": "2d6ab4b7e6ac1bedec0f3ed3d4fec2f13ad08d86",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2196
+      },
+      {
+        "issue": 2185,
+        "issueState": "closed",
+        "mergeCommit": "596890294d8be78b822021067f1b38a6fd128221",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2186
+      },
+      {
+        "issue": 2188,
+        "issueState": "closed",
+        "mergeCommit": "7a46fa11a2f1c6ef04cc54446254b0e3d2f6dc52",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2197
+      },
+      {
+        "issue": 2190,
+        "issueState": "closed",
+        "mergeCommit": "a0a22939d7bff01a219e9502e3275988ba02fb92",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2192
+      },
+      {
+        "issue": 2202,
+        "issueState": "closed",
+        "mergeCommit": "c8daffd94afb15812f373c9a60579197169f4434",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2215
+      },
+      {
+        "issue": 2210,
+        "issueState": "closed",
+        "mergeCommit": "dde7133c16aabdb5950c8bf107f4dd77e1c2c14e",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2211
+      },
+      {
+        "issue": 2212,
+        "issueState": "closed",
+        "mergeCommit": "47d1f47ffc2293ea1d29d22da414803d2b6a8e98",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2220
+      },
+      {
+        "issue": 2213,
+        "issueState": "closed",
+        "mergeCommit": "0543ac1b9ff015479e617054f96fc4c35d30b40b",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2243
+      },
+      {
+        "issue": 2218,
+        "issueState": "closed",
+        "mergeCommit": "34e2f34af6d5365fd43b50015aa497beb1a6b0bf",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2229
+      },
+      {
+        "issue": 2219,
+        "issueState": "closed",
+        "mergeCommit": "ac2097b63774138f5c45be79af34cc8238d3cf3e",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2302
+      },
+      {
+        "issue": 2222,
+        "issueState": "closed",
+        "mergeCommit": "780974ee21a6480bc95b1aa9c0e9d9f9518fcfa7",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2226
+      },
+      {
+        "issue": 2227,
+        "issueState": "closed",
+        "mergeCommit": "42c20a4865c11a16b36bab02d54eabdaffaa9615",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2230
+      },
+      {
+        "issue": 2228,
+        "issueState": "closed",
+        "mergeCommit": "345238bb4668744e23a7fbc5c524b104b113f7c7",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2231
+      },
+      {
+        "issue": 2237,
+        "issueState": "closed",
+        "mergeCommit": "b7a558185428597eedf2d568c4ca089fbbafe5e3",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2252
+      },
+      {
+        "issue": 2238,
+        "issueState": "closed",
+        "mergeCommit": "d6f527ee0e4aeee5c49e3b7c85cefb07d351e3c9",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2262
+      },
+      {
+        "issue": 2239,
+        "issueState": "closed",
+        "mergeCommit": "3eaef899fca422e615861ad8531337b80345274c",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2286
+      },
+      {
+        "issue": 2240,
+        "issueState": "closed",
+        "mergeCommit": "9b340e4748461212aa8ce9fdf92916effd266921",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2290
+      },
+      {
+        "issue": 2241,
+        "issueState": "closed",
+        "mergeCommit": "670d6af5ff1e0deae7e8a2044c53c75a2a3cafad",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2307
+      },
+      {
+        "issue": 2248,
+        "issueState": "closed",
+        "mergeCommit": "06139d9001c13d01405b303f98721715816245c4",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2249
+      },
+      {
+        "issue": 2251,
+        "issueState": "closed",
+        "mergeCommit": "5fbadbf226f4936dc761ad7515d67153807785d5",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2263
+      },
+      {
+        "issue": 2264,
+        "issueState": "closed",
+        "mergeCommit": "6222c2fa329b393ccf0e76c8c43c4233bdf49b1e",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2299
+      },
+      {
+        "issue": 2265,
+        "issueState": "closed",
+        "mergeCommit": "110023f729ead4410cb9d1fa0035376f004c517e",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2305
+      },
+      {
+        "issue": 2266,
+        "issueState": "closed",
+        "mergeCommit": "7b292894d59348b6c424486c71a6627df749c046",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2308
+      },
+      {
+        "issue": 2277,
+        "issueState": "closed",
+        "mergeCommit": "92c9dc6610419b90f8a1b33c9b8b11afa9350a2d",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2295
+      },
+      {
+        "issue": 2291,
+        "issueState": "closed",
+        "mergeCommit": "bd296651261447464847033e7d00462565792211",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2293
+      },
+      {
+        "issue": 2292,
+        "issueState": "closed",
+        "mergeCommit": "d108dea52801b782179aa84e8c557467914534c0",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2298
+      },
+      {
+        "issue": 2296,
+        "issueState": "closed",
+        "mergeCommit": "a8724906fe54ac636bd5e9115fd5a2d973e9f1cc",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2310
+      },
+      {
+        "issue": 2297,
+        "issueState": "open",
+        "mergeCommit": "90bf6bb01b2a58e57525139cc903da0ba5ca7004",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2330
+      },
+      {
+        "issue": 2300,
+        "issueState": "closed",
+        "mergeCommit": "82bc821cd3a5206b2743b2a6c4a6820ef5c8d8c4",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2320
+      },
+      {
+        "issue": 2301,
+        "issueState": "closed",
+        "mergeCommit": "8b15376fb177a9aaf2e8d040954cc71d7e6ede2f",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2303
+      },
+      {
+        "issue": 2311,
+        "issueState": "closed",
+        "mergeCommit": "1da51fa7042eae7a2d2869c38341cc69a00982eb",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2339
+      },
+      {
+        "issue": 2322,
+        "issueState": "closed",
+        "mergeCommit": "63ceae2765e1c63760561e0be77bece777d3fe9b",
+        "mergedIntoPlanningBase": true,
+        "pullRequest": 2324
+      }
+    ],
+    "versionSurfaces": [
+      {
+        "blobSha": "7bb68d49c9acfb0cb0a5551b0996c71a9c6e059c",
+        "contentSha256": "416654f28f6471ce0c8d36bfea45ff8bf6708efcb62a8b839d08f811109bb972",
+        "id": "root-package",
+        "path": "package.json",
+        "selector": "/version",
+        "value": "0.36.0"
+      },
+      {
+        "blobSha": "8102f8c8f64e53b9ce2e65ec56a7395cd9e8c8f0",
+        "contentSha256": "a1f1a4726179991fef49445ff3569dae53a47163c2a18975a9764cb8dd33ff52",
+        "id": "root-lock",
+        "path": "package-lock.json",
+        "selector": "/version",
+        "value": "0.36.0"
+      },
+      {
+        "blobSha": "8102f8c8f64e53b9ce2e65ec56a7395cd9e8c8f0",
+        "contentSha256": "a1f1a4726179991fef49445ff3569dae53a47163c2a18975a9764cb8dd33ff52",
+        "id": "root-lock-package",
+        "path": "package-lock.json",
+        "selector": "/packages//version",
+        "value": "0.36.0"
+      },
+      {
+        "blobSha": "ab5a7c87ec663344b2119b21192453ae07d452ba",
+        "contentSha256": "43c26c2c2dd4f5e6541f1716842d6c4f6395eb1c46cc61ebd1b0030ecfb5368b",
+        "id": "npm-package",
+        "path": "npm/package.json",
+        "selector": "/version",
+        "value": "0.36.0"
+      },
+      {
+        "blobSha": "adf1c02bb103aefadef0d4daa876115d46cac0c3",
+        "contentSha256": "0c1df2dd3108abce6b27a3c98ba2d2a865459ef359490980fa3c3cb76858a25d",
+        "id": "npm-installer",
+        "path": "npm/install.js",
+        "selector": "const VERSION",
+        "value": "0.36.0"
+      },
+      {
+        "blobSha": "90cd0fe74947ee049b8bac5dab5a33dc5f136ae8",
+        "contentSha256": "ff9f1f01a6d7369f4cb675da264c98bec7ea7eedf1606c3506f206f9d12cc8c5",
+        "id": "cargo-package",
+        "path": "src-tauri/Cargo.toml",
+        "selector": "[package].version",
+        "value": "0.36.0"
+      },
+      {
+        "blobSha": "0e895e7c732a11af3af2dbd300e5ffc86ebfd3ac",
+        "contentSha256": "ce9ccf5e51507f3c88cd34cf1cb405e6185c15599458e3f98129f4b3a622711b",
+        "id": "cargo-lock",
+        "path": "Cargo.lock",
+        "selector": "agentscommander.version",
+        "value": "0.36.0"
+      },
+      {
+        "blobSha": "9523111791eed0c0ef9c10760805deeb0e1723f8",
+        "contentSha256": "e09cf59f02a25cfad091ef4dcc9e0893020b0b0ca04be32fc51531f44d9c0f10",
+        "id": "tauri-config",
+        "path": "src-tauri/tauri.conf.json",
+        "selector": "/version",
+        "value": "0.36.0"
+      }
+    ],
+    "workflow": {
+      "actionPins": [
+        {
+          "ref": "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+          "repository": "actions/checkout",
+          "resolvedSha": "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09"
+        },
+        {
+          "ref": "a0853c24544627f65ddf259abe73b1d18a591444",
+          "repository": "actions/setup-node",
+          "resolvedSha": "a0853c24544627f65ddf259abe73b1d18a591444"
+        },
+        {
+          "ref": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "repository": "actions/upload-artifact",
+          "resolvedSha": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+        },
+        {
+          "ref": "4360b52568e2003a75bf9bc1d59f33a8e3fc893c",
+          "repository": "dtolnay/rust-toolchain",
+          "resolvedSha": "4360b52568e2003a75bf9bc1d59f33a8e3fc893c"
+        },
+        {
+          "ref": "6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+          "repository": "swatinem/rust-cache",
+          "resolvedSha": "6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
+        },
+        {
+          "ref": "84b9d35b5fc46c1e45415bdb6144030364f7ebc5",
+          "repository": "tauri-apps/tauri-action",
+          "resolvedSha": "84b9d35b5fc46c1e45415bdb6144030364f7ebc5"
+        }
+      ],
+      "blobSha": "1813662691aea512b4c8c087a388b0e9e87e66fa",
+      "contentSha256": "8c032478e665a51f17de2c061e793dacafe3351312fa2c0eadc7a8103a6e04db",
+      "observedContract": {
+        "hasDraftRelease": true,
+        "hasPublishNpm": true,
+        "makeLatestString": false,
+        "nodeVersions": [
+          "22"
+        ],
+        "normalSemverTrigger": true,
+        "npmPins": [
+          "11.6.2"
+        ],
+        "registryUrls": [
+          "https://registry.npmjs.org"
+        ]
+      }
+    }
+  },
+  "inputs": {
+    "candidateTag": "v0.37.0",
+    "candidateVersion": "0.37.0",
+    "changelogSource": {
+      "sha256": "55f0a5cdd4b8fb46a54b345492bd709907fbd2965ffbfb02061c6014e009cf6e",
+      "text": "### Fixed\n\n- **`list-peers-lean --snapshot-targets` no longer aborts on a neighbouring directory it cannot verify.** A linked or junctioned room, a stale `__agent_*` replica, or a sibling project directory that fails identity verification is now skipped and counted instead of failing the whole command with `Error: unsafe_path` and exit 1. The counts are reported on stderr as integers only (`snapshot_targets_note skipped_project_children=… skipped_rooms=… skipped_replicas=…`), a `[]` result now says why on stderr, and a genuinely rejected `--root` names the rule that rejected it. Every emitted target still passes the same unchanged identity verification, and stdout JSON is unchanged. ([#2228](https://github.com/mblua/AgentsCommander/issues/2228), [#2223](https://github.com/mblua/AgentsCommander/issues/2223))\n- **`terminal-snapshot` now says which argument it rejected and why.** Every CLI-originated rejection adds `field=` (when exactly one argument is at fault, from `token`, `root`, `to`, `format`, `output`, `timeout`) and `reason=` to the `terminal_snapshot_error` line, so the six previously identical `invalid_request` failures are distinguishable. `code=` values, exit codes, stdout and the HTTP API are unchanged, and the new tokens are fixed literals that never carry a path or a token. ([#2227](https://github.com/mblua/AgentsCommander/issues/2227), [#2223](https://github.com/mblua/AgentsCommander/issues/2223))\n"
+    },
+    "githubCli": {
+      "archive": "gh_2.101.0_linux_amd64.tar.gz",
+      "securityReview": {
+        "advisoryInventorySha256": "bb1d3ee43aa572f3987ae993fde28a7dc1eb78e891e02bafb8c2366b974a5e7d",
+        "minimumPatchedVersion": "2.98.0",
+        "publishedAdvisoryCount": 13,
+        "reviewedAt": "2026-09-21T04:39:49Z",
+        "verdict": "selected-version-at-or-above-every-published-patch"
+      },
+      "sha256": "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8",
+      "version": "2.101.0"
+    },
+    "policy": {
+      "assetUpload": "job-local-contents-write",
+      "reviewAuthority": {
+        "mode": "documented-admin-self-review-exception"
+      },
+      "tagBinding": "object-and-peeled-reverification"
+    },
+    "releaseAssertions": {
+      "assetLedger": {
+        "additionalCandidateAssets": [],
+        "expectedCandidateCount": 17,
+        "expectedPredecessorCount": 17
+      },
+      "scopeChangelog": []
+    },
+    "releaseIssue": "https://github.com/mblua/AgentsCommander/issues/2331",
+    "releaseIssueNumber": 2331,
+    "repository": "mblua/AgentsCommander",
+    "scope": {
+      "items": [
+        {
+          "issue": 2074,
+          "kind": "fix",
+          "pullRequest": 2193,
+          "summary": "fix(2074): raise the post-publish propagation budget and name the published-but-lagging case"
+        },
+        {
+          "issue": 2129,
+          "kind": "fix",
+          "pullRequest": 2174,
+          "summary": "fix(2129): name the remote in the branch-stale notice, never the branch twice"
+        },
+        {
+          "issue": 2141,
+          "kind": "fix",
+          "pullRequest": 2189,
+          "summary": "fix(2141): no branch-stale notice on a branch with no commits of its own"
+        },
+        {
+          "issue": 2146,
+          "kind": "maintenance",
+          "pullRequest": 2217,
+          "summary": "docs(config-seed): note the BUILTIN_AGENT_SUPPORT gate on factory masters and re-seed (refs #2146)"
+        },
+        {
+          "issue": 2148,
+          "kind": "maintenance",
+          "pullRequest": 2242,
+          "summary": "chore(sidebar): remove unconsumed sessionsStore.groupedSessions (refs #2148)"
+        },
+        {
+          "issue": 2155,
+          "kind": "maintenance",
+          "pullRequest": 2166,
+          "summary": "chore(2155): gate new test-code duplication before the CI matrices"
+        },
+        {
+          "issue": 2156,
+          "kind": "fix",
+          "pullRequest": 2191,
+          "summary": "fix(#2156): idle-burst filter ON by default for recognised coding agents"
+        },
+        {
+          "issue": 2162,
+          "kind": "feature",
+          "pullRequest": 2207,
+          "summary": "feat(config-seed): OS-aware variants for all five tiers (refs #2162)"
+        },
+        {
+          "issue": 2171,
+          "kind": "feature",
+          "pullRequest": 2221,
+          "summary": "feat(loops): validate Loop targets at startup and surface unresolvable ones, refs #2171"
+        },
+        {
+          "issue": 2173,
+          "kind": "fix",
+          "pullRequest": 2175,
+          "summary": "fix(screenshot): place macOS overlays in logical points (#2173)"
+        },
+        {
+          "issue": 2176,
+          "kind": "fix",
+          "pullRequest": 2200,
+          "summary": "fix(2176): resolve the loop wake agent from the replica's pinned agent and profile"
+        },
+        {
+          "issue": 2179,
+          "kind": "feature",
+          "pullRequest": 2187,
+          "summary": "feat(2179): pulsed NonStop alarm in sound.ts, gated by the global mute"
+        },
+        {
+          "issue": 2180,
+          "kind": "feature",
+          "pullRequest": 2198,
+          "summary": "feat(2180): non_stop_alarm contract and its single listener"
+        },
+        {
+          "issue": 2181,
+          "kind": "maintenance",
+          "pullRequest": 2208,
+          "summary": "refactor(2181): emit the non-stop alarm event instead of a Win32 beep"
+        },
+        {
+          "issue": 2182,
+          "kind": "fix",
+          "pullRequest": 2209,
+          "summary": "fix(2182): the NonStop sound alert is no longer Windows-only"
+        },
+        {
+          "issue": 2183,
+          "kind": "maintenance",
+          "pullRequest": 2196,
+          "summary": "chore(2183): move plans/ out of the repository and enforce the ban"
+        },
+        {
+          "issue": 2185,
+          "kind": "fix",
+          "pullRequest": 2186,
+          "summary": "fix(2185): silence the expected rejections of the tokenless token fixture"
+        },
+        {
+          "issue": 2188,
+          "kind": "fix",
+          "pullRequest": 2197,
+          "summary": "fix(build): skip the testable binary copy on non-Windows, refs #2188"
+        },
+        {
+          "issue": 2190,
+          "kind": "feature",
+          "pullRequest": 2192,
+          "summary": "feat(settings): new-install defaults for rail colour and restart wake (#2190)"
+        },
+        {
+          "issue": 2202,
+          "kind": "fix",
+          "pullRequest": 2215,
+          "summary": "fix(#2202): a room waiting on CI counts as working on every user-facing surface"
+        },
+        {
+          "issue": 2210,
+          "kind": "maintenance",
+          "pullRequest": 2211,
+          "summary": "chore(2210): drop the orphaned 1283 local-session proof scripts"
+        },
+        {
+          "issue": 2212,
+          "kind": "maintenance",
+          "pullRequest": 2220,
+          "summary": "test(activity_log): make coalescer prune test deterministic, refs #2212"
+        },
+        {
+          "issue": 2213,
+          "kind": "fix",
+          "pullRequest": 2243,
+          "summary": "fix(scripts): give dependency-cruiser spawnSync an explicit maxBuffer (refs #2213)"
+        },
+        {
+          "issue": 2218,
+          "kind": "fix",
+          "pullRequest": 2229,
+          "summary": "fix(#2218): ago test helper panics instead of saturating to now"
+        },
+        {
+          "issue": 2219,
+          "kind": "maintenance",
+          "pullRequest": 2302,
+          "summary": "ci(2219): inventory restored gate-debug target before cargo"
+        },
+        {
+          "issue": 2222,
+          "kind": "fix",
+          "pullRequest": 2226,
+          "summary": "fix(#2222): reveal the terminal when the already-selected row is clicked"
+        },
+        {
+          "issue": 2227,
+          "kind": "fix",
+          "pullRequest": 2230,
+          "summary": "fix(terminal-snapshot): attribute invalid_request to a field and a reason (#2227)"
+        },
+        {
+          "issue": 2228,
+          "kind": "fix",
+          "pullRequest": 2231,
+          "summary": "fix(cli): fail-soft --snapshot-targets discovery and name the path rules (#2228)"
+        },
+        {
+          "issue": 2237,
+          "kind": "feature",
+          "pullRequest": 2252,
+          "summary": "feat(loops): persist per-Loop sessionStart and deliver Fresh via restart (refs #2237)"
+        },
+        {
+          "issue": 2238,
+          "kind": "feature",
+          "pullRequest": 2262,
+          "summary": "feat(loops): carry sessionStart on Loop create and update IPC (refs #2238)"
+        },
+        {
+          "issue": 2239,
+          "kind": "feature",
+          "pullRequest": 2286,
+          "summary": "feat(loops): --session-start on loop create and update, and fix the cli_loop ETXTBSY race (refs #2239)"
+        },
+        {
+          "issue": 2240,
+          "kind": "feature",
+          "pullRequest": 2290,
+          "summary": "feat(loops): persistent Accumulate control in the Loop modals (refs #2240)"
+        },
+        {
+          "issue": 2241,
+          "kind": "maintenance",
+          "pullRequest": 2307,
+          "summary": "docs(loops): document fresh session start (refs #2241)"
+        },
+        {
+          "issue": 2248,
+          "kind": "feature",
+          "pullRequest": 2249,
+          "summary": "feat(blocking-menus): publish Claude and Codex patterns (#2248)"
+        },
+        {
+          "issue": 2251,
+          "kind": "feature",
+          "pullRequest": 2263,
+          "summary": "feat(blocking-menus): detect Claude choices and OpenCode permissions (refs #2251)"
+        },
+        {
+          "issue": 2264,
+          "kind": "feature",
+          "pullRequest": 2299,
+          "summary": "feat: capture provider records for Co-managed rooms (refs #2264); internal Co-managed foundation, disabled by default, production routing pending"
+        },
+        {
+          "issue": 2265,
+          "kind": "feature",
+          "pullRequest": 2305,
+          "summary": "feat: add Co-managed room config and Jev settings (refs #2265); internal Co-managed foundation, disabled by default, production routing pending"
+        },
+        {
+          "issue": 2266,
+          "kind": "feature",
+          "pullRequest": 2308,
+          "summary": "feat: add capture sink and durable state (refs #2266); internal Co-managed foundation, disabled by default, production routing pending"
+        },
+        {
+          "issue": 2277,
+          "kind": "feature",
+          "pullRequest": 2295,
+          "summary": "feat(sidebar): V3 Root Agent halo and rail width token (#2277)"
+        },
+        {
+          "issue": 2291,
+          "kind": "maintenance",
+          "pullRequest": 2293,
+          "summary": "test(2291): sync cli_loop isolation contract with run_output route"
+        },
+        {
+          "issue": 2292,
+          "kind": "feature",
+          "pullRequest": 2298,
+          "summary": "feat(blocking-menus): detect Claude mid-response disconnect (refs #2292)"
+        },
+        {
+          "issue": 2296,
+          "kind": "fix",
+          "pullRequest": 2310,
+          "summary": "fix(quit): add main-window quit gate (refs #2296)"
+        },
+        {
+          "issue": 2297,
+          "kind": "fix",
+          "pullRequest": 2330,
+          "summary": "fix(quit): close clients through main quit gate (refs #2297)"
+        },
+        {
+          "issue": 2300,
+          "kind": "fix",
+          "pullRequest": 2320,
+          "summary": "fix(#2300): exempt quit_application from IPC overdue alerts"
+        },
+        {
+          "issue": 2301,
+          "kind": "maintenance",
+          "pullRequest": 2303,
+          "summary": "style(rust): format menu guard tests merged in #2292 (#2301)"
+        },
+        {
+          "issue": 2311,
+          "kind": "maintenance",
+          "pullRequest": 2339,
+          "summary": "docs: prototype coding agent order in both views (refs #2311)"
+        },
+        {
+          "issue": 2322,
+          "kind": "maintenance",
+          "pullRequest": 2324,
+          "summary": "test: serialize copied CLI copy and spawn in phase A (refs #2322)"
+        }
+      ],
+      "schema": "prepare-agentscommander-release/scope/v1",
+      "sha256": "b7de65260a8b20c4289d7d3a26df0bcedd638a514ea11735ff3cf9c133d5f4dc"
+    }
+  },
+  "schema": "prepare-agentscommander-release/input-manifest/v1",
+  "templates": {
+    "schema": "prepare-agentscommander-release/templates/v1",
+    "sha256": {
+      "authority": "22c4961f40eea5ce30c26ddb712558c13238bb2c842b2df874db3ffd7768d3f3",
+      "generator": "54f3fe695324462b857e63bb1898af15d3cb53771017b6486b8591ceb603bb7b",
+      "plan": "a37a0e5ebb3544ae1539f4acadac2e70ffdfd57bc4fc3719db8933885e5440b1",
+      "releaseBody": "a71703905589f58eef3b636b2d219c3a6dbea4ccb658e55a060d147636319531"
+    }
+  }
+}

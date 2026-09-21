@@ -3486,8 +3486,16 @@ pub fn run(
     let broadcaster_for_web = broadcaster.clone();
     let web_token_for_server = Arc::clone(&web_access_token);
 
+    // #2232 phase 3 section 5.1 / phase 4 section 4.2: the **single**
+    // `CaptureRegistry` of the app. It is stored in Tauri state below and
+    // handed to the bridge manager, so the supervisor can open a session's
+    // endpoints and pass the live sender into both watchers. Without this the
+    // phase-1 and phase-3 chain is unreachable from production.
+    let capture_registry = Arc::new(capture::registry::CaptureRegistry::new());
+    let capture_registry_for_state = Arc::clone(&capture_registry);
+
     let tg_mgr: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
-        TelegramBridgeManager::new(output_senders),
+        TelegramBridgeManager::with_captures(output_senders, capture_registry),
     ));
 
     let loaded_settings = config::settings::load_settings();
@@ -3600,6 +3608,7 @@ pub fn run(
         .manage(session_mgr)
         .manage(selection_coordinator)
         .manage(tg_mgr)
+        .manage(capture_registry_for_state)
         .manage(network::OutboundNetwork::new().expect("failed to build shared network clients"))
         .manage(Arc::clone(&resource_monitor_state))
         .manage(voice_tracking)
