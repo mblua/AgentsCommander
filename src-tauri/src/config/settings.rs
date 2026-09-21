@@ -385,6 +385,10 @@ pub struct AppSettings {
     /// #714 Native global hotkey for screenshot capture, e.g. "Ctrl+Q".
     #[serde(default = "default_screenshot_capture_hotkey")]
     pub screenshot_capture_hotkey: String,
+    /// #2281 Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E". Stored
+    /// byte-identical to what the user typed; an invalid value blocks the save.
+    #[serde(default = "default_sidebar_compact_hotkey")]
+    pub sidebar_compact_hotkey: String,
     /// Enable voice-to-text microphone button on session items
     #[serde(default)]
     pub voice_to_text_enabled: bool,
@@ -835,6 +839,10 @@ fn default_screenshot_capture_hotkey() -> String {
     "Ctrl+Q".to_string()
 }
 
+fn default_sidebar_compact_hotkey() -> String {
+    "Ctrl+Shift+E".to_string()
+}
+
 /// #640 Resolve the effective auto-self-clear flag for an agent.
 /// Precedence: the global master `auto_self_clear_enabled` is an absolute kill
 /// switch (off => off for all); else an explicit per-agent override
@@ -1065,6 +1073,7 @@ impl Default for AppSettings {
             sounds_enabled: true,
             raise_terminal_on_click: true,
             screenshot_capture_hotkey: default_screenshot_capture_hotkey(),
+            sidebar_compact_hotkey: default_sidebar_compact_hotkey(),
             voice_to_text_enabled: false,
             gemini_api_key: String::new(),
             gemini_model: default_gemini_model(),
@@ -2314,6 +2323,7 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     validate_agent_commands(settings)?;
     validate_screenshot_hotkey(&settings.screenshot_capture_hotkey)?;
+    validate_sidebar_compact_hotkey(&settings.sidebar_compact_hotkey)?;
     validate_api_server_settings(settings)?;
     validate_resource_settings(settings)
 }
@@ -2346,6 +2356,39 @@ pub fn validate_screenshot_hotkey(value: &str) -> Result<(), String> {
     crate::screenshot::parse_screenshot_hotkey(value)
         .map(|_| ())
         .map_err(|e| format!("Screenshot hotkey: {}", e))
+}
+
+/// #2281 Reject a sidebar compact hotkey that the settings contract cannot
+/// accept. Unlike `validate_screenshot_hotkey` this is not an OS registration:
+/// it only enforces the shape `Ctrl|Control + Shift + <A-Z>` minus the reserved
+/// letters `W`, `R`, `C`, `V` (case-insensitive parts). Digits are rejected:
+/// `Ctrl+Shift+2` reaches xterm as `key="@"`, which Keyboard.ts maps to NUL and
+/// writes to the PTY. Syntax errors block a settings save; the value is judged
+/// byte-identical and never repaired, so a lower-case spelling is stored as-is.
+pub fn validate_sidebar_compact_hotkey(value: &str) -> Result<(), String> {
+    let reject = |reason: &str| Err(format!("Sidebar compact hotkey: {reason}"));
+    let parts: Vec<&str> = value.trim().split('+').map(|p| p.trim()).collect();
+    if parts.len() != 3 {
+        return reject("expected exactly three '+' separated parts, e.g. Ctrl+Shift+E");
+    }
+    if !parts[0].eq_ignore_ascii_case("ctrl") && !parts[0].eq_ignore_ascii_case("control") {
+        return reject("first part must be Ctrl or Control");
+    }
+    if !parts[1].eq_ignore_ascii_case("shift") {
+        return reject("second part must be Shift");
+    }
+    let mut chars = parts[2].chars();
+    let key = match (chars.next(), chars.next()) {
+        (Some(c), None) => c,
+        _ => return reject("third part must be exactly one character"),
+    };
+    if !key.is_ascii_alphabetic() {
+        return reject("third part must be an ASCII letter");
+    }
+    if matches!(key.to_ascii_lowercase(), 'w' | 'r' | 'c' | 'v') {
+        return reject("third part must not be one of the reserved letters W, R, C, V");
+    }
+    Ok(())
 }
 
 pub fn merge_protected_coding_agent_settings(
@@ -7717,6 +7760,148 @@ mod tests {
         assert!(super::validate_and_repair_settings(&mut s).is_ok());
     }
 
+    /// #2281 Cross-language parity contract (plan section "Cross-language
+    /// validator parity"): the 22 accepted letters `A-Z` minus `W/R/C/V` in
+    /// upper case, plus four mixed-case/padded spellings, so 26 entries.
+    /// `src/shared/app-hotkey.test.ts` (phase 5) re-asserts this list verbatim.
+    const PARITY_ACCEPTED: [&str; 26] = [
+        "Ctrl+Shift+A",
+        "Ctrl+Shift+B",
+        "Ctrl+Shift+D",
+        "Ctrl+Shift+E",
+        "Ctrl+Shift+F",
+        "Ctrl+Shift+G",
+        "Ctrl+Shift+H",
+        "Ctrl+Shift+I",
+        "Ctrl+Shift+J",
+        "Ctrl+Shift+K",
+        "Ctrl+Shift+L",
+        "Ctrl+Shift+M",
+        "Ctrl+Shift+N",
+        "Ctrl+Shift+O",
+        "Ctrl+Shift+P",
+        "Ctrl+Shift+Q",
+        "Ctrl+Shift+S",
+        "Ctrl+Shift+T",
+        "Ctrl+Shift+U",
+        "Ctrl+Shift+X",
+        "Ctrl+Shift+Y",
+        "Ctrl+Shift+Z",
+        "ctrl+shift+e",
+        "CTRL+SHIFT+E",
+        "Control+Shift+Z",
+        " Ctrl + Shift + E ",
+    ];
+
+    /// #2281 The 13 rejected literals in the plan's numbered order. Entry 6 is
+    /// the digit leak, entry 5 proves the reserved check is case-insensitive and
+    /// entry 13 is the Kelvin sign U+212A, which a `to_uppercase()` mirror would
+    /// wrongly accept as `K`.
+    const PARITY_REJECTED: [&str; 13] = [
+        "Ctrl+Shift+W",
+        "Ctrl+Shift+R",
+        "Ctrl+Shift+C",
+        "Ctrl+Shift+V",
+        "ctrl+shift+w",
+        "Ctrl+Shift+2",
+        "Ctrl+E",
+        "Shift+E",
+        "Alt+Shift+E",
+        "Ctrl+Shift+EE",
+        "Ctrl+Shift+",
+        "",
+        "Ctrl+Shift+\u{212A}",
+    ];
+
+    #[test]
+    fn sidebar_compact_hotkey_defaults_when_absent() {
+        // #2281 an old settings file without the key deserializes to "Ctrl+Shift+E".
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("sidebarCompactHotkey");
+        let parsed: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.sidebar_compact_hotkey, "Ctrl+Shift+E");
+    }
+
+    #[test]
+    fn sidebar_compact_hotkey_round_trips_camel_case() {
+        let s = AppSettings {
+            sidebar_compact_hotkey: "Control+Shift+B".to_string(),
+            ..AppSettings::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(
+            json.contains("\"sidebarCompactHotkey\":\"Control+Shift+B\""),
+            "{json}"
+        );
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sidebar_compact_hotkey, "Control+Shift+B");
+    }
+
+    #[test]
+    fn sidebar_compact_hotkey_accepts_the_parity_table() {
+        assert_eq!(PARITY_ACCEPTED.len(), 26);
+        for value in PARITY_ACCEPTED {
+            assert!(
+                super::validate_sidebar_compact_hotkey(value).is_ok(),
+                "expected Ok for {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_compact_hotkey_rejects_the_parity_table() {
+        assert_eq!(PARITY_REJECTED.len(), 13);
+        for value in PARITY_REJECTED {
+            let err = super::validate_sidebar_compact_hotkey(value)
+                .expect_err(&format!("expected Err for {value:?}"));
+            assert!(
+                err.starts_with("Sidebar compact hotkey: "),
+                "unexpected error for {value:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_compact_hotkey_call_site_preserves_a_valid_value() {
+        // Positive control: a validator that rejected everything would pass the
+        // reject table, so prove a valid non-default value survives the call site.
+        let mut s = AppSettings {
+            sidebar_compact_hotkey: "Ctrl+Shift+B".to_string(),
+            ..AppSettings::default()
+        };
+        assert!(super::validate_and_repair_settings(&mut s).is_ok());
+        assert_eq!(s.sidebar_compact_hotkey, "Ctrl+Shift+B");
+    }
+
+    #[test]
+    fn sidebar_compact_hotkey_call_site_rejects_an_invalid_value() {
+        // Negative control: proves the validator is wired into
+        // `validate_and_repair_settings` and not merely defined.
+        let mut s = AppSettings {
+            sidebar_compact_hotkey: "Ctrl+Shift+W".to_string(),
+            ..AppSettings::default()
+        };
+        let err = super::validate_and_repair_settings(&mut s).unwrap_err();
+        assert!(err.contains("Sidebar compact hotkey"), "{err}");
+    }
+
+    #[test]
+    fn screenshot_and_sidebar_compact_hotkeys_are_independent() {
+        let mut s = AppSettings {
+            sidebar_compact_hotkey: "Ctrl+Shift+B".to_string(),
+            ..AppSettings::default()
+        };
+        assert_eq!(s.screenshot_capture_hotkey, "Ctrl+Q");
+        s.screenshot_capture_hotkey = "Ctrl+P".to_string();
+        assert_eq!(s.sidebar_compact_hotkey, "Ctrl+Shift+B");
+        assert!(super::validate_and_repair_settings(&mut s).is_ok());
+        assert_eq!(s.sidebar_compact_hotkey, "Ctrl+Shift+B");
+        assert_eq!(s.screenshot_capture_hotkey, "Ctrl+P");
+    }
+
     /// #2015: shared pre-v2 fixture: `letters.A.name` plus
     /// `matrix.codex.A.argv` legacy data under `codingAgentProfiles`.
     const LEGACY_PROFILES_SETTINGS_FIXTURE: &str = r##"{
@@ -11086,6 +11271,9 @@ mod tests {
         /// #1905: re-captured after phase 3 - the loader no longer materializes
         /// `blockingMenus` and the export strips every array (claude's explicit `[]`
         /// is pristine and is dropped), so the control carries no `blockingMenus`.
+        /// #2236: re-captured after adding `sidebarCompactHotkey` (phase 4, #2281),
+        /// which is always serialized, using `print_s6_normalized_non_project_settings`
+        /// with two byte-identical JSON captures.
         const EXPECTED_NON_PROJECT_SETTINGS_JSON: &str = r##"{
   "activityLogEnabled": true,
   "agentAutoUpdateByCommand": {},
@@ -11209,6 +11397,7 @@ mod tests {
   "selectedRowRailColor": "#FFFFFF",
   "selectedRowRailWidth": "9px",
   "sidebarAlwaysOnTop": false,
+  "sidebarCompactHotkey": "Ctrl+Shift+E",
   "sidebarStyle": "noir-minimal",
   "sidebarZoom": 1.0,
   "soundsEnabled": true,
@@ -11272,6 +11461,14 @@ mod tests {
             let sorted: BTreeMap<String, Value> =
                 object.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             serde_json::to_string_pretty(&sorted).unwrap()
+        }
+
+        /// #2236: prints the S6 control so the fixture can be re-captured without a
+        /// scratch edit. Ignored by default; it asserts nothing.
+        #[test]
+        #[ignore = "capture helper: run with --ignored to re-capture the fixture"]
+        fn print_s6_normalized_non_project_settings() {
+            println!("{}", s6_normalized_non_project_settings());
         }
 
         // S6
