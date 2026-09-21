@@ -4,7 +4,26 @@
 //! `config_dir()` resolves to an isolated sibling config directory.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
+
+/// Excludes one test's open write descriptor on a freshly copied binary from
+/// overlapping another test's fork/exec.
+///
+/// These tests run in parallel and each copies the binary into its own temp dir
+/// before exec'ing it. `Command::spawn` forks, and the child inherits the write
+/// descriptor another thread still holds on *its* copy; exec'ing a binary that
+/// any process holds open for writing fails with `ETXTBSY`. Covering both the
+/// copy and the spawn closes that window. The lock is released before output is
+/// collected, so the binary runs themselves still overlap.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn command_for_binary(bin: &Path) -> Command {
     let mut command = Command::new(bin);
@@ -50,7 +69,10 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    {
+        let _guard = spawn_lock();
+        std::fs::copy(src, &dst).expect("copy binary");
+    }
     dst
 }
 
@@ -197,7 +219,8 @@ fn create_agent_matrix_success_prints_json_and_writes_layout() {
     let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -207,8 +230,14 @@ fn create_agent_matrix_success_prints_json_and_writes_layout() {
             "--description",
             "Build plans",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),
@@ -255,7 +284,8 @@ fn create_agent_matrix_resolves_project_name_from_settings_for_unrelated_root() 
     std::fs::create_dir_all(&root).expect("root dir");
     let root_s = root.to_string_lossy().to_string();
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -269,8 +299,14 @@ fn create_agent_matrix_resolves_project_name_from_settings_for_unrelated_root() 
             "--token",
             "00000000-0000-0000-0000-000000000000",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),
@@ -313,7 +349,8 @@ fn create_agent_matrix_rejects_ambiguous_project_name_without_writing() {
         }),
     );
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -323,8 +360,14 @@ fn create_agent_matrix_rejects_ambiguous_project_name_without_writing() {
             "--description",
             "Build plans",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert_eq!(
         out.status.code(),
@@ -356,7 +399,8 @@ fn create_agent_project_mode_requires_description() {
     );
     let project = project_with_workspace(tmp.path());
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent",
             "--project",
@@ -364,8 +408,14 @@ fn create_agent_project_mode_requires_description() {
             "--name",
             "Architect",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         !out.status.success(),
@@ -386,7 +436,8 @@ fn create_agent_rejects_parent_argument() {
     std::fs::create_dir_all(&parent).expect("create parent");
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent",
             "--parent",
@@ -396,8 +447,14 @@ fn create_agent_rejects_parent_argument() {
             "--description",
             "Build plans",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         !out.status.success(),
@@ -418,7 +475,8 @@ fn create_agent_rejects_project_path_input_without_writing() {
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
     let project_path = project.to_string_lossy().to_string();
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent",
             "--project",
@@ -428,8 +486,14 @@ fn create_agent_rejects_project_path_input_without_writing() {
             "--description",
             "Build plans",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert_eq!(
         out.status.code(),
@@ -452,7 +516,8 @@ fn create_agent_matrix_rejects_project_path_input_without_writing() {
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
     let project_path = project.to_string_lossy().to_string();
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -462,8 +527,14 @@ fn create_agent_matrix_rejects_project_path_input_without_writing() {
             "--description",
             "Build plans",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert_eq!(
         out.status.code(),
@@ -485,7 +556,8 @@ fn create_agent_matrix_success_writes_project_refresh_request() {
     let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -495,8 +567,14 @@ fn create_agent_matrix_success_writes_project_refresh_request() {
             "--description",
             "Build plans",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),
@@ -530,7 +608,8 @@ fn create_agent_matrix_project_name_resolves_from_settings_not_cwd() {
         }),
     );
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .current_dir(&caller_cwd)
         .args([
             "create-agent-matrix",
@@ -541,8 +620,14 @@ fn create_agent_matrix_project_name_resolves_from_settings_not_cwd() {
             "--description",
             "Build plans",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),
@@ -584,7 +669,8 @@ fn create_agent_project_mode_delegates_to_matrix_creation() {
         }),
     );
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent",
             "--project",
@@ -594,8 +680,14 @@ fn create_agent_project_mode_delegates_to_matrix_creation() {
             "--description",
             "Build plans",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),
@@ -641,7 +733,8 @@ fn create_agent_matrix_local_template_writes_role_and_skills() {
     )
     .expect("write local template skill");
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -653,8 +746,14 @@ fn create_agent_matrix_local_template_writes_role_and_skills() {
             "--role-template",
             "local:planner",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),
@@ -683,7 +782,8 @@ fn create_agent_matrix_invalid_template_exits_1_without_target_dir() {
     let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -695,8 +795,14 @@ fn create_agent_matrix_invalid_template_exits_1_without_target_dir() {
             "--role-template",
             "agency:not-real",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert_eq!(
         out.status.code(),
@@ -727,7 +833,8 @@ fn create_agent_matrix_from_cached_agency_template_seeds_role_without_skills() {
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
     seed_agency_cache(&config_dir);
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -739,8 +846,14 @@ fn create_agent_matrix_from_cached_agency_template_seeds_role_without_skills() {
             "--role-template",
             "agency:testing-accessibility-auditor",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),
@@ -832,7 +945,8 @@ fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
         watch_and_answer_session_request(&watcher_config_dir, "created", Some("sess-1"), None);
     });
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -844,8 +958,14 @@ fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
             "--launch",
             "codex",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
     watcher.join().expect("watcher answered");
 
     assert!(
@@ -923,7 +1043,8 @@ fn create_agent_matrix_launch_rejection_is_reported() {
         );
     });
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -935,8 +1056,14 @@ fn create_agent_matrix_launch_rejection_is_reported() {
             "--launch",
             "codex",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
     watcher.join().expect("watcher answered");
 
     // Matrix creation stays independent of the launch result: exit 0 and all
@@ -991,7 +1118,8 @@ fn create_agent_matrix_whitespace_launch_command_warns_without_request() {
         }),
     );
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -1003,8 +1131,14 @@ fn create_agent_matrix_whitespace_launch_command_warns_without_request() {
             "--launch",
             "codex",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),
@@ -1046,7 +1180,8 @@ fn create_agent_matrix_empty_launch_request_warns_without_request() {
         }),
     );
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent-matrix",
             "--project",
@@ -1058,8 +1193,14 @@ fn create_agent_matrix_empty_launch_request_warns_without_request() {
             "--launch",
             "",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),
@@ -1101,7 +1242,8 @@ fn create_agent_project_mode_blank_launch_command_warns_without_request() {
         }),
     );
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "create-agent",
             "--project",
@@ -1113,8 +1255,14 @@ fn create_agent_project_mode_blank_launch_command_warns_without_request() {
             "--launch",
             "codex",
         ])
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),
