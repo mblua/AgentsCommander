@@ -55,6 +55,7 @@ import { FakeTransport } from "../shared/testing/fake-transport";
 
 class SequencedTransport extends FakeTransport {
   readonly events: string[] = [];
+  failNextListenFor: string | null = null;
 
   override async invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     this.events.push(`invoke:${cmd}`);
@@ -67,6 +68,10 @@ class SequencedTransport extends FakeTransport {
     options?: ListenOptions,
   ): Promise<() => void> {
     this.events.push(`listen:${event}`);
+    if (this.failNextListenFor === event) {
+      this.failNextListenFor = null;
+      throw new Error(`listen failed: ${event}`);
+    }
     return super.listen<T>(event, callback, options);
   }
 }
@@ -447,6 +452,137 @@ describe("SpecBoardApp quit gate (#2297)", () => {
     expect(fake.callsFor("quit_gate_resolve")).toHaveLength(0);
     expect(tauri.destroyCalls).toBe(0);
     expect(editor().disabled).toBe(false);
+  });
+
+  it("does not let a stale round save close the replacement round's modal", async () => {
+    setSpecBoardStore({ dirty: true, docId: "doc-1", path: "/tmp/a.mmd", content: "x" });
+    const save = deferred<unknown>();
+    fake.onInvoke("spec_board_save", () => save.promise);
+    await mountBoard();
+
+    requestQuit(5);
+    await flush();
+    clickByTestId("specBoard.saveBeforeClose.save");
+    await flush();
+
+    // Round 5 dies while its save is in flight; round 7 replaces its modal.
+    fake.emitFromBackend("app_quit_cancelled", { epoch: 5, label: "spec-board" });
+    await flush();
+    expect(closeModal()).toBeNull();
+    requestQuit(7);
+    await flush();
+    expect(closeModal()).not.toBeNull();
+
+    // The late save completion for 5 must leave round 7 answerable.
+    save.resolve({ docId: "doc-1", path: "/tmp/a.mmd" });
+    await flush();
+    expect(closeModal()).not.toBeNull();
+    expect(fake.callsFor("quit_gate_resolve")).toHaveLength(0);
+
+    clickByTestId("specBoard.saveBeforeClose.cancel");
+    await flush();
+    expect(fake.lastCall("quit_gate_resolve")!.args).toEqual({ epoch: 7, consent: false });
+  });
+
+  it.each([
+    [
+      "no-docId Save",
+      "specBoard.saveBeforeClose.save",
+      { dirty: false, docId: null, path: null, content: "draft" },
+    ],
+    [
+      "Discard",
+      "specBoard.saveBeforeClose.discard",
+      { dirty: true, docId: "doc-1", path: "/tmp/a.mmd", content: "x" },
+    ],
+  ] as const)(
+    "does not let a stale %s clear or destroy a replacement round",
+    async (_label, actionTestId, store) => {
+      setSpecBoardStore(store);
+      const resolveCall = deferred<unknown>();
+      fake.onInvoke("quit_gate_resolve", () => resolveCall.promise);
+      await mountBoard();
+
+      requestQuit(5);
+      await flush();
+      clickByTestId(actionTestId);
+      await flush();
+
+      // Round 5 dies while its consent is in flight; round 7 replaces its modal.
+      fake.emitFromBackend("app_quit_cancelled", { epoch: 5, label: "spec-board" });
+      await flush();
+      requestQuit(7);
+      await flush();
+      expect(closeModal()).not.toBeNull();
+
+      // The stale consent resolving for 5 must not clear epoch 7 or destroy.
+      resolveCall.resolve(undefined);
+      await flush();
+      expect(tauri.destroyCalls).toBe(0);
+      expect(closeModal()).not.toBeNull();
+
+      clickByTestId("specBoard.saveBeforeClose.cancel");
+      await flush();
+      expect(fake.lastCall("quit_gate_resolve")!.args).toEqual({
+        epoch: 7,
+        consent: false,
+      });
+    },
+  );
+
+  it("keeps standalone Discard destroying the board without consent", async () => {
+    setSpecBoardStore({ dirty: true, docId: "doc-1", path: "/tmp/a.mmd", content: "x" });
+    await mountBoard();
+    const closeEvent = { preventDefault: vi.fn() };
+    await tauri.closeRequested!(closeEvent);
+    await flush();
+
+    clickByTestId("specBoard.saveBeforeClose.discard");
+    await flush();
+    expect(fake.callsFor("quit_gate_resolve")).toHaveLength(0);
+    expect(tauri.destroyCalls).toBe(1);
+  });
+
+  it("shows a blocking retry/error state when quit listener setup rejects", async () => {
+    fake.failNextListenFor = "app_quit_requested";
+    const board = await mountBoard();
+
+    expect(controls(board).hasAttribute("inert")).toBe(true);
+    expect(board.querySelector(".spec-board-gate-status")!.textContent).toContain(
+      "listen failed",
+    );
+    expect(fake.callsFor("quit_gate_register")).toHaveLength(0);
+
+    board.querySelector<HTMLButtonElement>(".spec-board-gate-status button")!.click();
+    await flush();
+    expect(fake.callsFor("quit_gate_register")).toHaveLength(1);
+    expect(fake.listensFor("app_quit_requested")).toHaveLength(1);
+    expect(controls(board).hasAttribute("inert")).toBe(false);
+  });
+
+  it("offers a manual Retry when the blocked auto-retries are exhausted", async () => {
+    let registrations = 0;
+    fake.onInvoke("quit_gate_register", () => {
+      registrations += 1;
+      return registrations <= 5
+        ? { status: "InFlight", epoch: 4 }
+        : { status: "Registered" };
+    });
+    const board = await mountBoard();
+    expect(controls(board).hasAttribute("inert")).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await flush();
+    expect(fake.callsFor("quit_gate_register")).toHaveLength(5);
+
+    const retryButton = board.querySelector<HTMLButtonElement>(
+      ".spec-board-gate-status button",
+    );
+    expect(retryButton).not.toBeNull();
+    retryButton!.click();
+    await flush();
+    expect(fake.callsFor("quit_gate_register")).toHaveLength(6);
+    expect(controls(board).hasAttribute("inert")).toBe(false);
   });
 
   it("does not destroy a dirty board when the window close arrives during a pending round", async () => {

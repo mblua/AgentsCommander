@@ -295,6 +295,25 @@ describe("MainApp quit handshake (#2297)", () => {
     expect(statusText()).toContain("spec-board");
   });
 
+  it("binds a start event during grace and skips the retry", async () => {
+    fake.onInvoke("quit_application", () => {
+      throw new Error("first");
+    });
+    await mountMain();
+    await triggerClose();
+    expect(fake.callsFor("quit_application")).toHaveLength(1);
+
+    // The first attempt's start event arrives inside the grace window, so the
+    // round is live and the retry timer must not fire a second invoke.
+    await emitStarted(91);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(fake.callsFor("quit_application")).toHaveLength(1);
+
+    await emitOutcome({ outcome: "Aborted", epoch: 91, reason: "cancelled" });
+    expect(statusText()).toContain("cancelled");
+  });
+
   it("ends in a visible failed state after both rejects and allows a fresh close", async () => {
     let attempts = 0;
     fake.onInvoke("quit_application", () => {

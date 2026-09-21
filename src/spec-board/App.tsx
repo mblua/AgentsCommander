@@ -54,8 +54,12 @@ const SpecBoardApp: Component = () => {
   let blockedEpoch: number | null = null;
   let registerAttempts = 0;
   let registerRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let registerGeneration = 0;
   let progressEpoch: number | null = null;
   let controlsRef!: HTMLDivElement;
+  let requestListenerInstalled = false;
+  let cancelledListenerInstalled = false;
+  let outcomeListenerInstalled = false;
   let disposed = false;
 
   const boardIsDirty = (): boolean =>
@@ -78,8 +82,34 @@ const SpecBoardApp: Component = () => {
     }, GATE_REGISTRATION_RETRY_DELAY_MS);
   };
 
+  /**
+   * Installs the quit listeners exactly once each, before registration.
+   * Granular flags so a partial failure can be retried without stacking
+   * duplicate listeners.
+   */
+  const ensureQuitListeners = async (): Promise<void> => {
+    // The scoped consent listener exists BEFORE registration: the snapshot is
+    // atomic and a request delivered before we can filter it would be lost.
+    if (!requestListenerInstalled) {
+      unlistens.push(await onAppQuitRequested(handleQuitRequested));
+      requestListenerInstalled = true;
+    }
+    if (!cancelledListenerInstalled) {
+      unlistens.push(await onAppQuitCancelled(handleQuitCancelled));
+      cancelledListenerInstalled = true;
+    }
+    // UNSCOPED on purpose: while the gate is unregistered (active-round
+    // `InFlight`), the targeted cancellation may never arrive, so the terminal
+    // outcome addressed at main is the fallback that releases the retry.
+    if (!outcomeListenerInstalled) {
+      unlistens.push(await onAppQuitOutcome(handleQuitOutcome));
+      outcomeListenerInstalled = true;
+    }
+  };
+
   const registerGate = async (): Promise<void> => {
     if (disposed) return;
+    const generation = ++registerGeneration;
     clearRetryTimer();
     registerAttempts += 1;
     setGateError(null);
@@ -87,8 +117,11 @@ const SpecBoardApp: Component = () => {
       setGateState("registering");
     }
     try {
+      // Listener failure is a blocking setup failure with the same bounded
+      // retry and manual Retry recovery as a rejected registration.
+      await ensureQuitListeners();
       const result = await QuitAPI.registerGate();
-      if (disposed) return;
+      if (disposed || generation !== registerGeneration) return;
       if (result && result.status === "Registered") {
         blockedEpoch = null;
         registerAttempts = 0;
@@ -107,7 +140,7 @@ const SpecBoardApp: Component = () => {
       setGateError("Spec Board quit registration returned an unexpected response.");
       scheduleGateRetry();
     } catch (error) {
-      if (disposed) return;
+      if (disposed || generation !== registerGeneration) return;
       setGateState("failed");
       setGateError(errorText(error));
       scheduleGateRetry();
@@ -238,15 +271,6 @@ const SpecBoardApp: Component = () => {
       ownLabel = "spec-board";
     }
 
-    // The scoped consent listener exists BEFORE registration: the snapshot is
-    // atomic and a request delivered before we can filter it would be lost.
-    unlistens.push(await onAppQuitRequested(handleQuitRequested));
-    unlistens.push(await onAppQuitCancelled(handleQuitCancelled));
-    // UNSCOPED on purpose: while the gate is unregistered (active-round
-    // `InFlight`), the targeted cancellation may never arrive, so the terminal
-    // outcome addressed at main is the fallback that releases the retry.
-    unlistens.push(await onAppQuitOutcome(handleQuitOutcome));
-
     const appWindow = getCurrentWindow();
     unlistenClose = await appWindow.onCloseRequested(async (event) => {
       event.preventDefault(); // Always intercept to handle async cleanup reliably
@@ -314,13 +338,16 @@ const SpecBoardApp: Component = () => {
         }
         if (epoch !== null) {
           if (pendingEpoch() !== epoch) {
-            // The quit was cancelled while the save ran: the stale consent is
-            // ignored, its modal closes and editing resumes.
-            setShowCloseModal(false);
+            // A stale save completion must never touch a newer round; it may
+            // only dismiss a modal left with no round at all.
+            if (pendingEpoch() === null) {
+              setShowCloseModal(false);
+            }
             return;
           }
           const resolved = await resolveQuitConsent(epoch, true);
           if (!resolved) return; // Keep the modal and epoch for retry/cancel
+          if (pendingEpoch() !== epoch) return; // Replaced while resolving
           setShowCloseModal(false);
           setPendingEpoch(null);
           return;
@@ -341,6 +368,8 @@ const SpecBoardApp: Component = () => {
       if (epoch !== null) {
         const resolved = await resolveQuitConsent(epoch, true);
         if (!resolved) return;
+        // The epoch may have been cancelled or replaced while consent resolved.
+        if (pendingEpoch() !== epoch) return;
         setPendingEpoch(null);
       }
       clearRoundProgress();
@@ -356,6 +385,9 @@ const SpecBoardApp: Component = () => {
       // after the backend accepted it.
       const resolved = await resolveQuitConsent(epoch, true);
       if (!resolved) return; // Board and modal stay open with the error
+      // The epoch may have been cancelled or replaced while consent resolved;
+      // a stale Discard must not clear or destroy a newer round.
+      if (pendingEpoch() !== epoch) return;
       setPendingEpoch(null);
       clearRoundProgress();
       setShowCloseModal(false);
@@ -402,7 +434,7 @@ const SpecBoardApp: Component = () => {
                 ? "Waiting for the active quit round to finish before enabling editing..."
                 : `Spec Board quit registration failed${gateError() ? `: ${gateError()}` : "."}`}
           </span>
-          <Show when={gateState() === "failed"}>
+          <Show when={gateState() === "failed" || gateState() === "blocked"}>
             <button onClick={retryGateRegistration} type="button">Retry</button>
           </Show>
         </div>
