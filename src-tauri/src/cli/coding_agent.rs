@@ -542,6 +542,8 @@ fn blank_agent() -> AgentConfig {
         label: String::new(),
         command: String::new(),
         color: DEFAULT_CUSTOM_COLOR.to_string(),
+        // #2306 P1 - the position is assigned by the op layer on Add.
+        order: None,
         envs: Vec::new(),
         isolated_home: false,
         instructions_filename: None,
@@ -561,6 +563,8 @@ fn definition_to_agent_seed(def: &CodingAgentDefinition) -> AgentConfig {
         label: def.label.clone(),
         command: def.command.clone(),
         color: def.color.clone(),
+        // #2306 P1 - the position is assigned by the op layer on Add.
+        order: None,
         envs: def.envs.clone(),
         isolated_home: def.isolated_home,
         instructions_filename: def.instructions_filename.clone(),

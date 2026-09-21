@@ -959,6 +959,19 @@ fn cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents() {
     assert_eq!(added["label"], "Sentinel");
     assert_eq!(added["command"], "sentinel-1967-command");
     assert_eq!(added["color"], "#654321");
+    // #2306 P1 - the pre-existing record keeps position 0, the add lands at 1.
+    assert_eq!(existing["order"], serde_json::json!(0));
+    assert_eq!(added["order"], serde_json::json!(1));
+
+    // #2306 P1 - `list`/`show` surface the normalized explicit order after load.
+    let (listed, _) = run_json(&bin, &["coding-agent", "list"]);
+    let listed = listed.as_array().expect("list is a JSON array");
+    assert_eq!(listed[0]["id"], "existing-1967");
+    assert_eq!(listed[0]["order"], serde_json::json!(0));
+    assert_eq!(listed[1]["id"], "added-1967");
+    assert_eq!(listed[1]["order"], serde_json::json!(1));
+    let (shown, _) = run_json(&bin, &["coding-agent", "show", "--id", "added-1967"]);
+    assert_eq!(shown["order"], serde_json::json!(1));
     assert_eq!(
         std::fs::read_to_string(catalog_dir.join("agents.json")).expect("catalog persists"),
         r##"{"schemaVersion":1,"agents":[{"key":"sentinel-1967","label":"Sentinel","description":"d","color":"#654321","command":"sentinel-1967-command","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["sentinel update"]}]}"##,

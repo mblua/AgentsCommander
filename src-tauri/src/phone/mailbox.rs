@@ -14420,6 +14420,7 @@ mod tests {
             label: label.into(),
             command: command.into(),
             color: "#10b981".into(),
+            order: None,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,

@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::settings::{
-    normalize_container_image_input, validate_and_repair_settings, AgentConfig, AppSettings,
-    CodingAgentEnv, ConfigSeedConfig,
+    finalize_agent_order, normalize_agent_order, normalize_container_image_input,
+    validate_and_repair_settings, AgentConfig, AppSettings, CodingAgentEnv, ConfigSeedConfig,
 };
 use crate::pty::backend::SessionBackendKind;
 
@@ -212,6 +212,15 @@ pub fn unknown_agent_id_error(id: &str, agents: &[AgentConfig]) -> String {
     format!("agent id '{id}' not found. Available ids: {list}")
 }
 
+/// #2306 P1 - direction of a registered-agent move request. Serializes as the
+/// `"up"`/`"down"` strings the picker sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentMoveDirection {
+    Up,
+    Down,
+}
+
 /// #786 R8: PURE op application. Mutates `settings` in memory and runs the shared
 /// validator/repair suite; NEVER saves to disk. Both callers own persistence.
 pub fn apply_coding_agent_op(
@@ -236,6 +245,9 @@ pub fn apply_coding_agent_op(
             let mut new_agent = agent.clone();
             new_agent.label = new_agent.label.trim().to_string();
             ensure_backend_consistent(&mut new_agent)?;
+            // #2306 P1 - Add appends at position n; a caller-supplied `order` is
+            // ignored on purpose because only a move may choose a position.
+            new_agent.order = Some(settings.agents.len() as u32);
             settings.agents.push(new_agent.clone());
             CodingAgentOpOutcome {
                 op: "add",
@@ -251,6 +263,9 @@ pub fn apply_coding_agent_op(
                 .ok_or_else(|| unknown_agent_id_error(id, &settings.agents))?;
             let mut updated = settings.agents[idx].clone();
             apply_patch(&mut updated, patch)?;
+            // #2306 P1 - Update/relabel keeps the current position; `AgentPatch` has
+            // no order field, so a patch can never move a tool.
+            updated.order = Some(idx as u32);
             warn_on_duplicate_label(settings, updated.label.trim(), Some(idx));
             settings.agents[idx] = updated.clone();
             CodingAgentOpOutcome {
@@ -278,11 +293,92 @@ pub fn apply_coding_agent_op(
         }
     };
 
+    // #2306 P1 - keep vector and ordinals aligned after every op: Add appended at
+    // n, Remove compacted and Update kept its slot. Renumbering in current vector
+    // order (never by stored ordinals) is the effective-view transition.
+    normalize_agent_order(&mut settings.agents);
+
     // Authoritative shared suite: command bans, env rows, instructions filename,
     // config-seed dest, plus profile repair (A-cell bookkeeping for a new agent).
     // This is exactly what every existing writer enforces.
     validate_and_repair_settings(settings)?;
     Ok(outcome)
+}
+
+/// #2306 P1 - pure "swap with the adjacent tool" transition over the effective
+/// order.
+///
+/// Effective order is derived on a temporary candidate first, so a rejected
+/// request (or a caller that supplied an unnormalized vector) can never reorder
+/// or renumber the live settings. `id` and `neighbor_id` must each occur exactly
+/// once by exact, case-sensitive id, and `neighbor_id` must be the immediate
+/// `direction` neighbor of `id` in that effective order: a boundary move, a
+/// stale/nonadjacent neighbor, an unknown id and a duplicated id all fail with
+/// `Err` and leave `settings` untouched. On success the live vector is replaced
+/// by the swapped, renumbered candidate and the authoritative ordered id list is
+/// returned.
+pub fn move_registered_agent(
+    settings: &mut AppSettings,
+    id: &str,
+    neighbor_id: &str,
+    direction: AgentMoveDirection,
+) -> Result<Vec<String>, String> {
+    let mut candidate = settings.agents.clone();
+    finalize_agent_order(&mut candidate);
+
+    let from = unique_agent_index(&candidate, id)?;
+    let neighbor = unique_agent_index(&candidate, neighbor_id)?;
+    let target = match direction {
+        AgentMoveDirection::Up => from.checked_sub(1),
+        AgentMoveDirection::Down => from.checked_add(1).filter(|index| *index < candidate.len()),
+    };
+    match target {
+        Some(index) if index == neighbor => {}
+        _ => {
+            let boundary = match direction {
+                AgentMoveDirection::Up => from == 0,
+                AgentMoveDirection::Down => from + 1 >= candidate.len(),
+            };
+            return Err(if boundary {
+                let edge = match direction {
+                    AgentMoveDirection::Up => "top",
+                    AgentMoveDirection::Down => "bottom",
+                };
+                format!("agent '{id}' is already at the {edge} of the list")
+            } else {
+                format!(
+                    "agent '{neighbor_id}' is not adjacent to '{id}' in the requested direction"
+                )
+            });
+        }
+    }
+
+    candidate.swap(from, neighbor);
+    normalize_agent_order(&mut candidate);
+    settings.agents = candidate;
+    Ok(settings
+        .agents
+        .iter()
+        .map(|agent| agent.id.clone())
+        .collect())
+}
+
+/// #2306 P1 - the single index of `id` in `agents`, rejecting an unknown or
+/// duplicated id. Comparison is exact: ids differing only by case are distinct
+/// records here, matching the move contract.
+fn unique_agent_index(agents: &[AgentConfig], id: &str) -> Result<usize, String> {
+    let mut found: Option<usize> = None;
+    for (index, agent) in agents.iter().enumerate() {
+        if agent.id == id {
+            if found.is_some() {
+                return Err(format!(
+                    "agent id '{id}' appears more than once; reordering requires unique ids"
+                ));
+            }
+            found = Some(index);
+        }
+    }
+    found.ok_or_else(|| unknown_agent_id_error(id, agents))
 }
 
 fn apply_patch(agent: &mut AgentConfig, patch: &AgentPatch) -> Result<(), String> {
@@ -577,6 +673,7 @@ mod tests {
             label: label.to_string(),
             command: command.to_string(),
             color: "#6366f1".to_string(),
+            order: None,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
@@ -1257,5 +1354,142 @@ mod tests {
             spawn.unwrap().is_some(),
             "expected a spawn command for the applied agent"
         );
+    }
+
+    // ---- #2306 P1: explicit registered-agent order -------------------------
+
+    /// `a,b,c` with contiguous ordinals, the shape the loaders leave behind.
+    fn ordered_2306() -> AppSettings {
+        let mut settings = AppSettings::default();
+        for id in ["a", "b", "c"] {
+            apply_coding_agent_op(&mut settings, &add(agent(id, &id.to_uppercase(), "claude")))
+                .unwrap();
+        }
+        settings
+    }
+
+    fn ids_2306(settings: &AppSettings) -> Vec<&str> {
+        settings.agents.iter().map(|a| a.id.as_str()).collect()
+    }
+
+    fn positions_2306(settings: &AppSettings) -> Vec<Option<u32>> {
+        settings.agents.iter().map(|a| a.order).collect()
+    }
+
+    #[test]
+    fn add_appends_at_the_next_position_and_ignores_a_caller_supplied_order() {
+        let mut settings = ordered_2306();
+        let mut incoming = agent("d", "D", "claude");
+        incoming.order = Some(0); // forged/stale: must have no authority
+        let outcome = apply_coding_agent_op(&mut settings, &add(incoming)).unwrap();
+        assert_eq!(ids_2306(&settings), ["a", "b", "c", "d"]);
+        assert_eq!(
+            positions_2306(&settings),
+            [Some(0), Some(1), Some(2), Some(3)]
+        );
+        assert_eq!(outcome.agent.unwrap().order, Some(3));
+    }
+
+    #[test]
+    fn remove_compacts_positions_and_update_retains_the_current_position() {
+        let mut settings = ordered_2306();
+        apply_coding_agent_op(&mut settings, &CodingAgentOp::Remove { id: "b".into() }).unwrap();
+        assert_eq!(ids_2306(&settings), ["a", "c"]);
+        assert_eq!(positions_2306(&settings), [Some(0), Some(1)]);
+
+        // A patch carrying an unknown `order` key cannot move the tool.
+        let patch: AgentPatch = serde_json::from_str(r#"{"label":"Renamed","order":0}"#).unwrap();
+        let outcome = apply_coding_agent_op(
+            &mut settings,
+            &CodingAgentOp::Update {
+                id: "c".into(),
+                patch,
+            },
+        )
+        .unwrap();
+        assert_eq!(ids_2306(&settings), ["a", "c"]);
+        assert_eq!(positions_2306(&settings), [Some(0), Some(1)]);
+        assert_eq!(outcome.agent.unwrap().order, Some(1));
+        assert_eq!(settings.agents[1].label, "Renamed");
+    }
+
+    #[test]
+    fn move_swaps_both_directions_and_returns_the_authoritative_order() {
+        let mut settings = ordered_2306();
+        let ids = move_registered_agent(&mut settings, "c", "b", AgentMoveDirection::Up).unwrap();
+        assert_eq!(ids, ["a", "c", "b"]);
+        assert_eq!(positions_2306(&settings), [Some(0), Some(1), Some(2)]);
+
+        let ids = move_registered_agent(&mut settings, "c", "b", AgentMoveDirection::Down).unwrap();
+        assert_eq!(ids, ["a", "b", "c"]);
+        assert_eq!(positions_2306(&settings), [Some(0), Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn move_derives_the_effective_order_before_the_adjacency_check() {
+        // Vector slots are [b, a] but the stored ordinals put a first; the move must
+        // act on the effective order [a, b], and normalize the result.
+        let mut settings = AppSettings::default();
+        apply_coding_agent_op(&mut settings, &add(agent("a", "A", "claude"))).unwrap();
+        apply_coding_agent_op(&mut settings, &add(agent("b", "B", "claude"))).unwrap();
+        settings.agents.swap(0, 1);
+        settings.agents[0].order = Some(1);
+        settings.agents[1].order = Some(0);
+
+        let ids = move_registered_agent(&mut settings, "b", "a", AgentMoveDirection::Up).unwrap();
+        assert_eq!(ids, ["b", "a"]);
+        assert_eq!(positions_2306(&settings), [Some(0), Some(1)]);
+    }
+
+    #[test]
+    fn rejected_moves_leave_the_live_settings_untouched() {
+        let cases = [
+            ("a", "b", AgentMoveDirection::Up, "top"),
+            ("c", "b", AgentMoveDirection::Down, "bottom"),
+            ("b", "a", AgentMoveDirection::Down, "not adjacent"),
+            ("missing", "a", AgentMoveDirection::Up, "not found"),
+            ("a", "missing", AgentMoveDirection::Down, "not found"),
+        ];
+        for (id, neighbor, direction, expected) in cases {
+            let mut settings = ordered_2306();
+            let ids_before: Vec<String> = settings.agents.iter().map(|a| a.id.clone()).collect();
+            let positions_before = positions_2306(&settings);
+            let error = move_registered_agent(&mut settings, id, neighbor, direction).unwrap_err();
+            assert!(
+                error.contains(expected),
+                "case ({id},{neighbor}): error {error:?} must mention {expected:?}"
+            );
+            let ids_after: Vec<String> = settings.agents.iter().map(|a| a.id.clone()).collect();
+            assert_eq!(ids_after, ids_before, "case ({id},{neighbor})");
+            assert_eq!(
+                positions_2306(&settings),
+                positions_before,
+                "case ({id},{neighbor})"
+            );
+        }
+    }
+
+    #[test]
+    fn move_rejects_duplicate_ids_while_case_distinct_ids_stay_distinct() {
+        let mut duplicated = AppSettings {
+            agents: vec![agent("dup", "D1", "claude"), agent("dup", "D2", "claude")],
+            ..AppSettings::default()
+        };
+        let error = move_registered_agent(&mut duplicated, "dup", "dup", AgentMoveDirection::Up)
+            .unwrap_err();
+        assert!(error.contains("more than once"), "{error}");
+
+        // Case-distinct ids are distinct records for ordering (Add keeps rejecting
+        // case-insensitive duplicates, so this legacy pair is inserted directly).
+        let mut upper = agent("A", "Upper", "claude");
+        upper.order = Some(0);
+        let mut lower = agent("a", "Lower", "claude");
+        lower.order = Some(1);
+        let mut cased = AppSettings {
+            agents: vec![upper, lower],
+            ..AppSettings::default()
+        };
+        let ids = move_registered_agent(&mut cased, "a", "A", AgentMoveDirection::Up).unwrap();
+        assert_eq!(ids, ["a", "A"]);
     }
 }

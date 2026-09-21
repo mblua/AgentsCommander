@@ -375,6 +375,7 @@ fn agent_config(id: &str, command: &str) -> agentscommander_lib::config::setting
         label: id.to_string(),
         command: command.to_string(),
         color: "#10b981".to_string(),
+        order: None,
         envs: Vec::new(),
         isolated_home: false,
         instructions_filename: None,
