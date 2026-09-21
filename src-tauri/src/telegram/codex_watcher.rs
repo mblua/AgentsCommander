@@ -69,7 +69,6 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
     attach_time: DateTime<Utc>,
     network: OutboundNetwork,
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
-    reanchor: tokio::sync::watch::Receiver<u64>,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
@@ -82,7 +81,6 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
             attach_time,
             network,
             dest,
-            reanchor,
             session_id.clone(),
             cancel,
             app.clone(),
@@ -474,14 +472,12 @@ async fn watch_loop<R: tauri::Runtime>(
     attach_time: DateTime<Utc>,
     network: OutboundNetwork,
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
-    reanchor: tokio::sync::watch::Receiver<u64>,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) {
     let mut dest_rx = dest;
-    let mut reanchor_rx = reanchor;
     // The task owns the current target and follows `changed()` itself
     // (section 4.1): a bot can attach over a room-only reader, and a detach
     // stops sends without stopping capture.
@@ -527,13 +523,7 @@ async fn watch_loop<R: tauri::Runtime>(
     let mut file_offset: u64 = 0;
     let mut line_remainder = String::new();
     let mut search_warned = false;
-    // Section 5.2: a re-anchor re-resolves with a **fresh search time**, so a
-    // rolled-over backup or a resumed rollout from a previous day is found
-    // again; `reanchor_pending` forces one immediate rescan and distinguishes
-    // the same-path case (offset retained) from the different-path one
-    // (existing EOF rotation policy).
-    let mut search_anchor = attach_time;
-    let mut reanchor_pending = false;
+    let search_anchor = attach_time;
 
     bridge_log!(
         "CODEX_INIT",
@@ -548,8 +538,8 @@ async fn watch_loop<R: tauri::Runtime>(
     poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        // `biased`: a destination change or a re-anchor signal is processed
-        // before the next file poll, never after it (sections 5.2 and 6).
+        // `biased`: a destination change is processed before the next file
+        // poll, never after it (section 6).
         tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
@@ -610,46 +600,28 @@ async fn watch_loop<R: tauri::Runtime>(
                 }
             }
 
-            // §5.2: a restart keeps the demand set untouched and re-anchors
-            // the rollout **file**. A fresh search time re-resolves the path;
-            // the file is not dropped, so the next poll distinguishes the
-            // same-path case (offset retained) from a different path (EOF
-            // rotation policy).
-            changed = reanchor_rx.changed() => {
-                if changed.is_ok() {
-                    let _ = *reanchor_rx.borrow_and_update();
-                    search_anchor = Utc::now();
-                    reanchor_pending = true;
-                    bridge_log!("CODEX_REANCHOR", "restart: re-resolving rollout file");
-                }
-            }
-
             _ = poll_interval.tick() => {
                 // M5: re-scan only when we don't have a current file, the tracked
-                // file has been unlinked, the file's mtime has not advanced
+                // file has been unlinked, or the file's mtime has not advanced
                 // for ROTATION_STALE_SECS wall-clock seconds (i.e. it might have
-                // been rotated out from under us), or a re-anchor asked for one.
+                // been rotated out from under us).
                 // `last_mtime_advance` is updated below when we observe the
                 // file's current mtime grow.
-                let need_rescan = reanchor_pending
-                    || match &current_file {
-                        None => true,
-                        Some(p) if !p.exists() => true,
-                        Some(_) => last_mtime_advance.elapsed().as_secs() >= ROTATION_STALE_SECS,
-                    };
+                let need_rescan = match &current_file {
+                    None => true,
+                    Some(p) if !p.exists() => true,
+                    Some(_) => last_mtime_advance.elapsed().as_secs() >= ROTATION_STALE_SECS,
+                };
 
                 if need_rescan {
                     if let Some(found) = find_session_file(&search_root, &expected_cwd, search_anchor) {
                         let same_as_current = current_file.as_ref() == Some(&found);
-                        if reanchor_pending || !same_as_current {
-                            // First bind, rotation, or a re-anchor.
+                        if !same_as_current {
+                            // First bind or rotation.
                             //  - first bind: run the §J preamble scan to emit
                             //    any final assistant answer from the file's
                             //    tail with timestamp >= attach_time - 5s, then
                             //    set offset = file_len;
-                            //  - same-path re-anchor: retain the offset and
-                            //    read only appended bytes (truncation is the
-                            //    kernel's H2 silent skip);
                             //  - different path: existing EOF rotation policy.
                             let first_bind = current_file.is_none();
                             if first_bind {
@@ -687,13 +659,6 @@ async fn watch_loop<R: tauri::Runtime>(
                                         file_offset = std::fs::metadata(&found).ok().map(|m| m.len()).unwrap_or(0);
                                     }
                                 }
-                            } else if same_as_current {
-                                // Same-path re-anchor: the offset is retained
-                                // and only appended bytes are read. If the file
-                                // was truncated below it, the kernel's H2
-                                // silent skip re-anchors at EOF, exactly as
-                                // Codex rotation always has.
-                                bridge_log!("CODEX_REANCHOR", "same rollout path, offset retained");
                             } else {
                                 // Different path: existing EOF rotation policy.
                                 line_remainder.clear();
@@ -701,7 +666,6 @@ async fn watch_loop<R: tauri::Runtime>(
                                 bridge_log!("CODEX_ROTATE", &format!("rotated to {}, offset={}", found.display(), file_offset));
                             }
                             current_file = Some(found);
-                            reanchor_pending = false;
                         }
                         let new_mtime = current_file.as_ref()
                             .and_then(|p| std::fs::metadata(p).ok())
@@ -928,7 +892,6 @@ mod tests {
         // The supervisor always holds this sender open for the reader's
         // lifetime; a dropped sender means the reader is going away.
         let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
-        let (_reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
 
         let task = spawn_watch_task(
             search_root,
@@ -936,7 +899,6 @@ mod tests {
             Utc::now(),
             network.clone(),
             dest_rx,
-            reanchor_rx,
             "room-only-session".to_string(),
             cancel.clone(),
             app.handle().clone(),
@@ -988,7 +950,6 @@ mod tests {
         let network = OutboundNetwork::new_for_tests(1);
         let cancel = CancellationToken::new();
         let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
-        let (_reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
 
         let task = spawn_watch_task(
             search_root,
@@ -996,7 +957,6 @@ mod tests {
             Utc::now(),
             network.clone(),
             dest_rx,
-            reanchor_rx,
             "no-sink-session".to_string(),
             cancel.clone(),
             app.handle().clone(),
@@ -2181,7 +2141,6 @@ mod tests {
         let cancel = CancellationToken::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
-        let (_reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
 
         let task = spawn_watch_task(
             search_root,
@@ -2189,7 +2148,6 @@ mod tests {
             Utc::now(),
             network.clone(),
             dest_rx,
-            reanchor_rx,
             "hot-attach-session".to_string(),
             cancel.clone(),
             app.handle().clone(),
@@ -2233,91 +2191,6 @@ mod tests {
             message_permits(&network),
             1,
             "only the attached line may be sent; the pending buffer is discarded"
-        );
-
-        cancel.cancel();
-        drop(dest_tx);
-        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
-    }
-
-    /// Test 9 (Codex half): a re-anchor re-resolves with a fresh search time.
-    /// The same path retains its offset, so an appended record is `Live` and
-    /// keeps the reader's in-memory epoch; a different path keeps the existing
-    /// EOF rotation policy, so records already in the new file are not replayed.
-    #[tokio::test]
-    async fn a_codex_reanchor_retains_the_same_offset_and_rotates_at_eof() {
-        let work = tempfile::tempdir().unwrap();
-        let cwd = work.path().to_string_lossy().replace('\\', "\\\\");
-        let (fixture, path) = room_only_fixture(&cwd);
-        let search_root = fixture.path().to_path_buf();
-
-        let app = mock_app();
-        let network = OutboundNetwork::new_for_tests(1);
-        let cancel = CancellationToken::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
-        let (reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
-
-        let task = spawn_watch_task(
-            search_root,
-            work.path().to_string_lossy().to_string(),
-            Utc::now(),
-            network.clone(),
-            dest_rx,
-            reanchor_rx,
-            "reanchor-session".to_string(),
-            cancel.clone(),
-            app.handle().clone(),
-            Some(tx),
-        );
-
-        let first = recv_record(&mut rx).await;
-        assert_eq!(first.origin, RecordOrigin::Preamble);
-
-        // Same path: the offset is retained, so only appended bytes arrive and
-        // the in-memory epoch continues unbroken.
-        append_final(&path, "live one").unwrap();
-        let live = recv_record(&mut rx).await;
-        assert_eq!(live.text, "live one");
-        assert_eq!(live.origin, RecordOrigin::Live);
-        assert_eq!(live.observed_path, path);
-
-        reanchor_tx.send_modify(|seq| *seq = seq.wrapping_add(1));
-        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS * 2)).await;
-        append_final(&path, "live two").unwrap();
-        let live_two = recv_record(&mut rx).await;
-        assert_eq!(live_two.text, "live two");
-        assert_eq!(
-            live_two.origin,
-            RecordOrigin::Live,
-            "the same path never replays"
-        );
-        assert_eq!(
-            live_two.epoch, live.epoch,
-            "the same path keeps its in-memory epoch"
-        );
-
-        // Different path: the existing EOF rotation policy applies, so a
-        // record already in the new file is not delivered.
-        let now = Utc::now();
-        let day = fixture
-            .path()
-            .join(format!("{:04}", now.format("%Y")))
-            .join(format!("{:02}", now.format("%m")))
-            .join(format!("{:02}", now.format("%d")));
-        let other = write_rollout(&day, "rollout-second.jsonl", &cwd, &now.to_rfc3339());
-        append_final(&other, "already present at reanchor").unwrap();
-        reanchor_tx.send_modify(|seq| *seq = seq.wrapping_add(1));
-        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS * 2)).await;
-        append_final(&other, "after rotation").unwrap();
-        let rotated = recv_record(&mut rx).await;
-        assert_eq!(rotated.text, "after rotation", "the new file binds at EOF");
-        assert_eq!(rotated.origin, RecordOrigin::Live);
-        assert_eq!(rotated.observed_path, other);
-        assert!(rotated.observed_len > 0);
-        assert_eq!(
-            rotated.epoch, 0,
-            "a new path starts its own in-memory epoch"
         );
 
         cancel.cancel();

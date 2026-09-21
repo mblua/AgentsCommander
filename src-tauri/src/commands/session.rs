@@ -1398,6 +1398,54 @@ pub(crate) mod seed_race_barriers {
     }
 }
 
+/// Test-only rendezvous inside `execute_restart_transaction`, after the old
+/// id's reader demands are released and before the replacement is created
+/// (#2232 phase 4 test 9).
+///
+/// Test 9 needs to prove the post-commit sweep: an old-id raise installed
+/// *after* the early release but *before* the commit must be gone once the
+/// commit has removed the old row. This barrier makes that window
+/// deterministic instead of timing-dependent.
+#[cfg(test)]
+pub(crate) mod restart_reader_seam {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    pub(crate) struct RestartReaderBarrier {
+        pub(crate) reached: Notify,
+        pub(crate) release: Notify,
+    }
+
+    type BarrierMap = Mutex<Option<HashMap<String, Arc<RestartReaderBarrier>>>>;
+
+    static AFTER_OLD_RELEASE: BarrierMap = Mutex::new(None);
+
+    /// Arm the barrier for the restart of `key` (the old session uuid).
+    pub(crate) fn install_after_old_release(key: &str) -> Arc<RestartReaderBarrier> {
+        let barrier = Arc::new(RestartReaderBarrier::default());
+        AFTER_OLD_RELEASE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashMap::new)
+            .insert(key.to_string(), Arc::clone(&barrier));
+        barrier
+    }
+
+    pub(crate) async fn hit_after_old_release(key: &str) {
+        let barrier = AFTER_OLD_RELEASE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .and_then(|map| map.remove(key));
+        if let Some(barrier) = barrier {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+}
+
 /// Core session creation logic shared by the Tauri command and the restore path.
 /// Creates a session record, spawns a PTY, and emits the session_created event.
 /// Auto-detects agent from shell command if not provided, and auto-injects provider-specific
@@ -2643,8 +2691,11 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         // so evaluate the gathering function once and raise the Room demand
         // only when it answers `Ready`. Detached, because the session-manager
         // read guard above is still live on this path and the gathering
-        // function takes its own.
-        {
+        // function takes its own. A restart replacement is the one exception:
+        // `execute_restart_transaction` raises its Room demand synchronously
+        // after the old id's final release and the commit (section 5.2), so the
+        // create-time raise is suppressed for `SelectionCause::Restart(_)`.
+        if !matches!(inline_cause, Some(SelectionCause::Restart(_))) {
             let app_for_demand = app.clone();
             tauri::async_runtime::spawn(async move {
                 raise_room_reader_demand(&app_for_demand, id).await;
@@ -4084,14 +4135,10 @@ pub(crate) async fn restart_session_inner_with_intent<R: tauri::Runtime>(
         })
         .await?;
 
-    // #2232 phase 4 section 5.2: AC preserves the session UUID across a
-    // restart, so there is no new id to acquire. The demand set is **untouched**
-    // — no release, no re-raise, no `CaptureRegistry::close` — and only the
-    // transcript **file** is re-anchored: the reader resolves the path again,
-    // the cut's sequence part is superseded and the slot is cleared to `Empty`
-    // with a fresh `seq`. This is the innermost of the three restart
-    // functions, so all three inherit it.
-    crate::commands::telegram::reanchor_reader(app, uuid).await;
+    // #2232 phase 4 section 5.2: the restart replaces the session UUID, so
+    // `execute_restart_transaction` owns the reader lifecycle on both the
+    // success and failure paths (release the old id, then raise the
+    // replacement's own demands). Nothing reader-related is done here.
 
     Ok(restarted)
 }
@@ -4145,6 +4192,10 @@ async fn teardown_old_for_restart<R: tauri::Runtime>(
             .unwrap_or_else(|error| error.into_inner())
             .remove(&session_id);
         detach_restart_telegram(transaction, session_id).await;
+        // Section 5.2: the old runtime is confirmed gone, so its reader
+        // demands are released before the replacement is created. A failure to
+        // create the replacement therefore leaves no old reader behind.
+        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
         return Ok(true);
     }
 
@@ -4224,6 +4275,9 @@ async fn teardown_old_for_restart<R: tauri::Runtime>(
         .unwrap_or_else(|error| error.into_inner())
         .remove(&session_id);
     detach_restart_telegram(transaction, session_id).await;
+    // Section 5.2: old runtime loss is confirmed, so the old id's reader
+    // demands are released before the replacement is created.
+    crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
     Ok(true)
 }
 
@@ -4270,6 +4324,10 @@ async fn finalize_failed_restart<R: tauri::Runtime>(
             mutations,
         )
         .await?;
+    // Section 5.2: the old row is gone, so any old-id reader demand that
+    // survived teardown (or was raised while it was in flight) is released and
+    // its capture slot closed before the destroyed publication.
+    crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
     transaction
         .persist(SelectionSource::Restart, Some(session_id))
         .await;
@@ -4423,6 +4481,10 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         Ok(old_lost) => old_lost,
         Err(error) => {
             if error.old_lost {
+                // Section 5.2: the old PTY is already gone, so its demands must
+                // not outlive the failed restart.
+                crate::commands::telegram::release_all_reader_demands(transaction.app(), uuid)
+                    .await;
                 if let Err(finalize_error) =
                     finalize_failed_restart(transaction, uuid, old_selected, intent).await
                 {
@@ -4435,6 +4497,11 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
             return Err(error.message);
         }
     };
+
+    // Test-only rendezvous after the old id's early release and before the
+    // replacement is created (phase 4 test 9).
+    #[cfg(test)]
+    restart_reader_seam::hit_after_old_release(&uuid.to_string()).await;
 
     // 4. Spawn the replacement as a pending, unannounced row.
     let completion = create_session_inner_impl(
@@ -4538,10 +4605,12 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         .find(|row| row.id == new_uuid.to_string())
         .cloned()
         .ok_or_else(|| "restart finalization did not produce the replacement row".to_string())?;
-    transaction
-        .persist(SelectionSource::Restart, Some(new_uuid))
-        .await;
-    transaction.publish_created(&session_info);
+    // Section 5.2: the commit removed the old row. Detach its bridge (dormant
+    // old) and sweep every old-id reader demand raised since teardown before
+    // the replacement is published or attached; then evaluate the new uuid's
+    // own Room eligibility, because the create-time raise was suppressed for
+    // `SelectionCause::Restart(_)`. Exactly one demand per consumer, one reader
+    // and one slot may exist.
     if !old_lost {
         detach_restart_telegram(transaction, uuid).await;
         transaction
@@ -4551,6 +4620,12 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
             .unwrap_or_else(|error| error.into_inner())
             .remove(&uuid);
     }
+    crate::commands::telegram::release_all_reader_demands(app, uuid).await;
+    raise_room_reader_demand(app, new_uuid).await;
+    transaction
+        .persist(SelectionSource::Restart, Some(new_uuid))
+        .await;
+    transaction.publish_created(&session_info);
     publish_restart_destroyed(transaction, uuid);
     if let Some(selection) = committed.selection.as_ref() {
         transaction.publish_selection(selection);
@@ -5601,7 +5676,7 @@ mod tests {
         );
     }
 
-    fn test_settings() -> AppSettings {
+    pub(crate) fn test_settings() -> AppSettings {
         AppSettings {
             agents: vec![
                 AgentConfig {
@@ -6605,7 +6680,7 @@ mod tests {
     }
 
     impl ScriptedSpawnBackend {
-        fn fail_spawn(&self, number: usize) {
+        pub(crate) fn fail_spawn(&self, number: usize) {
             self.fail_spawn_number.store(number, Ordering::SeqCst);
         }
 
@@ -7076,7 +7151,7 @@ mod tests {
         receiver
     }
 
-    async fn close_test_coordinator(app: &tauri::App<tauri::test::MockRuntime>) {
+    pub(crate) async fn close_test_coordinator(app: &tauri::App<tauri::test::MockRuntime>) {
         use tauri::Manager;
 
         app.state::<crate::session::selection::SelectionCoordinator>()
@@ -13285,6 +13360,7 @@ mod reader_demand_tests {
     use crate::capture::key::Cut;
     use crate::capture::registry::CaptureRegistry;
     use crate::network::OutboundNetwork;
+    use crate::pty::backend::PtyBackend;
     use crate::telegram::manager::{
         OutputSenderMap, ReaderConsumer, TelegramBridgeManager, TelegramBridgeState,
     };
@@ -13334,6 +13410,30 @@ mod reader_demand_tests {
                 .read()
                 .await
                 .set_resolved_claude_projects_dir(id, Some(self.projects_dir.clone()))
+                .await;
+            id
+        }
+
+        async fn codex_session_in(&self, cwd: &std::path::Path, home: &std::path::Path) -> Uuid {
+            let id = add_session_for_tests(
+                &self.manager,
+                cwd,
+                SessionBackendKind::LocalProcess,
+                CodingAgentKind::Codex,
+            )
+            .await;
+            self.manager
+                .read()
+                .await
+                .set_profile_metadata(
+                    id,
+                    None,
+                    None,
+                    Vec::new(),
+                    false,
+                    Some(home.to_string_lossy().into_owned()),
+                    None,
+                )
                 .await;
             id
         }
@@ -13466,6 +13566,144 @@ mod reader_demand_tests {
         }
     }
 
+    /// Acceptance criterion 8 (Codex half): a Codex reader spawned through the
+    /// supervisor delivers a record into `CaptureRegistry`'s **slot** with the
+    /// production sender, proving the phase-1/phase-3 chain is reachable from
+    /// production for both watchers.
+    #[tokio::test]
+    async fn a_supervised_codex_reader_puts_a_record_in_the_registry_slot() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let home = fixture.temp_path().join("codex-home");
+        std::fs::create_dir_all(&home).expect("codex home");
+        let id = h.codex_session_in(fixture.coordinator_path(), &home).await;
+
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), id).await);
+        let slot = h.captures.slot(&id.to_string()).expect("endpoints open");
+        let cwd = fixture.coordinator_path().to_string_lossy().into_owned();
+        write_codex_rollout(
+            &home,
+            &cwd,
+            "rollout-supervised.jsonl",
+            "codex supervised body",
+            chrono::Utc::now() - chrono::Duration::seconds(1),
+        );
+        let (_, record) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "codex supervised body"
+        })
+        .await;
+        assert_eq!(record.session_id, id.to_string());
+
+        let shutdown = {
+            let tg = h.bridge().await;
+            let mut tg = tg.lock().await;
+            tg.reader_release_all(id)
+        };
+        if let Some(shutdown) = shutdown {
+            shutdown.abort_now();
+        }
+    }
+
+    /// Test 21: a live detach whose `sessions.json` persistence fails still
+    /// releases the Bot demand (so the reader stops sending) and keeps capture
+    /// running under the surviving Room demand, with the error and event
+    /// unchanged.
+    #[tokio::test]
+    async fn a_detach_persistence_failure_releases_the_bot_demand_and_keeps_capture() {
+        use crate::capture::record::RecordOrigin;
+        use tauri::Listener;
+
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness(&fixture);
+        let cwd = fixture.coordinator_path();
+        let id = h.live_session(cwd, CodingAgentKind::Claude).await;
+        let key = id.to_string();
+
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), id).await);
+        h.attach_bot(id).await;
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(tg.has_bridge(id));
+            assert_eq!(
+                tg.reader_demands(id),
+                [ReaderConsumer::Bot, ReaderConsumer::Room]
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+            );
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        h.app.listen_any("telegram_bridge_error", move |event| {
+            let _ = tx.send(event.payload().to_string());
+        });
+
+        crate::commands::telegram::detach_persistence_seam::arm(id);
+        let error = crate::commands::telegram::detach_telegram_inner(h.app.handle(), id)
+            .await
+            .expect_err("the forced persistence failure must surface");
+        assert!(error.contains("could not be persisted"), "{error}");
+        let payload = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("telegram_bridge_error is emitted");
+        assert!(payload.contains("could not be persisted"), "{payload}");
+
+        // Bot is gone; the Room demand keeps the reader and its slot open.
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(!tg.has_bridge(id));
+            assert!(tg.reader_is_running(id));
+            assert_eq!(
+                tg.reader_demands(id),
+                [ReaderConsumer::Room]
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+            );
+        }
+        assert!(h.captures.is_open(&key));
+        let slot = h.captures.slot(&key).expect("slot open");
+
+        // Capture continues with no send: the appended line reaches the slot
+        // and acquires no `telegram.send_message` permit.
+        let dir = h.claude_projects_dir(&h.claude_config_dir, cwd);
+        std::fs::create_dir_all(&dir).expect("transcript dir");
+        let path = dir.join("session.jsonl");
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                claude_line(
+                    "before detach",
+                    chrono::Utc::now() - chrono::Duration::seconds(1)
+                )
+            ),
+        )
+        .expect("transcript");
+        wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "before detach"
+        })
+        .await;
+        let sends_before = h.message_permits();
+        append_claude(&path, "after detach");
+        let (_, record) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "after detach"
+        })
+        .await;
+        assert_eq!(record.origin, RecordOrigin::Live);
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        assert_eq!(
+            h.message_permits(),
+            sends_before,
+            "a detached reader must not send"
+        );
+
+        h.release_all(id).await;
+        h.close().await;
+    }
+
     /// Test 16: **live toggle.** With an orchestrator session already running
     /// and no reader, turning the flag on raises the Room demand and a reader
     /// starts; turning it off releases it and the reader stops. Epic section
@@ -13498,56 +13736,139 @@ mod reader_demand_tests {
         assert!(!h.captures.is_open(&orchestrator.to_string()));
     }
 
-    // ── Test 9: restart re-anchors the file and keeps the demand ──────────
+    // ── Test 9: restart transfers reader ownership to the new session UUID ──
 
-    /// The heavy harness test 9 needs: the existing scripted-session app,
-    /// extended with the shared capture registry and outbound network (the plan
-    /// asks for exactly that), plus a live scripted PTY.
+    const PHASE4_BOT_ID: &str = "phase4-bot";
+
+    /// The heavy harness test 9 needs: the scripted-session app, extended with
+    /// the single capture registry, the outbound network and the phase-2 room
+    /// fixture paths the replacement's Room raise resolves against.
+    ///
+    /// Both configured agents carry the environment row production reads for
+    /// the transcript memo (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), so the old
+    /// session and the replacement resolve their reader paths from settings
+    /// exactly as a real restart does.
     struct RestartHarness {
         app: tauri::App<tauri::test::MockRuntime>,
         manager: Arc<tokio::sync::RwLock<SessionManager>>,
         pty: Arc<Mutex<crate::pty::manager::PtyManager>>,
+        backend: Arc<crate::commands::session::tests::ScriptedSpawnBackend>,
         captures: Arc<CaptureRegistry>,
+        network: OutboundNetwork,
+        settings: AppSettings,
+        claude_config_dir: PathBuf,
+        codex_home: PathBuf,
     }
 
-    fn restart_harness() -> RestartHarness {
+    fn claude_env_row(dir: &std::path::Path) -> crate::config::settings::CodingAgentEnv {
+        crate::config::settings::CodingAgentEnv {
+            key: "CLAUDE_CONFIG_DIR".to_string(),
+            value: dir.to_string_lossy().into_owned(),
+            source: Default::default(),
+            enabled: true,
+        }
+    }
+
+    fn codex_env_row(dir: &std::path::Path) -> crate::config::settings::CodingAgentEnv {
+        crate::config::settings::CodingAgentEnv {
+            key: "CODEX_HOME".to_string(),
+            value: dir.to_string_lossy().into_owned(),
+            source: Default::default(),
+            enabled: true,
+        }
+    }
+
+    fn restart_harness(fixture: &RoomFixture) -> RestartHarness {
+        let claude_config_dir = fixture.temp_path().join("claude-home");
+        let codex_home = fixture.temp_path().join("codex-home");
+        std::fs::create_dir_all(&claude_config_dir).expect("claude config dir");
+        std::fs::create_dir_all(&codex_home).expect("codex home");
+
+        let mut settings = super::tests::test_settings();
+        settings.jev_api_key = "test-key".to_string();
+        settings.agents[0].envs = vec![claude_env_row(&claude_config_dir)];
+        settings.agents[1].envs = vec![codex_env_row(&codex_home)];
+        settings.telegram_bots = vec![crate::telegram::types::TelegramBotConfig {
+            id: PHASE4_BOT_ID.to_string(),
+            label: "Phase 4 bot".to_string(),
+            token: "test-token".to_string(),
+            chat_id: 7,
+            color: "#229ED9".to_string(),
+        }];
+        // The creation gate must accept the orchestrator replica cwd: the
+        // phase-2 fixture lives under `<temp>/project-a`, so registering that
+        // root is what a real AC project row contributes.
+        settings.project_paths = vec![fixture
+            .temp_path()
+            .join("project-a")
+            .to_string_lossy()
+            .into_owned()];
+
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let backend = Arc::new(crate::commands::session::tests::ScriptedSpawnBackend::default());
         let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-            backend,
+            backend.clone(),
         )));
         let app = crate::commands::session::tests::session_test_app_with_store(
-            settings_with_key(),
+            settings.clone(),
             Arc::clone(&manager),
             Arc::clone(&pty),
             crate::commands::session::tests::SessionTestStoreState::Ready,
         );
         let captures = app.state::<Arc<CaptureRegistry>>().inner().clone();
+        let network = app.state::<OutboundNetwork>().inner().clone();
         RestartHarness {
             app,
             manager,
             pty,
+            backend,
             captures,
+            network,
+            settings,
+            claude_config_dir,
+            codex_home,
         }
     }
 
     impl RestartHarness {
-        /// A live scripted session in `cwd` carrying `kind`.
+        /// A live scripted session for `kind` whose transcript memo comes from
+        /// the configured agent environment, exactly as production resolves it.
         async fn live_session(&self, cwd: &std::path::Path, kind: CodingAgentKind) -> Uuid {
-            let info = crate::commands::session::tests::create_scripted_session(
-                &self.app,
+            let (agent_id, label) = match kind {
+                CodingAgentKind::Claude => ("claude", "Claude Code"),
+                CodingAgentKind::Codex => ("codex", "Codex"),
+                _ => panic!("phase 4 restart fixture supports Claude and Codex only"),
+            };
+            let cwd_str = cwd.to_string_lossy().into_owned();
+            let spawn = crate::commands::session::build_configured_agent_spawn_for_cwd(
+                &self.settings,
+                agent_id,
+                &cwd_str,
+                None,
+            )
+            .expect("build configured agent spawn")
+            .expect("configured agent exists in test settings");
+            let info = crate::commands::session::create_session_inner(
+                self.app.handle(),
                 &self.manager,
                 &self.pty,
-                &cwd.to_string_lossy(),
+                spawn.shell.clone(),
+                spawn.shell_args.clone(),
+                cwd_str,
+                Some("phase 4 restart fixture".to_string()),
+                Some(agent_id.to_string()),
+                Some(label.to_string()),
+                true,
+                Vec::new(),
+                true,
+                Some(spawn),
+                None,
+                None,
+                CreateSelectionIntent::User,
             )
-            .await;
-            let id = Uuid::parse_str(&info.id).expect("session id");
-            self.manager
-                .read()
-                .await
-                .set_agent_kind(id, Some(kind))
-                .await;
-            id
+            .await
+            .expect("create phase 4 scripted session");
+            Uuid::parse_str(&info.id).expect("session id")
         }
 
         async fn bridge(&self) -> tauri::State<'_, TelegramBridgeState> {
@@ -13555,8 +13876,8 @@ mod reader_demand_tests {
         }
 
         /// Drive the production restart entry point (the innermost of the
-        /// three, so all three inherit it).
-        async fn restart(&self, id: Uuid) -> SessionInfo {
+        /// three, so all three inherit it) and return its error, if any.
+        async fn restart(&self, id: Uuid) -> Result<SessionInfo, String> {
             let settings = self.app.state::<crate::config::settings::SettingsState>();
             crate::commands::session::restart_session_inner_with_intent(
                 self.app.handle(),
@@ -13573,7 +13894,6 @@ mod reader_demand_tests {
                 crate::config::sessions_persistence::default_creation_gate_enforcement(),
             )
             .await
-            .expect("restart succeeds")
         }
 
         async fn snapshot(
@@ -13594,6 +13914,54 @@ mod reader_demand_tests {
             if let Some(shutdown) = shutdown {
                 shutdown.abort_now();
             }
+        }
+
+        /// Point the configured Claude agent at `dir`: the next restart builds
+        /// its replacement spawn from the live settings, so the replacement's
+        /// transcript memo moves with it (a "changed path" restart).
+        async fn set_claude_config_dir(&self, dir: &std::path::Path) {
+            let settings = self.app.state::<crate::config::settings::SettingsState>();
+            settings.write().await.agents[0].envs = vec![claude_env_row(dir)];
+        }
+
+        async fn set_codex_home(&self, dir: &std::path::Path) {
+            let settings = self.app.state::<crate::config::settings::SettingsState>();
+            settings.write().await.agents[1].envs = vec![codex_env_row(dir)];
+        }
+
+        /// The Claude transcript directory the configured memo resolves to.
+        fn claude_projects_dir(
+            &self,
+            config_dir: &std::path::Path,
+            cwd: &std::path::Path,
+        ) -> PathBuf {
+            config_dir
+                .join("projects")
+                .join(crate::session::session::mangle_cwd_for_claude(
+                    &cwd.to_string_lossy(),
+                ))
+        }
+
+        fn message_permits(&self) -> usize {
+            self.network
+                .acquired_labels_for_tests()
+                .iter()
+                .filter(|label| **label == "telegram.send_message")
+                .count()
+        }
+
+        async fn attach_bot(&self, id: Uuid) -> crate::telegram::types::BridgeInfo {
+            crate::commands::telegram::attach_telegram_bot_by_id(
+                self.app.handle(),
+                id,
+                PHASE4_BOT_ID,
+            )
+            .await
+            .expect("attach the configured bot")
+        }
+
+        async fn close(self) {
+            crate::commands::session::tests::close_test_coordinator(&self.app).await;
         }
     }
 
@@ -13679,31 +14047,80 @@ mod reader_demand_tests {
         }
     }
 
-    /// Test 9 (Claude, different transcript): drive
-    /// `restart_session_inner_with_intent` with a live reader. The demand set,
-    /// reader identity and registry slot survive; the transcript is
-    /// re-anchored and a >64 KiB new file is read from byte zero as
-    /// `RotationBackfill`, so a record above the tail window is not lost.
+    /// Write one Codex rollout with a `session_meta` line and a single
+    /// `final_answer` record carrying `body` at `ts`.
+    fn write_codex_rollout(
+        home: &std::path::Path,
+        cwd: &str,
+        name: &str,
+        body: &str,
+        ts: chrono::DateTime<chrono::Utc>,
+    ) -> std::path::PathBuf {
+        use std::io::Write as _;
+        let now = chrono::Utc::now();
+        let day = home
+            .join("sessions")
+            .join(format!("{:04}", now.format("%Y")))
+            .join(format!("{:02}", now.format("%m")))
+            .join(format!("{:02}", now.format("%d")));
+        std::fs::create_dir_all(&day).expect("codex day dir");
+        let path = day.join(name);
+        let meta = serde_json::json!({
+            "timestamp": now.to_rfc3339(),
+            "type": "session_meta",
+            "payload": {"id": name, "cwd": cwd, "timestamp": now.to_rfc3339()}
+        });
+        let record = serde_json::json!({
+            "timestamp": ts.to_rfc3339(),
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": body}]
+            }
+        });
+        let mut f = std::fs::File::create(&path).expect("rollout");
+        writeln!(f, "{meta}").expect("meta line");
+        writeln!(f, "{record}").expect("record line");
+        f.sync_all().expect("sync rollout");
+        path
+    }
+
+    async fn wait_for_message_permits(h: &RestartHarness, at_least: usize) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while h.message_permits() < at_least {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no telegram.send_message attempt within the budget"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Test 9 (Claude, changed path): the restart mints a new session UUID and
+    /// transfers reader ownership to it. The old id's reader, pump and slot are
+    /// gone before the replacement is delivered; the replacement gets a fresh
+    /// reader, one demand per consumer, a fresh cut and its own slot; an old
+    /// slot clone cannot reach the new slot; and only the appended post-restart
+    /// line is sent, exactly once.
     #[tokio::test]
-    async fn a_restart_reanchors_a_new_claude_transcript_as_rotation_backfill() {
+    async fn a_live_restart_transfers_the_reader_to_the_new_uuid() {
+        use crate::capture::record::RecordOrigin;
         use crate::capture::sink::SlotValue;
 
         let fixture = room_fixture();
         configure_room(fixture.room_path(), true);
-        let h = restart_harness();
-        let id = h
-            .live_session(fixture.coordinator_path(), CodingAgentKind::Claude)
-            .await;
-        let projects = fixture.temp_path().join("claude-projects");
-        std::fs::create_dir_all(&projects).expect("projects dir");
-        h.manager
-            .read()
-            .await
-            .set_resolved_claude_projects_dir(id, Some(projects.clone()))
-            .await;
+        let h = restart_harness(&fixture);
+        let cwd = fixture.coordinator_path();
+        let old = h.live_session(cwd, CodingAgentKind::Claude).await;
+        let old_key = old.to_string();
 
-        // The reader binds to the old file and emits one live record.
-        let old_path = projects.join("old.jsonl");
+        // Room demand first, then a hot Bot attach over the live reader.
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
+        let old_dir = h.claude_projects_dir(&h.claude_config_dir, cwd);
+        std::fs::create_dir_all(&old_dir).expect("old transcript dir");
+        let old_path = old_dir.join("session.jsonl");
         std::fs::write(
             &old_path,
             format!(
@@ -13715,265 +14132,550 @@ mod reader_demand_tests {
             ),
         )
         .expect("old transcript");
-        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), id).await);
-        append_claude(&old_path, "old live");
-        let key = id.to_string();
-        let slot = h.captures.slot(&key).expect("endpoints open");
-        let (_, pre_record) =
-            wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
-                r.text == "old live"
-            })
-            .await;
-
-        // A pre-restart clone with `seq > 0` and a cut with a sequence
-        // tie-break: both are observable across the restart.
-        let pre_clone = slot.clone();
-        pre_clone.invalidate("pre-restart");
-        let seq_before = slot.seq();
-        slot.set_cut(Cut {
-            path: pre_record.observed_path.clone(),
-            epoch: pre_record.epoch,
-            len: pre_record.observed_len,
-            reader_seq: Some(pre_record.reader_seq),
-        });
-        let (id_before, demands_before) = h.snapshot(id).await;
-
-        // The restarted run writes a new, >64 KiB transcript whose only
-        // assistant record sits above the 64 KiB tail window.
-        let new_path = projects.join("new.jsonl");
-        let new_len = large_claude_transcript(&new_path, "before the tail");
-
-        h.restart(id).await;
-
-        let (id_after, demands_after) = h.snapshot(id).await;
-        assert_eq!(id_after, id_before, "the same reader, not a new one");
-        assert_eq!(demands_after, demands_before, "the demand set is untouched");
-        assert!(
-            h.captures.is_open(&key),
-            "CaptureRegistry::close is never called on a restart"
-        );
-        assert!(matches!(slot.snapshot().value, SlotValue::Empty));
-        assert!(slot.seq() > seq_before, "the slot gets a fresh seq");
-        // The pre-restart clone still observes the registry slot: `close` plus
-        // `open` would have produced a different slot.
-        pre_clone.invalidate("post-restart clone probe");
-        assert_eq!(slot.snapshot().seq, pre_clone.snapshot().seq);
-        assert!(matches!(slot.snapshot().value, SlotValue::Invalid(_)));
-        // The sequence tie-break is superseded before the first new record.
-        assert_eq!(
-            slot.cut().expect("cut registered").reader_seq,
-            None,
-            "the cut's sequence part is superseded at re-anchor"
-        );
-
-        let (_, record) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
-            r.text == "before the tail"
+        let old_slot = h.captures.slot(&old_key).expect("old endpoints open");
+        // The cold bind offers the recent tail to the sink: that proves the
+        // reader is bound before the append below can race the scan.
+        wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "old preamble"
         })
         .await;
+        h.attach_bot(old).await;
+        append_claude(&old_path, "old live");
+        wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "old live"
+        })
+        .await;
+        // Let the pending Telegram buffer flush, so the final old release has
+        // nothing left to send.
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        let (old_reader_id, old_demands) = h.snapshot(old).await;
         assert_eq!(
-            record.origin,
-            crate::capture::record::RecordOrigin::RotationBackfill,
-            "a different path reads from byte zero as backfill"
+            old_demands,
+            [ReaderConsumer::Bot, ReaderConsumer::Room]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
         );
-        assert_eq!(record.epoch, 0, "the new path's in-memory epoch");
-        assert_eq!(record.observed_path, new_path);
-        assert_eq!(record.observed_len, new_len);
 
-        h.release_all(id).await;
+        // The replacement resolves a different transcript directory: a >64 KiB
+        // Claude file whose only final answer sits above the 64 KiB tail
+        // window, so cold-start rules never replay it.
+        let new_dir = fixture.temp_path().join("claude-home-b");
+        std::fs::create_dir_all(&new_dir).expect("new config dir");
+        h.set_claude_config_dir(&new_dir).await;
+        let new_projects = h.claude_projects_dir(&new_dir, cwd);
+        std::fs::create_dir_all(&new_projects).expect("new transcript dir");
+        let new_path = new_projects.join("session.jsonl");
+        let new_len = large_claude_transcript(&new_path, "above the tail window");
+
+        let restarted = h.restart(old).await.expect("restart succeeds");
+        let new = Uuid::parse_str(&restarted.id).expect("replacement id");
+        assert_ne!(new, old, "the restart mints a new session UUID");
+
+        // Old id: reader, demands, pump and slot are gone.
+        let (gone_reader, gone_demands) = h.snapshot(old).await;
+        assert_eq!(gone_reader, None);
+        assert!(gone_demands.is_empty());
+        assert!(!h.captures.is_open(&old_key), "the old slot is closed");
+        assert!(h.captures.slot(&old_key).is_none());
+        // A stale old-id slot clone cannot reach the replacement's slot: the
+        // replacement got a fresh slot object.
+        old_slot.set_cut(Cut {
+            path: old_path.clone(),
+            epoch: 9,
+            len: 9,
+            reader_seq: Some(9),
+        });
+
+        // New id: exactly one reader, one demand per consumer, fresh cut, slot.
+        let (new_reader_id, new_demands) = h.snapshot(new).await;
+        assert!(new_reader_id.is_some());
+        assert_ne!(new_reader_id, old_reader_id, "a new reader identity");
+        assert_eq!(
+            new_demands,
+            [ReaderConsumer::Bot, ReaderConsumer::Room]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        let new_key = new.to_string();
+        let new_slot = h.captures.slot(&new_key).expect("new endpoints open");
+        // A fresh slot has no cut at all; if a demand join recorded one, its
+        // sequence part is superseded. Either way the old reader's cut cannot
+        // be the replacement's.
+        if let Some(cut) = new_slot.cut() {
+            assert_eq!(
+                cut.reader_seq, None,
+                "the replacement's cut sequence must never be the old reader's"
+            );
+        }
+        // Give the room-only reader one poll to cold-bind the new file and one
+        // tick for the hot Bot attach; neither may offer a record.
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        assert!(matches!(new_slot.snapshot().value, SlotValue::Empty));
+        let seq_before = new_slot.seq();
+        let sends_before = h.message_permits();
+
+        append_claude(&new_path, "post restart");
+        let (seq, record) =
+            wait_for_slot_record(&new_slot, std::time::Duration::from_secs(10), |r| {
+                r.text == "post restart"
+            })
+            .await;
+        assert_eq!(record.origin, RecordOrigin::Live);
+        assert_eq!(record.observed_path, new_path);
+        assert!(
+            record.record_start.expect("live record") >= new_len,
+            "only appended bytes may be read after the replacement's cold bind"
+        );
+        assert_eq!(
+            seq,
+            seq_before + 1,
+            "exactly one capture offer for the post-restart line"
+        );
+        wait_for_message_permits(&h, sends_before + 1).await;
+        // Exactly one send for the appended line: the old reader is gone and
+        // its pending buffer was empty at the final release.
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        assert_eq!(h.message_permits(), sends_before + 1);
+        assert!(h.captures.is_open(&new_key));
+        h.release_all(new).await;
+        h.close().await;
     }
 
-    /// Test 9 (Claude, same transcript): a restart that resolves the same path
-    /// keeps the offset, so old content is not resent and the appended record
-    /// arrives `Live` with the same in-memory epoch.
+    /// Test 9 (Claude, same path): the replacement cold-binds the same
+    /// transcript file. Normal cold-start rules apply: the recent tail is
+    /// re-offered as `Preamble` (that is what a cold attach does today), the
+    /// offset starts at the file length, and only the appended line arrives
+    /// `Live` above the pre-restart length.
     #[tokio::test]
-    async fn a_restart_into_the_same_claude_path_keeps_the_offset_and_never_resends() {
-        use crate::capture::sink::SlotValue;
+    async fn a_restart_into_the_same_claude_path_reads_only_appended_bytes() {
+        use crate::capture::record::RecordOrigin;
 
         let fixture = room_fixture();
         configure_room(fixture.room_path(), true);
-        let h = restart_harness();
-        let id = h
-            .live_session(fixture.coordinator_path(), CodingAgentKind::Claude)
-            .await;
-        let projects = fixture.temp_path().join("claude-projects");
-        std::fs::create_dir_all(&projects).expect("projects dir");
-        h.manager
-            .read()
-            .await
-            .set_resolved_claude_projects_dir(id, Some(projects.clone()))
-            .await;
+        let h = restart_harness(&fixture);
+        let cwd = fixture.coordinator_path();
+        let old = h.live_session(cwd, CodingAgentKind::Claude).await;
 
-        let path = projects.join("session.jsonl");
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
+        let dir = h.claude_projects_dir(&h.claude_config_dir, cwd);
+        std::fs::create_dir_all(&dir).expect("transcript dir");
+        let path = dir.join("session.jsonl");
         std::fs::write(
             &path,
             format!(
                 "{}\n",
                 claude_line(
-                    "old preamble",
+                    "cold preamble",
                     chrono::Utc::now() - chrono::Duration::seconds(1)
                 )
             ),
         )
         .expect("transcript");
-        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), id).await);
-        append_claude(&path, "old live");
-        let key = id.to_string();
-        let slot = h.captures.slot(&key).expect("endpoints open");
-        let (_, old_record) =
-            wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
-                r.text == "old live"
-            })
-            .await;
-        let epoch_before = old_record.epoch;
-        let len_before = old_record.observed_len;
-
-        let seq_before = slot.seq();
-        let (id_before, demands_before) = h.snapshot(id).await;
-        h.restart(id).await;
-        // Give the watcher time to process the re-anchor before appending: the
-        // old code dropped the binding here and re-ran the §J tail scan, which
-        // would publish a duplicate `Preamble`.
-        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-        assert!(
-            matches!(slot.snapshot().value, SlotValue::Empty),
-            "the same path must not resend old content through a tail scan"
-        );
-        let (id_after, demands_after) = h.snapshot(id).await;
-        assert_eq!(id_after, id_before, "the same reader, not a new one");
-        assert_eq!(demands_after, demands_before, "the demand set is untouched");
-        assert!(h.captures.is_open(&key));
-        assert!(slot.seq() > seq_before);
-
-        append_claude(&path, "new live");
-        let (_, record) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
-            r.text == "new live"
+        let old_slot = h
+            .captures
+            .slot(&old.to_string())
+            .expect("old endpoints open");
+        wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "cold preamble"
         })
         .await;
-        assert_eq!(record.origin, crate::capture::record::RecordOrigin::Live);
-        assert_eq!(
-            record.epoch, epoch_before,
-            "the same path keeps its in-memory epoch"
-        );
-        assert!(
-            record.record_start.expect("live record") >= len_before,
-            "only appended bytes may be read after a same-path re-anchor"
-        );
+        append_claude(&path, "old live");
+        wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "old live"
+        })
+        .await;
+        let len_before = std::fs::metadata(&path).expect("transcript metadata").len();
 
-        h.release_all(id).await;
+        let restarted = h.restart(old).await.expect("restart succeeds");
+        let new = Uuid::parse_str(&restarted.id).expect("replacement id");
+        assert_ne!(new, old);
+        assert!(h.snapshot(old).await.0.is_none());
+        assert!(!h.captures.is_open(&old.to_string()));
+
+        let new_slot = h
+            .captures
+            .slot(&new.to_string())
+            .expect("new endpoints open");
+        // The cold scan re-offers the recent tail as Preamble; waiting for the
+        // last tail line proves the replacement has bound the file (and set
+        // its offset to the length) before the append below.
+        wait_for_slot_record(&new_slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "old live" && r.origin == RecordOrigin::Preamble
+        })
+        .await;
+        let seq_after_scan = new_slot.seq();
+
+        append_claude(&path, "new live");
+        let (seq, record) =
+            wait_for_slot_record(&new_slot, std::time::Duration::from_secs(10), |r| {
+                r.text == "new live"
+            })
+            .await;
+        assert_eq!(record.origin, RecordOrigin::Live);
+        assert_eq!(
+            record.record_start.expect("live record"),
+            len_before,
+            "the same path must not replay consumed bytes"
+        );
+        assert_eq!(
+            seq,
+            seq_after_scan + 1,
+            "only the appended line may follow the cold scan"
+        );
+        h.release_all(new).await;
+        h.close().await;
     }
 
-    /// Test 9 (Codex): a restart re-resolves with a fresh search time; the same
-    /// rollout path keeps its offset, so an appended record is `Live` with the
-    /// same in-memory epoch and the cut's sequence part stays superseded.
+    /// Test 9 (Codex, changed path): the same UUID transfer, driven for the
+    /// Codex watcher with a fresh `CODEX_HOME`, a real slot record and one
+    /// Telegram send for the appended post-restart line.
     #[tokio::test]
-    async fn a_codex_restart_keeps_the_offset_and_the_cut() {
+    async fn a_codex_live_restart_transfers_the_reader_to_the_new_uuid() {
+        use crate::capture::record::RecordOrigin;
         use crate::capture::sink::SlotValue;
-        use std::io::Write as _;
 
         let fixture = room_fixture();
         configure_room(fixture.room_path(), true);
-        let h = restart_harness();
-        let id = h
-            .live_session(fixture.coordinator_path(), CodingAgentKind::Codex)
-            .await;
-        let home = fixture.temp_path().join("codex-home");
-        h.manager
-            .read()
-            .await
-            .set_profile_metadata(
-                id,
-                None,
-                None,
-                Vec::new(),
-                false,
-                Some(home.to_string_lossy().to_string()),
-                None,
-            )
-            .await;
+        let h = restart_harness(&fixture);
+        let cwd = fixture.coordinator_path();
+        let cwd_str = cwd.to_string_lossy().into_owned();
+        let old = h.live_session(cwd, CodingAgentKind::Codex).await;
+        let old_key = old.to_string();
 
-        let now = chrono::Utc::now();
-        let day = home
-            .join("sessions")
-            .join(format!("{:04}", now.format("%Y")))
-            .join(format!("{:02}", now.format("%m")))
-            .join(format!("{:02}", now.format("%d")));
-        std::fs::create_dir_all(&day).expect("codex day dir");
-        let path = day.join("rollout-restart.jsonl");
-        let cwd = fixture.coordinator_path().to_string_lossy().to_string();
-        let meta = serde_json::json!({
-            "timestamp": now.to_rfc3339(),
-            "type": "session_meta",
-            "payload": {"id": "codex-restart", "cwd": cwd, "timestamp": now.to_rfc3339()}
-        });
-        let first = serde_json::json!({
-            "timestamp": (now - chrono::Duration::seconds(1)).to_rfc3339(),
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "phase": "final_answer",
-                "content": [{"type": "output_text", "text": "codex old"}]
-            }
-        });
-        {
-            let mut f = std::fs::File::create(&path).expect("rollout");
-            writeln!(f, "{meta}").unwrap();
-            writeln!(f, "{first}").unwrap();
-            f.sync_all().unwrap();
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
+        let old_path = write_codex_rollout(
+            &h.codex_home,
+            &cwd_str,
+            "rollout-old.jsonl",
+            "codex preamble",
+            chrono::Utc::now() - chrono::Duration::seconds(1),
+        );
+        let old_slot = h.captures.slot(&old_key).expect("old endpoints open");
+        wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "codex preamble"
+        })
+        .await;
+        h.attach_bot(old).await;
+        append_codex(&old_path, "codex live");
+        wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "codex live"
+        })
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+
+        let new_home = fixture.temp_path().join("codex-home-b");
+        std::fs::create_dir_all(&new_home).expect("new codex home");
+        h.set_codex_home(&new_home).await;
+        let new_path = write_codex_rollout(
+            &new_home,
+            &cwd_str,
+            "rollout-new.jsonl",
+            "codex old",
+            chrono::Utc::now() - chrono::Duration::seconds(30),
+        );
+
+        let restarted = h.restart(old).await.expect("restart succeeds");
+        let new = Uuid::parse_str(&restarted.id).expect("replacement id");
+        assert_ne!(new, old);
+        assert!(h.snapshot(old).await.0.is_none());
+        assert!(!h.captures.is_open(&old_key));
+        assert!(h.captures.slot(&old_key).is_none());
+
+        let new_key = new.to_string();
+        let new_slot = h.captures.slot(&new_key).expect("new endpoints open");
+        if let Some(cut) = new_slot.cut() {
+            assert_eq!(cut.reader_seq, None, "the replacement's cut is fresh");
         }
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        assert!(matches!(new_slot.snapshot().value, SlotValue::Empty));
+        let seq_before = new_slot.seq();
+        let sends_before = h.message_permits();
 
-        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), id).await);
-        let key = id.to_string();
-        let slot = h.captures.slot(&key).expect("endpoints open");
-        wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
-            r.text == "codex old"
-        })
-        .await;
-        append_codex(&path, "codex live one");
-        let (_, one) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
-            r.text == "codex live one"
-        })
-        .await;
-        assert_eq!(one.origin, crate::capture::record::RecordOrigin::Live);
-        let epoch_before = one.epoch;
-        let len_before = one.observed_len;
+        append_codex(&new_path, "codex post restart");
+        let (seq, record) =
+            wait_for_slot_record(&new_slot, std::time::Duration::from_secs(10), |r| {
+                r.text == "codex post restart"
+            })
+            .await;
+        assert_eq!(record.origin, RecordOrigin::Live);
+        assert_eq!(record.observed_path, new_path);
+        assert_eq!(seq, seq_before + 1);
+        wait_for_message_permits(&h, sends_before + 1).await;
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        assert_eq!(h.message_permits(), sends_before + 1);
+        h.release_all(new).await;
+        h.close().await;
+    }
 
-        let seq_before = slot.seq();
-        slot.set_cut(Cut {
-            path: one.observed_path.clone(),
-            epoch: one.epoch,
-            len: one.observed_len,
-            reader_seq: Some(one.reader_seq),
+    /// Test 9 (old-id raise, timing variant 2): a raise paused across the
+    /// restart and resumed **after** the old row is gone installs for a dead
+    /// id; its own post-install liveness recheck self-cleans it.
+    #[tokio::test]
+    async fn an_old_id_raise_resumed_after_old_row_removal_self_cleans() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness(&fixture);
+        let old = h
+            .live_session(fixture.coordinator_path(), CodingAgentKind::Claude)
+            .await;
+        let old_key = old.to_string();
+
+        let barrier =
+            crate::commands::telegram::reader_demand_seam::install_before_install(&old_key);
+        let app = h.app.handle().clone();
+        let raise = tokio::spawn(async move {
+            crate::commands::telegram::raise_reader_demand(&app, old, ReaderConsumer::Room, None)
+                .await
         });
-        let (id_before, demands_before) = h.snapshot(id).await;
-        h.restart(id).await;
-        let (id_after, demands_after) = h.snapshot(id).await;
-        assert_eq!(id_after, id_before, "the same reader, not a new one");
-        assert_eq!(demands_after, demands_before, "the demand set is untouched");
-        assert!(h.captures.is_open(&key));
-        assert!(matches!(slot.snapshot().value, SlotValue::Empty));
-        assert!(slot.seq() > seq_before);
-        assert_eq!(
-            slot.cut().expect("cut registered").reader_seq,
-            None,
-            "the cut's sequence part is superseded at re-anchor"
-        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            barrier.reached.notified(),
+        )
+        .await
+        .expect("the old-id raise reaches the pre-install seam");
 
-        // Fresh search time, same path: the offset is retained, so only the
-        // appended record arrives and the in-memory epoch is unbroken.
-        append_codex(&path, "codex live two");
-        let (_, two) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
-            r.text == "codex live two"
-        })
-        .await;
-        assert_eq!(two.origin, crate::capture::record::RecordOrigin::Live);
-        assert_eq!(two.epoch, epoch_before);
+        // The restart runs to completion while the raise is still paused.
+        let restarted = h.restart(old).await.expect("restart succeeds");
+        let new = Uuid::parse_str(&restarted.id).expect("replacement id");
+        assert_ne!(new, old);
+        assert!(h.snapshot(old).await.0.is_none());
+        assert!(!h.captures.is_open(&old_key));
+
+        // Resumed after old-row removal: the raise installs, then the liveness
+        // recheck releases the reader it just created.
+        barrier.release.notify_one();
+        let raised = tokio::time::timeout(std::time::Duration::from_secs(10), raise)
+            .await
+            .expect("the raise resumes")
+            .expect("the raise task joins");
+        assert!(!raised, "a raise resumed after removal must self-clean");
+        let (reader, demands) = h.snapshot(old).await;
+        assert_eq!(reader, None);
+        assert!(demands.is_empty());
+        assert!(!h.captures.is_open(&old_key));
+        assert!(h.captures.slot(&old_key).is_none());
+
+        // Exactly one reader exists, and it is the replacement's.
+        assert!(h.snapshot(new).await.0.is_some());
+        assert!(h.captures.is_open(&new.to_string()));
+        h.release_all(new).await;
+        h.close().await;
+    }
+
+    /// Test 9 (old-id raise, timing variant 1): a raise **installed after the
+    /// early release but before the commit** is swept by the post-commit
+    /// release. This is the deterministic proof that the success path cleans
+    /// the old id even when a demand lands in the window.
+    #[tokio::test]
+    async fn an_old_id_raise_installed_before_commit_is_swept_after_it() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness(&fixture);
+        let old = h
+            .live_session(fixture.coordinator_path(), CodingAgentKind::Claude)
+            .await;
+        let old_key = old.to_string();
+
+        let raise_barrier =
+            crate::commands::telegram::reader_demand_seam::install_before_install(&old_key);
+        let restart_barrier =
+            crate::commands::session::restart_reader_seam::install_after_old_release(&old_key);
+
+        let app = h.app.handle().clone();
+        let raise = tokio::spawn(async move {
+            crate::commands::telegram::raise_reader_demand(&app, old, ReaderConsumer::Room, None)
+                .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            raise_barrier.reached.notified(),
+        )
+        .await
+        .expect("the old-id raise reaches the pre-install seam");
+
+        let restart = {
+            let app = h.app.handle().clone();
+            let manager = Arc::clone(&h.manager);
+            let pty = Arc::clone(&h.pty);
+            let settings = h
+                .app
+                .state::<crate::config::settings::SettingsState>()
+                .inner()
+                .clone();
+            tokio::spawn(async move {
+                crate::commands::session::restart_session_inner_with_intent(
+                    &app,
+                    &manager,
+                    &pty,
+                    &settings,
+                    old,
+                    None,
+                    None,
+                    Some(false),
+                    true,
+                    TrustedRestartIntent::User,
+                    None,
+                    crate::config::sessions_persistence::default_creation_gate_enforcement(),
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            restart_barrier.reached.notified(),
+        )
+        .await
+        .expect("the restart reaches the post-release seam");
+
+        // Install inside the window: the old row is still live, so the raise's
+        // liveness recheck passes and the reader stays installed.
+        raise_barrier.release.notify_one();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while h.snapshot(old).await.0.is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the paused raise must install before the commit"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(h.captures.is_open(&old_key));
+
+        restart_barrier.release.notify_one();
+        let restarted = restart
+            .await
+            .expect("join restart")
+            .expect("restart succeeds");
+        let new = Uuid::parse_str(&restarted.id).expect("replacement id");
+        let raised = tokio::time::timeout(std::time::Duration::from_secs(10), raise)
+            .await
+            .expect("the raise resumes")
+            .expect("the raise task joins");
         assert!(
-            two.record_start.expect("live record") >= len_before,
-            "the same path must not replay consumed bytes"
+            raised,
+            "installed before the commit, the raise returns true"
         );
 
-        h.release_all(id).await;
+        // The post-commit release swept the old id.
+        let (reader, demands) = h.snapshot(old).await;
+        assert_eq!(reader, None, "the post-commit release sweeps the old id");
+        assert!(demands.is_empty());
+        assert!(!h.captures.is_open(&old_key));
+        assert!(h.captures.slot(&old_key).is_none());
+        // Exactly one reader, on the new id.
+        assert!(h.snapshot(new).await.0.is_some());
+        assert!(h.captures.is_open(&new.to_string()));
+        h.release_all(new).await;
+        h.close().await;
+    }
+
+    /// Test 9 (failure after runtime loss): when the replacement spawn fails
+    /// after the old PTY is gone, the old reader and its slot must close.
+    #[tokio::test]
+    async fn a_spawn_failure_after_runtime_loss_closes_the_old_reader() {
+        for kind in [CodingAgentKind::Claude, CodingAgentKind::Codex] {
+            let fixture = room_fixture();
+            configure_room(fixture.room_path(), true);
+            let h = restart_harness(&fixture);
+            let old = h.live_session(fixture.coordinator_path(), kind).await;
+            assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
+            let old_key = old.to_string();
+            assert!(h.captures.is_open(&old_key));
+
+            // Session create was spawn #1; fail the replacement spawn.
+            h.backend.fail_spawn(2);
+            let error = h
+                .restart(old)
+                .await
+                .expect_err("replacement spawn must fail");
+            assert!(
+                error.contains("synthetic scripted spawn failure"),
+                "{error}"
+            );
+
+            assert!(h.snapshot(old).await.0.is_none());
+            assert!(!h.captures.is_open(&old_key));
+            assert!(h.captures.slot(&old_key).is_none());
+            assert!(h.manager.read().await.get_session(old).await.is_none());
+            h.close().await;
+        }
+    }
+
+    /// Test 9 (dormant failure): a failed replacement for a dormant old session
+    /// retains the old row, reader and slot for retry.
+    #[tokio::test]
+    async fn a_dormant_restart_failure_keeps_the_old_reader_for_retry() {
+        for kind in [CodingAgentKind::Claude, CodingAgentKind::Codex] {
+            let fixture = room_fixture();
+            configure_room(fixture.room_path(), true);
+            let h = restart_harness(&fixture);
+            let old = h.live_session(fixture.coordinator_path(), kind).await;
+            h.backend.kill(old).expect("kill the dormant old");
+            h.app
+                .state::<crate::session::selection::SelectionCoordinator>()
+                .container_lifecycle_sender()
+                .route_lost(old, 23)
+                .await
+                .expect("reconcile the dormant route");
+            assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
+            let old_key = old.to_string();
+
+            h.backend.fail_spawn(2);
+            let error = h
+                .restart(old)
+                .await
+                .expect_err("dormant replacement must fail");
+            assert!(
+                error.contains("synthetic scripted spawn failure"),
+                "{error}"
+            );
+
+            let retained = h
+                .manager
+                .read()
+                .await
+                .get_session(old)
+                .await
+                .expect("the dormant row is retained");
+            assert!(matches!(retained.status, SessionStatus::Exited(_)));
+            assert!(h.snapshot(old).await.0.is_some(), "the old reader survives");
+            assert!(h.captures.is_open(&old_key), "the old slot survives");
+            h.release_all(old).await;
+            h.close().await;
+        }
+    }
+
+    /// Test 9 (preflight): a failure before teardown keeps the old runtime, so
+    /// its reader, demand set and slot survive untouched.
+    #[tokio::test]
+    async fn a_preflight_failure_keeps_the_old_reader_running() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness(&fixture);
+        let cwd = fixture.coordinator_path();
+        let old = h.live_session(cwd, CodingAgentKind::Claude).await;
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
+        let old_key = old.to_string();
+        let before = h.snapshot(old).await;
+
+        h.app
+            .state::<crate::config::settings::SettingsState>()
+            .write()
+            .await
+            .archived_project_paths = vec![cwd.to_string_lossy().into_owned()];
+        let error = h
+            .restart(old)
+            .await
+            .expect_err("archived project blocks restart");
+        assert!(
+            error.contains("Cannot start a session in archived project"),
+            "{error}"
+        );
+
+        assert_eq!(h.snapshot(old).await, before, "the old reader is untouched");
+        assert!(h.captures.is_open(&old_key));
+        assert!(h.captures.slot(&old_key).is_some());
+        h.release_all(old).await;
+        h.close().await;
     }
 
     /// Test 19: **create/destroy race.** The detached create-time Room raise is

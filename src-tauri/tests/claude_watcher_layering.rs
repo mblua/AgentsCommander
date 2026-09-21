@@ -1232,11 +1232,13 @@ fn analyze_guard(
 }
 
 // #2232 phase 4: the sets below are **unchanged**, and deliberately so. Phase 4
-// gave `claude_watcher` a destination `watch`, a re-anchor signal, per-line
-// preamble starts and a live `Option<Sender>`, but every one of those is either
-// std, `tokio`, or a name the watcher already carried: `capture::record` for the
-// record, `capture::key` and `capture::state` for the attachment, and
-// `jsonl_kernel` for the preamble window constants. No new module arc was
+// gave `claude_watcher` a destination `watch`, per-line preamble starts and a
+// live `Option<Sender>`, but every one of those is either std, `tokio`, or a
+// name the watcher already carried: `capture::record` for the record,
+// `capture::key` and `capture::state` for the attachment, and `jsonl_kernel`
+// for the preamble window constants. A restart now releases the old reader and
+// raises a fresh one on the new session UUID, so no re-anchor signal exists and
+// no watcher gained a reference to the supervisor. No new module arc was
 // created, so no row is added — adding one to satisfy a plan row would break the
 // equality pin the plan tells us not to relax.
 fn production_modules() -> BTreeSet<String> {

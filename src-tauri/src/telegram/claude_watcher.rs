@@ -39,15 +39,12 @@ const FLUSH_DELAY_MS: u64 = 500;
 /// `dest` carries the Telegram destination, consulted **only** when it changes
 /// — at attach and at detach (#2232 phase 4 section 6). `None` is a room-only
 /// reader: no logger is built, nothing is sent, and the records still reach
-/// `sink`. `reanchor` is bumped by the supervisor on a session restart; the
-/// demand set is untouched and only the transcript **file** is re-resolved
-/// (section 5.2).
+/// `sink`.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_watch_task<R: tauri::Runtime>(
     project_dir: PathBuf,
     network: OutboundNetwork,
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
-    reanchor: tokio::sync::watch::Receiver<u64>,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
@@ -58,7 +55,6 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
             project_dir,
             network,
             dest,
-            reanchor,
             session_id.clone(),
             cancel,
             app.clone(),
@@ -388,14 +384,12 @@ async fn watch_loop<R: tauri::Runtime>(
     project_dir: PathBuf,
     network: OutboundNetwork,
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
-    reanchor: tokio::sync::watch::Receiver<u64>,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) {
     let mut dest_rx = dest;
-    let mut reanchor_rx = reanchor;
     let mut current_dest: Option<BotTarget> = dest_rx.borrow_and_update().clone();
 
     // #2232 phase 4 section 8: with no bot demand no diagnostic is built, so
@@ -450,9 +444,8 @@ async fn watch_loop<R: tauri::Runtime>(
     poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        // `biased`: the destination change and the re-anchor signal are
-        // processed before the next file poll, never after it (sections 5.2
-        // and 6).
+        // `biased`: the destination change is processed before the next file
+        // poll, never after it (section 6).
         tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
@@ -498,51 +491,6 @@ async fn watch_loop<R: tauri::Runtime>(
                     buffer.push_str(&body);
                     buffer.push('\n');
                     last_buffer_add = Instant::now();
-                }
-            }
-
-            // §5.2: a restart keeps the demand set untouched and re-anchors the
-            // transcript **file**. The path is resolved again and compared with
-            // the binding:
-            //  - same path: retain the offset and read appended bytes only; if
-            //    the file was truncated below that offset, reset to zero and
-            //    mark the reread as backfill;
-            //  - different path: read from byte zero as `RotationBackfill`,
-            //    even beyond 64 KiB — never the cold-attach tail scan;
-            //  - no path: stay armed, so the reader keeps its binding and the
-            //    next poll resolves again.
-            changed = reanchor_rx.changed() => {
-                if changed.is_ok() {
-                    let _ = *reanchor_rx.borrow_and_update();
-                    let resolved = find_latest_jsonl(&project_dir);
-                    match (current_file.as_ref(), resolved) {
-                        (Some(current), Some(found)) if *current == found => {
-                            let len = std::fs::metadata(&found)
-                                .map(|m| m.len())
-                                .unwrap_or(0);
-                            if len < file_offset {
-                                file_offset = 0;
-                                line_remainder.clear();
-                                rotation_backfill_pending = true;
-                                bridge_log!("JSONL_REANCHOR", "same file truncated: rereading from byte zero as backfill");
-                            } else {
-                                bridge_log!("JSONL_REANCHOR", "same file: offset retained");
-                            }
-                        }
-                        (_, Some(found)) => {
-                            current_file = Some(found);
-                            current_file_mtime = current_file.as_ref()
-                                .and_then(|p| std::fs::metadata(p).ok())
-                                .and_then(|m| m.modified().ok());
-                            file_offset = 0;
-                            line_remainder.clear();
-                            rotation_backfill_pending = true;
-                            bridge_log!("JSONL_REANCHOR", "different file: reading from byte zero as backfill");
-                        }
-                        (_, None) => {
-                            bridge_log!("JSONL_REANCHOR", "no transcript yet: staying armed");
-                        }
-                    }
                 }
             }
 
@@ -866,14 +814,12 @@ mod tests {
         let network = crate::network::OutboundNetwork::new_for_tests(1);
         let cancel = CancellationToken::new();
         let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
-        let (_reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
         let task = spawn_watch_task(
             dir.path().to_path_buf(),
             network.clone(),
             dest_rx,
-            reanchor_rx,
             "room-only-claude".to_string(),
             cancel.clone(),
             app.handle().clone(),

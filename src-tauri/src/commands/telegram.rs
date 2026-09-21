@@ -242,6 +242,36 @@ pub(crate) mod reader_demand_seam {
     }
 }
 
+/// Test-only failure injection for `telegram_detach`'s `sessions.json`
+/// persistence step (phase 4 test 21).
+///
+/// Keyed by session id and consumed on first use: arming a failure for one
+/// test cannot leak into another test that detaches a different session.
+#[cfg(test)]
+pub(crate) mod detach_persistence_seam {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use uuid::Uuid;
+
+    static FORCE_FAILURE: Mutex<Option<HashSet<Uuid>>> = Mutex::new(None);
+
+    pub(crate) fn arm(session_id: Uuid) {
+        FORCE_FAILURE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashSet::new)
+            .insert(session_id);
+    }
+
+    pub(crate) fn take(session_id: Uuid) -> bool {
+        FORCE_FAILURE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .is_some_and(|armed| armed.remove(&session_id))
+    }
+}
+
 /// Release `consumer`'s demand. The reader stops only when it was the last one.
 ///
 /// The drain order is emitted with `TelegramBridgeState` **released**, within
@@ -280,16 +310,6 @@ pub(crate) async fn release_all_reader_demands<R: tauri::Runtime>(
     if let Some(shutdown) = shutdown {
         shutdown.spawn_wait_or_abort();
     }
-}
-
-/// Re-anchor the reader's transcript **file** after a restart, keeping the
-/// demand set untouched (section 5.2).
-pub(crate) async fn reanchor_reader<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid) {
-    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
-        return;
-    };
-    let tg = tg_state.lock().await;
-    tg.reader_reanchor(session_id);
 }
 
 pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
@@ -447,46 +467,68 @@ pub async fn telegram_attach(
 #[tauri::command]
 pub async fn telegram_detach(
     app: AppHandle,
-    tg_mgr: State<'_, TelegramBridgeState>,
+    _tg_mgr: State<'_, TelegramBridgeState>,
     session_id: String,
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    detach_telegram_inner(&app, uuid).await
+}
+
+/// Detach the bot side of a session and release its Bot demand.
+///
+/// Split out of the command so phase 4 test 21 can drive it with a plain
+/// `AppHandle` while still exercising the real persistence path and the
+/// `#[cfg(test)]` failure seam in it.
+pub(crate) async fn detach_telegram_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    uuid: Uuid,
+) -> Result<(), String> {
+    let session_id = uuid.to_string();
+    let tg_mgr = app.state::<TelegramBridgeState>();
     let mut shutdown = Some({
         let mut tg = tg_mgr.lock().await;
         tg.detach(uuid).map_err(|e| e.to_string())?
     });
 
-    {
+    let persist_result = {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
 
         mgr.set_telegram_bot_id(uuid, None).await;
-        if let Err(e) = persist_current_state_result(&mgr).await {
-            let err_msg = format!(
-                "Telegram bridge detached live, but sessions.json could not be persisted for session {}: {}",
-                uuid, e
-            );
-            log::error!("{}", err_msg);
-            let _ = app.emit(
-                "telegram_bridge_error",
-                serde_json::json!({
-                    "sessionId": session_id.clone(),
-                    "error": err_msg,
-                }),
-            );
-            if let Some(shutdown) = shutdown.take() {
-                shutdown.spawn_wait_or_abort();
-            }
-            return Err(err_msg);
-        }
-    }
+        let persist_result = persist_current_state_result(&mgr).await;
+        #[cfg(test)]
+        let persist_result = if detach_persistence_seam::take(uuid) {
+            Err("synthetic detach persistence failure".to_string())
+        } else {
+            persist_result
+        };
+        persist_result
+    };
     if let Some(shutdown) = shutdown.take() {
         shutdown.spawn_wait_or_abort();
     }
 
-    // #2232 phase 4: detaching releases the **bot** demand. A room demand, if
-    // any, keeps the reader running with Telegram sends stopped.
-    release_reader_demand(&app, uuid, ReaderConsumer::Bot).await;
+    // #2232 phase 4 section 5: a live detach releases the **bot** demand even
+    // when `sessions.json` persistence fails, so the reader stops sending and
+    // a Room demand, if any, keeps capturing. The persistence error and event
+    // below are unchanged.
+    release_reader_demand(app, uuid, ReaderConsumer::Bot).await;
+
+    if let Err(e) = persist_result {
+        let err_msg = format!(
+            "Telegram bridge detached live, but sessions.json could not be persisted for session {}: {}",
+            uuid, e
+        );
+        log::error!("{}", err_msg);
+        let _ = app.emit(
+            "telegram_bridge_error",
+            serde_json::json!({
+                "sessionId": session_id.clone(),
+                "error": err_msg,
+            }),
+        );
+        return Err(err_msg);
+    }
 
     let _ = app.emit(
         "telegram_bridge_detached",

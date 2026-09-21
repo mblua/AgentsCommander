@@ -2,7 +2,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
@@ -43,7 +42,6 @@ pub struct ReaderEntry {
     cancel: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
     dest: ReaderDestSender,
-    reanchor: watch::Sender<u64>,
     frontier: Arc<Mutex<Option<Cut>>>,
     demands: BTreeSet<ReaderConsumer>,
 }
@@ -57,7 +55,6 @@ impl ReaderEntry {
             cancel: spawned.cancel,
             tasks: spawned.tasks,
             dest: spawned.dest,
-            reanchor: spawned.reanchor,
             frontier: spawned.frontier,
             demands: BTreeSet::new(),
         }
@@ -300,26 +297,6 @@ impl TelegramBridgeManager {
         })
     }
 
-    /// Signal the reader to re-anchor its transcript **file** (section 5.2).
-    ///
-    /// The demand set is untouched: there is no release, no re-raise and no
-    /// `CaptureRegistry::close`, because AC preserves the session UUID across a
-    /// restart. The cut's sequence part is superseded and the slot is cleared to
-    /// `Empty` with a fresh `seq`, so a candidate captured before the restart
-    /// can never be consumed after it.
-    pub fn reader_reanchor(&self, session_id: Uuid) -> bool {
-        let Some(entry) = self.readers.get(&session_id) else {
-            return false;
-        };
-        let key = session_id.to_string();
-        if let Some(slot) = self.captures.slot(&key) {
-            slot.supersede_cut_sequence();
-            slot.clear();
-        }
-        entry.reanchor.send_modify(|seq| *seq = seq.wrapping_add(1));
-        true
-    }
-
     // The 8-argument signature is the frozen plan spec (#1549 §5.4): the PTY-bridge
     // chain threads `agent_kind` as a loose parameter by design (no struct grouping).
     #[allow(clippy::too_many_arguments)]
@@ -492,6 +469,7 @@ impl TelegramBridgeManager {
 mod tests {
     use super::*;
     use tokio::sync::mpsc;
+    use tokio::sync::watch;
     use tokio_util::sync::CancellationToken;
 
     // ── #2232 phase 4 section 5: the demand registry ──────────────────────
@@ -500,14 +478,12 @@ mod tests {
     /// nothing races the assertions.
     fn test_reader(cancel: CancellationToken) -> ReaderTask {
         let (dest, _dest_rx) = watch::channel(None);
-        let (reanchor, _reanchor_rx) = watch::channel(0u64);
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move { task_cancel.cancelled().await });
         ReaderTask {
             cancel,
             tasks: vec![task],
             dest: ReaderDestSender::Claude(dest),
-            reanchor,
             frontier: Arc::new(Mutex::new(None)),
         }
     }
@@ -701,7 +677,6 @@ mod tests {
             let reader_id = guard.next_reader_id();
             let cancel = CancellationToken::new();
             let (dest, _dest_rx) = watch::channel(None);
-            let (reanchor, _reanchor_rx) = watch::channel(0u64);
             // A task that ignores cancellation: the acknowledgement never comes.
             let task = tokio::spawn(async { std::future::pending::<()>().await });
             guard.reader_install(
@@ -712,7 +687,6 @@ mod tests {
                         cancel,
                         tasks: vec![task],
                         dest: ReaderDestSender::Claude(dest),
-                        reanchor,
                         frontier: Arc::new(Mutex::new(None)),
                     },
                 ),
@@ -743,44 +717,6 @@ mod tests {
         );
         assert!(started.elapsed() < Duration::from_millis(250));
         drain.await.expect("drain task joins after its own budget");
-    }
-
-    /// Section 5.2: a re-anchor keeps the demand set, never closes the capture
-    /// entry, and leaves the slot `Empty` with a **higher** `seq`.
-    #[tokio::test]
-    async fn a_reanchor_keeps_the_demands_and_clears_the_slot() {
-        let captures = Arc::new(CaptureRegistry::new());
-        let mut manager = test_manager(&captures);
-        let session_id = Uuid::new_v4();
-        let cancel = install(&mut manager, session_id, ReaderConsumer::Room);
-        let slot = captures.slot(&session_id.to_string()).expect("slot open");
-        slot.invalidate("pre-restart candidate");
-        let before_seq = slot.seq();
-        let before_demands = manager.reader_demands(session_id);
-        let before_id = manager.reader_id(session_id);
-        let mut reanchor_rx = manager
-            .readers
-            .get(&session_id)
-            .expect("reader installed")
-            .reanchor
-            .subscribe();
-        let before_signal = *reanchor_rx.borrow_and_update();
-
-        assert!(manager.reader_reanchor(session_id));
-
-        assert_eq!(manager.reader_demands(session_id), before_demands);
-        assert_eq!(manager.reader_id(session_id), before_id, "no respawn");
-        assert!(!cancel.is_cancelled(), "the reader is not cancelled");
-        assert!(
-            captures.is_open(&session_id.to_string()),
-            "CaptureRegistry::close is never called on a restart"
-        );
-        assert!(matches!(
-            slot.snapshot().value,
-            crate::capture::sink::SlotValue::Empty
-        ));
-        assert!(slot.seq() > before_seq, "the slot gets a fresh seq");
-        assert!(*reanchor_rx.borrow_and_update() > before_signal);
     }
 
     #[tokio::test]

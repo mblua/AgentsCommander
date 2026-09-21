@@ -604,7 +604,6 @@ pub struct ReaderTask {
     pub cancel: CancellationToken,
     pub tasks: Vec<JoinHandle<()>>,
     pub dest: ReaderDestSender,
-    pub reanchor: tokio::sync::watch::Sender<u64>,
     /// The reader's last observation, kept as a ready-made [`Cut`] so a demand
     /// raised over the running reader can record one (section 5, phase 3
     /// section 7) without stopping or re-reading anything.
@@ -742,7 +741,6 @@ pub fn spawn_reader<R: tauri::Runtime>(
 ) -> ReaderTask {
     let cancel = CancellationToken::new();
     let frontier: Arc<Mutex<Option<Cut>>> = Arc::new(Mutex::new(None));
-    let (reanchor_tx, reanchor_rx) = tokio::sync::watch::channel(0u64);
     let session_id_str = session_id.to_string();
 
     // Each watcher gets its own live destination `watch`, not a snapshot taken
@@ -756,7 +754,6 @@ pub fn spawn_reader<R: tauri::Runtime>(
                 project_dir,
                 network,
                 dest_rx,
-                reanchor_rx,
                 session_id_str,
                 cancel.clone(),
                 app_handle,
@@ -776,7 +773,6 @@ pub fn spawn_reader<R: tauri::Runtime>(
                 attach_time,
                 network,
                 dest_rx,
-                reanchor_rx,
                 session_id_str,
                 cancel.clone(),
                 app_handle,
@@ -803,7 +799,6 @@ pub fn spawn_reader<R: tauri::Runtime>(
         cancel,
         tasks,
         dest,
-        reanchor: reanchor_tx,
         frontier,
     }
 }
