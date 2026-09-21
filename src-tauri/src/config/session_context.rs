@@ -1642,11 +1642,11 @@ fn write_combined_context_file(
             &content
         };
         if first {
-            combined.push_str(&content);
+            combined.push_str(content);
             first = false;
         } else {
             combined.push_str(&format!("\n\n---\n\n# Context: {}\n\n", label));
-            combined.push_str(&content);
+            combined.push_str(content);
         }
     }
 
