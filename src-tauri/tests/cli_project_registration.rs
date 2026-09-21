@@ -4,7 +4,26 @@
 //! `config_dir()` resolves to an isolated sibling config directory.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
+
+/// Excludes one test's open write descriptor on a freshly copied binary from
+/// overlapping another test's fork/exec.
+///
+/// These tests run in parallel and each copies the binary into its own temp dir
+/// before exec'ing it. `Command::spawn` forks, and the child inherits the write
+/// descriptor another thread still holds on *its* copy; exec'ing a binary that
+/// any process holds open for writing fails with `ETXTBSY`. Covering both the
+/// copy and the spawn closes that window. The lock is released before output is
+/// collected, so the binary runs themselves still overlap.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn command_for_binary(bin: &Path) -> Command {
     let mut command = Command::new(bin);
@@ -39,7 +58,10 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    {
+        let _guard = spawn_lock();
+        std::fs::copy(src, &dst).expect("copy binary");
+    }
     dst
 }
 
@@ -118,7 +140,17 @@ fn assert_registration_request(request: &serde_json::Value, project: &Path) {
 }
 
 fn run_success(bin: &Path, args: &[&str]) {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let mut command = command_for_binary(bin);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -132,7 +164,17 @@ fn run_success(bin: &Path, args: &[&str]) {
 /// (stdout JSON plus stderr warnings) while keeping this file's frozen route
 /// set (the issue_1867 isolation contract counts `command_for_binary` routes).
 fn run_json(bin: &Path, args: &[&str]) -> (serde_json::Value, String) {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let mut command = command_for_binary(bin);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -149,7 +191,17 @@ fn run_json(bin: &Path, args: &[&str]) -> (serde_json::Value, String) {
 /// Failure capture returning the raw output so the caller can assert the exact
 /// exit status, stdout and stderr (the #1967 unavailable diagnostic).
 fn run_failure(bin: &Path, args: &[&str]) -> std::process::Output {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let mut command = command_for_binary(bin);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
     assert!(
         !out.status.success(),
         "expected failure\nstdout: {}\nstderr: {}",
