@@ -3950,10 +3950,10 @@ mod tests {
     }
 
     fn setup_project() -> (tempfile::TempDir, PathBuf) {
-        let _ = env_logger::builder()
-            .is_test(true)
-            .filter_level(log::LevelFilter::Warn)
-            .try_init();
+        // #1883 — install the shared crate logger instead of a raw
+        // `env_logger` builder, so the #264 error sink is the process-wide
+        // one the mailbox tests also probe.
+        crate::logging::init_logger();
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("project");
         std::fs::create_dir_all(project.join(".ac")).expect("create project .ac");
