@@ -630,6 +630,7 @@ mod tests {
             label: id.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
+            order: None,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
