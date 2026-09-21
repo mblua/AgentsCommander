@@ -1,0 +1,1906 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Prototipo: orden de herramientas de coding — Settings y Step 1 (bug #2311 · épica #2306)</title>
+<style>
+  /* ==========================================================================
+     P0 two-screen agent-order prototype (bug #2311, epic #2306).
+
+     This file is a design mock. There is no application code here, no IPC, no
+     settings schema and no real persistence: every save is simulated in page
+     state. It is only ever revised by hand for visual review.
+
+     Views:
+       Screen A  Settings > Coding Agents        (pinned screenshot 773x491)
+       Screen B  Coding Agent profile assignment > Step 1
+                                                 (pinned screenshot 607x1074)
+     Each screen has a Today and a Proposed state.
+
+     Proposed move controls are shown in BOTH screens for comparison only, not
+     as an approved placement. The user's decision is where they should live:
+     Settings only, Step 1 only, or both.
+
+     Token departure from the app (required by the plan): --sidebar-fg-dim is
+     #6a6a78 in the app, which is 3.71:1 on --sidebar-bg and 3.60:1 on
+     --sidebar-surface at 11px - below the WCAG AA 4.5:1 floor for body text.
+     This prototype uses #8f8fa0 instead: 6.21:1 on #0a0a0f and 6.03:1 on
+     #0e0e18. The app's dim token is not modified by this prototype.
+     ========================================================================== */
+  :root {
+    --sidebar-bg: #0a0a0f;
+    --sidebar-fg: #d0d0d8;
+    --sidebar-fg-dim: #8f8fa0; /* prototype departure from the app's #6a6a78 */
+    --sidebar-accent: #00d4ff;
+    --sidebar-hover: #12121e;
+    --sidebar-active: #222227;
+    --sidebar-border: rgba(255, 255, 255, 0.06);
+    --sidebar-surface: #0e0e18;
+    --status-active: #00d4ff;
+    --status-running: #3a7bff;
+    --status-exited: #ff3b5c;
+    --status-waiting: #22c55e;
+    --status-pending: #eab308;
+    --status-blocked: #f97316;
+    --spacing-xs: 4px;
+    --spacing-sm: 8px;
+    --spacing-md: 12px;
+    --spacing-lg: 16px;
+    --font-ui: "Geist", "Outfit", "General Sans", "Segoe UI", sans-serif;
+    --font-mono: "Cascadia Code", "JetBrains Mono", monospace;
+    --font-size-sm: 11px;
+    --font-size-md: 13px;
+    --font-size-lg: 14px;
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --transition-fast: 150ms ease-out;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-ui);
+    font-size: var(--font-size-md);
+    color: var(--sidebar-fg);
+    background: var(--sidebar-bg);
+    line-height: 1.5;
+    padding: 18px;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* ---------------------------------------------------------------- review chrome */
+  .review-head {
+    max-width: 1440px;
+    margin: 0 auto 18px;
+    padding: var(--spacing-md) var(--spacing-lg);
+    border: 1px dashed rgba(0, 212, 255, 0.4);
+    border-radius: var(--radius-md);
+    background: rgba(0, 212, 255, 0.04);
+  }
+  .review-head h1 { font-size: 16px; line-height: 1.3; margin-bottom: 6px; color: var(--sidebar-fg); }
+  .review-head p { font-size: 12px; color: var(--sidebar-fg-dim); max-width: 110ch; }
+  .review-head p + p { margin-top: 4px; }
+  .review-head strong { color: var(--sidebar-fg); }
+  .decision-line { color: var(--sidebar-fg); }
+
+  .review-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-sm) var(--spacing-md);
+    align-items: center;
+    margin-top: var(--spacing-md);
+    padding-top: var(--spacing-md);
+    border-top: 1px solid var(--sidebar-border);
+  }
+  .review-toolbar label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--sidebar-fg-dim);
+    cursor: pointer;
+  }
+  .review-toolbar input[type="checkbox"] { accent-color: var(--sidebar-accent); }
+
+  .review-status {
+    margin-top: var(--spacing-sm);
+    font-size: 11px;
+    min-height: 17px;
+    color: var(--sidebar-fg-dim);
+  }
+  .review-status[data-kind="error"] { color: var(--status-exited); }
+  .review-status[data-kind="warn"] { color: var(--status-pending); }
+  .review-status[data-kind="ok"] { color: var(--status-waiting); }
+
+  main { display: flex; flex-direction: column; gap: 18px; align-items: center; }
+
+  .screen-block { max-width: 1440px; width: 100%; display: flex; flex-direction: column; align-items: center; }
+  .screen-nav {
+    width: 100%;
+    max-width: 773px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    margin-bottom: 6px;
+  }
+  .screen-nav h2 { font-size: 13px; font-weight: 700; }
+  .screen-nav .screen-sub { display: block; font-size: 11px; font-weight: 400; color: var(--sidebar-fg-dim); }
+
+  .mode-switch { display: inline-flex; border: 1px solid var(--sidebar-border); border-radius: var(--radius-sm); overflow: hidden; }
+  .mode-switch button {
+    font: inherit; font-size: 11px; font-weight: 600;
+    padding: 5px 14px;
+    border: 0;
+    background: var(--sidebar-surface);
+    color: var(--sidebar-fg-dim);
+    cursor: pointer;
+  }
+  .mode-switch button + button { border-left: 1px solid var(--sidebar-border); }
+  .mode-switch button[aria-pressed="true"] { background: rgba(0, 212, 255, 0.12); color: var(--sidebar-accent); }
+  .mode-switch button:hover:not([aria-pressed="true"]) { color: var(--sidebar-fg); }
+
+  .proto-banner {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+    padding: 4px 10px;
+    border-bottom: 1px dashed rgba(0, 212, 255, 0.35);
+    background: rgba(0, 212, 255, 0.05);
+    color: var(--sidebar-fg-dim);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+  .proto-banner b { color: var(--sidebar-accent); font-weight: 700; letter-spacing: 0.04em; }
+
+  .review-btn {
+    font: inherit;
+    font-size: 11px;
+    padding: 4px 10px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-hover);
+    color: var(--sidebar-fg);
+    cursor: pointer;
+  }
+  .review-btn:hover:not(:disabled) { border-color: var(--sidebar-accent); color: var(--sidebar-accent); }
+  .review-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .review-btn:focus-visible { outline: 2px solid var(--sidebar-accent); outline-offset: 2px; }
+
+  /* Review-only highlight mode. Amber numbered badges mark proposed product
+     behavior that is not visible in the two confirmed screenshots; grey/first
+     tags mark prototype-only scaffolding. Nothing here changes behavior. */
+  .proto-tag {
+    display: inline-block;
+    margin-left: 5px;
+    padding: 0 5px;
+    border: 1px dashed var(--sidebar-fg-dim);
+    border-radius: 999px;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--sidebar-fg-dim);
+    white-space: nowrap;
+  }
+  .change-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    margin-left: 4px;
+    border: 1px solid var(--status-pending);
+    border-radius: 999px;
+    background: rgba(234, 179, 8, 0.15);
+    color: var(--status-pending);
+    font-size: 9px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .change-target { outline: 1px dashed rgba(234, 179, 8, 0.55); outline-offset: 2px; border-radius: 4px; }
+  .change-legend {
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px dashed var(--status-pending);
+    border-radius: var(--radius-sm);
+    background: rgba(234, 179, 8, 0.05);
+  }
+  .change-legend[hidden] { display: none; }
+  .change-legend h2 { font-size: 12px; margin-bottom: 4px; }
+  .change-legend > p { font-size: 11px; color: var(--sidebar-fg-dim); margin-bottom: 6px; }
+  .legend-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--sidebar-fg-dim);
+    padding: 2px 0;
+  }
+  .legend-item > span { flex: 1 1 auto; }
+  .legend-item b { color: var(--sidebar-fg); font-weight: 600; }
+  .legend-item .review-btn { flex: 0 0 auto; font-size: 10px; padding: 1px 7px; }
+  .scaffold-note { margin-top: var(--spacing-sm); font-size: 11px; color: var(--sidebar-fg-dim); }
+  .scaffold-note .proto-tag { margin-left: 0; margin-right: 4px; }
+  .settings-agent-order-chip {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--status-running);
+    border: 1px solid rgba(58, 123, 255, 0.4);
+    border-radius: 3px;
+    padding: 0 4px;
+    white-space: nowrap;
+  }
+  .mock-json {
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm);
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.5;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  button:focus-visible,
+  input:focus-visible,
+  [role="button"]:focus-visible {
+    outline: 2px solid var(--sidebar-accent);
+    outline-offset: 2px;
+  }
+
+  /* ------------------------------------------------------- app: Settings surface */
+  .settings-mock {
+    width: 773px;
+    max-width: 100%;
+    background: var(--sidebar-surface);
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  }
+
+  .settings-tabs {
+    display: flex;
+    gap: 0;
+    padding: 0;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .settings-tab {
+    flex: 1;
+    padding: var(--spacing-sm) var(--spacing-xs);
+    font-family: var(--font-ui);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--sidebar-fg-dim);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: default;
+    text-align: center;
+  }
+  .settings-tab.active { color: var(--sidebar-fg); border-bottom-color: var(--sidebar-accent); }
+
+  .settings-config-screen {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.62fr);
+    gap: var(--spacing-md);
+    padding: var(--spacing-md);
+    align-items: start;
+  }
+
+  .settings-agents-panel {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.02);
+    overflow: hidden;
+  }
+  .settings-agents-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-sm);
+    border-bottom: 1px solid var(--sidebar-border);
+    background: rgba(255, 255, 255, 0.025);
+  }
+  .settings-agents-panel-title { font-size: var(--font-size-md); font-weight: 700; color: var(--sidebar-fg); }
+  .settings-agents-panel-kicker { font-size: 10px; color: var(--sidebar-fg-dim); }
+  .settings-agents-add {
+    flex: 0 0 auto;
+    font: inherit;
+    font-size: 11px;
+    padding: 4px 9px;
+    border: 1px solid rgba(0, 212, 255, 0.45);
+    border-radius: var(--radius-sm);
+    background: rgba(0, 212, 255, 0.12);
+    color: var(--sidebar-accent);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .settings-agents-panel-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-sm);
+  }
+
+  .settings-agent-row {
+    --agent-color: var(--sidebar-accent);
+    border: 1px solid var(--sidebar-border);
+    border-left: 2px solid var(--agent-color);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .settings-agent-row[aria-current="true"] {
+    background: rgba(0, 212, 255, 0.05);
+    border-color: rgba(0, 212, 255, 0.28);
+    border-left-color: var(--agent-color);
+  }
+  .settings-agent-row-head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    cursor: pointer;
+  }
+  .settings-agent-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+  .settings-agent-row-meta { min-width: 0; }
+  .settings-agent-row-name {
+    font-size: 12px; font-weight: 700; color: var(--sidebar-fg);
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .settings-agent-row-cmd {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--sidebar-fg-dim);
+  }
+  .settings-agent-row-colorline {
+    display: flex; align-items: center; gap: 5px;
+    margin-top: 3px; flex-wrap: wrap;
+  }
+  .settings-agent-swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+
+  .settings-agent-color-input {
+    width: 68px;
+    padding: 1px 4px;
+    border: 1px dashed var(--sidebar-border);
+    border-radius: 3px;
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    font-family: var(--font-mono);
+    font-size: 9px;
+  }
+  .settings-agent-color-input:focus-visible { outline-offset: 0; border-style: solid; }
+
+  .settings-rail-pill {
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 8px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border: 1px solid var(--sidebar-border);
+    color: var(--sidebar-fg-dim);
+  }
+  .settings-rail-pill.left {
+    color: var(--sidebar-accent);
+    border-color: rgba(0, 212, 255, 0.4);
+    background: rgba(0, 212, 255, 0.12);
+  }
+  .settings-rail-pill.available { color: var(--sidebar-fg-dim); }
+
+  .draft-chip {
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--status-pending);
+    border: 1px solid rgba(234, 179, 8, 0.45);
+    border-radius: 999px;
+    padding: 0 5px;
+  }
+
+  .settings-agent-row-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+  .settings-row-btn {
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-hover);
+    color: var(--sidebar-fg);
+    font: inherit;
+    font-size: 10px;
+    padding: 3px 8px;
+    cursor: pointer;
+  }
+  .settings-row-btn:hover:not(:disabled) { border-color: var(--sidebar-accent); color: var(--sidebar-accent); }
+  .settings-row-btn[aria-current="true"] { border-color: var(--sidebar-accent); color: var(--sidebar-accent); }
+  .settings-row-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .settings-agent-row-delete {
+    display: flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; padding: 0;
+    border: none; background: transparent; color: var(--sidebar-fg-dim);
+    cursor: pointer; border-radius: var(--radius-sm);
+  }
+  .settings-agent-row-delete:hover { background: rgba(255, 59, 92, 0.15); color: var(--status-exited); }
+  .settings-agent-chevron {
+    color: var(--sidebar-fg-dim); font-size: 10px; width: 16px; padding: 0;
+    border: none; background: transparent; cursor: pointer; text-align: center;
+  }
+  .settings-agent-chevron:hover { color: var(--sidebar-accent); }
+
+  .move-btn {
+    min-width: 24px; min-height: 24px;
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 0 5px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-hover);
+    color: var(--sidebar-accent);
+    font: inherit; font-size: 12px; line-height: 1;
+    cursor: pointer;
+  }
+  .move-btn:hover:not(:disabled) { border-color: var(--sidebar-accent); background: var(--sidebar-active); }
+  .move-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .settings-actions-block {
+    margin-top: var(--spacing-xs);
+    padding: var(--spacing-sm);
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .settings-actions-title {
+    font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--sidebar-fg-dim); margin-bottom: var(--spacing-xs);
+  }
+  .settings-actions-row { display: flex; flex-wrap: wrap; gap: var(--spacing-xs); }
+
+  .settings-compare-wrap { min-width: 0; display: flex; flex-direction: column; gap: var(--spacing-sm); }
+  .settings-profile-rail {
+    --agent-color: var(--sidebar-accent);
+    border: 1px solid var(--sidebar-border);
+    border-left: 2px solid var(--agent-color);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.02);
+    overflow: hidden;
+  }
+  .settings-profile-rail-header {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: var(--spacing-sm);
+    border-bottom: 1px solid var(--sidebar-border);
+    background: rgba(255, 255, 255, 0.025);
+  }
+  .settings-profile-rail-title { font-size: 11px; font-weight: 700; }
+  .settings-profile-rail-subtitle { font-size: 10px; color: var(--sidebar-fg-dim); }
+  .settings-profile-rail-body { padding: var(--spacing-sm); }
+
+  .settings-profile-card {
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.025);
+    padding: var(--spacing-sm);
+  }
+  .settings-profile-card-head { display: flex; align-items: flex-start; gap: var(--spacing-sm); }
+  .settings-profile-letter-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; flex: 0 0 auto;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 212, 255, 0.4);
+    background: rgba(0, 212, 255, 0.1);
+    color: var(--sidebar-accent);
+    font-size: 11px; font-weight: 700;
+  }
+  .settings-profile-card-heading { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; }
+  .settings-profile-name-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .settings-profile-label {
+    min-width: 0; width: 120px;
+    padding: 3px 6px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    font: inherit; font-size: 11px;
+  }
+  .settings-profile-badge {
+    font-size: 8px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+    border-radius: 999px; padding: 1px 6px;
+    border: 1px solid rgba(0, 212, 255, 0.4);
+    color: var(--sidebar-accent);
+    background: rgba(0, 212, 255, 0.1);
+  }
+  .settings-profile-badge.inherited {
+    color: #e3b341; border-color: rgba(227, 179, 65, 0.45); background: rgba(227, 179, 65, 0.1);
+  }
+  .settings-profile-badge.none { color: var(--sidebar-fg-dim); border-color: var(--sidebar-border); background: transparent; }
+  .settings-profile-card-sub { font-family: var(--font-mono); font-size: 10px; color: var(--sidebar-fg-dim); }
+
+  .settings-hint {
+    margin-top: var(--spacing-xs);
+    font-size: 10px;
+    line-height: 1.4;
+    color: var(--sidebar-fg-dim);
+  }
+  .settings-ownership-reason {
+    margin: var(--spacing-xs) 0 0;
+    padding: 5px 7px;
+    border: 1px solid rgba(234, 179, 8, 0.4);
+    border-radius: var(--radius-sm);
+    background: rgba(234, 179, 8, 0.08);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  /* -------------------------------------------------- app: picker Step 1 surface */
+  .picker-frame { width: 607px; max-width: 100%; display: flex; flex-direction: column; gap: var(--spacing-sm); }
+
+  .picker-viewport {
+    width: 100%;
+    height: 1074px;
+    display: flex;
+    flex-direction: column;
+    background: var(--sidebar-surface);
+    border: 1px solid rgba(0, 212, 255, 0.15);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(0, 212, 255, 0.05);
+  }
+
+  .agent-picker-modal-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    padding: var(--spacing-md);
+    border-bottom: 1px solid var(--sidebar-border);
+    flex: 0 0 auto;
+  }
+  .agent-picker-eyebrow {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--sidebar-fg-dim);
+  }
+  .agent-modal-title { font-size: 13px; color: var(--sidebar-fg); }
+  .agent-picker-context { text-align: right; font-size: 10px; color: var(--sidebar-fg-dim); display: flex; flex-direction: column; }
+  .agent-picker-context strong { color: var(--sidebar-fg); font-size: 11px; }
+
+  .agent-profile-assignment-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+    overflow: hidden;
+  }
+
+  .agent-profile-panel {
+    min-width: 0;
+    display: grid;
+    gap: 10px;
+    align-content: start;
+    padding: 12px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .agent-profile-provider-panel {
+    grid-template-rows: auto auto minmax(0, 1fr);
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+  /* Filter + notices form one content-height row so the card list keeps the
+     stretchy row and its full-height cards. */
+  .agent-profile-provider-top { display: grid; gap: 10px; min-width: 0; }
+  .agent-profile-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--spacing-sm); }
+  .agent-profile-panel-title { font-size: 11px; font-weight: 700; color: var(--sidebar-fg); text-transform: uppercase; letter-spacing: 0.04em; }
+  .agent-profile-panel-kicker { color: var(--sidebar-fg-dim); font-size: 10px; line-height: 1.4; }
+  .agent-profile-step {
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em;
+    border: 1px solid rgba(0, 212, 255, 0.4);
+    color: var(--sidebar-accent);
+    background: rgba(0, 212, 255, 0.1);
+    white-space: nowrap;
+  }
+
+  .agent-profile-provider-filter {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+    padding: 6px 7px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .agent-profile-provider-filter label {
+    color: var(--sidebar-fg-dim);
+    font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .agent-profile-provider-filter input {
+    width: 100%; min-width: 0;
+    padding: 4px 7px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 4px;
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    font-family: var(--font-ui);
+    font-size: 11px;
+  }
+  .agent-profile-provider-filter input::placeholder { color: var(--sidebar-fg-dim); }
+  .agent-profile-provider-filter-status { min-width: 0; color: var(--sidebar-fg-dim); font-size: 9px; line-height: 1.35; overflow-wrap: anywhere; }
+  .agent-profile-provider-filter-status[data-state="match"] { color: var(--sidebar-accent); }
+  .agent-profile-provider-filter-status[data-state="empty"] { color: var(--status-pending); }
+
+  .agent-profile-provider-list { display: grid; gap: 8px; min-width: 0; min-height: 0; overflow-y: auto; }
+
+  /* The app's provider card is one <button>. The prototype splits it into a
+     wrapper + an inner select button + separate sibling move buttons so the
+     reorder controls are never nested inside another button (plan rule). The
+     wrapper keeps the card's real visual language. */
+  .agent-profile-provider-card-wrap {
+    --agent-color: var(--sidebar-border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--sidebar-border);
+    border-left-color: var(--agent-color);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.025);
+  }
+  .agent-profile-provider-card-wrap.active {
+    border-color: var(--sidebar-accent);
+    background: rgba(0, 212, 255, 0.08);
+  }
+  .agent-profile-provider-card-wrap:hover:not(.active) { border-color: rgba(0, 212, 255, 0.35); background: rgba(255, 255, 255, 0.05); }
+
+  .agent-profile-provider-card {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--sidebar-fg);
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--font-ui);
+  }
+  .agent-profile-provider-name { display: block; color: var(--sidebar-fg); font-size: 12px; font-weight: 700; }
+  .agent-profile-provider-command { display: block; color: var(--sidebar-fg-dim); font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+  .agent-profile-provider-chip {
+    border: 1px solid rgba(0, 212, 255, 0.24);
+    border-radius: 999px;
+    padding: 2px 6px;
+    color: var(--sidebar-accent);
+    font-size: 9px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .provider-card-moves { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; }
+
+  .picker-filter-reason {
+    margin-top: var(--spacing-xs);
+    padding: 5px 7px;
+    border: 1px solid rgba(234, 179, 8, 0.4);
+    border-radius: var(--radius-sm);
+    background: rgba(234, 179, 8, 0.08);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  .agent-comparison-panel { flex: 0 0 auto; }
+  .agent-comparison-table {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .agent-comparison-table-head,
+  .agent-comparison-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 5px 8px;
+  }
+  .agent-comparison-table-head {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--sidebar-fg-dim);
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .agent-comparison-row + .agent-comparison-row { border-top: 1px solid var(--sidebar-border); }
+  .agent-comparison-row.active { background: rgba(0, 212, 255, 0.06); }
+  .agent-comparison-agent { font-size: 11px; font-weight: 600; }
+  .agent-comparison-agent-sub { font-family: var(--font-mono); font-size: 10px; color: var(--sidebar-fg-dim); overflow-wrap: anywhere; }
+  .agent-comparison-status { font-size: 9px; color: var(--sidebar-fg-dim); white-space: nowrap; }
+
+  .under-fold-note {
+    font-size: 10px;
+    color: var(--sidebar-fg-dim);
+    padding: 0 2px;
+  }
+
+  /* ------------------------------------------------- review-only example blocks */
+  .review-card {
+    width: 100%;
+    max-width: 773px;
+    margin-top: var(--spacing-md);
+    border: 1px dashed rgba(0, 212, 255, 0.4);
+    border-radius: var(--radius-md);
+    background: rgba(0, 212, 255, 0.03);
+    padding: var(--spacing-md);
+  }
+  .review-card h3 { font-size: 12px; margin-bottom: 4px; }
+  .review-card > p { font-size: 11px; color: var(--sidebar-fg-dim); }
+  .label-example-grid { display: flex; flex-direction: column; gap: 6px; margin-top: var(--spacing-sm); }
+  .label-example-row { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; }
+  .label-example-row .tool-name { width: 96px; font-size: 11px; font-weight: 600; }
+  .label-example-row .resolution { font-size: 10px; color: var(--sidebar-fg-dim); }
+  .label-example-row .resolution.warn { color: #e3b341; }
+  .label-example-row input {
+    width: 130px;
+    padding: 3px 6px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    font: inherit; font-size: 11px;
+  }
+
+  .reopen-cover {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 10, 15, 0.86);
+    color: var(--sidebar-accent);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    z-index: 5;
+  }
+  .rel { position: relative; }
+
+  .banner-stack { display: flex; flex-direction: column; }
+  .state-banner {
+    padding: 5px 10px;
+    font-size: 10px;
+    line-height: 1.4;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .state-banner.error { background: rgba(255, 59, 92, 0.1); color: var(--status-exited); }
+  .state-banner.warn { background: rgba(234, 179, 8, 0.08); color: var(--status-pending); }
+  .state-banner.ok { background: rgba(34, 197, 94, 0.08); color: var(--status-waiting); }
+  .state-banner button { margin-left: 6px; }
+  .state-banner .review-btn { font-size: 10px; padding: 2px 7px; }
+
+  @media (max-width: 900px) {
+    .settings-config-screen { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="review-head">
+  <h1>Prototipo: orden de las herramientas de coding — Settings y Step 1 (bug #2311 · épica #2306)</h1>
+  <p><strong>Maqueta de diseño estática.</strong> Sin código de aplicación, sin IPC, sin esquema y sin archivos de settings reales. Cada guardado de abajo se simula solo en el estado de la página; recargar el navegador lo reinicia.</p>
+  <p><strong>Actual</strong> reproduce el comportamiento actual: Settings muestra el orden vectorial guardado (Claude Code, Codex, Pi, Grok); Step 1 queda alfabético (Claude Code, Codex, Grok, Pi) y no tiene controles de movimiento. <strong>Propuesto</strong> arranca ambas pantallas en el orden de Settings y muestra controles de subir/bajar en las dos — juntos solo para comparar, no como una ubicación aprobada.</p>
+  <p class="decision-line"><strong>Decisión para vos:</strong> ¿dónde deberían vivir los controles de movimiento — solo en Settings, solo en Step 1, o en ambas?</p>
+  <p>Las condiciones mock (propiedad persistente de <code>settings.local.json</code>, fallo de guardado transitorio, conflicto por vecino esperado obsoleto) se activan desde la barra. El estado deshabilitado por propiedad es el comportamiento <em>propuesto</em> de producción: asume un flag de snapshot de backend de solo lectura más el rechazo autoritativo del comando, y la aplicación actual no expone ese flag.</p>
+
+  <div class="review-toolbar">
+    <label><input type="checkbox" id="highlight-check" /> Resaltar cambios de producto (solo revisión)</label>
+    <button type="button" class="review-btn" id="reopen-btn" data-focus-key="reopen">Reabrir vistas propuestas</button>
+    <label><input type="checkbox" id="ownership-check" /> Mock: settings.local.json es dueño de «agents» y trae un orden distinto (persistente)</label>
+    <button type="button" class="review-btn" id="ownership-after-load-btn" data-focus-key="ownership-after-load">Simular que la propiedad empieza después de cargar</button>
+    <label><input type="checkbox" id="fail-check" /> Mock: hacer que falle el próximo guardado de movimiento</label>
+    <button type="button" class="review-btn" id="external-btn" data-focus-key="external">Simular que otro escritor cambia el orden</button>
+    <button type="button" class="review-btn" id="reset-btn" data-focus-key="reset">Restaurar el orden inicial propuesto</button>
+    <button type="button" class="review-btn" id="discard-btn" data-focus-key="discard">Descartar ediciones de color sin guardar</button>
+    <span class="proto-tag">Solo prototipo</span>
+  </div>
+  <p class="scaffold-note"><span class="proto-tag">Solo prototipo</span>Barra de revisión, selector Actual/Propuesto, «Reabrir vistas propuestas», controles mock, editor de color y ejemplo de etiquetas: andamiaje de revisión, no UI del producto. Nada aquí escribe settings reales.</p>
+  <section class="change-legend" id="change-legend" hidden aria-labelledby="change-legend-title">
+    <h2 id="change-legend-title">Cambios de producto más allá de las capturas confirmadas</h2>
+    <p>Estos comportamientos no se ven en las dos capturas que confirmaste. Con el resaltado activo, cada punto lleva su número en ámbar sobre la pantalla correspondiente.</p>
+    <div class="legend-item"><span class="change-badge">1</span><span><b>Step 1 usa el orden compartido</b> y deja de ordenar alfabéticamente.</span><button type="button" class="review-btn" data-repro="order">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">2</span><span><b>Mover guarda el orden de inmediato y de forma acotada</b>: sin botón Save y sin reescribir toda la configuración.</span></div>
+    <div class="legend-item"><span class="change-badge">3</span><span><b>Mover no guarda el borrador de Settings</b>: una edición de color sin guardar sobrevive al movimiento.</span><button type="button" class="review-btn" data-repro="draft">Reproducir ejemplo</button></div>
+    <div class="legend-item"><span class="change-badge">4</span><span><b>Reglas de movimiento y teclado</b>: una posición adyacente; primero-arriba y último-abajo deshabilitados; Tab/Enter/Espacio; foco, selección y rail conservados por id de herramienta.</span><button type="button" class="review-btn" data-repro="rules">Probar foco</button></div>
+    <div class="legend-item"><span class="change-badge">5</span><span><b>Regla de filtro</b>: el filtro oculta tarjetas de Step 1 y desactiva solo sus movimientos; Settings sigue habilitado; la comparación mantiene el orden completo.</span><button type="button" class="review-btn" data-repro="filter">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">6</span><span><b>Propiedad de settings.local.json</b>: si el overlay trae un orden distinto, ambas pantallas muestran ese orden efectivo (sin filtrar el orden base) y los controles de movimiento se deshabilitan con un motivo accesible (comportamiento propuesto; depende de un flag de backend que la app hoy no expone).</span><button type="button" class="review-btn" data-repro="ownership">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">7</span><span><b>Propiedad iniciada después de cargar</b>: el lado del comando rechaza el movimiento y revierte.</span><button type="button" class="review-btn" data-repro="ownership-after">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">8</span><span><b>Fallo de guardado transitorio</b>: el orden se revierte y se ofrece reintento.</span><button type="button" class="review-btn" data-repro="failure">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">9</span><span><b>Vecino esperado obsoleto</b>: se adopta el orden del otro escritor y se explica; el movimiento pedido no se aplica.</span><button type="button" class="review-btn" data-repro="conflict">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">10</span><span><b>Valor numérico <code>order</code> por herramienta</b> en <code>settings.json.agents[]</code> (entero, base 0): un solo orden global; un movimiento desde Settings o Step 1 actualiza los valores y ambas vistas; al guardar se normaliza a 0..n−1; si el campo falta se deriva del array y si un valor es inválido se cae a la posición del array y se avisa.</span><button type="button" class="review-btn" data-repro="order-field">Ver ejemplo</button></div>
+  </section>
+  <p class="review-status" id="review-status" role="status" aria-live="polite"></p>
+</header>
+
+<main>
+  <!-- ============================== SCREEN A: Settings > Coding Agents -->
+  <section class="screen-block" aria-labelledby="settings-screen-title">
+    <div class="screen-nav">
+      <h2 id="settings-screen-title">Pantalla A — Settings &gt; Coding Agents
+        <span class="screen-sub">Referencia fijada: 2306-settings-coding-agents.png (773×491)</span>
+      </h2>
+      <div class="mode-switch" role="group" aria-label="Estado de la pantalla Settings">
+        <button type="button" data-screen="settings" data-mode="today"
+                id="settings-mode-today" data-focus-key="mode-settings-today" aria-pressed="false">Actual</button>
+        <button type="button" data-screen="settings" data-mode="proposed"
+                id="settings-mode-proposed" data-focus-key="mode-settings-proposed" aria-pressed="true">Propuesto</button>
+      </div>
+      <span class="proto-tag">Solo prototipo</span>
+    </div>
+    <div id="settings-frame-root"></div>
+    <div class="review-card" id="label-example-card"></div>
+  </section>
+
+  <!-- ============================== SCREEN B: Assignment > Step 1 -->
+  <section class="screen-block" aria-labelledby="picker-screen-title">
+    <div class="screen-nav">
+      <h2 id="picker-screen-title">Pantalla B — Coding Agent profile assignment &gt; Step 1
+        <span class="screen-sub">Referencia fijada: 2306-profile-agent-picker.png (607×1074)</span>
+      </h2>
+      <div class="mode-switch" role="group" aria-label="Estado de la pantalla Step 1">
+        <button type="button" data-screen="picker" data-mode="today"
+                id="picker-mode-today" data-focus-key="mode-picker-today" aria-pressed="false">Actual</button>
+        <button type="button" data-screen="picker" data-mode="proposed"
+                id="picker-mode-proposed" data-focus-key="mode-picker-proposed" aria-pressed="true">Propuesto</button>
+      </div>
+      <span class="proto-tag">Solo prototipo</span>
+    </div>
+    <div id="picker-frame-root"></div>
+  </section>
+
+  <!-- ============================== SIMULATED PERSISTENCE SHAPE -->
+  <section class="screen-block" aria-labelledby="order-json-title">
+    <div class="review-card" id="order-json-card">
+      <h3 id="order-json-title">Persistencia simulada — <code>settings.json.agents[].order</code> <span class="proto-tag">Solo prototipo</span><span class="change-badge" id="order-json-badge" hidden>10</span></h3>
+      <p>Un solo orden global. Cada herramienta lleva el entero base 0 que define su posición; un movimiento desde Settings o desde Step 1 actualiza estos valores y ambas vistas de inmediato. Si el archivo no trae el campo, el orden se deriva del array; al guardar se normaliza a 0..n−1; un valor inválido cae a la posición del array y avisa. Si <code>settings.local.json</code> es dueño de <code>agents</code> y trae valores <code>order</code> válidos, ese orden gana y es el que deben mostrar ambas pantallas, con los movimientos deshabilitados. <strong>Simulado: el prototipo no escribe ningún archivo real.</strong></p>
+      <pre class="mock-json" id="order-json-body" aria-label="Fragmento simulado de settings.json"></pre>
+      <div id="overlay-json-wrap" hidden>
+        <p class="settings-hint"><strong>Simulado:</strong> <code>settings.local.json</code> (overlay) — sus valores <code>order</code> válidos ganan al orden del array; si faltan o son inválidos, vale el índice del propio array del overlay. En este ejemplo Grok trae <code>order 0</code> y queda primero aunque el array lista a Claude primero; Pi no trae <code>order</code> y usa su índice (3). Ambas pantallas muestran el orden efectivo del overlay.<span id="overlay-json-note"></span></p>
+        <pre class="mock-json" id="overlay-json-body" aria-label="Fragmento simulado de settings.local.json"></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="sr-only" role="status" aria-live="polite" id="live-region"></div>
+
+<script>
+"use strict";
+(function () {
+  /* -------------------------------------------------------------------- data */
+  // The four registered tools in the user's screenshots, with the colours those
+  // screenshots carry: catalog defaults for Claude Code / Codex / Pi and the
+  // custom-agent default #6366f1 for the custom "Grok" row.
+  var TOOLS = {
+    claude: { id: "claude", label: "Claude Code", command: "claude", color: "#d97706" },
+    codex:  { id: "codex",  label: "Codex",       command: "codex",  color: "#10b981" },
+    pi:     { id: "pi",     label: "Pi",          command: "pi",     color: "#ec4899" },
+    grok:   { id: "grok",   label: "Grok",        command: "grok",   color: "#6366f1" }
+  };
+
+  // Today: the two screens genuinely diverge. Settings keeps the stored vector
+  // order; Step 1 alphabetically sorts today, so Grok and Pi swap.
+  var TODAY_SETTINGS_ORDER = ["claude", "codex", "pi", "grok"];
+  var TODAY_PICKER_ORDER   = ["claude", "codex", "grok", "pi"];
+  // Proposed: both screens start from the Settings vector order.
+  var PROPOSED_START_ORDER = ["claude", "codex", "pi", "grok"];
+  // What the mocked "other writer" writes while this view is open: Grok up one.
+  var EXTERNAL_ORDER       = ["claude", "codex", "grok", "pi"];
+  // Simulated overlay order: settings.local.json owns agents and writes a
+  // DIFFERENT order. Both screens must show this one shared effective order
+  // while moves stay unavailable, with no base-order leakage.
+  var OVERLAY_ORDER        = ["grok", "claude", "codex", "pi"];
+  // As written in the overlay file: the array lists Claude first, but explicit
+  // valid `order` values win, so Grok (0) is effective first. Pi has no order
+  // and falls back to its index in this array (3).
+  var OVERLAY_ARRAY        = ["claude", "grok", "codex", "pi"];
+  var OVERLAY_EXPLICIT     = { grok: 0, claude: 1, codex: 2 };
+
+  // Profile-label example values (letter A). "CODER" is Claude Code's own
+  // label; "GENERAL" is the legacy slot label. Nothing here is deleted.
+  var OWN_LABEL = { claude: "CODER" };
+  var LEGACY_LABEL = "GENERAL";
+
+  /* ------------------------------------------------------------------- state */
+  var state = {
+    mode: { settings: "proposed", picker: "proposed" },
+    railTool: "claude",          // tool on the LEFT comparison rail (selection by id)
+    pickerSelected: "codex",     // active Step 1 card (selection by id)
+    proposedOrder: PROPOSED_START_ORDER.slice(),
+    orderValues: { claude: 0, codex: 1, pi: 2, grok: 3 }, // proposed settings.json.agents[].order (zero-based)
+    filterQuery: "",
+    draftColor: {},              // id -> typed hex (unsaved Settings draft)
+    draftLabel: {},              // id -> typed profile label (unsaved Settings draft)
+    ownership: false,            // settings.local.json owns top-level agents
+    ownershipAfterLoad: false,   // ownership began after this view loaded
+    failNextSave: false,
+    pendingRetry: null,          // {id, dir} of the failed move
+    moveError: null,             // {id, dir, message}
+    externalPending: false,      // another writer changed the order; next move is stale
+    conflict: null,              // {message}
+    reopening: false,
+    highlight: false,            // review-only: show amber badges + legend
+    status: "",
+    statusKind: ""
+  };
+
+  /* ------------------------------------------------------------------ helpers */
+  function esc(value) {
+    return String(value).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+  function attr(value) { return esc(value); }
+  function byId(id) { return TOOLS[id]; }
+  function orderFor(screen) {
+    // While the overlay owns agents, the single effective order shown by BOTH
+    // screens is the overlay's order, in both Actual and Propuesto.
+    if (overlayActive()) return OVERLAY_ORDER.slice();
+    if (state.mode[screen] === "proposed") return state.proposedOrder.slice();
+    return (screen === "settings" ? TODAY_SETTINGS_ORDER : TODAY_PICKER_ORDER).slice();
+  }
+  function overlayActive() {
+    // A stale snapshot (ownership began after load) keeps showing the base
+    // order until the view is reopened.
+    return state.ownership && !state.ownershipAfterLoad;
+  }
+  function overlayValues() {
+    var values = {};
+    OVERLAY_ORDER.forEach(function (id, i) { values[id] = i; });
+    return values;
+  }
+  function effectiveOrderValues() {
+    return overlayActive() ? overlayValues() : state.orderValues;
+  }
+  function effectiveOrderLabelText() {
+    return (overlayActive() ? OVERLAY_ORDER : state.proposedOrder).map(labelFor).join(", ");
+  }
+  function toolIndex(order, id) { return order.indexOf(id); }
+  function labelFor(id) { return TOOLS[id].label; }
+
+  // Proposed persistence shape: each tool carries a zero-based `order` integer.
+  // A move updates the values; the authorized save normalizes to 0..n-1, which
+  // for adjacent swaps is just the array index again.
+  function normalizeOrderValues() {
+    state.orderValues = {};
+    state.proposedOrder.forEach(function (id, i) { state.orderValues[id] = i; });
+  }
+
+  var liveRegion = document.getElementById("live-region");
+  var announceTimer = 0;
+  // Clear first so screen readers re-announce an identical message (e.g. the
+  // same boundary/refusal twice in a row).
+  function announce(text) {
+    window.clearTimeout(announceTimer);
+    liveRegion.textContent = "";
+    announceTimer = window.setTimeout(function () { liveRegion.textContent = text; }, 50);
+  }
+
+  function setStatus(text, kind) {
+    state.status = text || "";
+    state.statusKind = kind || "";
+    var el = document.getElementById("review-status");
+    el.textContent = state.status;
+    if (state.statusKind) el.setAttribute("data-kind", state.statusKind);
+    else el.removeAttribute("data-kind");
+  }
+
+  // Review-only highlight helpers. They return "" unless the highlight toggle
+  // is on, so the default view stays close to the confirmed screenshots.
+  function changeBadge() {
+    if (!state.highlight) return "";
+    var nums = Array.prototype.slice.call(arguments);
+    return ' <span class="change-badge" title="Cambio de producto ' + nums.join(", ") + '">' +
+      nums.join("\u00B7") + "</span>";
+  }
+  function hlClass() {
+    return state.highlight ? " change-target" : "";
+  }
+
+  // Full re-render with keyboard focus preserved by data-focus-key, so a move
+  // keeps focus on the pressed control by tool id (plan requirement).
+  function rerender() {
+    var active = document.activeElement;
+    var focusKey = active && active.getAttribute ? active.getAttribute("data-focus-key") : null;
+    var activeMove = active && active.getAttribute ? active.getAttribute("data-move") : null;
+    var activeTool = active && active.getAttribute ? active.getAttribute("data-tool") : null;
+    render();
+    if (!focusKey) return;
+    var next = document.querySelector('[data-focus-key="' + focusKey.replace(/"/g, '\\"') + '"]');
+    if (next && !next.disabled) { next.focus(); return; }
+    // The pressed move control became a boundary (or vanished): keep focus in
+    // the SAME screen and tool first, then move to the nearest row with an
+    // enabled move control, then to the same tool's row/card.
+    if (activeMove && activeTool) {
+      var sibling = document.querySelector('[data-move="' + activeMove + '"][data-tool="' + activeTool + '"]:not([disabled])');
+      if (sibling) { sibling.focus(); return; }
+      var rowSel = activeMove === "settings" ? ".settings-agent-row[data-tool]" : ".agent-profile-provider-card-wrap[data-tool]";
+      var rows = Array.prototype.slice.call(document.querySelectorAll("#" + activeMove + "-frame-root " + rowSel));
+      var at = -1;
+      for (var i = 0; i < rows.length; i += 1) {
+        if (rows[i].getAttribute("data-tool") === activeTool) { at = i; break; }
+      }
+      for (var d = 1; d <= rows.length; d += 1) {
+        var candidates = [rows[at - d], rows[at + d]];
+        for (var c = 0; c < candidates.length; c += 1) {
+          if (!candidates[c]) continue;
+          var btn = candidates[c].querySelector("[data-move]:not([disabled])");
+          if (btn) { btn.focus(); return; }
+        }
+      }
+      var own = document.querySelector('[data-focus-key="' + (activeMove === "settings" ? "row-" : "picker-card-") + activeTool + '"]');
+      if (own) { own.focus(); return; }
+    }
+    var fallback = document.querySelector('[data-focus-key="reopen"]');
+    if (fallback) fallback.focus();
+  }
+
+  function pickerMovesDisabledForFilter() {
+    return state.filterQuery.trim() !== "";
+  }
+  function ownershipDisablesControls() {
+    return state.ownership && !state.ownershipAfterLoad;
+  }
+  function draftCount() {
+    var count = 0;
+    Object.keys(state.draftColor).forEach(function (id) {
+      if (state.draftColor[id] && state.draftColor[id] !== TOOLS[id].color) count += 1;
+    });
+    return count;
+  }
+
+  /* ------------------------------------------------------------- move engine */
+  function moveTool(screen, id, dir) {
+    if (state.mode[screen] !== "proposed") return false;
+
+    // Persistent ownership: controls are rendered disabled, this is a guard.
+    if (ownershipDisablesControls()) {
+      announce("Los controles de movimiento no están disponibles porque settings.local.json es dueño del orden de los agentes.");
+      return false;
+    }
+    // Ownership that began after this view loaded: the stale snapshot still
+    // shows enabled controls, so the command side refuses and rolls back.
+    if (state.ownershipAfterLoad) {
+      // The command side rejects the stale move and the UI reconciles to the
+      // authoritative overlay order; move controls become disabled.
+      state.ownershipAfterLoad = false;
+      state.moveError = {
+        id: id, dir: dir,
+        message: "Movimiento rechazado por el lado del comando: settings.local.json empezó a ser dueño del orden de los agentes después de cargar esta vista. " +
+                 "El movimiento no se aplicó y la lista volvió al orden del overlay (Grok, Claude Code, Codex, Pi); los controles de movimiento quedan deshabilitados.",
+        kind: "ownership-after-load"
+      };
+      state.pendingRetry = null;
+      setStatus("Movimiento rechazado: la lista volvió al orden del overlay y los movimientos quedan deshabilitados.", "error");
+      announce("Movimiento rechazado por el lado del comando. La lista volvió al orden del overlay, Grok, Claude Code, Codex, Pi, y los movimientos quedan deshabilitados.");
+      syncToolbar();
+      rerender();
+      return false;
+    }
+    // Stale expected neighbour: another writer changed the vector since load.
+    if (state.externalPending) {
+      state.proposedOrder = EXTERNAL_ORDER.slice();
+      normalizeOrderValues();
+      state.externalPending = false;
+      state.conflict = {
+        message: "Otra ventana cambió el orden guardado mientras esta vista estaba abierta (Grok se movió antes que Pi). " +
+                 "Tu movimiento se comparó contra el orden que cargó esta vista y no se aplicó. La lista ahora muestra el orden del otro escritor."
+      };
+      state.moveError = null;
+      state.pendingRetry = null;
+      setStatus("Vecino esperado obsoleto: se adoptó el orden del otro escritor.", "warn");
+      announce("Conflicto: otra ventana cambió el orden. Tu movimiento no se aplicó; la lista ahora muestra el orden del otro escritor.");
+      rerender();
+      return false;
+    }
+    // Transient mock save failure: roll back and offer retry.
+    if (state.failNextSave) {
+      state.failNextSave = false;
+      state.moveError = {
+        id: id, dir: dir,
+        message: "No se pudo guardar el nuevo orden. La lista volvió al último orden guardado. Probá de nuevo.",
+        kind: "save-failure"
+      };
+      state.pendingRetry = { screen: screen, id: id, dir: dir };
+      setStatus("Fallo de guardado transitorio: orden revertido. Hay reintento disponible.", "error");
+      announce("Falló el guardado. El orden se revirtió. Hay reintento disponible.");
+      syncToolbar();
+      rerender();
+      return false;
+    }
+
+    var order = state.proposedOrder.slice();
+    var index = toolIndex(order, id);
+    var target = index + dir;
+    if (index < 0 || target < 0 || target >= order.length) return false; // boundary guard
+
+    var moved = order[index];
+    order[index] = order[target];
+    order[target] = moved;
+    state.proposedOrder = order;
+    normalizeOrderValues();
+    state.moveError = null;
+    state.pendingRetry = null;
+    state.conflict = null;
+
+    var draftNote = draftCount() > 0
+      ? (draftCount() === 1
+          ? " Tu edición de color sin guardar NO se guardó con este movimiento."
+          : " Tus ediciones de color sin guardar NO se guardaron con este movimiento.")
+      : "";
+    setStatus("Orden guardado (mock): " + state.proposedOrder.map(labelFor).join(", ") + "." + draftNote,
+              draftCount() > 0 ? "warn" : "ok");
+    announce(labelFor(moved) + " se movió " + (dir < 0 ? "hacia arriba" : "hacia abajo") + " a la posición " + (target + 1) +
+             " de " + order.length + "." + draftNote);
+    rerender();
+    return true;
+  }
+
+  function retryMove() {
+    if (!state.pendingRetry) return;
+    var pending = state.pendingRetry;
+    var screen = pending.screen || "settings";
+    state.pendingRetry = null;
+    state.moveError = null;
+    state.failNextSave = false;
+    syncToolbar();
+    // The failed move belongs to the view where it was attempted. If that view
+    // is no longer Propuesto, retry cannot apply and must not claim success.
+    if (state.mode[screen] !== "proposed") {
+      state.pendingRetry = pending;
+      state.moveError = {
+        screen: screen, id: pending.id, dir: pending.dir, kind: "save-failure",
+        message: "El reintento no se aplicó: la vista " + (screen === "picker" ? "Step 1" : "Settings") +
+                 " ya no está en Propuesto. Cambiala a Propuesto e intentá de nuevo."
+      };
+      setStatus("Reintento no aplicado: la vista no está en Propuesto.", "warn");
+      announce("El reintento no se aplicó porque la vista no está en Propuesto. Cambiala e intentá de nuevo.");
+      rerender();
+      return;
+    }
+    var applied = moveTool(screen, pending.id, pending.dir);
+    if (applied) {
+      setStatus("Reintento exitoso: el orden se guardó (mock).", "ok");
+      return;
+    }
+    setStatus("El reintento no se aplicó; no se guardó ningún cambio.", "warn");
+    announce("El reintento no se aplicó; no se guardó ningún cambio.");
+  }
+
+  function setMode(screen, mode) {
+    if (state.mode[screen] === mode) return;
+    state.mode[screen] = mode;
+    if (mode === "today") {
+      setStatus("Mostrando Actual en " + (screen === "settings" ? "Settings" : "Step 1") + ": el comportamiento actual.", "");
+    } else {
+      setStatus("Mostrando Propuesto en " + (screen === "settings" ? "Settings" : "Step 1") + ".", "");
+    }
+    rerender();
+  }
+
+  function setRailTool(id) {
+    state.railTool = id;
+    setStatus("Mostrando perfiles de " + labelFor(id) + " en el rail de comparación LEFT. El orden no cambió.", "");
+    announce("Mostrando perfiles de " + labelFor(id) + ". El orden no cambió.");
+    rerender();
+  }
+
+  function setPickerSelected(id) {
+    state.pickerSelected = id;
+    setStatus("Seleccionado " + labelFor(id) + " en Step 1. El orden no cambió.", "");
+    announce(labelFor(id) + " seleccionado.");
+    rerender();
+  }
+
+  function setFilter(value) {
+    state.filterQuery = value;
+    renderPicker();
+    var input = document.getElementById("picker-filter");
+    if (input) { input.focus(); input.setSelectionRange(value.length, value.length); }
+  }
+
+  function toggleOwnership(on) {
+    state.ownership = on;
+    if (!on) state.ownershipAfterLoad = false;
+    if (on) {
+      state.ownershipAfterLoad = false;
+      setStatus("Mock de propiedad persistente ACTIVADO: ambas pantallas muestran el orden del overlay (Grok, Claude Code, Codex, Pi) y los movimientos quedan deshabilitados con un motivo accesible.", "warn");
+      announce("Controles de movimiento deshabilitados: settings.local.json es dueño de agents y su orden, Grok, Claude Code, Codex, Pi, se muestra en ambas pantallas.");
+    } else {
+      setStatus("Mock de propiedad persistente DESACTIVADO: los controles de movimiento propuestos vuelven a estar habilitados.", "");
+    }
+    syncToolbar();
+    rerender();
+  }
+
+  function simulateOwnershipAfterLoad() {
+    state.ownership = true;
+    state.ownershipAfterLoad = true;
+    setStatus("La propiedad empezó después de cargar: el snapshot obsoleto mantiene los controles habilitados; el próximo movimiento será rechazado y revertido.", "warn");
+    announce("La propiedad empezó después de cargar esta vista. Los controles de movimiento todavía parecen habilitados; el lado del comando rechazará el próximo movimiento.");
+    syncToolbar();
+    rerender();
+  }
+
+  function simulateExternalWriter() {
+    state.externalPending = true;
+    state.conflict = null;
+    setStatus("Otro escritor movió Grok antes que Pi. El próximo movimiento se comparará contra un vecino esperado obsoleto.", "warn");
+    announce("Otro escritor cambió el orden guardado. El próximo movimiento entrará en conflicto con un vecino esperado obsoleto.");
+    syncToolbar();
+    rerender();
+  }
+
+  function restoreProposedOrder() {
+    state.proposedOrder = PROPOSED_START_ORDER.slice();
+    normalizeOrderValues();
+    state.moveError = null;
+    state.pendingRetry = null;
+    state.conflict = null;
+    state.externalPending = false;
+    setStatus("Se restauró el orden inicial propuesto. Orden efectivo: " + effectiveOrderLabelText() + ".", "ok");
+    announce("Se restauró el orden inicial propuesto. Orden efectivo: " + effectiveOrderLabelText() + ".");
+    syncToolbar();
+    rerender();
+  }
+
+  function discardDrafts() {
+    state.draftColor = {};
+    state.draftLabel = {};
+    setStatus("Se descartaron las ediciones de color y etiqueta sin guardar. El orden de las herramientas no se tocó.", "");
+    announce("Se descartaron las ediciones de color y etiqueta sin guardar.");
+    rerender();
+  }
+
+  // Review-only helper: reproduces the state a highlight legend item describes.
+  function reproduce(kind) {
+    if (kind === "order") { setMode("picker", "proposed"); }
+    else if (kind === "draft") {
+      if (!state.draftColor.pi || state.draftColor.pi === TOOLS.pi.color) state.draftColor.pi = "#ff00aa";
+      state.mode.settings = "proposed";
+      moveTool("settings", "pi", -1);
+    }
+    else if (kind === "rules") {
+      var btn = document.querySelector('#settings-frame-root [data-move]:not([disabled])') ||
+                document.querySelector('#picker-frame-root [data-move]:not([disabled])');
+      if (btn) {
+        btn.focus();
+        setStatus("Foco puesto en un control de movimiento: Tab/Enter/Espacio lo activan; el foco se conserva por id tras mover.", "");
+        announce("Foco en un control de movimiento. Tab, Enter o Espacio lo activan.");
+      } else {
+        setStatus("No hay controles de movimiento habilitados en este estado.", "warn");
+      }
+    }
+    else if (kind === "filter") { setFilter("grok"); }
+    else if (kind === "ownership") { toggleOwnership(true); }
+    else if (kind === "ownership-after") { simulateOwnershipAfterLoad(); }
+    else if (kind === "failure") {
+      state.failNextSave = true;
+      syncToolbar();
+      setStatus("El próximo movimiento fallará una vez (mock).", "warn");
+      announce("El próximo movimiento fallará una vez.");
+    }
+    else if (kind === "conflict") { simulateExternalWriter(); }
+    else if (kind === "order-field") {
+      var card = document.getElementById("order-json-card");
+      if (card) {
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+        setStatus("Ejemplo de persistencia: cada herramienta muestra su valor order (simulado, sin escribir archivos).", "");
+        announce("Ejemplo de persistencia simulado con los valores order actuales.");
+      }
+    }
+  }
+
+  function reopenProposed() {
+    state.reopening = true;
+    rerender();
+    window.setTimeout(function () {
+      state.reopening = false;
+      if (state.ownershipAfterLoad) {
+        // The mock reopen refreshes the ownership snapshot: controls now render
+        // disabled with the persistent reason.
+        state.ownershipAfterLoad = false;
+      }
+      setStatus("Vistas propuestas reabiertas con el orden efectivo: " + effectiveOrderLabelText() + ".", "ok");
+      announce("Vistas propuestas reabiertas. El orden efectivo es: " + effectiveOrderLabelText() + ".");
+      syncToolbar();
+      rerender();
+    }, 550);
+  }
+
+  /* -------------------------------------------------------------- rendering */
+  function protoBanner(screenLabel) {
+    return '<div class="proto-banner" role="note"><b>PROTOTIPO</b><span>' +
+      esc(screenLabel) + ' — solo guardado simulado, sin cambios en la aplicación. ' +
+      'Nada aquí escribe settings.json ni settings.local.json. La reapertura se simula en esta página; recargar el navegador lo reinicia todo.</span></div>';
+  }
+
+  function moveButton(screen, id, dir, order, opts) {
+    var index = toolIndex(order, id);
+    var boundary = dir < 0 ? index === 0 : index === order.length - 1;
+    var disabled = boundary || (opts && opts.disabled);
+    var describedBy = opts && opts.describedBy ? ' aria-describedby="' + attr(opts.describedBy) + '"' : "";
+    var label = "Mover " + labelFor(id) + (dir < 0 ? " hacia arriba" : " hacia abajo");
+    return '<button type="button" class="move-btn" data-move="' + attr(screen) + '" data-tool="' + attr(id) +
+      '" data-dir="' + dir + '" data-focus-key="move-' + attr(screen) + '-' + attr(id) + '-' + (dir < 0 ? "up" : "down") + '"' +
+      ' aria-label="' + attr(label) + '"' + (disabled ? " disabled" : "") + describedBy + '>' +
+      (dir < 0 ? "\u2191" : "\u2193") + "</button>";
+  }
+
+  function ownershipReasonBlock(screen) {
+    return '<p class="settings-ownership-reason' + hlClass() + '" id="ownership-reason-' + attr(screen) + '">' +
+      '<strong>Los controles de movimiento no están disponibles.</strong>' + changeBadge("6") + ' settings.local.json es dueño del ajuste agents de nivel superior: el orden que ves en Settings y en Step 1 es el del overlay (Grok, Claude Code, Codex, Pi), así que esta ventana no puede cambiarlo. ' +
+      'Cambiá el overlay fuera de esta función y reabrí. ' +
+      '(Comportamiento propuesto de producción: requiere un flag de snapshot de backend de solo lectura más el rechazo autoritativo del comando; la aplicación actual no expone ese flag.)</p>';
+  }
+
+  function resolveLabelToday(id, firstId) {
+    var own = ownLabel(id);
+    var inherited = firstId ? ownLabel(firstId) : "";
+    return (own || inherited || LEGACY_LABEL || "").trim();
+  }
+  function resolveLabelProposed(id) {
+    var own = ownLabel(id);
+    return (own || LEGACY_LABEL || "").trim();
+  }
+
+  /* --- Screen A: Settings > Coding Agents */
+  function renderSettings() {
+    var order = orderFor("settings");
+    var isProposed = state.mode.settings === "proposed";
+    var ownsDisabled = ownershipDisablesControls();
+    var firstId = order[0];
+    var orderValues = effectiveOrderValues();
+
+    var rows = order.map(function (id, i) {
+      var tool = byId(id);
+      var draft = state.draftColor[id];
+      var hex = draft !== undefined ? draft : tool.color;
+      var isRail = state.railTool === id;
+      var editing = draft !== undefined && draft !== tool.color;
+      var moveOpts = {
+        disabled: ownsDisabled,
+        describedBy: ownsDisabled ? "ownership-reason-settings" : ""
+      };
+      return '' +
+        '<div class="settings-agent-row" style="--agent-color:' + attr(tool.color) + '" role="listitem"' +
+          (isRail ? ' aria-current="true"' : "") + ' data-tool="' + attr(id) + '">' +
+          '<div class="settings-agent-row-head" role="button" tabindex="0" data-select-tool="' + attr(id) +
+            '" data-focus-key="row-' + attr(id) + '" aria-label="Mostrar ' + attr(tool.label) + ' en el rail de comparación LEFT">' +
+            '<span class="settings-agent-dot" style="background:' + attr(tool.color) + '"></span>' +
+            '<div class="settings-agent-row-meta">' +
+              '<div class="settings-agent-row-name">' + esc(tool.label) +
+                (isRail ? ' <span class="settings-rail-pill left" aria-hidden="true">Seleccionado</span>' : "") +
+              '</div>' +
+              '<div class="settings-agent-row-cmd">' + esc(tool.command) + '</div>' +
+              '<div class="settings-agent-row-colorline">' +
+                '<span class="settings-agent-swatch" style="background:' + attr(hex) + '"></span>' +
+                '<input class="settings-agent-color-input' + (isProposed && i === 0 ? hlClass() : "") + '" type="text" spellcheck="false" value="' + attr(hex) + '"' +
+                  ' aria-label="Color en borrador para ' + attr(tool.label) + ' (sin guardar)"' +
+                  ' data-color-tool="' + attr(id) + '" data-focus-key="color-' + attr(id) + '">' +
+                (isProposed && i === 0 ? changeBadge("3") : "") +
+                (i === 0 ? '<span class="proto-tag">Solo prototipo</span>' : "") +
+                (isProposed
+                  ? '<span class="settings-agent-order-chip' + (i === 0 ? hlClass() : "") + '" title="Campo propuesto settings.json.agents[].order">order ' + orderValues[id] + '</span>' +
+                    (i === 0 ? changeBadge("10") : "")
+                  : "") +
+                '<span class="settings-rail-pill ' + (isRail ? "left" : "available") + '">' + (isRail ? "LEFT" : "AVAILABLE") + '</span>' +
+                (editing ? '<span class="draft-chip">Sin guardar</span>' : "") +
+              '</div>' +
+            '</div>' +
+            '<div class="settings-agent-row-actions">' +
+              (isProposed
+                ? moveButton("settings", id, -1, order, moveOpts) + moveButton("settings", id, 1, order, moveOpts)
+                : "") +
+              '<button type="button" class="settings-row-btn" data-select-tool="' + attr(id) + '"' +
+                (isRail ? ' aria-current="true"' : "") + ' aria-label="See profiles for ' + attr(tool.label) + '">See profiles</button>' +
+              '<button type="button" class="settings-agent-row-delete" aria-label="Delete ' + attr(tool.label) + '" title="Delete agent">\u{1F5D1}</button>' +
+              '<button type="button" class="settings-agent-chevron" aria-expanded="false" aria-label="Expand agent settings" title="Expand agent settings">\u25B8</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+    }).join("");
+
+    var rail = byId(state.railTool);
+    var railOwn = state.draftLabel[rail.id] !== undefined ? state.draftLabel[rail.id] : (OWN_LABEL[rail.id] || "");
+    var railPlaceholder = isProposed
+      ? (resolveLabelProposed(rail.id) || "Baseline")
+      : (resolveLabelToday(rail.id, firstId) || "Baseline");
+
+    var errorBanner = state.moveError
+      ? '<div class="state-banner error' + hlClass() + '">' + esc(state.moveError.message) +
+          (state.moveError.kind === "ownership-after-load" ? changeBadge("7") : changeBadge("8")) +
+          (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Reintentar movimiento</button>' : "") +
+        '</div>'
+      : "";
+    var conflictBanner = state.conflict
+      ? '<div class="state-banner warn' + hlClass() + '">' + esc(state.conflict.message) + changeBadge("9") + '</div>'
+      : "";
+
+    var panel =
+      '<div class="settings-mock rel">' +
+        protoBanner("Settings > Coding Agents") +
+        '<div class="banner-stack">' + errorBanner + conflictBanner + '</div>' +
+        '<div class="settings-tabs" role="presentation">' +
+          '<button type="button" class="settings-tab" disabled>General</button>' +
+          '<button type="button" class="settings-tab active">Coding Agents</button>' +
+        '</div>' +
+        '<div class="settings-config-screen">' +
+          '<aside class="settings-agents-panel" aria-label="Coding Agents">' +
+            '<div class="settings-agents-panel-header">' +
+              '<div>' +
+                '<div class="settings-agents-panel-title">Coding Agents</div>' +
+                '<div class="settings-agents-panel-kicker">Colors and selected comparison pair' + (isProposed ? changeBadge("2", "4") : "") + '</div>' +
+              '</div>' +
+              '<button type="button" class="settings-agents-add">Add Agent</button>' +
+            '</div>' +
+            '<div class="settings-agents-panel-body">' +
+              (isProposed && ownsDisabled ? ownershipReasonBlock("settings") : "") +
+              '<div role="list" aria-label="Agentes de coding registrados">' + rows + '</div>' +
+              '<div class="settings-actions-block">' +
+                '<div class="settings-actions-title">Actions</div>' +
+                '<div class="settings-actions-row">' +
+                  '<button type="button" class="settings-row-btn" disabled title="No forma parte de este prototipo">Swap Rails</button>' +
+                  '<button type="button" class="settings-row-btn danger" disabled title="No forma parte de este prototipo">Delete Agent</button>' +
+                '</div>' +
+              '</div>' +
+              '<p class="settings-hint">' +
+                (isProposed
+                  ? "Propuesto: los controles de subir/bajar junto a las acciones de fila mueven una herramienta una posición adyacente real. El primero-arriba y el último-abajo están deshabilitados. Un movimiento nunca cambia qué herramienta es LEFT ni guarda el borrador de color."
+                  : "Actual: el orden vectorial guardado, sin controles de movimiento. La divergencia con Step 1 (que hoy ordena alfabéticamente) es el bug de este prototipo.") +
+              '</p>' +
+            '</div>' +
+          '</aside>' +
+          '<div class="settings-compare-wrap">' +
+            '<div class="settings-profile-rail" style="--agent-color:' + attr(rail.color) + '">' +
+              '<div class="settings-profile-rail-header">' +
+                '<div class="settings-profile-rail-title">' + esc(rail.label) + ' rail</div>' +
+                '<div class="settings-profile-rail-subtitle">Rail de comparación LEFT · tarjeta de perfil para la letra A</div>' +
+              '</div>' +
+              '<div class="settings-profile-rail-body">' +
+                '<article class="settings-profile-card">' +
+                  '<div class="settings-profile-card-head">' +
+                    '<span class="settings-profile-letter-badge" aria-label="Letra de perfil A">A</span>' +
+                    '<div class="settings-profile-card-heading">' +
+                      '<div class="settings-profile-name-line">' +
+                        '<input class="settings-profile-label" type="text" value="' + attr(railOwn) + '"' +
+                          ' placeholder="' + attr(railPlaceholder) + '"' +
+                          ' aria-label="Etiqueta de perfil para ' + attr(rail.label) + ', letra A (borrador)"' +
+                          ' data-label-tool="' + attr(rail.id) + '" data-focus-key="label-' + attr(rail.id) + '">' +
+                        '<span class="settings-profile-badge configured">CONFIGURED</span>' +
+                      '</div>' +
+                      '<div class="settings-profile-card-sub">' + esc(rail.command) + '</div>' +
+                    '</div>' +
+                  '</div>' +
+                  '<p class="settings-hint">Mover filas nunca cambia la herramienta LEFT ni este par de comparación. El placeholder muestra la resolución de etiqueta; el ejemplo completo está abajo.</p>' +
+                '</article>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        (state.reopening && isProposed ? '<div class="reopen-cover">Reabriendo vista propuesta…</div>' : "") +
+      '</div>';
+
+    document.getElementById("settings-frame-root").innerHTML = panel;
+  }
+
+  /* --- review-only label example (the inheritance problem, shown separately) */
+  function ownLabel(id) {
+    return state.draftLabel[id] !== undefined ? state.draftLabel[id] : (OWN_LABEL[id] || "");
+  }
+  function renderLabelExample() {
+    var order = orderFor("settings");
+    var firstId = order[0];
+    var isProposed = state.mode.settings === "proposed";
+    var rows = ["claude", "codex", "pi", "grok"].map(function (id) {
+      var tool = byId(id);
+      var own = ownLabel(id);
+      var placeholder, note, warn = false;
+      if (isProposed) {
+        var resolved = resolveLabelProposed(id);
+        placeholder = resolved || "Baseline";
+        if (own) { note = "etiqueta propia"; }
+        else if (resolved) { note = "etiqueta heredada del slot \u201C" + resolved + "\u201D"; }
+        else { note = "sin etiqueta propia ni heredada \u2192 letra A sola"; }
+      } else {
+        var inheritedOwn = ownLabel(firstId);
+        var resolvedToday = resolveLabelToday(id, firstId);
+        placeholder = resolvedToday || "Baseline";
+        if (own) { note = "etiqueta propia"; }
+        else if (inheritedOwn) {
+          note = "heredada de la primera herramienta (" + labelFor(firstId) + ") \u2014 el bug";
+          warn = true;
+        } else if (resolvedToday) { note = "etiqueta heredada del slot"; }
+        else { note = "sin etiqueta"; }
+      }
+      return '<div class="label-example-row">' +
+        '<span class="tool-name">' + esc(tool.label) + '</span>' +
+        '<input type="text" value="' + attr(own) + '" placeholder="' + attr(placeholder) + '"' +
+          ' aria-label="Etiqueta de perfil para ' + attr(tool.label) + ', letra A, ejemplo"' +
+          ' data-label-tool="' + attr(id) + '" data-focus-key="example-label-' + attr(id) + '">' +
+        '<span class="resolution' + (warn ? " warn" : "") + '">' + esc(note) + '</span>' +
+      '</div>';
+    }).join("");
+
+    document.getElementById("label-example-card").innerHTML =
+      '<h3>Ejemplo de etiqueta de perfil (letra A) — inputs de Settings (solo revisión, fuera del layout de la captura) <span class="proto-tag">Solo prototipo</span></h3>' +
+      '<p>' + (isProposed
+        ? 'Fallback propuesto en todas partes: etiqueta propia \u2192 etiqueta heredada del slot \u2192 letra sola. La etiqueta de la primera herramienta nunca se hereda. No se borra ninguna etiqueta guardada; la etiqueta heredada del slot sigue aplicándose a toda herramienta sin etiqueta.'
+        : 'Hoy el resolvedor cae a la etiqueta de la primera herramienta: una herramienta sin etiqueta muestra \u201CCODER\u201D de Claude Code (ámbar). Ese es el bug de herencia.') + '</p>' +
+      '<p>Valores de etiqueta solo de ejemplo \u2014 la captura fijada no tiene etiquetas configuradas, así que las tarjetas de Step 1 conservan su chip \u201CA\u201D en Actual y en Propuesto.</p>' +
+      '<div class="label-example-grid">' + rows + '</div>';
+  }
+
+  /* --- Screen B: Coding Agent profile assignment > Step 1 */
+  function renderPicker() {
+    var order = orderFor("picker");
+    var fullOrder = orderFor("picker"); // comparison rows keep the full order
+    var isProposed = state.mode.picker === "proposed";
+    var ownsDisabled = ownershipDisablesControls();
+    var filterActive = pickerMovesDisabledForFilter();
+    var query = state.filterQuery.trim().toLowerCase();
+
+    var visible = order.filter(function (id) {
+      if (!query) return true;
+      var tool = byId(id);
+      return tool.label.toLowerCase().indexOf(query) !== -1 || tool.command.toLowerCase().indexOf(query) !== -1;
+    });
+
+    var filterStatus = query === ""
+      ? order.length + " agentes"
+      : visible.length === 0
+        ? 'Ninguna herramienta de coding coincide con \u201C' + state.filterQuery.trim() + '\u201D. Limpiá el filtro para ver las ' + order.length + '.'
+        : visible.length + " de " + order.length + ' agentes coinciden con \u201C' + state.filterQuery.trim() + '\u201D.';
+    var filterState = query === "" ? "" : (visible.length === 0 ? ' data-state="empty"' : ' data-state="match"');
+
+    var cards = visible.map(function (id, i) {
+      var tool = byId(id);
+      var active = state.pickerSelected === id;
+      var index = toolIndex(order, id);
+      var boundaryUp = index === 0;
+      var boundaryDown = index === order.length - 1;
+      var moveDisabled = ownsDisabled || filterActive;
+      var describedBy = filterActive ? "filter-reason" : (ownsDisabled ? "ownership-reason-picker" : "");
+      var moveGroup = isProposed
+        ? '<div class="provider-card-moves' + (i === 0 ? hlClass() : "") + '" role="group" aria-label="Reordenar ' + attr(tool.label) + '">' +
+            moveButton("picker", id, -1, order, { disabled: moveDisabled || boundaryUp, describedBy: describedBy }) +
+            moveButton("picker", id, 1, order, { disabled: moveDisabled || boundaryDown, describedBy: describedBy }) +
+            (i === 0 ? changeBadge("2", "4") : "") +
+          '</div>'
+        : "";
+      return '<div class="agent-profile-provider-card-wrap' + (active ? " active" : "") + '"' +
+          ' style="--agent-color:' + attr(tool.color) + '" data-tool="' + attr(id) + '">' +
+          '<button type="button" class="agent-profile-provider-card" aria-pressed="' + (active ? "true" : "false") + '"' +
+            ' data-select-picker="' + attr(id) + '" data-focus-key="picker-card-' + attr(id) + '"' +
+            ' aria-label="' + attr(tool.label) + ', comando ' + attr(tool.command) + (active ? ", seleccionado" : "") + '">' +
+            '<span>' +
+              '<span class="agent-profile-provider-name">' + esc(tool.label) + '</span>' +
+              '<span class="agent-profile-provider-command">' + esc(tool.command) + '</span>' +
+            '</span>' +
+            '<span class="agent-profile-provider-chip" title="Letra de perfil por defecto A">A</span>' +
+          '</button>' +
+          moveGroup +
+        '</div>';
+    }).join("");
+
+    var emptyState = visible.length === 0
+      ? '<div class="settings-hint">Ninguna herramienta de coding coincide. Las filas de comparación de abajo siguen listando las ' + order.length + ' herramientas en orden.</div>'
+      : "";
+
+    var filterReason = (isProposed && filterActive)
+      ? '<p class="picker-filter-reason' + hlClass() + '" id="filter-reason">Los controles de movimiento de Step 1 están deshabilitados mientras el filtro está activo. Limpiá el filtro para cambiar el orden. Los controles de movimiento de Settings siguen habilitados (no se filtran).' + changeBadge("5") + '</p>'
+      : "";
+    var ownsReason = (isProposed && ownsDisabled) ? ownershipReasonBlock("picker") : "";
+
+    var comparisonRows = fullOrder.map(function (id) {
+      var tool = byId(id);
+      var active = state.pickerSelected === id;
+      return '<div class="agent-comparison-row' + (active ? " active" : "") + '" role="row" data-tool="' + attr(id) + '">' +
+        '<span class="agent-comparison-agent" role="cell">' + esc(tool.label) + '</span>' +
+        '<span class="agent-comparison-agent-sub" role="cell">' + esc(tool.command) + '</span>' +
+        '<span class="agent-comparison-status" role="cell">letra A</span>' +
+      '</div>';
+    }).join("");
+
+    var viewport =
+      '<div class="picker-viewport rel">' +
+        protoBanner("Step 1 — Choose the tool first") +
+        '<div class="banner-stack">' +
+          (state.moveError ? '<div class="state-banner error' + hlClass() + '">' + esc(state.moveError.message) +
+            (state.moveError.kind === "ownership-after-load" ? changeBadge("7") : changeBadge("8")) +
+            (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Reintentar movimiento</button>' : "") +
+            '</div>' : "") +
+          (state.conflict ? '<div class="state-banner warn' + hlClass() + '">' + esc(state.conflict.message) + changeBadge("9") + '</div>' : "") +
+        '</div>' +
+        '<div class="agent-picker-modal-header">' +
+          '<div>' +
+            '<div class="agent-picker-eyebrow">Coding Agent</div>' +
+            '<span class="agent-modal-title">Assign profile for <strong>ac-dev-webpage-ui-v4</strong></span>' +
+          '</div>' +
+          '<div class="agent-picker-context"><strong>dev-webpage-ui</strong><span>room-24-ac-dev-team-v4</span></div>' +
+        '</div>' +
+        '<div class="agent-profile-assignment-body">' +
+          '<aside class="agent-profile-panel agent-profile-provider-panel" aria-label="Coding Agents selector">' +
+            '<div class="agent-profile-panel-head">' +
+              '<div>' +
+                '<div class="agent-profile-panel-title">Coding Agent</div>' +
+                '<div class="agent-profile-panel-kicker">Choose the tool first' + (isProposed ? changeBadge("1") : "") + '</div>' +
+              '</div>' +
+              '<span class="agent-profile-step cyan">step 1</span>' +
+            '</div>' +
+            '<div class="agent-profile-provider-top">' +
+              '<div class="agent-profile-provider-filter' + hlClass() + '">' +
+                '<label for="picker-filter">Filter by name or start line' + changeBadge("5") + '</label>' +
+                '<input id="picker-filter" type="search" autocomplete="off" spellcheck="false"' +
+                  ' placeholder="name or command + args" value="' + attr(state.filterQuery) + '"' +
+                  ' data-focus-key="picker-filter" aria-describedby="picker-filter-status">' +
+                '<div class="agent-profile-provider-filter-status" id="picker-filter-status" role="status" aria-live="polite"' + filterState + '>' + esc(filterStatus) + '</div>' +
+              '</div>' +
+              ownsReason + filterReason +
+            '</div>' +
+            '<div class="agent-profile-provider-list" aria-label="Coding agent choices">' +
+              cards + emptyState +
+            '</div>' +
+          '</aside>' +
+        '</div>' +
+        (state.reopening && isProposed ? '<div class="reopen-cover">Reabriendo vista propuesta…</div>' : "") +
+      '</div>';
+
+    var comparison =
+      '<section class="agent-profile-panel agent-comparison-panel" aria-label="Same profile comparison">' +
+        '<div class="agent-profile-panel-head">' +
+          '<div>' +
+            '<div class="agent-profile-panel-title">Same profile comparison</div>' +
+            '<div class="agent-profile-panel-kicker">Letra A en cada Coding Agent configurado. Esta lista mantiene el orden completo aunque el filtro oculte tarjetas.</div>' +
+          '</div>' +
+        '</div>' +
+        '<p class="settings-hint">' +
+          (isProposed
+            ? 'Propuesto: la lista de Step 1 sigue el orden de Settings y ambas pantallas comparten un único orden guardado mock. Un movimiento en cualquiera de las dos actualiza la otra; el filtro solo oculta tarjetas.'
+            : 'Actual: la lista de Step 1 se ordena alfabéticamente y no tiene controles de movimiento, así que no coincide con Settings.') +
+        '</p>' +
+        '<div class="agent-comparison-table" role="table" aria-label="Same profile comparison">' +
+          '<div class="agent-comparison-table-head" role="row">' +
+            '<span role="columnheader">Coding Agent</span>' +
+            '<span role="columnheader">Startup line</span>' +
+            '<span role="columnheader">Profile</span>' +
+          '</div>' +
+          '<div role="rowgroup">' + comparisonRows + '</div>' +
+        '</div>' +
+        '<p class="under-fold-note">Se muestra acá para revisión; en la captura fijada de 607×1074 esta tabla queda debajo del pliegue del layout apilado de Step 1.</p>' +
+      '</section>';
+
+    document.getElementById("picker-frame-root").innerHTML =
+      '<div class="picker-frame">' + viewport + comparison + '</div>';
+  }
+
+  function renderModeButtons() {
+    ["settings", "picker"].forEach(function (screen) {
+      ["today", "proposed"].forEach(function (mode) {
+        var button = document.getElementById(screen + "-mode-" + mode);
+        if (button) button.setAttribute("aria-pressed", state.mode[screen] === mode ? "true" : "false");
+      });
+    });
+  }
+
+  function syncToolbar() {
+    var ownershipCheck = document.getElementById("ownership-check");
+    var failCheck = document.getElementById("fail-check");
+    var afterLoad = document.getElementById("ownership-after-load-btn");
+    var highlightCheck = document.getElementById("highlight-check");
+    ownershipCheck.checked = state.ownership;
+    failCheck.checked = state.failNextSave;
+    afterLoad.disabled = state.ownership;
+    highlightCheck.checked = state.highlight;
+    document.getElementById("change-legend").hidden = !state.highlight;
+  }
+
+  function render() {
+    renderSettings();
+    renderLabelExample();
+    renderPicker();
+    renderOrderJson();
+    renderModeButtons();
+    syncToolbar();
+  }
+
+  function buildMockJson(order, values) {
+    var rows = order.map(function (id, i) {
+      var tool = byId(id);
+      return '    { "label": "' + tool.label + '", "command": "' + tool.command + '", "order": ' + values[id] + ' }' +
+        (i < order.length - 1 ? "," : "");
+    });
+    return '{\n  "agents": [\n' + rows.join("\n") + '\n  ]\n}';
+  }
+
+  // Overlay excerpt: the file lists Claude first, explicit valid orders win
+  // (Grok 0 is effective first), and Pi has no order so it falls back to its
+  // index in the overlay array (3).
+  function buildOverlayJson() {
+    var rows = OVERLAY_ARRAY.map(function (id, i) {
+      var tool = byId(id);
+      var orderField = OVERLAY_EXPLICIT[id] !== undefined ? ', "order": ' + OVERLAY_EXPLICIT[id] : "";
+      return '    { "label": "' + tool.label + '", "command": "' + tool.command + '"' + orderField + ' }' +
+        (i < OVERLAY_ARRAY.length - 1 ? "," : "");
+    });
+    return '{\n  "agents": [\n' + rows.join("\n") + '\n  ]\n}';
+  }
+
+  function renderOrderJson() {
+    var badge = document.getElementById("order-json-badge");
+    var card = document.getElementById("order-json-card");
+    var body = document.getElementById("order-json-body");
+    if (!badge || !card || !body) return;
+    badge.hidden = !state.highlight;
+    card.classList.toggle("change-target", state.highlight);
+    body.textContent = buildMockJson(state.proposedOrder, state.orderValues);
+    var wrap = document.getElementById("overlay-json-wrap");
+    var note = document.getElementById("overlay-json-note");
+    var overlayBody = document.getElementById("overlay-json-body");
+    if (wrap) wrap.hidden = !state.ownership;
+    if (note) {
+      note.textContent = state.ownershipAfterLoad
+        ? " Esta vista todavía muestra el orden base: el snapshot no se refrescó; reabrí las vistas propuestas para adoptar el orden del overlay."
+        : " Con el overlay activo, ambas pantallas muestran este orden y los movimientos quedan deshabilitados.";
+    }
+    if (overlayBody) overlayBody.textContent = buildOverlayJson();
+  }
+
+  /* ------------------------------------------------------------------ wiring */
+  document.addEventListener("click", function (event) {
+    var target = event.target.closest("button, [data-select-tool]");
+    if (!target) return;
+
+    var repro = target.closest("[data-repro]");
+    if (repro) { reproduce(repro.getAttribute("data-repro")); return; }
+
+    var modeButton = target.closest("[data-screen][data-mode]");
+    if (modeButton) { setMode(modeButton.getAttribute("data-screen"), modeButton.getAttribute("data-mode")); return; }
+
+    if (target.getAttribute("data-action") === "retry") { retryMove(); return; }
+
+    var move = target.closest("[data-move]");
+    if (move) {
+      event.stopPropagation();
+      moveTool(move.getAttribute("data-move"), move.getAttribute("data-tool"), Number(move.getAttribute("data-dir")));
+      return;
+    }
+
+    var selectTool = target.closest("[data-select-tool]");
+    if (selectTool) {
+      event.stopPropagation();
+      setRailTool(selectTool.getAttribute("data-select-tool"));
+      return;
+    }
+
+    var selectPicker = target.closest("[data-select-picker]");
+    if (selectPicker) { setPickerSelected(selectPicker.getAttribute("data-select-picker")); return; }
+  });
+
+  // Row heads are role=button divs: Enter/Space select the rail, as in the app.
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    var row = event.target.closest ? event.target.closest(".settings-agent-row-head") : null;
+    if (!row || event.target !== row) return;
+    event.preventDefault();
+    setRailTool(row.getAttribute("data-select-tool"));
+  });
+
+  // Existing app behavior kept distinct from the move controls: ArrowUp/ArrowDown
+  // move the Step 1 selection (never the order) while focus is in that screen and
+  // not in the filter input. Move controls remain separate Tab/Enter targets.
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (event.target && event.target.id === "picker-filter") return;
+    var frame = document.getElementById("picker-frame-root");
+    if (!frame || !frame.contains(document.activeElement)) return;
+    var cards = Array.prototype.slice.call(frame.querySelectorAll(".agent-profile-provider-card-wrap[data-tool]"));
+    if (cards.length === 0) return;
+    var at = -1;
+    for (var i = 0; i < cards.length; i += 1) {
+      if (cards[i].getAttribute("data-tool") === state.pickerSelected) { at = i; break; }
+    }
+    var nextAt = event.key === "ArrowDown" ? Math.min(at + 1, cards.length - 1) : Math.max(at - 1, 0);
+    if (at < 0) nextAt = 0;
+    if (nextAt === at) return;
+    event.preventDefault();
+    var nextId = cards[nextAt].getAttribute("data-tool");
+    setPickerSelected(nextId);
+    var focus = document.querySelector('[data-focus-key="picker-card-' + nextId + '"]');
+    if (focus) focus.focus();
+  });
+
+  document.addEventListener("input", function (event) {
+    var el = event.target;
+    if (el.id === "picker-filter") { setFilter(el.value); return; }
+    if (el.getAttribute && el.getAttribute("data-color-tool")) {
+      var id = el.getAttribute("data-color-tool");
+      state.draftColor[id] = el.value;
+      var colorline = el.closest(".settings-agent-row-colorline");
+      var swatch = colorline ? colorline.querySelector(".settings-agent-swatch") : null;
+      if (swatch && /^#[0-9a-fA-F]{6}$/.test(el.value)) swatch.style.background = el.value;
+      // Show the unsaved chip immediately without re-rendering (a re-render
+      // would drop the caret while the reviewer is typing).
+      var chip = colorline ? colorline.querySelector(".draft-chip") : null;
+      if (colorline && el.value !== TOOLS[id].color && !chip) {
+        chip = document.createElement("span");
+        chip.className = "draft-chip";
+        chip.textContent = "Sin guardar";
+        colorline.appendChild(chip);
+      } else if (colorline && el.value === TOOLS[id].color && chip) {
+        chip.remove();
+      }
+      setStatus("Borrador de color sin guardar en Settings para " + labelFor(id) + " (" + el.value + "). Los movimientos guardan solo el orden, nunca este borrador.", "warn");
+      return;
+    }
+    if (el.getAttribute && el.getAttribute("data-label-tool")) {
+      state.draftLabel[el.getAttribute("data-label-tool")] = el.value;
+      setStatus("Borrador de etiqueta de perfil sin guardar. No se borra ninguna etiqueta guardada; el orden no se toca.", "warn");
+    }
+  });
+
+  document.getElementById("highlight-check").addEventListener("change", function (e) {
+    state.highlight = e.currentTarget.checked;
+    setStatus(state.highlight
+      ? "Modo de resaltado activo: números ámbar = cambios de producto propuestos; el andamiaje está marcado como «Solo prototipo»."
+      : "Modo de resaltado desactivado.", "");
+    rerender();
+  });
+  document.getElementById("reopen-btn").addEventListener("click", reopenProposed);
+  document.getElementById("reset-btn").addEventListener("click", restoreProposedOrder);
+  document.getElementById("discard-btn").addEventListener("click", discardDrafts);
+  document.getElementById("external-btn").addEventListener("click", simulateExternalWriter);
+  document.getElementById("ownership-after-load-btn").addEventListener("click", simulateOwnershipAfterLoad);
+  document.getElementById("ownership-check").addEventListener("change", function (e) { toggleOwnership(e.currentTarget.checked); });
+  document.getElementById("fail-check").addEventListener("change", function (e) {
+    state.failNextSave = e.currentTarget.checked;
+    setStatus(state.failNextSave ? "El próximo guardado de movimiento fallará una vez (mock)." : "Mock de fallo de guardado transitorio desactivado.", state.failNextSave ? "warn" : "");
+  });
+
+  setStatus("Ambas vistas empiezan en Propuesto. Cambiá cualquiera de las pantallas a Actual para ver el comportamiento actual.", "");
+  render();
+})();
+</script>
+</body>
+</html>
