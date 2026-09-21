@@ -1042,6 +1042,53 @@ impl SessionManager {
             .await
     }
 
+    /// #2232 phase 7 - sets `session.communication` to `CoManaged` with the
+    /// visible text the Co-managed feature produced (reason, excerpt and the
+    /// messaging-file path). Same shape and dedup rule as `set_blocked_menu`:
+    /// re-setting the identical visible message reports `changed == false`.
+    ///
+    /// The slot is single and shared with `raise_hand` / `set_blocked_menu`:
+    /// the newer writer overwrites, which is the documented phase-7 behaviour.
+    pub async fn set_co_managed(
+        &self,
+        id: Uuid,
+        message: String,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Option<(bool, SessionCommunication)> {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return None;
+        }
+        let session = state.sessions.get_mut(&id)?;
+        if matches!(session.status, SessionStatus::Exited(_)) {
+            return None;
+        }
+
+        if let Some(existing) = session.communication.as_ref() {
+            if existing.kind == SessionCommunicationKind::CoManaged
+                && existing.visible
+                && existing.message.as_deref() == Some(&message)
+            {
+                return Some((false, existing.clone()));
+            }
+        }
+
+        let communication = SessionCommunication {
+            kind: SessionCommunicationKind::CoManaged,
+            visible: true,
+            updated_at: updated_at.to_rfc3339(),
+            message: Some(message),
+        };
+        session.communication = Some(communication.clone());
+        Some((true, communication))
+    }
+
+    /// #2232 phase 7 - clears the Co-managed communication when its cycle ends.
+    pub async fn clear_co_managed(&self, id: Uuid) -> bool {
+        self.clear_communication_if_kind(id, SessionCommunicationKind::CoManaged)
+            .await
+    }
+
     /// (#747) Re-apply a persisted raise-hand onto a restored session record.
     /// Unlike `raise_hand`, this deliberately ACCEPTS records in
     /// `SessionStatus::Exited(_)`: the startup defer arm restores dormant
@@ -2997,6 +3044,62 @@ mod tests {
         assert!(stored.communication.is_none());
         let infos = mgr.list_sessions().await;
         assert!(infos[0].communication.is_none());
+    }
+
+    /// #2232 phase 7: the Co-managed communication follows the same shape and
+    /// dedup rule as `set_blocked_menu`, and its kind serializes as `coManaged`.
+    #[tokio::test]
+    async fn set_co_managed_round_trips_and_dedups_identical_messages() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+        let now = chrono::Utc::now();
+
+        let (changed, communication) = mgr
+            .set_co_managed(session.id, "Co-managed: routed".to_string(), now)
+            .await
+            .expect("the session exists and is live");
+        assert!(changed);
+        assert_eq!(communication.kind, SessionCommunicationKind::CoManaged);
+        assert!(communication.visible);
+        assert_eq!(communication.message.as_deref(), Some("Co-managed: routed"));
+
+        // Re-setting the identical visible message reports unchanged.
+        let (changed, again) = mgr
+            .set_co_managed(
+                session.id,
+                "Co-managed: routed".to_string(),
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(!changed);
+        assert_eq!(again.updated_at, communication.updated_at);
+
+        // The wire form of the new variant is camelCase, like its siblings.
+        assert_eq!(
+            serde_json::to_string(&SessionCommunicationKind::CoManaged).unwrap(),
+            "\"coManaged\""
+        );
+
+        assert!(mgr.clear_co_managed(session.id).await);
+        assert!(mgr
+            .get_session(session.id)
+            .await
+            .unwrap()
+            .communication
+            .is_none());
     }
 
     #[tokio::test]

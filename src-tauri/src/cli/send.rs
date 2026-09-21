@@ -290,14 +290,32 @@ fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
     }
 }
 
-fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> {
-    let ac_root = wg_root.parent().ok_or_else(|| {
-        format!(
-            "room root '{}' has no parent Project AC Root directory",
-            wg_root.display()
-        )
-    })?;
-    crate::config::ac_root::ensure_authoritative_ac_root(ac_root)
+/// #2232 phase 7: nothing but the in-process supervisor may write the
+/// Co-managed provenance queue. `--outbox` takes an arbitrary path, so without
+/// this guard any caller holding a token could forge a Co-managed-origin
+/// message. Rejects both the `<room>/.co-managed/queue` shape and any aliased
+/// spelling of it that resolves to that shape.
+fn reject_comanaged_queue_outbox(outbox_dir: &Path) -> Result<(), String> {
+    fn is_queue_shape(path: &Path) -> bool {
+        path.file_name().and_then(|name| name.to_str())
+            == Some(crate::config::co_managed::QUEUE_DIR_NAME)
+            && path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                == Some(crate::config::co_managed::CO_MANAGED_DIR_NAME)
+    }
+
+    let aliased = std::fs::canonicalize(outbox_dir)
+        .ok()
+        .is_some_and(|canonical| is_queue_shape(&canonical));
+    if is_queue_shape(outbox_dir) || aliased {
+        return Err(format!(
+            "--outbox may not target the Co-managed provenance queue ({}); only the Co-managed supervisor writes there",
+            outbox_dir.display()
+        ));
+    }
+    Ok(())
 }
 
 /// v4 UUID string length. Request ids are `Uuid::new_v4().to_string()`, so the
@@ -975,7 +993,9 @@ pub fn execute(args: SendArgs) -> i32 {
                     return 1;
                 }
             };
-            if let Err(e) = ensure_workgroup_root_is_authoritative(&wg_root) {
+            if let Err(e) =
+                crate::phone::messaging::ensure_workgroup_root_is_authoritative(&wg_root)
+            {
                 eprintln!("Error: {}", e);
                 return 1;
             }
@@ -1127,6 +1147,10 @@ pub fn execute(args: SendArgs) -> i32 {
     } else {
         ac_dir.join("outbox")
     };
+    if let Err(reason) = reject_comanaged_queue_outbox(&outbox_dir) {
+        eprintln!("Error: {}", reason);
+        return 1;
+    }
     if let Err(e) = std::fs::create_dir_all(&outbox_dir) {
         eprintln!("Error: failed to create outbox directory: {}", e);
         return 1;
@@ -2115,5 +2139,37 @@ mod tests {
             queued_receipt_line("m-1", "codex", &None),
             "Queued: m-1 (agent=codex)"
         );
+    }
+
+    // #2232 phase 7 test 8: the Co-managed provenance queue is not an
+    // `--outbox` target. The queue is the only tokenless, self-authorized
+    // origin; allowing a token-holding caller to write there would let it
+    // forge that origin.
+    #[test]
+    fn outbox_guard_rejects_the_co_managed_queue() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let room = temp.path().join("room-1-dev-team");
+        let queue = crate::config::co_managed::queue_dir(&room);
+
+        let error = reject_comanaged_queue_outbox(&queue)
+            .expect_err("the queue directory must be rejected");
+        assert!(error.contains("provenance queue"), "{error}");
+
+        // An aliased spelling that canonicalizes to the same directory is
+        // rejected too; the guard cannot be evaded with `./` or a symlink.
+        std::fs::create_dir_all(&queue).unwrap();
+        let aliased = room.join(".co-managed").join(".").join("queue");
+        assert!(
+            reject_comanaged_queue_outbox(&aliased).is_err(),
+            "an aliased queue spelling must be rejected"
+        );
+
+        // Ordinary outboxes stay accepted, including one named `queue` that is
+        // not under `.co-managed`.
+        let ordinary = temp.path().join("project-a").join("outbox");
+        reject_comanaged_queue_outbox(&ordinary).expect("an ordinary outbox is fine");
+        let unrelated_queue = temp.path().join("queue");
+        reject_comanaged_queue_outbox(&unrelated_queue)
+            .expect("a directory named queue outside .co-managed is fine");
     }
 }

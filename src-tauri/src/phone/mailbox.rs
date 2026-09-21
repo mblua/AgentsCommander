@@ -77,6 +77,23 @@ pub(crate) enum WakeDeliveryOrigin {
     DbQueue,
 }
 
+/// Where a scanned message file was found (#2232 phase 7).
+///
+/// Attribution is **by directory**, decided once per sweep: the mailbox routes
+/// and authorizes a message from this value and never from a path comparison at
+/// each site. It is deliberately separate from [`WakeDeliveryOrigin`], which
+/// names how a wake is delivered, not who produced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutboxOrigin {
+    /// An agent replica outbox, `<repo>/<local-dir>/outbox`.
+    Replica,
+    /// The instance-private app outbox: the master/root-token origin.
+    Master,
+    /// The phase-7 Co-managed provenance queue, `<room>/.co-managed/queue`.
+    /// The only tokenless origin; `from` is the authorizing FQN.
+    CoManaged,
+}
+
 /// Canonical routing capability for an AgentsCommander-generated notice. The FQN and
 /// replica path are validated and retained together so no internal caller can later route
 /// by spelling alone.
@@ -454,6 +471,9 @@ enum WakeDelivery<'a> {
     Peer {
         message: &'a OutboxMessage,
         origin: WakeDeliveryOrigin,
+        /// #2232 phase 7: display-only attribution for a Co-managed-origin
+        /// message. False for every pre-existing caller.
+        comanaged: bool,
     },
     InternalSystem {
         target: InternalSystemTarget,
@@ -468,15 +488,30 @@ enum WakeContent<'a> {
         from: &'a str,
         body: &'a str,
         origin: WakeDeliveryOrigin,
+        /// #2232 phase 7: true only for a message the Co-managed supervisor
+        /// wrote into the provenance queue. Display-only; `from` stays the
+        /// exact FQN and is the credential.
+        comanaged: bool,
     },
     InternalSystem(&'a InternalSystemNotice),
 }
 
 fn format_wake_content(content: WakeContent<'_>) -> String {
     match content {
-        WakeContent::Peer { from, body, origin } => {
+        WakeContent::Peer {
+            from,
+            body,
+            origin,
+            comanaged,
+        } => {
             let _ = origin;
-            crate::phone::messaging::format_pty_wrap(from, body)
+            if comanaged {
+                let display_from =
+                    crate::phone::messaging::compose_sender_for_comanaged_origin(from);
+                crate::phone::messaging::format_pty_wrap(&display_from, body)
+            } else {
+                crate::phone::messaging::format_pty_wrap(from, body)
+            }
         }
         WakeContent::InternalSystem(notice) => format!("\n{}\n\r", notice.line()),
     }
@@ -3910,11 +3945,43 @@ impl MailboxPoller {
         dedup_outbox_dirs_by_object_id(&mut outbox_dirs);
         outbox_dirs.push(PathBuf::from(&app_outbox_path));
 
-        for outbox_dir in &outbox_dirs {
+        // #2232 phase 7: the Co-managed provenance queues of every room an
+        // active session lives in. Each is its own scanned directory with its
+        // own origin, never an outbox subdirectory (the sweep skips those).
+        let mut queue_dirs: Vec<PathBuf> = Vec::new();
+        for path in &all_paths {
+            let Some(room_root) = crate::config::co_managed::room_root_for_path(Path::new(path))
+            else {
+                continue;
+            };
+            let queue = crate::config::co_managed::queue_dir(&room_root);
+            if !queue_dirs.contains(&queue) {
+                queue_dirs.push(queue);
+            }
+        }
+
+        let mut scan_dirs: Vec<(PathBuf, OutboxOrigin)> = outbox_dirs
+            .into_iter()
+            .map(|dir| {
+                let origin = if dir.as_path() == Path::new(&app_outbox_path) {
+                    OutboxOrigin::Master
+                } else {
+                    OutboxOrigin::Replica
+                };
+                (dir, origin)
+            })
+            .collect();
+        scan_dirs.extend(
+            queue_dirs
+                .into_iter()
+                .map(|dir| (dir, OutboxOrigin::CoManaged)),
+        );
+
+        for (outbox_dir, origin) in &scan_dirs {
             if !outbox_dir.is_dir() {
                 continue;
             }
-            let is_app_outbox = outbox_dir.as_path() == Path::new(&app_outbox_path);
+            let is_app_outbox = *origin == OutboxOrigin::Master;
             if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
                 if let Ok(store) = &state.store {
                     self.scrub_stale_pty_input_temps(outbox_dir, store);
@@ -3973,6 +4040,20 @@ impl MailboxPoller {
                 messages_processed += 1;
                 let standard_content = match classify_outbox_document(&path) {
                     OutboxClassification::PrivilegedCandidate { bytes, identity } => {
+                        if *origin == OutboxOrigin::CoManaged {
+                            // #2232 phase 7: the Co-managed origin may express
+                            // exactly one thing, a wake carrying a pointer. A
+                            // privileged PTY-input envelope is rejected before
+                            // any authority resolution; the queue grants no
+                            // other capability.
+                            let _ =
+                                Self::reject_raw_file(
+                                    &path,
+                                    "Co-managed origin may carry only a wake; privileged PTY input is rejected",
+                                );
+                            self.retry_tracker.remove(&path);
+                            continue;
+                        }
                         self.process_pty_input_file(app, &path, is_app_outbox, &bytes, &identity)
                             .await;
                         self.retry_tracker.remove(&path);
@@ -3990,7 +4071,7 @@ impl MailboxPoller {
                     .process_message_content(
                         app,
                         &path,
-                        is_app_outbox,
+                        *origin,
                         &standard_content,
                         Some(&mut deferred),
                     )
@@ -4019,7 +4100,7 @@ impl MailboxPoller {
         log::info!(
             "[mailbox] poll cycle done elapsed_ms={} outboxes={} messages={}",
             cycle_started.elapsed().as_millis(),
-            outbox_dirs.len(),
+            scan_dirs.len(),
             messages_processed
         );
 
@@ -6958,19 +7039,33 @@ impl MailboxPoller {
     }
 
     /// Process a single outbox message file.
-    /// `is_app_outbox`: true if the message came from the instance-private outbox (master token path).
+    /// `origin`: the directory the file was found in (#2232 phase 7). The
+    /// master/root-token origin is `OutboxOrigin::Master`.
     #[cfg(test)]
     async fn process_message<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         path: &Path,
-        is_app_outbox: bool,
+        origin: OutboxOrigin,
     ) -> Result<(), String> {
         let content = match classify_outbox_document(path) {
             OutboxClassification::Standard(content) => content,
             OutboxClassification::PrivilegedCandidate { bytes, identity } => {
-                self.process_pty_input_file(app, path, is_app_outbox, &bytes, &identity)
-                    .await;
+                if origin == OutboxOrigin::CoManaged {
+                    let _ = Self::reject_raw_file(
+                        path,
+                        "Co-managed origin may carry only a wake; privileged PTY input is rejected",
+                    );
+                    return Ok(());
+                }
+                self.process_pty_input_file(
+                    app,
+                    path,
+                    origin == OutboxOrigin::Master,
+                    &bytes,
+                    &identity,
+                )
+                .await;
                 return Ok(());
             }
             OutboxClassification::InvalidDocument => {
@@ -6978,7 +7073,7 @@ impl MailboxPoller {
                 return Ok(());
             }
         };
-        self.process_message_content(app, path, is_app_outbox, &content, None)
+        self.process_message_content(app, path, origin, &content, None)
             .await
     }
 
@@ -6991,10 +7086,13 @@ impl MailboxPoller {
         &self,
         app: &tauri::AppHandle<R>,
         path: &Path,
-        is_app_outbox: bool,
+        origin: OutboxOrigin,
         content: &str,
         deferred_tail: Option<&mut Option<OutboxMessage>>,
     ) -> Result<(), String> {
+        // The pre-phase-7 boolean, derived once: every pre-existing branch that
+        // only knew "app outbox or not" keeps its exact behaviour.
+        let is_app_outbox = origin == OutboxOrigin::Master;
         // `let mut msg`: §AR2-norm below mutates `msg.from` / `msg.to` in place
         // as the SINGLE POINT OF TRUTH for canonicalization. Downstream code
         // (routing, action dispatch, injection, archival) reads the canonical
@@ -7028,7 +7126,7 @@ impl MailboxPoller {
         // `expected_from` is hoisted (§DR2-3) so §AR2-norm can upgrade `msg.from`
         // even when this block has returned to outer scope.
         let mut expected_from: Option<String> = None;
-        if !is_app_outbox {
+        if origin == OutboxOrigin::Replica {
             let outbox_dir = path.parent().unwrap_or(Path::new(""));
             // outbox_dir is <repo>/.agentscommander/outbox — go up 2 levels to get the repo path
             if let Some(repo_path) = outbox_dir.parent().and_then(|p| p.parent()) {
@@ -7211,6 +7309,28 @@ impl MailboxPoller {
             }
         }
 
+        // ── #2232 phase 7: the Co-managed origin may express exactly one thing ──
+        // A wake carrying a pointer. `action` and `command` are rejected here,
+        // before the pre-routing dispatch below, because `purge-wg` and
+        // `close-session` are destructive verbs and this origin is written by
+        // the in-process supervisor, not by a token-bearing caller. The same
+        // fields from a replica outbox keep today's behaviour untouched.
+        if origin == OutboxOrigin::CoManaged && (msg.action.is_some() || msg.command.is_some()) {
+            log::warn!(
+                "[mailbox] Co-managed origin rejected a message carrying action={:?} command={:?} msg={}",
+                msg.action,
+                msg.command,
+                msg.id
+            );
+            return self
+                .reject_message(
+                    path,
+                    &msg,
+                    "Co-managed origin may carry only a wake; action and command are rejected",
+                )
+                .await;
+        }
+
         // ── #617 self-clear: token-authorized self-operation ──
         // Dispatched BEFORE the team-routing chain below. self-clear clears the
         // CALLER'S OWN context; it is authorized solely by session-token ownership
@@ -7254,7 +7374,58 @@ impl MailboxPoller {
             return self.handle_purge_wg(app, path, &msg, is_app_outbox).await;
         }
 
-        if root_agent_claim {
+        if origin == OutboxOrigin::CoManaged {
+            // #2232 phase 7: no token, no master path, no anti-spoof. The FQN in
+            // `from` is the credential and the destination check is the CLI's:
+            // Root through the verified-coordinator validator, everything else
+            // through `can_communicate`. An unreachable destination is rejected.
+            let mut paths = {
+                let cfg = app.state::<SettingsState>();
+                let c = cfg.read().await;
+                c.project_paths.clone()
+            };
+            // The queue lives under a room root, whose grandparent is the project
+            // directory; include it so a qualified coordinator FQN resolves even
+            // when the project is not in settings (session-derived rooms).
+            if let Some(project_dir) = crate::config::co_managed::room_root_for_path(path)
+                .and_then(|room_root| room_root.parent().map(|ac_root| ac_root.to_path_buf()))
+                .and_then(|ac_root| ac_root.parent().map(|project| project.to_path_buf()))
+            {
+                let canon_project = std::fs::canonicalize(&project_dir).ok();
+                let already_present = paths.iter().any(|p| match &canon_project {
+                    Some(canon_target) => {
+                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
+                    }
+                    None => std::path::Path::new(p) == project_dir,
+                });
+                if !already_present {
+                    paths.push(project_dir.to_string_lossy().to_string());
+                }
+            }
+
+            if root_agent_recipient {
+                if let Err(reason) = validate_coordinator_to_root_route(&msg.from, &paths) {
+                    return self.reject_message(path, &msg, reason).await;
+                }
+            } else {
+                let discovered_teams = teams::discover_teams();
+                if !self.can_reach(&msg.from, &msg.to, &discovered_teams) {
+                    log::warn!(
+                        "[mailbox] Co-managed routing check FAILED: '{}' cannot reach '{}'",
+                        msg.from,
+                        msg.to
+                    );
+                    return self
+                        .reject_message(path, &msg, "Sender cannot reach destination")
+                        .await;
+                }
+            }
+            log::debug!(
+                "[mailbox] Co-managed routing check passed: '{}' -> '{}'",
+                msg.from,
+                msg.to
+            );
+        } else if root_agent_claim {
             let mut paths = {
                 let cfg = app.state::<SettingsState>();
                 let c = cfg.read().await;
@@ -7390,6 +7561,21 @@ impl MailboxPoller {
                 )
                 .await;
         }
+        // #2232 phase 7: a Co-managed message is delivered inline with its
+        // display attribution; it is never parked for the detached worker pool,
+        // whose shared `deliver_wake` tail carries no attribution and must keep
+        // its exact behaviour for every other origin.
+        if origin == OutboxOrigin::CoManaged {
+            let annotated = self
+                .deliver_wake_with_attribution(
+                    app,
+                    &msg,
+                    WakeDeliveryOrigin::FilesystemPoller,
+                    true,
+                )
+                .await?;
+            return self.move_to_delivered(path, &annotated).await;
+        }
         if let Some(slot) = deferred_tail {
             *slot = Some(msg);
             return Ok(());
@@ -7432,6 +7618,28 @@ impl MailboxPoller {
             WakeDelivery::Peer {
                 message: msg,
                 origin,
+                comanaged: false,
+            },
+        )
+        .await
+    }
+
+    /// #2232 phase 7: deliver a wake whose origin is the Co-managed provenance
+    /// queue. `comanaged` is display-only and never part of routing; the
+    /// existing entry points stay attribution-free.
+    async fn deliver_wake_with_attribution<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        origin: WakeDeliveryOrigin,
+        comanaged: bool,
+    ) -> Result<OutboxMessage, String> {
+        self.deliver_wake_engine(
+            app,
+            WakeDelivery::Peer {
+                message: msg,
+                origin,
+                comanaged,
             },
         )
         .await
@@ -7448,8 +7656,13 @@ impl MailboxPoller {
         delivery: WakeDelivery<'_>,
     ) -> Result<OutboxMessage, String> {
         match delivery {
-            WakeDelivery::Peer { message, origin } => {
-                self.deliver_peer_wake(app, message, origin).await
+            WakeDelivery::Peer {
+                message,
+                origin,
+                comanaged,
+            } => {
+                self.deliver_peer_wake(app, message, origin, comanaged)
+                    .await
             }
             WakeDelivery::InternalSystem {
                 target,
@@ -7475,6 +7688,7 @@ impl MailboxPoller {
         app: &tauri::AppHandle<R>,
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
+        comanaged: bool,
     ) -> Result<OutboxMessage, String> {
         // Parse a hand-authored logical action after process_message's
         // authorization/routing gates but before any recipient actuation.
@@ -7619,7 +7833,7 @@ impl MailboxPoller {
                     // inject's own race handling below.
                     self.settle_live_before_inject(app, session_id).await;
                     match self
-                        .inject_wake_into_pty(app, session_id, msg, origin)
+                        .inject_wake_into_pty(app, session_id, msg, origin, comanaged)
                         .await
                     {
                         Ok(()) => {
@@ -7882,7 +8096,7 @@ impl MailboxPoller {
         self.wait_for_spawned_wake_idle(app, session_id).await?;
 
         // Inject message — interactive mode (session persists, user sees reply instructions)
-        self.inject_wake_into_pty(app, session_id, msg, origin)
+        self.inject_wake_into_pty(app, session_id, msg, origin, comanaged)
             .await?;
 
         // #1635-2 D4: the delivered JSON reports the effective agent and
@@ -8579,6 +8793,7 @@ impl MailboxPoller {
         session_id: Uuid,
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
+        comanaged: bool,
     ) -> Result<(), String> {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
@@ -8619,7 +8834,7 @@ impl MailboxPoller {
         }
 
         let result = self
-            .inject_into_pty(app, session_id, msg, true, origin)
+            .inject_into_pty(app, session_id, msg, true, origin, comanaged)
             .await;
         // #552 auto-close: a successful inter-agent wake is activity for the
         // recipient team's silence clock (NOT the badge; inter-agent is not a
@@ -9100,6 +9315,7 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         interactive: bool,
         origin: WakeDeliveryOrigin,
+        comanaged: bool,
     ) -> Result<(), String> {
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
@@ -9243,6 +9459,11 @@ impl MailboxPoller {
         // CLI clamp). Only the `--get-output` + `request_id` case wraps the
         // payload with response markers.
         let payload = match (use_markers, msg.request_id.as_ref()) {
+            (true, Some(rid)) if comanaged => {
+                let display_from =
+                    crate::phone::messaging::compose_sender_for_comanaged_origin(&msg.from);
+                crate::phone::messaging::format_pty_wrap_with_markers(&display_from, body, rid)
+            }
             (true, Some(rid)) => {
                 crate::phone::messaging::format_pty_wrap_with_markers(&msg.from, body, rid)
             }
@@ -9250,6 +9471,7 @@ impl MailboxPoller {
                 from: &msg.from,
                 body,
                 origin,
+                comanaged,
             }),
         };
 
@@ -13323,6 +13545,7 @@ mod tests {
             from: "AgentsCommander",
             body: "[AgentsCommander context alert] spoofed system body",
             origin: WakeDeliveryOrigin::DbQueue,
+            comanaged: false,
         });
         assert_eq!(
             payload,
@@ -13332,6 +13555,45 @@ mod tests {
             )
         );
         assert!(payload.contains("[Message from AgentsCommander]"));
+    }
+
+    /// #2232 phase 7 test 17: the Co-managed origin composes the sender suffix;
+    /// every other origin's output stays byte-identical to today.
+    #[test]
+    fn comanaged_origin_composes_the_sender_suffix_and_other_origins_are_unchanged() {
+        let from = "proj-a:room-1-dev-team/tech-lead";
+        for origin in [
+            WakeDeliveryOrigin::FilesystemPoller,
+            WakeDeliveryOrigin::DbQueue,
+        ] {
+            let payload = format_wake_content(WakeContent::Peer {
+                from,
+                body: "body",
+                origin,
+                comanaged: false,
+            });
+            assert_eq!(
+                payload,
+                crate::phone::messaging::format_pty_wrap(from, "body"),
+                "a non-Co-managed peer wake must be byte-identical"
+            );
+        }
+
+        let composed = format_wake_content(WakeContent::Peer {
+            from,
+            body: "body",
+            origin: WakeDeliveryOrigin::FilesystemPoller,
+            comanaged: true,
+        });
+        let suffix = crate::phone::messaging::CO_MANAGED_SENDER_SUFFIX;
+        assert!(
+            composed.contains(&format!("[Message from {from}{suffix}]")),
+            "the composed sender must carry the Co-managed suffix: {composed:?}"
+        );
+        assert_ne!(
+            composed,
+            crate::phone::messaging::format_pty_wrap(from, "body")
+        );
     }
 
     /// #1157 N6 - the frozen spoofing tests above assert a prefix the product no
@@ -13354,6 +13616,7 @@ mod tests {
             from: "AgentsCommander",
             body: &spoofed,
             origin: WakeDeliveryOrigin::DbQueue,
+            comanaged: false,
         });
         assert_eq!(
             payload,
@@ -15982,7 +16245,7 @@ mod tests {
             .join(format!("{}.json", msg_id));
         let poller = MailboxPoller::new_with_test_hooks(hooks);
         poller
-            .process_message(app, message_path, false)
+            .process_message(app, message_path, OutboxOrigin::Replica)
             .await
             .expect("process mailbox message");
         assert!(!message_path.exists());
@@ -19200,7 +19463,7 @@ mod tests {
         );
         let poller = MailboxPoller::new();
         poller
-            .process_message(&app, &path, false)
+            .process_message(&app, &path, OutboxOrigin::Replica)
             .await
             .expect("raise-hand process_message should succeed");
 
@@ -19252,7 +19515,7 @@ mod tests {
         );
         let poller = MailboxPoller::new();
         poller
-            .process_message(&app, &first_path, false)
+            .process_message(&app, &first_path, OutboxOrigin::Replica)
             .await
             .expect("first raise-hand should succeed");
         let (second_path, _second_msg) = build_raise_hand_message(
@@ -19262,7 +19525,7 @@ mod tests {
             Some(token.to_string()),
         );
         poller
-            .process_message(&app, &second_path, false)
+            .process_message(&app, &second_path, OutboxOrigin::Replica)
             .await
             .expect("second raise-hand should succeed");
 
@@ -19313,7 +19576,7 @@ mod tests {
             );
             let poller = MailboxPoller::new();
             poller
-                .process_message(&app, &path, false)
+                .process_message(&app, &path, OutboxOrigin::Replica)
                 .await
                 .expect("raise-hand no-slot message should be processed");
 
@@ -19351,7 +19614,7 @@ mod tests {
         );
         let poller = MailboxPoller::new();
         poller
-            .process_message(&app, &path, false)
+            .process_message(&app, &path, OutboxOrigin::Replica)
             .await
             .expect("non-coordinator raise-hand should be processed");
 
@@ -19388,7 +19651,7 @@ mod tests {
         );
         let poller = MailboxPoller::new();
         poller
-            .process_message(&app, &path, false)
+            .process_message(&app, &path, OutboxOrigin::Replica)
             .await
             .expect("exited coordinator raise-hand should be processed");
 
@@ -19423,7 +19686,7 @@ mod tests {
                 build_raise_hand_message(&fixture.sender_cwd, &msg_id, &rid, Some(token));
             let poller = MailboxPoller::new();
             poller
-                .process_message(&app, &path, false)
+                .process_message(&app, &path, OutboxOrigin::Replica)
                 .await
                 .expect("bad-token raise-hand should reject cleanly");
 
@@ -23508,7 +23771,7 @@ mod tests {
         );
         let poller = MailboxPoller::new();
         poller
-            .process_message(&app, &path, false)
+            .process_message(&app, &path, OutboxOrigin::Replica)
             .await
             .expect("process_message should succeed");
 
@@ -23587,7 +23850,7 @@ mod tests {
         );
         let poller = MailboxPoller::new();
         poller
-            .process_message(&app, &path, false)
+            .process_message(&app, &path, OutboxOrigin::Replica)
             .await
             .expect("process_message returns Ok even when it rejects");
 
@@ -23688,7 +23951,7 @@ mod tests {
         let poller = MailboxPoller::new();
         // `false` is the real agent-outbox path, so BOTH anti-spoof gates run.
         poller
-            .process_message(&app, &path, false)
+            .process_message(&app, &path, OutboxOrigin::Replica)
             .await
             .expect("process_message should succeed");
 
@@ -23767,7 +24030,7 @@ mod tests {
         );
         let poller = MailboxPoller::new();
         poller
-            .process_message(&app, &path, false)
+            .process_message(&app, &path, OutboxOrigin::Replica)
             .await
             .expect("process_message returns Ok even when it rejects");
 
@@ -24547,6 +24810,7 @@ mod tests {
                 &message,
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
+                false,
             )
             .await
             .unwrap();
@@ -24642,6 +24906,7 @@ mod tests {
                 &defer_a,
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
+                false,
             )
             .await
             .expect_err("menu-blocked logical command must defer");
@@ -24661,6 +24926,7 @@ mod tests {
                 &defer_b,
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
+                false,
             )
             .await
             .expect_err("menu-blocked standard wake must defer");
@@ -24699,6 +24965,7 @@ mod tests {
                 &fail_a,
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
+                false,
             )
             .await
             .expect_err("real PTY write failure must surface");
@@ -24717,6 +24984,7 @@ mod tests {
                 &fail_b,
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
+                false,
             )
             .await
             .expect_err("real PTY write failure must surface");
@@ -24772,6 +25040,7 @@ mod tests {
                 &clear_message,
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
+                false,
             ),
             poller.inject_into_pty(
                 &app,
@@ -24779,6 +25048,7 @@ mod tests {
                 &compact_message,
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
+                false,
             )
         );
         clear_result.unwrap();
@@ -24887,6 +25157,7 @@ mod tests {
                 &message,
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
+                false,
             )
             .await
             .unwrap_err();
@@ -27728,7 +27999,9 @@ mod tests {
             None,
         );
         let poller = MailboxPoller::new_with_test_hooks(hooks);
-        let result = poller.process_message(&app, &path, false).await;
+        let result = poller
+            .process_message(&app, &path, OutboxOrigin::Replica)
+            .await;
         assert!(
             result.is_ok(),
             "process_message should not error on rejection"
@@ -27810,7 +28083,9 @@ mod tests {
             None,
         );
         let poller = MailboxPoller::new_with_test_hooks(hooks);
-        let result = poller.process_message(&app, &path, true).await;
+        let result = poller
+            .process_message(&app, &path, OutboxOrigin::Master)
+            .await;
         assert!(result.is_ok());
 
         let rejected = sender_cwd
@@ -27891,7 +28166,9 @@ mod tests {
             None,
         );
         let poller = MailboxPoller::new_with_test_hooks(hooks);
-        let _ = poller.process_message(&app, &path, false).await;
+        let _ = poller
+            .process_message(&app, &path, OutboxOrigin::Replica)
+            .await;
 
         // (#885 E-6) Assert, don't hedge.
         let responses_dir = sender_cwd
@@ -27962,7 +28239,9 @@ mod tests {
             None,
         );
         let poller = MailboxPoller::new();
-        let _ = poller.process_message(&app, &path, false).await;
+        let _ = poller
+            .process_message(&app, &path, OutboxOrigin::Replica)
+            .await;
 
         let responses_dir = sender_cwd
             .join(crate::config::agent_local_dir_name())
@@ -28634,5 +28913,219 @@ mod tests {
             "[AgentsCommander] mblua/AgentsCommander main is now 4 commits behind its counterpart on GitHub as of 2026-09-15 23:18:43-03:00. If CI runs on this branch, it is validating an out-of-date base."
         );
         assert_eq!(counterpart.matches("main").count(), 1);
+    }
+
+    // ── #2232 phase 7: the Co-managed origin, end to end ──────────────────
+
+    fn comanaged_origin_message(
+        id: &str,
+        action: Option<&str>,
+        command: Option<&str>,
+    ) -> OutboxMessage {
+        OutboxMessage {
+            id: id.to_string(),
+            token: None,
+            from: CANONICAL_WAKE_FROM.to_string(),
+            to: CANONICAL_WAKE_TO.to_string(),
+            body: WAKE_BODY.to_string(),
+            mode: "wake".to_string(),
+            get_output: false,
+            request_id: None,
+            sender_agent: None,
+            preferred_agent: "auto".to_string(),
+            requested_profile: None,
+            effective_agent_id: None,
+            effective_profile: None,
+            profile_fallback_applied: false,
+            dispatch_not_applied: None,
+            priority: "normal".to_string(),
+            timestamp: "2026-09-21T00:00:00Z".to_string(),
+            command: command.map(str::to_string),
+            action: action.map(str::to_string),
+            target: None,
+            force: None,
+            timeout_secs: None,
+            switch_coding_agent: None,
+            switch_profile: None,
+            dry_run: None,
+            quiet_period_ms: None,
+            pty_input: None,
+        }
+    }
+
+    /// Test 7: the same body and the same `from` written into an agent's own
+    /// replica outbox is delivered with **no** suffix; only the Co-managed
+    /// origin composes one. This is the impersonation property, measured on
+    /// the bytes that actually reach the recipient's PTY.
+    #[tokio::test]
+    async fn replica_delivery_carries_no_comanaged_suffix() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let target = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "replica-target",
+            "codex",
+            SessionStatus::Running,
+        )
+        .await;
+        register_mock_pty_route(&app, target);
+        let hooks = MailboxTestHooks::default();
+        hooks.real_inject_sessions.lock().unwrap().insert(target);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        let path = write_wake_outbox_message(&fixture.sender_cwd, "impersonation-check");
+        poller
+            .process_message(&app, &path, OutboxOrigin::Replica)
+            .await
+            .expect("replica message processes");
+
+        let writes = mock_pty_writes_for(&app, target);
+        assert!(!writes.is_empty(), "the replica wake must reach the PTY");
+        let payload = String::from_utf8(writes[0].clone()).expect("utf-8 payload");
+        assert!(
+            payload.contains(&format!("[Message from {CANONICAL_WAKE_FROM}]")),
+            "the exact FQN is displayed as-is for a replica origin: {payload:?}"
+        );
+        assert!(
+            !payload.contains(crate::phone::messaging::CO_MANAGED_SENDER_SUFFIX),
+            "a replica must never carry the Co-managed suffix: {payload:?}"
+        );
+    }
+
+    /// Test 18: the Co-managed origin rejects `action` and `command`; the same
+    /// document from an agent replica outbox keeps today's behaviour. Two
+    /// assertions, so the rejection is proven origin-scoped.
+    #[tokio::test]
+    async fn comanaged_origin_rejects_action_and_command_while_replica_is_unchanged() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let hooks = MailboxTestHooks::default();
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        // (a) The Co-managed queue: `action` is rejected before dispatch.
+        let queue_dir = fixture
+            .sender_cwd
+            .parent()
+            .unwrap()
+            .join(".co-managed")
+            .join("queue");
+        std::fs::create_dir_all(&queue_dir).unwrap();
+        let action_msg = comanaged_origin_message("co-managed-action", Some("close-session"), None);
+        let queue_file = queue_dir.join("co-managed-action.json");
+        std::fs::write(
+            &queue_file,
+            serde_json::to_string_pretty(&action_msg).unwrap(),
+        )
+        .unwrap();
+        poller
+            .process_message(&app, &queue_file, OutboxOrigin::CoManaged)
+            .await
+            .expect("the rejection is a settled outcome");
+        let reason = std::fs::read_to_string(
+            queue_dir
+                .join("rejected")
+                .join("co-managed-action.reason.txt"),
+        )
+        .expect("the rejected reason file");
+        assert!(
+            reason.contains("Co-managed origin may carry only a wake"),
+            "{reason}"
+        );
+        assert!(
+            hooks.inject_calls.lock().unwrap().is_empty(),
+            "a rejected Co-managed action is never delivered"
+        );
+
+        // (a2) `command` is rejected the same way.
+        let command_msg = comanaged_origin_message("co-managed-command", None, Some("clear"));
+        let command_file = queue_dir.join("co-managed-command.json");
+        std::fs::write(
+            &command_file,
+            serde_json::to_string_pretty(&command_msg).unwrap(),
+        )
+        .unwrap();
+        poller
+            .process_message(&app, &command_file, OutboxOrigin::CoManaged)
+            .await
+            .expect("the rejection is a settled outcome");
+        let reason = std::fs::read_to_string(
+            queue_dir
+                .join("rejected")
+                .join("co-managed-command.reason.txt"),
+        )
+        .expect("the rejected reason file");
+        assert!(
+            reason.contains("Co-managed origin may carry only a wake"),
+            "{reason}"
+        );
+
+        // (a3) A privileged PTY-input envelope is not a wake either.
+        let privileged = serde_json::json!({
+            "id": "co-managed-pty",
+            "token": null,
+            "from": CANONICAL_WAKE_FROM,
+            "to": CANONICAL_WAKE_TO,
+            "body": WAKE_BODY,
+            "mode": "wake",
+            "ptyInput": {}
+        });
+        let privileged_file = queue_dir.join("co-managed-pty.json");
+        std::fs::write(
+            &privileged_file,
+            serde_json::to_string_pretty(&privileged).unwrap(),
+        )
+        .unwrap();
+        poller
+            .process_message(&app, &privileged_file, OutboxOrigin::CoManaged)
+            .await
+            .expect("the rejection is a settled outcome");
+        let reason =
+            std::fs::read_to_string(queue_dir.join("rejected").join("co-managed-pty.reason.txt"))
+                .expect("the rejected reason file");
+        assert!(
+            reason.contains("privileged PTY input is rejected"),
+            "{reason}"
+        );
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+
+        // (b) The same document from the sender's own replica outbox goes
+        // through today's chain: the Co-managed rejection text is absent.
+        let replica_path = write_wake_outbox_message_with_route(
+            &fixture.sender_cwd,
+            "replica-action",
+            CANONICAL_WAKE_FROM,
+            CANONICAL_WAKE_TO,
+        );
+        let mut replica_msg: OutboxMessage =
+            serde_json::from_str(&std::fs::read_to_string(&replica_path).unwrap()).unwrap();
+        replica_msg.action = Some("close-session".to_string());
+        std::fs::write(
+            &replica_path,
+            serde_json::to_string_pretty(&replica_msg).unwrap(),
+        )
+        .unwrap();
+        let replica_result = poller
+            .process_message(&app, &replica_path, OutboxOrigin::Replica)
+            .await;
+        if let Err(error) = &replica_result {
+            assert!(
+                !error.contains("Co-managed origin"),
+                "the rejection must be origin-scoped, got: {error}"
+            );
+        }
+        let replica_reason = std::fs::read_to_string(
+            fixture
+                .sender_cwd
+                .join(crate::config::agent_local_dir_name())
+                .join("outbox")
+                .join("rejected")
+                .join("replica-action.reason.txt"),
+        )
+        .unwrap_or_default();
+        assert!(
+            !replica_reason.contains("Co-managed origin"),
+            "the rejection must be origin-scoped, got: {replica_reason}"
+        );
     }
 }

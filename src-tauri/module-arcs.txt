@@ -6,6 +6,7 @@ agentscommander_lib -> agentscommander_lib::commands::role_templates
 agentscommander_lib -> agentscommander_lib::commands::session
 agentscommander_lib -> agentscommander_lib::config
 agentscommander_lib -> agentscommander_lib::config::activity_log
+agentscommander_lib -> agentscommander_lib::config::co_managed
 agentscommander_lib -> agentscommander_lib::config::coordinator_clocks
 agentscommander_lib -> agentscommander_lib::config::daemon_pid
 agentscommander_lib -> agentscommander_lib::config::injected_messages
@@ -18,6 +19,9 @@ agentscommander_lib -> agentscommander_lib::config::teams
 agentscommander_lib -> agentscommander_lib::logging
 agentscommander_lib -> agentscommander_lib::loops::ipc_observer
 agentscommander_lib -> agentscommander_lib::loops::non_stop_watchdog
+agentscommander_lib -> agentscommander_lib::network
+agentscommander_lib -> agentscommander_lib::phone::messaging
+agentscommander_lib -> agentscommander_lib::phone::types
 agentscommander_lib -> agentscommander_lib::pty::backend
 agentscommander_lib -> agentscommander_lib::pty::container_backend
 agentscommander_lib -> agentscommander_lib::pty::container_runtime
@@ -299,6 +303,7 @@ agentscommander_lib::cli::send -> agentscommander_lib
 agentscommander_lib::cli::send -> agentscommander_lib::cli
 agentscommander_lib::cli::send -> agentscommander_lib::config
 agentscommander_lib::cli::send -> agentscommander_lib::config::ac_root
+agentscommander_lib::cli::send -> agentscommander_lib::config::co_managed
 agentscommander_lib::cli::send -> agentscommander_lib::config::coding_agent_mutations
 agentscommander_lib::cli::send -> agentscommander_lib::config::root_agent
 agentscommander_lib::cli::send -> agentscommander_lib::config::settings
@@ -771,6 +776,7 @@ agentscommander_lib::phone::mailbox -> agentscommander_lib::config
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::ac_root
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::agent_command
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::agent_config
+agentscommander_lib::phone::mailbox -> agentscommander_lib::config::co_managed
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::coding_agent_mutations
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::entity_prefix
@@ -799,6 +805,7 @@ agentscommander_lib::phone::mailbox -> agentscommander_lib::session::purge_guard
 agentscommander_lib::phone::mailbox -> agentscommander_lib::session::selection
 agentscommander_lib::phone::mailbox -> agentscommander_lib::session::session
 agentscommander_lib::phone::mailbox -> agentscommander_lib::shutdown
+agentscommander_lib::phone::messaging -> agentscommander_lib::config::ac_root
 agentscommander_lib::phone::messaging -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::phone::messaging -> agentscommander_lib::config::root_agent
 agentscommander_lib::phone::terminal_snapshot -> agentscommander_lib

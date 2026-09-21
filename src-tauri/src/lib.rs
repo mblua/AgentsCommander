@@ -3395,6 +3395,13 @@ pub fn run(
 
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
 
+    // #2232 phase 7: the Co-managed supervisor. Created before the idle
+    // detector so its callback can read the armed flag synchronously and hand
+    // the edge over without touching settings, disk or a session lookup.
+    let (co_managed_supervisor, co_managed_triggers) = CoManagedSupervisorHandle::new();
+    let co_managed_supervisor_for_idle = co_managed_supervisor.clone();
+    let co_managed_supervisor_for_setup = co_managed_supervisor.clone();
+
     // Idle detector: emits session_idle / session_busy events.
     // Callbacks run on native threads (watcher + PTY read loop).
     // AppHandle.emit() is sync and thread-safe, so no tokio needed.
@@ -3406,10 +3413,15 @@ pub fn run(
         move |id| {
             log::debug!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
             if let Some(app) = handle_for_idle.get() {
-                let _ = tauri::Emitter::emit(
+                // #2232 phase 7: the Co-managed decision travels in the same
+                // payload, emitted synchronously and FIRST (epic 3.6). A
+                // separate later event would always paint waiting before red.
+                // `is_armed` is lock-free and never reads settings or disk.
+                let _ = emit_session_idle_edge(
                     app,
-                    "session_idle",
-                    serde_json::json!({ "id": id.to_string() }),
+                    &co_managed_supervisor_for_idle.armed,
+                    Some(&co_managed_supervisor_for_idle),
+                    id,
                 );
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
@@ -3647,6 +3659,16 @@ pub fn run(
 
             // Make AppHandle available to idle detector callbacks
             let _ = app_handle_lock.set(app.handle().clone());
+
+            // #2232 phase 7: start the Co-managed supervisor once the app
+            // handle exists. It owns the slot watchers, the idle-edge handling
+            // and the effect, all inside existing SCC members.
+            spawn_co_managed_supervisor(
+                app.handle().clone(),
+                co_managed_supervisor_for_setup.clone(),
+                co_managed_triggers,
+                shutdown_for_setup.token().clone(),
+            );
 
             // #1398 - registered here, at the top of setup, and NOT in the
             // post-restore tail where a308271c parked it by adjacency: the
@@ -5081,6 +5103,1133 @@ pub fn run(
     Ok(())
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// #2232 phase 7: the Co-managed supervisor
+//
+// Lives here, at the crate root, on purpose: `lib.rs` is already an SCC member,
+// so the arcs the effect needs (`config::teams`, `phone::messaging`,
+// `phone::mailbox`, `capture::*`) are internal to the cycle or SCC-to-leaf and
+// cannot grow the 88-member SCC (phase 7 section 4).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Attempts per trigger: the first plus two retries (plan section 5.1).
+const CO_MANAGED_MAX_ATTEMPTS: u32 = 3;
+/// Backoff before retry 2 and retry 3, in milliseconds.
+const CO_MANAGED_RETRY_BACKOFF_MS: [u64; 2] = [25, 50];
+/// Excerpt cap in UTF-8 bytes, following the 500-byte trim the bridge logger
+/// already uses (`telegram/output.rs:403`). The excerpt is persisted and
+/// travels over IPC and `list-peers`, so it cannot be uncapped. It is never a
+/// multi-byte character cut in half.
+const CO_MANAGED_EXCERPT_BYTES: usize = 500;
+
+/// A supervisor input. (a) is the orchestrator's idle edge, emitted from the
+/// real `IdleDetector` callback; (b) is a slot transition, which the slot
+/// watcher forwards for every record, invalidation and clearing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoManagedTrigger {
+    IdleEdge(uuid::Uuid),
+    SlotChanged(uuid::Uuid),
+}
+
+impl CoManagedTrigger {
+    fn session_id(self) -> uuid::Uuid {
+        match self {
+            Self::IdleEdge(id) | Self::SlotChanged(id) => id,
+        }
+    }
+}
+
+#[derive(Default)]
+struct CoManagedSupervisorState {
+    /// Sessions whose last cycle ended in contention, keyed to the slot
+    /// sequence that candidate had. The same sequence must not re-trigger.
+    contended: HashMap<String, u64>,
+    /// Sessions whose slot already has a watcher task.
+    watching: HashSet<String>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct CoManagedTestHooks {
+    steps: std::sync::Mutex<Vec<&'static str>>,
+    commit_calls: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl CoManagedTestHooks {
+    fn record_step(&self, step: &'static str) {
+        self.steps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(step);
+    }
+
+    fn steps(&self) -> Vec<&'static str> {
+        self.steps.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn commit_calls(&self) -> usize {
+        self.commit_calls.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// App-wide supervisor handle. Cheap to clone; every clone shares the armed
+/// flags, the contention state and the single trigger channel.
+#[derive(Clone)]
+struct CoManagedSupervisorHandle {
+    armed: Arc<capture::armed::ArmedFlags>,
+    state: Arc<Mutex<CoManagedSupervisorState>>,
+    triggers: tokio::sync::mpsc::UnboundedSender<CoManagedTrigger>,
+    #[cfg(test)]
+    test_hooks: Option<Arc<CoManagedTestHooks>>,
+}
+
+impl CoManagedSupervisorHandle {
+    fn new() -> (Self, tokio::sync::mpsc::UnboundedReceiver<CoManagedTrigger>) {
+        let (triggers, rx) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Self {
+                armed: Arc::new(capture::armed::ArmedFlags::new()),
+                state: Arc::new(Mutex::new(CoManagedSupervisorState::default())),
+                triggers,
+                #[cfg(test)]
+                test_hooks: None,
+            },
+            rx,
+        )
+    }
+
+    #[cfg(test)]
+    fn with_test_hooks(
+        hooks: Arc<CoManagedTestHooks>,
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<CoManagedTrigger>) {
+        let (mut handle, rx) = Self::new();
+        handle.test_hooks = Some(hooks);
+        (handle, rx)
+    }
+
+    fn notify_idle_edge(&self, session_id: uuid::Uuid) -> bool {
+        self.triggers
+            .send(CoManagedTrigger::IdleEdge(session_id))
+            .is_ok()
+    }
+
+    fn notify_slot_changed(&self, session_id: uuid::Uuid) -> bool {
+        self.triggers
+            .send(CoManagedTrigger::SlotChanged(session_id))
+            .is_ok()
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, CoManagedSupervisorState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn is_watching(&self, id: &str) -> bool {
+        self.lock_state().watching.contains(id)
+    }
+
+    fn mark_watching(&self, id: &str) {
+        self.lock_state().watching.insert(id.to_string());
+    }
+
+    fn mark_unwatched(&self, id: &str) {
+        self.lock_state().watching.remove(id);
+    }
+
+    fn is_contended(&self, id: &str, seq: u64) -> bool {
+        self.lock_state().contended.get(id) == Some(&seq)
+    }
+
+    fn mark_contended(&self, id: &str, seq: u64) {
+        self.lock_state().contended.insert(id.to_string(), seq);
+    }
+
+    fn clear_contended(&self, id: &str) {
+        self.lock_state().contended.remove(id);
+    }
+
+    fn record_step(&self, step: &'static str) {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            hooks.record_step(step);
+        }
+        let _ = step;
+    }
+
+    fn record_commit_call(&self) {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            hooks
+                .commit_calls
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+}
+
+/// The synchronous first half of the idle edge (plan section 9.1). Emits
+/// `session_idle` **first**, with the Co-managed decision in the same payload,
+/// then hands the edge to the supervisor. A separate later event would always
+/// paint waiting first, which is what this signature exists to prevent.
+fn emit_session_idle_edge<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    armed: &capture::armed::ArmedFlags,
+    supervisor: Option<&CoManagedSupervisorHandle>,
+    session_id: uuid::Uuid,
+) -> bool {
+    let comanaged = armed.is_armed(&session_id.to_string());
+    let _ = tauri::Emitter::emit(
+        app,
+        "session_idle",
+        serde_json::json!({ "id": session_id.to_string(), "comanaged": comanaged }),
+    );
+    if let Some(supervisor) = supervisor {
+        let _ = supervisor.notify_idle_edge(session_id);
+    }
+    comanaged
+}
+
+/// `session_comanaged_state`, emitted with `emit` (every window), never
+/// `emit_to`, so a detached terminal window receives it too (plan 9.2).
+fn emit_co_managed_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: uuid::Uuid,
+    active: bool,
+    reason: Option<&str>,
+) {
+    let _ = tauri::Emitter::emit(
+        app,
+        "session_comanaged_state",
+        serde_json::json!({
+            "id": session_id.to_string(),
+            "active": active,
+            "reason": reason,
+        }),
+    );
+}
+
+fn co_managed_state_reason(
+    state: &Result<crate::config::co_managed::CoManagedState, String>,
+) -> String {
+    use crate::config::co_managed::{CoManagedState, OffReason};
+    match state {
+        Ok(CoManagedState::Ready) => "Ready".to_string(),
+        Ok(CoManagedState::Off { reason }) => match reason {
+            OffReason::NotAnOrchestrator => "NotAnOrchestrator".to_string(),
+            OffReason::UnsupportedProvider { agent } => format!("UnsupportedProvider({agent})"),
+            OffReason::RoomFlagOff => "RoomFlagOff".to_string(),
+            OffReason::NoApiKey => "NoApiKey".to_string(),
+            OffReason::NoCatalogFile => "NoCatalogFile".to_string(),
+            OffReason::CatalogUnreadable => "CatalogUnreadable".to_string(),
+        },
+        Err(error) => format!("EffectiveStateError({error})"),
+    }
+}
+
+fn abstain_reason_label(reason: &capture::state::AbstainReason) -> String {
+    use capture::state::AbstainReason;
+    match reason {
+        AbstainReason::PreconditionsStale => "PreconditionsStale".to_string(),
+        AbstainReason::LockBusy => "LockBusy".to_string(),
+        AbstainReason::LockUnavailable(error) => format!("LockUnavailable({error})"),
+        AbstainReason::PreconditionsRejected => "PreconditionsRejected".to_string(),
+        AbstainReason::SlotChanged => "SlotChanged".to_string(),
+        AbstainReason::AlreadyConsumed => "AlreadyConsumed".to_string(),
+        AbstainReason::BudgetExhausted => "BudgetExhausted".to_string(),
+    }
+}
+
+/// The user-visible label for a candidate. `provider_final == false` is every
+/// Claude candidate (epic 3.3), and no rendering may ever call it a final
+/// message or imply the user approved anything.
+fn co_managed_candidate_label(provider_final: bool) -> &'static str {
+    if provider_final {
+        "final message"
+    } else {
+        "latest captured assistant text at the idle edge"
+    }
+}
+
+/// The 500-byte cap, UTF-8 safe: never cut a multi-byte character in half.
+fn utf8_safe_excerpt(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+fn co_managed_user_message(reason: &str, candidate: Option<(&str, bool, Option<&Path>)>) -> String {
+    let mut out = format!("Co-managed: {reason}");
+    if let Some((text, provider_final, path)) = candidate {
+        let excerpt = utf8_safe_excerpt(text, CO_MANAGED_EXCERPT_BYTES);
+        out.push_str(&format!(
+            "\n{} ({} bytes); excerpt is {} of {} bytes:\n{}",
+            co_managed_candidate_label(provider_final),
+            text.len(),
+            excerpt.len(),
+            text.len(),
+            excerpt,
+        ));
+        if let Some(path) = path {
+            out.push_str(&format!("\nMessage file: {}", path.display()));
+        }
+    }
+    out
+}
+
+/// Surface a user-facing communication on the session. The slot is single:
+/// `raise_hand` and `set_blocked_menu` overwrite it, and when that happens the
+/// pointer is lost, not the file, which stays findable in `messaging/`.
+async fn surface_co_managed_user_message<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: uuid::Uuid,
+    message: String,
+) {
+    let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+        return;
+    };
+    let outcome = {
+        let guard = manager.read().await;
+        guard
+            .set_co_managed(session_id, message, chrono::Utc::now())
+            .await
+    };
+    if let Some((changed, communication)) = outcome {
+        if changed {
+            crate::session::selection::publish_session_communication(
+                app,
+                session_id,
+                Some(&communication),
+            );
+        }
+    }
+}
+
+/// Read the six `AppSettings` Jev fields into the leaf's plain value type.
+async fn co_managed_jev_settings<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> capture::jev::JevSettings {
+    let settings = app.state::<SettingsState>();
+    let guard = settings.read().await;
+    capture::jev::JevSettings {
+        api_key: guard.jev_api_key.clone(),
+        model: guard.jev_model.clone(),
+        endpoint: guard.jev_endpoint.clone(),
+        timeout_secs: guard.jev_timeout_secs,
+        threshold: guard.jev_threshold,
+        margin: guard.jev_margin,
+    }
+}
+
+/// Load and validate the room's catalog through the leaf loader. A missing
+/// path or a missing file is `Catalog::missing()`, which `classify` turns into
+/// an abstention with `NoCatalogFile`.
+fn co_managed_catalog(room_root: &Path) -> capture::catalog::Catalog {
+    let config = crate::config::co_managed::load_config(room_root);
+    let Some(path) = config.catalog_path.as_deref() else {
+        return capture::catalog::Catalog::missing();
+    };
+    let candidate = Path::new(path);
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        room_root.join(candidate)
+    };
+    capture::catalog::Catalog::load(&resolved)
+}
+
+// ── the routed body is a pointer, not the text (plan section 7) ─────────────
+
+/// Write the message file into the sending orchestrator's own room
+/// `messaging/`, then return `(path, pointer)`. The pointer is the canonical
+/// `Process this inter-agent message: <abs path>` body.
+///
+/// `ensure_workgroup_root_is_authoritative` is called explicitly: the CLI did
+/// that for every file it wrote, and an in-process caller does not inherit it.
+fn write_co_managed_message_file(
+    room_root: &Path,
+    from_fqn: &str,
+    to_fqn: &str,
+    content: &str,
+) -> Result<(PathBuf, String), String> {
+    crate::phone::messaging::ensure_workgroup_root_is_authoritative(room_root)?;
+    let dir = crate::phone::messaging::messaging_dir(room_root).map_err(|e| e.to_string())?;
+    let from_short = crate::phone::messaging::agent_short_name(from_fqn);
+    let to_short = crate::phone::messaging::agent_short_name(to_fqn);
+    let slug = crate::phone::messaging::sanitize_slug("co-managed").map_err(|e| e.to_string())?;
+    let base =
+        crate::phone::messaging::build_filename(chrono::Utc::now(), &from_short, &to_short, &slug);
+    let (path, mut file) =
+        crate::phone::messaging::create_message_file(&dir, &base).map_err(|e| e.to_string())?;
+    use std::io::Write;
+    let written = (|| -> Result<(), String> {
+        file.write_all(content.as_bytes())
+            .map_err(|e| format!("message file write failed: {e}"))?;
+        file.flush()
+            .map_err(|e| format!("message file flush failed: {e}"))
+    })();
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&path);
+        return Err(error);
+    }
+    let abs = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    // UNC-strip at the single emission site, exactly as `cli/send` does.
+    let abs_str = abs.to_string_lossy();
+    let abs_display = abs_str.trim_start_matches(r"\\?\");
+    Ok((
+        path,
+        crate::phone::messaging::format_file_notification(abs_display),
+    ))
+}
+
+/// The queue envelope: a wake carrying the pointer, no token, no action field.
+fn write_co_managed_queue_message(
+    room_root: &Path,
+    from_fqn: &str,
+    to_fqn: &str,
+    pointer: &str,
+) -> Result<PathBuf, String> {
+    let dir = crate::config::co_managed::queue_dir(room_root);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("queue dir create failed: {e}"))?;
+    let envelope = crate::phone::types::OutboxMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        token: None,
+        from: from_fqn.to_string(),
+        to: to_fqn.to_string(),
+        body: pointer.to_string(),
+        mode: "wake".to_string(),
+        get_output: false,
+        request_id: None,
+        sender_agent: None,
+        preferred_agent: "auto".to_string(),
+        requested_profile: None,
+        effective_agent_id: None,
+        effective_profile: None,
+        profile_fallback_applied: false,
+        dispatch_not_applied: None,
+        priority: "normal".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        command: None,
+        action: None,
+        target: None,
+        force: None,
+        timeout_secs: None,
+        switch_coding_agent: None,
+        switch_profile: None,
+        dry_run: None,
+        quiet_period_ms: None,
+        pty_input: None,
+    };
+    let bytes = serde_json::to_vec_pretty(&envelope)
+        .map_err(|e| format!("queue envelope serialize failed: {e}"))?;
+    let path = dir.join(format!("{}.json", envelope.id));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = options
+        .open(&path)
+        .map_err(|e| format!("queue envelope create failed: {}", e))?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|e| format!("queue envelope write failed: {e}"))?;
+    file.flush()
+        .map_err(|e| format!("queue envelope flush failed: {e}"))?;
+    Ok(path)
+}
+
+/// Create the message file, then enqueue the pointer. The file exists before
+/// the queue entry so the pointer resolves when the recipient reads it. The
+/// line budget is the CLI's formula with the **composed** sender, which is
+/// longer; a body that does not fit is rejected with a visible reason and is
+/// never truncated.
+fn route_co_managed_wake(
+    handle: &CoManagedSupervisorHandle,
+    room_root: &Path,
+    from_fqn: &str,
+    to_fqn: &str,
+    content: &str,
+) -> Result<(), String> {
+    let (path, pointer) = write_co_managed_message_file(room_root, from_fqn, to_fqn, content)?;
+    handle.record_step("messaging_file");
+    let display_from = crate::phone::messaging::compose_sender_for_comanaged_origin(from_fqn);
+    let overhead = crate::phone::messaging::PTY_WRAP_FIXED + display_from.len();
+    if pointer.len() + overhead > crate::phone::messaging::PTY_SAFE_MAX {
+        // Nothing was delivered; the file was only just created by us, so it is
+        // removed rather than left as a never-referenced orphan.
+        let _ = std::fs::remove_file(&path);
+        return Err(format!(
+            "notification exceeds PTY-safe length (body {} + overhead {} > {}); shorten slug or move the room to a shallower path",
+            pointer.len(),
+            overhead,
+            crate::phone::messaging::PTY_SAFE_MAX
+        ));
+    }
+    write_co_managed_queue_message(room_root, from_fqn, to_fqn, &pointer)?;
+    handle.record_step("queue_file");
+    Ok(())
+}
+
+// ── routing decision ────────────────────────────────────────────────────────
+
+enum CoManagedRoute {
+    /// Text for the user, never routed. `write_candidate_file` is false only in
+    /// the secret case, where phase 6 forbids any file.
+    User {
+        reason: String,
+        write_candidate_file: bool,
+    },
+    /// A wake carrying a pointer. Spending budget is decided by the caller.
+    Wake {
+        to: String,
+        content: String,
+        reason: String,
+    },
+}
+
+impl CoManagedRoute {
+    fn kind(&self) -> capture::state::EffectKind {
+        match self {
+            Self::User { .. } => capture::state::EffectKind::TextToUser,
+            Self::Wake { .. } => capture::state::EffectKind::Automatic,
+        }
+    }
+}
+
+/// The authorization branch is mandatory, not a style choice: `can_communicate`
+/// returns false for `Root` by its own rules, because Root belongs to no team
+/// and is nobody's coordinator. Root goes through the verified-coordinator
+/// validator; every other destination goes through `can_communicate`.
+fn resolve_co_managed_route(
+    outcome: capture::jev::ClassifyOutcome,
+    catalog: &capture::catalog::Catalog,
+    from_fqn: &str,
+    project_paths: &[String],
+    candidate_text: &str,
+) -> CoManagedRoute {
+    use capture::catalog::{Destination, Resolution};
+    match outcome {
+        capture::jev::ClassifyOutcome::Abstained { reason } => CoManagedRoute::User {
+            reason: format!("abstained: {reason}"),
+            write_candidate_file: true,
+        },
+        capture::jev::ClassifyOutcome::Classified {
+            category,
+            destination,
+            score,
+            runner_up,
+        } => {
+            let decision =
+                format!("category '{category}' (noul {score:.2}, runner-up {runner_up:.2})");
+            match destination {
+                Destination::User => CoManagedRoute::User {
+                    reason: format!("{decision} routes to the user"),
+                    write_candidate_file: true,
+                },
+                Destination::Orchestrator => match catalog.resolve(&category) {
+                    Resolution::Valid {
+                        peer: Some(peer), ..
+                    } => {
+                        let discovered_teams = crate::config::teams::discover_teams();
+                        if crate::config::teams::can_communicate(from_fqn, &peer, &discovered_teams)
+                        {
+                            CoManagedRoute::Wake {
+                                to: peer.clone(),
+                                content: candidate_text.to_string(),
+                                reason: format!("{decision} routed to {peer}"),
+                            }
+                        } else {
+                            CoManagedRoute::User {
+                                reason: format!(
+                                    "{decision} names peer '{peer}', which is not reachable; nothing was routed"
+                                ),
+                                write_candidate_file: true,
+                            }
+                        }
+                    }
+                    _ => CoManagedRoute::User {
+                        reason: format!(
+                            "{decision} names an orchestrator destination without a peer; nothing was routed"
+                        ),
+                        write_candidate_file: true,
+                    },
+                },
+                Destination::Root => {
+                    if crate::config::teams::verified_wg_coordinator_target(from_fqn, project_paths)
+                        .is_some()
+                    {
+                        CoManagedRoute::Wake {
+                            to: crate::config::root_agent::ROOT_AGENT_SENDER.to_string(),
+                            content: candidate_text.to_string(),
+                            reason: format!("{decision} routed to the Root Agent"),
+                        }
+                    } else {
+                        CoManagedRoute::User {
+                            reason: format!(
+                                "{decision} chose Root, but this session is not a verified room orchestrator; nothing was routed"
+                            ),
+                            write_candidate_file: true,
+                        }
+                    }
+                }
+                Destination::DefaultReply => match catalog.resolve(&category) {
+                    Resolution::Valid {
+                        reply: Some(reply), ..
+                    } => CoManagedRoute::Wake {
+                        to: from_fqn.to_string(),
+                        content: reply,
+                        reason: format!("{decision} replied to this session"),
+                    },
+                    _ => CoManagedRoute::User {
+                        reason: format!("{decision} has no reply; nothing was routed"),
+                        write_candidate_file: true,
+                    },
+                },
+            }
+        }
+    }
+}
+
+// ── the commit and its retry policy ─────────────────────────────────────────
+
+enum CoManagedCommit {
+    Committed(capture::state::CommittedEffect),
+    Contention,
+    Rejected(capture::state::AbstainReason),
+}
+
+/// The preconditions, gathered fresh immediately before each attempt. No lock
+/// of ours is held across the awaits; the results travel in as a typed value.
+async fn gather_co_managed_preconditions<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: uuid::Uuid,
+    room_root: &Path,
+    candidate: &capture::record::CapturedRecord,
+    kind: capture::state::EffectKind,
+) -> capture::state::EffectPreconditions {
+    let (session_alive, anchor, unique_live_session_for_cwd) = {
+        let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+            return capture::state::EffectPreconditions {
+                session_alive: false,
+                session_id: session_id.to_string(),
+                anchor: String::new(),
+                provider: candidate.provider,
+                unique_live_session_for_cwd: false,
+                no_pending_user_input: false,
+                effective_ready: false,
+                observed_at: Instant::now(),
+                kind,
+            };
+        };
+        let guard = manager.read().await;
+        let session = guard.get_session(session_id).await;
+        let anchor = session
+            .as_ref()
+            .map(|s| s.working_directory.clone())
+            .unwrap_or_default();
+        let sessions = guard.list_sessions().await;
+        let unique = sessions
+            .iter()
+            .filter(|s| {
+                s.working_directory == anchor
+                    && !matches!(s.status, crate::session::session::SessionStatus::Exited(_))
+            })
+            .count()
+            == 1;
+        (session.is_some(), anchor, unique)
+    };
+
+    let no_pending_user_input =
+        match app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
+            Some(state) => {
+                let tracker = state.lock().unwrap_or_else(|e| e.into_inner());
+                !tracker.pending_within(
+                    session_id,
+                    crate::pty::input_activity::USER_WRITE_STAMP_WINDOW,
+                )
+            }
+            None => true,
+        };
+
+    let effective_ready = matches!(
+        crate::commands::session::co_managed_effective_state_for_session(
+            app,
+            room_root,
+            &session_id.to_string()
+        )
+        .await,
+        Ok(crate::config::co_managed::CoManagedState::Ready)
+    );
+
+    capture::state::EffectPreconditions {
+        session_alive,
+        session_id: session_id.to_string(),
+        anchor,
+        provider: candidate.provider,
+        unique_live_session_for_cwd,
+        no_pending_user_input,
+        effective_ready,
+        observed_at: Instant::now(),
+        kind,
+    }
+}
+
+/// `commit_effect` is synchronous and takes a blocking advisory file lock for
+/// up to `LOCK_WAIT_BUDGET` (100 ms). Called directly it would park a Tokio
+/// worker on every idle edge, so it runs on the blocking pool and a join error
+/// is an abstention, never a silent success.
+async fn commit_co_managed_effect(
+    room_root: PathBuf,
+    slot: capture::sink::CaptureSlot,
+    expected_seq: u64,
+    expected_key: capture::key::ConsumptionKey,
+    pre: capture::state::EffectPreconditions,
+) -> Result<capture::state::CommittedEffect, capture::state::AbstainReason> {
+    tauri::async_runtime::spawn_blocking(move || {
+        capture::state::commit_effect(&room_root, &slot, expected_seq, &expected_key, &pre)
+    })
+    .await
+    .unwrap_or(Err(capture::state::AbstainReason::LockUnavailable(
+        "commit task join failed".to_string(),
+    )))
+}
+
+/// Three attempts per trigger, the first plus two retries, with a fresh full
+/// snapshot before each; `PreconditionsStale` and `LockBusy` are the only
+/// retryable outcomes. The ceiling is the executable form of the bound: under
+/// contention the feature abstains with a reason instead of looping forever.
+#[allow(clippy::too_many_arguments)]
+async fn commit_co_managed_with_retries<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handle: &CoManagedSupervisorHandle,
+    session_id: uuid::Uuid,
+    room_root: &Path,
+    slot: &capture::sink::CaptureSlot,
+    expected_seq: u64,
+    expected_key: &capture::key::ConsumptionKey,
+    candidate: &capture::record::CapturedRecord,
+    kind: capture::state::EffectKind,
+) -> CoManagedCommit {
+    for attempt in 0..CO_MANAGED_MAX_ATTEMPTS {
+        if attempt > 0 {
+            let backoff = CO_MANAGED_RETRY_BACKOFF_MS[(attempt - 1) as usize];
+            tokio::time::sleep(Duration::from_millis(backoff)).await;
+        }
+        let pre =
+            gather_co_managed_preconditions(app, session_id, room_root, candidate, kind).await;
+        handle.record_commit_call();
+        let result = commit_co_managed_effect(
+            room_root.to_path_buf(),
+            slot.clone(),
+            expected_seq,
+            expected_key.clone(),
+            pre,
+        )
+        .await;
+        match result {
+            Ok(committed) => return CoManagedCommit::Committed(committed),
+            Err(capture::state::AbstainReason::PreconditionsStale)
+            | Err(capture::state::AbstainReason::LockBusy) => continue,
+            Err(error) => return CoManagedCommit::Rejected(error),
+        }
+    }
+    handle.mark_contended(&session_id.to_string(), expected_seq);
+    CoManagedCommit::Contention
+}
+
+enum CoManagedOutcome {
+    Contention,
+    Done(String),
+}
+
+/// One full effect: secrets first, then classification, then the bounded
+/// commit, then the action. Every path returns the reason the cycle ended.
+async fn co_managed_cycle<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handle: &CoManagedSupervisorHandle,
+    session_id: uuid::Uuid,
+    room_root: &Path,
+    slot: &capture::sink::CaptureSlot,
+    expected_seq: u64,
+    candidate: &Arc<capture::record::CapturedRecord>,
+) -> CoManagedOutcome {
+    let session = {
+        let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let guard = manager.read().await;
+        guard.get_session(session_id).await
+    };
+    let Some(session) = session else {
+        return CoManagedOutcome::Done("session vanished".to_string());
+    };
+    let from_fqn = crate::config::teams::agent_fqn_from_path(&session.working_directory);
+    let expected_key = capture::state::consumption_key(room_root, candidate.as_ref());
+    let text = candidate.text.clone();
+
+    // (1) The detector runs before any write and before any network call.
+    if let Some(detection) = capture::secrets::detect(&text) {
+        let reason = detection.reason();
+        let user_message = co_managed_user_message(
+            &format!("{reason}; no file was written and nothing was routed"),
+            None,
+        );
+        return match commit_co_managed_with_retries(
+            app,
+            handle,
+            session_id,
+            room_root,
+            slot,
+            expected_seq,
+            &expected_key,
+            candidate.as_ref(),
+            capture::state::EffectKind::TextToUser,
+        )
+        .await
+        {
+            CoManagedCommit::Committed(_) => {
+                // The candidate is consumed: clearing the slot publishes the
+                // transition, and a later idle edge can never act on it again.
+                slot.clear();
+                surface_co_managed_user_message(app, session_id, user_message).await;
+                CoManagedOutcome::Done(reason)
+            }
+            CoManagedCommit::Contention => CoManagedOutcome::Contention,
+            CoManagedCommit::Rejected(reason) => {
+                CoManagedOutcome::Done(abstain_reason_label(&reason))
+            }
+        };
+    }
+
+    // (2) Classify through the phase-6 leaf call.
+    let catalog = co_managed_catalog(room_root);
+    let settings = co_managed_jev_settings(app).await;
+    let outcome = {
+        let network = app.state::<crate::network::OutboundNetwork>();
+        capture::jev::classify(&network, &settings, &catalog, &text).await
+    };
+
+    // (3) Decide before committing, so an unreachable peer never spends budget.
+    let project_paths = {
+        let settings = app.state::<SettingsState>();
+        let guard = settings.read().await;
+        guard.project_paths.clone()
+    };
+    let route = resolve_co_managed_route(outcome, &catalog, &from_fqn, &project_paths, &text);
+    let kind = route.kind();
+
+    // (4) The bounded commit.
+    match commit_co_managed_with_retries(
+        app,
+        handle,
+        session_id,
+        room_root,
+        slot,
+        expected_seq,
+        &expected_key,
+        candidate.as_ref(),
+        kind,
+    )
+    .await
+    {
+        CoManagedCommit::Committed(committed) => {
+            // Consumed: the slot must not offer this candidate again on the
+            // next idle edge, and the transition clears the armed flag.
+            slot.clear();
+            // `routable` is false for a baseline consumed by an Automatic
+            // request (the plan's section 8 demotion). A TextToUser commit is
+            // equally not routable, but its effect is the user message below.
+            if committed.kind == capture::state::EffectKind::Automatic && !committed.routable {
+                return CoManagedOutcome::Done(
+                    "baseline record consumed; never routed".to_string(),
+                );
+            }
+            perform_co_managed_route(
+                app, handle, session_id, room_root, &from_fqn, candidate, route, &text,
+            )
+            .await
+        }
+        CoManagedCommit::Contention => CoManagedOutcome::Contention,
+        CoManagedCommit::Rejected(reason) => {
+            if matches!(reason, capture::state::AbstainReason::BudgetExhausted)
+                && kind == capture::state::EffectKind::Automatic
+            {
+                // Budget exhaustion abstains from the automatic action and
+                // falls back to the budget-free text-to-user channel, so the
+                // user sees why nothing was routed and nothing is enqueued.
+                return match commit_co_managed_with_retries(
+                    app,
+                    handle,
+                    session_id,
+                    room_root,
+                    slot,
+                    expected_seq,
+                    &expected_key,
+                    candidate.as_ref(),
+                    capture::state::EffectKind::TextToUser,
+                )
+                .await
+                {
+                    CoManagedCommit::Committed(_) => {
+                        slot.clear();
+                        let message = co_managed_user_message(
+                            &format!(
+                                "abstained: the automatic budget is exhausted ({} actions since the last recharge); the candidate was not routed",
+                                capture::state::BUDGET_CAP
+                            ),
+                            Some((&text, candidate.provider_final, None)),
+                        );
+                        surface_co_managed_user_message(app, session_id, message).await;
+                        CoManagedOutcome::Done("BudgetExhausted".to_string())
+                    }
+                    CoManagedCommit::Contention => CoManagedOutcome::Contention,
+                    CoManagedCommit::Rejected(second) => {
+                        CoManagedOutcome::Done(abstain_reason_label(&second))
+                    }
+                };
+            }
+            CoManagedOutcome::Done(abstain_reason_label(&reason))
+        }
+    }
+}
+
+/// The committed effect. A `Rejected` automatic commit falls back to the
+/// budget-free text-to-user channel so the user sees the reason; a route
+/// failure after the commit is reported there too (the declared residual: the
+/// reservation is not rolled back).
+#[allow(clippy::too_many_arguments)]
+async fn perform_co_managed_route<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handle: &CoManagedSupervisorHandle,
+    session_id: uuid::Uuid,
+    room_root: &Path,
+    from_fqn: &str,
+    candidate: &Arc<capture::record::CapturedRecord>,
+    route: CoManagedRoute,
+    text: &str,
+) -> CoManagedOutcome {
+    match route {
+        CoManagedRoute::User {
+            reason,
+            write_candidate_file,
+        } => {
+            let mut message = co_managed_user_message(&reason, None);
+            if write_candidate_file {
+                // Except in the secret case, the candidate is also written as a
+                // file in `messaging/`, and the communication carries the
+                // reason, an excerpt with its real length, and the path.
+                match write_co_managed_message_file(room_root, from_fqn, from_fqn, text) {
+                    Ok((path, _pointer)) => {
+                        handle.record_step("messaging_file");
+                        message = co_managed_user_message(
+                            &reason,
+                            Some((text, candidate.provider_final, Some(path.as_path()))),
+                        );
+                    }
+                    Err(error) => {
+                        message.push_str(&format!("\nmessage file write failed: {error}"));
+                    }
+                }
+            }
+            surface_co_managed_user_message(app, session_id, message).await;
+            CoManagedOutcome::Done(reason)
+        }
+        CoManagedRoute::Wake {
+            to,
+            content,
+            reason,
+        } => match route_co_managed_wake(handle, room_root, from_fqn, &to, &content) {
+            Ok(()) => CoManagedOutcome::Done(reason),
+            Err(error) => {
+                let message = co_managed_user_message(
+                    &format!("routing failed after the effect was reserved: {error}"),
+                    Some((text, candidate.provider_final, None)),
+                );
+                surface_co_managed_user_message(app, session_id, message).await;
+                CoManagedOutcome::Done(format!("route failed: {error}"))
+            }
+        },
+    }
+}
+
+/// One supervisor input. Trigger (b) runs a cycle only when the session is
+/// already idle; any other slot transition only keeps the armed flag current,
+/// which is how the idle edge finds it set.
+async fn handle_co_managed_trigger<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handle: &CoManagedSupervisorHandle,
+    trigger: CoManagedTrigger,
+) {
+    let session_id = trigger.session_id();
+    let id = session_id.to_string();
+
+    let Some(registry) = app.try_state::<Arc<capture::registry::CaptureRegistry>>() else {
+        return;
+    };
+    let Some(slot) = registry.slot(&id) else {
+        handle.armed.remove(&id);
+        return;
+    };
+    let state = slot.snapshot();
+    let Some(candidate) = state.value.record().cloned() else {
+        // Consumed, invalidated or cleared: the candidate this flag described
+        // is gone, so the flag goes with it.
+        handle.armed.remove(&id);
+        return;
+    };
+
+    // Contention leaves the candidate pending. A trigger for the SAME sequence
+    // must not re-run it; a new record changes the sequence and re-triggers.
+    if handle.is_contended(&id, state.seq) {
+        return;
+    }
+
+    let session = {
+        let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let guard = manager.read().await;
+        guard.get_session(session_id).await
+    };
+    let Some(session) = session else {
+        handle.armed.remove(&id);
+        return;
+    };
+    let Some(room_root) =
+        crate::config::co_managed::room_root_for_path(Path::new(&session.working_directory))
+    else {
+        handle.armed.remove(&id);
+        return;
+    };
+
+    let effective =
+        crate::commands::session::co_managed_effective_state_for_session(app, &room_root, &id)
+            .await;
+    let ready = matches!(
+        effective,
+        Ok(crate::config::co_managed::CoManagedState::Ready)
+    );
+    let was_armed = handle.armed.is_armed(&id);
+    if !ready {
+        if was_armed {
+            emit_co_managed_state(
+                app,
+                session_id,
+                false,
+                Some(&co_managed_state_reason(&effective)),
+            );
+        }
+        handle.armed.remove(&id);
+        return;
+    }
+
+    // Ready with an unconsumed candidate: the idle edge must find the flag set.
+    handle.armed.arm(&id);
+
+    let already_idle = matches!(session.status, crate::session::session::SessionStatus::Idle)
+        || session.waiting_for_input;
+    let is_idle_edge = matches!(trigger, CoManagedTrigger::IdleEdge(_));
+    if !is_idle_edge && !already_idle {
+        return;
+    }
+    if !is_idle_edge {
+        // Trigger (b): a record arrived while the session was already idle.
+        // This transition does not coincide with the idle edge, so it carries
+        // its own event before the cycle performs anything.
+        emit_co_managed_state(app, session_id, true, None);
+    }
+
+    let outcome = co_managed_cycle(
+        app, handle, session_id, &room_root, &slot, state.seq, &candidate,
+    )
+    .await;
+    match outcome {
+        CoManagedOutcome::Contention => {
+            emit_co_managed_state(app, session_id, false, Some("contention"));
+            // The flag stays set while the unchanged candidate remains pending.
+        }
+        CoManagedOutcome::Done(reason) => {
+            handle.clear_contended(&id);
+            handle.armed.disarm(&id);
+            emit_co_managed_state(app, session_id, false, Some(&reason));
+        }
+    }
+}
+
+/// Start the app-wide supervisor. The discovery tick subscribes a watcher to
+/// every live session's slot; the watcher forwards each slot transition as
+/// trigger (b) and keeps the armed flag current on records while the session
+/// is still busy.
+fn spawn_co_managed_supervisor<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    handle: CoManagedSupervisorHandle,
+    mut triggers: tokio::sync::mpsc::UnboundedReceiver<CoManagedTrigger>,
+    shutdown: CancellationToken,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut discovery = tokio::time::interval(Duration::from_millis(500));
+        discovery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => break,
+                _ = discovery.tick() => watch_capture_slots(&app, &handle).await,
+                trigger = triggers.recv() => {
+                    let Some(trigger) = trigger else { break };
+                    handle_co_managed_trigger(&app, &handle, trigger).await;
+                }
+            }
+        }
+    });
+}
+
+async fn watch_capture_slots<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handle: &CoManagedSupervisorHandle,
+) {
+    let Some(registry) = app.try_state::<Arc<capture::registry::CaptureRegistry>>() else {
+        return;
+    };
+    let session_ids: Vec<uuid::Uuid> = {
+        let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+            return;
+        };
+        let guard = manager.read().await;
+        guard
+            .list_sessions()
+            .await
+            .into_iter()
+            .filter_map(|s| uuid::Uuid::parse_str(&s.id).ok())
+            .collect()
+    };
+    for session_id in session_ids {
+        let id = session_id.to_string();
+        if handle.is_watching(&id) {
+            continue;
+        }
+        let Some(slot) = registry.slot(&id) else {
+            continue;
+        };
+        handle.mark_watching(&id);
+        // Subscribe FIRST, then evaluate the slot's CURRENT value immediately:
+        // `subscribe()` marks the existing state as seen, so without the
+        // immediate trigger a candidate that arrived before discovery would
+        // wait for the next transition. Subscribing first closes the race with
+        // a record arriving between the two steps.
+        let mut changes = slot.subscribe();
+        let _ = handle.notify_slot_changed(session_id);
+        let watcher_handle = handle.clone();
+        tokio::spawn(async move {
+            loop {
+                if changes.changed().await.is_err() {
+                    break;
+                }
+                if !watcher_handle.notify_slot_changed(session_id) {
+                    break;
+                }
+            }
+            watcher_handle.mark_unwatched(&id);
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -5096,7 +6245,6 @@ mod tests {
     };
     use crate::config::sessions_persistence::PersistedSession;
     use crate::config::settings::{AgentConfig, AppSettings};
-    use crate::session::session::SessionStatus;
     use std::collections::HashMap;
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -6488,6 +7636,1277 @@ mod tests {
             &settings,
             Some("codex")
         ));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // #2232 phase 7: Co-managed supervisor tests
+    // ══════════════════════════════════════════════════════════════════════
+
+    use super::{
+        abstain_reason_label, co_managed_candidate_label, co_managed_state_reason,
+        emit_session_idle_edge, resolve_co_managed_route, route_co_managed_wake, utf8_safe_excerpt,
+        CoManagedSupervisorHandle, CoManagedTestHooks, CoManagedTrigger,
+    };
+    use crate::capture::record::{CaptureProvider, CapturedRecord, RecordOrigin};
+    use crate::capture::registry::CaptureRegistry;
+    use crate::capture::sink::CaptureSlot;
+    use crate::config::co_managed::CoManagedState;
+    use crate::session::manager::SessionManager;
+    use crate::session::profile::CodingAgentKind;
+    use crate::session::session::SessionStatus;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicUsize;
+    use tauri::Listener;
+
+    struct CoManagedFixture {
+        _temp: tempfile::TempDir,
+        project: PathBuf,
+        room_root: PathBuf,
+        coordinator_cwd: PathBuf,
+        dev_cwd: PathBuf,
+        projects_dir: PathBuf,
+    }
+
+    fn make_co_managed_fixture() -> CoManagedFixture {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = crate::path_utils::normalize_windows_verbatim_path_buf(
+            &std::fs::canonicalize(temp.path()).expect("canonicalize fixture temp"),
+        );
+        make_co_managed_fixture_in(temp, root)
+    }
+
+    /// A room under an arbitrarily deep `root`, for the pointer-budget test.
+    fn make_co_managed_fixture_in(temp: tempfile::TempDir, root: PathBuf) -> CoManagedFixture {
+        let project = root.join("proj-a");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let origin_tech_lead = ac_root.join("_agent_tech-lead");
+        let origin_dev_rust = ac_root.join("_agent_dev-rust");
+        let room_root = ac_root.join("room-1-dev-team");
+        let coordinator_cwd = room_root.join("__agent_tech-lead");
+        let dev_cwd = room_root.join("__agent_dev-rust");
+        for dir in [
+            &team_dir,
+            &origin_tech_lead,
+            &origin_dev_rust,
+            &coordinator_cwd,
+            &dev_cwd,
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            coordinator_cwd.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dev_cwd.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust"}"#,
+        )
+        .unwrap();
+        let projects_dir = root.join("claude-projects");
+        std::fs::create_dir_all(&projects_dir).unwrap();
+        CoManagedFixture {
+            _temp: temp,
+            project,
+            room_root,
+            coordinator_cwd,
+            dev_cwd,
+            projects_dir,
+        }
+    }
+
+    fn write_co_managed_room_config(room_root: &Path, enabled: bool, catalog: Option<&str>) {
+        let dir = crate::config::co_managed::co_managed_dir(room_root);
+        std::fs::create_dir_all(&dir).unwrap();
+        let catalog_value = match catalog {
+            Some(name) => serde_json::Value::String(name.to_string()),
+            None => serde_json::Value::Null,
+        };
+        let json = serde_json::json!({ "enabled": enabled, "catalogPath": catalog_value });
+        std::fs::write(
+            crate::config::co_managed::config_path(room_root),
+            serde_json::to_string_pretty(&json).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_co_managed_catalog(room_root: &Path) {
+        let catalog = r#"{"categories":{
+            "to-peer":{"destination":"orchestrator","peer":"proj-a:room-1-dev-team/dev-rust","question":"route to the peer?"},
+            "to-user":{"destination":"user","question":"route to the user?"},
+            "to-root":{"destination":"root","question":"route to the root?"},
+            "to-reply":{"destination":"default_reply","reply":"Acknowledged by the Co-managed room.","question":"send the default reply?"}
+        }}"#;
+        std::fs::write(room_root.join("catalog.json"), catalog).unwrap();
+    }
+
+    fn co_managed_app(
+        fixture: &CoManagedFixture,
+        endpoint: String,
+        enabled: bool,
+    ) -> (
+        tauri::App<tauri::test::MockRuntime>,
+        Arc<tokio::sync::RwLock<SessionManager>>,
+        Arc<CaptureRegistry>,
+    ) {
+        write_co_managed_room_config(&fixture.room_root, enabled, Some("catalog.json"));
+        write_co_managed_catalog(&fixture.room_root);
+        let settings = AppSettings {
+            project_paths: vec![fixture.project.to_string_lossy().to_string()],
+            jev_api_key: "test-key".to_string(),
+            jev_model: "jev-1.13.0".to_string(),
+            jev_endpoint: endpoint,
+            jev_timeout_secs: 5,
+            jev_threshold: 0.70,
+            jev_margin: 0.15,
+            ..AppSettings::default()
+        };
+        let session_manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let registry = Arc::new(CaptureRegistry::new());
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let app = tauri::test::mock_builder()
+            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(session_manager.clone())
+            .manage(crate::network::OutboundNetwork::new().expect("shared outbound network"))
+            .manage(registry.clone())
+            .manage(crate::pty::input_activity::new_state())
+            .manage(idle_detector)
+            .manage(Arc::new(crate::session::purge_guard::PurgeGuard::default()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build Co-managed test app");
+        (app, session_manager, registry)
+    }
+
+    async fn add_claude_session(
+        session_manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+        cwd: &Path,
+        status: SessionStatus,
+        projects_dir: &Path,
+    ) -> uuid::Uuid {
+        let guard = session_manager.read().await;
+        let session = guard
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                cwd.to_string_lossy().to_string(),
+                Some("claude".to_string()),
+                Some("claude".to_string()),
+                Vec::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        guard
+            .set_agent_kind(session.id, Some(CodingAgentKind::Claude))
+            .await;
+        guard
+            .set_resolved_claude_projects_dir(session.id, Some(projects_dir.to_path_buf()))
+            .await;
+        if matches!(status, SessionStatus::Idle) {
+            guard.mark_idle(session.id).await;
+        }
+        session.id
+    }
+
+    fn co_managed_candidate(session_id: &str, text: &str) -> Arc<CapturedRecord> {
+        let text_sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(text.as_bytes()).into();
+        let path = PathBuf::from(format!("/tmp/#2270/{session_id}.jsonl"));
+        Arc::new(CapturedRecord {
+            session_id: session_id.to_string(),
+            text: text.to_string(),
+            file: path.clone(),
+            epoch: 0,
+            record_start: Some(0),
+            reader_seq: 0,
+            text_sha256,
+            turn_id: None,
+            provider: CaptureProvider::Claude,
+            provider_final: false,
+            turn_identified: false,
+            origin: RecordOrigin::Live,
+            observed_path: path,
+            observed_len: text.len() as u64,
+            observed_prefix: Vec::new(),
+        })
+    }
+
+    fn install_candidate(
+        registry: &Arc<CaptureRegistry>,
+        session_id: uuid::Uuid,
+        text: &str,
+    ) -> (CaptureSlot, Arc<CapturedRecord>) {
+        let (capture, _rx) = registry.open(&session_id.to_string());
+        let record = co_managed_candidate(&session_id.to_string(), text);
+        capture.slot.offer(record.clone(), 0);
+        (capture.slot, record)
+    }
+
+    fn capture_events(
+        app: &tauri::App<tauri::test::MockRuntime>,
+    ) -> Arc<Mutex<Vec<(String, serde_json::Value)>>> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        for name in ["session_idle", "session_comanaged_state"] {
+            let events = Arc::clone(&events);
+            app.listen_any(name, move |event| {
+                let payload = serde_json::from_str::<serde_json::Value>(event.payload())
+                    .unwrap_or(serde_json::Value::Null);
+                events.lock().unwrap().push((name.to_string(), payload));
+            });
+        }
+        events
+    }
+
+    fn queue_files(room_root: &Path) -> Vec<PathBuf> {
+        let dir = crate::config::co_managed::queue_dir(room_root);
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        files
+    }
+
+    fn messaging_files(room_root: &Path) -> Vec<PathBuf> {
+        let dir = room_root.join(crate::phone::messaging::MESSAGING_DIR_NAME);
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        files
+    }
+
+    async fn session_communication(
+        session_manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+        session_id: uuid::Uuid,
+    ) -> Option<crate::session::session::SessionCommunication> {
+        let guard = session_manager.read().await;
+        guard.get_session(session_id).await?.communication
+    }
+
+    /// Build the raw HTTP response body Jev expects: every requested category
+    /// with its score. `decide` requires all ids present and no unknowns.
+    fn jev_response_body(scores: &[(&str, f32)]) -> String {
+        let results: Vec<serde_json::Value> = scores
+            .iter()
+            .map(|(id, noul)| serde_json::json!({ "id": id, "noul": noul }))
+            .collect();
+        serde_json::json!({ "results": results }).to_string()
+    }
+
+    async fn read_http_request(stream: &mut tokio::net::TcpStream) {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let Ok(n) = stream.read(&mut chunk).await else {
+                return;
+            };
+            if n == 0 {
+                return;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(header_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let header = String::from_utf8_lossy(&buf[..header_end]).to_lowercase();
+                let content_length = header
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if buf.len() >= header_end + 4 + content_length {
+                    return;
+                }
+            }
+        }
+    }
+
+    async fn write_http_json(stream: &mut tokio::net::TcpStream, body: &str) {
+        use tokio::io::AsyncWriteExt;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.shutdown().await;
+    }
+
+    async fn spawn_jev_listener(scores: Vec<(&'static str, f32)>) -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                read_http_request(&mut stream).await;
+                let body = jev_response_body(&scores);
+                write_http_json(&mut stream, &body).await;
+            }
+        });
+        (format!("http://127.0.0.1:{port}/v1/systemone"), hits)
+    }
+
+    /// Test 1: idle edge with the room disabled makes zero Jev calls, writes
+    /// zero files, queues nothing, and `session_idle` carries `comanaged:false`.
+    #[tokio::test]
+    async fn idle_edge_with_a_disabled_room_makes_no_call_and_emits_comanaged_false() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, hits) = spawn_jev_listener(vec![("to-peer", 0.9), ("to-user", 0.1)]).await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, false);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let events = capture_events(&app);
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+
+        let comanaged =
+            emit_session_idle_edge(app.handle(), &handle.armed, Some(&handle), session_id);
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+
+        assert!(!comanaged);
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "zero Jev calls");
+        assert!(messaging_files(&fixture.room_root).is_empty(), "zero files");
+        assert!(
+            queue_files(&fixture.room_root).is_empty(),
+            "zero queue entries"
+        );
+        let captured = events.lock().unwrap().clone();
+        let idle = captured
+            .iter()
+            .find(|(name, _)| name == "session_idle")
+            .expect("session_idle");
+        assert_eq!(idle.1["comanaged"], serde_json::Value::Bool(false));
+        assert!(
+            !captured
+                .iter()
+                .any(|(name, _)| name == "session_comanaged_state"),
+            "a disabled room must not emit the state event"
+        );
+    }
+
+    /// Test 2: the enabled room writes exactly one message file before the
+    /// queue entry, and the pointer resolves to it.
+    #[tokio::test]
+    async fn enabled_room_writes_the_message_file_before_the_queue_entry() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-peer", 0.9),
+            ("to-user", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let hooks = Arc::new(CoManagedTestHooks::default());
+        let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+
+        let files = messaging_files(&fixture.room_root);
+        assert_eq!(files.len(), 1, "exactly one message file: {files:?}");
+        let queue = queue_files(&fixture.room_root);
+        assert_eq!(queue.len(), 1, "exactly one queue entry: {queue:?}");
+        assert_eq!(
+            hooks.steps(),
+            vec!["messaging_file", "queue_file"],
+            "the file must be created before the queue entry"
+        );
+        let envelope: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&queue[0]).unwrap()).unwrap();
+        let pointer = envelope["body"].as_str().expect("pointer body");
+        let pointer_path = pointer
+            .strip_prefix(crate::phone::messaging::FILE_NOTIFICATION_PREFIX)
+            .expect("canonical pointer prefix");
+        assert_eq!(
+            std::fs::canonicalize(pointer_path).unwrap(),
+            std::fs::canonicalize(&files[0]).unwrap(),
+            "the pointer must resolve to the message file"
+        );
+        assert_eq!(
+            envelope["to"],
+            serde_json::json!("proj-a:room-1-dev-team/dev-rust")
+        );
+        assert_eq!(
+            envelope["from"],
+            serde_json::json!("proj-a:room-1-dev-team/tech-lead")
+        );
+        assert!(envelope["token"].is_null(), "the queue carries no token");
+        assert!(envelope["action"].is_null());
+        assert!(envelope["command"].is_null());
+    }
+
+    /// Test 3: trigger (b) enqueues and emits `active:true`; a disabled room
+    /// does neither.
+    #[tokio::test]
+    async fn a_record_while_already_idle_emits_active_true_and_enqueues_only_when_enabled() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-peer", 0.9),
+            ("to-user", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Idle,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let events = capture_events(&app);
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::SlotChanged(session_id),
+        )
+        .await;
+
+        assert_eq!(queue_files(&fixture.room_root).len(), 1, "(b) enqueues");
+        let captured = events.lock().unwrap().clone();
+        assert_eq!(captured[0].0, "session_comanaged_state");
+        assert_eq!(captured[0].1["active"], serde_json::Value::Bool(true));
+        assert!(captured[0].1["reason"].is_null());
+        assert_eq!(
+            captured.last().unwrap().1["active"],
+            serde_json::Value::Bool(false)
+        );
+
+        // Disabled room: no queue entry and no active:true.
+        let disabled = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![("to-peer", 0.9)]).await;
+        let (app2, manager2, registry2) = co_managed_app(&disabled, endpoint, false);
+        let session2 = add_claude_session(
+            &manager2,
+            &disabled.coordinator_cwd,
+            SessionStatus::Idle,
+            &disabled.projects_dir,
+        )
+        .await;
+        install_candidate(&registry2, session2, "candidate text");
+        let events2 = capture_events(&app2);
+        let (handle2, _rx2) = CoManagedSupervisorHandle::new();
+        super::handle_co_managed_trigger(
+            app2.handle(),
+            &handle2,
+            CoManagedTrigger::SlotChanged(session2),
+        )
+        .await;
+        assert!(queue_files(&disabled.room_root).is_empty());
+        assert!(!events2
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, payload)| payload["active"] == serde_json::Value::Bool(true)));
+    }
+
+    /// Test 4: a non-orchestrator session in an enabled room never triggers.
+    #[tokio::test]
+    async fn a_non_orchestrator_session_never_triggers() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, hits) = spawn_jev_listener(vec![("to-peer", 0.9)]).await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.dev_cwd,
+            SessionStatus::Idle,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::SlotChanged(session_id),
+        )
+        .await;
+
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        assert!(messaging_files(&fixture.room_root).is_empty());
+        assert!(queue_files(&fixture.room_root).is_empty());
+        assert!(!handle.armed.is_armed(&session_id.to_string()));
+    }
+
+    /// Test 5: `can_communicate` is applied to peer destinations, and an
+    /// unreachable peer is rejected instead of routed.
+    #[test]
+    fn peer_destinations_apply_can_communicate_and_reject_unreachable_peers() {
+        let catalog = crate::capture::catalog::Catalog::from_json_str(
+            r#"{"categories":{"ok":{"destination":"orchestrator","peer":"proj-a:room-1-dev-team/dev-rust","question":"?"},"bad":{"destination":"orchestrator","peer":"proj-b:room-9-dev-team/nobody","question":"?"}}}"#,
+        );
+        let from = "proj-a:room-1-dev-team/tech-lead";
+        let reachable = resolve_co_managed_route(
+            crate::capture::jev::ClassifyOutcome::Classified {
+                category: "ok".to_string(),
+                destination: crate::capture::catalog::Destination::Orchestrator,
+                score: 0.9,
+                runner_up: 0.1,
+            },
+            &catalog,
+            from,
+            &[],
+            "body",
+        );
+        match reachable {
+            super::CoManagedRoute::Wake { to, .. } => {
+                assert_eq!(to, "proj-a:room-1-dev-team/dev-rust")
+            }
+            _ => panic!("a same-room peer must be reachable"),
+        }
+        let unreachable = resolve_co_managed_route(
+            crate::capture::jev::ClassifyOutcome::Classified {
+                category: "bad".to_string(),
+                destination: crate::capture::catalog::Destination::Orchestrator,
+                score: 0.9,
+                runner_up: 0.1,
+            },
+            &catalog,
+            from,
+            &[],
+            "body",
+        );
+        match unreachable {
+            super::CoManagedRoute::User { reason, .. } => {
+                assert!(reason.contains("not reachable"), "{reason}")
+            }
+            _ => panic!("an unreachable peer must not be routed"),
+        }
+    }
+
+    /// Test 6: Root succeeds only for a verified coordinator, and
+    /// `can_communicate(x, Root)` is false, which is why the branch is needed.
+    #[tokio::test]
+    async fn root_destination_uses_the_verified_coordinator_validator_not_can_communicate() {
+        let fixture = make_co_managed_fixture();
+        let catalog = crate::capture::catalog::Catalog::from_json_str(
+            r#"{"categories":{"root":{"destination":"root","question":"?"}}}"#,
+        );
+        let paths = vec![fixture.project.to_string_lossy().to_string()];
+        let verified = "proj-a:room-1-dev-team/tech-lead";
+        let outcome = || crate::capture::jev::ClassifyOutcome::Classified {
+            category: "root".to_string(),
+            destination: crate::capture::catalog::Destination::Root,
+            score: 0.9,
+            runner_up: 0.1,
+        };
+        match resolve_co_managed_route(outcome(), &catalog, verified, &paths, "body") {
+            super::CoManagedRoute::Wake { to, .. } => {
+                assert_eq!(to, crate::config::root_agent::ROOT_AGENT_SENDER)
+            }
+            _ => panic!("a verified coordinator may route to Root"),
+        }
+        match resolve_co_managed_route(
+            outcome(),
+            &catalog,
+            "proj-a:room-1-dev-team/dev-rust",
+            &paths,
+            "body",
+        ) {
+            super::CoManagedRoute::User { reason, .. } => {
+                assert!(
+                    reason.contains("not a verified room orchestrator"),
+                    "{reason}"
+                )
+            }
+            _ => panic!("a non-verified sender may not route to Root"),
+        }
+        assert!(!crate::config::teams::can_communicate(
+            verified,
+            crate::config::root_agent::ROOT_AGENT_SENDER,
+            &crate::config::teams::discover_teams(),
+        ));
+    }
+
+    /// Test 9: a 50 KiB candidate reaches the message file byte-for-byte and
+    /// the user surface carries the path and a capped excerpt.
+    #[tokio::test]
+    async fn a_fifty_kib_candidate_reaches_the_file_intact() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-user", 0.9),
+            ("to-peer", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        let big = "x".repeat(50 * 1024);
+        install_candidate(&registry, session_id, &big);
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+
+        let files = messaging_files(&fixture.room_root);
+        assert_eq!(files.len(), 1);
+        let written = std::fs::read(&files[0]).unwrap();
+        assert_eq!(written.len(), big.len(), "no truncation");
+        assert_eq!(written, big.as_bytes(), "byte-for-byte intact");
+        let communication = session_communication(&manager, session_id)
+            .await
+            .expect("user communication");
+        assert_eq!(
+            communication.kind,
+            crate::session::session::SessionCommunicationKind::CoManaged
+        );
+        let message = communication.message.expect("message text");
+        assert!(
+            message.contains(&files[0].display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("51200 bytes"), "{message}");
+    }
+
+    /// Test 10: a pointer that does not fit is rejected with a visible reason;
+    /// nothing is truncated and no partial message is queued.
+    #[tokio::test]
+    async fn a_pointer_that_does_not_fit_is_rejected_and_nothing_is_queued() {
+        // Deep, long path components push the absolute pointer over PTY_SAFE_MAX.
+        let long = "d".repeat(200);
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut root = crate::path_utils::normalize_windows_verbatim_path_buf(
+            &std::fs::canonicalize(temp.path()).unwrap(),
+        );
+        for _ in 0..5 {
+            root = root.join(&long);
+        }
+        let fixture = make_co_managed_fixture_in(temp, root);
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-peer", 0.9),
+            ("to-user", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+
+        assert!(queue_files(&fixture.room_root).is_empty(), "nothing queued");
+        assert!(
+            messaging_files(&fixture.room_root).is_empty(),
+            "the over-long file is removed, never delivered"
+        );
+        let communication = session_communication(&manager, session_id)
+            .await
+            .expect("visible reason");
+        let message = communication.message.expect("message text");
+        assert!(message.contains("PTY-safe"), "{message}");
+    }
+
+    /// Test 11: the excerpt is capped at 500 bytes and never splits a
+    /// multi-byte character.
+    #[test]
+    fn the_excerpt_is_capped_at_500_bytes_without_splitting_a_character() {
+        // One 300-byte line of 'a', then a multi-byte character straddling the
+        // 500-byte boundary, then more text.
+        let mut text = "a".repeat(300);
+        text.push_str(&"\u{e9}".repeat(200));
+        text.push_str("tail");
+        let excerpt = utf8_safe_excerpt(&text, super::CO_MANAGED_EXCERPT_BYTES);
+        assert!(excerpt.len() <= 500, "excerpt is {} bytes", excerpt.len());
+        assert!(text.starts_with(&excerpt));
+        assert!(text.is_char_boundary(excerpt.len()));
+        assert!(!excerpt.is_empty());
+
+        let exact = "b".repeat(500);
+        assert_eq!(utf8_safe_excerpt(&exact, 500), exact, "no cut at the cap");
+    }
+
+    /// Test 12: flipping the room flag off during the classifier call produces
+    /// zero effects.
+    #[tokio::test]
+    async fn flipping_the_room_flag_during_the_classifier_call_produces_zero_effects() {
+        let fixture = make_co_managed_fixture();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let endpoint = format!("http://127.0.0.1:{port}/v1/systemone");
+        let request_received = Arc::new(tokio::sync::Notify::new());
+        let notify = Arc::clone(&request_received);
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let body = jev_response_body(&[("to-peer", 0.9)]);
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                read_http_request(&mut stream).await;
+                notify.notify_one();
+                let _ = release_rx.await;
+                write_http_json(&mut stream, &body).await;
+            }
+        });
+
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let trigger_handle = app.handle().clone();
+        let supervisor = handle.clone();
+        let task = tokio::spawn(async move {
+            super::handle_co_managed_trigger(
+                &trigger_handle,
+                &supervisor,
+                CoManagedTrigger::IdleEdge(session_id),
+            )
+            .await;
+        });
+
+        request_received.notified().await;
+        crate::config::co_managed::set_enabled(&fixture.room_root, false).unwrap();
+        let _ = release_tx.send(());
+        task.await.unwrap();
+
+        assert!(messaging_files(&fixture.room_root).is_empty());
+        assert!(queue_files(&fixture.room_root).is_empty());
+        let communication = session_communication(&manager, session_id).await;
+        assert!(communication.is_none(), "no user-facing effect either");
+    }
+
+    /// Test 13: budget exhaustion abstains, sends text to the user, and
+    /// enqueues nothing.
+    #[tokio::test]
+    async fn budget_exhaustion_abstains_sends_text_and_enqueues_nothing() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-peer", 0.9),
+            ("to-user", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        // Three automatic actions already spent since the last recharge.
+        let state_path =
+            crate::config::co_managed::co_managed_dir(&fixture.room_root).join("state.json");
+        std::fs::write(
+            &state_path,
+            r#"{"spends_since_recharge":3,"recharge_stamp":1}"#,
+        )
+        .unwrap();
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+
+        assert!(
+            queue_files(&fixture.room_root).is_empty(),
+            "nothing enqueued"
+        );
+        let communication = session_communication(&manager, session_id)
+            .await
+            .expect("text to the user");
+        let message = communication.message.expect("message text");
+        assert!(message.to_lowercase().contains("budget"), "{message}");
+    }
+
+    /// Test 14: a `provider_final == false` candidate is rendered as the
+    /// latest captured assistant text, and no rendering implies approval.
+    #[test]
+    fn a_non_final_candidate_is_rendered_as_latest_captured_assistant_text() {
+        assert_eq!(
+            co_managed_candidate_label(false),
+            "latest captured assistant text at the idle edge"
+        );
+        assert_eq!(co_managed_candidate_label(true), "final message");
+        let text = "A status update for the room.";
+        let rendered = super::co_managed_user_message(
+            "category 'x' routes to the user",
+            Some((text, false, Some(Path::new("/tmp/msg.md")))),
+        );
+        assert!(rendered.contains("latest captured assistant text at the idle edge"));
+        assert!(!rendered.to_lowercase().contains("final message"));
+        for phrase in ["approved", "go ahead", "lgtm", "ship it"] {
+            assert!(
+                !rendered.to_lowercase().contains(phrase),
+                "rendering must not express approval: {rendered}"
+            );
+        }
+    }
+
+    /// Test 15: the idle edge never emits a bare idle for an armed session.
+    /// Drive the real emission site and capture emissions in order.
+    #[tokio::test]
+    async fn the_idle_edge_never_emits_a_bare_idle_for_an_armed_session() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-user", 0.9),
+            ("to-peer", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let events = capture_events(&app);
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        handle.armed.arm(&session_id.to_string());
+
+        let comanaged =
+            emit_session_idle_edge(app.handle(), &handle.armed, Some(&handle), session_id);
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+
+        assert!(comanaged);
+        let captured = events.lock().unwrap().clone();
+        assert_eq!(captured[0].0, "session_idle");
+        assert_eq!(captured[0].1["comanaged"], serde_json::Value::Bool(true));
+        assert!(
+            !captured.iter().any(|(name, payload)| {
+                name == "session_comanaged_state"
+                    && payload["active"] == serde_json::Value::Bool(true)
+            }),
+            "the idle edge must not be preceded or duplicated by active:true: {captured:?}"
+        );
+    }
+
+    /// Test 16: enabling the flag alone emits nothing; a cycle emits
+    /// `active:true` then `active:false` with a non-null reason.
+    #[tokio::test]
+    async fn enabling_the_flag_alone_emits_nothing_and_a_cycle_emits_true_then_false() {
+        // Disabled room: the enable alone (config write) emits nothing.
+        let disabled = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![("to-user", 0.9)]).await;
+        let (app, manager, registry) = co_managed_app(&disabled, endpoint, false);
+        let session_id = add_claude_session(
+            &manager,
+            &disabled.coordinator_cwd,
+            SessionStatus::Running,
+            &disabled.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let events = capture_events(&app);
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+        assert!(!events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(name, _)| name == "session_comanaged_state"));
+
+        // Enabled room: one cycle emits exactly true then false(reason).
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-user", 0.9),
+            ("to-peer", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app2, manager2, registry2) = co_managed_app(&fixture, endpoint, true);
+        let session2 = add_claude_session(
+            &manager2,
+            &fixture.coordinator_cwd,
+            SessionStatus::Idle,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry2, session2, "candidate text");
+        let events2 = capture_events(&app2);
+        let (handle2, _rx2) = CoManagedSupervisorHandle::new();
+        super::handle_co_managed_trigger(
+            app2.handle(),
+            &handle2,
+            CoManagedTrigger::SlotChanged(session2),
+        )
+        .await;
+        let captured = events2.lock().unwrap().clone();
+        let states: Vec<&serde_json::Value> = captured
+            .iter()
+            .filter(|(name, _)| name == "session_comanaged_state")
+            .map(|(_, payload)| payload)
+            .collect();
+        assert_eq!(states.len(), 2, "{captured:?}");
+        assert_eq!(states[0]["active"], serde_json::Value::Bool(true));
+        assert!(states[0]["reason"].is_null());
+        assert_eq!(states[1]["active"], serde_json::Value::Bool(false));
+        assert!(states[1]["reason"].is_string());
+    }
+
+    /// Test 20: `session_comanaged_state` is emitted with `emit`, so a general
+    /// listener receives it.
+    #[tokio::test]
+    async fn the_state_event_is_emitted_with_emit_not_emit_to() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-user", 0.9),
+            ("to-peer", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Idle,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let events = capture_events(&app);
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::SlotChanged(session_id),
+        )
+        .await;
+
+        let captured = events.lock().unwrap().clone();
+        let state = captured
+            .iter()
+            .find(|(name, _)| name == "session_comanaged_state")
+            .expect("a general listener must receive the event");
+        assert_eq!(state.1["id"], serde_json::json!(session_id.to_string()));
+        assert!(state.1["active"].is_boolean());
+        assert!(state.1.as_object().unwrap().contains_key("reason"));
+    }
+
+    /// Test 21: contention terminates after exactly three attempts, abstains
+    /// with reason "contention", keeps the flag armed and never re-triggers
+    /// the same sequence.
+    #[tokio::test]
+    async fn contention_terminates_after_three_attempts_and_keeps_the_flag_armed() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-peer", 0.9),
+            ("to-user", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        let (slot, _record) = install_candidate(&registry, session_id, "candidate text");
+        let seq_before = slot.seq();
+        let events = capture_events(&app);
+        let hooks = Arc::new(CoManagedTestHooks::default());
+        let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+
+        // Hold the advisory lock for the whole cycle.
+        let lock_path = crate::config::co_managed::lock_path(&fixture.room_root);
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        lock_file.try_lock().expect("test holds the lock");
+
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+
+        assert_eq!(hooks.commit_calls(), 3, "three attempts, then abstain");
+        assert!(messaging_files(&fixture.room_root).is_empty());
+        assert!(queue_files(&fixture.room_root).is_empty());
+        let captured = events.lock().unwrap().clone();
+        let last = captured.last().expect("events");
+        assert_eq!(last.0, "session_comanaged_state");
+        assert_eq!(last.1["active"], serde_json::Value::Bool(false));
+        assert_eq!(last.1["reason"], serde_json::json!("contention"));
+        assert!(handle.armed.is_armed(&session_id.to_string()));
+        assert_eq!(slot.seq(), seq_before, "the candidate is unchanged");
+        assert!(slot.snapshot().value.record().is_some());
+
+        // A trigger for the same sequence must not run a fourth attempt.
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+        assert_eq!(
+            hooks.commit_calls(),
+            3,
+            "no fourth attempt for the same sequence"
+        );
+
+        // A later idle callback reports the candidate as armed.
+        let comanaged =
+            emit_session_idle_edge(app.handle(), &handle.armed, Some(&handle), session_id);
+        assert!(comanaged, "the pending candidate stays armed");
+    }
+
+    /// Test 22: `commit_effect` runs on the blocking pool, so a current-thread
+    /// runtime keeps making progress while the advisory lock is held.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_blocking_commit_does_not_park_a_current_thread_worker() {
+        let fixture = make_co_managed_fixture();
+        write_co_managed_room_config(&fixture.room_root, true, Some("catalog.json"));
+        let registry = Arc::new(CaptureRegistry::new());
+        let session_id = uuid::Uuid::new_v4();
+        let (slot, record) = install_candidate(&registry, session_id, "candidate text");
+        let expected_seq = slot.seq();
+        let expected_key =
+            crate::capture::state::consumption_key(&fixture.room_root, record.as_ref());
+        let pre = crate::capture::state::EffectPreconditions {
+            session_alive: true,
+            session_id: session_id.to_string(),
+            anchor: fixture.coordinator_cwd.to_string_lossy().to_string(),
+            provider: CaptureProvider::Claude,
+            unique_live_session_for_cwd: true,
+            no_pending_user_input: true,
+            effective_ready: true,
+            observed_at: Instant::now(),
+            kind: crate::capture::state::EffectKind::Automatic,
+        };
+
+        let lock_path = crate::config::co_managed::lock_path(&fixture.room_root);
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let lock_path_for_thread = lock_path.clone();
+        let lock_holder = std::thread::spawn(move || {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path_for_thread)
+                .unwrap();
+            file.try_lock().expect("lock holder");
+            std::thread::sleep(Duration::from_millis(50));
+            drop(file);
+        });
+
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let ticker = {
+            let ticks = Arc::clone(&ticks);
+            tokio::spawn(async move {
+                for _ in 0..3 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        };
+        let commit = super::commit_co_managed_effect(
+            fixture.room_root.clone(),
+            slot.clone(),
+            expected_seq,
+            expected_key,
+            pre,
+        )
+        .await;
+        ticker.await.unwrap();
+        lock_holder.join().unwrap();
+
+        assert!(
+            commit.is_ok(),
+            "the lock is released and the commit applies"
+        );
+        assert_eq!(
+            ticks.load(Ordering::SeqCst),
+            3,
+            "the async worker kept making progress while the blocking commit waited"
+        );
+    }
+
+    /// Test 23: the late-poll residual is real. A record delivered after the
+    /// idle edge paints waiting (`comanaged:false`) and then red (`active:true`).
+    #[tokio::test]
+    async fn the_late_poll_residual_paints_waiting_then_red() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-user", 0.9),
+            ("to-peer", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Idle,
+            &fixture.projects_dir,
+        )
+        .await;
+        let events = capture_events(&app);
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+
+        // The idle edge fires with no candidate: false.
+        emit_session_idle_edge(app.handle(), &handle.armed, Some(&handle), session_id);
+        // The record arrives afterwards, while the session is already idle.
+        install_candidate(&registry, session_id, "candidate text");
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::SlotChanged(session_id),
+        )
+        .await;
+
+        let captured = events.lock().unwrap().clone();
+        assert_eq!(captured[0].0, "session_idle", "{captured:?}");
+        assert_eq!(captured[0].1["comanaged"], serde_json::Value::Bool(false));
+        let active = captured
+            .iter()
+            .find(|(name, payload)| {
+                name == "session_comanaged_state"
+                    && payload["active"] == serde_json::Value::Bool(true)
+            })
+            .expect("the late record arms red after the waiting dot");
+        assert_eq!(captured[0].0, "session_idle");
+        assert_eq!(active.1["id"], serde_json::json!(session_id.to_string()));
+    }
+
+    /// The two supervisor helpers the contention/abstention reasons must stay
+    /// stable for phase 8 and the log readers.
+    #[test]
+    fn supervisor_reason_strings_are_stable() {
+        assert_eq!(
+            abstain_reason_label(&crate::capture::state::AbstainReason::LockBusy),
+            "LockBusy"
+        );
+        assert_eq!(co_managed_state_reason(&Ok(CoManagedState::Ready)), "Ready");
+        assert_eq!(
+            co_managed_state_reason(&Ok(CoManagedState::Off {
+                reason: crate::config::co_managed::OffReason::RoomFlagOff
+            })),
+            "RoomFlagOff"
+        );
+    }
+
+    /// `route_co_managed_wake` is the in-process writer: it must own the file
+    /// authority check and leave a resolvable pointer.
+    #[test]
+    fn route_co_managed_wake_requires_an_authoritative_room() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let not_a_room = temp.path().join("not-a-room");
+        std::fs::create_dir_all(&not_a_room).unwrap();
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let error = route_co_managed_wake(
+            &handle,
+            &not_a_room,
+            "proj-a:room-1-dev-team/tech-lead",
+            "proj-a:room-1-dev-team/dev-rust",
+            "body",
+        )
+        .expect_err("a non-authoritative root must be refused before any write");
+        assert!(!error.is_empty());
+        assert!(
+            !not_a_room
+                .join(crate::phone::messaging::MESSAGING_DIR_NAME)
+                .exists(),
+            "nothing may be created under a refused root"
+        );
     }
 }
 
