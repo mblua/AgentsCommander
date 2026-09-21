@@ -1061,6 +1061,7 @@ agentscommander_lib::telegram::claude_watcher -> agentscommander_lib::telegram::
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::capture::key
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::capture::record
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::capture::state
+agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::capture::turn_codex
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::commands::codex_resolver
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::network
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::telegram::jsonl_kernel

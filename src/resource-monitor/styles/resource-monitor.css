@@ -109,11 +109,14 @@ button {
   gap: var(--spacing-md);
   padding: var(--spacing-md);
   overflow: auto;
+  container-type: inline-size;
+  container-name: rm-body;
 }
 
 .rm-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-direction: column;
   justify-content: space-between;
   gap: var(--spacing-md);
   min-height: 42px;
@@ -182,8 +185,9 @@ button {
 
 .rm-status-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacing-sm);
+  font-variant-numeric: tabular-nums;
 }
 
 .rm-status-tile {
@@ -375,7 +379,6 @@ button {
 
 .rm-filter-clear {
   min-height: 24px;
-  margin-left: auto;
   padding: 0 10px;
   border: none;
   border-radius: var(--radius-sm);
@@ -399,7 +402,10 @@ button {
 }
 
 .rm-group-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px;
   border-radius: var(--radius-md);
+  font-variant-numeric: tabular-nums;
   background: var(--sidebar-surface);
   box-shadow: inset 0 0 0 1px var(--sidebar-border);
   overflow: hidden;
@@ -420,18 +426,17 @@ button {
 }
 
 .rm-group-main {
-  display: grid;
-  grid-template-columns: 20px minmax(130px, 1.5fr) 110px 72px 96px 72px minmax(110px, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--spacing-sm);
-  width: calc(100% - 64px);
+  row-gap: 2px;
   min-height: 38px;
   padding: 0 var(--spacing-sm);
   border: none;
   background: transparent;
   color: var(--sidebar-fg);
   cursor: pointer;
-  float: left;
   font-size: var(--font-size-sm);
   text-align: left;
 }
@@ -526,8 +531,6 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  float: right;
-  width: 64px;
   height: 38px;
   border: none;
   background: transparent;
@@ -552,18 +555,20 @@ button {
 }
 
 .rm-process-list {
-  clear: both;
+  grid-column: 1 / -1;
   padding: 0 var(--spacing-sm) var(--spacing-sm) 32px;
 }
 
 .rm-process-header,
 .rm-process-row {
-  display: grid;
-  grid-template-columns: minmax(120px, 1.5fr) 70px 96px 96px 70px 90px;
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--spacing-sm);
+  row-gap: 2px;
   align-items: center;
   min-height: 28px;
   font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
 }
 
 .rm-process-header {
@@ -649,33 +654,308 @@ button {
   margin-top: var(--spacing-md);
 }
 
-@media (max-width: 760px) {
+/* #2245 - the wrap layout, disjoint legs.
+   .rm-group-identity is itself a <span> and a DIRECT child of .rm-group-main,
+   and the process name is the FIRST <span> child of its row and header, so a
+   bare `.rm-group-main > span` would match the identity cell too and
+   `min-width: max-content` would kill the very ellipsis it is meant to protect.
+   The two legs are therefore written so they can never match the same element,
+   and no specificity comparison arises. */
+.rm-group-main > .rm-group-identity,
+.rm-process-header > span:first-child,
+.rm-process-row > span:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* `auto` and not a `100%` basis: a 100% basis gives the identity a line of its
+   own and leaves the 20px expander alone on the line above it, which at the
+   760px default width is the ordinary view rather than an edge case. The
+   explicit min-width: 0 is required and not inherited — without it the name
+   cannot shrink below its text and the ellipsis never fires. */
+
+/* The anti-clipping rule: a metric cell can no longer be squeezed below its own
+   text. The network pill is excluded because it is NOT a metric — its text is
+   free-form ("Socket attribution unavailable"), so under max-content the pill
+   itself would overflow and .rm-group-row { overflow: hidden } would cut it
+   with no ellipsis. Excluded, it keeps the shared ellipsis rule above and a
+   title attribute, so the cell stays present and readable. */
+.rm-group-main > span:not(.rm-group-identity):not(.rm-network-pill),
+.rm-process-header > span:not(:first-child),
+.rm-process-row > span:not(:first-child) {
+  flex: 0 0 auto;
+  min-width: max-content;
+}
+
+/* The identity name and its partial-observation pill share one line. A span,
+   never a div: this lives inside the <button>. */
+.rm-group-identity-line {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  min-width: 0;
+}
+
+.rm-group-identity-line .rm-group-name {
+  flex: 0 1 auto;
+}
+
+.rm-partial-pill {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-hover);
+  color: var(--status-pending);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* #2245 - PID and search inputs */
+.rm-filter-pid-input,
+.rm-filter-search-input {
+  min-height: 24px;
+  min-width: 96px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-hover);
+  color: var(--sidebar-fg);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+}
+
+.rm-filter-pid-input:disabled,
+.rm-filter-search-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.rm-filter-pid-input[aria-invalid="true"] {
+  box-shadow: inset 0 0 0 1px var(--status-exited);
+}
+
+.rm-filter-input-clear {
+  min-height: 20px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.rm-filter-input-clear:hover {
+  color: var(--sidebar-fg);
+}
+
+.rm-filter-help {
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+}
+
+.rm-filter-pid-error {
+  color: var(--status-pending);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.rm-filter-pid-error[data-ac-state="error"] {
+  color: var(--status-exited);
+}
+
+.rm-filter-coverage {
+  padding: var(--spacing-sm);
+  border-radius: var(--radius-md);
+  background: var(--sidebar-surface);
+  color: var(--sidebar-fg-dim);
+  font-size: var(--font-size-sm);
+}
+
+/* #2245 - applied-PID chips. An unmatched chip is never auto-removed: it stays
+   dimmed so the user can see the filter is still on. */
+.rm-pid-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  min-height: 22px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-hover);
+  color: var(--sidebar-accent);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.rm-pid-chip.is-unmatched {
+  color: var(--sidebar-fg-dim);
+  opacity: 0.6;
+}
+
+.rm-pid-chip-name {
+  font-weight: 400;
+}
+
+/* #2245 - sort controls, and the container that carries the margin-left:auto
+   the Clear filters button used to own on its own. */
+.rm-filter-trailing {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-left: auto;
+}
+
+.rm-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.rm-sort-field {
+  min-height: 24px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-hover);
+  color: var(--sidebar-fg);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+}
+
+.rm-sort-direction {
+  min-width: 26px;
+  min-height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-hover);
+  color: var(--sidebar-fg);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.rm-sort-direction:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+/* #2245 - the process tree guide. No ASCII box characters: they break the
+   ellipsis. Indentation itself is an inline style computed in JS. */
+.rm-process-depth {
+  border-left: 1px solid var(--sidebar-border);
+}
+
+/* #2245 - visual priority, weakest first so source order settles the ties:
+   alternating band, expanded row, then the PID match. The match is not colour
+   alone — a 3px left bar plus the PID in bold. */
+.rm-process-row:nth-of-type(even) {
+  background: var(--sidebar-hover);
+}
+
+.rm-group-row.is-expanded > .rm-group-main {
+  background: var(--sidebar-hover);
+}
+
+.rm-process-row.is-pid-match {
+  background: var(--sidebar-active);
+  box-shadow: inset 3px 0 0 var(--sidebar-accent);
+}
+
+.rm-process-pid-match {
+  font-weight: 700;
+}
+
+/* #2245 - focus ring. The offset is negative on the two elements that fill the
+   group row, because .rm-group-row carries overflow: hidden and a positive
+   offset would be clipped to invisibility while a byte test still passed. */
+.rm-action-btn:focus-visible,
+.rm-filter-seg-btn:focus-visible,
+.rm-filter-chip:focus-visible,
+.rm-filter-clear:focus-visible,
+.rm-titlebar-btn:focus-visible,
+.rm-filter-pid-input:focus-visible,
+.rm-filter-search-input:focus-visible,
+.rm-filter-input-clear:focus-visible,
+.rm-pid-chip:focus-visible,
+.rm-sort-field:focus-visible,
+.rm-sort-direction:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: 2px;
+}
+
+.rm-group-main:focus-visible,
+.rm-kill-btn:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rm-titlebar-btn,
+  .rm-action-btn,
+  .rm-filter-seg-btn,
+  .rm-filter-chip,
+  .rm-filter-clear,
+  .rm-filter-input-clear,
+  .rm-pid-chip,
+  .rm-sort-direction,
+  .rm-kill-btn {
+    transition: none;
+  }
+}
+
+/* #2245 - the ONE conditional block, and it is the one whose loss costs
+   nothing. The trigger reads the CONTAINER, not the viewport: embedded, the
+   monitor lives in a pane that is the window minus a 400-600px sidebar, so a
+   viewport breakpoint switches to the one-line grid while the pane is far
+   narrower than the grid needs and overflow: hidden cuts the trailing metrics.
+   The query is INVERTED for the same reason: which runtimes parse @container is
+   unverified here, and a runtime that does not understand the condition
+   discards the whole block — so the wrap layout above is the unconditional base
+   and this block only ADDS the one-line grid. Arithmetic: the eight tracks have
+   a fixed minimum of 682px, plus seven 8px gaps and 16px of padding = 754px;
+   with the 64px Kill track the row demands 818px, and a container query
+   resolves against the content box, so 860px leaves 42px of headroom.
+   The old @media block's hiding rule is DELETED outright, not relocated: in an
+   unconditional base it would hide five metric cells of every group row at
+   every width, which is the exact loss this section exists to prevent. */
+@container rm-body (min-width: 860px) {
+  .rm-group-main {
+    display: grid;
+    grid-template-columns: 20px minmax(130px, 1.5fr) 110px 72px 96px 72px 72px minmax(110px, 1fr);
+  }
+
+  .rm-process-header,
+  .rm-process-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 1.5fr) 70px 96px 96px 70px 90px;
+  }
+
+  /* Required, not tidiness: min-width: max-content is not inert on a grid item
+     and would raise the automatic minimum of a fixed metric track. */
+  .rm-group-main > span:not(.rm-group-identity):not(.rm-network-pill),
+  .rm-process-header > span:not(:first-child),
+  .rm-process-row > span:not(:first-child) {
+    min-width: 0;
+  }
+
   .rm-status-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(110px, 1fr));
   }
 
   .rm-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .rm-group-main,
-  .rm-process-header,
-  .rm-process-row {
-    grid-template-columns: 1fr 70px;
-  }
-
-  .rm-group-main {
-    width: calc(100% - 58px);
-  }
-
-  .rm-group-main span:nth-child(n + 4),
-  .rm-process-header span:nth-child(n + 3),
-  .rm-process-row span:nth-child(n + 3) {
-    display: none;
-  }
-
-  .rm-kill-btn {
-    width: 58px;
+    align-items: center;
+    flex-direction: row;
   }
 }
