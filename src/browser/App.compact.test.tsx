@@ -314,4 +314,57 @@ describe("BrowserApp compact host (#2280)", () => {
       rendered.cleanup();
     }
   });
+
+  it("re-bases a repeated mouse start so no mouse listener survives the end", async () => {
+    const rendered = mountBrowserApp();
+    try {
+      await flushMicrotasks();
+      const layout = rendered.root.querySelector(".browser-layout") as HTMLElement;
+      const handle = divider(rendered);
+      expect(paneWidth(rendered)).toBe("300px");
+
+      // A second mousedown must retire the first mouse pair before installing
+      // its own; otherwise the first pair survives the mouseup below.
+      mouseAt(handle, "mousedown", clientXForWidth(300));
+      mouseAt(handle, "mousedown", clientXForWidth(300));
+      expect(layout.classList.contains("browser-dragging")).toBe(true);
+
+      mouseAt(document, "mousemove", clientXForWidth(250));
+      expect(paneWidth(rendered)).toBe("250px");
+      mouseAt(document, "mouseup", clientXForWidth(250));
+      expect(layout.classList.contains("browser-dragging")).toBe(false);
+
+      // The leak is only visible here: a stale first mouse pair resizes after
+      // an end the slot believed had removed it.
+      mouseAt(document, "mousemove", clientXForWidth(350));
+      expect(paneWidth(rendered)).toBe("250px");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("re-bases a repeated touch start so no touch listener survives the end", async () => {
+    const rendered = mountBrowserApp();
+    try {
+      await flushMicrotasks();
+      const layout = rendered.root.querySelector(".browser-layout") as HTMLElement;
+      const handle = divider(rendered);
+      expect(paneWidth(rendered)).toBe("300px");
+
+      touchAt(handle, "touchstart", clientXForWidth(300));
+      touchAt(handle, "touchstart", clientXForWidth(300));
+      expect(layout.classList.contains("browser-dragging")).toBe(true);
+
+      touchAt(document, "touchmove", clientXForWidth(250));
+      expect(paneWidth(rendered)).toBe("250px");
+      touchAt(document, "touchend");
+      expect(layout.classList.contains("browser-dragging")).toBe(false);
+
+      // Touch has its own re-entry hazard and its own stale pair to leave.
+      touchAt(document, "touchmove", clientXForWidth(350));
+      expect(paneWidth(rendered)).toBe("250px");
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });

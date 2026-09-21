@@ -137,6 +137,9 @@ const BrowserApp: Component = () => {
 
   const onMouseDown = (e: MouseEvent) => {
     if (sidebarCompact()) return;
+    // Same-modality re-entry: retire the pair already listening before this
+    // start installs its own, or the first pair survives the next end.
+    endActiveBrowserMouseDrag?.();
     e.preventDefault();
     setDragging(true);
     const side = sidebarSide();
@@ -166,6 +169,9 @@ const BrowserApp: Component = () => {
 
   const onTouchStart = (e: TouchEvent) => {
     if (sidebarCompact()) return;
+    // Same-modality re-entry: retire the pair already listening before this
+    // start installs its own, or the first pair survives the next end.
+    endActiveBrowserTouchDrag?.();
     e.preventDefault();
     setDragging(true);
     const side = sidebarSide();
