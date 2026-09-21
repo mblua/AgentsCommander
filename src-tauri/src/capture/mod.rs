@@ -8,3 +8,5 @@ pub mod record;
 pub mod registry;
 pub mod sink;
 pub mod state;
+// #2232 phase 5: the Codex turn-boundary state machine the watcher now feeds.
+pub mod turn_codex;

@@ -1251,6 +1251,7 @@ fn production_modules() -> BTreeSet<String> {
         "agentscommander_lib::capture::key",
         "agentscommander_lib::capture::record",
         "agentscommander_lib::capture::state",
+        "agentscommander_lib::capture::turn_codex", // #2232 phase 5
         "agentscommander_lib::config",
         "agentscommander_lib::network",
         "agentscommander_lib::telegram",
