@@ -196,16 +196,21 @@ describe("ProjectPanel remote-activity chip (#2064 Phase C)", () => {
   it("idle_and_current_and_unknown_add_no_class", async () => {
     await openPanel();
 
-    // idle/current: the honest "checked, nothing happening" state.
+    // idle/current: no CI text on the chip. The gate is a real transition: `running`
+    // must first tint the chip and print its title, so the neutral title below is
+    // measured after a visible change, never against the initial DOM.
+    publish("running", "current");
+    await waitFor(() => expect(chipState().className).toBe("ac-discovery-badge branch ci-running"));
+    expect(chipState().title).toBe(`${REPO_PATH} (status unknown) - CI running`);
     publish("idle", "current");
-    await waitFor(() =>
-      expect(chipState().title).toBe(
-        `${REPO_PATH} (status unknown) - no CI activity for this commit`
-      )
-    );
-    expect(chipState().className).toBe("ac-discovery-badge branch");
+    await waitFor(() => expect(chipState().className).toBe("ac-discovery-badge branch"));
+    expect(chipState().title).toBe(`${REPO_PATH} (status unknown)`);
 
-    // unknown/unknown: no `gh`, feature off, or not swept yet. Silent on purpose.
+    // unknown/unknown: no `gh`, feature off, or not swept yet. Silent on purpose,
+    // proven after the same running-to-neutral transition.
+    publish("running", "current");
+    await waitFor(() => expect(chipState().className).toBe("ac-discovery-badge branch ci-running"));
+    expect(chipState().title).toBe(`${REPO_PATH} (status unknown) - CI running`);
     publish("unknown", "unknown");
     await waitFor(() => expect(chipState().className).toBe("ac-discovery-badge branch"));
     expect(chipState().title).toBe(`${REPO_PATH} (status unknown)`);
