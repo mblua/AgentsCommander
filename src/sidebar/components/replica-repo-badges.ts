@@ -21,17 +21,16 @@ export function formatReplicaRepoBadgeLabel(repo: Pick<SessionRepo, "label" | "b
   return `${repo.label}${repo.branch ? `/${repo.branch}` : ""}`;
 }
 
-/** #2064 — the CI and staleness suffixes on the repo chip's tooltip. `unknown` CI is
- *  SILENT on purpose: it is the majority case (no `gh`, feature off, not yet swept)
- *  and has nothing to say, so the distinction between "no CI" and "we do not know"
- *  lives in the tooltip rather than in a third marker on the chip. */
+/** #2064 — the CI and staleness suffixes on the repo chip's tooltip. Only `running`
+ *  CI adds text: `idle` and `unknown` are both SILENT on purpose (no `gh`, feature
+ *  off, not yet swept, or a default branch that suppresses its answers), and the
+ *  payload carries no suppression reason that could tell them apart. */
 function remoteActivityTitleSuffix(
   remoteActivity: Pick<RemoteActivityEntry, "ci" | "staleness" | "behindBy"> | null | undefined
 ): string {
   if (!remoteActivity) return "";
   let suffix = "";
   if (remoteActivity.ci === "running") suffix += " - CI running";
-  else if (remoteActivity.ci === "idle") suffix += " - no CI activity for this commit";
   // A `stale` state with a null count is omitted rather than guessed: the bar still
   // renders, and a suffix with no number explains nothing.
   if (remoteActivity.staleness === "stale" && typeof remoteActivity.behindBy === "number") {
