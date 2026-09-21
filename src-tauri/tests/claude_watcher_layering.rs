@@ -1231,6 +1231,16 @@ fn analyze_guard(
     Ok(report)
 }
 
+// #2232 phase 4: the sets below are **unchanged**, and deliberately so. Phase 4
+// gave `claude_watcher` a destination `watch`, per-line preamble starts and a
+// live `Option<Sender>`, but every one of those is either std, `tokio`, or a
+// name the watcher already carried: `capture::record` for the record,
+// `capture::key` and `capture::state` for the attachment, and `jsonl_kernel`
+// for the preamble window constants. A restart now releases the old reader and
+// raises a fresh one on the new session UUID, so no re-anchor signal exists and
+// no watcher gained a reference to the supervisor. No new module arc was
+// created, so no row is added — adding one to satisfy a plan row would break the
+// equality pin the plan tells us not to relax.
 fn production_modules() -> BTreeSet<String> {
     [
         CRATE_ID,
@@ -2599,14 +2609,45 @@ fn production_claude_and_codex_reach_output_without_bridge() {
             "{module} must depend on {OUTPUT_MODULE} directly; observed {:?}",
             report.dependencies
         );
-        assert!(
-            report
-                .dependencies
-                .iter()
-                .all(|row| row.module != "agentscommander_lib::telegram::bridge"),
-            "{module} must not route through bridge; observed {:?}",
-            report.dependencies
-        );
+        // #2232 phase 4 section 10: the supervisor drives the watchers, never
+        // the reverse. Phase 4 moved the reader out of `BridgeHandle.tasks`
+        // into `telegram::manager`'s demand registry and gave it a destination
+        // `watch` and a capture sink, so the three names a watcher must still
+        // never carry are pinned together here. `telegram::bridge` and
+        // `telegram::manager` are both SCC members; an arc from either watcher
+        // into them, or into any `commands::` module, pulls that watcher into
+        // the 88-member cycle.
+        for forbidden in [
+            "agentscommander_lib::telegram::bridge",
+            "agentscommander_lib::telegram::manager",
+        ] {
+            assert!(
+                report
+                    .dependencies
+                    .iter()
+                    .all(|row| row.module != forbidden),
+                "{module} must not depend on {forbidden}; observed {:?}",
+                report.dependencies
+            );
+        }
+        // `commands::co_managed` and `commands::telegram` are the SCC-side
+        // command modules of this epic; `commands::codex_resolver`, which the
+        // Codex watcher already named before this phase, is a leaf outside the
+        // 88-member cycle, so it is not forbidden here.
+        for forbidden in [
+            "agentscommander_lib::commands::telegram",
+            "agentscommander_lib::commands::session",
+            "agentscommander_lib::commands::co_managed",
+        ] {
+            assert!(
+                report
+                    .dependencies
+                    .iter()
+                    .all(|row| row.module != forbidden),
+                "{module} must not reach into {forbidden}; observed {:?}",
+                report.dependencies
+            );
+        }
     }
 }
 

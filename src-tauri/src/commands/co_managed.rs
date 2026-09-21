@@ -88,6 +88,11 @@ pub async fn co_managed_get<R: tauri::Runtime>(
 ///
 /// The read-modify-write is a blocking, lock-bearing operation, so it runs on
 /// the blocking pool rather than stalling the async runtime.
+/// Toggling the flag on a **live** session must take effect immediately
+/// (#2232 phase 4 section 5.1, epic section 3.2): without this, a user turning
+/// the flag on for a running orchestrator would get no reader until the next
+/// spawn. Every raise and release goes through the SCC-member functions in
+/// `commands::session`, so this module keeps **outgoing arcs only**.
 #[tauri::command]
 pub async fn co_managed_set_enabled<R: tauri::Runtime>(
     app: AppHandle<R>,
@@ -95,9 +100,55 @@ pub async fn co_managed_set_enabled<R: tauri::Runtime>(
     enabled: bool,
 ) -> Result<CoManagedConfig, String> {
     let root = canonical_room_root(&app, &room_root).await?;
-    tauri::async_runtime::spawn_blocking(move || co_managed::set_enabled(&root, enabled))
-        .await
-        .map_err(|e| format!("coManagedSetEnabledTaskFailed: {e}"))?
+    let write_root = root.clone();
+    let config =
+        tauri::async_runtime::spawn_blocking(move || co_managed::set_enabled(&write_root, enabled))
+            .await
+            .map_err(|e| format!("coManagedSetEnabledTaskFailed: {e}"))??;
+
+    for session_id in live_sessions_in_room(&app, &root).await {
+        if enabled {
+            crate::commands::session::raise_room_reader_demand_in(&app, &root, session_id).await;
+        } else {
+            crate::commands::session::release_room_reader_demand(&app, session_id).await;
+        }
+    }
+
+    Ok(config)
+}
+
+/// Every live session whose working directory sits inside `room_root`.
+async fn live_sessions_in_room<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    room_root: &std::path::Path,
+) -> Vec<uuid::Uuid> {
+    let Some(manager) = app
+        .try_state::<std::sync::Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>(
+        )
+    else {
+        return Vec::new();
+    };
+    let sessions = {
+        let guard = manager.read().await;
+        guard.list_sessions().await
+    };
+    sessions
+        .into_iter()
+        .filter(|session| {
+            co_managed::room_root_for_path(std::path::Path::new(&session.working_directory))
+                .is_some_and(|root| {
+                    // `room_root` is canonical (see `canonical_room_root`) while the
+                    // candidate is derived from the session's stored cwd, which is not.
+                    // On Windows `canonicalize` yields a `\\?\` verbatim path, so
+                    // comparing a raw candidate with a canonical root drops every live
+                    // session and the toggle starts no reader (#2267 phase 4, Windows
+                    // CI `toggling_the_flag_on_a_live_session_starts_and_stops_the_reader`).
+                    let candidate = std::fs::canonicalize(&root).unwrap_or(root);
+                    crate::path_identity::paths_equivalent(&candidate, room_root)
+                })
+        })
+        .filter_map(|session| uuid::Uuid::parse_str(&session.id).ok())
+        .collect()
 }
 
 /// Answer "is Co-managed effective for this room right now, and if not, why".

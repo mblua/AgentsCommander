@@ -1362,19 +1362,27 @@ mod tests {
     }
 
     /// Hold `.co-managed/lock` for `hold`, signalling once it is really held.
+    /// The join handle returns how long the lock was actually held: a loaded
+    /// runner can deschedule the holder past its sleep, and a caller must be
+    /// able to tell that scheduler overshoot from a code defect.
     fn hold_lock(
         root: &Path,
         hold: Duration,
-    ) -> (std::sync::mpsc::Receiver<()>, std::thread::JoinHandle<()>) {
+    ) -> (
+        std::sync::mpsc::Receiver<()>,
+        std::thread::JoinHandle<Duration>,
+    ) {
         let (tx, rx) = std::sync::mpsc::channel();
         let root = root.to_path_buf();
         let handle = std::thread::spawn(move || {
             let LockAttempt::Held(lock) = acquire_lock(&root, Duration::from_secs(5)) else {
                 panic!("the holder must get the lock");
             };
+            let acquired = Instant::now();
             tx.send(()).expect("signal");
             std::thread::sleep(hold);
             drop(lock);
+            acquired.elapsed()
         });
         (rx, handle)
     }
@@ -1414,7 +1422,9 @@ mod tests {
 
     // Test 25: the staleness window is not consumed by the lock wait. Together
     // with test 24 this pins the ordering of the two bounds, not their values
-    // in isolation.
+    // in isolation. The plan allows scheduler slack: a holder the runner
+    // deschedules past LOCK_WAIT_BUDGET legitimately yields LockBusy, which is
+    // not the same result as the staleness check consuming the lock wait.
     #[test]
     fn a_short_lock_wait_still_leaves_the_snapshot_fresh() {
         let temp = tempfile::tempdir().expect("temp");
@@ -1429,10 +1439,22 @@ mod tests {
         let mut pre = preconditions(EffectKind::Automatic);
         pre.observed_at = Instant::now() - Duration::from_millis(75);
         let outcome = commit_effect(&root, &slot, seq, &key, &pre);
-        holder.join().expect("holder");
+        let held = holder.join().expect("holder");
 
-        assert!(outcome.is_ok(), "expected success, got {outcome:?}");
-        assert_eq!(watermark(&root, &file), Some(10));
+        match outcome {
+            Ok(_) => assert_eq!(watermark(&root, &file), Some(10)),
+            // Slop is the runner's, not the code's: accept LockBusy only when
+            // the measured hold really did outlive the budget.
+            Err(AbstainReason::LockBusy) => assert!(
+                held > LOCK_WAIT_BUDGET,
+                "LockBusy although the holder released after only {held:?}, \
+                 inside the {LOCK_WAIT_BUDGET:?} budget"
+            ),
+            Err(other) => panic!(
+                "a short lock wait must not consume the staleness window: {other:?} \
+                 (held {held:?})"
+            ),
+        }
     }
 
     // Test 26: a held lock bounds the debounce flush, leaves the dirty stamp
