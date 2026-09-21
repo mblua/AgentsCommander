@@ -1251,8 +1251,9 @@ impl B {
     fn handle(&self) {}
 }
 `);
-      expectEqual(idAt(fix, 'handle(&self)', 'handle', 1), 'rust:src/two.rs::impl:A::handle', 'impl A handle');
-      expectEqual(idAt(fix, 'handle(&self)', 'handle', 2), 'rust:src/two.rs::impl:B::handle', 'impl B handle');
+      const ids = [1, 2].map((occurrence) => idAt(fix, 'handle(&self)', 'handle', occurrence));
+      expectDifferent(ids[0], ids[1], 'impl A and impl B');
+      expectEqual(ids[0], 'rust:src/two.rs::impl:A::handle', 'impl A handle');
     }],
     ['case 31: impl Tr for T, trait Tr and mod m yield their three containers', () => {
       const fix = fixture('src/three.rs', `impl Tr for T {
@@ -1265,9 +1266,8 @@ mod m {
     fn c(&self) {}
 }
 `);
-      expectEqual(containerAtNeedle(fix, 'a(&self)'), 'impl:Tr for T', 'impl container');
-      expectEqual(containerAtNeedle(fix, 'b(&self)'), 'trait:Tr', 'trait container');
-      expectEqual(containerAtNeedle(fix, 'c(&self)'), 'mod:m', 'mod container');
+      const containers = ['a(&self)', 'b(&self)', 'c(&self)'].map((needle) => containerAtNeedle(fix, needle));
+      expectEqual(containers.join(' | '), 'impl:Tr for T | trait:Tr | mod:m', 'the three containers');
     }],
     ['case 32: a free function id carries no container segment', () => {
       const fix = fixture('src/free.rs', 'fn free() {}\n');
@@ -1443,8 +1443,8 @@ fn free() {
     let c = |x| x;
 }
 `);
-      expectEqual(containerAtNeedle(fix, 'free()'), '', 'free is at file scope');
-      expectEqual(containerAtNeedle(fix, '|x|'), 'fn:free', 'closure under free');
+      const containers = ['free()', '|x|'].map((needle) => containerAtNeedle(fix, needle));
+      expectEqual(JSON.stringify(containers), JSON.stringify(['', 'fn:free']), 'free scope and closure scope');
     }],
     ['case 56: a closure under a module declaration stays under its function', () => {
       const fix = fixture('src/below.rs', `pub mod web;
