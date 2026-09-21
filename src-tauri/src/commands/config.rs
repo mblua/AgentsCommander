@@ -6907,6 +6907,31 @@ mod tests {
         assert!(live.rail_favorites_collapsed);
     }
 
+    /// #2336 - an out-of-range `typingHoldSeconds` is rejected before the save,
+    /// so the live and persisted value stays untouched; a boundary value saves.
+    #[tokio::test]
+    async fn invalid_typing_hold_settings_update_leaves_live_settings_unchanged() {
+        let original = settings_with_single_agent();
+        assert_eq!(original.typing_hold_seconds, 30);
+        let state = state_for(original.clone());
+
+        let mut invalid = original.clone();
+        invalid.typing_hold_seconds = 0;
+        let err = persist_protected_settings_update_with_saver(&state, invalid, |c| Ok(c.clone()))
+            .await
+            .expect_err("out-of-range typing hold must be rejected");
+        assert!(err.contains("typingHoldSeconds"), "{err}");
+        assert_eq!(state.read().await.typing_hold_seconds, 30);
+
+        let mut valid = original.clone();
+        valid.typing_hold_seconds = 3600;
+        let saved = persist_protected_settings_update_with_saver(&state, valid, |c| Ok(c.clone()))
+            .await
+            .expect("in-range typing hold must persist");
+        assert_eq!(saved.typing_hold_seconds, 3600);
+        assert_eq!(state.read().await.typing_hold_seconds, 3600);
+    }
+
     #[tokio::test]
     async fn save_settings_draft_keeps_live_rail_collapse_when_draft_is_stale() {
         let mut current = settings_with_single_agent();

@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
@@ -67,6 +67,7 @@ pub async fn pty_write(
         }
     }
     PtyManager::write_with_permit(&permit, &data).map_err(|error| error.to_string())?;
+    record_typing_hold_keystroke(&app, uuid, &data);
     mark_successful_pty_write_busy(&app, uuid, data.len()).await;
     drop(permit);
 
@@ -346,6 +347,158 @@ fn classify_substantive<R: tauri::Runtime>(
     };
     let mut tracker = state.lock().unwrap_or_else(|e| e.into_inner());
     tracker.feed(session_id, data)
+}
+
+/// #2336 - record a desktop keystroke for the typing hold. ONLY `pty_write`
+/// calls this: web writes and every injection path must not arm the natural
+/// window. Called while the per-session writer permit is still held, so a peer
+/// injection that acquires the permit next observes the key.
+fn record_typing_hold_keystroke<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    data: &[u8],
+) {
+    if !crate::pty::input_activity::chunk_qualifies_typing_hold(data) {
+        return;
+    }
+    if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
+        state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .note_qualifying_key(session_id);
+    }
+}
+
+/// #2336 - the live natural-hold window. Read from settings on every evaluation
+/// so an edit takes effect without a restart; clamped because the Settings API
+/// rejects out-of-range values but a hand-edited settings.json still loads.
+async fn typing_hold_window<R: tauri::Runtime>(app: &AppHandle<R>) -> Duration {
+    let seconds = match app.try_state::<crate::config::settings::SettingsState>() {
+        Some(settings) => settings.read().await.typing_hold_seconds,
+        None => crate::config::settings::DEFAULT_TYPING_HOLD_SECONDS,
+    }
+    .clamp(
+        crate::config::settings::TYPING_HOLD_SECONDS_MIN,
+        crate::config::settings::TYPING_HOLD_SECONDS_MAX,
+    );
+    Duration::from_secs(u64::from(seconds))
+}
+
+/// #2336 - pure in-memory padlock snapshot for one session. An absent state or
+/// session reads as open with no held ids; no lock is held across an await.
+fn typing_hold_snapshot<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    window: Duration,
+) -> crate::pty::input_activity::TypingHoldSnapshot {
+    match app.try_state::<crate::pty::input_activity::TypingHoldState>() {
+        Some(state) => state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .snapshot(session_id, window),
+        None => crate::pty::input_activity::TypingHoldSnapshot {
+            closed: false,
+            held_count: 0,
+        },
+    }
+}
+
+/// #2336 - evaluated inside `pty::inject` at the serialized write boundary of a
+/// peer wake. Read-only, so evaluating it never consumes the hold.
+pub(crate) async fn typing_hold_defers_injection<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) -> bool {
+    let window = typing_hold_window(app).await;
+    typing_hold_snapshot(app, session_id, window).closed
+}
+
+/// #2336 - count a peer wake message ID as deferred, once (the set dedupes, so
+/// a retried poll of the same message never increases the count).
+pub(crate) fn note_held_wake<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    message_id: &str,
+) {
+    if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
+        state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record_held_message(session_id, message_id);
+    }
+}
+
+/// #2336 - drop a held message ID after an observed delivery.
+pub(crate) fn clear_held_wake<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    message_id: &str,
+) {
+    if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
+        state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear_held_message(session_id, message_id);
+    }
+}
+
+/// #2336 - confirm a session exists before reading or flipping its padlock, so
+/// an invalid or absent session errors instead of silently touching nothing.
+async fn ensure_session_exists<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) -> Result<(), String> {
+    let Some(sessions) =
+        app.try_state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>()
+    else {
+        return Err("session manager is unavailable".to_string());
+    };
+    let manager = {
+        let guard = sessions.read().await;
+        guard.clone()
+    };
+    if manager.get_session(session_id).await.is_some() {
+        Ok(())
+    } else {
+        Err(format!("Session not found: {}", session_id))
+    }
+}
+
+/// #2336 - read the per-session typing-hold snapshot. `closed` is the effective
+/// hold (manual or natural window); `heldCount` is the unique deferred peer wake
+/// message count. Pure in-memory read: no filesystem, DB or source-side
+/// reconciliation, and no mutation of the count.
+#[tauri::command]
+pub async fn get_typing_hold(
+    app: AppHandle,
+    session_id: String,
+) -> Result<crate::pty::input_activity::TypingHoldSnapshot, String> {
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    ensure_session_exists(&app, session_id).await?;
+    let window = typing_hold_window(&app).await;
+    Ok(typing_hold_snapshot(&app, session_id, window))
+}
+
+/// #2336 - flip one session's manual padlock and return the post-toggle
+/// snapshot. An effective-closed session releases (suppressing the current
+/// natural window so the next poll may deliver); an open one takes the manual
+/// hold. Per-session only: an unknown session errors and leaves every other
+/// session untouched.
+#[tauri::command]
+pub async fn toggle_typing_hold(
+    app: AppHandle,
+    session_id: String,
+) -> Result<crate::pty::input_activity::TypingHoldSnapshot, String> {
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    ensure_session_exists(&app, session_id).await?;
+    let window = typing_hold_window(&app).await;
+    match app.try_state::<crate::pty::input_activity::TypingHoldState>() {
+        Some(state) => Ok(state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .toggle_manual(session_id, window)),
+        None => Err("typing hold state is unavailable".to_string()),
+    }
 }
 
 /// (#756) Record an AC-driven fresh-conversation boundary for `session_id`:
@@ -2406,5 +2559,151 @@ mod tests {
                 "the input path waited {elapsed:?} on a held file lock"
             );
         });
+    }
+
+    /// #2336 - the desktop `pty_write` path is the only recorder for the typing
+    /// hold, and only qualifying human chunks arm it.
+    #[test]
+    fn typing_hold_recorder_arms_on_human_keys_and_ignores_terminal_sequences() {
+        let app = tauri::test::mock_builder()
+            .manage(crate::pty::input_activity::new_typing_hold_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build typing hold test app");
+        let id = Uuid::new_v4();
+        let window = Duration::from_secs(30);
+        let state = app.state::<crate::pty::input_activity::TypingHoldState>();
+
+        record_typing_hold_keystroke(app.handle(), id, b"\x1b[A");
+        assert!(!state.lock().unwrap().is_hold_active(id, window));
+        record_typing_hold_keystroke(app.handle(), id, b"");
+        assert!(!state.lock().unwrap().is_hold_active(id, window));
+
+        record_typing_hold_keystroke(app.handle(), id, b"hi");
+        assert!(state.lock().unwrap().is_hold_active(id, window));
+    }
+
+    /// #2336 - the user-message bookkeeping is not the recording choke point:
+    /// the web transport's `UserInputSource::Web` never arms the hold.
+    #[tokio::test]
+    async fn typing_hold_user_message_sources_do_not_arm_hold() {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+        let app = tauri::test::mock_builder()
+            .manage(session_mgr.clone())
+            .manage(clocks)
+            .manage(crate::pty::input_activity::new_state())
+            .manage(crate::pty::input_activity::new_typing_hold_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build typing hold user input test app");
+        let session = {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "codex".to_string(),
+                Vec::new(),
+                "C:/ac-test/project/.ac/wg-2336-dev-team/__agent_rust".to_string(),
+                None,
+                None,
+                Vec::<SessionRepo>::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create session")
+        };
+        let id = session.id;
+        let window = Duration::from_secs(30);
+        let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+
+        note_user_message_to_session(app.handle(), id, UserInputSource::Web(b"hello")).await;
+        assert!(!hold.lock().unwrap().is_hold_active(id, window));
+
+        note_user_message_to_session(app.handle(), id, UserInputSource::Terminal(b"hello")).await;
+        assert!(!hold.lock().unwrap().is_hold_active(id, window));
+    }
+
+    /// #2336 - the destroy/restart side-state purge clears the typing hold with
+    /// the substantive tracker it already reset, so no manual padlock or counted
+    /// ID survives a session teardown.
+    #[test]
+    fn typing_hold_is_cleared_by_session_side_state_purge() {
+        let app = tauri::test::mock_builder()
+            .manage(crate::pty::input_activity::new_typing_hold_state())
+            .manage(crate::pty::input_activity::new_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build teardown test app");
+        let id = Uuid::new_v4();
+        let window = Duration::from_secs(30);
+        let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+
+        record_typing_hold_keystroke(app.handle(), id, b"hi");
+        hold.lock().unwrap().record_held_message(id, "held-msg");
+        assert!(hold.lock().unwrap().is_hold_active(id, window));
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 1);
+
+        crate::commands::session::purge_session_side_state(app.handle(), id);
+
+        assert!(!hold.lock().unwrap().is_hold_active(id, window));
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
+    }
+
+    /// #2336 - deterministic boundary race: a qualifying desktop key lands while
+    /// a logical-clear writer permit is in flight (before the stamp, the order
+    /// the plan specifies), then the shared fresh-boundary stamp runs. The stamp
+    /// resets ONLY the substantive tracker, so the hold stays armed, counted held
+    /// IDs survive, and the next peer wake is deferred. The pre-set fresh intent
+    /// keeps the record half a no-op, so the test writes no instance state.
+    #[tokio::test]
+    async fn typing_hold_survives_fresh_boundary_stamp_and_defers_next_wake() {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+        let app = tauri::test::mock_builder()
+            .manage(session_mgr.clone())
+            .manage(clocks)
+            .manage(crate::pty::input_activity::new_state())
+            .manage(crate::pty::input_activity::new_typing_hold_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build boundary race test app");
+        let session = {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "codex".to_string(),
+                Vec::new(),
+                "C:/ac-test/project/.ac/wg-2336-dev-team/__agent_rust".to_string(),
+                None,
+                None,
+                Vec::<SessionRepo>::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create session")
+        };
+        let id = session.id;
+        {
+            let mgr = session_mgr.read().await;
+            mgr.set_start_fresh_on_restore(id, true).await;
+        }
+        let window = Duration::from_secs(30);
+
+        let substantive = app.state::<crate::pty::input_activity::SubstantiveInputState>();
+        substantive.lock().unwrap().feed(id, b"half-typed");
+        assert!(substantive
+            .lock()
+            .unwrap()
+            .pending_within(id, crate::pty::input_activity::USER_WRITE_STAMP_WINDOW));
+        record_typing_hold_keystroke(app.handle(), id, b"half-typed");
+        let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+        hold.lock().unwrap().record_held_message(id, "held-msg");
+
+        stamp_fresh_boundary_to_session(app.handle(), id).await;
+
+        assert!(hold.lock().unwrap().is_hold_active(id, window));
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 1);
+        assert!(typing_hold_defers_injection(app.handle(), id).await);
+        // The stamp still did its own job on the substantive tracker.
+        assert!(!substantive
+            .lock()
+            .unwrap()
+            .pending_within(id, crate::pty::input_activity::USER_WRITE_STAMP_WINDOW));
     }
 }

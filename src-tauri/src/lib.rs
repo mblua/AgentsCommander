@@ -3639,6 +3639,7 @@ pub fn run(
         .manage(screenshot_capture_state) // #714
         .manage(screenshot_hotkey_state) // #714
         .manage(crate::pty::input_activity::new_state()) // #871 substantive-input tracker
+        .manage(crate::pty::input_activity::new_typing_hold_state()) // #2336 typing hold
         .manage(crate::session::warnings::new_session_warning_state())
         .manage(Arc::new(QuitGate::new())) // #2296 managed type: Arc<QuitGate>
         .setup(move |app| {
@@ -4541,6 +4542,8 @@ pub fn run(
                 commands::task::task_clean_at,
                 commands::task::task_set_title_at,
                 commands::pty::pty_write,
+                commands::pty::get_typing_hold,
+                commands::pty::toggle_typing_hold,
                 commands::pty::pty_resize,
                 commands::pty::get_screen_snapshot,
                 commands::pty::activate_terminal_output,

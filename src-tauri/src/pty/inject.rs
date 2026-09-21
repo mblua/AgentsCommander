@@ -264,6 +264,32 @@ pub async fn inject_text_into_session<R: tauri::Runtime>(
     inject_text_into_session_with_pre_write_check(app, session_id, text, || Ok(())).await
 }
 
+/// #2336 - peer-wake text injection: subject to the per-session typing hold.
+/// The mailbox's standard message delivery and its logical remote command
+/// delivery call this. The follow-up body after a logical command deliberately
+/// keeps the plain `inject_text_into_session` above: that body was already
+/// marked delivered when the command half succeeded, so a hold armed during the
+/// detached idle wait must not drop it.
+pub(crate) async fn inject_peer_wake_text_into_session<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+    text: &str,
+    message_id: &str,
+) -> Result<(), String> {
+    let result =
+        inject_text_into_session_impl(app, session_id, text, Some(message_id), |session| {
+            session.ok_or_else(|| format!("Session not found: {}", session_id))?;
+            Ok(())
+        })
+        .await;
+    if result.is_ok() {
+        // The message left the deferred set the moment its text was written; a
+        // repeated clear is a no-op.
+        crate::commands::pty::clear_held_wake(app, session_id, message_id);
+    }
+    result
+}
+
 pub(crate) async fn inject_text_into_session_with_pre_write_check<R, F>(
     app: &tauri::AppHandle<R>,
     session_id: Uuid,
@@ -274,7 +300,7 @@ where
     R: tauri::Runtime,
     F: FnOnce() -> Result<(), String>,
 {
-    inject_text_into_session_impl(app, session_id, text, move |session| {
+    inject_text_into_session_impl(app, session_id, text, None, move |session| {
         session.ok_or_else(|| format!("Session not found: {}", session_id))?;
         pre_write_check()
     })
@@ -319,7 +345,7 @@ where
     R: tauri::Runtime,
     F: FnOnce(&Session) -> Result<(), String>,
 {
-    inject_text_into_session_impl(app, session_id, text, move |session| {
+    inject_text_into_session_impl(app, session_id, text, None, move |session| {
         let session = session.ok_or_else(|| {
             format!(
                 "Session {} is missing before supported-agent injection",
@@ -336,6 +362,7 @@ async fn inject_text_into_session_impl<R, F>(
     app: &tauri::AppHandle<R>,
     session_id: Uuid,
     text: &str,
+    hold_message_id: Option<&str>,
     pre_write_check: F,
 ) -> Result<(), String>
 where
@@ -372,6 +399,23 @@ where
             return Err(format!(
                 "{}: session {} is blocked by interactive menu",
                 crate::pty::menu_guard::ERR_MENU_GUARD_DEFERRED,
+                session_id
+            ));
+        }
+    }
+
+    // #2336 - the typing hold gate, still under the per-session writer permit so
+    // a key written against this session is observed before any payload byte.
+    // Only the peer-wake entry point sets `hold_message_id`; internal notices,
+    // self-maintenance, Telegram and the logical-command follow-up stay on the
+    // plain injector and are never held. Deferring records the message ID and
+    // writes no payload and no Enter byte.
+    if let Some(message_id) = hold_message_id {
+        if crate::commands::pty::typing_hold_defers_injection(app, session_id).await {
+            crate::commands::pty::note_held_wake(app, session_id, message_id);
+            return Err(format!(
+                "{}: session {} is holding peer wake injection while the user is typing",
+                crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED,
                 session_id
             ));
         }
@@ -1223,5 +1267,120 @@ mod tests {
         assert!(crate::pty::menu_guard::is_menu_guard_deferred_error(&err));
         assert!(err.contains(&id.to_string()));
         assert!(backend.writes.lock().unwrap().is_empty());
+    }
+
+    async fn typing_hold_app(
+        shell: &str,
+    ) -> (
+        tauri::App<tauri::test::MockRuntime>,
+        Uuid,
+        Arc<RecordingBackend>,
+    ) {
+        let session_manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = session_manager
+            .read()
+            .await
+            .create_session(
+                shell.to_string(),
+                Vec::new(),
+                "C:\\test".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let id = session.id;
+        let backend = Arc::new(RecordingBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(id, SessionBackendKind::LocalProcess);
+        let settings_state: crate::config::settings::SettingsState = Arc::new(
+            tokio::sync::RwLock::new(crate::config::settings::AppSettings::default()),
+        );
+        let app = tauri::test::mock_builder()
+            .manage(session_manager)
+            .manage(pty)
+            .manage(crate::pty::input_activity::new_typing_hold_state())
+            .manage(settings_state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        (app, id, backend)
+    }
+
+    /// #2336 - a peer wake is deferred with zero bytes written while the typing
+    /// hold is active; a repeated poll does not grow the unique count; a manual
+    /// release lets the very next attempt deliver and clears the id.
+    #[tokio::test]
+    async fn test_peer_wake_injection_blocked_while_typing_hold_active() {
+        let (app, id, backend) = typing_hold_app("claude").await;
+        let window = std::time::Duration::from_secs(30);
+        let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+        hold.lock().unwrap().note_qualifying_key(id);
+
+        let err = inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-1")
+            .await
+            .unwrap_err();
+        assert!(crate::pty::menu_guard::is_typing_hold_deferred_error(&err));
+        assert!(err.contains(&id.to_string()));
+        assert!(
+            backend.writes.lock().unwrap().is_empty(),
+            "payload and Enter bytes must not be written while held"
+        );
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 1);
+
+        // A repeated poll of the same message never increases the unique count.
+        let _ = inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-1").await;
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 1);
+
+        // The closed-click release suppresses the window, so the next attempt
+        // delivers and the observed id drops out of the count.
+        let released = hold.lock().unwrap().toggle_manual(id, window);
+        assert!(!released.closed);
+        inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-1")
+            .await
+            .unwrap();
+        let writes: Vec<Vec<u8>> = backend
+            .writes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(write_id, _)| *write_id == id)
+            .map(|(_, bytes)| bytes.clone())
+            .collect();
+        assert_eq!(
+            writes,
+            vec![b"echo hello".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
+    }
+
+    /// #2336 - internal notices, self-maintenance and Telegram keep the plain
+    /// injector: a hold never delays them.
+    #[tokio::test]
+    async fn test_internal_injection_bypasses_typing_hold() {
+        let (app, id, backend) = typing_hold_app("claude").await;
+        app.state::<crate::pty::input_activity::TypingHoldState>()
+            .lock()
+            .unwrap()
+            .note_qualifying_key(id);
+
+        inject_text_into_session(app.handle(), id, "internal notice")
+            .await
+            .unwrap();
+
+        let writes: Vec<Vec<u8>> = backend
+            .writes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(write_id, _)| *write_id == id)
+            .map(|(_, bytes)| bytes.clone())
+            .collect();
+        assert_eq!(writes.len(), 3);
+        assert_eq!(writes[0], b"internal notice".to_vec());
     }
 }

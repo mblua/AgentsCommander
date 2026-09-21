@@ -733,6 +733,13 @@ pub struct AppSettings {
     /// #1646 / #1647 - master kill switch for proactive detection of terminal blocking menus.
     #[serde(default = "default_true")]
     pub menu_guard_enabled: bool,
+    /// #2336 - seconds the automatic typing hold stays active after the last
+    /// qualifying keystroke in a session. Default 30; accepted range 1..=3600,
+    /// rejected outside it by `validate_and_repair_settings` so a Settings update
+    /// cannot persist a value that would make the hold nonsensical. Read live at
+    /// each hold evaluation, so an edit takes effect without a restart.
+    #[serde(default = "default_typing_hold_seconds")]
+    pub typing_hold_seconds: u32,
 }
 
 /// #1171 - one entry of the root `watchers` map, or whatever the user wrote there.
@@ -1032,6 +1039,17 @@ fn default_agent_process_kill_private_bytes() -> u64 {
     12 * 1024 * 1024 * 1024
 }
 
+/// #2336 - default `typing_hold_seconds`.
+pub const DEFAULT_TYPING_HOLD_SECONDS: u32 = 30;
+/// #2336 - accepted `typing_hold_seconds` bounds; outside them the Settings API
+/// rejects the update and the live value is left unchanged.
+pub const TYPING_HOLD_SECONDS_MIN: u32 = 1;
+pub const TYPING_HOLD_SECONDS_MAX: u32 = 3600;
+
+fn default_typing_hold_seconds() -> u32 {
+    DEFAULT_TYPING_HOLD_SECONDS
+}
+
 fn default_resource_keep_last_snapshot() -> bool {
     true
 }
@@ -1146,6 +1164,7 @@ impl Default for AppSettings {
             watchers: BTreeMap::new(),
             watchers_geometry: None,
             menu_guard_enabled: true,
+            typing_hold_seconds: default_typing_hold_seconds(),
         }
     }
 }
@@ -2315,7 +2334,23 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
     validate_agent_commands(settings)?;
     validate_screenshot_hotkey(&settings.screenshot_capture_hotkey)?;
     validate_api_server_settings(settings)?;
+    validate_typing_hold_settings(settings)?;
     validate_resource_settings(settings)
+}
+
+/// #2336 - reject a settings update whose typing-hold window is outside the
+/// accepted range. Called on every save path, so the invalid candidate is
+/// discarded before `save_settings` and the persisted (and live) value stays
+/// untouched.
+pub fn validate_typing_hold_settings(settings: &AppSettings) -> Result<(), String> {
+    let seconds = settings.typing_hold_seconds;
+    if !(TYPING_HOLD_SECONDS_MIN..=TYPING_HOLD_SECONDS_MAX).contains(&seconds) {
+        return Err(format!(
+            "typingHoldSeconds must be between {} and {} (got {})",
+            TYPING_HOLD_SECONDS_MIN, TYPING_HOLD_SECONDS_MAX, seconds
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn parse_api_server_socket_addr(bind: &str, port: u16) -> Result<SocketAddr, String> {
@@ -7717,6 +7752,53 @@ mod tests {
         assert!(super::validate_and_repair_settings(&mut s).is_ok());
     }
 
+    #[test]
+    fn typing_hold_seconds_defaults_to_30_when_absent() {
+        // #2336 an old settings file without the key deserializes to 30.
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("typingHoldSeconds");
+        let parsed: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.typing_hold_seconds, 30);
+
+        let json = serde_json::to_string(&AppSettings::default()).unwrap();
+        assert!(json.contains("\"typingHoldSeconds\":30"), "{json}");
+    }
+
+    #[test]
+    fn validate_and_repair_accepts_typing_hold_bounds_and_rejects_out_of_range() {
+        for seconds in [
+            super::TYPING_HOLD_SECONDS_MIN,
+            30,
+            super::TYPING_HOLD_SECONDS_MAX,
+        ] {
+            let mut s = AppSettings {
+                typing_hold_seconds: seconds,
+                ..AppSettings::default()
+            };
+            assert!(
+                super::validate_typing_hold_settings(&s).is_ok(),
+                "{seconds}"
+            );
+            assert!(
+                super::validate_and_repair_settings(&mut s).is_ok(),
+                "{seconds}"
+            );
+        }
+        for seconds in [0, super::TYPING_HOLD_SECONDS_MAX + 1] {
+            let s = AppSettings {
+                typing_hold_seconds: seconds,
+                ..AppSettings::default()
+            };
+            let err = super::validate_typing_hold_settings(&s).unwrap_err();
+            assert!(err.contains("typingHoldSeconds"), "{err}");
+            let mut repaired = s.clone();
+            assert!(
+                super::validate_and_repair_settings(&mut repaired).is_err(),
+                "{seconds}"
+            );
+        }
+    }
+
     /// #2015: shared pre-v2 fixture: `letters.A.name` plus
     /// `matrix.codex.A.argv` legacy data under `codingAgentProfiles`.
     const LEGACY_PROFILES_SETTINGS_FIXTURE: &str = r##"{
@@ -11226,6 +11308,7 @@ mod tests {
   "terminalSnapshotsEnabled": false,
   "terminalZoom": 1.0,
   "themeLight": false,
+  "typingHoldSeconds": 30,
   "voiceAutoExecute": true,
   "voiceAutoExecuteDelay": 15,
   "voiceToTextEnabled": false,
