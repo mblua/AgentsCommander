@@ -1244,31 +1244,27 @@ function selfTestCases() {
       expectEqual(idAt(fix, 'r#match', 'r#match'), 'rust:src/raw.rs::r#match', 'r#match name');
     }],
     ['case 30: two handle methods in impl A and impl B get two ids', () => {
-      const fix = fixture('src/two.rs', [
-        'impl A {',
-        '    fn handle(&self) {}',
-        '}',
-        'impl B {',
-        '    fn handle(&self) {}',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/two.rs', `impl A {
+    fn handle(&self) {}
+}
+impl B {
+    fn handle(&self) {}
+}
+`);
       expectEqual(idAt(fix, 'handle(&self)', 'handle', 1), 'rust:src/two.rs::impl:A::handle', 'impl A handle');
       expectEqual(idAt(fix, 'handle(&self)', 'handle', 2), 'rust:src/two.rs::impl:B::handle', 'impl B handle');
     }],
     ['case 31: impl Tr for T, trait Tr and mod m yield their three containers', () => {
-      const fix = fixture('src/three.rs', [
-        'impl Tr for T {',
-        '    fn a(&self) {}',
-        '}',
-        'trait Tr {',
-        '    fn b(&self) {}',
-        '}',
-        'mod m {',
-        '    fn c(&self) {}',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/three.rs', `impl Tr for T {
+    fn a(&self) {}
+}
+trait Tr {
+    fn b(&self) {}
+}
+mod m {
+    fn c(&self) {}
+}
+`);
       expectEqual(containerAtNeedle(fix, 'a(&self)'), 'impl:Tr for T', 'impl container');
       expectEqual(containerAtNeedle(fix, 'b(&self)'), 'trait:Tr', 'trait container');
       expectEqual(containerAtNeedle(fix, 'c(&self)'), 'mod:m', 'mod container');
@@ -1278,24 +1274,20 @@ function selfTestCases() {
       expectEqual(idAt(fix, 'free()', 'free'), 'rust:src/free.rs::free', 'free id');
     }],
     ['case 33: a function inside another function inside impl A keeps both frames', () => {
-      const fix = fixture('src/nested.rs', [
-        'impl A {',
-        '    fn outer() {',
-        '        fn inner() {}',
-        '    }',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/nested.rs', `impl A {
+    fn outer() {
+        fn inner() {}
+    }
+}
+`);
       expectEqual(containerAtNeedle(fix, 'inner()'), 'impl:A::fn:outer', 'nested container');
       expectEqual(idAt(fix, 'inner()', 'inner'), 'rust:src/nested.rs::impl:A::fn:outer::inner', 'nested id');
     }],
     ['case 34: an impl where clause is dropped and its generics kept', () => {
-      const fix = fixture('src/where.rs', [
-        'impl<T> Foo<T> where T: X {',
-        '    fn f() {}',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/where.rs', `impl<T> Foo<T> where T: X {
+    fn f() {}
+}
+`);
       expectEqual(containerAtNeedle(fix, 'f()'), 'impl:<T> Foo<T>', 'where clause dropped');
     }],
     ['case 35: an unreadable source raises CAPTURE instead of inventing file scope', () => {
@@ -1444,142 +1436,122 @@ function selfTestCases() {
       expectExit(['--help'], 0, silent);
     }],
     ['case 55: a function and closure after a complete impl block stay at file scope', () => {
-      const fix = fixture('src/after.rs', [
-        'impl A {',
-        '    fn method(&self) {}',
-        '}',
-        'fn free() {',
-        '    let c = |x| x;',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/after.rs', `impl A {
+    fn method(&self) {}
+}
+fn free() {
+    let c = |x| x;
+}
+`);
       expectEqual(containerAtNeedle(fix, 'free()'), '', 'free is at file scope');
       expectEqual(containerAtNeedle(fix, '|x|'), 'fn:free', 'closure under free');
     }],
     ['case 56: a closure under a module declaration stays under its function', () => {
-      const fix = fixture('src/below.rs', [
-        'pub mod web;',
-        'fn free() {',
-        '    let c = |x| x;',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/below.rs', `pub mod web;
+fn free() {
+    let c = |x| x;
+}
+`);
       expectEqual(containerAtNeedle(fix, 'free()'), '', 'module declaration opens nothing');
       expectEqual(idAt(fix, '|x|', '|x|'), 'rust:src/below.rs::fn:free::{closure}', 'closure id');
     }],
     ['case 57: four same-named methods under four different impls get four ids', () => {
-      const fix = fixture('src/four.rs', [
-        'impl Display for F {',
-        '    fn fmt(&self) {}',
-        '}',
-        'impl Debug for F {',
-        '    fn fmt(&self) {}',
-        '}',
-        'impl From<String> for E {',
-        '    fn from(value: String) {}',
-        '}',
-        'impl From<&str> for E {',
-        '    fn from(value: &str) {}',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/four.rs', `impl Display for F {
+    fn fmt(&self) {}
+}
+impl Debug for F {
+    fn fmt(&self) {}
+}
+impl From<String> for E {
+    fn from(value: String) {}
+}
+impl From<&str> for E {
+    fn from(value: &str) {}
+}
+`);
       const ids = [
-        idAt(fix, 'fmt(&self)', 'fmt', 1),
-        idAt(fix, 'fmt(&self)', 'fmt', 2),
-        idAt(fix, 'from(value: String)', 'from'),
-        idAt(fix, 'from(value: &str)', 'from'),
-      ];
+        ['fmt(&self)', 'fmt', 1],
+        ['fmt(&self)', 'fmt', 2],
+        ['from(value: String)', 'from', 1],
+        ['from(value: &str)', 'from', 1],
+      ].map(([needle, sliceText, occurrence]) => idAt(fix, needle, sliceText, occurrence));
       if (new Set(ids).size !== 4) throw new Error(`expected four distinct ids, got ${JSON.stringify(ids)}`);
       expectEqual(ids[2], 'rust:src/four.rs::impl:From<String> for E::from', 'String impl');
       expectEqual(ids[3], 'rust:src/four.rs::impl:From<&str> for E::from', '&str impl');
     }],
     ['case 58: module paths separate siblings, and cfg-alternate siblings share one id', () => {
-      const split = fixture('src/mods.rs', [
-        'mod a {',
-        '    mod inner {',
-        '        fn f() {}',
-        '    }',
-        '}',
-        'mod b {',
-        '    mod inner {',
-        '        fn f() {}',
-        '    }',
-        '}',
-        '',
-      ].join('\n'));
+      const split = fixture('src/mods.rs', `mod a {
+    mod inner {
+        fn f() {}
+    }
+}
+mod b {
+    mod inner {
+        fn f() {}
+    }
+}
+`);
       expectDifferent(idAt(split, 'f()', 'f', 1), idAt(split, 'f()', 'f', 2), 'module paths');
       expectEqual(idAt(split, 'f()', 'f', 1), 'rust:src/mods.rs::mod:a::mod:inner::f', 'mod a path');
       expectEqual(idAt(split, 'f()', 'f', 2), 'rust:src/mods.rs::mod:b::mod:inner::f', 'mod b path');
-      const shared = fixture('src/shared.rs', [
-        'mod p {',
-        '    mod inner {',
-        '        fn f() {}',
-        '    }',
-        '    mod inner {',
-        '        fn f() {}',
-        '    }',
-        '}',
-        '',
-      ].join('\n'));
+      const shared = fixture('src/shared.rs', `mod p {
+    mod inner {
+        fn f() {}
+    }
+    mod inner {
+        fn f() {}
+    }
+}
+`);
       expectEqual(idAt(shared, 'f()', 'f', 1), 'rust:src/shared.rs::mod:p::mod:inner::f', 'shared path');
       expectEqual(idAt(shared, 'f()', 'f', 1), idAt(shared, 'f()', 'f', 2), 'cfg-alternate pair');
     }],
     ['case 59: a three-line impl header is joined and collapsed', () => {
-      const fix = fixture('src/joined.rs', [
-        'impl<T>',
-        '    Trait<T>',
-        '    for Foo<T>',
-        '{',
-        '    fn f() {}',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/joined.rs', `impl<T>
+    Trait<T>
+    for Foo<T>
+{
+    fn f() {}
+}
+`);
       expectEqual(containerAtNeedle(fix, 'f()'), 'impl:<T> Trait<T> for Foo<T>', 'joined header');
     }],
     ['case 60: nested generics in an impl header survive whole', () => {
-      const fix = fixture('src/generics.rs', [
-        'impl<T: Into<Vec<u8>>> Foo<T> {',
-        '    fn f() {}',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/generics.rs', `impl<T: Into<Vec<u8>>> Foo<T> {
+    fn f() {}
+}
+`);
       expectEqual(containerAtNeedle(fix, 'f()'), 'impl:<T: Into<Vec<u8>>> Foo<T>', 'nested generics');
     }],
     ['case 61: trailing comments, raw strings and commented mod lines open nothing', () => {
-      const fix = fixture('src/lexed.rs', [
-        'impl Foo for Bar // for Baz',
-        '{',
-        '    fn m(&self) {}',
-        '}',
-        'fn host() {',
-        'r#"impl Other {"#;',
-        '}',
-        'fn after() {}',
-        'fn host2() {',
-        '// mod x {',
-        '}',
-        'fn after2() {}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/lexed.rs', `impl Foo for Bar // for Baz
+{
+    fn m(&self) {}
+}
+fn host() {
+r#"impl Other {"#;
+}
+fn after() {}
+fn host2() {
+// mod x {
+}
+fn after2() {}
+`);
       expectEqual(containerAtNeedle(fix, 'm(&self)'), 'impl:Foo for Bar', 'trailing comment');
       expectEqual(containerAtNeedle(fix, 'after()'), '', 'raw string opens nothing');
       expectEqual(containerAtNeedle(fix, 'after2()'), '', 'commented mod opens nothing');
     }],
     ['case 62: inserting an unrelated item changes the id set by exactly one id', () => {
-      const base = fixture('src/insert.rs', [
-        'fn a() {}',
-        'impl A {',
-        '    fn b(&self) {}',
-        '}',
-        '',
-      ].join('\n'));
-      const inserted = fixture('src/insert.rs', [
-        'struct P;',
-        'impl P {',
-        '    fn p(&self) {}',
-        '}',
-        base.source,
-      ].join('\n'));
+      const base = fixture('src/insert.rs', `fn a() {}
+impl A {
+    fn b(&self) {}
+}
+`);
+      const inserted = fixture('src/insert.rs', `struct P;
+impl P {
+    fn p(&self) {}
+}
+${base.source}`);
       const baseIds = new Set([idAt(base, 'a()', 'a'), idAt(base, 'b(&self)', 'b')]);
       const insertedIds = new Set([
         idAt(inserted, 'a()', 'a'),
@@ -1595,55 +1567,45 @@ function selfTestCases() {
       if (insertedIds.size !== 3) throw new Error(`struct P must contribute no id, got ${JSON.stringify([...insertedIds])}`);
     }],
     ['case 63: closures on their fn header line stay under their own method', () => {
-      const fix = fixture('src/same-line.rs', [
-        'impl P {',
-        '    fn m1(&self) { let c = |x| x; }',
-        '    fn m2(&self) { let c = |x| x; }',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/same-line.rs', `impl P {
+    fn m1(&self) { let c = |x| x; }
+    fn m2(&self) { let c = |x| x; }
+}
+`);
       expectEqual(idAt(fix, '|x|', '|x|', 1), 'rust:src/same-line.rs::impl:P::fn:m1::{closure}', 'm1 closure');
       expectEqual(idAt(fix, '|x|', '|x|', 2), 'rust:src/same-line.rs::impl:P::fn:m2::{closure}', 'm2 closure');
     }],
     ['case 64: headers ended by a semicolon open no scope', () => {
-      const fix = fixture('src/semis.rs', [
-        'mod web;',
-        'fn f() {}',
-        'trait T {',
-        '    fn g(&self);',
-        '    fn h(&self) {}',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/semis.rs', `mod web;
+fn f() {}
+trait T {
+    fn g(&self);
+    fn h(&self) {}
+}
+`);
       expectEqual(containerAtNeedle(fix, 'f()'), '', 'mod declaration');
       expectEqual(containerAtNeedle(fix, 'h(&self)'), 'trait:T', 'trait method');
     }],
     ['case 65: closure anchors split shared ids, and identical closures share one anchor', () => {
-      const different = fixture('src/anchors.rs', [
-        'fn f() {',
-        '    let a = |x: u32| { x };',
-        '    let b = |y: u32| { y };',
-        '}',
-        '',
-      ].join('\n'));
+      const different = fixture('src/anchors.rs', `fn f() {
+    let a = |x: u32| { x };
+    let b = |y: u32| { y };
+}
+`);
       expectEqual(idAt(different, '|x: u32|', '|x: u32|'), idAt(different, '|y: u32|', '|y: u32|'), 'shared closure id');
       expectDifferent(anchorAt(different, '|x: u32|'), anchorAt(different, '|y: u32|'), 'parameter lists');
-      const identical = fixture('src/anchors.rs', [
-        'fn f() {',
-        '    let a = |x: u32| { x };',
-        '    let b = |x: u32| { y };',
-        '}',
-        '',
-      ].join('\n'));
+      const identical = fixture('src/anchors.rs', `fn f() {
+    let a = |x: u32| { x };
+    let b = |x: u32| { y };
+}
+`);
       expectEqual(anchorAt(identical, '|x: u32|', 1), anchorAt(identical, '|x: u32|', 2), 'identical closures');
     }],
     ['case 66: a const-generic brace ends the impl header early', () => {
-      const fix = fixture('src/const-generic.rs', [
-        'impl Foo<{N + 1}> {',
-        '    fn f() {}',
-        '}',
-        '',
-      ].join('\n'));
+      const fix = fixture('src/const-generic.rs', `impl Foo<{N + 1}> {
+    fn f() {}
+}
+`);
       const frames = lexFile(fix.file, fix.reader);
       if (frames.length === 0 || frames[0].token !== 'impl:Foo<') {
         throw new Error(`expected the header to end at the const-generic brace, got ${JSON.stringify(frames)}`);
@@ -1651,22 +1613,12 @@ function selfTestCases() {
       expectEqual(containerAtNeedle(fix, 'f()'), '', 'truncated impl frame is closed');
     }],
     ['case 69: array types in signatures do not drop their frames', () => {
-      const fix = fixture('src/arrays.rs', [
-        'fn f(x: u32) -> [u32; 3] { let c = |y| y; }',
-        'fn g(x: u32) -> [u32; 3] { let c = |y| y; }',
-        'impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }',
-        '',
-      ].join('\n'));
-      const containers = [
-        containerAtNeedle(fix, '|y|', 1),
-        containerAtNeedle(fix, '|y|', 2),
-        containerAtNeedle(fix, '|y|', 3),
-      ];
-      const ids = [
-        idAt(fix, '|y|', '|y|', 1),
-        idAt(fix, '|y|', '|y|', 2),
-        idAt(fix, '|y|', '|y|', 3),
-      ];
+      const fix = fixture('src/arrays.rs', `fn f(x: u32) -> [u32; 3] { let c = |y| y; }
+fn g(x: u32) -> [u32; 3] { let c = |y| y; }
+impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
+`);
+      const containers = [1, 2, 3].map((occurrence) => containerAtNeedle(fix, '|y|', occurrence));
+      const ids = [1, 2, 3].map((occurrence) => idAt(fix, '|y|', '|y|', occurrence));
       expectEqual(containers[0], 'fn:f', 'fn f container');
       expectEqual(containers[1], 'fn:g', 'fn g container');
       expectEqual(containers[2], 'impl:Tr for [u8; 4]::fn:m', 'impl method container');
@@ -1681,21 +1633,21 @@ function selfTestCases() {
       expectDifferent(anchorAt(before, 'f('), anchorAt(signature, 'f('), 'signature edit');
     }],
     ['case 73: closure anchors split, and a lexed header ends at the real brace', () => {
-      const split = fixture('src/decoy.rs', [
-        'fn f() {',
-        '    let a = |x: u32| { x };',
-        '    let b = |y: u32| { y };',
-        '}',
-        '',
-      ].join('\n'));
+      const split = fixture('src/decoy.rs', `fn f() {
+    let a = |x: u32| { x };
+    let b = |y: u32| { y };
+}
+`);
       expectDifferent(anchorAt(split, '|x: u32|'), anchorAt(split, '|y: u32|'), 'closure parameters');
-      const decoy = fixture('src/decoy-header.rs', 'fn f() -> [u8; "{".len()] // {\n{ 0 }\n');
+      const decoy = fixture('src/decoy-header.rs', `fn f() -> [u8; "{".len()] // {
+{ 0 }
+`);
       const expected = sha256(Buffer.from('f() -> [u8; .len()] {', 'utf8')).slice(0, 12);
-      expectEqual(anchorAt(decoy, 'f()'), expected, 'anchor ends at the real brace');
+      expectEqual(anchorAt(decoy, 'f('), expected, 'anchor ends at the real brace');
     }],
     ['case 74: a braceless tail anchors over the capped text without raising', () => {
       const fix = fixture('src/capped.rs', `fn f() ${'x'.repeat(600)}\n`);
-      const anchor = anchorAt(fix, 'f()');
+      const anchor = anchorAt(fix, 'f(');
       if (!/^[0-9a-f]{12}$/.test(anchor)) throw new Error(`expected 12 hex characters, got ${JSON.stringify(anchor)}`);
       const expected = sha256(Buffer.from(`f() ${'x'.repeat(396)}`, 'utf8')).slice(0, 12);
       expectEqual(anchor, expected, 'capped anchor');
