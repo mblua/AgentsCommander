@@ -1,4 +1,4 @@
-import { Component, createSignal, onMount, onCleanup, Show } from "solid-js";
+import { Component, createSignal, onMount, onCleanup, batch, Show } from "solid-js";
 import type { UnlistenFn } from "../shared/transport";
 import {
   MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT,
@@ -13,7 +13,14 @@ import {
   type MainTerminalLayoutPulseStatus,
   type MainTerminalLayoutPulseTrace,
 } from "../shared/types";
-import { SettingsAPI } from "../shared/ipc";
+import {
+  SettingsAPI,
+  QuitAPI,
+  onAppQuitCancelled,
+  onAppQuitOutcome,
+  onAppQuitStarted,
+  type QuitOutcome,
+} from "../shared/ipc";
 import { isTauri } from "../shared/platform";
 import { initZoom } from "../shared/zoom";
 import { initWindowGeometry } from "../shared/window-geometry";
@@ -54,6 +61,61 @@ const SIDEBAR_PULSE_LEG_TIMEOUT_MS = 2000;
 const SIDEBAR_PULSE_REQUEST_TIMEOUT_MS = 8000;
 
 const SIDEBAR_ANIMATION_FALLBACK_MS = 400;
+
+// #2297 phase 3 - main close handshake.
+const QUIT_RETRY_GRACE_MS = 2000;
+const QUIT_FORCE_OFFER_MS = 10_000;
+
+type QuitStatus =
+  | { kind: "waiting" }
+  | {
+      kind: "aborted";
+      reason: string | null;
+      refusingLabels: string[];
+      unansweredLabels: string[];
+    }
+  | { kind: "failed"; errors: string[] };
+
+interface QuitRound {
+  epoch: number | null;
+  attemptId: string | null;
+  attempts: number;
+  forceEarned: boolean;
+  forceSuppressed: boolean;
+  forceOffer: boolean;
+  forceDialog: boolean;
+  ended: boolean;
+  terminalHandled: boolean;
+  errors: string[];
+  forceTimer: ReturnType<typeof setTimeout> | null;
+  graceTimer: ReturnType<typeof setTimeout> | null;
+  startedUnlisten: (() => void) | null;
+}
+
+const isLiveEpoch = (epoch: unknown): epoch is number =>
+  typeof epoch === "number" && Number.isSafeInteger(epoch) && epoch >= 0;
+
+const errorText = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const quitStatusText = (status: QuitStatus): string => {
+  if (status.kind === "waiting") {
+    return "Waiting to quit...";
+  }
+  if (status.kind === "failed") {
+    return `Quit failed: ${status.errors.join("; ")}`;
+  }
+  const parts = [
+    status.reason ? `Quit was aborted (${status.reason}).` : "Quit was aborted.",
+  ];
+  if (status.refusingLabels.length > 0) {
+    parts.push(`Refused by: ${status.refusingLabels.join(", ")}.`);
+  }
+  if (status.unansweredLabels.length > 0) {
+    parts.push(`Unanswered: ${status.unansweredLabels.join(", ")}.`);
+  }
+  return parts.join(" ");
+};
 
 type SidebarPulseWaitOutcome = "matched" | "timeout" | "cancelled";
 
@@ -181,11 +243,21 @@ const MainApp: Component = () => {
   const [dragging, setDragging] = createSignal(false);
   const [quitModalCount, setQuitModalCount] = createSignal<number | null>(null);
 
+  const [quitStatus, setQuitStatus] = createSignal<QuitStatus | null>(null);
+  const [quitForceOfferVisible, setQuitForceOfferVisible] = createSignal(false);
+  const [quitForceDialogVisible, setQuitForceDialogVisible] = createSignal(false);
+
+  let mainRootRef!: HTMLDivElement;
+  let forceOfferRef: HTMLButtonElement | undefined;
   let sidebarPaneRef!: HTMLDivElement;
   const unlisteners: UnlistenFn[] = [];
   let cleanupZoom: (() => void) | null = null;
   let cleanupGeometry: (() => void) | null = null;
   let quitInProgress = false;
+  let activeQuitRound: QuitRound | null = null;
+  let closeRequestPending = false;
+  let quitPreviousFocus: HTMLElement | null = null;
+  let quitAttemptSeq = 0;
   let splitterSaveTimeout: ReturnType<typeof setTimeout> | null = null;
   let splitterPersistenceInFlightCount = 0;
   let splitterSettingsUpdateCount = 0;
@@ -911,25 +983,388 @@ const MainApp: Component = () => {
     return all.filter((w) => w.label.startsWith("terminal-")).length;
   }
 
+  const clearQuitTimers = (round: QuitRound): void => {
+    if (round.forceTimer !== null) {
+      clearTimeout(round.forceTimer);
+      round.forceTimer = null;
+    }
+    if (round.graceTimer !== null) {
+      clearTimeout(round.graceTimer);
+      round.graceTimer = null;
+    }
+  };
+
+  const detachQuitStartedListener = (round: QuitRound): void => {
+    round.startedUnlisten?.();
+    round.startedUnlisten = null;
+  };
+
+  /**
+   * Read by `QuitConfirmModal`'s cleanup: false once the round is terminal
+   * (the parent restores focus itself), true while a Force dialog is merely
+   * declined (the modal restores focus to the still-available offer).
+   */
+  const shouldRestoreQuitFocus = (): boolean => {
+    const round = activeQuitRound;
+    return round !== null && !round.ended;
+  };
+
+  const focusAfterQuitTermination = (): void => {
+    const titlebarClose = document.querySelector<HTMLElement>(
+      '[data-ac-testid="titlebar.close"]',
+    );
+    const candidate = titlebarClose?.isConnected
+      ? titlebarClose
+      : quitPreviousFocus?.isConnected
+        ? quitPreviousFocus
+        : mainRootRef;
+    try {
+      candidate?.focus();
+    } catch {
+      /* best-effort */
+    }
+  };
+
+  const hideQuitForce = (): void => {
+    batch(() => {
+      setQuitForceOfferVisible(false);
+      setQuitForceDialogVisible(false);
+    });
+  };
+
+  /** A matching `app_quit_cancelled` (or a terminal outcome) kills the round's
+   *  Force clock and offer; a cancelled round is never offered Force. */
+  const suppressQuitForce = (round: QuitRound): void => {
+    round.forceEarned = false;
+    round.forceSuppressed = true;
+    round.forceOffer = false;
+    round.forceDialog = false;
+    if (round.forceTimer !== null) {
+      clearTimeout(round.forceTimer);
+      round.forceTimer = null;
+    }
+    hideQuitForce();
+  };
+
+  /** Binds the round to its epoch and, if the 10-second clock already earned
+   *  the offer while unbound, shows it now. */
+  const bindQuitEpoch = (round: QuitRound, epoch: number): void => {
+    if (!isLiveEpoch(epoch) || round.ended || activeQuitRound !== round) {
+      return;
+    }
+    if (round.epoch === null) {
+      round.epoch = epoch;
+    } else if (round.epoch !== epoch) {
+      return;
+    }
+    if (round.forceEarned && !round.forceSuppressed && !round.forceDialog) {
+      round.forceOffer = true;
+      setQuitForceOfferVisible(true);
+    }
+  };
+
+  const finishQuitExited = (round: QuitRound): void => {
+    if (round.ended) return;
+    round.ended = true;
+    round.terminalHandled = true;
+    clearQuitTimers(round);
+    detachQuitStartedListener(round);
+    quitInProgress = false;
+    activeQuitRound = null;
+    batch(() => {
+      setQuitStatus(null);
+      setQuitForceOfferVisible(false);
+      setQuitForceDialogVisible(false);
+    });
+  };
+
+  const finishQuitAborted = (round: QuitRound, outcome: QuitOutcome): void => {
+    if (round.ended) return;
+    round.ended = true;
+    round.terminalHandled = true;
+    clearQuitTimers(round);
+    detachQuitStartedListener(round);
+    quitInProgress = false;
+    setQuitStatus({
+      kind: "aborted",
+      reason: outcome.reason ?? null,
+      refusingLabels: [...(outcome.refusingLabels ?? [])],
+      unansweredLabels: [...(outcome.unansweredLabels ?? [])],
+    });
+    setQuitForceOfferVisible(false);
+    setQuitForceDialogVisible(false);
+    activeQuitRound = null;
+    focusAfterQuitTermination();
+  };
+
+  /** Force was atomically rejected as stale (already aborted or replaced):
+   *  clear the old Force UI, keep the app open and allow a fresh attempt. */
+  const finishQuitStale = (round: QuitRound): void => {
+    if (round.ended) return;
+    round.ended = true;
+    round.terminalHandled = true;
+    clearQuitTimers(round);
+    detachQuitStartedListener(round);
+    quitInProgress = false;
+    batch(() => {
+      setQuitStatus(null);
+      setQuitForceOfferVisible(false);
+      setQuitForceDialogVisible(false);
+    });
+    activeQuitRound = null;
+    focusAfterQuitTermination();
+  };
+
+  /** Both normal attempts were rejected with no epoch bound: a visible failed
+   *  state with both errors, no Force offer, reentrancy released. */
+  const finishQuitFailed = (round: QuitRound): void => {
+    if (round.ended) return;
+    round.ended = true;
+    round.terminalHandled = true;
+    clearQuitTimers(round);
+    detachQuitStartedListener(round);
+    quitInProgress = false;
+    setQuitStatus({ kind: "failed", errors: [...round.errors] });
+    setQuitForceOfferVisible(false);
+    setQuitForceDialogVisible(false);
+    activeQuitRound = null;
+    focusAfterQuitTermination();
+  };
+
+  const handleQuitStarted = (
+    round: QuitRound,
+    attemptId: string,
+    payload: { epoch: number; attemptId: string },
+  ): void => {
+    if (round.ended || activeQuitRound !== round) return;
+    // Ignore starts for settled or superseded attempts.
+    if (round.attemptId !== attemptId) return;
+    if (!payload || payload.attemptId !== attemptId) return;
+    bindQuitEpoch(round, payload.epoch);
+  };
+
+  const handleQuitOutcomeEvent = (payload: QuitOutcome): void => {
+    const round = activeQuitRound;
+    if (!round || round.ended || round.terminalHandled) return;
+    if (!payload || !isLiveEpoch(payload.epoch)) return;
+    // Unbound outcomes cannot be matched safely; mismatched epochs are ignored.
+    if (round.epoch === null || round.epoch !== payload.epoch) return;
+    if (payload.outcome === "Aborted") {
+      finishQuitAborted(round, payload);
+    } else if (payload.outcome === "Exiting") {
+      finishQuitExited(round);
+    } else if (payload.outcome === "Stale") {
+      finishQuitStale(round);
+    }
+  };
+
+  const handleQuitCancelledEvent = (payload: {
+    epoch: number;
+    label: string;
+  }): void => {
+    const round = activeQuitRound;
+    if (!round || round.ended) return;
+    if (!payload || !isLiveEpoch(payload.epoch)) return;
+    if (round.epoch === null || round.epoch !== payload.epoch) return;
+    suppressQuitForce(round);
+  };
+
+  async function issueNormalAttempt(round: QuitRound): Promise<void> {
+    if (round.ended || activeQuitRound !== round) return;
+    round.attempts += 1;
+    const attemptId = newQuitAttemptId();
+    round.attemptId = attemptId;
+    detachQuitStartedListener(round);
+
+    // The scoped start listener must exist before the invoke; a retry gets its
+    // own listener bound to its own attemptId.
+    let unlisten: (() => void) | null = null;
+    try {
+      unlisten = await onAppQuitStarted((payload) =>
+        handleQuitStarted(round, attemptId, payload),
+      );
+    } catch (error) {
+      console.warn("[quit] app_quit_started listener failed:", error);
+    }
+    if (round.ended || activeQuitRound !== round || round.attemptId !== attemptId) {
+      unlisten?.();
+      return;
+    }
+    round.startedUnlisten = unlisten;
+
+    let result: QuitOutcome | null = null;
+    let rejection: unknown = null;
+    try {
+      result = await QuitAPI.startQuit(attemptId);
+    } catch (error) {
+      rejection = error;
+    }
+    handleNormalOutcome(round, attemptId, result, rejection);
+  }
+
+  function handleNormalOutcome(
+    round: QuitRound,
+    attemptId: string,
+    result: QuitOutcome | null,
+    rejection: unknown,
+  ): void {
+    if (round.ended || activeQuitRound !== round) return;
+    if (round.attemptId !== attemptId) return;
+
+    if (result) {
+      if (!isLiveEpoch(result.epoch)) return;
+      if (round.epoch !== null && round.epoch !== result.epoch) return;
+      if (result.outcome === "Exiting") {
+        finishQuitExited(round);
+        return;
+      }
+      if (result.outcome === "Aborted") {
+        finishQuitAborted(round, result);
+        return;
+      }
+      if (result.outcome === "InFlight") {
+        bindQuitEpoch(round, result.epoch);
+        return;
+      }
+      if (result.outcome === "Stale") {
+        finishQuitStale(round);
+        return;
+      }
+      return;
+    }
+
+    if (round.epoch !== null) {
+      // A live epoch is bound: a rejection cannot prove no quit started and
+      // only that epoch's terminal outcome may end the attempt.
+      return;
+    }
+
+    round.errors.push(errorText(rejection));
+    if (round.attempts <= 1) {
+      // Unconditional 2-second grace: a late start event may still bind the
+      // epoch, in which case the retry is skipped.
+      round.graceTimer = setTimeout(() => {
+        round.graceTimer = null;
+        if (round.ended || activeQuitRound !== round || round.epoch !== null) return;
+        void issueNormalAttempt(round);
+      }, QUIT_RETRY_GRACE_MS);
+      return;
+    }
+    finishQuitFailed(round);
+  }
+
+  const newQuitAttemptId = (): string => {
+    quitAttemptSeq += 1;
+    return `quit-${Date.now().toString(36)}-${quitAttemptSeq}`;
+  };
+
+  const beginQuitRound = (): void => {
+    if (quitInProgress || !isTauri) return;
+    quitInProgress = true;
+    const focused = document.activeElement;
+    quitPreviousFocus = focused instanceof HTMLElement ? focused : null;
+    const round: QuitRound = {
+      epoch: null,
+      attemptId: null,
+      attempts: 0,
+      forceEarned: false,
+      forceSuppressed: false,
+      forceOffer: false,
+      forceDialog: false,
+      ended: false,
+      terminalHandled: false,
+      errors: [],
+      forceTimer: null,
+      graceTimer: null,
+      startedUnlisten: null,
+    };
+    activeQuitRound = round;
+    batch(() => {
+      setQuitStatus({ kind: "waiting" });
+      setQuitForceOfferVisible(false);
+      setQuitForceDialogVisible(false);
+    });
+
+    // The 10-second wall clock starts at the first accepted close action and
+    // therefore covers the grace and the retry as well.
+    round.forceTimer = setTimeout(() => {
+      round.forceTimer = null;
+      if (round.ended || activeQuitRound !== round || round.forceSuppressed) return;
+      round.forceEarned = true;
+      if (round.epoch !== null) {
+        round.forceOffer = true;
+        setQuitForceOfferVisible(true);
+      }
+    }, QUIT_FORCE_OFFER_MS);
+
+    void issueNormalAttempt(round);
+  };
+
+  const onQuitForceOffer = (): void => {
+    const round = activeQuitRound;
+    if (!round || round.ended || round.forceSuppressed) return;
+    if (round.epoch === null || !isLiveEpoch(round.epoch)) return;
+    round.forceOffer = false;
+    round.forceDialog = true;
+    batch(() => {
+      setQuitForceOfferVisible(false);
+      setQuitForceDialogVisible(true);
+    });
+  };
+
+  const onQuitForceKeepWaiting = (): void => {
+    const round = activeQuitRound;
+    if (!round || round.ended) return;
+    round.forceDialog = false;
+    round.forceOffer = round.forceEarned && !round.forceSuppressed;
+    batch(() => {
+      setQuitForceOfferVisible(round.forceOffer);
+      setQuitForceDialogVisible(false);
+    });
+    // A click does not necessarily leave the offer focused (jsdom never
+    // focuses it); declining must land focus back on the still-available offer.
+    if (round.forceOffer) {
+      try {
+        forceOfferRef?.focus();
+      } catch {
+        /* best-effort */
+      }
+    }
+  };
+
+  const onQuitForceConfirm = (): void => {
+    const round = activeQuitRound;
+    if (!round || round.ended) return;
+    const epoch = round.epoch;
+    // Never send force without a bound live epoch of the active round.
+    if (epoch === null || !isLiveEpoch(epoch)) return;
+    void (async () => {
+      let result: QuitOutcome | null = null;
+      try {
+        result = await QuitAPI.forceQuit(epoch);
+      } catch (error) {
+        console.error("[quit] force quit failed:", error);
+      }
+      if (activeQuitRound !== round || round.ended) return;
+      if (!result) {
+        // The round may still be live; leave the dialog for a retry.
+        return;
+      }
+      if (result.outcome === "Stale") {
+        finishQuitStale(round);
+      } else if (result.outcome === "Exiting") {
+        finishQuitExited(round);
+      } else if (result.outcome === "Aborted") {
+        finishQuitAborted(round, result);
+      }
+    })();
+  };
+
   const onModalCancel = () => setQuitModalCount(null);
 
-  const onModalQuit = async () => {
-    quitInProgress = true;
-    try {
-      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      for (const w of await WebviewWindow.getAll()) {
-        if (w.label.startsWith("terminal-")) {
-          try { await w.destroy(); }
-          catch (err) { console.warn("[quit] destroy of", w.label, "failed:", err); }
-        }
-      }
-      try { await getCurrentWindow().destroy(); }
-      catch (err) { console.warn("[quit] destroy of main failed:", err); }
-    } finally {
-      quitInProgress = false;
-      setQuitModalCount(null);
-    }
+  const onModalQuit = () => {
+    setQuitModalCount(null);
+    beginQuitRound();
   };
 
   const onWindowResize = () => {
@@ -1001,17 +1436,33 @@ const MainApp: Component = () => {
     window.addEventListener("main-sidebar-side-change", onSidebarSideChange);
 
     if (isTauri) {
+      // A terminal abort is addressed at main; a cancelled epoch is addressed
+      // at the gates, but main keeps the filter as a defensive fallback.
+      unlisteners.push(
+        await onAppQuitOutcome(handleQuitOutcomeEvent, { scopeToCurrentWindow: true }),
+      );
+      unlisteners.push(await onAppQuitCancelled(handleQuitCancelledEvent));
+
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       const win = getCurrentWindow();
       const unlistenClose = await win.onCloseRequested(async (e) => {
-        if (quitInProgress || quitModalCount() !== null) {
-          e.preventDefault();
+        // Every main close is intercepted synchronously, including the
+        // zero-detached case; the round decides what happens next.
+        e.preventDefault();
+        if (closeRequestPending || quitInProgress || quitModalCount() !== null) {
           return;
         }
-        const count = await countDetachedWindows();
-        if (count === 0) return; // silent quit path
-        e.preventDefault();
-        setQuitModalCount(count);
+        closeRequestPending = true;
+        try {
+          const count = await countDetachedWindows();
+          if (count > 0) {
+            setQuitModalCount(count);
+            return;
+          }
+          beginQuitRound();
+        } finally {
+          closeRequestPending = false;
+        }
       });
       unlisteners.push(unlistenClose);
     }
@@ -1027,6 +1478,12 @@ const MainApp: Component = () => {
       finishPulse(pulseOwner, "cancelled", "teardown");
     }
     unlisteners.forEach((u) => u());
+    const round = activeQuitRound;
+    if (round) {
+      clearQuitTimers(round);
+      detachQuitStartedListener(round);
+      activeQuitRound = null;
+    }
     if (cleanupZoom) cleanupZoom();
     if (cleanupGeometry) cleanupGeometry();
     if (splitterSaveTimeout !== null) {
@@ -1042,6 +1499,8 @@ const MainApp: Component = () => {
   return (
     <div
       class="main-root"
+      ref={mainRootRef}
+      tabindex="-1"
       classList={{
         "main-dragging": dragging(),
         "main-sidebar-right": sidebarSide() === "right",
@@ -1100,6 +1559,60 @@ const MainApp: Component = () => {
           detachedCount={quitModalCount()!}
           onCancel={onModalCancel}
           onQuit={onModalQuit}
+        />
+      </Show>
+      <Show when={quitStatus()}>
+        {(status) => (
+          <div
+            class="quit-status"
+            role="status"
+            style={{
+              position: "fixed",
+              left: "50%",
+              bottom: "24px",
+              transform: "translateX(-50%)",
+              "z-index": "10001",
+              background: "var(--bg-modal, #14141a)",
+              color: "var(--fg-primary, #e8e8e8)",
+              border: "1px solid var(--border-subtle, rgba(255, 255, 255, 0.1))",
+              "border-radius": "6px",
+              padding: "10px 16px",
+              "font-size": "13px",
+              "max-width": "min(640px, 90vw)",
+              "box-shadow": "0 8px 32px rgba(0, 0, 0, 0.6)",
+            }}
+          >
+            {quitStatusText(status())}
+          </div>
+        )}
+      </Show>
+      <Show when={quitForceOfferVisible()}>
+        <div
+          class="quit-force-offer"
+          style={{
+            position: "fixed",
+            right: "24px",
+            bottom: "24px",
+            "z-index": "10001",
+          }}
+        >
+          <button
+            ref={forceOfferRef}
+            class="quit-confirm-btn quit-confirm-btn-quit"
+            data-ac-testid="quit.forceOffer"
+            onClick={onQuitForceOffer}
+            type="button"
+          >
+            Force quit
+          </button>
+        </div>
+      </Show>
+      <Show when={quitForceDialogVisible()}>
+        <QuitConfirmModal
+          mode="force"
+          shouldRestoreFocus={shouldRestoreQuitFocus}
+          onKeepWaiting={onQuitForceKeepWaiting}
+          onForceQuit={onQuitForceConfirm}
         />
       </Show>
       <ErrorModal />
