@@ -33,6 +33,18 @@
   width: 100%;
 }
 
+/* Epic D13 — only a mode change animates the pane width; a divider drag and
+   the initial render never do. */
+.browser-sidebar.ac-sidebar-animating {
+  transition: width 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .browser-sidebar.ac-sidebar-animating {
+    transition: none;
+  }
+}
+
 /* --- Draggable divider --- */
 .browser-divider {
   flex-shrink: 0;
