@@ -607,25 +607,35 @@ mod tests {
     }
 
     /// Test 8: an out-of-range noul, a missing `results`, a duplicate id and an
-    /// unknown id are all malformed with zero retries.
+    /// unknown id are all malformed with zero retries. Each case also asserts
+    /// the rule that fired, so deleting one rule cannot leave this test green.
     #[tokio::test]
     async fn malformed_bodies_abstain_with_zero_retries() {
         let cases = [
-            body_with(&[("a", 1.4)]),
-            r#"{"other": []}"#.to_string(),
-            body_with(&[("a", 0.9), ("a", 0.9)]),
-            body_with(&[("a", 0.9), ("never-requested", 0.9)]),
+            (body_with(&[("a", 1.4)]), "out of [0,1]"),
+            (r#"{"other": []}"#.to_string(), "malformed response"),
+            (
+                body_with(&[("a", 0.9), ("b", 0.9), ("a", 0.5)]),
+                "duplicate id",
+            ),
+            (
+                body_with(&[("a", 0.9), ("never-requested", 0.9)]),
+                "unknown id",
+            ),
         ];
-        for body in cases {
+        for (body, expected) in cases {
             let (url, hits) = serve(vec![(200, body.clone())], None).await;
             let network = OutboundNetwork::new_for_tests(4);
             let settings = settings_for(&url);
             let catalog = catalog(&[("a", "user"), ("b", "user")]);
             let outcome = classify(&network, &settings, &catalog, "candidate").await;
-            assert!(
-                matches!(outcome, ClassifyOutcome::Abstained { .. }),
-                "body {body} must abstain, got {outcome:?}"
-            );
+            match outcome {
+                ClassifyOutcome::Abstained { reason } => assert!(
+                    reason.contains(expected),
+                    "body {body} must fail with {expected:?}, got {reason:?}"
+                ),
+                other => panic!("body {body} must abstain, got {other:?}"),
+            }
             assert_eq!(
                 hits.load(AtomicOrdering::SeqCst),
                 1,
