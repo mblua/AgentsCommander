@@ -10,3 +10,9 @@ pub mod sink;
 pub mod state;
 // #2232 phase 5: the Codex turn-boundary state machine the watcher now feeds.
 pub mod turn_codex;
+// #2232 phase 6: the user catalog, the single typed Jev call and the
+// pre-egress secret detector. Every one of the three is a leaf and adds no
+// path into the 88-module SCC.
+pub mod catalog;
+pub mod jev;
+pub mod secrets;

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 
 #[cfg(not(target_os = "windows"))]
 use std::sync::mpsc;
@@ -9,6 +10,24 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const VALID_TOKEN: &str = "11111111-1111-1111-1111-111111111111";
+
+/// Excludes one test's open write descriptor on a freshly copied binary from
+/// overlapping another test's fork/exec.
+///
+/// These tests run in parallel and each copies the binary into its own temp dir
+/// before exec'ing it. `Command::spawn` forks, and the child inherits the write
+/// descriptor another thread still holds on *its* copy; exec'ing a binary that
+/// any process holds open for writing fails with `ETXTBSY`. Covering both the
+/// copy and the spawn closes that window. The lock is released before output is
+/// collected, so the binary runs themselves still overlap.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn command_for_binary(bin: &Path) -> Command {
     let mut command = Command::new(bin);
@@ -48,7 +67,10 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    {
+        let _guard = spawn_lock();
+        std::fs::copy(src, &dst).expect("copy binary");
+    }
     dst
 }
 
@@ -406,7 +428,8 @@ fn run_raise_hand_with_simulator(
 
     let simulator = spawn_daemon_simulator(tmp, &outbox_dir, &responses_dir, response_body);
 
-    let out = command_for_binary(&fix.bin)
+    let mut command = command_for_binary(&fix.bin);
+    command
         .args([
             "raise-hand",
             "--token",
@@ -416,10 +439,14 @@ fn run_raise_hand_with_simulator(
             "--timeout",
             "5",
         ])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("spawn binary");
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
