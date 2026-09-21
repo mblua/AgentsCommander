@@ -683,6 +683,15 @@ pub fn error_sink() -> &'static ErrorEventSink {
     ERROR_SINK.get_or_init(ErrorEventSink::new)
 }
 
+/// #1883 — test-only serialization for error-sink drain windows. Two library
+/// tests read-and-clear the process-wide `ERROR_SINK` (`phone::mailbox::tests`
+/// async, `logging::tests` sync); without mutual exclusion one test's drain can
+/// steal the other's entries. This lock is compiled only for tests and never
+/// enters any production sink or logging path.
+#[cfg(test)]
+pub(crate) static ERROR_SINK_TEST_DRAIN_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
 /// Spawn the background task that emits the `error_log_event` ping to the UI.
 /// Called once from `lib::run()`'s `setup()` hook (§5.3.a).
 ///
@@ -1202,6 +1211,11 @@ mod tests {
     /// test, so the entry cannot be stolen between log() and drain().
     #[test]
     fn error_record_survives_gate_at_strictest_level_and_reaches_264_sink() {
+        // #1883 — hold the shared sink-drain lock for the whole window: the
+        // async mailbox test also read-and-clears this process-wide sink, so
+        // drains must serialize. `blocking_lock()` is safe here because this
+        // `#[test]` runs outside Tokio.
+        let _drain_guard = ERROR_SINK_TEST_DRAIN_LOCK.blocking_lock();
         let mut builder = env_logger::Builder::new();
         builder.parse_filters(GATE_INNER_FILTER);
         // No app.log file: an empty log_state makes the closure's file branch a

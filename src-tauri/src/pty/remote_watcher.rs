@@ -706,8 +706,9 @@ struct KeyPlan {
 #[derive(Default)]
 struct KeyOutcome {
     ci: Option<Result<CiState, FailureKind>>,
-    /// Set when the CI answer was suppressed by the identical-to-default rule.
-    /// Carried beside `ci` because `CiState` has no `Suppressed` value.
+    /// Set when the CI answer was suppressed: the branch is the resolved default
+    /// branch, or it is identical to the default branch (#2126). Carried beside
+    /// `ci` because `CiState` has no `Suppressed` value.
     ci_suppressed: bool,
     /// Set only when the identity compare was issued as an EXTRA `gh` call, so
     /// the reservation made for it is refunded when it was never made.
@@ -1442,6 +1443,8 @@ impl RemoteSweeper {
             Ok(_) if suppressed => {
                 // A suppressed answer has no edge into or out of it: `confirmed =
                 // None` breaks the transition chain both ways, like a fresh key.
+                // Both suppression rules (resolved default branch; identical to
+                // the default branch) publish `Idle` here.
                 entry.ci.chip = CiState::Idle;
                 entry.ci.confirmed = None;
                 entry.ci.last_confirmed_at = Some(ctx.wall);
@@ -1479,6 +1482,19 @@ impl RemoteSweeper {
                         ctx,
                     );
                 }
+            }
+            Err(kind) if suppressed => {
+                // A failed query on the resolved default branch keeps the chip
+                // Idle: no CI is published for that branch either way. The
+                // failure is not hidden - it still backs off, warns and can arm
+                // the round gate - and `last_confirmed_at` is left untouched.
+                let next = failure_interval(kind, base, entry.ci.failure_interval);
+                entry.ci.chip = CiState::Idle;
+                entry.ci.confirmed = None;
+                entry.ci.failure_interval = Some(next);
+                entry.ci.next_due = Some(ctx.now + next);
+                drop(state);
+                self.warn_failure(key, Axis::Ci, kind);
             }
             Err(kind) => {
                 let next = failure_interval(kind, base, entry.ci.failure_interval);
@@ -1719,10 +1735,18 @@ async fn query_key(
             Err(_) => Err(FailureKind::Other),
         };
         let scripted_staleness = outcome.staleness;
+        let on_default_branch = default_branch == Some(key.branch.as_str());
+        if on_default_branch {
+            outcome.ci_suppressed = true;
+        }
         let ci_result = match ci {
+            // A resolved default branch is suppressed after the branch-filtered
+            // query and without any identity question: `Ok` publishes `Idle`,
+            // while an `Err` falls through to the failure arm below so the round
+            // still backs off, warns and can arm its gate.
+            Ok(_) if on_default_branch => Ok(CiState::Idle),
             // Only a non-default branch that HAS runs needs the identity
-            // question; a branch with no runs answers `Idle` without it, and the
-            // default branch is never suppressed.
+            // question; a branch with no runs answers `Idle` without it.
             Ok(answer)
                 if answer.branch_has_runs
                     && default_branch.is_some_and(|default| key.branch != default) =>
@@ -2709,8 +2733,12 @@ mod tests {
         );
     }
 
+    /// #2329: a repo on its RESOLVED default branch publishes no CI at all,
+    /// even while GitHub has a run in progress on that exact branch and SHA.
+    /// The CI query is still issued (the reserved token is spent); only its
+    /// answer is suppressed.
     #[tokio::test]
-    async fn default_branch_is_never_suppressed() {
+    async fn resolved_default_branch_ci_is_suppressed() {
         let _guard = round_test_lock().await;
         let harness = Harness::new(AppSettings::default());
         let repo = harness.repo("repo-a");
@@ -2726,23 +2754,38 @@ mod tests {
 
         let mut now = Instant::now();
         let mut wall = Local::now();
-        for _ in 0..3 {
+        for round in 0..3 {
             harness.round(now, wall).await;
+            assert_eq!(
+                harness.snapshot().get(&repo).expect("entry").ci,
+                CiState::Idle,
+                "round {round}: a resolved default branch publishes Idle, never Running"
+            );
             tick(&mut now, &mut wall, 60);
         }
 
-        let transitions = harness.drain_transitions();
-        assert_eq!(transitions.len(), 2);
-        assert_eq!(transitions[0].kind, TransitionKind::CiStarted);
-        assert_eq!(transitions[1].kind, TransitionKind::CiFinished);
+        assert!(
+            harness.drain_transitions().is_empty(),
+            "a suppressed CI answer has no edge into or out of it"
+        );
+        {
+            let state = harness.sweeper.lock_state();
+            let (_, entry) = state.keys.iter().next().expect("one key");
+            assert_eq!(
+                entry.ci.confirmed, None,
+                "the transition chain stays broken across suppressed rounds"
+            );
+        }
+        let gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(
-            harness
-                .gh
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .count("/compare/"),
+            gh.count("/actions/runs?"),
+            3,
+            "the CI call is still issued every round; only its answer is suppressed"
+        );
+        assert_eq!(
+            gh.count("/compare/"),
             1,
-            "one staleness compare in round 1; the default branch adds none"
+            "one staleness compare in round 1; the default branch adds no identity compare"
         );
     }
 
@@ -3551,8 +3594,11 @@ mod tests {
         let _ = harness.drain_transitions();
     }
 
+    /// #2329: two rooms sharing one repo and one commit on the resolved default
+    /// branch behave identically - both stay idle, neither gets a CI notice -
+    /// while the shared key still costs exactly one CI query per round.
     #[tokio::test]
-    async fn two_rooms_on_one_commit_are_one_call_and_two_transitions() {
+    async fn two_rooms_on_one_default_commit_are_one_call_and_no_ci_transition() {
         let _guard = round_test_lock().await;
         let harness = Harness::new(AppSettings::default());
         let first = harness.repo("repo-a");
@@ -3560,6 +3606,8 @@ mod tests {
         harness.set_work(&[first.clone(), second.clone()]);
         {
             let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
             gh.ci.push_back(Ok(ok_output(&ci_body(&["in_progress"]))));
             gh.ci.push_back(Ok(ok_output(&ci_body(&[]))));
         }
@@ -3577,8 +3625,10 @@ mod tests {
         tick(&mut now, &mut wall, 60);
         harness.round(now, wall).await;
 
-        let transitions = harness.drain_transitions();
-        assert_eq!(transitions.len(), 2, "one notice per room");
+        assert!(
+            harness.drain_transitions().is_empty(),
+            "the resolved default branch emits no CI notice for either room"
+        );
         assert_eq!(
             harness
                 .gh
@@ -3588,12 +3638,14 @@ mod tests {
             2,
             "one call per round for the shared key"
         );
-        let mut paths: Vec<String> = transitions
-            .iter()
-            .map(|transition| transition.repo_path.clone())
-            .collect();
-        paths.sort();
-        assert_eq!(paths, vec![first, second]);
+        let snapshot = harness.snapshot();
+        for path in [&first, &second] {
+            assert_eq!(
+                snapshot.get(path).expect("entry").ci,
+                CiState::Idle,
+                "both rooms publish the same idle chip"
+            );
+        }
     }
 
     #[tokio::test]
@@ -3834,6 +3886,105 @@ mod tests {
             now + Duration::from_secs(60),
             "a secondary limit is a burst signal, not an exhausted quota"
         );
+    }
+
+    /// #2329: a failing CI query on the resolved default branch keeps the chip
+    /// idle instead of falling back to Unknown, but the failure itself is not
+    /// swallowed: the per-key backoff and the round gate match the kind, and the
+    /// early next round issues no call at all. `branchStalenessEnabled` is off
+    /// so the ONLY failure kind in play is the CI one.
+    #[tokio::test]
+    async fn default_branch_ci_failure_keeps_idle_chip_and_arms_the_backoff() {
+        let _guard = round_test_lock().await;
+        for (failure, expected) in [
+            (primary_limit_output(), BACKOFF_CAP),
+            (secondary_limit_output(), SECONDARY_BACKOFF_BASE),
+        ] {
+            let harness = Harness::new(AppSettings {
+                branch_staleness_enabled: false,
+                ..AppSettings::default()
+            });
+            harness.set_jitter(0.0);
+            let repo = harness.repo("repo-a");
+            harness.set_work(std::slice::from_ref(&repo));
+            {
+                let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+                gh.repo_info
+                    .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+                gh.ci.push_back(Ok(ok_output(&ci_body(&[]))));
+            }
+
+            let mut now = Instant::now();
+            let mut wall = Local::now();
+            harness.round(now, wall).await;
+            assert_eq!(
+                harness.snapshot().get(&repo).expect("entry").ci,
+                CiState::Idle,
+                "round 1: the resolved default branch is suppressed"
+            );
+            assert!(harness.drain_transitions().is_empty());
+
+            harness
+                .gh
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ci
+                .push_back(Ok(failure));
+            tick(&mut now, &mut wall, 60);
+            harness.round(now, wall).await;
+
+            assert_eq!(
+                harness.snapshot().get(&repo).expect("entry").ci,
+                CiState::Idle,
+                "a failed default-branch CI query keeps the idle chip"
+            );
+            assert!(
+                harness.drain_transitions().is_empty(),
+                "no CI edge is ever published for the default branch"
+            );
+            let key = QueryKey {
+                nwo: "mblua/AgentsCommander".to_string(),
+                sha40: sha_of('a'),
+                branch: "main".to_string(),
+            };
+            {
+                let state = harness.sweeper.lock_state();
+                let entry = state.keys.get(&key).expect("key state");
+                assert_eq!(
+                    entry.ci.failure_interval,
+                    Some(expected),
+                    "the failure kind schedules its own retry"
+                );
+                assert_eq!(
+                    entry.ci.next_due,
+                    Some(now + expected),
+                    "the per-key retry is due on the failure interval"
+                );
+                assert_eq!(entry.ci.confirmed, None, "confirmed stays cleared");
+                assert!(
+                    state.warned_failures.contains(&(key.clone(), Axis::Ci)),
+                    "warn_failure ran for the CI axis"
+                );
+                assert_eq!(
+                    state.throttled_until,
+                    Some(now + expected),
+                    "the round gate is armed for the kind: 900s primary, 60s secondary"
+                );
+            }
+
+            let calls_before = harness.gh_call_count();
+            tick(&mut now, &mut wall, 30);
+            harness.round(now, wall).await;
+            assert_eq!(
+                harness.gh_call_count(),
+                calls_before,
+                "the early next round is gated and issues no call"
+            );
+            assert!(
+                harness.drain_transitions().is_empty(),
+                "a gated round changes no chip"
+            );
+        }
     }
 
     #[test]
