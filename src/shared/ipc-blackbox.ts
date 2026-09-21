@@ -20,8 +20,8 @@
  * funnel and the Tauri transport. Every DOM and storage access lives inside
  * `installIpcBlackBox()`, the tick, or a listener.
  *
- * Coverage is app commands only - 151 of 151 app command call sites, which is
- * NOT the same as all renderer-to-backend IPC. Tauri plugin IPC
+ * Coverage is app commands only - every app command call site, which is NOT
+ * the same as all renderer-to-backend IPC. Tauri plugin IPC
  * (`plugin:window|*`, `plugin:webview|*`, `plugin:dialog|open`,
  * `plugin:event|*`) never passes through a transport and phase 1's observer
  * cannot see it either, so both sides stay symmetric. Phase 1 prints that
@@ -41,12 +41,20 @@ const CURRENT_PREFIX = "ac.ipc.bb.cur.";
 const ROTATED_PREFIX = "ac.ipc.bb.prev.";
 const SCAN_PREFIX = "ac.ipc.bb.";
 
-/** Three commands legitimately pend until the user acts: all three are
- *  `rfd::AsyncFileDialog` (`agent_creator.rs:7-19`, `spec_board.rs:246-254`,
- *  `spec_board.rs:332`). They stay in `pending` so the record is complete, but
- *  they are never marked `overdue` and never counted in `overdueTotal`, so the
- *  5 s sweeper does not report a modal file picker as a frozen call. */
-const NEVER_OVERDUE = new Set(["pick_folder", "spec_board_pick_open", "spec_board_pick_save"]);
+/** Four commands legitimately pend far past the 5 s threshold. Three are
+ *  `rfd::AsyncFileDialog` file pickers (`agent_creator.rs:7-19`,
+ *  `spec_board.rs:246-254`, `spec_board.rs:332`) that wait on the user; the
+ *  fourth, `quit_application`, may await gate consent, a slow save or Force.
+ *  They stay in `pending` with their real `ageMs` so the record is complete,
+ *  but they are never marked `overdue` and never counted in `overdueTotal`, so
+ *  the 5 s sweeper does not report a modal picker or a consenting quit as a
+ *  frozen call. */
+const NEVER_OVERDUE = new Set([
+  "pick_folder",
+  "spec_board_pick_open",
+  "spec_board_pick_save",
+  "quit_application",
+]);
 
 /**
  * Mirrors phase 1's `BlackBoxRecord` field for field, camelCase, 23 fields, and
