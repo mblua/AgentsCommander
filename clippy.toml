@@ -1,0 +1,5 @@
+# Pinned for #2234 so a future change of Clippy's default cannot move the gate.
+# scripts/check-cognitive-complexity.mjs asserts this exact line and asserts that
+# every diagnostic it reads carries 25 as its denominator.
+# See docs/quality/cognitive-complexity-gate.md (added in phase 8).
+cognitive-complexity-threshold = 25
