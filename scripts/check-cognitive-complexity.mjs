@@ -1440,8 +1440,10 @@ export function runCapture(options, io = {}) {
       `${options.captureFile} has a line starting with '{' that does not parse: ${JSON.stringify(parseError.slice(0, 120))}`,
     );
   }
-  const finished = records.filter((record) => record?.reason === 'build-finished').pop();
-  if (finished === undefined) {
+  // A terminal build-finished is what makes the capture a complete record:
+  // records after it mean a second run was truncated into the same file.
+  const finished = records[records.length - 1];
+  if (finished?.reason !== 'build-finished') {
     throw new CaptureError(`${options.captureFile} has no terminal build-finished record`);
   }
   if (finished.success !== true) {
@@ -2485,7 +2487,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       ]);
       expectEqual(fixture.run(['--platform', 'linux']), 0, 'linux sees only its own array');
     }],
-    ['case 9: a capture with no build-finished record is CAPTURE', () => {
+    ['case 9: a capture without a terminal build-finished record is CAPTURE', () => {
       const fixture = captureFixture({
         capture: jsonl(cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' })),
         workspace: {},
@@ -2493,6 +2495,17 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       expectEqual(fixture.run(), 1, 'a truncated capture fails');
       if (!stderrText(fixture).includes('CAPTURE')) {
         throw new Error(`expected CAPTURE, got ${stderrText(fixture)}`);
+      }
+      const followed = captureFixture({
+        capture: jsonl(
+          buildFinished(),
+          cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+        ),
+        workspace: { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
+      });
+      expectEqual(followed.run(['--report']), 1, 'a non-terminal build-finished fails');
+      if (!stderrText(followed).includes('CAPTURE')) {
+        throw new Error(`expected CAPTURE, got ${stderrText(followed)}`);
       }
     }],
     ['case 10: build-finished success:false is CAPTURE', () => {
