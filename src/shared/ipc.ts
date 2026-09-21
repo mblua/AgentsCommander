@@ -1553,3 +1553,110 @@ export function onSpecBoardConflict(callback: (payload: SpecBoardDocument) => vo
 export function onSpecBoardFileMissing(callback: (payload: { docId: string; path: string }) => void): Promise<UnlistenFn> {
   return transport.listen<{ docId: string; path: string }>("spec_board_file_missing", callback);
 }
+
+// --- #2297 phase 3: quit gate -------------------------------------------------
+//
+// Typed wrappers over phase 1's `quit_*` commands and events. They go through
+// the same `transport` funnel as every other command, so the Tauri path keeps
+// its blackbox accounting and the WS path keeps its parity; nothing here
+// imports `@tauri-apps/api` directly. The caller window label is always
+// supplied by Tauri, never by this module.
+
+/** Terminal outcomes of `quit_application` and payloads of `app_quit_outcome`. */
+export type QuitOutcomeKind = "Exiting" | "Aborted" | "InFlight" | "Stale";
+
+/** Abort reasons phase 1 can report, already lower-cased on the wire. */
+export type QuitAbortReason =
+  | "refused"
+  | "timeout"
+  | "unregistered"
+  | "destroyed"
+  | "cancelled";
+
+export interface QuitOutcome {
+  outcome: QuitOutcomeKind;
+  epoch: number;
+  reason?: QuitAbortReason;
+  refusingLabels?: string[];
+  unansweredLabels?: string[];
+}
+
+/** `quit_gate_register` answer: enrolled, or refused inside an active round. */
+export type QuitGateRegistration =
+  | { status: "Registered" }
+  | { status: "InFlight"; epoch: number };
+
+export interface AppQuitStartedPayload {
+  epoch: number;
+  attemptId: string;
+}
+
+/** `app_quit_requested` / `app_quit_cancelled` payload, carrying its target label. */
+export interface AppQuitTargetPayload {
+  epoch: number;
+  label: string;
+}
+
+export const QuitAPI = {
+  /** Starts one normal quit round. `attemptId` correlates the round's start event. */
+  startQuit: (attemptId: string) =>
+    transport.invoke<QuitOutcome>("quit_application", { force: false, attemptId }),
+
+  /** Forces the bound live epoch. A stale epoch answers `Stale` with no exit. */
+  forceQuit: (epoch: number) =>
+    transport.invoke<QuitOutcome>("quit_application", { force: true, epoch }),
+
+  registerGate: () =>
+    transport.invoke<QuitGateRegistration>("quit_gate_register", {}),
+
+  unregisterGate: () => transport.invoke<void>("quit_gate_unregister", {}),
+
+  resolveGate: (epoch: number, consent: boolean) =>
+    transport.invoke<void>("quit_gate_resolve", { epoch, consent }),
+
+  reportProgress: (epoch: number, busy: boolean) =>
+    transport.invoke<void>("quit_gate_progress", { epoch, busy }),
+};
+
+/** Main-only start event for its own pending attempt; scoped to this window. */
+export function onAppQuitStarted(
+  callback: (payload: AppQuitStartedPayload) => void,
+): Promise<UnlistenFn> {
+  return transport.listen<AppQuitStartedPayload>("app_quit_started", callback, {
+    scopeToCurrentWindow: true,
+  });
+}
+
+/**
+ * Terminal abort outcome addressed at `main`.
+ *
+ * `options` exists because the unregistered Spec Board listens UNSCOPED (an
+ * `Any` listener receives an `emit_to` regardless of label), while main keeps
+ * the scoped registration its targeted delivery expects. Callers filter epochs
+ * themselves: the payload is data, the label filter is not an isolation
+ * boundary.
+ */
+export function onAppQuitOutcome(
+  callback: (payload: QuitOutcome) => void,
+  options?: ListenOptions,
+): Promise<UnlistenFn> {
+  return transport.listen<QuitOutcome>("app_quit_outcome", callback, options);
+}
+
+/** Consent request targeted at this gate window; scoped to the current window. */
+export function onAppQuitRequested(
+  callback: (payload: AppQuitTargetPayload) => void,
+): Promise<UnlistenFn> {
+  return transport.listen<AppQuitTargetPayload>("app_quit_requested", callback, {
+    scopeToCurrentWindow: true,
+  });
+}
+
+/** The round this gate belonged to was cancelled; scoped to the current window. */
+export function onAppQuitCancelled(
+  callback: (payload: AppQuitTargetPayload) => void,
+): Promise<UnlistenFn> {
+  return transport.listen<AppQuitTargetPayload>("app_quit_cancelled", callback, {
+    scopeToCurrentWindow: true,
+  });
+}
