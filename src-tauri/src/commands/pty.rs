@@ -353,6 +353,15 @@ fn classify_substantive<R: tauri::Runtime>(
 /// calls this: web writes and every injection path must not arm the natural
 /// window. Called while the per-session writer permit is still held, so a peer
 /// injection that acquires the permit next observes the key.
+///
+/// The web write paths (`web/commands.rs` dispatch `pty_write`, and the
+/// binary-frame handler in `web/mod.rs`) call `mark_successful_pty_write_busy`
+/// and `note_user_message_to_session(UserInputSource::Web(..))` but never this
+/// recorder, so web input cannot arm or refresh the natural hold. Accepted
+/// evidence for that property, per the review fallback: this source review plus
+/// `typing_hold_user_message_sources_do_not_arm_hold` in this module. Driving
+/// the real web dispatcher needs a Wry `WsState` fixture and web-module
+/// internals, outside this phase's approved file inventory.
 fn record_typing_hold_keystroke<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
@@ -2559,6 +2568,79 @@ mod tests {
                 "the input path waited {elapsed:?} on a held file lock"
             );
         });
+    }
+
+    /// #2336 - `get_typing_hold` / `toggle_typing_hold`: UUID validation, absent
+    /// session error, per-session isolation, and the flip/snapshot contract.
+    #[tokio::test]
+    async fn typing_hold_commands_report_and_reject_sessions() {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let first = {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "codex".to_string(),
+                Vec::new(),
+                "C:/ac-test/project/.ac/wg-2336-dev-team/__agent_one".to_string(),
+                None,
+                None,
+                Vec::<SessionRepo>::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create first session")
+        };
+        let second = {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "codex".to_string(),
+                Vec::new(),
+                "C:/ac-test/project/.ac/wg-2336-dev-team/__agent_two".to_string(),
+                None,
+                None,
+                Vec::<SessionRepo>::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create second session")
+        };
+        let app = crate::test_support::test_builder()
+            .manage(session_mgr)
+            .manage(crate::pty::input_activity::new_typing_hold_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build typing hold command test app");
+
+        assert!(
+            get_typing_hold(app.handle().clone(), "not-a-uuid".to_string())
+                .await
+                .is_err(),
+            "a malformed session id must error"
+        );
+        let err = get_typing_hold(app.handle().clone(), Uuid::new_v4().to_string())
+            .await
+            .unwrap_err();
+        assert!(err.contains("Session not found"), "{err}");
+
+        let open = get_typing_hold(app.handle().clone(), first.id.to_string())
+            .await
+            .unwrap();
+        assert!(!open.closed);
+        assert_eq!(open.held_count, 0);
+
+        let held = toggle_typing_hold(app.handle().clone(), first.id.to_string())
+            .await
+            .unwrap();
+        assert!(held.closed);
+        let other = get_typing_hold(app.handle().clone(), second.id.to_string())
+            .await
+            .unwrap();
+        assert!(!other.closed, "toggle must be per-session");
+
+        let released = toggle_typing_hold(app.handle().clone(), first.id.to_string())
+            .await
+            .unwrap();
+        assert!(!released.closed);
     }
 
     /// #2336 - the desktop `pty_write` path is the only recorder for the typing

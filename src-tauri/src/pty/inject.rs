@@ -1383,4 +1383,91 @@ mod tests {
         assert_eq!(writes.len(), 3);
         assert_eq!(writes[0], b"internal notice".to_vec());
     }
+
+    fn recorded_writes(backend: &Arc<RecordingBackend>, id: Uuid) -> Vec<Vec<u8>> {
+        backend
+            .writes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(write_id, _)| *write_id == id)
+            .map(|(_, bytes)| bytes.clone())
+            .collect()
+    }
+
+    /// #2336 - the serialized-write-boundary race: a peer wake queued behind the
+    /// held per-session writer permit re-checks the hold when it finally acquires
+    /// the permit, so a qualifying desktop key recorded while the permit was held
+    /// defers it with the typed marker and zero payload/Enter bytes. After
+    /// release the same message delivers exactly once and leaves the count.
+    #[tokio::test]
+    async fn typing_hold_peer_wake_queued_behind_writer_permit_rechecks_and_defers() {
+        let (app, id, backend) = typing_hold_app("claude").await;
+        let window = std::time::Duration::from_secs(30);
+        let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+
+        // Hold the writer permit, then queue a peer wake behind it.
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let permit = PtyManager::acquire_input_writer(&pty, id).await.unwrap();
+        let app_clone = app.handle().clone();
+        let queued = tokio::spawn(async move {
+            inject_peer_wake_text_into_session(&app_clone, id, "echo hello", "msg-race").await
+        });
+        // Let the queued wake reach the permit wait.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // A qualifying desktop key lands while the permit is still held.
+        hold.lock().unwrap().note_qualifying_key(id);
+        drop(permit);
+
+        let err = queued.await.unwrap().unwrap_err();
+        assert!(crate::pty::menu_guard::is_typing_hold_deferred_error(&err));
+        assert!(
+            recorded_writes(&backend, id).is_empty(),
+            "a deferred queued wake must write no payload or Enter byte"
+        );
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 1);
+
+        // Release: the next attempt delivers exactly once and clears the count.
+        assert!(!hold.lock().unwrap().toggle_manual(id, window).closed);
+        inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-race")
+            .await
+            .unwrap();
+        assert_eq!(
+            recorded_writes(&backend, id),
+            vec![b"echo hello".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
+    }
+
+    /// #2336 - natural expiry with no manual action: once the configured window
+    /// has passed since the last qualifying key, the next attempt delivers.
+    #[tokio::test]
+    async fn typing_hold_peer_wake_delivers_after_natural_window_expiry() {
+        let (app, id, backend) = typing_hold_app("claude").await;
+        let window = std::time::Duration::from_secs(30);
+        let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+        hold.lock().unwrap().note_qualifying_key(id);
+
+        let err = inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-expiry")
+            .await
+            .unwrap_err();
+        assert!(crate::pty::menu_guard::is_typing_hold_deferred_error(&err));
+        assert!(recorded_writes(&backend, id).is_empty());
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 1);
+
+        // Age the key past the configured window with no release of any kind.
+        hold.lock()
+            .unwrap()
+            .backdate_last_key_for_test(id, window + std::time::Duration::from_secs(1));
+
+        inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-expiry")
+            .await
+            .unwrap();
+        assert_eq!(
+            recorded_writes(&backend, id),
+            vec![b"echo hello".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
+    }
 }

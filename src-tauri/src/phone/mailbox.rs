@@ -24610,6 +24610,123 @@ mod tests {
         assert_eq!(payload["id"], message.id);
     }
 
+    /// #2336 - the post-clear follow-up body is exempt from the typing hold. The
+    /// logical command half is delivered and receipted FIRST; a hold then arms
+    /// during the detached idle wait (and stays armed), and the plain injector
+    /// must still write the body exactly once. The follow-up is not counted as a
+    /// held wake and no second delivered receipt is emitted.
+    #[tokio::test]
+    async fn typing_hold_armed_during_post_clear_wait_does_not_drop_followup_body() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let session_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-followup",
+            "pi.cmd",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, session_id);
+        assert!(fixture
+            .app
+            .manage(crate::pty::input_activity::new_typing_hold_state()));
+
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = Arc::clone(&events);
+        fixture.app.listen_any("message_delivered", move |event| {
+            captured.lock().unwrap().push(event.payload().to_string());
+        });
+
+        let poller = MailboxPoller::new();
+        let message = logical_command_message("clear", "follow-up body");
+        poller
+            .inject_into_pty(
+                &app,
+                session_id,
+                &message,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+
+        // The command half is delivered and receipted; the detached follow-up is
+        // now in its idle wait, so arm the hold during that wait.
+        assert_eq!(events.lock().unwrap().len(), 1);
+        let window = std::time::Duration::from_secs(30);
+        let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+        hold.lock().unwrap().note_qualifying_key(session_id);
+        assert!(hold.lock().unwrap().is_hold_active(session_id, window));
+
+        // The agent becomes idle again; the follow-up must be written anyway.
+        {
+            let manager = {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = state.read().await;
+                guard.clone()
+            };
+            manager.mark_idle(session_id).await;
+        }
+
+        let expected_body =
+            crate::phone::messaging::format_pty_wrap(&message.from, "follow-up body");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            // The follow-up writes the body, then sleeps 1500ms and 500ms before
+            // its two Enters, so settle on the full six-write sequence.
+            if mock_pty_writes_for(&app, session_id).len() == 6 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the held-window follow-up did not complete: {:?}",
+                mock_pty_writes_for(&app, session_id)
+                    .iter()
+                    .map(|write| String::from_utf8_lossy(write).to_string())
+                    .collect::<Vec<_>>()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // Command text + two Enters, then the body + two Enters, exactly once.
+        let writes = mock_pty_writes_for(&app, session_id);
+        assert_eq!(
+            writes,
+            vec![
+                b"/new".to_vec(),
+                b"\r".to_vec(),
+                b"\r".to_vec(),
+                expected_body.as_bytes().to_vec(),
+                b"\r".to_vec(),
+                b"\r".to_vec(),
+            ],
+            "writes={:?}",
+            writes
+                .iter()
+                .map(|write| String::from_utf8_lossy(write).to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|write| write.as_slice() == expected_body.as_bytes())
+                .count(),
+            1,
+            "the follow-up body must be written exactly once"
+        );
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "no second delivered receipt may follow the body"
+        );
+        assert_eq!(
+            hold.lock().unwrap().snapshot(session_id, window).held_count,
+            0,
+            "the follow-up body is not a held wake"
+        );
+    }
+
     /// #1883 — both mailbox injection sites must log a menu-guard deferral at
     /// debug (never into the #264 Application Error sink) and every real PTY
     /// write failure at ERROR. One test, one sequential drain per phase, so the
