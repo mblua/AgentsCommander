@@ -52,6 +52,7 @@
 - fix: fix(quit): close clients through main quit gate (refs #2297) ([#2297](https://github.com/mblua/AgentsCommander/issues/2297), [PR #2330](https://github.com/mblua/AgentsCommander/pull/2330))
 - fix: fix(#2300): exempt quit_application from IPC overdue alerts ([#2300](https://github.com/mblua/AgentsCommander/issues/2300), [PR #2320](https://github.com/mblua/AgentsCommander/pull/2320))
 - maintenance: style(rust): format menu guard tests merged in #2292 (#2301) ([#2301](https://github.com/mblua/AgentsCommander/issues/2301), [PR #2303](https://github.com/mblua/AgentsCommander/pull/2303))
+- maintenance: docs: prototype coding agent order in both views (refs #2311) ([#2311](https://github.com/mblua/AgentsCommander/issues/2311), [PR #2339](https://github.com/mblua/AgentsCommander/pull/2339))
 - maintenance: test: serialize copied CLI copy and spawn in phase A (refs #2322) ([#2322](https://github.com/mblua/AgentsCommander/issues/2322), [PR #2324](https://github.com/mblua/AgentsCommander/pull/2324))
 
 ## Install from npm
