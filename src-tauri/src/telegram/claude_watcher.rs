@@ -5,6 +5,7 @@
 // Shared scaffold (find_latest_jsonl, read_new_lines, polling/rotation
 // constants) lives in `jsonl_kernel.rs` — see commit 1 for the extraction.
 
+use std::io::{Read as IoRead, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -22,7 +23,7 @@ use crate::capture::state::head_from_lines;
 use crate::network::OutboundNetwork;
 use crate::telegram::jsonl_kernel::{
     find_latest_jsonl, read_new_lines_with_starts, read_preamble_for_race, POLL_INTERVAL_MS,
-    ROTATION_STALE_SECS,
+    PREAMBLE_MAX_BYTES, RACE_GRACE_SECS, ROTATION_STALE_SECS,
 };
 use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
 
@@ -34,28 +35,95 @@ const FLUSH_DELAY_MS: u64 = 500;
 /// `project_dir` must be the already-resolved Claude `projects/<mangled-cwd>`
 /// directory (callers resolve via `commands::session::resolve_claude_projects_dir`
 /// so wrapper-driven `CLAUDE_CONFIG_DIR` overrides like `claude-mb` are honored).
+///
+/// `dest` carries the Telegram destination, consulted **only** when it changes
+/// — at attach and at detach (#2232 phase 4 section 6). `None` is a room-only
+/// reader: no logger is built, nothing is sent, and the records still reach
+/// `sink`.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_watch_task<R: tauri::Runtime>(
     project_dir: PathBuf,
     network: OutboundNetwork,
-    bot_token: String,
-    chat_id: i64,
+    dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
+    sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         watch_loop(
             project_dir,
             network,
-            bot_token,
-            chat_id,
+            dest,
             session_id.clone(),
             cancel,
             app.clone(),
+            sink,
         )
         .await;
         log::info!("[JSONL_EXIT] Watcher task ended for session {}", session_id);
     })
+}
+
+/// Where a reader sends Telegram messages (#2232 phase 4 section 6).
+///
+/// Deliberately **not** shared with `codex_watcher`, which declares its own:
+/// section 10 forbids either watcher gaining a reference the other does not
+/// already have, and `claude_watcher_layering` equality-pins this module's
+/// dependency set. Two three-line structs are cheaper than an arc between the
+/// watchers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BotTarget {
+    pub token: String,
+    pub chat_id: i64,
+}
+
+/// The §6 live-attach preamble window of `path`, as `(start, body)` pairs.
+///
+/// **Starts are computed on the raw bytes plus the window offset**, never on
+/// the decoded text: lossy decoding changes lengths and the line iterator
+/// already drops the carriage return. `raw[start..]` therefore walks back to
+/// the exact bytes in the file, which is what lets the caller drop every line
+/// at or above the reader's current offset — those the normal loop will send.
+fn read_preamble_with_starts(
+    path: &Path,
+    attach_time: DateTime<Utc>,
+) -> std::io::Result<Vec<(u64, String)>> {
+    let initial_len = std::fs::metadata(path)?.len();
+    let window_start = initial_len.saturating_sub(PREAMBLE_MAX_BYTES);
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(window_start))?;
+    let mut buf: Vec<u8> = Vec::new();
+    file.read_to_end(&mut buf)?;
+
+    // Drop everything before the first `\n` unless the window starts at 0: the
+    // seek point almost certainly lands mid-line. `base` is the absolute file
+    // offset of the first byte of `bytes`.
+    let (bytes, base): (&[u8], u64) = if window_start == 0 {
+        (&buf, 0)
+    } else {
+        match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => (&buf[i + 1..], window_start + i as u64 + 1),
+            // A single line larger than the window: nothing can be anchored.
+            None => return Ok(Vec::new()),
+        }
+    };
+
+    let cutoff = attach_time - chrono::Duration::seconds(RACE_GRACE_SECS);
+    let mut out = Vec::new();
+    let mut cursor: usize = 0;
+    for raw in bytes.split_inclusive(|&b| b == b'\n') {
+        let line_start = base + cursor as u64;
+        cursor += raw.len();
+        let decoded = String::from_utf8_lossy(raw);
+        let line = decoded.trim_end_matches('\n').trim_end_matches('\r');
+        if let Some((ts, _id, body)) = claude_preamble_extractor(line) {
+            if ts >= cutoff {
+                out.push((line_start, body));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Extractor for `read_preamble_for_race`: pairs each emitted body with the
@@ -254,26 +322,102 @@ fn capture_preamble_bodies(
     records
 }
 
+/// The §6 attach/detach transition: **discard the pending buffer, switch the
+/// destination, run the preamble**, in that order.
+///
+/// Deliberately **not** `async`. The order is correctness, not style, and there
+/// must be no `await` between the three: yielding would flush the pending
+/// buffer to the NEW destination, which is exactly what this contract
+/// prevents, and the preamble could use a different offset than the reader had
+/// when it started. A synchronous function makes that structural rather than a
+/// convention — an `await` cannot be introduced here without changing the
+/// signature.
+///
+/// Returns the preamble bodies to send **to Telegram only**. There is no sink
+/// parameter by construction: a live-attach preamble must never reach the sink,
+/// because those lines were already delivered as live records and re-delivering
+/// them with the same key could consume or overwrite a pending live candidate.
+/// The cold-attach preamble, which the sink does need, runs on the §J path in
+/// the poll loop instead.
+fn apply_destination_change(
+    buffer: &mut String,
+    current_dest: &mut Option<BotTarget>,
+    new_dest: Option<BotTarget>,
+    current_file: Option<&Path>,
+    file_offset: u64,
+    switch_time: DateTime<Utc>,
+) -> Vec<String> {
+    // 1. discard the pending buffer. §7: the chat no longer receives up to 2 s
+    //    of pre-attach text; those records already reached the sink on their own.
+    buffer.clear();
+
+    // 2. switch the destination.
+    let attaching = new_dest.is_some();
+    *current_dest = new_dest;
+
+    // 3. run the preamble, for a live attach only. A cold attach — the reader
+    //    has not bound a file yet — keeps the §J scan in the poll loop, which
+    //    also marks the sink. A live attach **does not assign `file_offset`**:
+    //    the reader stays where it is and only the lines strictly below that
+    //    offset are emitted, so the chat sees no duplicates.
+    let Some(path) = current_file else {
+        return Vec::new();
+    };
+    if !attaching {
+        return Vec::new();
+    }
+    match read_preamble_with_starts(path, switch_time) {
+        Ok(lines) => lines
+            .into_iter()
+            .filter(|(start, _)| *start < file_offset)
+            .map(|(_, body)| body)
+            .collect(),
+        Err(e) => {
+            log::warn!("[JSONL_ERR] live-attach preamble read failed: {}", e);
+            Vec::new()
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn watch_loop<R: tauri::Runtime>(
     project_dir: PathBuf,
     network: OutboundNetwork,
-    token: String,
-    chat_id: i64,
+    dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
+    sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) {
-    let mut logger = BridgeLogger::new(&session_id);
-    let mut diag = DiagLogger::new();
+    let mut dest_rx = dest;
+    let mut current_dest: Option<BotTarget> = dest_rx.borrow_and_update().clone();
+
+    // #2232 phase 4 section 8: with no bot demand no diagnostic is built, so
+    // `BridgeLogger::new` — which truncates the **global** diagnostic files
+    // (`telegram/output.rs:140`) — is never called for a room-only reader. On a
+    // hot attach the loggers are born at that moment, which is when they are
+    // truncated on attach today.
+    let mut logger = current_dest
+        .as_ref()
+        .map(|_| BridgeLogger::new(&session_id));
+    let mut diag = current_dest.as_ref().map(|_| DiagLogger::new());
+    // Log through the bridge logger only when one exists, so `JSONL_EXTRACT`
+    // is not written for a room-only reader (section 8).
+    macro_rules! bridge_log {
+        ($tag:expr, $msg:expr) => {
+            if let Some(bridge_logger) = logger.as_mut() {
+                bridge_logger.log($tag, &session_id, $msg);
+            }
+        };
+    }
     let mut buffer = String::new();
     let mut last_buffer_add = Instant::now();
     let flush_delay = Duration::from_millis(FLUSH_DELAY_MS);
 
-    // #2232 phase 1: records are built and delivered per accepted JSONL record,
-    // but no sink is attached yet — phase 4 passes a real sender into this
-    // watcher. With `None` the emit is a no-op and the Telegram path stays
-    // byte-identical.
-    let capture_tx: Option<UnboundedSender<Arc<CapturedRecord>>> = None;
+    // #2232 phase 4 section 4.2: the supervisor passes the live sender in, so
+    // the records of a room-only reader reach `CaptureRegistry` with no bot
+    // anywhere. With `None` the emit is a no-op.
+    let capture_tx: Option<UnboundedSender<Arc<CapturedRecord>>> = sink;
     let mut reader_seq: u64 = 0;
     // #2232 phase 3: the reader's own epoch and file observation. Both are
     // computed only when a sink is attached, so a room without the flag keeps
@@ -291,29 +435,76 @@ async fn watch_loop<R: tauri::Runtime>(
     let mut line_remainder = String::new();
     let mut dir_warned = false;
 
-    logger.log(
+    bridge_log!(
         "JSONL_INIT",
-        &session_id,
-        &format!("project_dir={}", project_dir.display()),
+        &format!("project_dir={}", project_dir.display())
     );
 
     let mut poll_interval = tokio::time::interval(Duration::from_millis(POLL_INTERVAL_MS));
     poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        // `biased`: the destination change is processed before the next file
+        // poll, never after it (section 6).
         tokio::select! {
+            biased;
             _ = cancel.cancelled() => break,
+
+            // §6: the destination is consulted only when it changes, and the
+            // three transitions run **inside the reader task**. There is no
+            // `await` between them: yielding would flush the pending buffer to
+            // the NEW destination, which is exactly what this contract
+            // prevents, and the preamble could use a different offset than the
+            // reader had when it started.
+            changed = dest_rx.changed() => {
+                if changed.is_err() {
+                    // The supervisor dropped the sender: the reader is going away.
+                    break;
+                }
+                let new_dest = dest_rx.borrow_and_update().clone();
+                let attaching = new_dest.is_some();
+                // The loggers are born at the moment of a hot attach, which is
+                // when they are truncated on attach today, so what is
+                // observable does not change (§8).
+                if attaching {
+                    if logger.is_none() {
+                        logger = Some(BridgeLogger::new(&session_id));
+                    }
+                    if diag.is_none() {
+                        diag = Some(DiagLogger::new());
+                    }
+                } else {
+                    logger = None;
+                    diag = None;
+                }
+                // The moment of the destination switch serves as `attach_time`.
+                let preamble = apply_destination_change(
+                    &mut buffer,
+                    &mut current_dest,
+                    new_dest,
+                    current_file.as_deref(),
+                    file_offset,
+                    Utc::now(),
+                );
+                for body in preamble {
+                    bridge_log!("JSONL_PREAMBLE", &body);
+                    buffer.push_str(&body);
+                    buffer.push('\n');
+                    last_buffer_add = Instant::now();
+                }
+            }
+
             _ = poll_interval.tick() => {
                 // Check if project directory exists yet
                 if !project_dir.is_dir() {
                     if !dir_warned {
-                        logger.log("JSONL_WAIT", &session_id, "project directory does not exist yet");
+                        bridge_log!("JSONL_WAIT", "project directory does not exist yet");
                         dir_warned = true;
                     }
                     continue;
                 }
                 if dir_warned {
-                    logger.log("JSONL_INIT", &session_id, "project directory appeared");
+                    bridge_log!("JSONL_INIT", "project directory appeared");
                     dir_warned = false;
                 }
 
@@ -354,17 +545,19 @@ async fn watch_loop<R: tauri::Runtime>(
                                             capture_tx.as_ref(),
                                             &attach,
                                         ) {
-                                            logger.log("JSONL_PREAMBLE", &session_id, &record.text);
-                                            buffer.push_str(&record.text);
-                                            buffer.push('\n');
-                                            last_buffer_add = Instant::now();
+                                            bridge_log!("JSONL_PREAMBLE", &record.text);
+                                            if current_dest.is_some() {
+                                                buffer.push_str(&record.text);
+                                                buffer.push('\n');
+                                                last_buffer_add = Instant::now();
+                                            }
                                         }
                                         file_offset = file_len;
-                                        logger.log("JSONL_FILE", &session_id,
+                                        bridge_log!("JSONL_FILE",
                                             &format!("initial file, preamble scan done, offset={}", file_offset));
                                     }
                                     Err(e) => {
-                                        logger.log("JSONL_ERR", &session_id,
+                                        bridge_log!("JSONL_ERR",
                                             &format!("preamble scan failed: {}", e));
                                         file_offset = std::fs::metadata(p).ok()
                                             .map(|m| m.len())
@@ -378,8 +571,7 @@ async fn watch_loop<R: tauri::Runtime>(
                             // File rotation (new Claude session): read from start
                             file_offset = 0;
                             rotation_backfill_pending = true;
-                            logger.log("JSONL_ROTATE", &session_id,
-                                &format!("new file: {:?}", latest));
+                            bridge_log!("JSONL_ROTATE", &format!("new file: {:?}", latest));
                         }
                         current_file = latest;
                         current_file_mtime = current_file.as_ref()
@@ -414,10 +606,12 @@ async fn watch_loop<R: tauri::Runtime>(
                                 origin,
                                 &attach,
                             ) {
-                                logger.log("JSONL_EXTRACT", &session_id, &record.text);
-                                buffer.push_str(&record.text);
-                                buffer.push('\n');
-                                last_buffer_add = Instant::now();
+                                bridge_log!("JSONL_EXTRACT", &record.text);
+                                if current_dest.is_some() {
+                                    buffer.push_str(&record.text);
+                                    buffer.push('\n');
+                                    last_buffer_add = Instant::now();
+                                }
                             }
 
                             // Update mtime for rotation flicker guard
@@ -426,7 +620,7 @@ async fn watch_loop<R: tauri::Runtime>(
                         }
                         Err(e) => {
                             // G5: Emit bridge error event for file I/O failures
-                            logger.log("JSONL_ERR", &session_id, &e.to_string());
+                            bridge_log!("JSONL_ERR", &e.to_string());
                             log::error!("[JSONL_ERR] Read error for session {}: {}", session_id, e);
                             let _ = app.emit(
                                 "telegram_bridge_error",
@@ -443,11 +637,17 @@ async fn watch_loop<R: tauri::Runtime>(
                 if !buffer.is_empty() {
                     let elapsed = last_buffer_add.elapsed();
                     if elapsed >= flush_delay || buffer.len() > 2000 {
-                        flush_buffer(
-                            &mut buffer, &network, &token, chat_id,
-                            &session_id, &app, &mut logger, &mut diag,
-                            true, // skip_dedup: JSONL text is clean, repeated lines are legitimate
-                        ).await;
+                        if let (Some(target), Some(bridge_logger), Some(diag_logger)) =
+                            (current_dest.as_ref(), logger.as_mut(), diag.as_mut())
+                        {
+                            flush_buffer(
+                                &mut buffer, &network, &target.token, target.chat_id,
+                                &session_id, &app, bridge_logger, diag_logger,
+                                true, // skip_dedup: JSONL text is clean, repeated lines are legitimate
+                            ).await;
+                        } else {
+                            buffer.clear();
+                        }
                     }
                 }
             }
@@ -480,30 +680,343 @@ async fn watch_loop<R: tauri::Runtime>(
                 origin,
                 &attach,
             ) {
-                buffer.push_str(&record.text);
-                buffer.push('\n');
+                if current_dest.is_some() {
+                    buffer.push_str(&record.text);
+                    buffer.push('\n');
+                }
             }
         }
     }
     if !buffer.is_empty() {
-        flush_buffer(
-            &mut buffer,
-            &network,
-            &token,
-            chat_id,
-            &session_id,
-            &app,
-            &mut logger,
-            &mut diag,
-            true,
-        )
-        .await;
+        if let (Some(target), Some(bridge_logger), Some(diag_logger)) =
+            (current_dest.as_ref(), logger.as_mut(), diag.as_mut())
+        {
+            flush_buffer(
+                &mut buffer,
+                &network,
+                &target.token,
+                target.chat_id,
+                &session_id,
+                &app,
+                bridge_logger,
+                diag_logger,
+                true,
+            )
+            .await;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::io::Write;
+
+    /// A Claude fixture line with a timestamp, as the preamble scan needs.
+    fn stamped_line(text: &str, ts: DateTime<Utc>) -> String {
+        serde_json::json!({
+            "type": "assistant",
+            "timestamp": ts.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "message": {"content": [{"type": "text", "text": text}]}
+        })
+        .to_string()
+    }
+
+    struct Transcript {
+        _dir: tempfile::TempDir,
+        path: PathBuf,
+        /// Absolute start offset of each written line, in order.
+        starts: Vec<u64>,
+        bodies: Vec<String>,
+    }
+
+    /// Five recent assistant turns, one with a multi-byte character and one
+    /// terminated by CRLF, so the byte arithmetic is exercised (test 4).
+    fn transcript(now: DateTime<Utc>) -> Transcript {
+        let dir = tempfile::tempdir().expect("fixture dir");
+        let path = dir.path().join("session.jsonl");
+        let bodies = vec![
+            "first".to_string(),
+            "caf\u{e9} \u{2705} second".to_string(),
+            "third".to_string(),
+            "fourth".to_string(),
+            "fifth".to_string(),
+        ];
+        let mut file = std::fs::File::create(&path).expect("fixture file");
+        let mut starts = Vec::new();
+        let mut offset = 0u64;
+        for (i, body) in bodies.iter().enumerate() {
+            let line = stamped_line(body, now - chrono::Duration::milliseconds(100));
+            // Row 2 ends with CRLF; the rest with LF.
+            let raw = if i == 1 {
+                format!("{line}\r\n")
+            } else {
+                format!("{line}\n")
+            };
+            starts.push(offset);
+            offset += raw.len() as u64;
+            file.write_all(raw.as_bytes()).expect("write fixture line");
+        }
+        file.sync_all().expect("sync fixture");
+        Transcript {
+            _dir: dir,
+            path,
+            starts,
+            bodies,
+        }
+    }
+
+    /// What the normal poll loop sends to Telegram from `offset` onward.
+    fn loop_bodies_from(path: &Path, offset: u64) -> Vec<String> {
+        let mut cursor = offset;
+        let mut remainder = String::new();
+        read_new_lines_with_starts(path, &mut cursor, &mut remainder)
+            .expect("read fixture")
+            .into_iter()
+            .filter_map(|(_, line)| extract_assistant_text(&line))
+            .collect()
+    }
+
+    /// Test 11 (Claude half; the Codex half lives in `codex_watcher`): with no
+    /// Bot demand no `JSONL_EXTRACT` line is written and **no global log file
+    /// is truncated**. Each file's size is asserted unchanged, not merely that
+    /// no line matched — `BridgeLogger::new` truncates on construction
+    /// (`telegram/output.rs:140`), so "not constructed" is the only safe state.
+    #[tokio::test]
+    async fn a_room_only_claude_reader_truncates_no_global_log_and_still_emits() {
+        // Serialized against the Codex hot-attach test, which constructs the
+        // loggers and writes to the same global files.
+        let _logs = crate::telegram::codex_watcher::lock_global_diagnostic_files().await;
+        let dir = tempfile::tempdir().expect("projects dir");
+        let now = Utc::now();
+        std::fs::write(
+            dir.path().join("session.jsonl"),
+            format!("{}\n", stamped_line("room-only body", now)),
+        )
+        .expect("write transcript");
+
+        let before: Vec<(PathBuf, u64)> = match crate::config::config_dir() {
+            Some(config) => ["telegram-bridge.log", "diag-raw.log", "diag-sent.log"]
+                .into_iter()
+                .map(|name| {
+                    let path = config.join(name);
+                    let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    (path, len)
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build claude watcher test app");
+        let network = crate::network::OutboundNetwork::new_for_tests(1);
+        let cancel = CancellationToken::new();
+        let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let task = spawn_watch_task(
+            dir.path().to_path_buf(),
+            network.clone(),
+            dest_rx,
+            "room-only-claude".to_string(),
+            cancel.clone(),
+            app.handle().clone(),
+            Some(tx),
+        );
+
+        let record = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("a room-only reader must still deliver records")
+            .expect("the sink stays open while the reader runs");
+        assert_eq!(record.text, "room-only body");
+
+        cancel.cancel();
+        drop(dest_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+
+        assert!(
+            network.acquired_labels_for_tests().is_empty(),
+            "no HTTP request may be attempted without a bot demand"
+        );
+        for (path, len) in before {
+            let after = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            assert_eq!(
+                after,
+                len,
+                "{} must not be truncated by a room-only reader",
+                path.display()
+            );
+        }
+    }
+
+    /// Test 4: preamble line starts index back to the exact raw bytes,
+    /// including a line containing a multi-byte character and a line ending in
+    /// CRLF. Starts are computed on the raw bytes plus the window offset, never
+    /// on the decoded text.
+    #[test]
+    fn preamble_line_starts_index_back_to_the_exact_raw_bytes() {
+        let now = Utc::now();
+        let fixture = transcript(now);
+        let raw = std::fs::read(&fixture.path).expect("read fixture bytes");
+
+        let lines = read_preamble_with_starts(&fixture.path, now).expect("preamble scan");
+
+        assert_eq!(lines.len(), fixture.bodies.len());
+        for ((start, body), (expected_start, expected_body)) in lines
+            .iter()
+            .zip(fixture.starts.iter().zip(fixture.bodies.iter()))
+        {
+            assert_eq!(start, expected_start, "body={body}");
+            // The start walks back to the exact bytes in the file.
+            let tail = &raw[*start as usize..];
+            let end = tail
+                .iter()
+                .position(|&b| b == b'\n')
+                .expect("every fixture line is terminated");
+            let re_read = String::from_utf8(tail[..end].to_vec())
+                .expect("fixture lines are valid UTF-8")
+                .trim_end_matches('\r')
+                .to_string();
+            assert_eq!(
+                extract_assistant_text(&re_read).as_deref(),
+                Some(expected_body.as_str())
+            );
+            assert_eq!(body, expected_body);
+        }
+    }
+
+    /// Tests 1 and 2: attaching over a **live** reader and a **cold** attach
+    /// produce the same chat content over the same fixture transcript, and no
+    /// duplicate line reaches Telegram when the preamble runs over a live
+    /// reader. This is the parity hypothesis of `epic.md` 9.6.
+    #[test]
+    fn a_live_attach_and_a_cold_attach_send_the_same_chat_content_exactly_once() {
+        let now = Utc::now();
+        let fixture = transcript(now);
+
+        // Cold attach: the §J scan emits the whole recent tail, then the reader
+        // continues from EOF, which has nothing more to send.
+        let (cold_preamble, _ids, cold_offset) =
+            read_preamble_for_race(&fixture.path, now, claude_preamble_extractor)
+                .expect("cold preamble");
+        let cold_chat: Vec<String> = cold_preamble
+            .into_iter()
+            .chain(loop_bodies_from(&fixture.path, cold_offset))
+            .collect();
+
+        // Live attach: the reader is already running and has consumed the first
+        // three turns, so it sits at the start of the fourth.
+        let reader_offset = fixture.starts[3];
+        let mut buffer = String::new();
+        let mut current_dest = None;
+        let live_preamble = apply_destination_change(
+            &mut buffer,
+            &mut current_dest,
+            Some(BotTarget {
+                token: "token".into(),
+                chat_id: 7,
+            }),
+            Some(&fixture.path),
+            reader_offset,
+            now,
+        );
+        let live_chat: Vec<String> = live_preamble
+            .clone()
+            .into_iter()
+            .chain(loop_bodies_from(&fixture.path, reader_offset))
+            .collect();
+
+        assert_eq!(cold_chat, fixture.bodies, "the fixture pins the cold case");
+        assert_eq!(live_chat, cold_chat, "a live attach must match a cold one");
+
+        // No duplicate: the preamble stops exactly where the reader stands.
+        assert_eq!(live_preamble, fixture.bodies[..3].to_vec());
+        let mut seen = live_chat.clone();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), live_chat.len(), "no line is sent twice");
+    }
+
+    /// Test 3: the pending buffer is **not** flushed to the new destination
+    /// when the destination switches — it is discarded first, before the
+    /// destination is switched and before the preamble runs.
+    #[test]
+    fn the_pending_buffer_is_discarded_and_never_reaches_the_new_destination() {
+        let now = Utc::now();
+        let fixture = transcript(now);
+        let mut buffer = String::from("pre-attach text that must never be sent\n");
+        let mut current_dest = None;
+
+        let preamble = apply_destination_change(
+            &mut buffer,
+            &mut current_dest,
+            Some(BotTarget {
+                token: "token".into(),
+                chat_id: 7,
+            }),
+            Some(&fixture.path),
+            fixture.starts[3],
+            now,
+        );
+
+        assert!(buffer.is_empty(), "the pending buffer must be discarded");
+        assert!(
+            !preamble.iter().any(|body| body.contains("pre-attach")),
+            "pre-attach text must not reappear through the preamble"
+        );
+        assert_eq!(current_dest.map(|d| d.chat_id), Some(7));
+    }
+
+    /// Test 13: a live-attach preamble delivers **zero** records to the sink; a
+    /// cold-attach preamble delivers them marked `Preamble`.
+    #[test]
+    fn a_live_attach_preamble_reaches_telegram_only_and_a_cold_one_marks_the_sink() {
+        let now = Utc::now();
+        let fixture = transcript(now);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Live attach: the transition function has no sink parameter at all, so
+        // no record can reach one.
+        let mut buffer = String::new();
+        let mut current_dest = None;
+        let live = apply_destination_change(
+            &mut buffer,
+            &mut current_dest,
+            Some(BotTarget {
+                token: "token".into(),
+                chat_id: 7,
+            }),
+            Some(&fixture.path),
+            fixture.starts[3],
+            now,
+        );
+        assert!(!live.is_empty(), "the live attach does emit to Telegram");
+        assert!(
+            rx.try_recv().is_err(),
+            "a live-attach preamble delivers zero records to the sink"
+        );
+
+        // Cold attach: the §J bodies are delivered, marked `Preamble`.
+        let (cold_bodies, _ids, _len) =
+            read_preamble_for_race(&fixture.path, now, claude_preamble_extractor)
+                .expect("cold preamble");
+        let mut reader_seq = 0u64;
+        let records = capture_preamble_bodies(
+            cold_bodies,
+            "session",
+            &fixture.path,
+            &mut reader_seq,
+            Some(&tx),
+            &ReaderAttachment::default(),
+        );
+        assert_eq!(records.len(), fixture.bodies.len());
+        for _ in 0..records.len() {
+            let record = rx.try_recv().expect("cold preamble reaches the sink");
+            assert_eq!(record.origin, RecordOrigin::Preamble);
+        }
+    }
 
     /// A Claude fixture line carrying one assistant `text` block.
     fn assistant_line(text: &str) -> String {

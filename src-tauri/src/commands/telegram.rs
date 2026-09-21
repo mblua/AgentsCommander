@@ -12,8 +12,8 @@ use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
-use crate::telegram::bridge::SessionReaderKind;
-use crate::telegram::manager::TelegramBridgeState;
+use crate::telegram::bridge::{self, ReaderDest, SessionReaderKind};
+use crate::telegram::manager::{ReaderConsumer, ReaderEntry, TelegramBridgeState};
 use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
 
 /// Derive which session-reader pipeline to spawn for a given session.
@@ -93,6 +93,255 @@ pub(crate) fn derive_reader(
     }
 }
 
+/// Resolve the reader pipeline of a live session, or `None` when it has none.
+async fn reader_kind_for_session<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) -> Option<SessionReaderKind> {
+    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let session = {
+        let mgr = session_mgr.read().await;
+        mgr.get_session(session_id).await?
+    };
+    derive_reader(
+        &session.shell,
+        &session.shell_args,
+        &session.working_directory,
+        session.backend_kind,
+        session.agent_kind,
+        session.resolved_claude_projects_dir.clone(),
+        session.effective_codex_home.as_deref(),
+    )
+    .ok()
+    .flatten()
+}
+
+/// True while `session_id` still exists in the session manager.
+///
+/// Used by the detached create-time raise (section 5.1): if a destroy won the
+/// race while the raise was resolving, the freshly installed reader must be
+/// discarded instead of leaking for a session that is already gone.
+async fn session_is_live<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid) -> bool {
+    let Some(session_mgr) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+        return true;
+    };
+    let mgr = session_mgr.read().await;
+    mgr.get_session(session_id).await.is_some()
+}
+
+/// Raise `consumer`'s demand on `session_id`'s transcript reader (#2232 phase 4
+/// section 5).
+///
+/// Idempotent, and **adding a demand never restarts a running reader**: the new
+/// consumer joins it and a cut is recorded at the reader's frontier. When no
+/// reader is running one is spawned here, with the live `CaptureRegistry`
+/// sender, which is the link that makes phases 1 and 3 reachable from
+/// production.
+///
+/// Returns `true` when a reader is running for the session afterwards.
+pub(crate) async fn raise_reader_demand<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    consumer: ReaderConsumer,
+    dest: Option<ReaderDest>,
+) -> bool {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return false;
+    };
+    // Fast path taken without resolving anything: the reader is already there.
+    {
+        let mut tg = tg_state.lock().await;
+        if tg.reader_is_running(session_id) {
+            return tg.reader_demand_add(session_id, consumer, dest);
+        }
+    }
+
+    let Some(kind) = reader_kind_for_session(app, session_id).await else {
+        return false;
+    };
+    // Test-only rendezvous after eligibility resolution and before install
+    // (phase 4 test 19): the create/destroy race is paused here.
+    #[cfg(test)]
+    reader_demand_seam::hit_before_install(&session_id.to_string()).await;
+    let network = app.state::<OutboundNetwork>().inner().clone();
+
+    let mut tg = tg_state.lock().await;
+    // Re-check under the lock: another demand may have spawned it meanwhile.
+    if tg.reader_is_running(session_id) {
+        return tg.reader_demand_add(session_id, consumer, dest);
+    }
+    let (capture, rx) = tg.captures().open(&session_id.to_string());
+    let reader_id = tg.next_reader_id();
+    let spawned = bridge::spawn_reader(
+        kind,
+        session_id,
+        dest,
+        network,
+        app.clone(),
+        Some(capture.tx.clone()),
+        rx.map(|rx| (capture.slot.clone(), rx)),
+    );
+    tg.reader_install(session_id, ReaderEntry::new(reader_id, spawned), consumer);
+    drop(tg);
+
+    // Section 5.1: the detached create-time raise rechecks session liveness
+    // after install. If a destroy won the race while this raise was paused, the
+    // reader is discarded and its capture slot closed instead of leaking until
+    // shutdown. The check is deliberately outside `TelegramBridgeState`: the
+    // destroy path takes the session lock and then this state, so awaiting the
+    // session lock while holding this state would invert that order.
+    if !session_is_live(app, session_id).await {
+        release_all_reader_demands(app, session_id).await;
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+pub(crate) mod reader_demand_seam {
+    //! Test-only rendezvous inside [`super::raise_reader_demand`].
+    //!
+    //! Armed for one session id; the raise signals `reached` and then awaits
+    //! `release`. Phase 4 test 19 uses it to destroy a session while the
+    //! detached create-time raise sits between eligibility resolution and
+    //! install.
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    pub(crate) struct ReaderDemandBarrier {
+        pub(crate) reached: Notify,
+        pub(crate) release: Notify,
+    }
+
+    type BarrierMap = Mutex<Option<HashMap<String, Arc<ReaderDemandBarrier>>>>;
+
+    static BEFORE_INSTALL: BarrierMap = Mutex::new(None);
+
+    pub(crate) fn install_before_install(key: &str) -> Arc<ReaderDemandBarrier> {
+        let barrier = Arc::new(ReaderDemandBarrier::default());
+        BEFORE_INSTALL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashMap::new)
+            .insert(key.to_string(), Arc::clone(&barrier));
+        barrier
+    }
+
+    pub(crate) async fn hit_before_install(key: &str) {
+        let barrier = BEFORE_INSTALL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .and_then(|map| map.remove(key));
+        if let Some(barrier) = barrier {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+}
+
+/// Test-only failure injection for `attach_telegram_bot_by_id`'s
+/// `sessions.json` persistence step (phase 4 attach-rollback coverage).
+///
+/// Keyed by session id and consumed on first use: arming a failure for one
+/// test cannot leak into another test that attaches a different session.
+#[cfg(test)]
+pub(crate) mod attach_persistence_seam {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use uuid::Uuid;
+
+    static FORCE_FAILURE: Mutex<Option<HashSet<Uuid>>> = Mutex::new(None);
+
+    pub(crate) fn arm(session_id: Uuid) {
+        FORCE_FAILURE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashSet::new)
+            .insert(session_id);
+    }
+
+    pub(crate) fn take(session_id: Uuid) -> bool {
+        FORCE_FAILURE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .is_some_and(|armed| armed.remove(&session_id))
+    }
+}
+
+/// Test-only failure injection for `telegram_detach`'s `sessions.json`
+/// persistence step (phase 4 test 21).
+///
+/// Keyed by session id and consumed on first use: arming a failure for one
+/// test cannot leak into another test that detaches a different session.
+#[cfg(test)]
+pub(crate) mod detach_persistence_seam {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use uuid::Uuid;
+
+    static FORCE_FAILURE: Mutex<Option<HashSet<Uuid>>> = Mutex::new(None);
+
+    pub(crate) fn arm(session_id: Uuid) {
+        FORCE_FAILURE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashSet::new)
+            .insert(session_id);
+    }
+
+    pub(crate) fn take(session_id: Uuid) -> bool {
+        FORCE_FAILURE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .is_some_and(|armed| armed.remove(&session_id))
+    }
+}
+
+/// Release `consumer`'s demand. The reader stops only when it was the last one.
+///
+/// The drain order is emitted with `TelegramBridgeState` **released**, within
+/// the existing 2 s budget (section 9): awaiting inside the state lock is what
+/// makes a slow chat block unrelated sessions.
+pub(crate) async fn release_reader_demand<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    consumer: ReaderConsumer,
+) {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return;
+    };
+    let shutdown = {
+        let mut tg = tg_state.lock().await;
+        tg.reader_demand_release(session_id, consumer)
+    };
+    if let Some(shutdown) = shutdown {
+        shutdown.spawn_wait_or_abort();
+    }
+}
+
+/// Release **every** demand for a session. Destroy and shutdown do this; a
+/// persistence rollback releases only the bot demand (section 5).
+pub(crate) async fn release_all_reader_demands<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return;
+    };
+    let shutdown = {
+        let mut tg = tg_state.lock().await;
+        tg.reader_release_all(session_id)
+    };
+    if let Some(shutdown) = shutdown {
+        shutdown.spawn_wait_or_abort();
+    }
+}
+
 pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
@@ -165,6 +414,11 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
             .ok_or_else(|| format!("Bot not found: {}", bot_id))?
     };
 
+    // #2232 phase 4: the reader no longer lives in the bridge. The bridge owns
+    // the bot-side tasks; the reader is raised as a **Bot demand** below, which
+    // starts one if none is running and otherwise attaches over the live one.
+    let reader_mode = reader.is_some();
+
     let info = {
         let mgr = session_mgr.read().await;
         let mut tg = tg_mgr.lock().await;
@@ -175,14 +429,21 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
                 pty_mgr.inner().clone(),
                 network.clone(),
                 app.clone(),
-                reader,
+                reader_mode,
                 agent_kind,
             )
             .map_err(|e| e.to_string())?;
 
         mgr.set_telegram_bot_id(session_id, Some(bot.id.clone()))
             .await;
-        if let Err(e) = persist_current_state_result(&mgr).await {
+        let persist_result = persist_current_state_result(&mgr).await;
+        #[cfg(test)]
+        let persist_result = if attach_persistence_seam::take(session_id) {
+            Err("synthetic attach persistence failure".to_string())
+        } else {
+            persist_result
+        };
+        if let Err(e) = persist_result {
             mgr.set_telegram_bot_id(session_id, None).await;
             let shutdown = tg.detach(session_id).ok();
             let err_msg = format!(
@@ -202,10 +463,29 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
             if let Some(shutdown) = shutdown {
                 shutdown.spawn_wait_or_abort();
             }
+            // #2232 phase 4 section 5: this attach raises the Bot demand only
+            // **after** persistence succeeds, so the rollback has no demand of
+            // its own to release. Releasing here would tear down the demand of
+            // an earlier, still-valid attach (an idempotent repeat attach lands
+            // in this branch), which section 5 forbids: a rollback releases Bot
+            // only when that attach raised it.
             return Err(err_msg);
         }
         info
     };
+
+    if reader_mode {
+        raise_reader_demand(
+            app,
+            session_id,
+            ReaderConsumer::Bot,
+            Some(ReaderDest {
+                token: bot.token.clone(),
+                chat_id: bot.chat_id,
+            }),
+        )
+        .await;
+    }
 
     let _ = app.emit("telegram_bridge_attached", info.clone());
     Ok(info)
@@ -227,41 +507,67 @@ pub async fn telegram_attach(
 #[tauri::command]
 pub async fn telegram_detach(
     app: AppHandle,
-    tg_mgr: State<'_, TelegramBridgeState>,
+    _tg_mgr: State<'_, TelegramBridgeState>,
     session_id: String,
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    detach_telegram_inner(&app, uuid).await
+}
+
+/// Detach the bot side of a session and release its Bot demand.
+///
+/// Split out of the command so phase 4 test 21 can drive it with a plain
+/// `AppHandle` while still exercising the real persistence path and the
+/// `#[cfg(test)]` failure seam in it.
+pub(crate) async fn detach_telegram_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    uuid: Uuid,
+) -> Result<(), String> {
+    let session_id = uuid.to_string();
+    let tg_mgr = app.state::<TelegramBridgeState>();
     let mut shutdown = Some({
         let mut tg = tg_mgr.lock().await;
         tg.detach(uuid).map_err(|e| e.to_string())?
     });
 
-    {
+    let persist_result = {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
 
         mgr.set_telegram_bot_id(uuid, None).await;
-        if let Err(e) = persist_current_state_result(&mgr).await {
-            let err_msg = format!(
-                "Telegram bridge detached live, but sessions.json could not be persisted for session {}: {}",
-                uuid, e
-            );
-            log::error!("{}", err_msg);
-            let _ = app.emit(
-                "telegram_bridge_error",
-                serde_json::json!({
-                    "sessionId": session_id.clone(),
-                    "error": err_msg,
-                }),
-            );
-            if let Some(shutdown) = shutdown.take() {
-                shutdown.spawn_wait_or_abort();
-            }
-            return Err(err_msg);
-        }
-    }
+        let persist_result = persist_current_state_result(&mgr).await;
+        #[cfg(test)]
+        let persist_result = if detach_persistence_seam::take(uuid) {
+            Err("synthetic detach persistence failure".to_string())
+        } else {
+            persist_result
+        };
+        persist_result
+    };
     if let Some(shutdown) = shutdown.take() {
         shutdown.spawn_wait_or_abort();
+    }
+
+    // #2232 phase 4 section 5: a live detach releases the **bot** demand even
+    // when `sessions.json` persistence fails, so the reader stops sending and
+    // a Room demand, if any, keeps capturing. The persistence error and event
+    // below are unchanged.
+    release_reader_demand(app, uuid, ReaderConsumer::Bot).await;
+
+    if let Err(e) = persist_result {
+        let err_msg = format!(
+            "Telegram bridge detached live, but sessions.json could not be persisted for session {}: {}",
+            uuid, e
+        );
+        log::error!("{}", err_msg);
+        let _ = app.emit(
+            "telegram_bridge_error",
+            serde_json::json!({
+                "sessionId": session_id.clone(),
+                "error": err_msg,
+            }),
+        );
+        return Err(err_msg);
     }
 
     let _ = app.emit(
