@@ -156,11 +156,11 @@
       "ancestryAloneAccepted": false,
       "finalCandidateGate": "VERSION_MERGE_SHA",
       "hardeningParents": [
-        "1da51fa7042eae7a2d2869c38341cc69a00982eb",
+        "484637b85d6b29085c9f7b36d66a49bdb4762889",
         "HARDENING_HEAD"
       ],
       "mergeMethod": "merge-commit",
-      "planningBaseGate": "1da51fa7042eae7a2d2869c38341cc69a00982eb",
+      "planningBaseGate": "484637b85d6b29085c9f7b36d66a49bdb4762889",
       "versionParents": [
         "HARDENING_MERGE_SHA",
         "VERSION_HEAD"
@@ -525,7 +525,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/contents/CHANGELOG.md?ref=1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/contents/CHANGELOG.md?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           }
@@ -581,7 +581,7 @@
             "tool": "gh"
           }
         ],
-        "resultSha256": "e35d1ca1d1f09586b7ad9adc30fac718d65f966e6cadfee704ae3ffaff61db31",
+        "resultSha256": "e56f52aee622d5d53fae566bb4122e2c066314faedd2fac2fd5534229fde7419",
         "target": "cli/cli"
       },
       {
@@ -684,7 +684,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/c8e3a9599b0684b7f7af052722b7acdd87f00215...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/c8e3a9599b0684b7f7af052722b7acdd87f00215...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -705,7 +705,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/f09aa02bddbf0abccec513e481ec0a9f84bb77fb...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/f09aa02bddbf0abccec513e481ec0a9f84bb77fb...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -726,7 +726,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/c741a3faf29642b17955090f8cf8014b8a3343c8...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/c741a3faf29642b17955090f8cf8014b8a3343c8...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -747,7 +747,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/72c3e6dca7caa652c675a498e13715a92af8faae...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/72c3e6dca7caa652c675a498e13715a92af8faae...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -768,7 +768,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/ef165460c67a5d34160e68faf4796d22f9679423...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/ef165460c67a5d34160e68faf4796d22f9679423...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -789,7 +789,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/7e085462b706e857b86d6ea03adf44c3d36640b9...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/7e085462b706e857b86d6ea03adf44c3d36640b9...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -810,7 +810,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/4f95780c948ccabd6424725036ad9bc7110780b2...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/4f95780c948ccabd6424725036ad9bc7110780b2...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -831,7 +831,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/347dcf178b5eb619d729d2260423274fa53a4b42...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/347dcf178b5eb619d729d2260423274fa53a4b42...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -852,7 +852,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/3f0350e40178b9488b1e3514843ec1a2e6b2f133...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/3f0350e40178b9488b1e3514843ec1a2e6b2f133...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -873,7 +873,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/8c401187bc9a054b31e86deed8476e5caf06c9cf...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/8c401187bc9a054b31e86deed8476e5caf06c9cf...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -894,7 +894,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/6ee4596431f64c632ea25c0c4ec0aee085b81f73...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/6ee4596431f64c632ea25c0c4ec0aee085b81f73...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -915,7 +915,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/82b31ff822f3fb7d73da76fc3ef54948dcd8d57e...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/82b31ff822f3fb7d73da76fc3ef54948dcd8d57e...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -936,7 +936,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/427fa0e86703c50ed5f9b57b0c1a2dc7c21715c4...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/427fa0e86703c50ed5f9b57b0c1a2dc7c21715c4...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -957,7 +957,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/597acd6eb5e79da92b56c25be29ce498f1b193a5...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/597acd6eb5e79da92b56c25be29ce498f1b193a5...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -978,7 +978,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/bbd2c00e5c078d3a1d6c267b198ed26461f67299...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/bbd2c00e5c078d3a1d6c267b198ed26461f67299...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -999,7 +999,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/2d6ab4b7e6ac1bedec0f3ed3d4fec2f13ad08d86...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/2d6ab4b7e6ac1bedec0f3ed3d4fec2f13ad08d86...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1020,7 +1020,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/596890294d8be78b822021067f1b38a6fd128221...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/596890294d8be78b822021067f1b38a6fd128221...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1041,7 +1041,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/7a46fa11a2f1c6ef04cc54446254b0e3d2f6dc52...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/7a46fa11a2f1c6ef04cc54446254b0e3d2f6dc52...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1062,7 +1062,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/a0a22939d7bff01a219e9502e3275988ba02fb92...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/a0a22939d7bff01a219e9502e3275988ba02fb92...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1083,7 +1083,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/c8daffd94afb15812f373c9a60579197169f4434...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/c8daffd94afb15812f373c9a60579197169f4434...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1104,7 +1104,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/dde7133c16aabdb5950c8bf107f4dd77e1c2c14e...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/dde7133c16aabdb5950c8bf107f4dd77e1c2c14e...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1125,7 +1125,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/47d1f47ffc2293ea1d29d22da414803d2b6a8e98...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/47d1f47ffc2293ea1d29d22da414803d2b6a8e98...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1146,7 +1146,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/0543ac1b9ff015479e617054f96fc4c35d30b40b...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/0543ac1b9ff015479e617054f96fc4c35d30b40b...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1167,7 +1167,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/34e2f34af6d5365fd43b50015aa497beb1a6b0bf...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/34e2f34af6d5365fd43b50015aa497beb1a6b0bf...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1188,7 +1188,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/ac2097b63774138f5c45be79af34cc8238d3cf3e...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/ac2097b63774138f5c45be79af34cc8238d3cf3e...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1209,7 +1209,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/780974ee21a6480bc95b1aa9c0e9d9f9518fcfa7...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/780974ee21a6480bc95b1aa9c0e9d9f9518fcfa7...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1230,7 +1230,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/42c20a4865c11a16b36bab02d54eabdaffaa9615...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/42c20a4865c11a16b36bab02d54eabdaffaa9615...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1251,7 +1251,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/345238bb4668744e23a7fbc5c524b104b113f7c7...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/345238bb4668744e23a7fbc5c524b104b113f7c7...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1272,7 +1272,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/b7a558185428597eedf2d568c4ca089fbbafe5e3...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/b7a558185428597eedf2d568c4ca089fbbafe5e3...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1293,7 +1293,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/d6f527ee0e4aeee5c49e3b7c85cefb07d351e3c9...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/d6f527ee0e4aeee5c49e3b7c85cefb07d351e3c9...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1314,7 +1314,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/3eaef899fca422e615861ad8531337b80345274c...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/3eaef899fca422e615861ad8531337b80345274c...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1335,7 +1335,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/9b340e4748461212aa8ce9fdf92916effd266921...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/9b340e4748461212aa8ce9fdf92916effd266921...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1356,7 +1356,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/670d6af5ff1e0deae7e8a2044c53c75a2a3cafad...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/670d6af5ff1e0deae7e8a2044c53c75a2a3cafad...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1377,7 +1377,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/06139d9001c13d01405b303f98721715816245c4...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/06139d9001c13d01405b303f98721715816245c4...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1398,7 +1398,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/5fbadbf226f4936dc761ad7515d67153807785d5...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/5fbadbf226f4936dc761ad7515d67153807785d5...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1419,7 +1419,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/6222c2fa329b393ccf0e76c8c43c4233bdf49b1e...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/6222c2fa329b393ccf0e76c8c43c4233bdf49b1e...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1440,7 +1440,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/110023f729ead4410cb9d1fa0035376f004c517e...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/110023f729ead4410cb9d1fa0035376f004c517e...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1461,7 +1461,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/7b292894d59348b6c424486c71a6627df749c046...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/7b292894d59348b6c424486c71a6627df749c046...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1482,7 +1482,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/92c9dc6610419b90f8a1b33c9b8b11afa9350a2d...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/92c9dc6610419b90f8a1b33c9b8b11afa9350a2d...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1503,7 +1503,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/bd296651261447464847033e7d00462565792211...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/bd296651261447464847033e7d00462565792211...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1524,7 +1524,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/d108dea52801b782179aa84e8c557467914534c0...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/d108dea52801b782179aa84e8c557467914534c0...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1545,7 +1545,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/a8724906fe54ac636bd5e9115fd5a2d973e9f1cc...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/a8724906fe54ac636bd5e9115fd5a2d973e9f1cc...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1566,7 +1566,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/90bf6bb01b2a58e57525139cc903da0ba5ca7004...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/90bf6bb01b2a58e57525139cc903da0ba5ca7004...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1587,7 +1587,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/82bc821cd3a5206b2743b2a6c4a6820ef5c8d8c4...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/82bc821cd3a5206b2743b2a6c4a6820ef5c8d8c4...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1608,7 +1608,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/8b15376fb177a9aaf2e8d040954cc71d7e6ede2f...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/8b15376fb177a9aaf2e8d040954cc71d7e6ede2f...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1629,7 +1629,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/1da51fa7042eae7a2d2869c38341cc69a00982eb...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/1da51fa7042eae7a2d2869c38341cc69a00982eb...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1650,7 +1650,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/compare/63ceae2765e1c63760561e0be77bece777d3fe9b...1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/compare/63ceae2765e1c63760561e0be77bece777d3fe9b...484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           }
@@ -1665,7 +1665,7 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/contents/.github/workflows/release.yml?ref=1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/contents/.github/workflows/release.yml?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
@@ -1739,12 +1739,12 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/git/commits/1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/git/commits/484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           }
         ],
-        "resultSha256": "d75203c68eeafb9e2ddbe39b636303fd0514682770a89b664d34a9ecf458e0ee",
+        "resultSha256": "0989bc1d654c362f4f533f519173ac7f9b7d8749d33e26d00fc0c520d3782445",
         "target": "refs/heads/main"
       },
       {
@@ -1801,49 +1801,49 @@
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/contents/package.json?ref=1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/contents/package.json?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/contents/package-lock.json?ref=1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/contents/package-lock.json?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/contents/npm/package.json?ref=1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/contents/npm/package.json?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/contents/npm/install.js?ref=1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/contents/npm/install.js?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/contents/src-tauri/Cargo.toml?ref=1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/contents/src-tauri/Cargo.toml?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/contents/Cargo.lock?ref=1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/contents/Cargo.lock?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           },
           {
             "argv": [
               "api",
-              "repos/mblua/AgentsCommander/contents/src-tauri/tauri.conf.json?ref=1da51fa7042eae7a2d2869c38341cc69a00982eb"
+              "repos/mblua/AgentsCommander/contents/src-tauri/tauri.conf.json?ref=484637b85d6b29085c9f7b36d66a49bdb4762889"
             ],
             "tool": "gh"
           }
@@ -2088,7 +2088,7 @@
         "advisoryInventorySha256": "bb1d3ee43aa572f3987ae993fde28a7dc1eb78e891e02bafb8c2366b974a5e7d",
         "minimumPatchedVersion": "2.98.0",
         "publishedAdvisoryCount": 13,
-        "reviewedAt": "2026-09-21T03:46:06Z",
+        "reviewedAt": "2026-09-21T04:39:49Z",
         "verdict": "selected-version-at-or-above-every-published-patch"
       },
       "sha256": "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8",
@@ -2264,10 +2264,9 @@
     "remoteMain": {
       "branch": "main",
       "parents": [
-        "90bf6bb01b2a58e57525139cc903da0ba5ca7004",
-        "fbb1c2a519d07c63c5f8cfda985db20aa01cbd09"
+        "1da51fa7042eae7a2d2869c38341cc69a00982eb"
       ],
-      "sha": "1da51fa7042eae7a2d2869c38341cc69a00982eb"
+      "sha": "484637b85d6b29085c9f7b36d66a49bdb4762889"
     },
     "repository": {
       "defaultBranch": "main",
@@ -2736,7 +2735,7 @@
         "advisoryInventorySha256": "bb1d3ee43aa572f3987ae993fde28a7dc1eb78e891e02bafb8c2366b974a5e7d",
         "minimumPatchedVersion": "2.98.0",
         "publishedAdvisoryCount": 13,
-        "reviewedAt": "2026-09-21T03:46:06Z",
+        "reviewedAt": "2026-09-21T04:39:49Z",
         "verdict": "selected-version-at-or-above-every-published-patch"
       },
       "sha256": "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8",

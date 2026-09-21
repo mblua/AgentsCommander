@@ -5,7 +5,7 @@ Status: `REVIEW_REQUIRED`. This generated bundle is not approval to implement, t
 Repository: `mblua/AgentsCommander`  
 Release issue: https://github.com/mblua/AgentsCommander/issues/2331  
 Candidate: `0.37.0` / `v0.37.0`  
-Planning base: `1da51fa7042eae7a2d2869c38341cc69a00982eb`  
+Planning base: `484637b85d6b29085c9f7b36d66a49bdb4762889`  
 Predecessor: `v0.36.0`
 
 ## 1. Exact review identity
@@ -60,8 +60,8 @@ The hardening allowlist is closed at the release workflow plus these evidence pa
 
 ## 2. Frozen read-only facts
 
-- Git remote main and GitHub API agree at `1da51fa7042eae7a2d2869c38341cc69a00982eb`.
-- Ordered planning-base parents: [90bf6bb01b2a58e57525139cc903da0ba5ca7004, fbb1c2a519d07c63c5f8cfda985db20aa01cbd09].
+- Git remote main and GitHub API agree at `484637b85d6b29085c9f7b36d66a49bdb4762889`.
+- Ordered planning-base parents: [1da51fa7042eae7a2d2869c38341cc69a00982eb].
 - Base `.github/workflows/release.yml` blob: `1813662691aea512b4c8c087a388b0e9e87e66fa`; content SHA-256: `8c032478e665a51f17de2c061e793dacafe3351312fa2c0eadc7a8103a6e04db`.
 - Predecessor annotated object: `52aca156ca758faa658d05fe9f2d4957d6c7a99e`; peeled commit: `4007c00793b66ac2daef11fe7bf5a119b8131d4b`.
 - Predecessor immutable GitHub Release id: `391490080`.
@@ -160,7 +160,7 @@ No implementation, PR, merge, tag, or publication occurs before steps 1-5. There
 
 ## 4. Planning-base gate
 
-Before implementation, independently query remote main through raw Git and the GitHub ref API. Both must equal `1da51fa7042eae7a2d2869c38341cc69a00982eb`; the GitHub commit API must return the ordered parent list [90bf6bb01b2a58e57525139cc903da0ba5ca7004, fbb1c2a519d07c63c5f8cfda985db20aa01cbd09]; the contents API must return workflow blob `1813662691aea512b4c8c087a388b0e9e87e66fa`. Any mismatch is `FROZEN_INPUT_CHANGED`: discard the bundle and run the generator again from a new config/output path.
+Before implementation, independently query remote main through raw Git and the GitHub ref API. Both must equal `484637b85d6b29085c9f7b36d66a49bdb4762889`; the GitHub commit API must return the ordered parent list [1da51fa7042eae7a2d2869c38341cc69a00982eb]; the contents API must return workflow blob `1813662691aea512b4c8c087a388b0e9e87e66fa`. Any mismatch is `FROZEN_INPUT_CHANGED`: discard the bundle and run the generator again from a new config/output path.
 
 This gate is not reused after required merges. Later gates bind `FINAL_CANDIDATE_MAIN` instead.
 
@@ -185,7 +185,7 @@ The allowlist is closed: no wildcard and no other changed path is permitted. Its
 For the selected merge method, record `HARDENING_HEAD` only after exact-head review. After protected merge, require a two-parent merge commit and assert the ordered parent vector is exactly:
 
 ```text
-[1da51fa7042eae7a2d2869c38341cc69a00982eb, HARDENING_HEAD]
+[484637b85d6b29085c9f7b36d66a49bdb4762889, HARDENING_HEAD]
 ```
 
 Set `HARDENING_MERGE_SHA` to that merge commit. A squash, rebase, reversed parent order, extra parent, or intervening main commit invalidates this bundle.
