@@ -11,9 +11,13 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager};
 
+use crate::capture::catalog::Catalog;
+use crate::capture::jev::{ClassifyOutcome, JevSettings};
+use crate::capture::secrets;
 use crate::config::co_managed::{self, CoManagedConfig, CoManagedState};
 use crate::config::entity_prefix::ROOM_DIR_PREFIX;
 use crate::config::settings::SettingsState;
+use crate::network::OutboundNetwork;
 
 /// Canonicalise `room_root` and prove it is a Room of a registered project
 /// before any read or write. A path failing either check returns an error and
@@ -167,10 +171,127 @@ pub async fn co_managed_effective_state<R: tauri::Runtime>(
     crate::commands::session::co_managed_effective_state_for_session(&app, &root, &session_id).await
 }
 
+/// Phase-6 dry run: the pre-egress detector, then the single Jev call, with no
+/// side effects.
+///
+/// A seeded secret returns before the network client is even built, so nothing
+/// is written, nothing is enqueued and no request is issued (plan section 7);
+/// the outcome carries only the detector's reason and the candidate length.
+///
+/// #2232 phase 6: NOT a #[tauri::command]. This phase's tests call it. The phase-7
+/// supervisor calls capture::jev directly, never commands::co_managed. Registering it would add `lib.rs` to this phase and
+/// would put a network-calling entry point on the IPC surface with no UI asking for it.
+#[allow(dead_code)] // Test-only helper; --all-targets also compiles the lib without cfg(test).
+pub(crate) async fn classify_dry_run(
+    catalog: &Catalog,
+    text: &str,
+    settings: &JevSettings,
+) -> Result<ClassifyOutcome, String> {
+    if let Some(detection) = secrets::detect(text) {
+        return Ok(ClassifyOutcome::abstained(detection.reason()));
+    }
+    let network = OutboundNetwork::new()
+        .map_err(|error| format!("classifyDryRunNetworkInitFailed: {error}"))?;
+    Ok(crate::capture::jev::classify(&network, settings, catalog, text).await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::settings::AppSettings;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// A loopback listener that only counts connections; the two dry-run tests
+    /// below assert the count stays zero.
+    async fn silent_listener() -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a loopback listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let _ = tokio::io::AsyncWriteExt::shutdown(&mut stream).await;
+            }
+        });
+        (format!("http://127.0.0.1:{port}/v1/systemone"), hits)
+    }
+
+    fn dry_run_settings(endpoint: String) -> JevSettings {
+        JevSettings {
+            api_key: "test-key".to_string(),
+            model: "jev-1.13.0".to_string(),
+            endpoint,
+            timeout_secs: 5,
+            threshold: 0.70,
+            margin: 0.15,
+        }
+    }
+
+    /// Test 10: an absent catalog is inert and no HTTP request is issued.
+    #[tokio::test]
+    async fn classify_dry_run_without_a_catalog_issues_no_request() {
+        let (url, hits) = silent_listener().await;
+        let outcome = classify_dry_run(&Catalog::missing(), "candidate", &dry_run_settings(url))
+            .await
+            .expect("a missing catalog is an abstention, not an error");
+        match outcome {
+            ClassifyOutcome::Abstained { reason } => {
+                assert!(reason.contains("NoCatalogFile"), "{reason}")
+            }
+            other => panic!("a missing catalog must be inert, got {other:?}"),
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "no HTTP request may be issued"
+        );
+    }
+
+    /// Test 14: a seeded secret means no request, no file anywhere, and a reason
+    /// with neither an excerpt nor a path.
+    #[tokio::test]
+    async fn classify_dry_run_with_a_seeded_secret_creates_no_file_and_issues_no_request() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (url, hits) = silent_listener().await;
+        let catalog = Catalog::from_json_str(
+            r#"{"categories": {"a": {"destination": "user", "question": "is a?"}}}"#,
+        );
+        let secret = "AKIAIOSFODNN7EXAMPLE";
+        let outcome = classify_dry_run(&catalog, secret, &dry_run_settings(url))
+            .await
+            .expect("a seeded secret is an abstention, not an error");
+        match outcome {
+            ClassifyOutcome::Abstained { reason } => {
+                assert!(reason.contains("secret detected"), "{reason}");
+                assert!(
+                    !reason.contains(secret),
+                    "the reason must not carry an excerpt"
+                );
+                assert!(!reason.contains('/'), "the reason must not carry a path");
+            }
+            other => panic!("a seeded secret must abstain, got {other:?}"),
+        }
+        let entries: Vec<_> = std::fs::read_dir(scratch.path())
+            .unwrap()
+            .flatten()
+            .collect();
+        assert!(entries.is_empty(), "no file may be created anywhere");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "a flagged candidate must never reach the network"
+        );
+    }
 
     fn test_app(project_paths: Vec<String>) -> tauri::App<tauri::test::MockRuntime> {
         let settings = AppSettings {
