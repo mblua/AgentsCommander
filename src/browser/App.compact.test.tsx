@@ -7,7 +7,12 @@ import {
   renderWithFakeTransport,
   resetSidebarCompactForTests,
 } from "../shared/testing/ui-harness";
-import { setSidebarCompactMode, sidebarCompact } from "../shared/sidebar-compact";
+import {
+  restoreWidthPx,
+  setRestoreWidthPx,
+  setSidebarCompactMode,
+  sidebarCompact,
+} from "../shared/sidebar-compact";
 
 // #2280 — only BrowserApp's own compact host is under test here; the embedded
 // sidebar and terminal are inert so the browser pane, divider and animation
@@ -128,26 +133,31 @@ describe("BrowserApp compact host (#2280)", () => {
     }
   });
 
-  it("snapshots and restores 250 in this host's own [200, 600] range", async () => {
+  it("snapshots and restores 250 without overwriting the shared snapshot", async () => {
     const rendered = mountBrowserApp();
     try {
       await flushMicrotasks();
+      // Seed the shared snapshot with a sentinel. A host that used the shared
+      // getter/setter would overwrite it with 250 at collapse time and still
+      // restore a correct-looking 250 through its own [200, 600] clamp, so the
+      // sentinel assertion after the collapse is what fails there.
+      setRestoreWidthPx(517);
       dragMouseTo(rendered, 250);
       expect(paneWidth(rendered)).toBe("250px");
 
       setSidebarCompactMode(true);
       expect(paneWidth(rendered)).toBe(COMPACT_WIDTH);
+      expect(restoreWidthPx()).toBe(517);
 
-      // A shared snapshot clamped to the main host's [400, 600] would land on
-      // 400 here, and a live-signal restore on 300.
       setSidebarCompactMode(false);
       expect(paneWidth(rendered)).toBe("250px");
+      expect(restoreWidthPx()).toBe(517);
     } finally {
       rendered.cleanup();
     }
   });
 
-  it("keeps the divider inert while compact without corrupting the snapshot", async () => {
+  it("keeps both compact starts inert via their own guards", async () => {
     const rendered = mountBrowserApp();
     try {
       await flushMicrotasks();
@@ -155,25 +165,27 @@ describe("BrowserApp compact host (#2280)", () => {
 
       setSidebarCompactMode(true);
       const handle = divider(rendered);
+      const layout = rendered.root.querySelector(".browser-layout") as HTMLElement;
       expect(handle.getAttribute("aria-disabled")).toBe("true");
+      expect(paneWidth(rendered)).toBe(COMPACT_WIDTH);
 
-      // A live divider would move 120px here (250 -> 370); assert after the
-      // move and again after the up that the compact expression is untouched.
+      // Each start handler has its own early return, so each modality is
+      // proven separately at its own start event: an injected missing guard
+      // would add browser-dragging and then move the hidden width.
       mouseAt(handle, "mousedown", clientXForWidth(250));
+      expect(layout.classList.contains("browser-dragging")).toBe(false);
       mouseAt(document, "mousemove", clientXForWidth(370));
       expect(paneWidth(rendered)).toBe(COMPACT_WIDTH);
       mouseAt(document, "mouseup", clientXForWidth(370));
-      expect(paneWidth(rendered)).toBe(COMPACT_WIDTH);
 
-      // Touch is a separate handler, so it needs its own guard.
       touchAt(handle, "touchstart", clientXForWidth(250));
+      expect(layout.classList.contains("browser-dragging")).toBe(false);
       touchAt(document, "touchmove", clientXForWidth(370));
       expect(paneWidth(rendered)).toBe(COMPACT_WIDTH);
       touchAt(document, "touchend");
       expect(paneWidth(rendered)).toBe(COMPACT_WIDTH);
 
-      // Only the expand can prove the guard held: while compact the hidden
-      // signal is invisible, so a corrupted snapshot shows up here.
+      // The hidden signal stayed undragged, so the snapshot survives the flip.
       setSidebarCompactMode(false);
       expect(paneWidth(rendered)).toBe("250px");
     } finally {
@@ -241,6 +253,63 @@ describe("BrowserApp compact host (#2280)", () => {
       expect(BROWSER_CSS).toMatch(
         /@media \(prefers-reduced-motion: reduce\) \{\s*\.browser-sidebar\.ac-sidebar-animating\s*\{\s*transition:\s*none;\s*\}\s*\}/,
       );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("keeps interleaved mouse/touch owners separate and ends both on a mode change", async () => {
+    const rendered = mountBrowserApp();
+    try {
+      await flushMicrotasks();
+      const layout = rendered.root.querySelector(".browser-layout") as HTMLElement;
+      const handle = divider(rendered);
+      expect(paneWidth(rendered)).toBe("300px");
+
+      // Overlapping starts: the later touch start must not overwrite the
+      // mouse owner, so the mouse pair still moves the width.
+      mouseAt(handle, "mousedown", clientXForWidth(300));
+      touchAt(handle, "touchstart", clientXForWidth(300));
+      expect(layout.classList.contains("browser-dragging")).toBe(true);
+
+      mouseAt(document, "mousemove", clientXForWidth(250));
+      expect(paneWidth(rendered)).toBe("250px");
+
+      // The ordinary mouse end removes only the mouse pair; the touch owner
+      // stays live, so browser-dragging must remain until the touchend.
+      mouseAt(document, "mouseup", clientXForWidth(250));
+      mouseAt(document, "mousemove", clientXForWidth(350));
+      expect(paneWidth(rendered)).toBe("250px");
+      expect(layout.classList.contains("browser-dragging")).toBe(true);
+
+      touchAt(document, "touchmove", clientXForWidth(280));
+      expect(paneWidth(rendered)).toBe("280px");
+      touchAt(document, "touchend");
+      expect(layout.classList.contains("browser-dragging")).toBe(false);
+
+      // Both ordinary ends are done: neither modality may still move the pane.
+      mouseAt(document, "mousemove", clientXForWidth(350));
+      touchAt(document, "touchmove", clientXForWidth(350));
+      expect(paneWidth(rendered)).toBe("280px");
+
+      // A mode change with both saves active must end both before the flip, so
+      // the remembered width survives and no stale listener can move it.
+      mouseAt(handle, "mousedown", clientXForWidth(280));
+      touchAt(handle, "touchstart", clientXForWidth(280));
+      expect(layout.classList.contains("browser-dragging")).toBe(true);
+
+      setSidebarCompactMode(true);
+      expect(layout.classList.contains("browser-dragging")).toBe(false);
+      expect(paneWidth(rendered)).toBe(COMPACT_WIDTH);
+
+      mouseAt(document, "mousemove", clientXForWidth(500));
+      touchAt(document, "touchmove", clientXForWidth(500));
+      setSidebarCompactMode(false);
+      expect(paneWidth(rendered)).toBe("280px");
+
+      mouseAt(document, "mousemove", clientXForWidth(500));
+      touchAt(document, "touchmove", clientXForWidth(500));
+      expect(paneWidth(rendered)).toBe("280px");
     } finally {
       rendered.cleanup();
     }

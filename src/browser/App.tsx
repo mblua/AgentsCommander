@@ -28,7 +28,11 @@ const BrowserApp: Component = () => {
   const [browserRestoreWidthPx, setBrowserRestoreWidthPx] = createSignal(0);
   let sidebarPaneRef: HTMLDivElement | undefined;
   let sidebarAnimationTimer: ReturnType<typeof setTimeout> | null = null;
-  let endActiveBrowserDrag: (() => void) | null = null;
+  // Epic D21 — mouse and touch each own their listener pair. The single slot
+  // this replaces was unsafe: a later touch start overwrote the mouse
+  // teardown, so an ordinary mouseup could no longer remove the mouse pair.
+  let endActiveBrowserMouseDrag: (() => void) | null = null;
+  let endActiveBrowserTouchDrag: (() => void) | null = null;
   let disposed = false;
   let unlistenThemeChanged: UnlistenFn | null = null;
 
@@ -97,12 +101,18 @@ const BrowserApp: Component = () => {
 
   onCleanup(() => stopSidebarAnimation());
 
+  // Ends both modalities; safe when neither is active.
+  const endActiveBrowserDrag = (): void => {
+    endActiveBrowserMouseDrag?.();
+    endActiveBrowserTouchDrag?.();
+  };
+
   // Epic D21/D22 — the host hook runs pre-flip, so the snapshot and the
   // restore read the mode the user is leaving.
   onCleanup(
     registerCompactHost({
       onBeforeModeChange: (next) => {
-        if (dragging()) endActiveBrowserDrag?.();
+        endActiveBrowserDrag();
         if (next) {
           setBrowserRestoreWidthPx(sidebarWidth());
         } else {
@@ -112,6 +122,7 @@ const BrowserApp: Component = () => {
       },
     }),
   );
+  onCleanup(() => endActiveBrowserDrag());
 
   const toggleSide = async () => {
     const next: MainSidebarSide = sidebarSide() === "right" ? "left" : "right";
@@ -136,17 +147,17 @@ const BrowserApp: Component = () => {
     };
 
     const onMouseUp = () => {
-      endActiveBrowserDrag?.();
+      endActiveBrowserMouseDrag?.();
     };
 
-    // Exactly one teardown, shared by the ordinary mouseup path and the
-    // pre-flip hook. These are mouse events, not pointer events: no capture
-    // and no persistWidth here.
-    endActiveBrowserDrag = () => {
+    // The mouse owner removes only the mouse pair and leaves any touch owner
+    // live. These are mouse events, not pointer events: no capture, no
+    // pointerId and no persistWidth here.
+    endActiveBrowserMouseDrag = () => {
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
-      setDragging(false);
-      endActiveBrowserDrag = null;
+      endActiveBrowserMouseDrag = null;
+      setDragging(endActiveBrowserTouchDrag !== null);
     };
 
     document.addEventListener("mousemove", onMouseMove);
@@ -166,16 +177,16 @@ const BrowserApp: Component = () => {
     };
 
     const onTouchEnd = () => {
-      endActiveBrowserDrag?.();
+      endActiveBrowserTouchDrag?.();
     };
 
     // Touch is a separate handler from mouse, so it owns its own guard and
-    // teardown; the shared slot is what the pre-flip hook ends.
-    endActiveBrowserDrag = () => {
+    // teardown, and an overlapping mouse drag survives this end.
+    endActiveBrowserTouchDrag = () => {
       document.removeEventListener("touchmove", onTouchMove);
       document.removeEventListener("touchend", onTouchEnd);
-      setDragging(false);
-      endActiveBrowserDrag = null;
+      endActiveBrowserTouchDrag = null;
+      setDragging(endActiveBrowserMouseDrag !== null);
     };
 
     document.addEventListener("touchmove", onTouchMove);
