@@ -634,6 +634,477 @@ function defaultReadBytes(file) {
 }
 
 // ---------------------------------------------------------------------------
+// The source lexer and the identity rule (#2254, phase 2 of #2234)
+//
+// This is the part of the gate that decides what a function is. It reads a
+// Rust source file as text, walks it once as a lexer (comments, strings and
+// literals are opaque), and records one frame per item header that ends in
+// `{`; a header ended by a depth-0 `;` opens nothing. `containerAt` returns
+// the `::`-joined tokens of the frames open at a site, `idFor` builds the
+// stable id and `anchorFor` hashes the text from a site to its body brace.
+// Everything reads through an injectable reader so the self-test runs in
+// memory; the new code is inert until phase 3 calls it.
+// ---------------------------------------------------------------------------
+
+const ITEM_KEYWORDS = new Set(['fn', 'impl', 'trait', 'mod']);
+const ITEM_PREFIX_WORDS = new Set([
+  'pub', 'pub(...)', 'unsafe', 'default', 'async', 'const', 'extern', 'extern-string',
+]);
+const NAME_RE = /^(r#)?[A-Za-z_][A-Za-z0-9_]*$/;
+const ANCHOR_CAP = 400;
+
+/** The error class phase 3 turns into a failed run. */
+export class CaptureError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'CAPTURE';
+    this.code = 'CAPTURE';
+  }
+}
+
+function lineStartsOf(source) {
+  const starts = [0];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === '\n') starts.push(index + 1);
+  }
+  return starts;
+}
+
+function lineNumberAt(starts, offset) {
+  let low = 0;
+  let high = starts.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (starts[middle] <= offset) low = middle;
+    else high = middle - 1;
+  }
+  return low + 1;
+}
+
+/** Returns the offset just past a nested block comment, or end of source. */
+function skipBlockComment(source, start) {
+  let index = start;
+  let depth = 0;
+  while (index < source.length) {
+    if (source[index] === '/' && source[index + 1] === '*') {
+      depth += 1;
+      index += 2;
+      continue;
+    }
+    if (source[index] === '*' && source[index + 1] === '/') {
+      depth -= 1;
+      index += 2;
+      if (depth === 0) return index;
+      continue;
+    }
+    index += 1;
+  }
+  return source.length;
+}
+
+/**
+ * Returns the offset just past a raw or byte-raw string opened at `start`,
+ * where `start` points at the `r` of `r`/`br`, or -1 when the prefix is not a
+ * string. A nested `#` count must close with the same count.
+ */
+function rawStringEnd(source, start) {
+  let index = source[start] === 'r' ? start + 1 : start + 2;
+  let hashes = 0;
+  while (source[index] === '#') {
+    hashes += 1;
+    index += 1;
+  }
+  if (source[index] !== '"') return -1;
+  const terminator = `"${'#'.repeat(hashes)}`;
+  const close = source.indexOf(terminator, index + 1);
+  return close === -1 ? source.length : close + terminator.length;
+}
+
+/** Reads an identifier at `start`, keeping a raw prefix as written. */
+function readIdentifier(source, start) {
+  let index = start;
+  while (index < source.length && isIdentContinue(source[index])) index += 1;
+  let value = source.slice(start, index);
+  if (value === 'r' && source[index] === '#' && isIdentStart(source[index + 1])) {
+    let rawEnd = index + 1;
+    while (rawEnd < source.length && isIdentContinue(source[rawEnd])) rawEnd += 1;
+    value = source.slice(start, rawEnd);
+    index = rawEnd;
+  }
+  return { value, end: index };
+}
+
+function atItemPosition(previousSignificantChar, previousWord) {
+  if (previousSignificantChar === '') return true;
+  if (
+    (previousSignificantChar === '{' || previousSignificantChar === '}'
+      || previousSignificantChar === ';' || previousSignificantChar === ']')
+    && previousWord === ''
+  ) {
+    return true;
+  }
+  return ITEM_PREFIX_WORDS.has(previousWord);
+}
+
+/** True when the next code token after a `fn`/`mod`/`trait` is an identifier. */
+function nextItemNameStarts(source, start) {
+  let index = start;
+  for (;;) {
+    while (index < source.length && /\s/.test(source[index])) index += 1;
+    if (source[index] === '/' && source[index + 1] === '/') {
+      while (index < source.length && source[index] !== '\n') index += 1;
+      continue;
+    }
+    if (source[index] === '/' && source[index + 1] === '*') {
+      index = skipBlockComment(source, index);
+      continue;
+    }
+    break;
+  }
+  if (isIdentStart(source[index])) return true;
+  return source[index] === 'r' && source[index + 1] === '#' && isIdentStart(source[index + 2]);
+}
+
+function normalizeImplHeader(text) {
+  return text
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/(^|[^\w#])where\b[\s\S]*$/, '$1')
+    .trim();
+}
+
+/**
+ * Returns the offset just past the comment or literal opened at `index`, with
+ * its kind, or null when `index` does not open one. Comments leave the
+ * previous significant character untouched; strings clear or replace it.
+ */
+function opaqueEnd(source, index) {
+  const ch = source[index];
+  if (ch === '/' && source[index + 1] === '/') {
+    let cursor = index + 2;
+    while (cursor < source.length && source[cursor] !== '\n') cursor += 1;
+    return { kind: 'comment', end: cursor };
+  }
+  if (ch === '/' && source[index + 1] === '*') {
+    return { kind: 'comment', end: skipBlockComment(source, index) };
+  }
+  if ((ch === 'r' || (ch === 'b' && source[index + 1] === 'r')) && !isIdentContinue(source[index - 1])) {
+    const end = rawStringEnd(source, index);
+    if (end !== -1) return { kind: 'string', end };
+  }
+  if (ch === '"') {
+    let cursor = index + 1;
+    while (cursor < source.length) {
+      if (source[cursor] === '\\') {
+        cursor = Math.min(source.length, cursor + 2);
+        continue;
+      }
+      if (source[cursor] === '"') {
+        cursor += 1;
+        break;
+      }
+      cursor += 1;
+    }
+    return { kind: 'string', end: cursor };
+  }
+  return null;
+}
+
+/**
+ * Walks the whole file as a lexer and returns the item frames, outermost
+ * first. The frame opens at its `{` and closes at the matching `}`; a site is
+ * attributed to a frame only while `open < site < close`, which keeps an item
+ * out of its own frame while its inner items land under it.
+ */
+function lexSource(source, starts) {
+  const frames = [];
+  const stack = [];
+  const length = source.length;
+  let index = 0;
+  let braceDepth = 0;
+  let parenDepth = 0;
+  let previousSignificantChar = '';
+  let previousWord = '';
+  let pending = null;
+  let pubParenArmed = false;
+  let pubParenDepth = -1;
+
+  const append = (text) => {
+    if (pending !== null) pending.text += text;
+  };
+  const resetWord = (ch) => {
+    previousSignificantChar = ch;
+    previousWord = '';
+  };
+
+  while (index < length) {
+    const opaque = opaqueEnd(source, index);
+    if (opaque !== null) {
+      if (opaque.kind === 'string') {
+        if (source[index] === '"') {
+          const externBefore = previousWord === 'extern';
+          previousSignificantChar = '"';
+          previousWord = externBefore ? 'extern-string' : '';
+        } else {
+          resetWord('"');
+        }
+      }
+      index = opaque.end;
+      continue;
+    }
+
+    const ch = source[index];
+    if (ch === "'") {
+      if (isIdentContinue(source[index + 1]) && source[index + 2] !== "'") {
+        append("'");
+        previousSignificantChar = "'";
+        index += 1;
+        continue;
+      }
+      let cursor = index + 1;
+      if (source[cursor] === '\\') cursor += 2;
+      else cursor += 1;
+      while (cursor < length && source[cursor] !== "'" && source[cursor] !== '\n') cursor += 1;
+      index = cursor >= length ? length : cursor + 1;
+      resetWord("'");
+      continue;
+    }
+
+    if (isIdentStart(ch) && !isIdentContinue(source[index - 1])) {
+      const { value, end } = readIdentifier(source, index);
+      if (pending !== null) {
+        if (pending.kind !== 'impl' && pending.name === null) pending.name = value;
+        pending.text += value;
+      } else if (
+        ITEM_KEYWORDS.has(value)
+        && atItemPosition(previousSignificantChar, previousWord)
+        && (value === 'impl' || nextItemNameStarts(source, end))
+      ) {
+        pending = { kind: value, name: null, text: '', kwLine: lineNumberAt(starts, index), nest: 0 };
+      }
+      previousWord = value;
+      previousSignificantChar = value[value.length - 1];
+      pubParenArmed = value === 'pub';
+      index = end;
+      continue;
+    }
+
+    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
+      append(ch);
+      index += 1;
+      continue;
+    }
+    if (ch === '(') {
+      parenDepth += 1;
+      if (pubParenArmed) {
+        pubParenDepth = parenDepth;
+        pubParenArmed = false;
+      }
+      if (pending !== null) pending.nest += 1;
+      append(ch);
+      previousSignificantChar = '(';
+      previousWord = pubParenDepth === parenDepth ? 'pub(' : '';
+      index += 1;
+      continue;
+    }
+    if (ch === ')') {
+      const closesPub = pubParenDepth === parenDepth;
+      parenDepth -= 1;
+      if (pending !== null) pending.nest -= 1;
+      append(ch);
+      previousSignificantChar = ')';
+      previousWord = closesPub ? 'pub(...)' : '';
+      if (closesPub) pubParenDepth = -1;
+      index += 1;
+      continue;
+    }
+    if (ch === '[') {
+      if (pending !== null) pending.nest += 1;
+      append(ch);
+      resetWord(ch);
+      index += 1;
+      continue;
+    }
+    if (ch === ']') {
+      if (pending !== null) pending.nest -= 1;
+      append(ch);
+      resetWord(ch);
+      index += 1;
+      continue;
+    }
+    if (ch === '{') {
+      braceDepth += 1;
+      if (pending !== null && pending.nest <= 0) {
+        const token = pending.kind === 'impl'
+          ? `impl:${normalizeImplHeader(pending.text)}`
+          : `${pending.kind}:${pending.name}`;
+        const frame = {
+          kind: pending.kind,
+          name: pending.kind === 'impl' ? null : pending.name,
+          token,
+          kwLine: pending.kwLine,
+          open: index,
+          close: length,
+          braceDepth,
+        };
+        frames.push(frame);
+        stack.push(frame);
+        pending = null;
+      } else if (pending !== null) {
+        append(ch);
+      }
+      resetWord(ch);
+      index += 1;
+      continue;
+    }
+    if (ch === '}') {
+      append(ch);
+      braceDepth -= 1;
+      if (braceDepth < 0) braceDepth = 0;
+      while (stack.length > 0 && stack[stack.length - 1].braceDepth > braceDepth) {
+        stack.pop().close = index;
+      }
+      resetWord(ch);
+      index += 1;
+      continue;
+    }
+    if (ch === ';') {
+      if (pending !== null && pending.nest <= 0) pending = null;
+      else append(ch);
+      resetWord(ch);
+      index += 1;
+      continue;
+    }
+    if (pubParenArmed) pubParenArmed = false;
+    append(ch);
+    resetWord(ch);
+    index += 1;
+  }
+
+  return frames;
+}
+
+const lexCache = new WeakMap();
+
+function loadLexed(path, readSource) {
+  let byPath = lexCache.get(readSource);
+  if (byPath === undefined) {
+    byPath = new Map();
+    lexCache.set(readSource, byPath);
+  }
+  let entry = byPath.get(path);
+  if (entry === undefined) {
+    let source;
+    try {
+      source = readSource(path);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new CaptureError(`cannot read source file ${path}: ${reason}`);
+    }
+    const starts = lineStartsOf(source);
+    entry = { source, starts, frames: lexSource(source, starts) };
+    byPath.set(path, entry);
+  }
+  return entry;
+}
+
+function offsetAt(entry, line, column) {
+  const starts = entry.starts;
+  if (!Number.isInteger(line) || line < 1 || line > starts.length) return entry.source.length;
+  let offset = starts[line - 1];
+  let remaining = Math.max(0, column - 1);
+  while (remaining > 0 && offset < entry.source.length && entry.source[offset] !== '\n') {
+    const codePoint = entry.source.codePointAt(offset);
+    offset += codePoint > 0xffff ? 2 : 1;
+    remaining -= 1;
+  }
+  return offset;
+}
+
+/**
+ * The item frames of a file, cached per reader and path. `path` is the
+ * repo-relative POSIX path the caller supplies; an unreadable file raises
+ * CAPTURE rather than a silently empty result.
+ */
+export function lexFile(path, readSource = defaultReadSource) {
+  return loadLexed(path, readSource).frames;
+}
+
+/** The `::`-joined tokens of the frames open at a site; "" at file scope. */
+export function containerAt(path, line, column, readSource = defaultReadSource) {
+  const entry = loadLexed(path, readSource);
+  const offset = offsetAt(entry, line, column);
+  return entry.frames
+    .filter((frame) => frame.open < offset && offset < frame.close)
+    .map((frame) => frame.token)
+    .join('::');
+}
+
+/** The stable id `rust:<file>::<container>::<name>`, container omitted when empty. */
+export function idFor(path, line, column, sliceText, readSource = defaultReadSource) {
+  const name = typeof sliceText === 'string' && NAME_RE.test(sliceText) ? sliceText : '{closure}';
+  const container = containerAt(path, line, column, readSource);
+  return container === '' ? `rust:${path}::${name}` : `rust:${path}::${container}::${name}`;
+}
+
+/** The normalised code text from a site to its body brace, empty when no brace. */
+function anchorText(source, start) {
+  const length = source.length;
+  let index = start;
+  let nest = 0;
+  let text = '';
+  while (index < length && text.length < ANCHOR_CAP) {
+    const opaque = opaqueEnd(source, index);
+    if (opaque !== null) {
+      index = opaque.end;
+      continue;
+    }
+    const ch = source[index];
+    if (ch === "'") {
+      if (isIdentContinue(source[index + 1]) && source[index + 2] !== "'") {
+        text += "'";
+        index += 1;
+        continue;
+      }
+      let cursor = index + 1;
+      if (source[cursor] === '\\') cursor += 2;
+      else cursor += 1;
+      while (cursor < length && source[cursor] !== "'" && source[cursor] !== '\n') cursor += 1;
+      index = cursor >= length ? length : cursor + 1;
+      continue;
+    }
+    if (ch === '(' || ch === '[') {
+      nest += 1;
+      text += ch;
+      index += 1;
+      continue;
+    }
+    if (ch === ')' || ch === ']') {
+      nest = Math.max(0, nest - 1);
+      text += ch;
+      index += 1;
+      continue;
+    }
+    if (ch === '{') {
+      text += ch;
+      index += 1;
+      if (nest === 0) break;
+      continue;
+    }
+    text += ch;
+    index += 1;
+  }
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/** The first 12 lowercase hex characters of the site's anchor text. */
+export function anchorFor(path, line, column, readSource = defaultReadSource) {
+  const entry = loadLexed(path, readSource);
+  const offset = offsetAt(entry, line, column);
+  return sha256(Buffer.from(anchorText(entry.source, offset), 'utf8')).slice(0, 12);
+}
+
+// ---------------------------------------------------------------------------
 // In-memory self-test
 // ---------------------------------------------------------------------------
 
@@ -677,6 +1148,69 @@ function expectExit(argv, expected, io) {
   }
 }
 
+function fixtureReader(sources) {
+  return (file) => {
+    if (!(file in sources)) throw new Error(`fixture is missing source for ${file}`);
+    return sources[file];
+  };
+}
+
+/** The 1-based (line, column) of the `occurrence`-th `needle`, line first. */
+function sourceSite(source, needle, occurrence = 1) {
+  let index = -1;
+  for (let seen = 0; seen < occurrence; seen += 1) {
+    index = source.indexOf(needle, index + 1);
+    if (index === -1) throw new Error(`fixture is missing ${JSON.stringify(needle)}`);
+  }
+  let line = 1;
+  let lineStart = 0;
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (source[cursor] === '\n') {
+      line += 1;
+      lineStart = cursor + 1;
+    }
+  }
+  let column = 1;
+  let offset = lineStart;
+  while (offset < index) {
+    const codePoint = source.codePointAt(offset);
+    offset += codePoint > 0xffff ? 2 : 1;
+    column += 1;
+  }
+  return { line, column };
+}
+
+/**
+ * One in-memory fixture: a file path, its source and a reader over it. A new
+ * fixture gets a fresh reader, so the lexer cache never leaks between cases.
+ */
+function fixture(file, source) {
+  return { file, source, reader: fixtureReader({ [file]: source }) };
+}
+
+function idAt(fix, needle, sliceText, occurrence = 1) {
+  const site = sourceSite(fix.source, needle, occurrence);
+  return idFor(fix.file, site.line, site.column, sliceText, fix.reader);
+}
+
+function containerAtNeedle(fix, needle, occurrence = 1) {
+  const site = sourceSite(fix.source, needle, occurrence);
+  return containerAt(fix.file, site.line, site.column, fix.reader);
+}
+
+function anchorAt(fix, needle, occurrence = 1) {
+  const site = sourceSite(fix.source, needle, occurrence);
+  return anchorFor(fix.file, site.line, site.column, fix.reader);
+}
+
+function expectEqual(actual, expected, label) {
+  if (actual !== expected) throw new Error(`${label}: expected ${expected}, got ${actual}`);
+}
+
+function expectDifferent(left, right, label) {
+  if (left === right) throw new Error(`${label}: expected two different values, got ${left}`);
+}
+
 // The four comments and pinned assignment of the phase-1 root clippy.toml.
 const PINNED_CLIPPY_TOML = [
   "# Pinned for #2234 so a future change of Clippy's default cannot move the gate.",
@@ -705,6 +1239,70 @@ const MACOS_FORMS = [
 
 function selfTestCases() {
   return [
+    ['case 29: a raw-identifier span slice is kept as the name, not {closure}', () => {
+      const fix = fixture('src/raw.rs', 'fn r#match() {}\n');
+      expectEqual(idAt(fix, 'r#match', 'r#match'), 'rust:src/raw.rs::r#match', 'r#match name');
+    }],
+    ['case 30: two handle methods in impl A and impl B get two ids', () => {
+      const fix = fixture('src/two.rs', `impl A {
+    fn handle(&self) {}
+}
+impl B {
+    fn handle(&self) {}
+}
+`);
+      const ids = [1, 2].map((occurrence) => idAt(fix, 'handle(&self)', 'handle', occurrence));
+      expectDifferent(ids[0], ids[1], 'impl A and impl B');
+      expectEqual(ids[0], 'rust:src/two.rs::impl:A::handle', 'impl A handle');
+    }],
+    ['case 31: impl Tr for T, trait Tr and mod m yield their three containers', () => {
+      const fix = fixture('src/three.rs', `impl Tr for T {
+    fn a(&self) {}
+}
+trait Tr {
+    fn b(&self) {}
+}
+mod m {
+    fn c(&self) {}
+}
+`);
+      const containers = ['a(&self)', 'b(&self)', 'c(&self)'].map((needle) => containerAtNeedle(fix, needle));
+      expectEqual(containers.join(' | '), 'impl:Tr for T | trait:Tr | mod:m', 'the three containers');
+    }],
+    ['case 32: a free function id carries no container segment', () => {
+      const fix = fixture('src/free.rs', 'fn free() {}\n');
+      expectEqual(idAt(fix, 'free()', 'free'), 'rust:src/free.rs::free', 'free id');
+    }],
+    ['case 33: a function inside another function inside impl A keeps both frames', () => {
+      const fix = fixture('src/nested.rs', `impl A {
+    fn outer() {
+        fn inner() {}
+    }
+}
+`);
+      expectEqual(containerAtNeedle(fix, 'inner()'), 'impl:A::fn:outer', 'nested container');
+      expectEqual(idAt(fix, 'inner()', 'inner'), 'rust:src/nested.rs::impl:A::fn:outer::inner', 'nested id');
+    }],
+    ['case 34: an impl where clause is dropped and its generics kept', () => {
+      const fix = fixture('src/where.rs', `impl<T> Foo<T> where T: X {
+    fn f() {}
+}
+`);
+      expectEqual(containerAtNeedle(fix, 'f()'), 'impl:<T> Foo<T>', 'where clause dropped');
+    }],
+    ['case 35: an unreadable source raises CAPTURE instead of inventing file scope', () => {
+      let caught = null;
+      try {
+        containerAt('src/missing.rs', 1, 1, () => {
+          throw new Error('missing fixture');
+        });
+      } catch (error) {
+        caught = error;
+      }
+      if (!(caught instanceof CaptureError) || caught.code !== 'CAPTURE') {
+        throw new Error(`expected a CAPTURE error, got ${caught}`);
+      }
+    }],
     ['case 46: the per-function cognitive_complexity attribute fails S1', () => {
       const hits = runFixture(['src/legacy.rs'], {
         'src/legacy.rs': '#[clippy::cognitive_complexity = "1000"]\nfn legacy() {}\n',
@@ -836,6 +1434,223 @@ function selfTestCases() {
       expectExit(['--platform'], 2, silent);
       expectExit(['--platform', 'bogus', '--scan-sources'], 2, silent);
       expectExit(['--help'], 0, silent);
+    }],
+    ['case 55: a function and closure after a complete impl block stay at file scope', () => {
+      const fix = fixture('src/after.rs', `impl A {
+    fn method(&self) {}
+}
+fn free() {
+    let c = |x| x;
+}
+`);
+      const containers = ['free()', '|x|'].map((needle) => containerAtNeedle(fix, needle));
+      expectEqual(JSON.stringify(containers), JSON.stringify(['', 'fn:free']), 'free scope and closure scope');
+    }],
+    ['case 56: a closure under a module declaration stays under its function', () => {
+      const fix = fixture('src/below.rs', `pub mod web;
+fn free() {
+    let c = |x| x;
+}
+`);
+      expectEqual(containerAtNeedle(fix, 'free()'), '', 'module declaration opens nothing');
+      expectEqual(idAt(fix, '|x|', '|x|'), 'rust:src/below.rs::fn:free::{closure}', 'closure id');
+    }],
+    ['case 57: four same-named methods under four different impls get four ids', () => {
+      const fix = fixture('src/four.rs', `impl Display for F {
+    fn fmt(&self) {}
+}
+impl Debug for F {
+    fn fmt(&self) {}
+}
+impl From<String> for E {
+    fn from(value: String) {}
+}
+impl From<&str> for E {
+    fn from(value: &str) {}
+}
+`);
+      const ids = [
+        ['fmt(&self)', 'fmt', 1],
+        ['fmt(&self)', 'fmt', 2],
+        ['from(value: String)', 'from', 1],
+        ['from(value: &str)', 'from', 1],
+      ].map(([needle, sliceText, occurrence]) => idAt(fix, needle, sliceText, occurrence));
+      if (new Set(ids).size !== 4) throw new Error(`expected four distinct ids, got ${JSON.stringify(ids)}`);
+      expectEqual(ids[2], 'rust:src/four.rs::impl:From<String> for E::from', 'String impl');
+      expectEqual(ids[3], 'rust:src/four.rs::impl:From<&str> for E::from', '&str impl');
+    }],
+    ['case 58: module paths separate siblings, and cfg-alternate siblings share one id', () => {
+      const split = fixture('src/mods.rs', `mod a {
+    mod inner {
+        fn f() {}
+    }
+}
+mod b {
+    mod inner {
+        fn f() {}
+    }
+}
+`);
+      expectDifferent(idAt(split, 'f()', 'f', 1), idAt(split, 'f()', 'f', 2), 'module paths');
+      expectEqual(idAt(split, 'f()', 'f', 1), 'rust:src/mods.rs::mod:a::mod:inner::f', 'mod a path');
+      expectEqual(idAt(split, 'f()', 'f', 2), 'rust:src/mods.rs::mod:b::mod:inner::f', 'mod b path');
+      const shared = fixture('src/shared.rs', `mod p {
+    mod inner {
+        fn f() {}
+    }
+    mod inner {
+        fn f() {}
+    }
+}
+`);
+      expectEqual(idAt(shared, 'f()', 'f', 1), 'rust:src/shared.rs::mod:p::mod:inner::f', 'shared path');
+      expectEqual(idAt(shared, 'f()', 'f', 1), idAt(shared, 'f()', 'f', 2), 'cfg-alternate pair');
+    }],
+    ['case 59: a three-line impl header is joined and collapsed', () => {
+      const fix = fixture('src/joined.rs', `impl<T>
+    Trait<T>
+    for Foo<T>
+{
+    fn f() {}
+}
+`);
+      expectEqual(containerAtNeedle(fix, 'f()'), 'impl:<T> Trait<T> for Foo<T>', 'joined header');
+    }],
+    ['case 60: nested generics in an impl header survive whole', () => {
+      const fix = fixture('src/generics.rs', `impl<T: Into<Vec<u8>>> Foo<T> {
+    fn f() {}
+}
+`);
+      expectEqual(containerAtNeedle(fix, 'f()'), 'impl:<T: Into<Vec<u8>>> Foo<T>', 'nested generics');
+    }],
+    ['case 61: trailing comments, raw strings and commented mod lines open nothing', () => {
+      const fix = fixture('src/lexed.rs', `impl Foo for Bar // for Baz
+{
+    fn m(&self) {}
+}
+fn host() {
+r#"impl Other {"#;
+}
+fn after() {}
+fn host2() {
+// mod x {
+}
+fn after2() {}
+`);
+      expectEqual(containerAtNeedle(fix, 'm(&self)'), 'impl:Foo for Bar', 'trailing comment');
+      expectEqual(containerAtNeedle(fix, 'after()'), '', 'raw string opens nothing');
+      expectEqual(containerAtNeedle(fix, 'after2()'), '', 'commented mod opens nothing');
+    }],
+    ['case 62: inserting an unrelated item changes the id set by exactly one id', () => {
+      const base = fixture('src/insert.rs', `fn a() {}
+impl A {
+    fn b(&self) {}
+}
+`);
+      const inserted = fixture('src/insert.rs', `struct P;
+impl P {
+    fn p(&self) {}
+}
+${base.source}`);
+      const baseIds = new Set([idAt(base, 'a()', 'a'), idAt(base, 'b(&self)', 'b')]);
+      const insertedIds = new Set([
+        idAt(inserted, 'a()', 'a'),
+        idAt(inserted, 'b(&self)', 'b'),
+        idAt(inserted, 'p(&self)', 'p'),
+      ]);
+      const added = [...insertedIds].filter((id) => !baseIds.has(id));
+      const removed = [...baseIds].filter((id) => !insertedIds.has(id));
+      if (added.length !== 1 || added[0] !== 'rust:src/insert.rs::impl:P::p') {
+        throw new Error(`expected exactly impl:P::p inserted, got ${JSON.stringify(added)}`);
+      }
+      if (removed.length !== 0) throw new Error(`unrelated ids moved: ${JSON.stringify(removed)}`);
+      if (insertedIds.size !== 3) throw new Error(`struct P must contribute no id, got ${JSON.stringify([...insertedIds])}`);
+    }],
+    ['case 63: closures on their fn header line stay under their own method', () => {
+      const fix = fixture('src/same-line.rs', `impl P {
+    fn m1(&self) { let c = |x| x; }
+    fn m2(&self) { let c = |x| x; }
+}
+`);
+      expectEqual(idAt(fix, '|x|', '|x|', 1), 'rust:src/same-line.rs::impl:P::fn:m1::{closure}', 'm1 closure');
+      expectEqual(idAt(fix, '|x|', '|x|', 2), 'rust:src/same-line.rs::impl:P::fn:m2::{closure}', 'm2 closure');
+    }],
+    ['case 64: headers ended by a semicolon open no scope', () => {
+      const fix = fixture('src/semis.rs', `mod web;
+fn f() {}
+trait T {
+    fn g(&self);
+    fn h(&self) {}
+}
+`);
+      expectEqual(containerAtNeedle(fix, 'f()'), '', 'mod declaration');
+      expectEqual(containerAtNeedle(fix, 'h(&self)'), 'trait:T', 'trait method');
+    }],
+    ['case 65: closure anchors split shared ids, and identical closures share one anchor', () => {
+      const different = fixture('src/anchors.rs', `fn f() {
+    let a = |x: u32| { x };
+    let b = |y: u32| { y };
+}
+`);
+      expectEqual(idAt(different, '|x: u32|', '|x: u32|'), idAt(different, '|y: u32|', '|y: u32|'), 'shared closure id');
+      expectDifferent(anchorAt(different, '|x: u32|'), anchorAt(different, '|y: u32|'), 'parameter lists');
+      const identical = fixture('src/anchors.rs', `fn f() {
+    let a = |x: u32| { x };
+    let b = |x: u32| { y };
+}
+`);
+      expectEqual(anchorAt(identical, '|x: u32|', 1), anchorAt(identical, '|x: u32|', 2), 'identical closures');
+    }],
+    ['case 66: a const-generic brace ends the impl header early', () => {
+      const fix = fixture('src/const-generic.rs', `impl Foo<{N + 1}> {
+    fn f() {}
+}
+`);
+      const frames = lexFile(fix.file, fix.reader);
+      if (frames.length === 0 || frames[0].token !== 'impl:Foo<') {
+        throw new Error(`expected the header to end at the const-generic brace, got ${JSON.stringify(frames)}`);
+      }
+      expectEqual(containerAtNeedle(fix, 'f()'), '', 'truncated impl frame is closed');
+    }],
+    ['case 69: array types in signatures do not drop their frames', () => {
+      const fix = fixture('src/arrays.rs', `fn f(x: u32) -> [u32; 3] { let c = |y| y; }
+fn g(x: u32) -> [u32; 3] { let c = |y| y; }
+impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
+`);
+      const containers = [1, 2, 3].map((occurrence) => containerAtNeedle(fix, '|y|', occurrence));
+      const ids = [1, 2, 3].map((occurrence) => idAt(fix, '|y|', '|y|', occurrence));
+      expectEqual(containers[0], 'fn:f', 'fn f container');
+      expectEqual(containers[1], 'fn:g', 'fn g container');
+      expectEqual(containers[2], 'impl:Tr for [u8; 4]::fn:m', 'impl method container');
+      if (new Set(ids).size !== 3) throw new Error(`expected three distinct ids, got ${JSON.stringify(ids)}`);
+      if (containers.some((container) => container === '')) throw new Error('a frame was lost to the array semicolon');
+    }],
+    ['case 72: a body edit leaves the anchor, a signature edit moves it', () => {
+      const before = fixture('src/edit.rs', 'fn f() { let a = 1; }\n');
+      const bodied = fixture('src/edit.rs', 'fn f() { let a = 1; let b = 2; }\n');
+      const signature = fixture('src/edit.rs', 'fn f(x: u32) { let a = 1; }\n');
+      expectEqual(anchorAt(before, 'f('), anchorAt(bodied, 'f('), 'body edit');
+      expectDifferent(anchorAt(before, 'f('), anchorAt(signature, 'f('), 'signature edit');
+    }],
+    ['case 73: closure anchors split, and a lexed header ends at the real brace', () => {
+      const split = fixture('src/decoy.rs', `fn f() {
+    let a = |x: u32| { x };
+    let b = |y: u32| { y };
+}
+`);
+      expectDifferent(anchorAt(split, '|x: u32|'), anchorAt(split, '|y: u32|'), 'closure parameters');
+      const decoy = fixture('src/decoy-header.rs', `fn f() -> [u8; "{".len()] // {
+{ 0 }
+`);
+      const expected = sha256(Buffer.from('f() -> [u8; .len()] {', 'utf8')).slice(0, 12);
+      expectEqual(anchorAt(decoy, 'f('), expected, 'anchor ends at the real brace');
+    }],
+    ['case 74: a braceless tail anchors over the capped text without raising', () => {
+      const fix = fixture('src/capped.rs', `fn f() ${'x'.repeat(600)}\n`);
+      const anchor = anchorAt(fix, 'f(');
+      if (!/^[0-9a-f]{12}$/.test(anchor)) throw new Error(`expected 12 hex characters, got ${JSON.stringify(anchor)}`);
+      const expected = sha256(Buffer.from(`f() ${'x'.repeat(396)}`, 'utf8')).slice(0, 12);
+      expectEqual(anchor, expected, 'capped anchor');
     }],
   ];
 }
