@@ -1,10 +1,29 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 
 use agentscommander_lib::config::sessions_persistence::{
     load_sessions_raw_from_dir_for_test, PersistedSession,
 };
 use agentscommander_lib::session::session::SessionStatus;
+
+/// Excludes one test's open write descriptor on a freshly copied binary from
+/// overlapping another test's fork/exec.
+///
+/// These tests run in parallel and each copies the binary into its own temp dir
+/// before exec'ing it. `Command::spawn` forks, and the child inherits the write
+/// descriptor another thread still holds on *its* copy; exec'ing a binary that
+/// any process holds open for writing fails with `ETXTBSY`. Covering both the
+/// copy and the spawn closes that window. The lock is released before output is
+/// collected, so the binary runs themselves still overlap.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn command_for_binary(bin: &Path) -> Command {
     let mut command = Command::new(bin);
@@ -39,7 +58,10 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    {
+        let _guard = spawn_lock();
+        std::fs::copy(src, &dst).expect("copy binary");
+    }
     dst
 }
 
@@ -181,7 +203,17 @@ fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
 }
 
 fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let mut command = command_for_binary(bin);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -193,11 +225,18 @@ fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_json_machine(bin: &Path, args: &[&str]) -> serde_json::Value {
-    let out = command_for_binary(bin)
+    let mut command = command_for_binary(bin);
+    command
         .env("AC_MACHINE_OUTPUT", "1")
         .args(args)
-        .output()
-        .expect("spawn");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -209,7 +248,17 @@ fn run_json_machine(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_fail(bin: &Path, args: &[&str]) -> String {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let mut command = command_for_binary(bin);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
     assert!(
         !out.status.success(),
         "expected failure\nstdout: {}\nstderr: {}",
@@ -221,7 +270,17 @@ fn run_fail(bin: &Path, args: &[&str]) -> String {
 
 #[cfg(target_os = "windows")]
 fn run_fail_output(bin: &Path, args: &[&str]) -> (String, String) {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let mut command = command_for_binary(bin);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
     assert!(
         !out.status.success(),
         "expected failure\nstdout: {}\nstderr: {}",
@@ -235,7 +294,17 @@ fn run_fail_output(bin: &Path, args: &[&str]) -> (String, String) {
 }
 
 fn run_stdout(bin: &Path, args: &[&str]) -> String {
-    let out = command_for_binary(bin).args(args).output().expect("spawn");
+    let mut command = command_for_binary(bin);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -1018,7 +1087,8 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
         .join(".ac")
         .join("room-1-dev-team")
         .join("__agent_architect");
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "list-peers-lean",
             "--root",
@@ -1026,8 +1096,14 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
             "--token",
             "00000000-0000-0000-0000-000000000000",
         ])
-        .output()
-        .expect("list peers");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("list peers")
+    };
+    let out = child.wait_with_output().expect("collect output");
     assert!(
         out.status.success(),
         "stdout: {}\nstderr: {}",
@@ -1170,7 +1246,8 @@ fn issue_1937_repeat_member_preserves_config() {
     // Repeat the member add while this test process performs guarded writes
     // concurrently: the cross-process sidecar lock serializes them, and the
     // creator's merge must not drop either writer's data.
-    let child = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "team",
             "add-member",
@@ -1182,9 +1259,11 @@ fn issue_1937_repeat_member_preserves_config() {
             "dev-rust",
         ])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn repeat add-member");
+        .stderr(std::process::Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn repeat add-member")
+    };
     for index in 0..5 {
         guarded_update(&config_path, |obj| {
             obj.insert(
@@ -1311,7 +1390,8 @@ fn list_peers_surfaces_context_percent_for_matching_live_session() {
         .join("__agent_architect");
 
     for verb in ["list-peers", "list-peers-lean"] {
-        let out = command_for_binary(&bin)
+        let mut command = command_for_binary(&bin);
+        command
             .args([
                 verb,
                 "--root",
@@ -1319,8 +1399,14 @@ fn list_peers_surfaces_context_percent_for_matching_live_session() {
                 "--token",
                 "00000000-0000-0000-0000-000000000000",
             ])
-            .output()
-            .expect("run peer verb");
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = {
+            let _guard = spawn_lock();
+            command.spawn().expect("run peer verb")
+        };
+        let out = child.wait_with_output().expect("collect output");
         assert!(
             out.status.success(),
             "{verb} failed\nstdout: {}\nstderr: {}",
@@ -1547,7 +1633,8 @@ fn workgroup_add_legacy_missing_team_still_bootstraps_with_warning() {
     write_settings(&config_dir, tmp.path());
     let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "workgroup",
             "add",
@@ -1562,8 +1649,14 @@ fn workgroup_add_legacy_missing_team_still_bootstraps_with_warning() {
             "--agent",
             "dev-rust",
         ])
-        .output()
-        .expect("spawn");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
     assert!(
         out.status.success(),
         "stdout: {}\nstderr: {}",
@@ -2246,7 +2339,8 @@ fn purge_room_and_purge_wg_produce_identical_outbox_messages() {
         let root = tmp.path().join(format!("root-{}", slot));
         std::fs::create_dir_all(&root).expect("create agent root");
 
-        let mut child = command_for_binary(&bin)
+        let mut command = command_for_binary(&bin);
+        command
             .args([
                 sub,
                 "--token",
@@ -2258,9 +2352,11 @@ fn purge_room_and_purge_wg_produce_identical_outbox_messages() {
                 "--dry-run",
             ])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn purge");
+            .stderr(std::process::Stdio::null());
+        let mut child = {
+            let _guard = spawn_lock();
+            command.spawn().expect("spawn purge")
+        };
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut found = None;

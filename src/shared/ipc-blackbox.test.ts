@@ -126,12 +126,13 @@ describe("ipc black box", () => {
     expect(record.overdueTotal).toBe(1);
   });
 
-  it("never marks the three file-dialog commands overdue", async () => {
+  it("never marks the four never-overdue commands overdue", async () => {
     await installIpcBlackBox();
 
     noteInvokeStart("pick_folder");
     noteInvokeStart("spec_board_pick_open");
     noteInvokeStart("spec_board_pick_save");
+    noteInvokeStart("quit_application");
     vi.advanceTimersByTime(60_000);
 
     const record = readRecord();
@@ -139,10 +140,58 @@ describe("ipc black box", () => {
       ["pick_folder", false],
       ["spec_board_pick_open", false],
       ["spec_board_pick_save", false],
+      ["quit_application", false],
     ]);
     expect(record.pending[0].ageMs).toBeGreaterThanOrEqual(60_000);
-    expect(record.pendingTotal).toBe(3);
+    expect(record.pendingTotal).toBe(4);
     expect(record.overdueTotal).toBe(0);
+  });
+
+  it("keeps a long-pending quit_application out of overdueTotal", async () => {
+    await installIpcBlackBox();
+
+    noteInvokeStart("quit_application");
+    vi.advanceTimersByTime(60_000);
+
+    const record = readRecord();
+    expect(record.pending).toHaveLength(1);
+    expect(record.pending[0].cmd).toBe("quit_application");
+    expect(record.pending[0].ageMs).toBeGreaterThanOrEqual(60_000);
+    expect(record.pending[0].overdue).toBe(false);
+    expect(record.pendingTotal).toBe(1);
+    expect(record.overdueTotal).toBe(0);
+  });
+
+  it("counts an ordinary call overdue alongside an exempt quit and settles both", async () => {
+    await installIpcBlackBox();
+
+    const quitId = noteInvokeStart("quit_application");
+    const ordinaryId = noteInvokeStart("get_sessions");
+    vi.advanceTimersByTime(60_000);
+
+    const both = readRecord();
+    expect(both.pending.map((entry) => [entry.cmd, entry.overdue])).toEqual([
+      ["quit_application", false],
+      ["get_sessions", true],
+    ]);
+    expect(both.pendingTotal).toBe(2);
+    expect(both.overdueTotal).toBe(1);
+
+    noteInvokeSettle(quitId);
+    vi.advanceTimersByTime(TICK_MS);
+
+    const ordinaryOnly = readRecord();
+    expect(ordinaryOnly.pending.map((entry) => entry.cmd)).toEqual(["get_sessions"]);
+    expect(ordinaryOnly.pendingTotal).toBe(1);
+    expect(ordinaryOnly.overdueTotal).toBe(1);
+
+    noteInvokeSettle(ordinaryId);
+    vi.advanceTimersByTime(TICK_MS);
+
+    const empty = readRecord();
+    expect(empty.pending).toEqual([]);
+    expect(empty.pendingTotal).toBe(0);
+    expect(empty.overdueTotal).toBe(0);
   });
 
   it("counts every overdue call even when pending is capped and keeps the oldest", async () => {
