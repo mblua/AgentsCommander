@@ -93,10 +93,93 @@ pub struct AgentConfig {
     /// layer 0 while it is still present. No production writer sets `Some`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocking_menus: Option<Vec<BlockingMenuEntry>>,
+    /// #2306 P1 - explicit zero-based position of this tool inside
+    /// `settings.agents`. `None` means no usable stored position: the record
+    /// predates the field, or its JSON value was not a nonnegative 32-bit
+    /// integer. Leaving `order` absent never fails the settings decode.
+    ///
+    /// Loading finalizes every record to a unique contiguous `Some(0..n-1)`
+    /// position and loading alone never writes; the next authorized save
+    /// persists what the loader derived.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_agent_order"
+    )]
+    pub order: Option<u32>,
     /// Backend used for future non-local session transports. Omitted/default
     /// keeps today's local-process behavior.
     #[serde(default, skip_serializing_if = "AgentBackendConfig::is_default")]
     pub backend: AgentBackendConfig,
+}
+
+/// #2306 P1 - tolerant decode for [`AgentConfig::order`].
+///
+/// Only a nonnegative integer that fits `u32` decodes as `Some`. `null`,
+/// negative, fractional, string and overflowing values become `None` so one
+/// hand-edited ordinal cannot make the whole settings file unreadable; absent
+/// and invalid are indistinguishable after decode by design.
+fn deserialize_agent_order<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value
+        .as_ref()
+        .and_then(Value::as_u64)
+        .and_then(|raw| u32::try_from(raw).ok()))
+}
+
+/// #2306 P1 - sort `agents` into their effective order and rewrite every
+/// `order` as a unique contiguous `0..n-1` value.
+///
+/// The sort key is the explicit [`AgentConfig::order`] when present, otherwise
+/// the record's original array index; ties break by original array index, which
+/// keeps a legacy file without ordinals in its exact vector order and makes the
+/// result deterministic for mixed, duplicate and out-of-range ordinals. Records
+/// move whole, so ids, labels, profile cells and every other field are
+/// untouched. This is the load-side finalize and the only place allowed to
+/// re-sort; use [`normalize_agent_order`] on the write side.
+pub fn finalize_agent_order(agents: &mut Vec<AgentConfig>) {
+    let mut keyed: Vec<(u64, usize)> = agents
+        .iter()
+        .enumerate()
+        .map(|(index, agent)| (agent.order.map_or(index as u64, u64::from), index))
+        .collect();
+    // The original index is part of the key, so the order is total and the
+    // sort outcome does not depend on the sort implementation being stable.
+    keyed.sort_unstable();
+    if keyed
+        .iter()
+        .enumerate()
+        .all(|(position, &(_, index))| position == index)
+    {
+        normalize_agent_order(agents);
+        return;
+    }
+
+    let mut slots: Vec<Option<AgentConfig>> =
+        std::mem::take(agents).into_iter().map(Some).collect();
+    let mut ordered: Vec<AgentConfig> = Vec::with_capacity(slots.len());
+    for (_, index) in keyed {
+        if let Some(agent) = slots[index].take() {
+            ordered.push(agent);
+        }
+    }
+    *agents = ordered;
+    normalize_agent_order(agents);
+}
+
+/// #2306 P1 - write-side normalizer: renumber `agents` in current vector order
+/// as contiguous `0..n-1`.
+///
+/// It never sorts, so stale numeric values cannot resurrect an old order;
+/// idempotent. Call it immediately before a write when the in-memory vector is
+/// already the effective order.
+pub fn normalize_agent_order(agents: &mut [AgentConfig]) {
+    for (position, agent) in agents.iter_mut().enumerate() {
+        agent.order = Some(position as u32);
+    }
 }
 
 /// #1646 / #1647 - one entry of an agent's `blockingMenus` array, or whatever the user wrote there.
@@ -1972,6 +2055,10 @@ fn parse_settings_json(
         (Err(reason), None) => return Err(reason),
     };
     settings.project_path_state = Arc::new(state);
+    // #2306 P1 - in-memory finalize over the merged view. It is deliberately not
+    // part of `needs_save`: a legacy file with no ordinals must load without a
+    // disk write or a backup rotation.
+    finalize_agent_order(&mut settings.agents);
     report_overlay_diagnostics(source, &overlay);
     settings.local_overlay_state = Arc::new(overlay);
     Ok((settings, legacy_profiles))
@@ -2042,6 +2129,9 @@ fn default_settings_with_overlay(settings_path: &Path, source: &str) -> AppSetti
     }
     match serde_json::from_value::<AppSettings>(value) {
         Ok(mut settings) => {
+            // #2306 P1 - same in-memory finalize as the normal parse, applied to
+            // the defaults-plus-overlay view; still no write.
+            finalize_agent_order(&mut settings.agents);
             settings.local_overlay_state = Arc::new(overlay);
             settings
         }
@@ -2798,6 +2888,10 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
             true
         };
         if backup_ok {
+            // #2306 P1 - the migration write is authorized, so persist explicit
+            // contiguous ordinals. Finalize already ran at load; this renumber is
+            // the write-side guarantee and cannot re-sort or revive stale values.
+            normalize_agent_order(&mut settings.agents);
             // #1077: route the startup root-token/migration write through PRESERVE
             // mode so it cannot erase project companions/conflicts before the
             // first snapshot, and so a present-but-invalid file is never
@@ -5340,6 +5434,9 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
         return Ok(candidate);
     }
 
+    // #2306 P1 - renumber in the candidate's current (effective) vector order
+    // right before the direct write; never re-sort from stored ordinals.
+    normalize_agent_order(&mut candidate.agents);
     let written = match save_settings_value_locked(
         &candidate,
         path,
@@ -5387,6 +5484,11 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     let mut settings: AppSettings =
         serde_json::from_value(value).map_err(|_| "settings_invalid".to_string())?;
     settings.project_path_state = Arc::new(state);
+    // #2306 P1 - finalize before the caller's no-op return or direct write, so
+    // both the returned and the written snapshot carry contiguous ordinals.
+    // Overlay values stay in memory: `save_settings_value_locked` restores the
+    // base `agents` array before writing the file.
+    finalize_agent_order(&mut settings.agents);
     Ok(settings)
 }
 
@@ -7668,6 +7770,7 @@ mod tests {
                     label: (*label).to_string(),
                     command: (*command).to_string(),
                     color: "#000000".to_string(),
+                    order: None,
                     envs: Vec::new(),
                     isolated_home: false,
                     instructions_filename: None,
@@ -7769,6 +7872,7 @@ mod tests {
             label: "Claude".to_string(),
             command: "claude".to_string(),
             color: "#fff".to_string(),
+            order: None,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
@@ -10857,6 +10961,7 @@ mod tests {
             label: id.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
+            order: None,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
@@ -11348,6 +11453,9 @@ mod tests {
         /// #1905: re-captured after phase 3 - the loader no longer materializes
         /// `blockingMenus` and the export strips every array (claude's explicit `[]`
         /// is pristine and is dropped), so the control carries no `blockingMenus`.
+        /// #2306 P1: re-captured - the loader finalizes every registered agent to
+        /// an explicit contiguous `order`, so the control carries codex at 0 and
+        /// claude at 1.
         const EXPECTED_NON_PROJECT_SETTINGS_JSON: &str = r##"{
   "activityLogEnabled": true,
   "agentAutoUpdateByCommand": {},
@@ -11362,7 +11470,8 @@ mod tests {
       "envs": [],
       "id": "codex",
       "isolatedHome": false,
-      "label": "Codex"
+      "label": "Codex",
+      "order": 0
     },
     {
       "color": "#445566",
@@ -11370,7 +11479,8 @@ mod tests {
       "envs": [],
       "id": "claude",
       "isolatedHome": false,
-      "label": "Claude"
+      "label": "Claude",
+      "order": 1
     }
   ],
   "alwaysShowSelectedWorkgroup": true,
@@ -13795,6 +13905,7 @@ mod tests {
                 label: "grok-1".to_string(),
                 command: "grok".to_string(),
                 color: "#000000".to_string(),
+                order: None,
                 envs: Vec::new(),
                 isolated_home: false,
                 instructions_filename: None,
@@ -13919,6 +14030,356 @@ mod tests {
         );
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // #2306 P1 - registered-agent explicit order model.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    fn order_2306_decode_settings(agents: serde_json::Value) -> AppSettings {
+        // `defaultShell`, `defaultShellArgs` and `agents` are the three fields
+        // `AppSettings` has no serde default for.
+        serde_json::from_value(serde_json::json!({
+            "defaultShell": "test-shell",
+            "defaultShellArgs": [],
+            "agents": agents,
+        }))
+        .expect("settings decode")
+    }
+
+    fn order_2306_agent(id: &str, order: Option<serde_json::Value>) -> serde_json::Value {
+        let mut agent = serde_json::json!({
+            "id": id,
+            "label": id.to_uppercase(),
+            "command": "claude",
+            "color": "#000000",
+        });
+        if let Some(order) = order {
+            agent["order"] = order;
+        }
+        agent
+    }
+
+    fn order_2306_ids(agents: &[AgentConfig]) -> Vec<&str> {
+        agents.iter().map(|agent| agent.id.as_str()).collect()
+    }
+
+    fn order_2306_positions(agents: &[AgentConfig]) -> Vec<Option<u32>> {
+        agents.iter().map(|agent| agent.order).collect()
+    }
+
+    #[test]
+    fn agent_order_mixed_missing_duplicate_and_out_of_range_is_deterministic() {
+        // Keys: a=(2,0), b=(1,1) [absent uses its index], c=(0,2), d=(0,3),
+        // e=(99,4). Sorted by (key, original index): c,d,b,a,e.
+        let mut settings = order_2306_decode_settings(serde_json::json!([
+            order_2306_agent("a", Some(serde_json::json!(2))),
+            order_2306_agent("b", None),
+            order_2306_agent("c", Some(serde_json::json!(0))),
+            order_2306_agent("d", Some(serde_json::json!(0))),
+            order_2306_agent("e", Some(serde_json::json!(99))),
+        ]));
+        super::finalize_agent_order(&mut settings.agents);
+        assert_eq!(order_2306_ids(&settings.agents), ["c", "d", "b", "a", "e"]);
+        assert_eq!(
+            order_2306_positions(&settings.agents),
+            [Some(0), Some(1), Some(2), Some(3), Some(4)]
+        );
+
+        // Idempotent: a second finalize cannot re-sort the now-valid ordinals.
+        super::finalize_agent_order(&mut settings.agents);
+        assert_eq!(order_2306_ids(&settings.agents), ["c", "d", "b", "a", "e"]);
+        assert_eq!(
+            order_2306_positions(&settings.agents),
+            [Some(0), Some(1), Some(2), Some(3), Some(4)]
+        );
+    }
+
+    #[test]
+    fn agent_order_absent_keeps_legacy_vector_order() {
+        let mut settings = order_2306_decode_settings(serde_json::json!([
+            order_2306_agent("a", None),
+            order_2306_agent("b", None),
+            order_2306_agent("c", None),
+        ]));
+        super::finalize_agent_order(&mut settings.agents);
+        assert_eq!(order_2306_ids(&settings.agents), ["a", "b", "c"]);
+        assert_eq!(
+            order_2306_positions(&settings.agents),
+            [Some(0), Some(1), Some(2)]
+        );
+    }
+
+    #[test]
+    fn agent_order_invalid_values_decode_as_absent_without_failing_the_file() {
+        for raw in [
+            serde_json::json!(null),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("3"),
+            serde_json::json!(true),
+            serde_json::json!(u64::from(u32::MAX) + 1),
+        ] {
+            let mut settings = order_2306_decode_settings(serde_json::json!([order_2306_agent(
+                "a",
+                Some(raw.clone())
+            ),]));
+            assert_eq!(settings.agents[0].order, None, "raw order {raw}");
+            super::finalize_agent_order(&mut settings.agents);
+            assert_eq!(settings.agents[0].order, Some(0), "raw order {raw}");
+        }
+
+        // The boundary value still decodes as a real ordinal.
+        let settings = order_2306_decode_settings(serde_json::json!([order_2306_agent("a", None)]));
+        assert_eq!(settings.agents[0].order, None);
+        let settings = order_2306_decode_settings(serde_json::json!([{
+            "id": "a", "label": "A", "command": "claude", "color": "#000000",
+            "order": u32::MAX,
+        }]));
+        assert_eq!(settings.agents[0].order, Some(u32::MAX));
+    }
+
+    #[test]
+    fn agent_order_legacy_load_writes_nothing_and_next_save_persists_positions() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        // `order: -1` is invalid and stays on disk until an authorized save; `b`
+        // has no ordinal at all. Complete A-profile cells keep the loader from
+        // taking any unrelated repair/root-token save path, so a write here can
+        // only come from the order code under test.
+        std::fs::write(
+            &path,
+            r##"{
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "rootToken": "base-token",
+                "agents": [
+                    {"id":"a","label":"A","command":"claude","color":"#000000","order":-1},
+                    {"id":"b","label":"B","command":"claude","color":"#000000"}
+                ],
+                "codingAgentProfiles": {
+                    "schemaVersion": 2,
+                    "profileSlots": {"A": {"label": ""}},
+                    "defaultProfileByAgent": {},
+                    "profilesByAgent": {
+                        "a": {"A": {"enabled": true, "command": "", "env": {}, "notes": "cell-a"}},
+                        "b": {"A": {"enabled": true, "command": "", "env": {}, "notes": "cell-b"}}
+                    },
+                    "profileLabelsByAgent": {"a": {"A": "Alpha"}}
+                }
+            }"##,
+        )
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let settings = super::load_settings_from_path(&path);
+        assert_eq!(order_2306_ids(&settings.agents), ["a", "b"]);
+        assert_eq!(
+            order_2306_positions(&settings.agents),
+            [Some(0), Some(1)],
+            "absent and invalid ordinals normalize to the array position"
+        );
+        // A/B profile cells and labels survive reordering.
+        assert_eq!(
+            settings.coding_agent_profiles.profiles_by_agent["a"]["A"].notes,
+            "cell-a"
+        );
+        assert_eq!(
+            settings.coding_agent_profiles.profile_labels_by_agent["a"]["A"],
+            "Alpha"
+        );
+        // Loading alone is not an authorized write: disk bytes and backups stay put.
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(
+            !super::settings_backup_path(&path, 1).exists(),
+            "a legacy load must not rotate a settings backup"
+        );
+
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(disk["agents"][0]["id"], "a");
+        assert_eq!(disk["agents"][0]["order"], 0);
+        assert_eq!(disk["agents"][1]["id"], "b");
+        assert_eq!(disk["agents"][1]["order"], 1);
+        assert_eq!(order_2306_positions(&written.agents), [Some(0), Some(1)]);
+
+        // Second reload preserves the written explicit positions.
+        let reloaded = super::load_settings_from_path(&path);
+        assert_eq!(order_2306_ids(&reloaded.agents), ["a", "b"]);
+        assert_eq!(order_2306_positions(&reloaded.agents), [Some(0), Some(1)]);
+    }
+
+    #[test]
+    fn agent_order_unknown_fields_follow_existing_writer_behavior() {
+        let mut settings = order_2306_decode_settings(serde_json::json!([{
+            "id": "a", "label": "A", "command": "claude", "color": "#000000",
+            "futureField": 7,
+        }]));
+        assert_eq!(settings.agents.len(), 1);
+        super::finalize_agent_order(&mut settings.agents);
+        let object = serde_json::to_value(&settings).unwrap();
+        assert!(
+            object["agents"][0].get("futureField").is_none(),
+            "the typed writer drops unknown fields as before: {object}"
+        );
+        assert_eq!(object["agents"][0]["order"], 0);
+    }
+
+    #[test]
+    fn agent_order_terminal_snapshot_cas_returns_and_installs_normalized_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r##"{
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "rootToken": "base-token",
+                "terminalSnapshotsEnabled": false,
+                "agents": [
+                    {"id":"a","label":"A","command":"claude","color":"#000000","order":1},
+                    {"id":"b","label":"B","command":"claude","color":"#000000"},
+                    {"id":"c","label":"C","command":"claude","color":"#000000","order":0},
+                    {"id":"d","label":"D","command":"claude","color":"#000000","order":0}
+                ]
+            }"##,
+        )
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let current = AppSettings::default();
+
+        // disk gate == enabled: the no-op CAS returns the finalized, normalized view
+        // with no write and no backup rotation.
+        let no_op = super::compare_and_set_terminal_snapshots_enabled_at_path(
+            &current, &path, false, false,
+        )
+        .unwrap();
+        assert_eq!(order_2306_ids(&no_op.agents), ["c", "d", "a", "b"]);
+        assert_eq!(
+            order_2306_positions(&no_op.agents),
+            [Some(0), Some(1), Some(2), Some(3)]
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "the no-op CAS writes nothing"
+        );
+
+        // Direct CAS write: the file itself carries contiguous explicit ordinals.
+        super::compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, false, true)
+            .unwrap();
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(disk["terminalSnapshotsEnabled"], true);
+        let agents = disk["agents"].as_array().unwrap();
+        let ids: Vec<&str> = agents.iter().map(|a| a["id"].as_str().unwrap()).collect();
+        let orders: Vec<u64> = agents
+            .iter()
+            .map(|a| a["order"].as_u64().unwrap())
+            .collect();
+        assert_eq!(ids, ["c", "d", "a", "b"]);
+        assert_eq!(orders, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn agent_order_overlay_owns_agents_in_memory_and_leaves_both_files_base_owned() {
+        use local_overlay_1737::{base_fixture, disk_object, seed};
+        let temp = tempfile::tempdir().unwrap();
+        let mut base = base_fixture();
+        base["agents"] = serde_json::json!([
+            {"id":"base-a","label":"Base A","command":"claude","color":"#111111","order":0},
+            {"id":"base-b","label":"Base B","command":"claude","color":"#222222","order":1}
+        ]);
+        let local = serde_json::json!({
+            "agents": [
+                {"id":"ov-a","label":"Overlay A","command":"claude","color":"#aaaaaa","order":1},
+                {"id":"ov-b","label":"Overlay B","command":"claude","color":"#bbbbbb"},
+                {"id":"ov-c","label":"Overlay C","command":"claude","color":"#cccccc","order":0}
+            ]
+        });
+        let path = seed(temp.path(), Some(&base), Some(&local));
+
+        let mut settings = super::load_settings_from_path(&path);
+        assert!(settings.local_overlay_state.owns_top_level("agents"));
+        // Overlay numbers win; the missing value falls back to its overlay index.
+        assert_eq!(order_2306_ids(&settings.agents), ["ov-c", "ov-a", "ov-b"]);
+        assert_eq!(
+            order_2306_positions(&settings.agents),
+            [Some(0), Some(1), Some(2)]
+        );
+
+        // The CLI loaders share `parse_settings_json` with the GUI loader.
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let (cli_view, _) = super::parse_settings_json(&contents, "test", Some(&path)).unwrap();
+        assert_eq!(order_2306_ids(&cli_view.agents), ["ov-c", "ov-a", "ov-b"]);
+
+        // A non-order save restores the base `agents` array to disk byte-for-byte,
+        // keeps the effective overlay order only in memory, and never writes the
+        // local file.
+        let local_path = temp.path().join("settings.local.json");
+        let overlay_before = std::fs::read(&local_path).unwrap();
+        settings.gemini_api_key = "unrelated".to_string();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        let disk = disk_object(&path);
+        assert_eq!(disk["agents"], base["agents"]);
+        assert_eq!(std::fs::read(&local_path).unwrap(), overlay_before);
+        assert_eq!(order_2306_ids(&written.agents), ["ov-c", "ov-a", "ov-b"]);
+        assert_eq!(
+            order_2306_positions(&written.agents),
+            [Some(0), Some(1), Some(2)]
+        );
+    }
+
+    #[test]
+    fn agent_order_overlay_only_install_honors_numeric_order_without_leaking_to_base() {
+        use local_overlay_1737::{disk_object, seed};
+        let temp = tempfile::tempdir().unwrap();
+        let local = serde_json::json!({
+            "agents": [
+                {"id":"only-a","label":"A","command":"claude","color":"#111111","order":1},
+                {"id":"only-b","label":"B","command":"claude","color":"#222222","order":0}
+            ]
+        });
+        let path = seed(temp.path(), None, Some(&local));
+        let local_path = temp.path().join("settings.local.json");
+        let overlay_before = std::fs::read(&local_path).unwrap();
+
+        let settings = super::load_settings_from_path(&path);
+        assert_eq!(order_2306_ids(&settings.agents), ["only-b", "only-a"]);
+        assert_eq!(order_2306_positions(&settings.agents), [Some(0), Some(1)]);
+        // The fresh-install save writes a base file, but the base never owned
+        // `agents`, so the save restores the serialized default empty array: no
+        // overlay record or overlay ordinal may leak into it.
+        let disk = disk_object(&path);
+        assert_eq!(
+            disk.get("agents"),
+            Some(&serde_json::json!([])),
+            "the absent base restores its default empty agents array: {disk:?}"
+        );
+        assert_eq!(std::fs::read(&local_path).unwrap(), overlay_before);
+    }
+
+    #[test]
+    fn agent_order_unparseable_base_with_overlay_still_finalizes_the_effective_view() {
+        use local_overlay_1737::seed;
+        let temp = tempfile::tempdir().unwrap();
+        let local = serde_json::json!({
+            "agents": [
+                {"id":"ov-a","label":"A","command":"claude","color":"#111111","order":1},
+                {"id":"ov-b","label":"B","command":"claude","color":"#222222","order":0}
+            ]
+        });
+        let path = seed(temp.path(), None, Some(&local));
+        std::fs::write(&path, "{not json").unwrap();
+        let corrupt = std::fs::read(&path).unwrap();
+
+        let settings = super::load_settings_from_path(&path);
+        assert_eq!(order_2306_ids(&settings.agents), ["ov-b", "ov-a"]);
+        assert_eq!(order_2306_positions(&settings.agents), [Some(0), Some(1)]);
+        // The preserve writer refuses to overwrite a present-but-invalid base.
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+    }
     /// #2348 - main-window placement persistence: serde, the central present-only
     /// `Preserve` table, the legacy-migration one-save regression, and overlay
     /// base-preservation for the new key.
