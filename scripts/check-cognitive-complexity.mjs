@@ -634,6 +634,488 @@ function defaultReadBytes(file) {
 }
 
 // ---------------------------------------------------------------------------
+// The source lexer and the identity rule (#2254, phase 2 of #2234)
+//
+// This is the part of the gate that decides what a function is. It reads a
+// Rust source file as text, walks it once as a lexer (comments, strings and
+// literals are opaque), and records one frame per item header that ends in
+// `{`; a header ended by a depth-0 `;` opens nothing. `containerAt` returns
+// the `::`-joined tokens of the frames open at a site, `idFor` builds the
+// stable id and `anchorFor` hashes the text from a site to its body brace.
+// Everything reads through an injectable reader so the self-test runs in
+// memory; the new code is inert until phase 3 calls it.
+// ---------------------------------------------------------------------------
+
+const ITEM_KEYWORDS = new Set(['fn', 'impl', 'trait', 'mod']);
+const ITEM_PREFIX_WORDS = new Set([
+  'pub', 'pub(...)', 'unsafe', 'default', 'async', 'const', 'extern', 'extern-string',
+]);
+const NAME_RE = /^(r#)?[A-Za-z_][A-Za-z0-9_]*$/;
+const ANCHOR_CAP = 400;
+
+/** The error class phase 3 turns into a failed run. */
+export class CaptureError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'CAPTURE';
+    this.code = 'CAPTURE';
+  }
+}
+
+function lineStartsOf(source) {
+  const starts = [0];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === '\n') starts.push(index + 1);
+  }
+  return starts;
+}
+
+function lineNumberAt(starts, offset) {
+  let low = 0;
+  let high = starts.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (starts[middle] <= offset) low = middle;
+    else high = middle - 1;
+  }
+  return low + 1;
+}
+
+/** Returns the offset just past a nested block comment, or end of source. */
+function skipBlockComment(source, start) {
+  let index = start;
+  let depth = 0;
+  while (index < source.length) {
+    if (source[index] === '/' && source[index + 1] === '*') {
+      depth += 1;
+      index += 2;
+      continue;
+    }
+    if (source[index] === '*' && source[index + 1] === '/') {
+      depth -= 1;
+      index += 2;
+      if (depth === 0) return index;
+      continue;
+    }
+    index += 1;
+  }
+  return source.length;
+}
+
+/**
+ * Returns the offset just past a raw or byte-raw string opened at `start`,
+ * where `start` points at the `r` of `r`/`br`, or -1 when the prefix is not a
+ * string. A nested `#` count must close with the same count.
+ */
+function rawStringEnd(source, start) {
+  let index = source[start] === 'r' ? start + 1 : start + 2;
+  let hashes = 0;
+  while (source[index] === '#') {
+    hashes += 1;
+    index += 1;
+  }
+  if (source[index] !== '"') return -1;
+  const terminator = `"${'#'.repeat(hashes)}`;
+  const close = source.indexOf(terminator, index + 1);
+  return close === -1 ? source.length : close + terminator.length;
+}
+
+/** Reads an identifier at `start`, keeping a raw prefix as written. */
+function readIdentifier(source, start) {
+  let index = start;
+  while (index < source.length && isIdentContinue(source[index])) index += 1;
+  let value = source.slice(start, index);
+  if (value === 'r' && source[index] === '#' && isIdentStart(source[index + 1])) {
+    let rawEnd = index + 1;
+    while (rawEnd < source.length && isIdentContinue(source[rawEnd])) rawEnd += 1;
+    value = source.slice(start, rawEnd);
+    index = rawEnd;
+  }
+  return { value, end: index };
+}
+
+function atItemPosition(previousSignificantChar, previousWord) {
+  if (previousSignificantChar === '') return true;
+  if (
+    (previousSignificantChar === '{' || previousSignificantChar === '}'
+      || previousSignificantChar === ';' || previousSignificantChar === ']')
+    && previousWord === ''
+  ) {
+    return true;
+  }
+  return ITEM_PREFIX_WORDS.has(previousWord);
+}
+
+/** True when the next code token after a `fn`/`mod`/`trait` is an identifier. */
+function nextItemNameStarts(source, start) {
+  let index = start;
+  for (;;) {
+    while (index < source.length && /\s/.test(source[index])) index += 1;
+    if (source[index] === '/' && source[index + 1] === '/') {
+      while (index < source.length && source[index] !== '\n') index += 1;
+      continue;
+    }
+    if (source[index] === '/' && source[index + 1] === '*') {
+      index = skipBlockComment(source, index);
+      continue;
+    }
+    break;
+  }
+  if (isIdentStart(source[index])) return true;
+  return source[index] === 'r' && source[index + 1] === '#' && isIdentStart(source[index + 2]);
+}
+
+function normalizeImplHeader(text) {
+  return text
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/(^|[^\w#])where\b[\s\S]*$/, '$1')
+    .trim();
+}
+
+/**
+ * Walks the whole file as a lexer and returns the item frames, outermost
+ * first. The frame opens at its `{` and closes at the matching `}`; a site is
+ * attributed to a frame only while `open < site < close`, which keeps an item
+ * out of its own frame while its inner items land under it.
+ */
+function lexSource(source, starts) {
+  const frames = [];
+  const stack = [];
+  const length = source.length;
+  let index = 0;
+  let braceDepth = 0;
+  let parenDepth = 0;
+  let previousSignificantChar = '';
+  let previousWord = '';
+  let pending = null;
+  let pubParenArmed = false;
+  let pubParenDepth = -1;
+
+  const append = (text) => {
+    if (pending !== null) pending.text += text;
+  };
+  const resetWord = (ch) => {
+    previousSignificantChar = ch;
+    previousWord = '';
+  };
+
+  while (index < length) {
+    const ch = source[index];
+
+    if (ch === '/' && source[index + 1] === '/') {
+      while (index < length && source[index] !== '\n') index += 1;
+      continue;
+    }
+    if (ch === '/' && source[index + 1] === '*') {
+      index = skipBlockComment(source, index);
+      continue;
+    }
+
+    if ((ch === 'r' || (ch === 'b' && source[index + 1] === 'r')) && !isIdentContinue(source[index - 1])) {
+      const end = rawStringEnd(source, index);
+      if (end !== -1) {
+        index = end;
+        resetWord('"');
+        continue;
+      }
+    }
+
+    if (ch === '"') {
+      const externBefore = previousWord === 'extern';
+      index += 1;
+      while (index < length) {
+        if (source[index] === '\\') {
+          index = Math.min(length, index + 2);
+          continue;
+        }
+        if (source[index] === '"') {
+          index += 1;
+          break;
+        }
+        index += 1;
+      }
+      previousSignificantChar = '"';
+      previousWord = externBefore ? 'extern-string' : '';
+      continue;
+    }
+
+    if (ch === "'") {
+      if (isIdentContinue(source[index + 1]) && source[index + 2] !== "'") {
+        append("'");
+        previousSignificantChar = "'";
+        index += 1;
+        continue;
+      }
+      let cursor = index + 1;
+      if (source[cursor] === '\\') cursor += 2;
+      else cursor += 1;
+      while (cursor < length && source[cursor] !== "'" && source[cursor] !== '\n') cursor += 1;
+      index = cursor >= length ? length : cursor + 1;
+      resetWord("'");
+      continue;
+    }
+
+    if (isIdentStart(ch) && !isIdentContinue(source[index - 1])) {
+      const { value, end } = readIdentifier(source, index);
+      if (pending !== null) {
+        if (pending.kind !== 'impl' && pending.name === null) pending.name = value;
+        pending.text += value;
+      } else if (
+        ITEM_KEYWORDS.has(value)
+        && atItemPosition(previousSignificantChar, previousWord)
+        && (value === 'impl' || nextItemNameStarts(source, end))
+      ) {
+        pending = { kind: value, name: null, text: '', kwLine: lineNumberAt(starts, index), nest: 0 };
+      }
+      previousWord = value;
+      previousSignificantChar = value[value.length - 1];
+      pubParenArmed = value === 'pub';
+      index = end;
+      continue;
+    }
+
+    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
+      append(ch);
+      index += 1;
+      continue;
+    }
+    if (ch === '(') {
+      parenDepth += 1;
+      if (pubParenArmed) {
+        pubParenDepth = parenDepth;
+        pubParenArmed = false;
+      }
+      if (pending !== null) pending.nest += 1;
+      append(ch);
+      previousSignificantChar = '(';
+      previousWord = pubParenDepth === parenDepth ? 'pub(' : '';
+      index += 1;
+      continue;
+    }
+    if (ch === ')') {
+      const closesPub = pubParenDepth === parenDepth;
+      parenDepth -= 1;
+      if (pending !== null) pending.nest -= 1;
+      append(ch);
+      previousSignificantChar = ')';
+      previousWord = closesPub ? 'pub(...)' : '';
+      if (closesPub) pubParenDepth = -1;
+      index += 1;
+      continue;
+    }
+    if (ch === '[') {
+      if (pending !== null) pending.nest += 1;
+      append(ch);
+      resetWord(ch);
+      index += 1;
+      continue;
+    }
+    if (ch === ']') {
+      if (pending !== null) pending.nest -= 1;
+      append(ch);
+      resetWord(ch);
+      index += 1;
+      continue;
+    }
+    if (ch === '{') {
+      braceDepth += 1;
+      if (pending !== null && pending.nest <= 0) {
+        const token = pending.kind === 'impl'
+          ? `impl:${normalizeImplHeader(pending.text)}`
+          : `${pending.kind}:${pending.name}`;
+        const frame = {
+          kind: pending.kind,
+          name: pending.kind === 'impl' ? null : pending.name,
+          token,
+          kwLine: pending.kwLine,
+          open: index,
+          close: length,
+          braceDepth,
+        };
+        frames.push(frame);
+        stack.push(frame);
+        pending = null;
+      } else if (pending !== null) {
+        append(ch);
+      }
+      resetWord(ch);
+      index += 1;
+      continue;
+    }
+    if (ch === '}') {
+      append(ch);
+      braceDepth -= 1;
+      if (braceDepth < 0) braceDepth = 0;
+      while (stack.length > 0 && stack[stack.length - 1].braceDepth > braceDepth) {
+        stack.pop().close = index;
+      }
+      resetWord(ch);
+      index += 1;
+      continue;
+    }
+    if (ch === ';') {
+      if (pending !== null && pending.nest <= 0) pending = null;
+      else append(ch);
+      resetWord(ch);
+      index += 1;
+      continue;
+    }
+    if (pubParenArmed) pubParenArmed = false;
+    append(ch);
+    resetWord(ch);
+    index += 1;
+  }
+
+  return frames;
+}
+
+const lexCache = new WeakMap();
+
+function loadLexed(path, readSource) {
+  let byPath = lexCache.get(readSource);
+  if (byPath === undefined) {
+    byPath = new Map();
+    lexCache.set(readSource, byPath);
+  }
+  let entry = byPath.get(path);
+  if (entry === undefined) {
+    let source;
+    try {
+      source = readSource(path);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new CaptureError(`cannot read source file ${path}: ${reason}`);
+    }
+    const starts = lineStartsOf(source);
+    entry = { source, starts, frames: lexSource(source, starts) };
+    byPath.set(path, entry);
+  }
+  return entry;
+}
+
+function offsetAt(entry, line, column) {
+  const starts = entry.starts;
+  if (!Number.isInteger(line) || line < 1 || line > starts.length) return entry.source.length;
+  let offset = starts[line - 1];
+  let remaining = Math.max(0, column - 1);
+  while (remaining > 0 && offset < entry.source.length && entry.source[offset] !== '\n') {
+    const codePoint = entry.source.codePointAt(offset);
+    offset += codePoint > 0xffff ? 2 : 1;
+    remaining -= 1;
+  }
+  return offset;
+}
+
+/**
+ * The item frames of a file, cached per reader and path. `path` is the
+ * repo-relative POSIX path the caller supplies; an unreadable file raises
+ * CAPTURE rather than a silently empty result.
+ */
+export function lexFile(path, readSource = defaultReadSource) {
+  return loadLexed(path, readSource).frames;
+}
+
+/** The `::`-joined tokens of the frames open at a site; "" at file scope. */
+export function containerAt(path, line, column, readSource = defaultReadSource) {
+  const entry = loadLexed(path, readSource);
+  const offset = offsetAt(entry, line, column);
+  return entry.frames
+    .filter((frame) => frame.open < offset && offset < frame.close)
+    .map((frame) => frame.token)
+    .join('::');
+}
+
+/** The stable id `rust:<file>::<container>::<name>`, container omitted when empty. */
+export function idFor(path, line, column, sliceText, readSource = defaultReadSource) {
+  const name = typeof sliceText === 'string' && NAME_RE.test(sliceText) ? sliceText : '{closure}';
+  const container = containerAt(path, line, column, readSource);
+  return container === '' ? `rust:${path}::${name}` : `rust:${path}::${container}::${name}`;
+}
+
+/** The normalised code text from a site to its body brace, empty when no brace. */
+function anchorText(source, start) {
+  const length = source.length;
+  let index = start;
+  let nest = 0;
+  let text = '';
+  while (index < length && text.length < ANCHOR_CAP) {
+    const ch = source[index];
+    if (ch === '/' && source[index + 1] === '/') {
+      while (index < length && source[index] !== '\n') index += 1;
+      continue;
+    }
+    if (ch === '/' && source[index + 1] === '*') {
+      index = skipBlockComment(source, index);
+      continue;
+    }
+    if ((ch === 'r' || (ch === 'b' && source[index + 1] === 'r')) && !isIdentContinue(source[index - 1])) {
+      const end = rawStringEnd(source, index);
+      if (end !== -1) {
+        index = end;
+        continue;
+      }
+    }
+    if (ch === '"') {
+      index += 1;
+      while (index < length) {
+        if (source[index] === '\\') {
+          index = Math.min(length, index + 2);
+          continue;
+        }
+        if (source[index] === '"') {
+          index += 1;
+          break;
+        }
+        index += 1;
+      }
+      continue;
+    }
+    if (ch === "'") {
+      if (isIdentContinue(source[index + 1]) && source[index + 2] !== "'") {
+        text += "'";
+        index += 1;
+        continue;
+      }
+      let cursor = index + 1;
+      if (source[cursor] === '\\') cursor += 2;
+      else cursor += 1;
+      while (cursor < length && source[cursor] !== "'" && source[cursor] !== '\n') cursor += 1;
+      index = cursor >= length ? length : cursor + 1;
+      continue;
+    }
+    if (ch === '(' || ch === '[') {
+      nest += 1;
+      text += ch;
+      index += 1;
+      continue;
+    }
+    if (ch === ')' || ch === ']') {
+      nest = Math.max(0, nest - 1);
+      text += ch;
+      index += 1;
+      continue;
+    }
+    if (ch === '{') {
+      text += ch;
+      index += 1;
+      if (nest === 0) break;
+      continue;
+    }
+    text += ch;
+    index += 1;
+  }
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/** The first 12 lowercase hex characters of the site's anchor text. */
+export function anchorFor(path, line, column, readSource = defaultReadSource) {
+  const entry = loadLexed(path, readSource);
+  const offset = offsetAt(entry, line, column);
+  return sha256(Buffer.from(anchorText(entry.source, offset), 'utf8')).slice(0, 12);
+}
+
+// ---------------------------------------------------------------------------
 // In-memory self-test
 // ---------------------------------------------------------------------------
 
@@ -677,6 +1159,38 @@ function expectExit(argv, expected, io) {
   }
 }
 
+function fixtureReader(sources) {
+  return (file) => {
+    if (!(file in sources)) throw new Error(`fixture is missing source for ${file}`);
+    return sources[file];
+  };
+}
+
+/** The 1-based (line, column) of the `occurrence`-th `needle`, line first. */
+function sourceSite(source, needle, occurrence = 1) {
+  let index = -1;
+  for (let seen = 0; seen < occurrence; seen += 1) {
+    index = source.indexOf(needle, index + 1);
+    if (index === -1) throw new Error(`fixture is missing ${JSON.stringify(needle)}`);
+  }
+  let line = 1;
+  let lineStart = 0;
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (source[cursor] === '\n') {
+      line += 1;
+      lineStart = cursor + 1;
+    }
+  }
+  let column = 1;
+  let offset = lineStart;
+  while (offset < index) {
+    const codePoint = source.codePointAt(offset);
+    offset += codePoint > 0xffff ? 2 : 1;
+    column += 1;
+  }
+  return { line, column };
+}
+
 // The four comments and pinned assignment of the phase-1 root clippy.toml.
 const PINNED_CLIPPY_TOML = [
   "# Pinned for #2234 so a future change of Clippy's default cannot move the gate.",
@@ -705,6 +1219,104 @@ const MACOS_FORMS = [
 
 function selfTestCases() {
   return [
+    ['case 29: a raw-identifier span slice is kept as the name, not {closure}', () => {
+      const source = 'fn r#match() {}\n';
+      const reader = fixtureReader({ 'src/raw.rs': source });
+      const site = sourceSite(source, 'r#match');
+      const id = idFor('src/raw.rs', site.line, site.column, 'r#match', reader);
+      if (id !== 'rust:src/raw.rs::r#match') throw new Error(`expected rust:src/raw.rs::r#match, got ${id}`);
+    }],
+    ['case 30: two handle methods in impl A and impl B get two ids', () => {
+      const source = [
+        'impl A {',
+        '    fn handle(&self) {}',
+        '}',
+        'impl B {',
+        '    fn handle(&self) {}',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/two.rs': source });
+      const first = sourceSite(source, 'handle(&self)', 1);
+      const second = sourceSite(source, 'handle(&self)', 2);
+      const idOne = idFor('src/two.rs', first.line, first.column, 'handle', reader);
+      const idTwo = idFor('src/two.rs', second.line, second.column, 'handle', reader);
+      if (idOne !== 'rust:src/two.rs::impl:A::handle') throw new Error(`expected impl:A::handle, got ${idOne}`);
+      if (idTwo !== 'rust:src/two.rs::impl:B::handle') throw new Error(`expected impl:B::handle, got ${idTwo}`);
+    }],
+    ['case 31: impl Tr for T, trait Tr and mod m yield their three containers', () => {
+      const source = [
+        'impl Tr for T {',
+        '    fn a(&self) {}',
+        '}',
+        'trait Tr {',
+        '    fn b(&self) {}',
+        '}',
+        'mod m {',
+        '    fn c(&self) {}',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/three.rs': source });
+      const implSite = sourceSite(source, 'a(&self)');
+      const traitSite = sourceSite(source, 'b(&self)');
+      const modSite = sourceSite(source, 'c(&self)');
+      const implContainer = containerAt('src/three.rs', implSite.line, implSite.column, reader);
+      const traitContainer = containerAt('src/three.rs', traitSite.line, traitSite.column, reader);
+      const modContainer = containerAt('src/three.rs', modSite.line, modSite.column, reader);
+      if (implContainer !== 'impl:Tr for T') throw new Error(`expected impl:Tr for T, got ${implContainer}`);
+      if (traitContainer !== 'trait:Tr') throw new Error(`expected trait:Tr, got ${traitContainer}`);
+      if (modContainer !== 'mod:m') throw new Error(`expected mod:m, got ${modContainer}`);
+    }],
+    ['case 32: a free function id carries no container segment', () => {
+      const source = 'fn free() {}\n';
+      const reader = fixtureReader({ 'src/free.rs': source });
+      const site = sourceSite(source, 'free()');
+      const id = idFor('src/free.rs', site.line, site.column, 'free', reader);
+      if (id !== 'rust:src/free.rs::free') throw new Error(`expected rust:src/free.rs::free, got ${id}`);
+    }],
+    ['case 33: a function inside another function inside impl A keeps both frames', () => {
+      const source = [
+        'impl A {',
+        '    fn outer() {',
+        '        fn inner() {}',
+        '    }',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/nested.rs': source });
+      const site = sourceSite(source, 'inner()');
+      const container = containerAt('src/nested.rs', site.line, site.column, reader);
+      const id = idFor('src/nested.rs', site.line, site.column, 'inner', reader);
+      if (container !== 'impl:A::fn:outer') throw new Error(`expected impl:A::fn:outer, got ${container}`);
+      if (id !== 'rust:src/nested.rs::impl:A::fn:outer::inner') throw new Error(`expected the nested id, got ${id}`);
+    }],
+    ['case 34: an impl where clause is dropped and its generics kept', () => {
+      const source = [
+        'impl<T> Foo<T> where T: X {',
+        '    fn f() {}',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/where.rs': source });
+      const site = sourceSite(source, 'f()');
+      const container = containerAt('src/where.rs', site.line, site.column, reader);
+      if (container !== 'impl:<T> Foo<T>') throw new Error(`expected impl:<T> Foo<T>, got ${container}`);
+    }],
+    ['case 35: an unreadable source raises CAPTURE instead of inventing file scope', () => {
+      const reader = () => {
+        throw new Error('missing fixture');
+      };
+      let caught = null;
+      try {
+        containerAt('src/missing.rs', 1, 1, reader);
+      } catch (error) {
+        caught = error;
+      }
+      if (!(caught instanceof CaptureError) || caught.code !== 'CAPTURE') {
+        throw new Error(`expected a CAPTURE error, got ${caught}`);
+      }
+    }],
     ['case 46: the per-function cognitive_complexity attribute fails S1', () => {
       const hits = runFixture(['src/legacy.rs'], {
         'src/legacy.rs': '#[clippy::cognitive_complexity = "1000"]\nfn legacy() {}\n',
@@ -836,6 +1448,362 @@ function selfTestCases() {
       expectExit(['--platform'], 2, silent);
       expectExit(['--platform', 'bogus', '--scan-sources'], 2, silent);
       expectExit(['--help'], 0, silent);
+    }],
+    ['case 55: a function and closure after a complete impl block stay at file scope', () => {
+      const source = [
+        'impl A {',
+        '    fn method(&self) {}',
+        '}',
+        'fn free() {',
+        '    let c = |x| x;',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/after.rs': source });
+      const fnSite = sourceSite(source, 'free()');
+      const closureSite = sourceSite(source, '|x|');
+      const fnContainer = containerAt('src/after.rs', fnSite.line, fnSite.column, reader);
+      const closureContainer = containerAt('src/after.rs', closureSite.line, closureSite.column, reader);
+      if (fnContainer !== '') throw new Error(`expected file scope for free, got ${fnContainer}`);
+      if (closureContainer !== 'fn:free') throw new Error(`expected fn:free for the closure, got ${closureContainer}`);
+    }],
+    ['case 56: a closure under a module declaration stays under its function', () => {
+      const source = [
+        'pub mod web;',
+        'fn free() {',
+        '    let c = |x| x;',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/below.rs': source });
+      const fnSite = sourceSite(source, 'free()');
+      const closureSite = sourceSite(source, '|x|');
+      const fnContainer = containerAt('src/below.rs', fnSite.line, fnSite.column, reader);
+      const id = idFor('src/below.rs', closureSite.line, closureSite.column, '|x|', reader);
+      if (fnContainer !== '') throw new Error(`expected file scope for free, got ${fnContainer}`);
+      if (id !== 'rust:src/below.rs::fn:free::{closure}') throw new Error(`expected fn:free::{closure}, got ${id}`);
+    }],
+    ['case 57: four same-named methods under four different impls get four ids', () => {
+      const source = [
+        'impl Display for F {',
+        '    fn fmt(&self) {}',
+        '}',
+        'impl Debug for F {',
+        '    fn fmt(&self) {}',
+        '}',
+        'impl From<String> for E {',
+        '    fn from(value: String) {}',
+        '}',
+        'impl From<&str> for E {',
+        '    fn from(value: &str) {}',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/four.rs': source });
+      const displaySite = sourceSite(source, 'fmt(&self)', 1);
+      const debugSite = sourceSite(source, 'fmt(&self)', 2);
+      const stringSite = sourceSite(source, 'from(value: String)', 1);
+      const strSite = sourceSite(source, 'from(value: &str)', 1);
+      const ids = [
+        idFor('src/four.rs', displaySite.line, displaySite.column, 'fmt', reader),
+        idFor('src/four.rs', debugSite.line, debugSite.column, 'fmt', reader),
+        idFor('src/four.rs', stringSite.line, stringSite.column, 'from', reader),
+        idFor('src/four.rs', strSite.line, strSite.column, 'from', reader),
+      ];
+      if (new Set(ids).size !== 4) throw new Error(`expected four distinct ids, got ${JSON.stringify(ids)}`);
+      if (ids[2] !== 'rust:src/four.rs::impl:From<String> for E::from') throw new Error(`expected the String impl, got ${ids[2]}`);
+      if (ids[3] !== 'rust:src/four.rs::impl:From<&str> for E::from') throw new Error(`expected the &str impl, got ${ids[3]}`);
+    }],
+    ['case 58: module paths separate siblings, and cfg-alternate siblings share one id', () => {
+      const split = [
+        'mod a {',
+        '    mod inner {',
+        '        fn f() {}',
+        '    }',
+        '}',
+        'mod b {',
+        '    mod inner {',
+        '        fn f() {}',
+        '    }',
+        '}',
+        '',
+      ].join('\n');
+      const splitReader = fixtureReader({ 'src/mods.rs': split });
+      const splitFirst = sourceSite(split, 'f()', 1);
+      const splitSecond = sourceSite(split, 'f()', 2);
+      const firstId = idFor('src/mods.rs', splitFirst.line, splitFirst.column, 'f', splitReader);
+      const secondId = idFor('src/mods.rs', splitSecond.line, splitSecond.column, 'f', splitReader);
+      if (firstId === secondId) throw new Error(`expected the two module paths to split, got ${firstId}`);
+      if (firstId !== 'rust:src/mods.rs::mod:a::mod:inner::f') throw new Error(`expected mod:a::mod:inner::f, got ${firstId}`);
+      if (secondId !== 'rust:src/mods.rs::mod:b::mod:inner::f') throw new Error(`expected mod:b::mod:inner::f, got ${secondId}`);
+      const shared = [
+        'mod p {',
+        '    mod inner {',
+        '        fn f() {}',
+        '    }',
+        '    mod inner {',
+        '        fn f() {}',
+        '    }',
+        '}',
+        '',
+      ].join('\n');
+      const sharedReader = fixtureReader({ 'src/shared.rs': shared });
+      const sharedFirstSite = sourceSite(shared, 'f()', 1);
+      const sharedSecondSite = sourceSite(shared, 'f()', 2);
+      const sharedFirst = idFor('src/shared.rs', sharedFirstSite.line, sharedFirstSite.column, 'f', sharedReader);
+      const sharedSecond = idFor('src/shared.rs', sharedSecondSite.line, sharedSecondSite.column, 'f', sharedReader);
+      if (sharedFirst !== 'rust:src/shared.rs::mod:p::mod:inner::f') throw new Error(`expected mod:p::mod:inner::f, got ${sharedFirst}`);
+      if (sharedFirst !== sharedSecond) throw new Error(`expected the cfg-alternate pair to share one id, got ${sharedFirst} and ${sharedSecond}`);
+    }],
+    ['case 59: a three-line impl header is joined and collapsed', () => {
+      const source = [
+        'impl<T>',
+        '    Trait<T>',
+        '    for Foo<T>',
+        '{',
+        '    fn f() {}',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/joined.rs': source });
+      const site = sourceSite(source, 'f()');
+      const container = containerAt('src/joined.rs', site.line, site.column, reader);
+      if (container !== 'impl:<T> Trait<T> for Foo<T>') throw new Error(`expected impl:<T> Trait<T> for Foo<T>, got ${container}`);
+    }],
+    ['case 60: nested generics in an impl header survive whole', () => {
+      const source = [
+        'impl<T: Into<Vec<u8>>> Foo<T> {',
+        '    fn f() {}',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/generics.rs': source });
+      const site = sourceSite(source, 'f()');
+      const container = containerAt('src/generics.rs', site.line, site.column, reader);
+      if (container !== 'impl:<T: Into<Vec<u8>>> Foo<T>') throw new Error(`expected the full generic header, got ${container}`);
+    }],
+    ['case 61: trailing comments, raw strings and commented mod lines open nothing', () => {
+      const source = [
+        'impl Foo for Bar // for Baz',
+        '{',
+        '    fn m(&self) {}',
+        '}',
+        'fn host() {',
+        'r#"impl Other {"#;',
+        '}',
+        'fn after() {}',
+        'fn host2() {',
+        '// mod x {',
+        '}',
+        'fn after2() {}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/lexed.rs': source });
+      const methodSite = sourceSite(source, 'm(&self)');
+      const afterSite = sourceSite(source, 'after()');
+      const afterTwoSite = sourceSite(source, 'after2()');
+      const methodContainer = containerAt('src/lexed.rs', methodSite.line, methodSite.column, reader);
+      const afterContainer = containerAt('src/lexed.rs', afterSite.line, afterSite.column, reader);
+      const afterTwoContainer = containerAt('src/lexed.rs', afterTwoSite.line, afterTwoSite.column, reader);
+      if (methodContainer !== 'impl:Foo for Bar') throw new Error(`expected impl:Foo for Bar, got ${methodContainer}`);
+      if (afterContainer !== '') throw new Error(`expected file scope after the raw string, got ${afterContainer}`);
+      if (afterTwoContainer !== '') throw new Error(`expected file scope after the commented mod, got ${afterTwoContainer}`);
+    }],
+    ['case 62: inserting an unrelated item changes the id set by exactly one id', () => {
+      const base = [
+        'fn a() {}',
+        'impl A {',
+        '    fn b(&self) {}',
+        '}',
+        '',
+      ].join('\n');
+      const inserted = [
+        'struct P;',
+        'impl P {',
+        '    fn p(&self) {}',
+        '}',
+        base,
+      ].join('\n');
+      const baseReader = fixtureReader({ 'src/insert.rs': base });
+      const insertedReader = fixtureReader({ 'src/insert.rs': inserted });
+      const siteA = sourceSite(base, 'a()');
+      const siteB = sourceSite(base, 'b(&self)');
+      const idA = idFor('src/insert.rs', siteA.line, siteA.column, 'a', baseReader);
+      const idB = idFor('src/insert.rs', siteB.line, siteB.column, 'b', baseReader);
+      const insertedA = sourceSite(inserted, 'a()');
+      const insertedB = sourceSite(inserted, 'b(&self)');
+      const insertedP = sourceSite(inserted, 'p(&self)');
+      const baseIds = new Set([idA, idB]);
+      const insertedIds = new Set([
+        idFor('src/insert.rs', insertedA.line, insertedA.column, 'a', insertedReader),
+        idFor('src/insert.rs', insertedB.line, insertedB.column, 'b', insertedReader),
+        idFor('src/insert.rs', insertedP.line, insertedP.column, 'p', insertedReader),
+      ]);
+      const added = [...insertedIds].filter((id) => !baseIds.has(id));
+      const removed = [...baseIds].filter((id) => !insertedIds.has(id));
+      if (added.length !== 1 || added[0] !== 'rust:src/insert.rs::impl:P::p') {
+        throw new Error(`expected exactly impl:P::p inserted, got ${JSON.stringify(added)}`);
+      }
+      if (removed.length !== 0) throw new Error(`unrelated ids moved: ${JSON.stringify(removed)}`);
+      if (insertedIds.size !== 3) throw new Error(`struct P must contribute no id, got ${JSON.stringify([...insertedIds])}`);
+    }],
+    ['case 63: closures on their fn header line stay under their own method', () => {
+      const source = [
+        'impl P {',
+        '    fn m1(&self) { let c = |x| x; }',
+        '    fn m2(&self) { let c = |x| x; }',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/same-line.rs': source });
+      const first = sourceSite(source, '|x|', 1);
+      const second = sourceSite(source, '|x|', 2);
+      const idOne = idFor('src/same-line.rs', first.line, first.column, '|x|', reader);
+      const idTwo = idFor('src/same-line.rs', second.line, second.column, '|x|', reader);
+      if (idOne !== 'rust:src/same-line.rs::impl:P::fn:m1::{closure}') throw new Error(`expected the m1 closure, got ${idOne}`);
+      if (idTwo !== 'rust:src/same-line.rs::impl:P::fn:m2::{closure}') throw new Error(`expected the m2 closure, got ${idTwo}`);
+    }],
+    ['case 64: headers ended by a semicolon open no scope', () => {
+      const source = [
+        'mod web;',
+        'fn f() {}',
+        'trait T {',
+        '    fn g(&self);',
+        '    fn h(&self) {}',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/semis.rs': source });
+      const freeSite = sourceSite(source, 'f()');
+      const methodSite = sourceSite(source, 'h(&self)');
+      const freeContainer = containerAt('src/semis.rs', freeSite.line, freeSite.column, reader);
+      const methodContainer = containerAt('src/semis.rs', methodSite.line, methodSite.column, reader);
+      if (freeContainer !== '') throw new Error(`expected file scope after mod web;, got ${freeContainer}`);
+      if (methodContainer !== 'trait:T') throw new Error(`expected trait:T, got ${methodContainer}`);
+    }],
+    ['case 65: closure anchors split shared ids, and identical closures share one anchor', () => {
+      const different = [
+        'fn f() {',
+        '    let a = |x: u32| { x };',
+        '    let b = |y: u32| { y };',
+        '}',
+        '',
+      ].join('\n');
+      const differentReader = fixtureReader({ 'src/anchors.rs': different });
+      const xSite = sourceSite(different, '|x: u32|');
+      const ySite = sourceSite(different, '|y: u32|');
+      const idX = idFor('src/anchors.rs', xSite.line, xSite.column, '|x: u32|', differentReader);
+      const idY = idFor('src/anchors.rs', ySite.line, ySite.column, '|y: u32|', differentReader);
+      if (idX !== idY || idX !== 'rust:src/anchors.rs::fn:f::{closure}') {
+        throw new Error(`expected one shared id, got ${idX} and ${idY}`);
+      }
+      const anchorX = anchorFor('src/anchors.rs', xSite.line, xSite.column, differentReader);
+      const anchorY = anchorFor('src/anchors.rs', ySite.line, ySite.column, differentReader);
+      if (anchorX === anchorY) throw new Error('different parameter lists must produce different anchors');
+      const identical = [
+        'fn f() {',
+        '    let a = |x: u32| { x };',
+        '    let b = |x: u32| { y };',
+        '}',
+        '',
+      ].join('\n');
+      const identicalReader = fixtureReader({ 'src/anchors.rs': identical });
+      const firstSite = sourceSite(identical, '|x: u32|', 1);
+      const secondSite = sourceSite(identical, '|x: u32|', 2);
+      const firstAnchor = anchorFor('src/anchors.rs', firstSite.line, firstSite.column, identicalReader);
+      const secondAnchor = anchorFor('src/anchors.rs', secondSite.line, secondSite.column, identicalReader);
+      if (firstAnchor !== secondAnchor) {
+        throw new Error(`identical closures must share an anchor, got ${firstAnchor} and ${secondAnchor}`);
+      }
+    }],
+    ['case 66: a const-generic brace ends the impl header early', () => {
+      const source = [
+        'impl Foo<{N + 1}> {',
+        '    fn f() {}',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/const-generic.rs': source });
+      const frames = lexFile('src/const-generic.rs', reader);
+      const site = sourceSite(source, 'f()');
+      const container = containerAt('src/const-generic.rs', site.line, site.column, reader);
+      if (frames.length === 0 || frames[0].token !== 'impl:Foo<') {
+        throw new Error(`expected the header to end at the const-generic brace, got ${JSON.stringify(frames)}`);
+      }
+      if (container !== '') throw new Error(`expected the truncated impl frame to be closed, got ${container}`);
+    }],
+    ['case 69: array types in signatures do not drop their frames', () => {
+      const source = [
+        'fn f(x: u32) -> [u32; 3] { let c = |y| y; }',
+        'fn g(x: u32) -> [u32; 3] { let c = |y| y; }',
+        'impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/arrays.rs': source });
+      const first = sourceSite(source, '|y|', 1);
+      const second = sourceSite(source, '|y|', 2);
+      const third = sourceSite(source, '|y|', 3);
+      const containers = [
+        containerAt('src/arrays.rs', first.line, first.column, reader),
+        containerAt('src/arrays.rs', second.line, second.column, reader),
+        containerAt('src/arrays.rs', third.line, third.column, reader),
+      ];
+      const ids = [
+        idFor('src/arrays.rs', first.line, first.column, '|y|', reader),
+        idFor('src/arrays.rs', second.line, second.column, '|y|', reader),
+        idFor('src/arrays.rs', third.line, third.column, '|y|', reader),
+      ];
+      if (containers[0] !== 'fn:f') throw new Error(`expected fn:f, got ${containers[0]}`);
+      if (containers[1] !== 'fn:g') throw new Error(`expected fn:g, got ${containers[1]}`);
+      if (containers[2] !== 'impl:Tr for [u8; 4]::fn:m') throw new Error(`expected the impl method scope, got ${containers[2]}`);
+      if (new Set(ids).size !== 3) throw new Error(`expected three distinct ids, got ${JSON.stringify(ids)}`);
+      if (containers.some((container) => container === '')) throw new Error('a frame was lost to the array semicolon');
+    }],
+    ['case 72: a body edit leaves the anchor, a signature edit moves it', () => {
+      const before = 'fn f() { let a = 1; }\n';
+      const bodied = 'fn f() { let a = 1; let b = 2; }\n';
+      const signature = 'fn f(x: u32) { let a = 1; }\n';
+      const beforeReader = fixtureReader({ 'src/edit.rs': before });
+      const bodiedReader = fixtureReader({ 'src/edit.rs': bodied });
+      const signatureReader = fixtureReader({ 'src/edit.rs': signature });
+      const site = sourceSite(before, 'f()');
+      const beforeAnchor = anchorFor('src/edit.rs', site.line, site.column, beforeReader);
+      const bodiedAnchor = anchorFor('src/edit.rs', site.line, site.column, bodiedReader);
+      const signatureAnchor = anchorFor('src/edit.rs', site.line, site.column, signatureReader);
+      if (beforeAnchor !== bodiedAnchor) throw new Error('a body edit must not move the anchor');
+      if (beforeAnchor === signatureAnchor) throw new Error('a signature edit must move the anchor');
+    }],
+    ['case 73: closure anchors split, and a lexed header ends at the real brace', () => {
+      const source = [
+        'fn f() {',
+        '    let a = |x: u32| { x };',
+        '    let b = |y: u32| { y };',
+        '}',
+        '',
+      ].join('\n');
+      const reader = fixtureReader({ 'src/decoy.rs': source });
+      const first = sourceSite(source, '|x: u32|');
+      const second = sourceSite(source, '|y: u32|');
+      const firstAnchor = anchorFor('src/decoy.rs', first.line, first.column, reader);
+      const secondAnchor = anchorFor('src/decoy.rs', second.line, second.column, reader);
+      if (firstAnchor === secondAnchor) throw new Error('different closure parameters must produce different anchors');
+      const decoy = 'fn f() -> [u8; "{".len()] // {\n{ 0 }\n';
+      const decoyReader = fixtureReader({ 'src/decoy-header.rs': decoy });
+      const decoySite = sourceSite(decoy, 'f()');
+      const decoyAnchor = anchorFor('src/decoy-header.rs', decoySite.line, decoySite.column, decoyReader);
+      const expected = sha256(Buffer.from('f() -> [u8; .len()] {', 'utf8')).slice(0, 12);
+      if (decoyAnchor !== expected) {
+        throw new Error(`expected the anchor to end at the real brace (${expected}), got ${decoyAnchor}`);
+      }
+    }],
+    ['case 74: a braceless tail anchors over the capped text without raising', () => {
+      const source = `fn f() ${'x'.repeat(600)}\n`;
+      const reader = fixtureReader({ 'src/capped.rs': source });
+      const site = sourceSite(source, 'f()');
+      const anchor = anchorFor('src/capped.rs', site.line, site.column, reader);
+      const expected = sha256(Buffer.from(`f() ${'x'.repeat(396)}`, 'utf8')).slice(0, 12);
+      if (!/^[0-9a-f]{12}$/.test(anchor)) throw new Error(`expected 12 hex characters, got ${JSON.stringify(anchor)}`);
+      if (anchor !== expected) throw new Error(`expected the capped anchor ${expected}, got ${anchor}`);
     }],
   ];
 }
