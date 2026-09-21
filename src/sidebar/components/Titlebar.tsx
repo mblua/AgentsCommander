@@ -280,6 +280,7 @@ const Titlebar: Component = () => {
           </button>
           <button
             class="titlebar-btn titlebar-btn-close"
+            data-ac-testid="titlebar.close"
             onClick={handleClose}
             title="Close"
           >
