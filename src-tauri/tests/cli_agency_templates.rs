@@ -1,5 +1,24 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
+
+/// Excludes one test's open write descriptor on a freshly copied binary from
+/// overlapping another test's fork/exec.
+///
+/// These tests run in parallel and each copies the binary into its own temp dir
+/// before exec'ing it. `Command::spawn` forks, and the child inherits the write
+/// descriptor another thread still holds on *its* copy; exec'ing a binary that
+/// any process holds open for writing fails with `ETXTBSY`. Covering both the
+/// copy and the spawn closes that window. The lock is released before output is
+/// collected, so the binary runs themselves still overlap.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn command_for_binary(bin: &Path) -> Command {
     let mut command = Command::new(bin);
@@ -40,7 +59,10 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    {
+        let _guard = spawn_lock();
+        std::fs::copy(src, &dst).expect("copy binary");
+    }
     dst
 }
 
@@ -130,10 +152,19 @@ fn seed_cache(config_dir: &Path) {
 fn agency_templates_unknown_subcommand_exits_one_with_usage() {
     let tmp = Tmp::new("agency-unknown-subcommand");
     let bin = copy_binary_into(tmp.path());
-    let output = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args(["agency-templates", "unknown-subcommand"])
-        .output()
-        .expect("run unknown subcommand");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn unknown subcommand")
+    };
+    let output = child
+        .wait_with_output()
+        .expect("collect unknown subcommand output");
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
@@ -156,7 +187,8 @@ fn agency_templates_update_prints_json_on_success_and_noop() {
     write_git_redirect_config(&git_config, &source_repo);
 
     let run_update = || {
-        command_for_binary(&bin)
+        let mut command = command_for_binary(&bin);
+        command
             .env("GIT_CONFIG_GLOBAL", &git_config)
             .args([
                 "agency-templates",
@@ -167,8 +199,14 @@ fn agency_templates_update_prints_json_on_success_and_noop() {
                 "main",
                 "--json",
             ])
-            .output()
-            .expect("run update")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = {
+            let _guard = spawn_lock();
+            command.spawn().expect("spawn update")
+        };
+        child.wait_with_output().expect("collect update output")
     };
 
     let output = run_update();
@@ -204,10 +242,17 @@ fn agency_templates_update_prints_json_on_success_and_noop() {
 fn agency_templates_status_missing_cache_returns_json() {
     let tmp = Tmp::new("agency-status-missing");
     let bin = copy_binary_into(tmp.path());
-    let output = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args(["agency-templates", "status", "--json"])
-        .output()
-        .expect("run status");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn status")
+    };
+    let output = child.wait_with_output().expect("collect status output");
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
@@ -221,10 +266,17 @@ fn agency_templates_status_missing_cache_returns_json() {
 fn agency_templates_list_missing_cache_returns_empty_array() {
     let tmp = Tmp::new("agency-list-missing");
     let bin = copy_binary_into(tmp.path());
-    let output = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args(["agency-templates", "list", "--json"])
-        .output()
-        .expect("run list");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn list")
+    };
+    let output = child.wait_with_output().expect("collect list output");
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
@@ -240,10 +292,17 @@ fn agency_templates_list_pretty_returns_cached_metadata() {
     let config = config_dir_for_bin(&bin);
     seed_cache(&config);
 
-    let output = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args(["agency-templates", "list", "--pretty"])
-        .output()
-        .expect("run list");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn list")
+    };
+    let output = child.wait_with_output().expect("collect list output");
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
@@ -268,10 +327,17 @@ fn agency_templates_status_reports_locked_cache() {
         .open(&lock_path)
         .expect("hold lock");
 
-    let output = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args(["agency-templates", "status"])
-        .output()
-        .expect("run status");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn status")
+    };
+    let output = child.wait_with_output().expect("collect status output");
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
