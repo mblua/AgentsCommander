@@ -72,6 +72,67 @@ export function toggleSidebarCompact(): void {
   setSidebarCompactMode(!sidebarCompact());
 }
 
+/**
+ * #2236 D25 — the named seams the #1532 pulse routes its seven width
+ * couplings through. Each member is the identity in expanded mode and reads
+ * or writes the rail nudge while compact, so the pulse keeps comparing the
+ * width it actually owns instead of the hidden expanded width.
+ */
+export type PulseWidthSeams = {
+  readPulseWidth(): number;
+  writePulseWidth(px: number): void;
+  clampPulseWidth(px: number): number;
+  pulseWidthIsApplied(px: number): boolean;
+};
+
+/** Empty unless a test installed a partial override. */
+let pulseSeamOverrides: Partial<PulseWidthSeams> = {};
+
+/**
+ * @internal test seam — replaces individual members of the returned object;
+ * empty by default. Cleared by the harness reset, so a leaked override cannot
+ * silently disable a later file's negative controls.
+ */
+export function setPulseSeamOverridesForTests(
+  partial: Partial<PulseWidthSeams> | null,
+): void {
+  pulseSeamOverrides = partial ?? {};
+}
+
+export function createPulseWidthSeams(deps: {
+  readExpanded(): number;
+  writeExpanded(px: number): void;
+  clampExpanded(px: number): number;
+  paneStyleWidth(): string;
+}): PulseWidthSeams {
+  const fallback: PulseWidthSeams = {
+    readPulseWidth: () =>
+      sidebarCompact() ? RAIL_WIDTH_PX + railNudgePx() : deps.readExpanded(),
+    writePulseWidth: (px) => {
+      if (sidebarCompact()) {
+        setRailNudgePx(px - RAIL_WIDTH_PX);
+      } else {
+        deps.writeExpanded(px);
+      }
+    },
+    clampPulseWidth: (px) => (sidebarCompact() ? px : deps.clampExpanded(px)),
+    pulseWidthIsApplied: (px) =>
+      sidebarCompact()
+        ? railNudgePx() === px - RAIL_WIDTH_PX
+        : deps.paneStyleWidth() === `${px}px`,
+  };
+  return {
+    readPulseWidth: () =>
+      (pulseSeamOverrides.readPulseWidth ?? fallback.readPulseWidth)(),
+    writePulseWidth: (px) =>
+      (pulseSeamOverrides.writePulseWidth ?? fallback.writePulseWidth)(px),
+    clampPulseWidth: (px) =>
+      (pulseSeamOverrides.clampPulseWidth ?? fallback.clampPulseWidth)(px),
+    pulseWidthIsApplied: (px) =>
+      (pulseSeamOverrides.pulseWidthIsApplied ?? fallback.pulseWidthIsApplied)(px),
+  };
+}
+
 export {
   sidebarCompact,
   railNudgePx,

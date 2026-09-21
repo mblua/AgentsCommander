@@ -43,6 +43,7 @@ import {
   clampMainSidebarWidth,
 } from "../shared/sidebar-layout";
 import {
+  createPulseWidthSeams,
   railNudgePx,
   registerCompactHost,
   restoreWidthPx,
@@ -267,6 +268,16 @@ const MainApp: Component = () => {
   let endActiveDividerDrag: (() => void) | null = null;
   let sidebarAnimationTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // #2236 phase 7 — the pulse's seven width couplings go through these named
+  // seams. Expanded mode delegates to the host accessors unchanged; compact
+  // mode reads and writes the rail nudge instead of the hidden live width.
+  const seams = createPulseWidthSeams({
+    readExpanded: sidebarWidth,
+    writeExpanded: setSidebarWidth,
+    clampExpanded: (px) => clampMainSidebarWidth(px, window.innerWidth),
+    paneStyleWidth: () => sidebarPaneRef.style.width,
+  });
+
   const cancelOwnerWait = (owner: SidebarPulseOwner): void => {
     const wait = owner.wait;
     if (!wait) {
@@ -305,8 +316,8 @@ const MainApp: Component = () => {
       owner.originalWidth !== null &&
       owner.nudgedWidth !== null
     ) {
-      if (sidebarWidth() === owner.nudgedWidth) {
-        setSidebarWidth(owner.originalWidth);
+      if (seams.readPulseWidth() === owner.nudgedWidth) {
+        seams.writePulseWidth(owner.originalWidth);
       }
       owner.ownsTemporaryWidth = false;
     }
@@ -415,7 +426,7 @@ const MainApp: Component = () => {
     if (splitterSaveTimeout !== null || splitterPersistenceInFlightCount > 0) {
       return { kind: "stop", status: "cancelled", reason: "persistence_owned" };
     }
-    if (sidebarWidth() !== expectedWidth) {
+    if (seams.readPulseWidth() !== expectedWidth) {
       return { kind: "stop", status: "cancelled", reason: "width_changed" };
     }
 
@@ -574,7 +585,7 @@ const MainApp: Component = () => {
     owner.started = true;
 
     try {
-      const originalWidth = sidebarWidth();
+      const originalWidth = seams.readPulseWidth();
       if (!Number.isFinite(originalWidth) || originalWidth < 0) {
         failPulseForInvalidNumbers(owner);
         return;
@@ -593,9 +604,8 @@ const MainApp: Component = () => {
         originalLive.sample.completedObserverAck,
       );
 
-      const inwardCandidate = clampMainSidebarWidth(
+      const inwardCandidate = seams.clampPulseWidth(
         originalWidth - SIDEBAR_PULSE_DELTA_PX,
-        window.innerWidth,
       );
       let direction: SidebarPulseDirection;
       let nudgedWidth: number;
@@ -603,9 +613,8 @@ const MainApp: Component = () => {
         direction = "inward";
         nudgedWidth = inwardCandidate;
       } else {
-        const outwardCandidate = clampMainSidebarWidth(
+        const outwardCandidate = seams.clampPulseWidth(
           originalWidth + SIDEBAR_PULSE_DELTA_PX,
-          window.innerWidth,
         );
         if (outwardCandidate !== originalWidth + SIDEBAR_PULSE_DELTA_PX) {
           finishPulse(owner, "skipped", "clamped");
@@ -635,7 +644,7 @@ const MainApp: Component = () => {
       const expansionBaselineObservedEpoch =
         expansionBoundary.sample.observedObserverEpoch;
 
-      setSidebarWidth(nudgedWidth);
+      seams.writePulseWidth(nudgedWidth);
       owner.ownsTemporaryWidth = true;
 
       const expandedOutcome = await waitForPulseLeg(
@@ -705,7 +714,7 @@ const MainApp: Component = () => {
       }
       const restoreBaselineObservedEpoch = restoreBoundary.sample.observedObserverEpoch;
 
-      setSidebarWidth(originalWidth);
+      seams.writePulseWidth(originalWidth);
       owner.ownsTemporaryWidth = false;
 
       const restoredOutcome = await waitForPulseLeg(
@@ -748,7 +757,7 @@ const MainApp: Component = () => {
       }
       if (
         !sameLayoutGeometry(finalLive.sample, originalGeometry) ||
-        sidebarPaneRef.style.width !== `${originalWidth}px`
+        !seams.pulseWidthIsApplied(originalWidth)
       ) {
         finishPulse(owner, "cancelled", "width_changed");
         return;
@@ -853,7 +862,7 @@ const MainApp: Component = () => {
     if (
       owner.ownsTemporaryWidth &&
       owner.nudgedWidth !== null &&
-      sidebarWidth() !== owner.nudgedWidth
+      seams.readPulseWidth() !== owner.nudgedWidth
     ) {
       finishPulse(owner, "cancelled", "width_changed");
       return;
