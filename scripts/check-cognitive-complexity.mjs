@@ -774,6 +774,43 @@ function normalizeImplHeader(text) {
 }
 
 /**
+ * Returns the offset just past the comment or literal opened at `index`, with
+ * its kind, or null when `index` does not open one. Comments leave the
+ * previous significant character untouched; strings clear or replace it.
+ */
+function opaqueEnd(source, index) {
+  const ch = source[index];
+  if (ch === '/' && source[index + 1] === '/') {
+    let cursor = index + 2;
+    while (cursor < source.length && source[cursor] !== '\n') cursor += 1;
+    return { kind: 'comment', end: cursor };
+  }
+  if (ch === '/' && source[index + 1] === '*') {
+    return { kind: 'comment', end: skipBlockComment(source, index) };
+  }
+  if ((ch === 'r' || (ch === 'b' && source[index + 1] === 'r')) && !isIdentContinue(source[index - 1])) {
+    const end = rawStringEnd(source, index);
+    if (end !== -1) return { kind: 'string', end };
+  }
+  if (ch === '"') {
+    let cursor = index + 1;
+    while (cursor < source.length) {
+      if (source[cursor] === '\\') {
+        cursor = Math.min(source.length, cursor + 2);
+        continue;
+      }
+      if (source[cursor] === '"') {
+        cursor += 1;
+        break;
+      }
+      cursor += 1;
+    }
+    return { kind: 'string', end: cursor };
+  }
+  return null;
+}
+
+/**
  * Walks the whole file as a lexer and returns the item frames, outermost
  * first. The frame opens at its `{` and closes at the matching `}`; a site is
  * attributed to a frame only while `open < site < close`, which keeps an item
@@ -801,45 +838,22 @@ function lexSource(source, starts) {
   };
 
   while (index < length) {
-    const ch = source[index];
-
-    if (ch === '/' && source[index + 1] === '/') {
-      while (index < length && source[index] !== '\n') index += 1;
-      continue;
-    }
-    if (ch === '/' && source[index + 1] === '*') {
-      index = skipBlockComment(source, index);
-      continue;
-    }
-
-    if ((ch === 'r' || (ch === 'b' && source[index + 1] === 'r')) && !isIdentContinue(source[index - 1])) {
-      const end = rawStringEnd(source, index);
-      if (end !== -1) {
-        index = end;
-        resetWord('"');
-        continue;
-      }
-    }
-
-    if (ch === '"') {
-      const externBefore = previousWord === 'extern';
-      index += 1;
-      while (index < length) {
-        if (source[index] === '\\') {
-          index = Math.min(length, index + 2);
-          continue;
-        }
+    const opaque = opaqueEnd(source, index);
+    if (opaque !== null) {
+      if (opaque.kind === 'string') {
         if (source[index] === '"') {
-          index += 1;
-          break;
+          const externBefore = previousWord === 'extern';
+          previousSignificantChar = '"';
+          previousWord = externBefore ? 'extern-string' : '';
+        } else {
+          resetWord('"');
         }
-        index += 1;
       }
-      previousSignificantChar = '"';
-      previousWord = externBefore ? 'extern-string' : '';
+      index = opaque.end;
       continue;
     }
 
+    const ch = source[index];
     if (ch === "'") {
       if (isIdentContinue(source[index + 1]) && source[index + 2] !== "'") {
         append("'");
@@ -1040,37 +1054,12 @@ function anchorText(source, start) {
   let nest = 0;
   let text = '';
   while (index < length && text.length < ANCHOR_CAP) {
+    const opaque = opaqueEnd(source, index);
+    if (opaque !== null) {
+      index = opaque.end;
+      continue;
+    }
     const ch = source[index];
-    if (ch === '/' && source[index + 1] === '/') {
-      while (index < length && source[index] !== '\n') index += 1;
-      continue;
-    }
-    if (ch === '/' && source[index + 1] === '*') {
-      index = skipBlockComment(source, index);
-      continue;
-    }
-    if ((ch === 'r' || (ch === 'b' && source[index + 1] === 'r')) && !isIdentContinue(source[index - 1])) {
-      const end = rawStringEnd(source, index);
-      if (end !== -1) {
-        index = end;
-        continue;
-      }
-    }
-    if (ch === '"') {
-      index += 1;
-      while (index < length) {
-        if (source[index] === '\\') {
-          index = Math.min(length, index + 2);
-          continue;
-        }
-        if (source[index] === '"') {
-          index += 1;
-          break;
-        }
-        index += 1;
-      }
-      continue;
-    }
     if (ch === "'") {
       if (isIdentContinue(source[index + 1]) && source[index + 2] !== "'") {
         text += "'";
@@ -1191,6 +1180,37 @@ function sourceSite(source, needle, occurrence = 1) {
   return { line, column };
 }
 
+/**
+ * One in-memory fixture: a file path, its source and a reader over it. A new
+ * fixture gets a fresh reader, so the lexer cache never leaks between cases.
+ */
+function fixture(file, source) {
+  return { file, source, reader: fixtureReader({ [file]: source }) };
+}
+
+function idAt(fix, needle, sliceText, occurrence = 1) {
+  const site = sourceSite(fix.source, needle, occurrence);
+  return idFor(fix.file, site.line, site.column, sliceText, fix.reader);
+}
+
+function containerAtNeedle(fix, needle, occurrence = 1) {
+  const site = sourceSite(fix.source, needle, occurrence);
+  return containerAt(fix.file, site.line, site.column, fix.reader);
+}
+
+function anchorAt(fix, needle, occurrence = 1) {
+  const site = sourceSite(fix.source, needle, occurrence);
+  return anchorFor(fix.file, site.line, site.column, fix.reader);
+}
+
+function expectEqual(actual, expected, label) {
+  if (actual !== expected) throw new Error(`${label}: expected ${expected}, got ${actual}`);
+}
+
+function expectDifferent(left, right, label) {
+  if (left === right) throw new Error(`${label}: expected two different values, got ${left}`);
+}
+
 // The four comments and pinned assignment of the phase-1 root clippy.toml.
 const PINNED_CLIPPY_TOML = [
   "# Pinned for #2234 so a future change of Clippy's default cannot move the gate.",
@@ -1220,14 +1240,11 @@ const MACOS_FORMS = [
 function selfTestCases() {
   return [
     ['case 29: a raw-identifier span slice is kept as the name, not {closure}', () => {
-      const source = 'fn r#match() {}\n';
-      const reader = fixtureReader({ 'src/raw.rs': source });
-      const site = sourceSite(source, 'r#match');
-      const id = idFor('src/raw.rs', site.line, site.column, 'r#match', reader);
-      if (id !== 'rust:src/raw.rs::r#match') throw new Error(`expected rust:src/raw.rs::r#match, got ${id}`);
+      const fix = fixture('src/raw.rs', 'fn r#match() {}\n');
+      expectEqual(idAt(fix, 'r#match', 'r#match'), 'rust:src/raw.rs::r#match', 'r#match name');
     }],
     ['case 30: two handle methods in impl A and impl B get two ids', () => {
-      const source = [
+      const fix = fixture('src/two.rs', [
         'impl A {',
         '    fn handle(&self) {}',
         '}',
@@ -1235,17 +1252,12 @@ function selfTestCases() {
         '    fn handle(&self) {}',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/two.rs': source });
-      const first = sourceSite(source, 'handle(&self)', 1);
-      const second = sourceSite(source, 'handle(&self)', 2);
-      const idOne = idFor('src/two.rs', first.line, first.column, 'handle', reader);
-      const idTwo = idFor('src/two.rs', second.line, second.column, 'handle', reader);
-      if (idOne !== 'rust:src/two.rs::impl:A::handle') throw new Error(`expected impl:A::handle, got ${idOne}`);
-      if (idTwo !== 'rust:src/two.rs::impl:B::handle') throw new Error(`expected impl:B::handle, got ${idTwo}`);
+      ].join('\n'));
+      expectEqual(idAt(fix, 'handle(&self)', 'handle', 1), 'rust:src/two.rs::impl:A::handle', 'impl A handle');
+      expectEqual(idAt(fix, 'handle(&self)', 'handle', 2), 'rust:src/two.rs::impl:B::handle', 'impl B handle');
     }],
     ['case 31: impl Tr for T, trait Tr and mod m yield their three containers', () => {
-      const source = [
+      const fix = fixture('src/three.rs', [
         'impl Tr for T {',
         '    fn a(&self) {}',
         '}',
@@ -1256,60 +1268,42 @@ function selfTestCases() {
         '    fn c(&self) {}',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/three.rs': source });
-      const implSite = sourceSite(source, 'a(&self)');
-      const traitSite = sourceSite(source, 'b(&self)');
-      const modSite = sourceSite(source, 'c(&self)');
-      const implContainer = containerAt('src/three.rs', implSite.line, implSite.column, reader);
-      const traitContainer = containerAt('src/three.rs', traitSite.line, traitSite.column, reader);
-      const modContainer = containerAt('src/three.rs', modSite.line, modSite.column, reader);
-      if (implContainer !== 'impl:Tr for T') throw new Error(`expected impl:Tr for T, got ${implContainer}`);
-      if (traitContainer !== 'trait:Tr') throw new Error(`expected trait:Tr, got ${traitContainer}`);
-      if (modContainer !== 'mod:m') throw new Error(`expected mod:m, got ${modContainer}`);
+      ].join('\n'));
+      expectEqual(containerAtNeedle(fix, 'a(&self)'), 'impl:Tr for T', 'impl container');
+      expectEqual(containerAtNeedle(fix, 'b(&self)'), 'trait:Tr', 'trait container');
+      expectEqual(containerAtNeedle(fix, 'c(&self)'), 'mod:m', 'mod container');
     }],
     ['case 32: a free function id carries no container segment', () => {
-      const source = 'fn free() {}\n';
-      const reader = fixtureReader({ 'src/free.rs': source });
-      const site = sourceSite(source, 'free()');
-      const id = idFor('src/free.rs', site.line, site.column, 'free', reader);
-      if (id !== 'rust:src/free.rs::free') throw new Error(`expected rust:src/free.rs::free, got ${id}`);
+      const fix = fixture('src/free.rs', 'fn free() {}\n');
+      expectEqual(idAt(fix, 'free()', 'free'), 'rust:src/free.rs::free', 'free id');
     }],
     ['case 33: a function inside another function inside impl A keeps both frames', () => {
-      const source = [
+      const fix = fixture('src/nested.rs', [
         'impl A {',
         '    fn outer() {',
         '        fn inner() {}',
         '    }',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/nested.rs': source });
-      const site = sourceSite(source, 'inner()');
-      const container = containerAt('src/nested.rs', site.line, site.column, reader);
-      const id = idFor('src/nested.rs', site.line, site.column, 'inner', reader);
-      if (container !== 'impl:A::fn:outer') throw new Error(`expected impl:A::fn:outer, got ${container}`);
-      if (id !== 'rust:src/nested.rs::impl:A::fn:outer::inner') throw new Error(`expected the nested id, got ${id}`);
+      ].join('\n'));
+      expectEqual(containerAtNeedle(fix, 'inner()'), 'impl:A::fn:outer', 'nested container');
+      expectEqual(idAt(fix, 'inner()', 'inner'), 'rust:src/nested.rs::impl:A::fn:outer::inner', 'nested id');
     }],
     ['case 34: an impl where clause is dropped and its generics kept', () => {
-      const source = [
+      const fix = fixture('src/where.rs', [
         'impl<T> Foo<T> where T: X {',
         '    fn f() {}',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/where.rs': source });
-      const site = sourceSite(source, 'f()');
-      const container = containerAt('src/where.rs', site.line, site.column, reader);
-      if (container !== 'impl:<T> Foo<T>') throw new Error(`expected impl:<T> Foo<T>, got ${container}`);
+      ].join('\n'));
+      expectEqual(containerAtNeedle(fix, 'f()'), 'impl:<T> Foo<T>', 'where clause dropped');
     }],
     ['case 35: an unreadable source raises CAPTURE instead of inventing file scope', () => {
-      const reader = () => {
-        throw new Error('missing fixture');
-      };
       let caught = null;
       try {
-        containerAt('src/missing.rs', 1, 1, reader);
+        containerAt('src/missing.rs', 1, 1, () => {
+          throw new Error('missing fixture');
+        });
       } catch (error) {
         caught = error;
       }
@@ -1450,7 +1444,7 @@ function selfTestCases() {
       expectExit(['--help'], 0, silent);
     }],
     ['case 55: a function and closure after a complete impl block stay at file scope', () => {
-      const source = [
+      const fix = fixture('src/after.rs', [
         'impl A {',
         '    fn method(&self) {}',
         '}',
@@ -1458,33 +1452,23 @@ function selfTestCases() {
         '    let c = |x| x;',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/after.rs': source });
-      const fnSite = sourceSite(source, 'free()');
-      const closureSite = sourceSite(source, '|x|');
-      const fnContainer = containerAt('src/after.rs', fnSite.line, fnSite.column, reader);
-      const closureContainer = containerAt('src/after.rs', closureSite.line, closureSite.column, reader);
-      if (fnContainer !== '') throw new Error(`expected file scope for free, got ${fnContainer}`);
-      if (closureContainer !== 'fn:free') throw new Error(`expected fn:free for the closure, got ${closureContainer}`);
+      ].join('\n'));
+      expectEqual(containerAtNeedle(fix, 'free()'), '', 'free is at file scope');
+      expectEqual(containerAtNeedle(fix, '|x|'), 'fn:free', 'closure under free');
     }],
     ['case 56: a closure under a module declaration stays under its function', () => {
-      const source = [
+      const fix = fixture('src/below.rs', [
         'pub mod web;',
         'fn free() {',
         '    let c = |x| x;',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/below.rs': source });
-      const fnSite = sourceSite(source, 'free()');
-      const closureSite = sourceSite(source, '|x|');
-      const fnContainer = containerAt('src/below.rs', fnSite.line, fnSite.column, reader);
-      const id = idFor('src/below.rs', closureSite.line, closureSite.column, '|x|', reader);
-      if (fnContainer !== '') throw new Error(`expected file scope for free, got ${fnContainer}`);
-      if (id !== 'rust:src/below.rs::fn:free::{closure}') throw new Error(`expected fn:free::{closure}, got ${id}`);
+      ].join('\n'));
+      expectEqual(containerAtNeedle(fix, 'free()'), '', 'module declaration opens nothing');
+      expectEqual(idAt(fix, '|x|', '|x|'), 'rust:src/below.rs::fn:free::{closure}', 'closure id');
     }],
     ['case 57: four same-named methods under four different impls get four ids', () => {
-      const source = [
+      const fix = fixture('src/four.rs', [
         'impl Display for F {',
         '    fn fmt(&self) {}',
         '}',
@@ -1498,24 +1482,19 @@ function selfTestCases() {
         '    fn from(value: &str) {}',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/four.rs': source });
-      const displaySite = sourceSite(source, 'fmt(&self)', 1);
-      const debugSite = sourceSite(source, 'fmt(&self)', 2);
-      const stringSite = sourceSite(source, 'from(value: String)', 1);
-      const strSite = sourceSite(source, 'from(value: &str)', 1);
+      ].join('\n'));
       const ids = [
-        idFor('src/four.rs', displaySite.line, displaySite.column, 'fmt', reader),
-        idFor('src/four.rs', debugSite.line, debugSite.column, 'fmt', reader),
-        idFor('src/four.rs', stringSite.line, stringSite.column, 'from', reader),
-        idFor('src/four.rs', strSite.line, strSite.column, 'from', reader),
+        idAt(fix, 'fmt(&self)', 'fmt', 1),
+        idAt(fix, 'fmt(&self)', 'fmt', 2),
+        idAt(fix, 'from(value: String)', 'from'),
+        idAt(fix, 'from(value: &str)', 'from'),
       ];
       if (new Set(ids).size !== 4) throw new Error(`expected four distinct ids, got ${JSON.stringify(ids)}`);
-      if (ids[2] !== 'rust:src/four.rs::impl:From<String> for E::from') throw new Error(`expected the String impl, got ${ids[2]}`);
-      if (ids[3] !== 'rust:src/four.rs::impl:From<&str> for E::from') throw new Error(`expected the &str impl, got ${ids[3]}`);
+      expectEqual(ids[2], 'rust:src/four.rs::impl:From<String> for E::from', 'String impl');
+      expectEqual(ids[3], 'rust:src/four.rs::impl:From<&str> for E::from', '&str impl');
     }],
     ['case 58: module paths separate siblings, and cfg-alternate siblings share one id', () => {
-      const split = [
+      const split = fixture('src/mods.rs', [
         'mod a {',
         '    mod inner {',
         '        fn f() {}',
@@ -1527,16 +1506,11 @@ function selfTestCases() {
         '    }',
         '}',
         '',
-      ].join('\n');
-      const splitReader = fixtureReader({ 'src/mods.rs': split });
-      const splitFirst = sourceSite(split, 'f()', 1);
-      const splitSecond = sourceSite(split, 'f()', 2);
-      const firstId = idFor('src/mods.rs', splitFirst.line, splitFirst.column, 'f', splitReader);
-      const secondId = idFor('src/mods.rs', splitSecond.line, splitSecond.column, 'f', splitReader);
-      if (firstId === secondId) throw new Error(`expected the two module paths to split, got ${firstId}`);
-      if (firstId !== 'rust:src/mods.rs::mod:a::mod:inner::f') throw new Error(`expected mod:a::mod:inner::f, got ${firstId}`);
-      if (secondId !== 'rust:src/mods.rs::mod:b::mod:inner::f') throw new Error(`expected mod:b::mod:inner::f, got ${secondId}`);
-      const shared = [
+      ].join('\n'));
+      expectDifferent(idAt(split, 'f()', 'f', 1), idAt(split, 'f()', 'f', 2), 'module paths');
+      expectEqual(idAt(split, 'f()', 'f', 1), 'rust:src/mods.rs::mod:a::mod:inner::f', 'mod a path');
+      expectEqual(idAt(split, 'f()', 'f', 2), 'rust:src/mods.rs::mod:b::mod:inner::f', 'mod b path');
+      const shared = fixture('src/shared.rs', [
         'mod p {',
         '    mod inner {',
         '        fn f() {}',
@@ -1546,17 +1520,12 @@ function selfTestCases() {
         '    }',
         '}',
         '',
-      ].join('\n');
-      const sharedReader = fixtureReader({ 'src/shared.rs': shared });
-      const sharedFirstSite = sourceSite(shared, 'f()', 1);
-      const sharedSecondSite = sourceSite(shared, 'f()', 2);
-      const sharedFirst = idFor('src/shared.rs', sharedFirstSite.line, sharedFirstSite.column, 'f', sharedReader);
-      const sharedSecond = idFor('src/shared.rs', sharedSecondSite.line, sharedSecondSite.column, 'f', sharedReader);
-      if (sharedFirst !== 'rust:src/shared.rs::mod:p::mod:inner::f') throw new Error(`expected mod:p::mod:inner::f, got ${sharedFirst}`);
-      if (sharedFirst !== sharedSecond) throw new Error(`expected the cfg-alternate pair to share one id, got ${sharedFirst} and ${sharedSecond}`);
+      ].join('\n'));
+      expectEqual(idAt(shared, 'f()', 'f', 1), 'rust:src/shared.rs::mod:p::mod:inner::f', 'shared path');
+      expectEqual(idAt(shared, 'f()', 'f', 1), idAt(shared, 'f()', 'f', 2), 'cfg-alternate pair');
     }],
     ['case 59: a three-line impl header is joined and collapsed', () => {
-      const source = [
+      const fix = fixture('src/joined.rs', [
         'impl<T>',
         '    Trait<T>',
         '    for Foo<T>',
@@ -1564,26 +1533,20 @@ function selfTestCases() {
         '    fn f() {}',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/joined.rs': source });
-      const site = sourceSite(source, 'f()');
-      const container = containerAt('src/joined.rs', site.line, site.column, reader);
-      if (container !== 'impl:<T> Trait<T> for Foo<T>') throw new Error(`expected impl:<T> Trait<T> for Foo<T>, got ${container}`);
+      ].join('\n'));
+      expectEqual(containerAtNeedle(fix, 'f()'), 'impl:<T> Trait<T> for Foo<T>', 'joined header');
     }],
     ['case 60: nested generics in an impl header survive whole', () => {
-      const source = [
+      const fix = fixture('src/generics.rs', [
         'impl<T: Into<Vec<u8>>> Foo<T> {',
         '    fn f() {}',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/generics.rs': source });
-      const site = sourceSite(source, 'f()');
-      const container = containerAt('src/generics.rs', site.line, site.column, reader);
-      if (container !== 'impl:<T: Into<Vec<u8>>> Foo<T>') throw new Error(`expected the full generic header, got ${container}`);
+      ].join('\n'));
+      expectEqual(containerAtNeedle(fix, 'f()'), 'impl:<T: Into<Vec<u8>>> Foo<T>', 'nested generics');
     }],
     ['case 61: trailing comments, raw strings and commented mod lines open nothing', () => {
-      const source = [
+      const fix = fixture('src/lexed.rs', [
         'impl Foo for Bar // for Baz',
         '{',
         '    fn m(&self) {}',
@@ -1597,47 +1560,31 @@ function selfTestCases() {
         '}',
         'fn after2() {}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/lexed.rs': source });
-      const methodSite = sourceSite(source, 'm(&self)');
-      const afterSite = sourceSite(source, 'after()');
-      const afterTwoSite = sourceSite(source, 'after2()');
-      const methodContainer = containerAt('src/lexed.rs', methodSite.line, methodSite.column, reader);
-      const afterContainer = containerAt('src/lexed.rs', afterSite.line, afterSite.column, reader);
-      const afterTwoContainer = containerAt('src/lexed.rs', afterTwoSite.line, afterTwoSite.column, reader);
-      if (methodContainer !== 'impl:Foo for Bar') throw new Error(`expected impl:Foo for Bar, got ${methodContainer}`);
-      if (afterContainer !== '') throw new Error(`expected file scope after the raw string, got ${afterContainer}`);
-      if (afterTwoContainer !== '') throw new Error(`expected file scope after the commented mod, got ${afterTwoContainer}`);
+      ].join('\n'));
+      expectEqual(containerAtNeedle(fix, 'm(&self)'), 'impl:Foo for Bar', 'trailing comment');
+      expectEqual(containerAtNeedle(fix, 'after()'), '', 'raw string opens nothing');
+      expectEqual(containerAtNeedle(fix, 'after2()'), '', 'commented mod opens nothing');
     }],
     ['case 62: inserting an unrelated item changes the id set by exactly one id', () => {
-      const base = [
+      const base = fixture('src/insert.rs', [
         'fn a() {}',
         'impl A {',
         '    fn b(&self) {}',
         '}',
         '',
-      ].join('\n');
-      const inserted = [
+      ].join('\n'));
+      const inserted = fixture('src/insert.rs', [
         'struct P;',
         'impl P {',
         '    fn p(&self) {}',
         '}',
-        base,
-      ].join('\n');
-      const baseReader = fixtureReader({ 'src/insert.rs': base });
-      const insertedReader = fixtureReader({ 'src/insert.rs': inserted });
-      const siteA = sourceSite(base, 'a()');
-      const siteB = sourceSite(base, 'b(&self)');
-      const idA = idFor('src/insert.rs', siteA.line, siteA.column, 'a', baseReader);
-      const idB = idFor('src/insert.rs', siteB.line, siteB.column, 'b', baseReader);
-      const insertedA = sourceSite(inserted, 'a()');
-      const insertedB = sourceSite(inserted, 'b(&self)');
-      const insertedP = sourceSite(inserted, 'p(&self)');
-      const baseIds = new Set([idA, idB]);
+        base.source,
+      ].join('\n'));
+      const baseIds = new Set([idAt(base, 'a()', 'a'), idAt(base, 'b(&self)', 'b')]);
       const insertedIds = new Set([
-        idFor('src/insert.rs', insertedA.line, insertedA.column, 'a', insertedReader),
-        idFor('src/insert.rs', insertedB.line, insertedB.column, 'b', insertedReader),
-        idFor('src/insert.rs', insertedP.line, insertedP.column, 'p', insertedReader),
+        idAt(inserted, 'a()', 'a'),
+        idAt(inserted, 'b(&self)', 'b'),
+        idAt(inserted, 'p(&self)', 'p'),
       ]);
       const added = [...insertedIds].filter((id) => !baseIds.has(id));
       const removed = [...baseIds].filter((id) => !insertedIds.has(id));
@@ -1648,23 +1595,18 @@ function selfTestCases() {
       if (insertedIds.size !== 3) throw new Error(`struct P must contribute no id, got ${JSON.stringify([...insertedIds])}`);
     }],
     ['case 63: closures on their fn header line stay under their own method', () => {
-      const source = [
+      const fix = fixture('src/same-line.rs', [
         'impl P {',
         '    fn m1(&self) { let c = |x| x; }',
         '    fn m2(&self) { let c = |x| x; }',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/same-line.rs': source });
-      const first = sourceSite(source, '|x|', 1);
-      const second = sourceSite(source, '|x|', 2);
-      const idOne = idFor('src/same-line.rs', first.line, first.column, '|x|', reader);
-      const idTwo = idFor('src/same-line.rs', second.line, second.column, '|x|', reader);
-      if (idOne !== 'rust:src/same-line.rs::impl:P::fn:m1::{closure}') throw new Error(`expected the m1 closure, got ${idOne}`);
-      if (idTwo !== 'rust:src/same-line.rs::impl:P::fn:m2::{closure}') throw new Error(`expected the m2 closure, got ${idTwo}`);
+      ].join('\n'));
+      expectEqual(idAt(fix, '|x|', '|x|', 1), 'rust:src/same-line.rs::impl:P::fn:m1::{closure}', 'm1 closure');
+      expectEqual(idAt(fix, '|x|', '|x|', 2), 'rust:src/same-line.rs::impl:P::fn:m2::{closure}', 'm2 closure');
     }],
     ['case 64: headers ended by a semicolon open no scope', () => {
-      const source = [
+      const fix = fixture('src/semis.rs', [
         'mod web;',
         'fn f() {}',
         'trait T {',
@@ -1672,138 +1614,91 @@ function selfTestCases() {
         '    fn h(&self) {}',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/semis.rs': source });
-      const freeSite = sourceSite(source, 'f()');
-      const methodSite = sourceSite(source, 'h(&self)');
-      const freeContainer = containerAt('src/semis.rs', freeSite.line, freeSite.column, reader);
-      const methodContainer = containerAt('src/semis.rs', methodSite.line, methodSite.column, reader);
-      if (freeContainer !== '') throw new Error(`expected file scope after mod web;, got ${freeContainer}`);
-      if (methodContainer !== 'trait:T') throw new Error(`expected trait:T, got ${methodContainer}`);
+      ].join('\n'));
+      expectEqual(containerAtNeedle(fix, 'f()'), '', 'mod declaration');
+      expectEqual(containerAtNeedle(fix, 'h(&self)'), 'trait:T', 'trait method');
     }],
     ['case 65: closure anchors split shared ids, and identical closures share one anchor', () => {
-      const different = [
+      const different = fixture('src/anchors.rs', [
         'fn f() {',
         '    let a = |x: u32| { x };',
         '    let b = |y: u32| { y };',
         '}',
         '',
-      ].join('\n');
-      const differentReader = fixtureReader({ 'src/anchors.rs': different });
-      const xSite = sourceSite(different, '|x: u32|');
-      const ySite = sourceSite(different, '|y: u32|');
-      const idX = idFor('src/anchors.rs', xSite.line, xSite.column, '|x: u32|', differentReader);
-      const idY = idFor('src/anchors.rs', ySite.line, ySite.column, '|y: u32|', differentReader);
-      if (idX !== idY || idX !== 'rust:src/anchors.rs::fn:f::{closure}') {
-        throw new Error(`expected one shared id, got ${idX} and ${idY}`);
-      }
-      const anchorX = anchorFor('src/anchors.rs', xSite.line, xSite.column, differentReader);
-      const anchorY = anchorFor('src/anchors.rs', ySite.line, ySite.column, differentReader);
-      if (anchorX === anchorY) throw new Error('different parameter lists must produce different anchors');
-      const identical = [
+      ].join('\n'));
+      expectEqual(idAt(different, '|x: u32|', '|x: u32|'), idAt(different, '|y: u32|', '|y: u32|'), 'shared closure id');
+      expectDifferent(anchorAt(different, '|x: u32|'), anchorAt(different, '|y: u32|'), 'parameter lists');
+      const identical = fixture('src/anchors.rs', [
         'fn f() {',
         '    let a = |x: u32| { x };',
         '    let b = |x: u32| { y };',
         '}',
         '',
-      ].join('\n');
-      const identicalReader = fixtureReader({ 'src/anchors.rs': identical });
-      const firstSite = sourceSite(identical, '|x: u32|', 1);
-      const secondSite = sourceSite(identical, '|x: u32|', 2);
-      const firstAnchor = anchorFor('src/anchors.rs', firstSite.line, firstSite.column, identicalReader);
-      const secondAnchor = anchorFor('src/anchors.rs', secondSite.line, secondSite.column, identicalReader);
-      if (firstAnchor !== secondAnchor) {
-        throw new Error(`identical closures must share an anchor, got ${firstAnchor} and ${secondAnchor}`);
-      }
+      ].join('\n'));
+      expectEqual(anchorAt(identical, '|x: u32|', 1), anchorAt(identical, '|x: u32|', 2), 'identical closures');
     }],
     ['case 66: a const-generic brace ends the impl header early', () => {
-      const source = [
+      const fix = fixture('src/const-generic.rs', [
         'impl Foo<{N + 1}> {',
         '    fn f() {}',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/const-generic.rs': source });
-      const frames = lexFile('src/const-generic.rs', reader);
-      const site = sourceSite(source, 'f()');
-      const container = containerAt('src/const-generic.rs', site.line, site.column, reader);
+      ].join('\n'));
+      const frames = lexFile(fix.file, fix.reader);
       if (frames.length === 0 || frames[0].token !== 'impl:Foo<') {
         throw new Error(`expected the header to end at the const-generic brace, got ${JSON.stringify(frames)}`);
       }
-      if (container !== '') throw new Error(`expected the truncated impl frame to be closed, got ${container}`);
+      expectEqual(containerAtNeedle(fix, 'f()'), '', 'truncated impl frame is closed');
     }],
     ['case 69: array types in signatures do not drop their frames', () => {
-      const source = [
+      const fix = fixture('src/arrays.rs', [
         'fn f(x: u32) -> [u32; 3] { let c = |y| y; }',
         'fn g(x: u32) -> [u32; 3] { let c = |y| y; }',
         'impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/arrays.rs': source });
-      const first = sourceSite(source, '|y|', 1);
-      const second = sourceSite(source, '|y|', 2);
-      const third = sourceSite(source, '|y|', 3);
+      ].join('\n'));
       const containers = [
-        containerAt('src/arrays.rs', first.line, first.column, reader),
-        containerAt('src/arrays.rs', second.line, second.column, reader),
-        containerAt('src/arrays.rs', third.line, third.column, reader),
+        containerAtNeedle(fix, '|y|', 1),
+        containerAtNeedle(fix, '|y|', 2),
+        containerAtNeedle(fix, '|y|', 3),
       ];
       const ids = [
-        idFor('src/arrays.rs', first.line, first.column, '|y|', reader),
-        idFor('src/arrays.rs', second.line, second.column, '|y|', reader),
-        idFor('src/arrays.rs', third.line, third.column, '|y|', reader),
+        idAt(fix, '|y|', '|y|', 1),
+        idAt(fix, '|y|', '|y|', 2),
+        idAt(fix, '|y|', '|y|', 3),
       ];
-      if (containers[0] !== 'fn:f') throw new Error(`expected fn:f, got ${containers[0]}`);
-      if (containers[1] !== 'fn:g') throw new Error(`expected fn:g, got ${containers[1]}`);
-      if (containers[2] !== 'impl:Tr for [u8; 4]::fn:m') throw new Error(`expected the impl method scope, got ${containers[2]}`);
+      expectEqual(containers[0], 'fn:f', 'fn f container');
+      expectEqual(containers[1], 'fn:g', 'fn g container');
+      expectEqual(containers[2], 'impl:Tr for [u8; 4]::fn:m', 'impl method container');
       if (new Set(ids).size !== 3) throw new Error(`expected three distinct ids, got ${JSON.stringify(ids)}`);
       if (containers.some((container) => container === '')) throw new Error('a frame was lost to the array semicolon');
     }],
     ['case 72: a body edit leaves the anchor, a signature edit moves it', () => {
-      const before = 'fn f() { let a = 1; }\n';
-      const bodied = 'fn f() { let a = 1; let b = 2; }\n';
-      const signature = 'fn f(x: u32) { let a = 1; }\n';
-      const beforeReader = fixtureReader({ 'src/edit.rs': before });
-      const bodiedReader = fixtureReader({ 'src/edit.rs': bodied });
-      const signatureReader = fixtureReader({ 'src/edit.rs': signature });
-      const site = sourceSite(before, 'f()');
-      const beforeAnchor = anchorFor('src/edit.rs', site.line, site.column, beforeReader);
-      const bodiedAnchor = anchorFor('src/edit.rs', site.line, site.column, bodiedReader);
-      const signatureAnchor = anchorFor('src/edit.rs', site.line, site.column, signatureReader);
-      if (beforeAnchor !== bodiedAnchor) throw new Error('a body edit must not move the anchor');
-      if (beforeAnchor === signatureAnchor) throw new Error('a signature edit must move the anchor');
+      const before = fixture('src/edit.rs', 'fn f() { let a = 1; }\n');
+      const bodied = fixture('src/edit.rs', 'fn f() { let a = 1; let b = 2; }\n');
+      const signature = fixture('src/edit.rs', 'fn f(x: u32) { let a = 1; }\n');
+      expectEqual(anchorAt(before, 'f('), anchorAt(bodied, 'f('), 'body edit');
+      expectDifferent(anchorAt(before, 'f('), anchorAt(signature, 'f('), 'signature edit');
     }],
     ['case 73: closure anchors split, and a lexed header ends at the real brace', () => {
-      const source = [
+      const split = fixture('src/decoy.rs', [
         'fn f() {',
         '    let a = |x: u32| { x };',
         '    let b = |y: u32| { y };',
         '}',
         '',
-      ].join('\n');
-      const reader = fixtureReader({ 'src/decoy.rs': source });
-      const first = sourceSite(source, '|x: u32|');
-      const second = sourceSite(source, '|y: u32|');
-      const firstAnchor = anchorFor('src/decoy.rs', first.line, first.column, reader);
-      const secondAnchor = anchorFor('src/decoy.rs', second.line, second.column, reader);
-      if (firstAnchor === secondAnchor) throw new Error('different closure parameters must produce different anchors');
-      const decoy = 'fn f() -> [u8; "{".len()] // {\n{ 0 }\n';
-      const decoyReader = fixtureReader({ 'src/decoy-header.rs': decoy });
-      const decoySite = sourceSite(decoy, 'f()');
-      const decoyAnchor = anchorFor('src/decoy-header.rs', decoySite.line, decoySite.column, decoyReader);
+      ].join('\n'));
+      expectDifferent(anchorAt(split, '|x: u32|'), anchorAt(split, '|y: u32|'), 'closure parameters');
+      const decoy = fixture('src/decoy-header.rs', 'fn f() -> [u8; "{".len()] // {\n{ 0 }\n');
       const expected = sha256(Buffer.from('f() -> [u8; .len()] {', 'utf8')).slice(0, 12);
-      if (decoyAnchor !== expected) {
-        throw new Error(`expected the anchor to end at the real brace (${expected}), got ${decoyAnchor}`);
-      }
+      expectEqual(anchorAt(decoy, 'f()'), expected, 'anchor ends at the real brace');
     }],
     ['case 74: a braceless tail anchors over the capped text without raising', () => {
-      const source = `fn f() ${'x'.repeat(600)}\n`;
-      const reader = fixtureReader({ 'src/capped.rs': source });
-      const site = sourceSite(source, 'f()');
-      const anchor = anchorFor('src/capped.rs', site.line, site.column, reader);
-      const expected = sha256(Buffer.from(`f() ${'x'.repeat(396)}`, 'utf8')).slice(0, 12);
+      const fix = fixture('src/capped.rs', `fn f() ${'x'.repeat(600)}\n`);
+      const anchor = anchorAt(fix, 'f()');
       if (!/^[0-9a-f]{12}$/.test(anchor)) throw new Error(`expected 12 hex characters, got ${JSON.stringify(anchor)}`);
-      if (anchor !== expected) throw new Error(`expected the capped anchor ${expected}, got ${anchor}`);
+      const expected = sha256(Buffer.from(`f() ${'x'.repeat(396)}`, 'utf8')).slice(0, 12);
+      expectEqual(anchor, expected, 'capped anchor');
     }],
   ];
 }
