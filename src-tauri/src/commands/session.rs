@@ -2687,21 +2687,6 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
 
         register_session_samplers(app, id, agent_id.clone());
 
-        // #2232 phase 4 section 5.1: the session exists and its room is known,
-        // so evaluate the gathering function once and raise the Room demand
-        // only when it answers `Ready`. Detached, because the session-manager
-        // read guard above is still live on this path and the gathering
-        // function takes its own. A restart replacement is the one exception:
-        // `execute_restart_transaction` raises its Room demand synchronously
-        // after the old id's final release and the commit (section 5.2), so the
-        // create-time raise is suppressed for `SelectionCause::Restart(_)`.
-        if !matches!(inline_cause, Some(SelectionCause::Restart(_))) {
-            let app_for_demand = app.clone();
-            tauri::async_runtime::spawn(async move {
-                raise_room_reader_demand(&app_for_demand, id).await;
-            });
-        }
-
         // Auto-inject optional non-credential bootstrap text for agent sessions
         // after PTY spawn. Credentials are already present in child environment
         // variables; no credentials are written through PTY.
@@ -2911,7 +2896,23 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 .unwrap_or_else(|error| error.into_inner())
                 .take();
         }
-        finalized.map(CreateCompletion::Finalized)
+        let completion = finalized.map(CreateCompletion::Finalized);
+        // #2232 phase 4 section 5.1: the Room demand may be raised only once
+        // the row is **finalized and visible** to `get_session` — a
+        // pending-create row is hidden, so a raise spawned earlier answers
+        // "session not found" and is never retried. Detached, as before: the
+        // raise resolves the reader kind and spawns the watcher under its own
+        // locks, off the create path. A restart replacement is finalized later
+        // by `execute_restart_transaction`, which raises its Room demand
+        // synchronously after the commit (section 5.2); `SelectionCause::Restart(_)`
+        // never reaches a finalize here, and the gate keeps that explicit.
+        if completion.is_ok() && !matches!(inline_cause, Some(SelectionCause::Restart(_))) {
+            let app_for_demand = app.clone();
+            tauri::async_runtime::spawn(async move {
+                raise_room_reader_demand(&app_for_demand, id).await;
+            });
+        }
+        completion
     };
     let result = tokio::select! {
         biased;
@@ -13382,8 +13383,17 @@ mod reader_demand_tests {
         ));
         let projects_dir = fixture.temp_path().join("claude-projects");
         std::fs::create_dir_all(&projects_dir).expect("projects dir");
+        // The production `co_managed_set_enabled` command canonicalises the
+        // room root and proves it belongs to a registered project, so the
+        // phase-2 fixture root is registered exactly as a project row would.
+        let mut settings = settings_with_key();
+        settings.project_paths = vec![fixture
+            .temp_path()
+            .join("project-a")
+            .to_string_lossy()
+            .into_owned()];
         let app = tauri::test::mock_builder()
-            .manage(Arc::new(tokio::sync::RwLock::new(settings_with_key())))
+            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
             .manage(Arc::clone(&manager))
             .manage(bridge_state)
             .manage(OutboundNetwork::new_for_tests(1))
@@ -13704,29 +13714,69 @@ mod reader_demand_tests {
         h.close().await;
     }
 
-    /// Test 16: **live toggle.** With an orchestrator session already running
-    /// and no reader, turning the flag on raises the Room demand and a reader
-    /// starts; turning it off releases it and the reader stops. Epic section
-    /// 3.2 is explicitly about already-running sessions.
+    /// Test 16: **live toggle through the production command.** With an
+    /// orchestrator session already running and no reader,
+    /// `co_managed_set_enabled(room, true)` must drive its live-session loop,
+    /// raise the Room demand and start a reader; `false` must release it and
+    /// stop the reader. A member session in the same room must never get one.
+    /// Epic section 3.2 is explicitly about already-running sessions; a
+    /// swapped command branch or a no-op live-session loop fails this test.
     #[tokio::test]
     async fn toggling_the_flag_on_a_live_session_starts_and_stops_the_reader() {
         let fixture = room_fixture();
         configure_room(fixture.room_path(), false);
         let h = harness(&fixture);
         let orchestrator = h.session_in(fixture.coordinator_path()).await;
+        let member = h.session_in(fixture.member_path()).await;
 
-        configure_room(fixture.room_path(), true);
-        assert!(
-            raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), orchestrator).await
-        );
+        // Flag off and no reader anywhere: the command is the only trigger.
         {
             let tg = h.bridge().await;
             let tg = tg.lock().await;
-            assert!(tg.reader_is_running(orchestrator));
+            assert!(!tg.reader_is_running(orchestrator));
+            assert!(!tg.reader_is_running(member));
         }
 
-        configure_room(fixture.room_path(), false);
-        release_room_reader_demand(h.app.handle(), orchestrator).await;
+        let room_root = fixture.room_path().to_string_lossy().into_owned();
+        let config = crate::commands::co_managed::co_managed_set_enabled(
+            h.app.handle().clone(),
+            room_root.clone(),
+            true,
+        )
+        .await
+        .expect("enabling the flag on a live room succeeds");
+        assert!(config.enabled, "the on-disk config is enabled");
+
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(
+                tg.reader_is_running(orchestrator),
+                "the live orchestrator must get a reader from the toggle"
+            );
+            assert_eq!(
+                tg.reader_demands(orchestrator)
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                vec![ReaderConsumer::Room]
+            );
+            assert!(
+                !tg.reader_is_running(member),
+                "a member session never gets a reader from the toggle"
+            );
+        }
+        assert!(h.captures.is_open(&orchestrator.to_string()));
+        assert!(!h.captures.is_open(&member.to_string()));
+
+        let config = crate::commands::co_managed::co_managed_set_enabled(
+            h.app.handle().clone(),
+            room_root,
+            false,
+        )
+        .await
+        .expect("disabling the flag succeeds");
+        assert!(!config.enabled);
+
         {
             let tg = h.bridge().await;
             let tg = tg.lock().await;
@@ -13734,6 +13784,209 @@ mod reader_demand_tests {
             assert!(tg.reader_demands(orchestrator).is_empty());
         }
         assert!(!h.captures.is_open(&orchestrator.to_string()));
+    }
+
+    /// B1 regression: the create-time Room raise must run **after** the
+    /// pending-create row is finalized and visible. Under the old ordering the
+    /// detached raise ran while the row was hidden, the gathering function
+    /// answered "session not found", and the Ready room-only session never got
+    /// a reader or a capture slot (and never retried).
+    #[tokio::test]
+    async fn a_created_session_raises_its_room_demand_after_finalization() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness(&fixture);
+        let cwd = fixture.coordinator_path();
+
+        let id = h.live_session(cwd, CodingAgentKind::Claude).await;
+        let key = id.to_string();
+        assert!(
+            h.manager.read().await.get_session(id).await.is_some(),
+            "the create returns a finalized, visible row"
+        );
+
+        // The raise is detached, so poll: the bug is an absent reader, not a
+        // slow one.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let running = {
+                let tg = h.bridge().await;
+                let tg = tg.lock().await;
+                tg.reader_is_running(id)
+            };
+            if running && h.captures.is_open(&key) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a Ready room-only create must get a reader and an open capture slot"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert_eq!(
+                tg.reader_demands(id).into_iter().collect::<Vec<_>>(),
+                vec![ReaderConsumer::Room]
+            );
+        }
+        assert!(h.captures.slot(&key).is_some());
+        h.release_all(id).await;
+        h.close().await;
+    }
+
+    /// B3: a successful **dormant** restart takes the `!old_lost` branch: after
+    /// the commit the old bridge is detached, the old reader and slot are
+    /// released, and the replacement gets its own reader.
+    #[tokio::test]
+    async fn a_successful_dormant_restart_detaches_the_old_bridge_and_transfers_the_reader() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness(&fixture);
+        let cwd = fixture.coordinator_path();
+        let old = h.live_session(cwd, CodingAgentKind::Claude).await;
+        let old_key = old.to_string();
+
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
+        h.attach_bot(old).await;
+        h.backend.kill(old).expect("kill the dormant old");
+        h.app
+            .state::<crate::session::selection::SelectionCoordinator>()
+            .container_lifecycle_sender()
+            .route_lost(old, 17)
+            .await
+            .expect("reconcile the dormant route");
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(
+                tg.has_bridge(old),
+                "the dormant old keeps its bridge until the post-commit branch"
+            );
+        }
+
+        let restarted = h.restart(old).await.expect("dormant restart succeeds");
+        let new = Uuid::parse_str(&restarted.id).expect("replacement id");
+        assert_ne!(new, old);
+
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(
+                !tg.has_bridge(old),
+                "the !old_lost branch detaches the old bridge"
+            );
+            assert_eq!(tg.test_detach_count(old), 1);
+            assert!(!tg.reader_is_running(old));
+            assert!(tg.reader_is_running(new));
+        }
+        assert!(!h.captures.is_open(&old_key));
+        assert!(h.captures.is_open(&new.to_string()));
+        assert!(h.manager.read().await.get_session(old).await.is_none());
+        h.release_all(new).await;
+        h.close().await;
+    }
+
+    /// B3: attach rollback at its production site. A persistence failure after
+    /// the bridge attach rolls the bridge back, clears the persisted bot id,
+    /// emits the error and leaves the Room reader capturing; the rollback must
+    /// not release a Bot demand this attach never raised.
+    #[tokio::test]
+    async fn an_attach_persistence_failure_rolls_back_without_touching_the_room_reader() {
+        use tauri::Listener;
+
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness(&fixture);
+        let cwd = fixture.coordinator_path();
+        let id = h.live_session(cwd, CodingAgentKind::Claude).await;
+        let key = id.to_string();
+
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), id).await);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        h.app.listen_any("telegram_bridge_error", move |event| {
+            let _ = tx.send(event.payload().to_string());
+        });
+
+        crate::commands::telegram::attach_persistence_seam::arm(id);
+        let error =
+            crate::commands::telegram::attach_telegram_bot_by_id(h.app.handle(), id, PHASE4_BOT_ID)
+                .await
+                .expect_err("the forced attach persistence failure must surface");
+        assert!(error.contains("could not be persisted"), "{error}");
+        let payload = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("telegram_bridge_error is emitted");
+        assert!(payload.contains("could not be persisted"), "{payload}");
+
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(!tg.has_bridge(id), "the rolled-back bridge is detached");
+            assert!(tg.reader_is_running(id));
+            assert_eq!(
+                tg.reader_demands(id).into_iter().collect::<Vec<_>>(),
+                vec![ReaderConsumer::Room],
+                "the rollback must not touch the Room demand"
+            );
+        }
+        assert!(h.captures.is_open(&key));
+        assert!(h
+            .manager
+            .read()
+            .await
+            .get_session(id)
+            .await
+            .expect("session row")
+            .telegram_bot_id
+            .is_none());
+
+        h.release_all(id).await;
+        h.close().await;
+    }
+
+    /// B3: an idempotent repeated attach that fails persistence must leave the
+    /// earlier attach's Bot demand alone; a rollback releases only a demand
+    /// *that attach raised*.
+    #[tokio::test]
+    async fn a_repeated_attach_rollback_keeps_the_previous_bot_demand() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness(&fixture);
+        let cwd = fixture.coordinator_path();
+        let id = h.live_session(cwd, CodingAgentKind::Claude).await;
+
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), id).await);
+        // First attach succeeds and raises the Bot demand.
+        h.attach_bot(id).await;
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(tg.reader_demands(id).contains(&ReaderConsumer::Bot));
+        }
+
+        crate::commands::telegram::attach_persistence_seam::arm(id);
+        let error =
+            crate::commands::telegram::attach_telegram_bot_by_id(h.app.handle(), id, PHASE4_BOT_ID)
+                .await
+                .expect_err("the repeated attach persistence failure must surface");
+        assert!(error.contains("could not be persisted"), "{error}");
+
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(
+                tg.reader_demands(id).contains(&ReaderConsumer::Bot),
+                "a repeated attach rollback must not release the earlier Bot demand"
+            );
+            assert!(tg.reader_demands(id).contains(&ReaderConsumer::Room));
+            assert!(tg.reader_is_running(id));
+        }
+        assert!(h.captures.is_open(&id.to_string()));
+        h.release_all(id).await;
+        h.close().await;
     }
 
     // ── Test 9: restart transfers reader ownership to the new session UUID ──

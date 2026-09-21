@@ -242,6 +242,36 @@ pub(crate) mod reader_demand_seam {
     }
 }
 
+/// Test-only failure injection for `attach_telegram_bot_by_id`'s
+/// `sessions.json` persistence step (phase 4 attach-rollback coverage).
+///
+/// Keyed by session id and consumed on first use: arming a failure for one
+/// test cannot leak into another test that attaches a different session.
+#[cfg(test)]
+pub(crate) mod attach_persistence_seam {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use uuid::Uuid;
+
+    static FORCE_FAILURE: Mutex<Option<HashSet<Uuid>>> = Mutex::new(None);
+
+    pub(crate) fn arm(session_id: Uuid) {
+        FORCE_FAILURE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashSet::new)
+            .insert(session_id);
+    }
+
+    pub(crate) fn take(session_id: Uuid) -> bool {
+        FORCE_FAILURE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .is_some_and(|armed| armed.remove(&session_id))
+    }
+}
+
 /// Test-only failure injection for `telegram_detach`'s `sessions.json`
 /// persistence step (phase 4 test 21).
 ///
@@ -406,7 +436,14 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
 
         mgr.set_telegram_bot_id(session_id, Some(bot.id.clone()))
             .await;
-        if let Err(e) = persist_current_state_result(&mgr).await {
+        let persist_result = persist_current_state_result(&mgr).await;
+        #[cfg(test)]
+        let persist_result = if attach_persistence_seam::take(session_id) {
+            Err("synthetic attach persistence failure".to_string())
+        } else {
+            persist_result
+        };
+        if let Err(e) = persist_result {
             mgr.set_telegram_bot_id(session_id, None).await;
             let shutdown = tg.detach(session_id).ok();
             let err_msg = format!(
@@ -426,9 +463,12 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
             if let Some(shutdown) = shutdown {
                 shutdown.spawn_wait_or_abort();
             }
-            // A rollback releases **only** the bot demand (section 5); a room
-            // demand, if any, keeps the reader running.
-            release_reader_demand(app, session_id, ReaderConsumer::Bot).await;
+            // #2232 phase 4 section 5: this attach raises the Bot demand only
+            // **after** persistence succeeds, so the rollback has no demand of
+            // its own to release. Releasing here would tear down the demand of
+            // an earlier, still-valid attach (an idempotent repeat attach lands
+            // in this branch), which section 5 forbids: a rollback releases Bot
+            // only when that attach raised it.
             return Err(err_msg);
         }
         info
