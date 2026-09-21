@@ -87,7 +87,26 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
     sessionId: string;
     snapshot: TypingHoldSnapshot;
   } | null>(null);
-  const [typingHoldPending, setTypingHoldPending] = createSignal(false);
+  // #2337 - pending is per session: a toggle for tab A must not disable tab B's
+  // padlock (and must not swallow B's clicks) while it is in flight.
+  const [typingHoldPending, setTypingHoldPending] = createSignal<ReadonlySet<string>>(
+    new Set(),
+  );
+  // #2337 - one order for every writer of `typingHold`: polls and toggles share
+  // this sequence, so a poll that left before a toggle cannot land after it and
+  // repaint the pre-toggle state.
+  let typingHoldSeq = 0;
+
+  const markTypingHoldPending = (sessionId: string, pending: boolean) => {
+    setTypingHoldPending((previous) => {
+      const next = new Set(previous);
+      if (pending) next.add(sessionId);
+      else next.delete(sessionId);
+      return next;
+    });
+  };
+  const typingHoldIsPending = (sessionId: string | null) =>
+    !!sessionId && typingHoldPending().has(sessionId);
 
   const typingHoldSnapshot = (): TypingHoldSnapshot | null => {
     const state = typingHold();
@@ -97,10 +116,12 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
   };
   const typingHoldClosed = () => !!typingHoldSnapshot()?.closed;
   const typingHoldTitle = () => {
-    const held = typingHoldSnapshot()?.heldCount ?? 0;
-    return typingHoldClosed()
-      ? `Release held messages and resume delivery (#${held} held)`
-      : `Hold message delivery to this session (#${held} held)`;
+    const snapshot = typingHoldSnapshot();
+    // No snapshot yet: make no claim about a count.
+    if (!snapshot) return "Hold message delivery to this session";
+    return snapshot.closed
+      ? `Release held messages and resume delivery (#${snapshot.heldCount} held)`
+      : `Hold message delivery to this session (#${snapshot.heldCount} held)`;
   };
 
   // #2337 - poll while this bar is mounted. The effect re-runs on every active
@@ -113,12 +134,11 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
     const sessionId = terminalStore.activeSessionId;
     if (!isTauri || !sessionId) return;
     let cancelled = false;
-    let requestSeq = 0;
     const fetchSnapshot = async () => {
-      const seq = ++requestSeq;
+      const seq = ++typingHoldSeq;
       try {
         const snapshot = await PtyAPI.getTypingHold(sessionId);
-        if (cancelled || seq !== requestSeq) return;
+        if (cancelled || seq !== typingHoldSeq) return;
         setTypingHold({ sessionId, snapshot });
       } catch {
         // Keep the last known state; the next tick retries.
@@ -135,10 +155,13 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
   const handleToggleTypingHold = async () => {
     // Captured at click: a tab switch mid-request must not retarget the toggle.
     const sessionId = terminalStore.activeSessionId;
-    if (!sessionId || typingHoldPending()) return;
-    setTypingHoldPending(true);
+    if (!sessionId || typingHoldIsPending(sessionId)) return;
+    markTypingHoldPending(sessionId, true);
     try {
       const snapshot = await PtyAPI.toggleTypingHold(sessionId);
+      // Retire every poll that started before this result, so none of them can
+      // land afterwards and repaint the state the toggle just replaced.
+      typingHoldSeq += 1;
       if (terminalStore.activeSessionId === sessionId) {
         setTypingHold({ sessionId, snapshot });
       }
@@ -146,6 +169,7 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
       // A failed toggle must not claim one; refetch the authoritative state.
       try {
         const snapshot = await PtyAPI.getTypingHold(sessionId);
+        typingHoldSeq += 1;
         if (terminalStore.activeSessionId === sessionId) {
           setTypingHold({ sessionId, snapshot });
         }
@@ -153,7 +177,7 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
         // Keep the last known state; the poll retries on its next tick.
       }
     } finally {
-      setTypingHoldPending(false);
+      markTypingHoldPending(sessionId, false);
     }
   };
 
@@ -233,7 +257,7 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
               class="status-bar-btn status-bar-btn-typing-hold"
               classList={{ closed: typingHoldClosed() }}
               onClick={handleToggleTypingHold}
-              disabled={typingHoldPending()}
+              disabled={typingHoldIsPending(terminalStore.activeSessionId)}
               title={typingHoldTitle()}
               aria-label={typingHoldTitle()}
               aria-pressed={typingHoldClosed()}

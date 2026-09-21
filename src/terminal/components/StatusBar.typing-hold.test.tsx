@@ -111,6 +111,30 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
     }
   });
 
+  it("does not claim a held count before the first snapshot arrives", async () => {
+    terminalStore.setActiveSessionForTests("session-1");
+    const fake = new FakeTransport();
+    let resolveGet!: (value: unknown) => void;
+    fake.onInvoke("get_typing_hold", () =>
+      new Promise((resolve) => {
+        resolveGet = resolve;
+      }),
+    );
+    const rendered = renderStatusBar(fake);
+    try {
+      await waitFor(() => expect(holdButton(rendered.root)).toBeTruthy());
+      expect(holdButton(rendered.root).getAttribute("title")).toBe(
+        "Hold message delivery to this session",
+      );
+      resolveGet({ closed: false, heldCount: 0 });
+      await waitFor(() =>
+        expect(holdButton(rendered.root).getAttribute("aria-label")).toContain("#0 held"),
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("toggles the session that is active at click, never a previous tab", async () => {
     terminalStore.setActiveSessionForTests("session-A");
     const fake = new FakeTransport();
@@ -166,6 +190,35 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
     }
   });
 
+  it("stops polling the old session after a switch", async () => {
+    vi.useFakeTimers();
+    terminalStore.setActiveSessionForTests("session-A");
+    const fake = new FakeTransport();
+    fake.resolve("get_typing_hold", { closed: false, heldCount: 0 });
+    const rendered = renderStatusBar(fake);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(500);
+      const callsForA = () =>
+        fake.callsFor("get_typing_hold").filter((call) => call.args.sessionId === "session-A")
+          .length;
+      expect(callsForA()).toBe(2);
+
+      terminalStore.setActiveSessionForTests("session-B");
+      await vi.advanceTimersByTimeAsync(0);
+      const aCallsAtSwitch = callsForA();
+
+      // Two more seconds of ticks: A's interval must be gone, B's must run.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(callsForA()).toBe(aCallsAtSwitch);
+      expect(
+        fake.callsFor("get_typing_hold").some((call) => call.args.sessionId === "session-B"),
+      ).toBe(true);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("disables the button while a toggle is pending so one click flips once", async () => {
     terminalStore.setActiveSessionForTests("session-1");
     const fake = new FakeTransport();
@@ -185,6 +238,84 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
       resolveToggle({ closed: true, heldCount: 1 });
       await waitFor(() => expect(holdButton(rendered.root).disabled).toBe(false));
       expect(holdButton(rendered.root).textContent).toContain("#1");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("drops a poll that resolves after a toggle, so it cannot repaint pre-toggle state", async () => {
+    vi.useFakeTimers();
+    terminalStore.setActiveSessionForTests("session-1");
+    const fake = new FakeTransport();
+    let pollCount = 0;
+    let resolvePendingPoll!: (value: unknown) => void;
+    fake.onInvoke("get_typing_hold", () => {
+      pollCount += 1;
+      if (pollCount === 1) return Promise.resolve({ closed: false, heldCount: 0 });
+      return new Promise((resolve) => {
+        resolvePendingPoll = resolve;
+      });
+    });
+    let resolveToggle!: (value: unknown) => void;
+    fake.onInvoke("toggle_typing_hold", () =>
+      new Promise((resolve) => {
+        resolveToggle = resolve;
+      }),
+    );
+    const rendered = renderStatusBar(fake);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(holdButton(rendered.root).textContent).toContain(OPEN);
+      // A poll is in flight when the click happens; it still answers with the
+      // pre-toggle snapshot and must not land after the toggle result.
+      await vi.advanceTimersByTimeAsync(500);
+      expect(pollCount).toBe(2);
+
+      click(holdButton(rendered.root));
+      resolveToggle({ closed: true, heldCount: 2 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(holdButton(rendered.root).textContent).toContain("#2");
+
+      resolvePendingPoll({ closed: false, heldCount: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(holdButton(rendered.root).textContent).toContain(CLOSED);
+      expect(holdButton(rendered.root).textContent).toContain("#2");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("keeps the new tab's padlock usable while another tab's toggle is pending", async () => {
+    terminalStore.setActiveSessionForTests("session-A");
+    const fake = new FakeTransport();
+    fake.resolve("get_typing_hold", { closed: false, heldCount: 0 });
+    let resolveToggleA!: (value: unknown) => void;
+    fake.onInvoke("toggle_typing_hold", (args) =>
+      args.sessionId === "session-A"
+        ? new Promise((resolve) => {
+            resolveToggleA = resolve;
+          })
+        : Promise.resolve({ closed: true, heldCount: 1 }),
+    );
+    const rendered = renderStatusBar(fake);
+    try {
+      await waitFor(() => expect(holdButton(rendered.root)).toBeTruthy());
+      click(holdButton(rendered.root));
+      await waitFor(() => expect(fake.callsFor("toggle_typing_hold")).toHaveLength(1));
+      expect(holdButton(rendered.root).disabled).toBe(true);
+
+      terminalStore.setActiveSessionForTests("session-B");
+      await waitFor(() =>
+        expect(
+          fake.callsFor("get_typing_hold").some((call) => call.args.sessionId === "session-B"),
+        ).toBe(true),
+      );
+      // B's padlock is not the pending one, so it stays enabled and clickable.
+      expect(holdButton(rendered.root).disabled).toBe(false);
+      click(holdButton(rendered.root));
+      await waitFor(() => expect(fake.callsFor("toggle_typing_hold")).toHaveLength(2));
+      expect(fake.lastCall("toggle_typing_hold")!.args).toEqual({ sessionId: "session-B" });
+      resolveToggleA({ closed: true, heldCount: 5 });
     } finally {
       rendered.cleanup();
     }
