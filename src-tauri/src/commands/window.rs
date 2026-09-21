@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
-use crate::config::settings::WindowGeometry;
+use crate::config::settings::{AppSettings, MainWindowDisplayState, WindowGeometry};
 use crate::session::manager::{CommitDecision, LifecycleMutations, SessionManager};
 use crate::session::selection::{
     SelectionCause, SelectionCoordinator, SelectionSource, SelectionTransaction,
@@ -570,6 +570,58 @@ pub async fn set_watchers_geometry(
     .await
 }
 
+/// #2348 - the narrow owner of the main window's saved placement pair
+/// (`mainGeometry` + `mainWindowDisplayState`).
+///
+/// Holds the managed settings write guard across the persistence call, so the
+/// overlay rejection (inside `set_main_window_placement`) and the in-memory
+/// publish are atomic against every other settings writer. A rejection returns
+/// the stable `main_window_placement_overlay_pinned` and changes neither memory
+/// nor the base JSON.
+#[tauri::command]
+pub async fn set_main_window_placement(
+    settings: State<'_, crate::config::settings::SettingsState>,
+    geometry: WindowGeometry,
+    display_state: MainWindowDisplayState,
+) -> Result<(), String> {
+    set_main_window_placement_inner(settings.inner(), geometry, display_state).await
+}
+
+pub(crate) async fn set_main_window_placement_inner(
+    settings: &crate::config::settings::SettingsState,
+    geometry: WindowGeometry,
+    display_state: MainWindowDisplayState,
+) -> Result<(), String> {
+    set_main_window_placement_inner_with_saver(
+        settings,
+        geometry,
+        display_state,
+        |current, geometry, display_state| {
+            crate::config::settings::set_main_window_placement(current, geometry, display_state)
+        },
+    )
+    .await
+}
+
+/// Saver seam mirroring the `*_with_saver` pairs in `commands/config.rs`, so a
+/// unit test can drive the real guard/publish split without reaching
+/// `config::config_dir()` and the developer's own settings.json.
+async fn set_main_window_placement_inner_with_saver(
+    settings: &crate::config::settings::SettingsState,
+    geometry: WindowGeometry,
+    display_state: MainWindowDisplayState,
+    save: impl FnOnce(
+        &AppSettings,
+        &WindowGeometry,
+        MainWindowDisplayState,
+    ) -> Result<AppSettings, String>,
+) -> Result<(), String> {
+    let mut guard = settings.write().await;
+    let written = save(&guard, &geometry, display_state)?;
+    *guard = written;
+    Ok(())
+}
+
 /// Open a path in the system file explorer (Explorer, Finder, xdg-open).
 #[tauri::command]
 pub fn open_in_explorer(path: String) -> Result<(), String> {
@@ -967,10 +1019,12 @@ pub async fn open_watchers_window<R: tauri::Runtime>(
 mod tests {
     use super::{
         get_watchers_scope, open_watchers_window, resource_monitor_placement_for_main,
-        PhysicalWindowRect, WatchersScopeState, WindowDestroyAudit, RESOURCE_MONITOR_DOCK_WIDTH,
-        WATCHERS_WINDOW_LABEL,
+        set_main_window_placement_inner_with_saver, PhysicalWindowRect, WatchersScopeState,
+        WindowDestroyAudit, RESOURCE_MONITOR_DOCK_WIDTH, WATCHERS_WINDOW_LABEL,
     };
-    use crate::config::settings::WindowGeometry;
+    use crate::config::settings::{
+        AppSettings, MainWindowDisplayState, SettingsState, WindowGeometry,
+    };
     use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
     use crate::pty::manager::PtyManager;
     use crate::session::manager::SessionManager;
@@ -1485,5 +1539,190 @@ mod tests {
         .is_err());
         assert!(app.webview_windows().is_empty());
         assert_eq!(get_watchers_scope(app.state()).await.unwrap(), None);
+    }
+
+    // ── #2348 - the narrow main-window placement command ──────────────────
+
+    fn placement_geometry(x: f64, y: f64) -> WindowGeometry {
+        WindowGeometry {
+            x,
+            y,
+            width: 800.0,
+            height: 600.0,
+        }
+    }
+
+    fn placement_state(settings: AppSettings) -> SettingsState {
+        Arc::new(tokio::sync::RwLock::new(settings))
+    }
+
+    fn write_placement_base(path: &std::path::Path, placement: serde_json::Value) {
+        let mut base = serde_json::json!({
+            "defaultShell": "test-shell",
+            "defaultShellArgs": [],
+            "agents": [],
+            "rootToken": "fixed-token",
+        });
+        for (key, value) in placement.as_object().unwrap() {
+            base[key] = value.clone();
+        }
+        std::fs::write(path, serde_json::to_string_pretty(&base).unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn issue_2348_placement_command_publishes_the_written_pair() {
+        let original = AppSettings {
+            main_geometry: None,
+            main_window_display_state: MainWindowDisplayState::Normal,
+            ..AppSettings::default()
+        };
+        let state = placement_state(original);
+
+        set_main_window_placement_inner_with_saver(
+            &state,
+            placement_geometry(5.0, 6.0),
+            MainWindowDisplayState::Maximized,
+            |current, geometry, display_state| {
+                let mut written = current.clone();
+                written.main_geometry = Some(geometry.clone());
+                written.main_window_display_state = display_state;
+                Ok(written)
+            },
+        )
+        .await
+        .unwrap();
+
+        let live = state.read().await;
+        assert_eq!(
+            live.main_window_display_state,
+            MainWindowDisplayState::Maximized
+        );
+        let geometry = live.main_geometry.as_ref().expect("geometry published");
+        assert_eq!((geometry.x, geometry.y), (5.0, 6.0));
+    }
+
+    #[tokio::test]
+    async fn issue_2348_placement_command_rejection_leaves_live_settings_unchanged() {
+        let state = placement_state(AppSettings {
+            main_geometry: None,
+            main_window_display_state: MainWindowDisplayState::Normal,
+            ..AppSettings::default()
+        });
+
+        let err = set_main_window_placement_inner_with_saver(
+            &state,
+            placement_geometry(5.0, 6.0),
+            MainWindowDisplayState::Maximized,
+            |_, _, _| Err("main_window_placement_overlay_pinned".to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "main_window_placement_overlay_pinned");
+
+        let live = state.read().await;
+        assert!(live.main_geometry.is_none());
+        assert_eq!(
+            live.main_window_display_state,
+            MainWindowDisplayState::Normal
+        );
+    }
+
+    #[test]
+    fn issue_2348_placement_owner_writes_both_keys_as_one_explicit_pair() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        write_placement_base(
+            &path,
+            serde_json::json!({
+                "mainGeometry": { "x": 1.0, "y": 2.0, "width": 300.0, "height": 400.0 },
+                "mainWindowDisplayState": "normal",
+            }),
+        );
+        let current = crate::config::settings::load_settings_from_path(&path);
+
+        let written = crate::config::settings::set_main_window_placement_at_path(
+            &current,
+            &path,
+            &placement_geometry(50.0, 60.0),
+            MainWindowDisplayState::Maximized,
+        )
+        .unwrap();
+
+        let disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(disk["mainGeometry"]["x"], serde_json::json!(50.0));
+        assert_eq!(disk["mainGeometry"]["y"], serde_json::json!(60.0));
+        assert_eq!(disk["mainGeometry"]["width"], serde_json::json!(800.0));
+        assert_eq!(
+            disk["mainWindowDisplayState"],
+            serde_json::json!("maximized")
+        );
+        assert_eq!(
+            written.main_window_display_state,
+            MainWindowDisplayState::Maximized
+        );
+        assert_eq!(written.main_geometry.as_ref().map(|g| g.x), Some(50.0));
+    }
+
+    /// Writes the base file plus an overlay that owns the given placement key,
+    /// then loads through the real merge so ownership is genuine.
+    fn seed_overlay_placement(
+        key: &str,
+        value: serde_json::Value,
+    ) -> (tempfile::TempDir, std::path::PathBuf, AppSettings) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        write_placement_base(&path, serde_json::json!({}));
+        std::fs::write(
+            temp.path().join("settings.local.json"),
+            serde_json::to_string_pretty(&serde_json::json!({ key: value })).unwrap(),
+        )
+        .unwrap();
+        let current = crate::config::settings::load_settings_from_path(&path);
+        (temp, path, current)
+    }
+
+    #[test]
+    fn issue_2348_overlay_owned_geometry_rejects_without_touching_the_base_file() {
+        let (temp, path, current) = seed_overlay_placement(
+            "mainGeometry",
+            serde_json::json!({ "x": 1.0, "y": 2.0, "width": 300.0, "height": 400.0 }),
+        );
+        assert!(current.local_overlay_state.owns_top_level("mainGeometry"));
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let err = crate::config::settings::set_main_window_placement_at_path(
+            &current,
+            &path,
+            &placement_geometry(50.0, 60.0),
+            MainWindowDisplayState::Maximized,
+        )
+        .unwrap_err();
+
+        assert_eq!(err, "main_window_placement_overlay_pinned");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        drop(temp);
+    }
+
+    #[test]
+    fn issue_2348_overlay_owned_display_state_rejects_without_touching_the_base_file() {
+        let (temp, path, current) =
+            seed_overlay_placement("mainWindowDisplayState", serde_json::json!("maximized"));
+        assert!(current
+            .local_overlay_state
+            .owns_top_level("mainWindowDisplayState"));
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let err = crate::config::settings::set_main_window_placement_at_path(
+            &current,
+            &path,
+            &placement_geometry(50.0, 60.0),
+            MainWindowDisplayState::Normal,
+        )
+        .unwrap_err();
+
+        assert_eq!(err, "main_window_placement_overlay_pinned");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        drop(temp);
     }
 }

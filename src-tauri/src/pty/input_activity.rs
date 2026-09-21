@@ -1,4 +1,6 @@
-//! (#871) Substantive-submission classifier for raw PTY keystroke input.
+//! (#871) Substantive-submission classifier for raw PTY keystroke input, and
+//! (#2336) the per-session typing-hold state that defers peer wakes while the
+//! user is typing.
 //!
 //! Restart Session stamps a durable "start fresh on restore" intent. That intent
 //! must survive an app restart when the user has not actually engaged. The bug:
@@ -197,6 +199,223 @@ fn classify_chunk(pending: &mut bool, data: &[u8]) -> ChunkEffect {
         submitted,
         contributed,
     }
+}
+
+/// #2336 - the typing-hold snapshot returned to the frontend padlock. `closed`
+/// is the EFFECTIVE hold (manual OR the natural window, suppression included),
+/// which is exactly the state the click toggles. `held_count` is the number of
+/// unique peer wake message IDs currently recorded as deferred for the session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TypingHoldSnapshot {
+    pub closed: bool,
+    pub held_count: u32,
+}
+
+/// #2336 - per-session typing-hold state: the automatic window and the manual
+/// padlock. Runtime-only; never persisted and never reconciled from disk.
+///
+/// Deliberately separate from [`SubstantiveInputTracker`]. That tracker's
+/// `pending_within` clears on Enter, Ctrl-C and Ctrl-U, so it stops being true
+/// exactly when a person submits a line. This hold must survive a submission (a
+/// later key refreshes it), so it owns its own clock. Nothing here is read by
+/// #871/#1682 and nothing there is read here.
+#[derive(Default)]
+pub struct TypingHoldTracker {
+    sessions: HashMap<Uuid, TypingHoldSession>,
+}
+
+#[derive(Default)]
+struct TypingHoldSession {
+    /// When the most recent qualifying human keystroke arrived. Refreshed by
+    /// `note_qualifying_key`, which every desktop `pty_write` chunk that passes
+    /// [`chunk_qualifies_typing_hold`] reaches. `None` until the first one.
+    last_qualifying_key: Option<Instant>,
+    /// Manual padlock: `true` holds until the user releases it, with no expiry.
+    manual_closed: bool,
+    /// Incremented by every manual release (closed click). The pair with
+    /// `suppressed_generation` is how one release suppresses exactly the natural
+    /// window that existed at that moment, and nothing later.
+    release_generation: u64,
+    /// The release generation whose natural window was suppressed. A qualifying
+    /// key clears it, so the next window re-arms normally.
+    suppressed_generation: Option<u64>,
+    /// Unique peer wake message IDs observed deferred for this session in this
+    /// run. The padlock count; removed on delivery, permanent rejection, or
+    /// session teardown.
+    held_message_ids: std::collections::HashSet<String>,
+}
+
+impl TypingHoldSession {
+    /// The natural window: a qualifying key within `window`, unless the release
+    /// generation currently in force suppressed it.
+    fn natural_window_active(&self, window: Duration) -> bool {
+        if self.suppressed_generation == Some(self.release_generation) {
+            return false;
+        }
+        self.last_qualifying_key
+            .is_some_and(|last| last.elapsed() <= window)
+    }
+
+    fn effective_closed(&self, window: Duration) -> bool {
+        self.manual_closed || self.natural_window_active(window)
+    }
+}
+
+impl TypingHoldTracker {
+    /// Record one qualifying desktop keystroke chunk.
+    pub fn note_qualifying_key(&mut self, id: Uuid) {
+        let session = self.sessions.entry(id).or_default();
+        session.last_qualifying_key = Some(Instant::now());
+        // A new key re-arms the natural window even after a manual release.
+        session.suppressed_generation = None;
+    }
+
+    /// Is the hold active for `id`? Read-only, so an injection attempt never
+    /// mutates the state it is evaluating (expiry is evaluated on read).
+    pub fn is_hold_active(&self, id: Uuid, window: Duration) -> bool {
+        self.sessions
+            .get(&id)
+            .is_some_and(|session| session.effective_closed(window))
+    }
+
+    /// Read-only padlock snapshot. An unseen session is open with no held ids,
+    /// and repeated snapshots never change the count.
+    pub fn snapshot(&self, id: Uuid, window: Duration) -> TypingHoldSnapshot {
+        match self.sessions.get(&id) {
+            Some(session) => TypingHoldSnapshot {
+                closed: session.effective_closed(window),
+                held_count: held_count(&session.held_message_ids),
+            },
+            None => TypingHoldSnapshot {
+                closed: false,
+                held_count: 0,
+            },
+        }
+    }
+
+    /// Atomic padlock toggle. An effective-closed session releases: manual state
+    /// drops, the generation advances and that generation's natural window is
+    /// suppressed, so the pending queue becomes eligible immediately. An
+    /// effective-open session takes the manual hold. Returns the post-toggle
+    /// snapshot under the same lock, so the UI cannot observe a half-flip.
+    pub fn toggle_manual(&mut self, id: Uuid, window: Duration) -> TypingHoldSnapshot {
+        let session = self.sessions.entry(id).or_default();
+        if session.effective_closed(window) {
+            session.manual_closed = false;
+            session.release_generation = session.release_generation.wrapping_add(1);
+            session.suppressed_generation = Some(session.release_generation);
+        } else {
+            session.manual_closed = true;
+        }
+        TypingHoldSnapshot {
+            closed: session.effective_closed(window),
+            held_count: held_count(&session.held_message_ids),
+        }
+    }
+
+    /// Record a deferred peer wake message ID. The set makes the count unique,
+    /// so a retried poll of the same message never increases it.
+    pub fn record_held_message(&mut self, id: Uuid, message_id: &str) {
+        self.sessions
+            .entry(id)
+            .or_default()
+            .held_message_ids
+            .insert(message_id.to_string());
+    }
+
+    /// Remove one message ID on observed delivery or terminal rejection.
+    pub fn clear_held_message(&mut self, id: Uuid, message_id: &str) {
+        if let Some(session) = self.sessions.get_mut(&id) {
+            session.held_message_ids.remove(message_id);
+        }
+    }
+
+    /// Full per-session teardown, shared with the substantive tracker's reset
+    /// sites (destroy, restart, reset). Drops the clock, the manual state, the
+    /// generations and every counted ID.
+    pub fn reset(&mut self, id: Uuid) {
+        self.sessions.remove(&id);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backdate_last_key_for_test(&mut self, id: Uuid, age: Duration) {
+        if let Some(last) = self
+            .sessions
+            .get_mut(&id)
+            .and_then(|session| session.last_qualifying_key.as_mut())
+        {
+            *last = Instant::now()
+                .checked_sub(age)
+                .expect("process uptime exceeds the backdated age");
+        }
+    }
+}
+
+fn held_count(ids: &std::collections::HashSet<String>) -> u32 {
+    ids.len().min(u32::MAX as usize) as u32
+}
+
+/// Tauri-managed shared state alias.
+pub type TypingHoldState = Arc<Mutex<TypingHoldTracker>>;
+
+/// Build a fresh managed typing-hold state value.
+pub fn new_typing_hold_state() -> TypingHoldState {
+    Arc::new(Mutex::new(TypingHoldTracker::default()))
+}
+
+/// #2336 - does one raw `pty_write` chunk contain a keystroke the typing hold
+/// counts? Qualifying: printable text, whitespace, Enter, Backspace, Delete,
+/// and the human edit controls Ctrl-C / Ctrl-U. Not qualifying: an empty write,
+/// anything introduced by ESC (arrows, focus reports, device replies, mouse
+/// reports, OSC/DCS replies), and every other bare control byte. The scan skips
+/// ESC sequences exactly like `classify_chunk`, so a device reply's printable
+/// tail cannot masquerade as typing.
+///
+/// Called only from the desktop `pty_write` path, so an injected write never
+/// reaches it: injections are not user keystrokes.
+pub fn chunk_qualifies_typing_hold(data: &[u8]) -> bool {
+    let mut i = 0;
+    while i < data.len() {
+        let b = data[i];
+        match b {
+            0x1b => {
+                i += 1;
+                if i >= data.len() {
+                    break;
+                }
+                match data[i] {
+                    b'[' | b'O' => {
+                        i += 1;
+                        while i < data.len() && !(0x40..=0x7e).contains(&data[i]) {
+                            i += 1;
+                        }
+                    }
+                    b']' | b'P' | b'_' | b'^' | b'X' => {
+                        i += 1;
+                        while i < data.len() {
+                            if data[i] == 0x07 {
+                                break;
+                            }
+                            if data[i] == 0x1b {
+                                if i + 1 < data.len() && data[i + 1] == 0x5c {
+                                    i += 1;
+                                }
+                                break;
+                            }
+                            i += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            0x0d | 0x0a | 0x08 | 0x7f | 0x09 | 0x20 | 0x03 | 0x15 => return true,
+            _ if b < 0x20 => {}
+            _ => return true,
+        }
+        i += 1;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -639,5 +858,140 @@ mod tests {
                 + IdleTuning::DEFAULT.resize_grace
                 + Duration::from_millis(500)
         );
+    }
+
+    /// #2336 - the exact chunk classes the typing hold accepts and rejects.
+    /// The rejected rows are the same device-reply/mouse/focus classes #1682
+    /// proved arrive through the same `onData` stream while a person is NOT
+    /// typing.
+    #[test]
+    fn typing_hold_classifier_accepts_human_keys_only() {
+        for accepted in [
+            b"hello".as_slice(),
+            b" ".as_slice(),
+            b"\t".as_slice(),
+            b"\r".as_slice(),
+            b"\n".as_slice(),
+            b"\x08".as_slice(),
+            b"\x7f".as_slice(),
+            b"\x03".as_slice(),
+            b"\x15".as_slice(),
+            b"h\x03i".as_slice(),
+        ] {
+            assert!(chunk_qualifies_typing_hold(accepted), "{accepted:?}");
+        }
+        for rejected in [
+            b"".as_slice(),
+            b"\x1b".as_slice(),
+            b"\x1b[A".as_slice(),
+            b"\x1b[I".as_slice(),
+            b"\x1b[24;80R".as_slice(),
+            b"\x1b[?62;1;6;9;15;22c".as_slice(),
+            b"\x1b]11;rgb:1234/5678/9abc\x07".as_slice(),
+            b"\x1b[<35;80;24M".as_slice(),
+            b"\x1bP1$r0m\x1b\\".as_slice(),
+            b"\x01\x02\x04".as_slice(),
+        ] {
+            assert!(!chunk_qualifies_typing_hold(rejected), "{rejected:?}");
+        }
+    }
+
+    /// #2336 - a qualifying key opens the natural window; the window ages out on
+    /// its own; a later key refreshes it.
+    #[test]
+    fn typing_hold_natural_window_arms_refreshes_and_expires() {
+        let mut tracker = TypingHoldTracker::default();
+        let id = Uuid::new_v4();
+        let window = Duration::from_secs(30);
+
+        assert!(!tracker.is_hold_active(id, window));
+        tracker.note_qualifying_key(id);
+        assert!(tracker.is_hold_active(id, window));
+        assert!(tracker.snapshot(id, window).closed);
+
+        tracker.backdate_last_key_for_test(id, window + Duration::from_secs(1));
+        assert!(!tracker.is_hold_active(id, window));
+        assert!(!tracker.snapshot(id, window).closed);
+
+        tracker.note_qualifying_key(id);
+        assert!(tracker.is_hold_active(id, window));
+    }
+
+    /// #2336 - per-session isolation: a hold in one session never leaks into
+    /// another, and a teardown reset drops only its own entry.
+    #[test]
+    fn typing_hold_is_per_session() {
+        let mut tracker = TypingHoldTracker::default();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let window = Duration::from_secs(30);
+
+        tracker.note_qualifying_key(a);
+        assert!(tracker.is_hold_active(a, window));
+        assert!(!tracker.is_hold_active(b, window));
+        assert_eq!(tracker.snapshot(b, window).held_count, 0);
+
+        tracker.record_held_message(a, "m-a");
+        tracker.record_held_message(b, "m-b");
+        tracker.reset(b);
+        assert_eq!(tracker.snapshot(a, window).held_count, 1);
+        assert_eq!(tracker.snapshot(b, window).held_count, 0);
+    }
+
+    /// #2336 - a closed click releases, suppresses only the natural window that
+    /// existed then, and a later key re-arms. Manual close/open needs no key.
+    #[test]
+    fn typing_hold_manual_release_suppresses_then_next_key_rearms() {
+        let mut tracker = TypingHoldTracker::default();
+        let id = Uuid::new_v4();
+        let window = Duration::from_secs(30);
+
+        // A key arms the natural window; the first click (effective-closed)
+        // releases it and shows open, suppression in force.
+        tracker.note_qualifying_key(id);
+        let released = tracker.toggle_manual(id, window);
+        assert!(!released.closed);
+        assert!(!tracker.is_hold_active(id, window));
+
+        // The next qualifying key clears suppression and re-arms.
+        tracker.note_qualifying_key(id);
+        assert!(tracker.is_hold_active(id, window));
+
+        // Release the re-armed window, then an open click takes the MANUAL hold:
+        // it stays closed even after the natural window ages out.
+        assert!(!tracker.toggle_manual(id, window).closed);
+        let held = tracker.toggle_manual(id, window);
+        assert!(held.closed);
+        tracker.backdate_last_key_for_test(id, window + Duration::from_secs(1));
+        assert!(tracker.is_hold_active(id, window));
+
+        // Clicking again releases the manual hold and suppresses the (expired)
+        // window generation.
+        let released_again = tracker.toggle_manual(id, window);
+        assert!(!released_again.closed);
+        assert!(!tracker.is_hold_active(id, window));
+    }
+
+    /// #2336 - the count is a unique set of message IDs, repeated recordings do
+    /// not increase it, reads do not mutate it, and terminal cleanup removes it.
+    #[test]
+    fn typing_hold_counts_unique_ids_and_snapshot_is_read_only() {
+        let mut tracker = TypingHoldTracker::default();
+        let id = Uuid::new_v4();
+        let window = Duration::from_secs(30);
+
+        tracker.record_held_message(id, "msg-1");
+        tracker.record_held_message(id, "msg-1");
+        tracker.record_held_message(id, "msg-2");
+        for _ in 0..5 {
+            assert_eq!(tracker.snapshot(id, window).held_count, 2);
+            assert_eq!(tracker.snapshot(id, window).held_count, 2);
+        }
+
+        tracker.clear_held_message(id, "msg-1");
+        assert_eq!(tracker.snapshot(id, window).held_count, 1);
+        tracker.reset(id);
+        assert_eq!(tracker.snapshot(id, window).held_count, 0);
+        assert!(!tracker.is_hold_active(id, window));
     }
 }

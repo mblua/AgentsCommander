@@ -2498,14 +2498,16 @@ pub(crate) fn err_is_pty_session_missing(e: &str) -> bool {
     e.contains("Session not found:")
 }
 
-/// #1883 — pure severity classifier for a PTY injection failure. A menu-guard
-/// deferral is a recoverable "not yet" (the dispatcher releases the lease and
-/// retries), so it is logged at debug and never reaches the Application Error
-/// sink; every other error keeps the existing ERROR severity. Returns the log
-/// level plus the outcome word for the line; the caller propagates the error
-/// string unchanged.
+/// #1883 - pure severity classifier for a PTY injection failure. A menu-guard or
+/// typing-hold deferral is a recoverable "not yet" (the dispatcher releases the
+/// lease and the poller preserves the attempt and retries), so both are logged
+/// at debug and never reach the Application Error sink; every other error keeps
+/// the existing ERROR severity. Returns the log level plus the outcome word for
+/// the line; the caller propagates the error string unchanged.
 fn classify_injection_error(error: &str) -> (log::Level, &'static str) {
-    if crate::pty::menu_guard::is_menu_guard_deferred_error(error) {
+    if crate::pty::menu_guard::is_menu_guard_deferred_error(error)
+        || crate::pty::menu_guard::is_typing_hold_deferred_error(error)
+    {
         (log::Level::Debug, "deferred")
     } else {
         (log::Level::Error, "FAILED")
@@ -4139,9 +4141,21 @@ impl MailboxPoller {
                 self.retry_tracker.remove(&path);
             }
             Err(e) => {
-                if crate::pty::menu_guard::is_menu_guard_deferred_error(&e) {
+                // #2336 - the typing hold shares the menu guard's exemption: a
+                // deferred wake is "not yet", never an attempt, and the file is
+                // already back at its original path (the claim restore ran
+                // before this bookkeeping).
+                let held_by = if crate::pty::menu_guard::is_menu_guard_deferred_error(&e) {
+                    Some("menu guard")
+                } else if crate::pty::menu_guard::is_typing_hold_deferred_error(&e) {
+                    Some("typing hold")
+                } else {
+                    None
+                };
+                if let Some(held_by) = held_by {
                     log::debug!(
-                        "[mailbox] message delivery deferred by menu guard {:?}: {}",
+                        "[mailbox] message delivery deferred by {} {:?}: {}",
+                        held_by,
                         path,
                         e
                     );
@@ -9351,22 +9365,37 @@ impl MailboxPoller {
             // Submit the resolved static text through the canonical injector.
             // The accepted idle-to-final-Enter race is the same one as normal
             // message delivery; delayed double Enter remains the shared defense.
-            crate::pty::inject::inject_text_into_session(app, session_id, resolved.text)
-                .await
-                .map_err(|e| {
-                    let (level, outcome) = classify_injection_error(&e);
-                    log::log!(
-                        level,
-                        "[mailbox] PTY injection {} msg={} session={} logical={} resolved={}: {}",
-                        outcome,
-                        msg.id,
-                        session_id,
-                        command,
-                        resolved.text,
-                        e
-                    );
+            // #2336 - this is a peer wake (logical remote command), so it passes
+            // through the typing hold like a standard wake.
+            crate::pty::inject::inject_peer_wake_text_into_session(
+                app,
+                session_id,
+                resolved.text,
+                &msg.id,
+            )
+            .await
+            .map_err(|e| {
+                if !crate::pty::menu_guard::is_typing_hold_deferred_error(&e)
+                    && is_permanent_delivery_error(&e)
+                {
+                    // Terminal rejection of a previously held wake: drop its
+                    // count. A transient failure keeps it, because the message
+                    // stays queued and may be deferred again.
+                    crate::commands::pty::clear_held_wake(app, session_id, &msg.id);
+                }
+                let (level, outcome) = classify_injection_error(&e);
+                log::log!(
+                    level,
+                    "[mailbox] PTY injection {} msg={} session={} logical={} resolved={}: {}",
+                    outcome,
+                    msg.id,
+                    session_id,
+                    command,
+                    resolved.text,
                     e
-                })?;
+                );
+                e
+            })?;
 
             log::info!(
                 "[mailbox] logical PTY action executed msg={} session={} logical={} resolved={}",
@@ -9502,9 +9531,16 @@ impl MailboxPoller {
             payload.len(),
             payload.chars().take(100).collect::<String>()
         );
-        crate::pty::inject::inject_text_into_session(app, session_id, &payload)
+        // #2336 - a standard peer wake is the other gated delivery path; the
+        // detached logical-command follow-up above stays on the plain injector.
+        crate::pty::inject::inject_peer_wake_text_into_session(app, session_id, &payload, &msg.id)
             .await
             .map_err(|e| {
+                if !crate::pty::menu_guard::is_typing_hold_deferred_error(&e)
+                    && is_permanent_delivery_error(&e)
+                {
+                    crate::commands::pty::clear_held_wake(app, session_id, &msg.id);
+                }
                 let (level, outcome) = classify_injection_error(&e);
                 log::log!(
                     level,
@@ -24838,6 +24874,124 @@ mod tests {
         assert_eq!(payload["id"], message.id);
     }
 
+    /// #2336 - the post-clear follow-up body is exempt from the typing hold. The
+    /// logical command half is delivered and receipted FIRST; a hold then arms
+    /// during the detached idle wait (and stays armed), and the plain injector
+    /// must still write the body exactly once. The follow-up is not counted as a
+    /// held wake and no second delivered receipt is emitted.
+    #[tokio::test]
+    async fn typing_hold_armed_during_post_clear_wait_does_not_drop_followup_body() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let session_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-followup",
+            "pi.cmd",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, session_id);
+        assert!(fixture
+            .app
+            .manage(crate::pty::input_activity::new_typing_hold_state()));
+
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = Arc::clone(&events);
+        fixture.app.listen_any("message_delivered", move |event| {
+            captured.lock().unwrap().push(event.payload().to_string());
+        });
+
+        let poller = MailboxPoller::new();
+        let message = logical_command_message("clear", "follow-up body");
+        poller
+            .inject_into_pty(
+                &app,
+                session_id,
+                &message,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+                false,
+            )
+            .await
+            .unwrap();
+
+        // The command half is delivered and receipted; the detached follow-up is
+        // now in its idle wait, so arm the hold during that wait.
+        assert_eq!(events.lock().unwrap().len(), 1);
+        let window = std::time::Duration::from_secs(30);
+        let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+        hold.lock().unwrap().note_qualifying_key(session_id);
+        assert!(hold.lock().unwrap().is_hold_active(session_id, window));
+
+        // The agent becomes idle again; the follow-up must be written anyway.
+        {
+            let manager = {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = state.read().await;
+                guard.clone()
+            };
+            manager.mark_idle(session_id).await;
+        }
+
+        let expected_body =
+            crate::phone::messaging::format_pty_wrap(&message.from, "follow-up body");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            // The follow-up writes the body, then sleeps 1500ms and 500ms before
+            // its two Enters, so settle on the full six-write sequence.
+            if mock_pty_writes_for(&app, session_id).len() == 6 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the held-window follow-up did not complete: {:?}",
+                mock_pty_writes_for(&app, session_id)
+                    .iter()
+                    .map(|write| String::from_utf8_lossy(write).to_string())
+                    .collect::<Vec<_>>()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // Command text + two Enters, then the body + two Enters, exactly once.
+        let writes = mock_pty_writes_for(&app, session_id);
+        assert_eq!(
+            writes,
+            vec![
+                b"/new".to_vec(),
+                b"\r".to_vec(),
+                b"\r".to_vec(),
+                expected_body.as_bytes().to_vec(),
+                b"\r".to_vec(),
+                b"\r".to_vec(),
+            ],
+            "writes={:?}",
+            writes
+                .iter()
+                .map(|write| String::from_utf8_lossy(write).to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|write| write.as_slice() == expected_body.as_bytes())
+                .count(),
+            1,
+            "the follow-up body must be written exactly once"
+        );
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "no second delivered receipt may follow the body"
+        );
+        assert_eq!(
+            hold.lock().unwrap().snapshot(session_id, window).held_count,
+            0,
+            "the follow-up body is not a held wake"
+        );
+    }
+
     /// #1883 — both mailbox injection sites must log a menu-guard deferral at
     /// debug (never into the #264 Application Error sink) and every real PTY
     /// write failure at ERROR. One test, one sequential drain per phase, so the
@@ -28316,6 +28470,44 @@ mod tests {
         assert!(!poller.retry_tracker.contains_key(&msg_path));
         assert!(msg_path.exists());
         assert!(!temp.path().join("rejected").exists());
+    }
+
+    /// #2336 - a typing-held wake gets the menu guard's exemption: the filesystem
+    /// poller never counts an attempt against it and never rejects it, even past
+    /// the attempt ceiling. The file stays at its original path for the next poll.
+    #[tokio::test]
+    async fn test_typing_hold_defers_without_burning_attempts() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let msg_path = temp.path().join("test_msg.json");
+        std::fs::write(&msg_path, "{}").unwrap();
+
+        let mut poller = MailboxPoller::new();
+        let deferred_err = format!(
+            "{}: session 123 is holding peer wake injection while the user is typing",
+            crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED
+        );
+
+        for _ in 0..(MAX_DELIVERY_ATTEMPTS + 5) {
+            poller
+                .record_message_outcome(msg_path.clone(), Err(deferred_err.clone()))
+                .await;
+        }
+
+        assert!(!poller.retry_tracker.contains_key(&msg_path));
+        assert!(msg_path.exists());
+        assert!(!temp.path().join("rejected").exists());
+    }
+
+    #[test]
+    fn typing_hold_marker_classifies_as_deferred() {
+        let err = format!(
+            "{}: session 123 is holding peer wake injection while the user is typing",
+            crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED
+        );
+        assert_eq!(
+            classify_injection_error(&err),
+            (log::Level::Debug, "deferred")
+        );
     }
 
     #[tokio::test]
