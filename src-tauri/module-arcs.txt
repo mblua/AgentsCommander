@@ -168,6 +168,8 @@ agentscommander_lib::api::message_store -> agentscommander_lib::pty::backend
 agentscommander_lib::api::message_store -> agentscommander_lib::pty::inject
 agentscommander_lib::api::schema -> agentscommander_lib::cli::list_peers
 agentscommander_lib::api::schema -> agentscommander_lib::phone::types
+agentscommander_lib::capture::jev -> agentscommander_lib::capture::catalog
+agentscommander_lib::capture::jev -> agentscommander_lib::network
 agentscommander_lib::capture::key -> agentscommander_lib::capture::record
 agentscommander_lib::capture::registry -> agentscommander_lib::capture::record
 agentscommander_lib::capture::registry -> agentscommander_lib::capture::sink
@@ -379,12 +381,16 @@ agentscommander_lib::commands::ac_discovery -> agentscommander_lib::session::ses
 agentscommander_lib::commands::ac_discovery -> agentscommander_lib::shutdown
 agentscommander_lib::commands::ac_discovery -> agentscommander_lib::web::commands
 agentscommander_lib::commands::agent_creator -> agentscommander_lib::config::agent_creation
+agentscommander_lib::commands::co_managed -> agentscommander_lib::capture::catalog
+agentscommander_lib::commands::co_managed -> agentscommander_lib::capture::jev
+agentscommander_lib::commands::co_managed -> agentscommander_lib::capture::secrets
 agentscommander_lib::commands::co_managed -> agentscommander_lib::commands::session
 agentscommander_lib::commands::co_managed -> agentscommander_lib::config::ac_root
 agentscommander_lib::commands::co_managed -> agentscommander_lib::config::co_managed
 agentscommander_lib::commands::co_managed -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::commands::co_managed -> agentscommander_lib::config::projects
 agentscommander_lib::commands::co_managed -> agentscommander_lib::config::settings
+agentscommander_lib::commands::co_managed -> agentscommander_lib::network
 agentscommander_lib::commands::co_managed -> agentscommander_lib::path_identity
 agentscommander_lib::commands::co_managed -> agentscommander_lib::session::manager
 agentscommander_lib::commands::codex_resolver -> agentscommander_lib::path_utils
@@ -1061,6 +1067,7 @@ agentscommander_lib::telegram::claude_watcher -> agentscommander_lib::telegram::
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::capture::key
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::capture::record
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::capture::state
+agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::capture::turn_codex
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::commands::codex_resolver
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::network
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::telegram::jsonl_kernel
