@@ -1835,9 +1835,52 @@ function compareToolchainVersions(base, head) {
   return 0;
 }
 
+// `git` is never resolved through PATH (javascript:S4036): the candidates are
+// the fixed, installer-owned locations the Git for Windows installer and the
+// POSIX system packages use. The first runnable candidate wins and is cached.
+const POSIX_GIT_CANDIDATES = ['/usr/bin/git', '/bin/git', '/usr/local/bin/git', '/opt/homebrew/bin/git'];
+const WINDOWS_GIT_ROOTS = [
+  ['ProgramFiles', String.raw`C:\Program Files`],
+  ['ProgramW6432', String.raw`C:\Program Files`],
+  ['ProgramFiles(x86)', String.raw`C:\Program Files (x86)`],
+];
+
+function gitExecutableCandidates() {
+  if (process.platform !== 'win32') return POSIX_GIT_CANDIDATES;
+  const candidates = [];
+  for (const [name, fallback] of WINDOWS_GIT_ROOTS) {
+    const root = process.env[name] || fallback;
+    candidates.push(path.join(root, 'Git', 'cmd', 'git.exe'));
+    candidates.push(path.join(root, 'Git', 'bin', 'git.exe'));
+  }
+  return candidates;
+}
+
+function isRunnableFile(file) {
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+let resolvedGitExecutable = null;
+
+function resolveGitExecutable() {
+  if (resolvedGitExecutable !== null) return resolvedGitExecutable;
+  const candidate = gitExecutableCandidates().find(isRunnableFile);
+  if (candidate === undefined) {
+    throw new GitError('cannot find git in a fixed location', false);
+  }
+  resolvedGitExecutable = candidate;
+  return candidate;
+}
+
 /** Runs git from the repository root; a missing path is a typed, non-fatal case. */
 function defaultRunGit(args) {
-  const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
+  const git = resolveGitExecutable();
+  const result = spawnSync(git, args, { cwd: ROOT, encoding: 'utf8' });
   if (result.error !== undefined) throw new GitError(result.error.message, false);
   if (result.status !== 0) {
     const message =
@@ -1896,7 +1939,7 @@ export function runBaselineDiff(options, io = {}) {
   const removals = [];
   const baseById = new Map(baseDocument.entries.map((entry) => [entry.id, entry]));
   const headById = new Map(headDocument.entries.map((entry) => [entry.id, entry]));
-  const ids = [...new Set([...baseById.keys(), ...headById.keys()])].sort();
+  const ids = [...new Set([...baseById.keys(), ...headById.keys()])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   for (const id of ids) {
     const baseEntry = baseById.get(id);
     const headEntry = headById.get(id);
@@ -1905,7 +1948,7 @@ export function runBaselineDiff(options, io = {}) {
         ...(baseEntry === undefined ? [] : Object.keys(baseEntry.sites)),
         ...(headEntry === undefined ? [] : Object.keys(headEntry.sites)),
       ]),
-    ].sort();
+    ].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     for (const platform of platforms) {
       const remaining = new Map();
       for (const anchor of baseEntry?.sites[platform] ?? []) {
@@ -2085,7 +2128,7 @@ export function runMerge(options, io = {}) {
         }
       }
       if (!merged.has(entry.id)) merged.set(entry.id, { id: entry.id, sites: {} });
-      merged.get(entry.id).sites[platform] = [...entry.anchors].sort();
+      merged.get(entry.id).sites[platform] = [...entry.anchors].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     }
   }
   const entries = [...merged.values()].sort((left, right) =>
@@ -2165,7 +2208,7 @@ export function runClassifyProbe(options, io = {}) {
         : code.code;
     histogram.set(key, (histogram.get(key) ?? 0) + 1);
   }
-  const keys = [...histogram.keys()].sort();
+  const keys = [...histogram.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   for (const key of keys) stdout(`${key} ${histogram.get(key)}`);
 
   if (stopReason !== null) {
