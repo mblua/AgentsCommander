@@ -25,6 +25,17 @@ pub fn is_menu_guard_deferred_error(e: &str) -> bool {
     e.starts_with(ERR_MENU_GUARD_DEFERRED)
 }
 
+/// #2336 - deferral marker for the per-session typing hold. Deliberately a
+/// SEPARATE marker from the menu guard, not a reuse of it: both refusals get the
+/// same recoverable "not yet" treatment at every retry boundary (lease release,
+/// no attempt burn), but their causes never overlap and their lifetimes differ
+/// (a blocking-menu episode versus a recent human keystroke).
+pub const ERR_TYPING_HOLD_DEFERRED: &str = "typing_hold_deferred";
+
+pub fn is_typing_hold_deferred_error(e: &str) -> bool {
+    e.starts_with(ERR_TYPING_HOLD_DEFERRED)
+}
+
 #[derive(Debug, Clone)]
 pub struct MenuGuardSessionState {
     pub episode_id: u64,

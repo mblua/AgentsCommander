@@ -312,7 +312,19 @@ where
                     .await?;
                 crate::api::audit::record("-", &row.sender_fqn, "send-dispatch", "delivered");
             }
-            Err(reason) if crate::pty::menu_guard::is_menu_guard_deferred_error(&reason) => {
+            Err(reason)
+                if crate::pty::menu_guard::is_menu_guard_deferred_error(&reason)
+                    || crate::pty::menu_guard::is_typing_hold_deferred_error(&reason) =>
+            {
+                // #2336 - the typing hold shares the menu guard's recoverable
+                // "not yet" contract: release the lease without incrementing the
+                // attempt and leave status queued with its due time. The audit
+                // word distinguishes the two causes.
+                let deferred_by = if crate::pty::menu_guard::is_menu_guard_deferred_error(&reason) {
+                    "menu-guard-deferred"
+                } else {
+                    "typing-hold-deferred"
+                };
                 store
                     .release_delivery_lease_offloaded(
                         row.message_id.clone(),
@@ -320,12 +332,7 @@ where
                         chrono::Utc::now(),
                     )
                     .await?;
-                crate::api::audit::record(
-                    "-",
-                    &row.sender_fqn,
-                    "send-dispatch",
-                    "menu-guard-deferred",
-                );
+                crate::api::audit::record("-", &row.sender_fqn, "send-dispatch", deferred_by);
             }
             Err(reason) => {
                 let status = store
@@ -589,6 +596,37 @@ mod tests {
         assert_eq!(processed, 1);
 
         // Verify status is queued and attempt count is preserved (0)
+        let messages = store
+            .lease_due(
+                chrono::Utc::now(),
+                10,
+                Duration::from_secs(60),
+                "test-worker",
+            )
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message_id, message_id);
+        assert_eq!(messages[0].attempt, 0);
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_typing_hold_deferred_releases_lease() {
+        let store = store();
+        let message_id = enqueue(&store, "op-typing-hold", "hello");
+
+        let config = DispatcherConfig::default();
+        let processed = dispatch_due_with(&store, chrono::Utc::now(), &config, |_msg| async {
+            Err(format!(
+                "{}: session 123 is holding peer wake injection while the user is typing",
+                crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED
+            ))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(processed, 1);
+
+        // Same recoverable contract as the menu guard: queued, attempt preserved.
         let messages = store
             .lease_due(
                 chrono::Utc::now(),
