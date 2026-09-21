@@ -6,6 +6,10 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Fixed
+
+- **CI activity on a repository's default branch no longer rings the chip or notifies the orchestrator.** A resolved default branch reports idle whatever GitHub answers, so it adds no room CI activity and sends no `ci-started` or `ci-finished` notice; an unresolved default branch is unchanged. The chip tooltip no longer claims `no CI activity for this commit`, because an absent CI suffix cannot tell idle from unknown. ([#2326](https://github.com/mblua/AgentsCommander/issues/2326))
+
 ## 0.37.0
 
 ### Fixed
