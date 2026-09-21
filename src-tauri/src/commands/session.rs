@@ -13786,6 +13786,48 @@ mod reader_demand_tests {
         assert!(!h.captures.is_open(&orchestrator.to_string()));
     }
 
+    /// The production toggle canonicalises its `room_root`, while a session
+    /// stores the cwd it was created with. A session reached through an
+    /// unresolved ancestor (symlink on Unix, verbatim `\\?\` prefix on
+    /// Windows) must still be matched, or the toggle silently starts no
+    /// reader. Unix-only here because the Windows shape needs the Windows
+    /// path canonicaliser; the ordinary Windows CI run owns that side.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn toggling_matches_a_live_session_reached_through_an_unresolved_ancestor() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), false);
+
+        // temp/project-link -> temp/project-a, so the room and its agents stay
+        // reachable through an ancestor that canonicalises away.
+        let link = fixture.temp_path().join("project-link");
+        std::os::unix::fs::symlink(fixture.temp_path().join("project-a"), &link)
+            .expect("symlink project");
+        let linked_coordinator = link
+            .join(".ac")
+            .join("room-1-dev-team")
+            .join("__agent_coordinator");
+
+        let h = harness(&fixture);
+        let orchestrator = h.session_in(&linked_coordinator).await;
+
+        let config = crate::commands::co_managed::co_managed_set_enabled(
+            h.app.handle().clone(),
+            fixture.room_path().to_string_lossy().into_owned(),
+            true,
+        )
+        .await
+        .expect("enabling the flag on a live room succeeds");
+        assert!(config.enabled, "the on-disk config is enabled");
+
+        let tg = h.bridge().await;
+        let tg = tg.lock().await;
+        assert!(
+            tg.reader_is_running(orchestrator),
+            "a live session reached through an unresolved ancestor must still get a reader"
+        );
+    }
+
     /// B1 regression: the create-time Room raise must run **after** the
     /// pending-create row is finalized and visible. Under the old ordering the
     /// detached raise ran while the row was hidden, the gathering function

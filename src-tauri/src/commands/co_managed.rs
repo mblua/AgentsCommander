@@ -136,7 +136,16 @@ async fn live_sessions_in_room<R: tauri::Runtime>(
         .into_iter()
         .filter(|session| {
             co_managed::room_root_for_path(std::path::Path::new(&session.working_directory))
-                .is_some_and(|root| crate::path_identity::paths_equivalent(&root, room_root))
+                .is_some_and(|root| {
+                    // `room_root` is canonical (see `canonical_room_root`) while the
+                    // candidate is derived from the session's stored cwd, which is not.
+                    // On Windows `canonicalize` yields a `\\?\` verbatim path, so
+                    // comparing a raw candidate with a canonical root drops every live
+                    // session and the toggle starts no reader (#2267 phase 4, Windows
+                    // CI `toggling_the_flag_on_a_live_session_starts_and_stops_the_reader`).
+                    let candidate = std::fs::canonicalize(&root).unwrap_or(root);
+                    crate::path_identity::paths_equivalent(&candidate, room_root)
+                })
         })
         .filter_map(|session| uuid::Uuid::parse_str(&session.id).ok())
         .collect()
