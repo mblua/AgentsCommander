@@ -1,12 +1,18 @@
-import { Component, Show, createMemo, onCleanup } from "solid-js";
+import { Component, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { terminalStore } from "../stores/terminal";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import { PtyAPI, WindowAPI, emitOpenSettings } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
+import type { TypingHoldSnapshot } from "../../shared/types";
 
 const MIC_DISABLED_TITLE =
   "Enable voice-to-text in Settings and set a Gemini API key to use this.";
+
+// #2337 - the backend owns the padlock; this is only the read cadence.
+const TYPING_HOLD_POLL_MS = 500;
+const OPEN_PADLOCK = "\u{1F513}";
+const CLOSED_PADLOCK = "\u{1F512}";
 
 const StatusBar: Component<{ detached?: boolean }> = (props) => {
   let mouseUpHandler: (() => void) | null = null;
@@ -72,6 +78,83 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
     // Ctrl+U: kills line backward in readline/bash/most coding agents
     const encoder = new TextEncoder();
     PtyAPI.write(sessionId, encoder.encode("\x15"));
+  };
+
+  // #2337 - the snapshot is stored with the session it came from. Rendering only
+  // when the ids agree keeps a slow fetch for tab A from painting over tab B and
+  // makes the closed state and pending count per session.
+  const [typingHold, setTypingHold] = createSignal<{
+    sessionId: string;
+    snapshot: TypingHoldSnapshot;
+  } | null>(null);
+  const [typingHoldPending, setTypingHoldPending] = createSignal(false);
+
+  const typingHoldSnapshot = (): TypingHoldSnapshot | null => {
+    const state = typingHold();
+    return state && state.sessionId === terminalStore.activeSessionId
+      ? state.snapshot
+      : null;
+  };
+  const typingHoldClosed = () => !!typingHoldSnapshot()?.closed;
+  const typingHoldTitle = () => {
+    const held = typingHoldSnapshot()?.heldCount ?? 0;
+    return typingHoldClosed()
+      ? `Release held messages and resume delivery (#${held} held)`
+      : `Hold message delivery to this session (#${held} held)`;
+  };
+
+  // #2337 - poll while this bar is mounted. The effect re-runs on every active
+  // session change: cleanup drops the timer AND the previous session's late
+  // responses (the `cancelled` flag), so a slow fetch for tab A can never paint
+  // over tab B. A failed poll keeps the last known snapshot and retries on the
+  // next tick; it never fabricates a release. Desktop only: the web client has
+  // no arm for these commands and hides the control instead (see the render).
+  createEffect(() => {
+    const sessionId = terminalStore.activeSessionId;
+    if (!isTauri || !sessionId) return;
+    let cancelled = false;
+    let requestSeq = 0;
+    const fetchSnapshot = async () => {
+      const seq = ++requestSeq;
+      try {
+        const snapshot = await PtyAPI.getTypingHold(sessionId);
+        if (cancelled || seq !== requestSeq) return;
+        setTypingHold({ sessionId, snapshot });
+      } catch {
+        // Keep the last known state; the next tick retries.
+      }
+    };
+    void fetchSnapshot();
+    const timer = setInterval(() => void fetchSnapshot(), TYPING_HOLD_POLL_MS);
+    onCleanup(() => {
+      cancelled = true;
+      clearInterval(timer);
+    });
+  });
+
+  const handleToggleTypingHold = async () => {
+    // Captured at click: a tab switch mid-request must not retarget the toggle.
+    const sessionId = terminalStore.activeSessionId;
+    if (!sessionId || typingHoldPending()) return;
+    setTypingHoldPending(true);
+    try {
+      const snapshot = await PtyAPI.toggleTypingHold(sessionId);
+      if (terminalStore.activeSessionId === sessionId) {
+        setTypingHold({ sessionId, snapshot });
+      }
+    } catch {
+      // A failed toggle must not claim one; refetch the authoritative state.
+      try {
+        const snapshot = await PtyAPI.getTypingHold(sessionId);
+        if (terminalStore.activeSessionId === sessionId) {
+          setTypingHold({ sessionId, snapshot });
+        }
+      } catch {
+        // Keep the last known state; the poll retries on its next tick.
+      }
+    } finally {
+      setTypingHoldPending(false);
+    }
   };
 
   return (
@@ -143,6 +226,26 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
               data-ac-role="button"
             >
               &#x1F4E1;
+            </button>
+          </Show>
+          <Show when={isTauri}>
+            <button
+              class="status-bar-btn status-bar-btn-typing-hold"
+              classList={{ closed: typingHoldClosed() }}
+              onClick={handleToggleTypingHold}
+              disabled={typingHoldPending()}
+              title={typingHoldTitle()}
+              aria-label={typingHoldTitle()}
+              aria-pressed={typingHoldClosed()}
+              data-ac-testid="statusBar.typingHold"
+              data-ac-role="button"
+            >
+              <span>{typingHoldClosed() ? CLOSED_PADLOCK : OPEN_PADLOCK}</span>
+              <Show when={typingHoldClosed()}>
+                <span class="status-bar-hold-count">
+                  #{typingHoldSnapshot()!.heldCount}
+                </span>
+              </Show>
             </button>
           </Show>
           <button
