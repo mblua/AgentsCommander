@@ -609,6 +609,9 @@
     min-height: 0;
     overflow: hidden;
   }
+  /* Filter + notices form one content-height row so the card list keeps the
+     stretchy row and its full-height cards. */
+  .agent-profile-provider-top { display: grid; gap: 10px; min-width: 0; }
   .agent-profile-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--spacing-sm); }
   .agent-profile-panel-title { font-size: 11px; font-weight: 700; color: var(--sidebar-fg); text-transform: uppercase; letter-spacing: 0.04em; }
   .agent-profile-panel-kicker { color: var(--sidebar-fg-dim); font-size: 10px; line-height: 1.4; }
@@ -824,7 +827,7 @@
   <div class="review-toolbar">
     <label><input type="checkbox" id="highlight-check" /> Resaltar cambios de producto (solo revisión)</label>
     <button type="button" class="review-btn" id="reopen-btn" data-focus-key="reopen">Reabrir vistas propuestas</button>
-    <label><input type="checkbox" id="ownership-check" /> Mock: settings.local.json es dueño de «agents» de nivel superior (persistente)</label>
+    <label><input type="checkbox" id="ownership-check" /> Mock: settings.local.json es dueño de «agents» y trae un orden distinto (persistente)</label>
     <button type="button" class="review-btn" id="ownership-after-load-btn" data-focus-key="ownership-after-load">Simular que la propiedad empieza después de cargar</button>
     <label><input type="checkbox" id="fail-check" /> Mock: hacer que falle el próximo guardado de movimiento</label>
     <button type="button" class="review-btn" id="external-btn" data-focus-key="external">Simular que otro escritor cambia el orden</button>
@@ -841,7 +844,7 @@
     <div class="legend-item"><span class="change-badge">3</span><span><b>Mover no guarda el borrador de Settings</b>: una edición de color sin guardar sobrevive al movimiento.</span><button type="button" class="review-btn" data-repro="draft">Reproducir ejemplo</button></div>
     <div class="legend-item"><span class="change-badge">4</span><span><b>Reglas de movimiento y teclado</b>: una posición adyacente; primero-arriba y último-abajo deshabilitados; Tab/Enter/Espacio; foco, selección y rail conservados por id de herramienta.</span><button type="button" class="review-btn" data-repro="rules">Probar foco</button></div>
     <div class="legend-item"><span class="change-badge">5</span><span><b>Regla de filtro</b>: el filtro oculta tarjetas de Step 1 y desactiva solo sus movimientos; Settings sigue habilitado; la comparación mantiene el orden completo.</span><button type="button" class="review-btn" data-repro="filter">Reproducir</button></div>
-    <div class="legend-item"><span class="change-badge">6</span><span><b>Propiedad de settings.local.json</b>: los controles de movimiento se deshabilitan con un motivo accesible (comportamiento propuesto; depende de un flag de backend que la app hoy no expone).</span><button type="button" class="review-btn" data-repro="ownership">Reproducir</button></div>
+    <div class="legend-item"><span class="change-badge">6</span><span><b>Propiedad de settings.local.json</b>: si el overlay trae un orden distinto, ambas pantallas muestran ese orden efectivo (sin filtrar el orden base) y los controles de movimiento se deshabilitan con un motivo accesible (comportamiento propuesto; depende de un flag de backend que la app hoy no expone).</span><button type="button" class="review-btn" data-repro="ownership">Reproducir</button></div>
     <div class="legend-item"><span class="change-badge">7</span><span><b>Propiedad iniciada después de cargar</b>: el lado del comando rechaza el movimiento y revierte.</span><button type="button" class="review-btn" data-repro="ownership-after">Reproducir</button></div>
     <div class="legend-item"><span class="change-badge">8</span><span><b>Fallo de guardado transitorio</b>: el orden se revierte y se ofrece reintento.</span><button type="button" class="review-btn" data-repro="failure">Reproducir</button></div>
     <div class="legend-item"><span class="change-badge">9</span><span><b>Vecino esperado obsoleto</b>: se adopta el orden del otro escritor y se explica; el movimiento pedido no se aplica.</span><button type="button" class="review-btn" data-repro="conflict">Reproducir</button></div>
@@ -890,8 +893,12 @@
   <section class="screen-block" aria-labelledby="order-json-title">
     <div class="review-card" id="order-json-card">
       <h3 id="order-json-title">Persistencia simulada — <code>settings.json.agents[].order</code> <span class="proto-tag">Solo prototipo</span><span class="change-badge" id="order-json-badge" hidden>10</span></h3>
-      <p>Un solo orden global. Cada herramienta lleva el entero base 0 que define su posición; un movimiento desde Settings o desde Step 1 actualiza estos valores y ambas vistas de inmediato. Si el archivo no trae el campo, el orden se deriva del array; al guardar se normaliza a 0..n−1; un valor inválido cae a la posición del array y avisa. Los valores corresponden al orden compartido propuesto. <strong>Simulado: el prototipo no escribe ningún archivo real.</strong></p>
+      <p>Un solo orden global. Cada herramienta lleva el entero base 0 que define su posición; un movimiento desde Settings o desde Step 1 actualiza estos valores y ambas vistas de inmediato. Si el archivo no trae el campo, el orden se deriva del array; al guardar se normaliza a 0..n−1; un valor inválido cae a la posición del array y avisa. Si <code>settings.local.json</code> es dueño de <code>agents</code> y trae valores <code>order</code> válidos, ese orden gana y es el que deben mostrar ambas pantallas, con los movimientos deshabilitados. <strong>Simulado: el prototipo no escribe ningún archivo real.</strong></p>
       <pre class="mock-json" id="order-json-body" aria-label="Fragmento simulado de settings.json"></pre>
+      <div id="overlay-json-wrap" hidden>
+        <p class="settings-hint"><strong>Simulado:</strong> <code>settings.local.json</code> (overlay) — sus valores <code>order</code> válidos ganan al orden del array; si faltan o son inválidos, vale el índice del propio array del overlay. En este ejemplo Grok trae <code>order 0</code> y queda primero aunque el array lista a Claude primero; Pi no trae <code>order</code> y usa su índice (3). Ambas pantallas muestran el orden efectivo del overlay.<span id="overlay-json-note"></span></p>
+        <pre class="mock-json" id="overlay-json-body" aria-label="Fragmento simulado de settings.local.json"></pre>
+      </div>
     </div>
   </section>
 </main>
@@ -920,6 +927,15 @@
   var PROPOSED_START_ORDER = ["claude", "codex", "pi", "grok"];
   // What the mocked "other writer" writes while this view is open: Grok up one.
   var EXTERNAL_ORDER       = ["claude", "codex", "grok", "pi"];
+  // Simulated overlay order: settings.local.json owns agents and writes a
+  // DIFFERENT order. Both screens must show this one shared effective order
+  // while moves stay unavailable, with no base-order leakage.
+  var OVERLAY_ORDER        = ["grok", "claude", "codex", "pi"];
+  // As written in the overlay file: the array lists Claude first, but explicit
+  // valid `order` values win, so Grok (0) is effective first. Pi has no order
+  // and falls back to its index in this array (3).
+  var OVERLAY_ARRAY        = ["claude", "grok", "codex", "pi"];
+  var OVERLAY_EXPLICIT     = { grok: 0, claude: 1, codex: 2 };
 
   // Profile-label example values (letter A). "CODER" is Claude Code's own
   // label; "GENERAL" is the legacy slot label. Nothing here is deleted.
@@ -958,8 +974,24 @@
   function attr(value) { return esc(value); }
   function byId(id) { return TOOLS[id]; }
   function orderFor(screen) {
+    // While the overlay owns agents, the single effective order shown by BOTH
+    // screens is the overlay's order, in both Actual and Propuesto.
+    if (overlayActive()) return OVERLAY_ORDER.slice();
     if (state.mode[screen] === "proposed") return state.proposedOrder.slice();
     return (screen === "settings" ? TODAY_SETTINGS_ORDER : TODAY_PICKER_ORDER).slice();
+  }
+  function overlayActive() {
+    // A stale snapshot (ownership began after load) keeps showing the base
+    // order until the view is reopened.
+    return state.ownership && !state.ownershipAfterLoad;
+  }
+  function overlayValues() {
+    var values = {};
+    OVERLAY_ORDER.forEach(function (id, i) { values[id] = i; });
+    return values;
+  }
+  function effectiveOrderValues() {
+    return overlayActive() ? overlayValues() : state.orderValues;
   }
   function toolIndex(order, id) { return order.indexOf(id); }
   function labelFor(id) { return TOOLS[id].label; }
@@ -1048,16 +1080,19 @@
     // Ownership that began after this view loaded: the stale snapshot still
     // shows enabled controls, so the command side refuses and rolls back.
     if (state.ownershipAfterLoad) {
+      // The command side rejects the stale move and the UI reconciles to the
+      // authoritative overlay order; move controls become disabled.
+      state.ownershipAfterLoad = false;
       state.moveError = {
         id: id, dir: dir,
         message: "Movimiento rechazado por el lado del comando: settings.local.json empezó a ser dueño del orden de los agentes después de cargar esta vista. " +
-                 "No se guardó ningún cambio y la lista volvió al último orden guardado. " +
-                 "Reabrí las vistas propuestas para tomar el snapshot de propiedad.",
+                 "El movimiento no se aplicó y la lista volvió al orden del overlay (Grok, Claude Code, Codex, Pi); los controles de movimiento quedan deshabilitados.",
         kind: "ownership-after-load"
       };
       state.pendingRetry = null;
-      setStatus("Movimiento rechazado: settings.local.json ahora es dueño del orden de los agentes. Revertido, nada guardado.", "error");
-      announce("Movimiento rechazado. settings.local.json ahora es dueño del orden de los agentes. La lista se revirtió y no se guardó nada.");
+      setStatus("Movimiento rechazado: la lista volvió al orden del overlay y los movimientos quedan deshabilitados.", "error");
+      announce("Movimiento rechazado por el lado del comando. La lista volvió al orden del overlay, Grok, Claude Code, Codex, Pi, y los movimientos quedan deshabilitados.");
+      syncToolbar();
       rerender();
       return;
     }
@@ -1167,8 +1202,8 @@
     if (!on) state.ownershipAfterLoad = false;
     if (on) {
       state.ownershipAfterLoad = false;
-      setStatus("Mock de propiedad persistente ACTIVADO: los controles de movimiento propuestos quedan deshabilitados con un motivo accesible.", "warn");
-      announce("Controles de movimiento deshabilitados: settings.local.json es dueño del ajuste agents de nivel superior.");
+      setStatus("Mock de propiedad persistente ACTIVADO: ambas pantallas muestran el orden del overlay (Grok, Claude Code, Codex, Pi) y los movimientos quedan deshabilitados con un motivo accesible.", "warn");
+      announce("Controles de movimiento deshabilitados: settings.local.json es dueño de agents y su orden, Grok, Claude Code, Codex, Pi, se muestra en ambas pantallas.");
     } else {
       setStatus("Mock de propiedad persistente DESACTIVADO: los controles de movimiento propuestos vuelven a estar habilitados.", "");
     }
@@ -1294,8 +1329,8 @@
 
   function ownershipReasonBlock() {
     return '<p class="settings-ownership-reason' + hlClass() + '" id="ownership-reason">' +
-      '<strong>Los controles de movimiento no están disponibles.</strong>' + changeBadge("6") + ' settings.local.json es dueño del ajuste agents de nivel superior, ' +
-      'así que esta ventana no puede cambiar el orden. Cambiá el overlay fuera de esta función y reabrí. ' +
+      '<strong>Los controles de movimiento no están disponibles.</strong>' + changeBadge("6") + ' settings.local.json es dueño del ajuste agents de nivel superior: el orden que ves en Settings y en Step 1 es el del overlay (Grok, Claude Code, Codex, Pi), así que esta ventana no puede cambiarlo. ' +
+      'Cambiá el overlay fuera de esta función y reabrí. ' +
       '(Comportamiento propuesto de producción: requiere un flag de snapshot de backend de solo lectura más el rechazo autoritativo del comando; la aplicación actual no expone ese flag.)</p>';
   }
 
@@ -1315,6 +1350,7 @@
     var isProposed = state.mode.settings === "proposed";
     var ownsDisabled = ownershipDisablesControls();
     var firstId = order[0];
+    var orderValues = effectiveOrderValues();
 
     var rows = order.map(function (id, i) {
       var tool = byId(id);
@@ -1345,7 +1381,7 @@
                 (isProposed && i === 0 ? changeBadge("3") : "") +
                 (i === 0 ? '<span class="proto-tag">Solo prototipo</span>' : "") +
                 (isProposed
-                  ? '<span class="settings-agent-order-chip' + (i === 0 ? hlClass() : "") + '" title="Campo propuesto settings.json.agents[].order">order ' + state.orderValues[id] + '</span>' +
+                  ? '<span class="settings-agent-order-chip' + (i === 0 ? hlClass() : "") + '" title="Campo propuesto settings.json.agents[].order">order ' + orderValues[id] + '</span>' +
                     (i === 0 ? changeBadge("10") : "")
                   : "") +
                 '<span class="settings-rail-pill ' + (isRail ? "left" : "available") + '">' + (isRail ? "LEFT" : "AVAILABLE") + '</span>' +
@@ -1592,14 +1628,16 @@
               '</div>' +
               '<span class="agent-profile-step cyan">step 1</span>' +
             '</div>' +
-            '<div class="agent-profile-provider-filter' + hlClass() + '">' +
-              '<label for="picker-filter">Filter by name or start line' + changeBadge("5") + '</label>' +
-              '<input id="picker-filter" type="search" autocomplete="off" spellcheck="false"' +
-                ' placeholder="name or command + args" value="' + attr(state.filterQuery) + '"' +
-                ' data-focus-key="picker-filter" aria-describedby="picker-filter-status">' +
-              '<div class="agent-profile-provider-filter-status" id="picker-filter-status" role="status" aria-live="polite"' + filterState + '>' + esc(filterStatus) + '</div>' +
+            '<div class="agent-profile-provider-top">' +
+              '<div class="agent-profile-provider-filter' + hlClass() + '">' +
+                '<label for="picker-filter">Filter by name or start line' + changeBadge("5") + '</label>' +
+                '<input id="picker-filter" type="search" autocomplete="off" spellcheck="false"' +
+                  ' placeholder="name or command + args" value="' + attr(state.filterQuery) + '"' +
+                  ' data-focus-key="picker-filter" aria-describedby="picker-filter-status">' +
+                '<div class="agent-profile-provider-filter-status" id="picker-filter-status" role="status" aria-live="polite"' + filterState + '>' + esc(filterStatus) + '</div>' +
+              '</div>' +
+              ownsReason + filterReason +
             '</div>' +
-            ownsReason + filterReason +
             '<div class="agent-profile-provider-list" aria-label="Coding agent choices">' +
               cards + emptyState +
             '</div>' +
@@ -1666,6 +1704,28 @@
     syncToolbar();
   }
 
+  function buildMockJson(order, values) {
+    var rows = order.map(function (id, i) {
+      var tool = byId(id);
+      return '    { "label": "' + tool.label + '", "command": "' + tool.command + '", "order": ' + values[id] + ' }' +
+        (i < order.length - 1 ? "," : "");
+    });
+    return '{\n  "agents": [\n' + rows.join("\n") + '\n  ]\n}';
+  }
+
+  // Overlay excerpt: the file lists Claude first, explicit valid orders win
+  // (Grok 0 is effective first), and Pi has no order so it falls back to its
+  // index in the overlay array (3).
+  function buildOverlayJson() {
+    var rows = OVERLAY_ARRAY.map(function (id, i) {
+      var tool = byId(id);
+      var orderField = OVERLAY_EXPLICIT[id] !== undefined ? ', "order": ' + OVERLAY_EXPLICIT[id] : "";
+      return '    { "label": "' + tool.label + '", "command": "' + tool.command + '"' + orderField + ' }' +
+        (i < OVERLAY_ARRAY.length - 1 ? "," : "");
+    });
+    return '{\n  "agents": [\n' + rows.join("\n") + '\n  ]\n}';
+  }
+
   function renderOrderJson() {
     var badge = document.getElementById("order-json-badge");
     var card = document.getElementById("order-json-card");
@@ -1673,12 +1733,17 @@
     if (!badge || !card || !body) return;
     badge.hidden = !state.highlight;
     card.classList.toggle("change-target", state.highlight);
-    var rows = state.proposedOrder.map(function (id, i) {
-      var tool = byId(id);
-      return '    { "label": "' + tool.label + '", "command": "' + tool.command + '", "order": ' + i + ' }' +
-        (i < state.proposedOrder.length - 1 ? "," : "");
-    });
-    body.textContent = '{\n  "agents": [\n' + rows.join("\n") + '\n  ]\n}';
+    body.textContent = buildMockJson(state.proposedOrder, state.orderValues);
+    var wrap = document.getElementById("overlay-json-wrap");
+    var note = document.getElementById("overlay-json-note");
+    var overlayBody = document.getElementById("overlay-json-body");
+    if (wrap) wrap.hidden = !state.ownership;
+    if (note) {
+      note.textContent = state.ownershipAfterLoad
+        ? " Esta vista todavía muestra el orden base: el snapshot no se refrescó; reabrí las vistas propuestas para adoptar el orden del overlay."
+        : " Con el overlay activo, ambas pantallas muestran este orden y los movimientos quedan deshabilitados.";
+    }
+    if (overlayBody) overlayBody.textContent = buildOverlayJson();
   }
 
   /* ------------------------------------------------------------------ wiring */
