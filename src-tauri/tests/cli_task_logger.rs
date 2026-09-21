@@ -15,7 +15,26 @@
 //! tests, the dev build, or the user's installed standalone.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
+
+/// Excludes one test's open write descriptor on a freshly copied binary from
+/// overlapping another test's fork/exec.
+///
+/// These tests run in parallel and each copies the binary into its own temp dir
+/// before exec'ing it. `Command::spawn` forks, and the child inherits the write
+/// descriptor another thread still holds on *its* copy; exec'ing a binary that
+/// any process holds open for writing fails with `ETXTBSY`. Covering both the
+/// copy and the spawn closes that window. The lock is released before output is
+/// collected, so the binary runs themselves still overlap.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn command_for_binary(bin: &Path) -> Command {
     let mut command = Command::new(bin);
@@ -64,7 +83,10 @@ fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let file_name = src.file_name().expect("binary has a file name");
     let dst = tmp.join(file_name);
-    std::fs::copy(src, &dst).expect("copy binary under test into tmp dir");
+    {
+        let _guard = spawn_lock();
+        std::fs::copy(src, &dst).expect("copy binary under test into tmp dir");
+    }
     dst
 }
 
@@ -129,7 +151,8 @@ fn task_set_title_audit_line_reaches_file_sink() {
     let outside_sentinel = tmp.path().join("outside-sentinel.txt");
     std::fs::write(&outside_sentinel, "keep").expect("write outside sentinel");
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "task-set-title",
             "--token",
@@ -145,8 +168,14 @@ fn task_set_title_audit_line_reaches_file_sink() {
         // audit line and the `[task] set-title:` check below
         // false-fails; production behavior is unchanged.
         .env("RUST_LOG", "agentscommander=info")
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),
@@ -210,7 +239,8 @@ fn task_append_body_audit_line_reaches_file_sink_and_preserves_title() {
     let outside_sentinel = tmp.path().join("outside-sentinel.txt");
     std::fs::write(&outside_sentinel, "keep").expect("write outside sentinel");
 
-    let out = command_for_binary(&bin)
+    let mut command = command_for_binary(&bin);
+    command
         .args([
             "task-append-body",
             "--token",
@@ -221,8 +251,14 @@ fn task_append_body_audit_line_reaches_file_sink_and_preserves_title() {
             "Appended body from subprocess",
         ])
         .env("RUST_LOG", "agentscommander=info")
-        .output()
-        .expect("spawn binary");
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
 
     assert!(
         out.status.success(),

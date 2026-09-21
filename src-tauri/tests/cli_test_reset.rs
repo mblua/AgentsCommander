@@ -1,9 +1,22 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 
 static TESTABLE_RESET_IDENTITY_LOCK: Mutex<()> = Mutex::new(());
+
+/// Excludes one test's open write descriptor on a freshly copied binary from
+/// overlapping another test's fork/exec. This is separate from the identity
+/// lock above, which governs testable-reset identity, not copied-binary
+/// serialization.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 struct Tmp(PathBuf);
 
@@ -36,8 +49,30 @@ impl Tmp {
 fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(name);
-    std::fs::copy(src, &dst).expect("copy binary");
+    {
+        let _guard = spawn_lock();
+        std::fs::copy(src, &dst).expect("copy binary");
+    }
     dst
+}
+
+/// Returns a path that `Command` can actually launch for a copied binary.
+///
+/// On Windows, `CreateProcessW` cannot resolve a plain program path past the
+/// legacy `MAX_PATH` limit, and Rust's `Command` deliberately forwards long
+/// paths unchanged, so a plain long path fails to spawn with
+/// `ERROR_PATH_NOT_FOUND`. `canonicalize` yields the verbatim (`\\?\C:\...`)
+/// form, which CreateProcessW accepts; on Unix the path is already usable.
+fn spawnable_binary_path(bin: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        std::fs::canonicalize(bin)
+            .unwrap_or_else(|e| panic!("canonicalize long-path binary {}: {e}", bin.display()))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        bin.to_path_buf()
+    }
 }
 
 fn testable_reset_identity_lock() -> MutexGuard<'static, ()> {
@@ -47,7 +82,17 @@ fn testable_reset_identity_lock() -> MutexGuard<'static, ()> {
 }
 
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
-    let out = Command::new(bin).args(args).output().expect("spawn binary");
+    let mut command = Command::new(bin);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn binary")
+    };
+    let out = child.wait_with_output().expect("collect output");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -282,14 +327,22 @@ fn long_path_target_deletes_only_allowed_directories() {
         );
         return;
     }
-    let bin = copy_binary_as(&base, "agentscommander_testeable.exe");
-    if let Err(e) = Command::new(&bin).arg("--help").output() {
-        println!(
-            "skipping long path reset regression; see docs/testing/destructive-filesystem-regression.md#reset-long-path-check: {}",
-            e
-        );
-        return;
-    }
+    let bin = spawnable_binary_path(&copy_binary_as(&base, "agentscommander_testeable.exe"));
+    let mut probe = Command::new(&bin);
+    probe
+        .arg("--help")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let probe_child = {
+        let _guard = spawn_lock();
+        probe.spawn().expect(
+            "spawn --help probe; see docs/testing/destructive-filesystem-regression.md#reset-long-path-check",
+        )
+    };
+    let _probe_output = probe_child
+        .wait_with_output()
+        .expect("collect --help probe output");
     let config_dir = base.join(".agentscommander_testeable");
     let project_dir = base.join("agentscommander_testeable");
     let keep_dir = base.join(".agentscommander_other");
