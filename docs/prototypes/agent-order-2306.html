@@ -993,6 +993,9 @@
   function effectiveOrderValues() {
     return overlayActive() ? overlayValues() : state.orderValues;
   }
+  function effectiveOrderLabelText() {
+    return (overlayActive() ? OVERLAY_ORDER : state.proposedOrder).map(labelFor).join(", ");
+  }
   function toolIndex(order, id) { return order.indexOf(id); }
   function labelFor(id) { return TOOLS[id].label; }
 
@@ -1040,18 +1043,37 @@
   function rerender() {
     var active = document.activeElement;
     var focusKey = active && active.getAttribute ? active.getAttribute("data-focus-key") : null;
+    var activeMove = active && active.getAttribute ? active.getAttribute("data-move") : null;
+    var activeTool = active && active.getAttribute ? active.getAttribute("data-tool") : null;
     render();
-    if (focusKey) {
-      var next = document.querySelector('[data-focus-key="' + focusKey.replace(/"/g, '\\"') + '"]');
-      if (next && !next.disabled) { next.focus(); return; }
-      var owned = document.querySelector(".agent-profile-provider-card-wrap.active");
-      if (owned) {
-        var alive = owned.querySelector('[data-focus-key="' + focusKey.replace(/"/g, '\\"') + '"]');
-        if (alive && !alive.disabled) { alive.focus(); return; }
+    if (!focusKey) return;
+    var next = document.querySelector('[data-focus-key="' + focusKey.replace(/"/g, '\\"') + '"]');
+    if (next && !next.disabled) { next.focus(); return; }
+    // The pressed move control became a boundary (or vanished): keep focus in
+    // the SAME screen and tool first, then move to the nearest row with an
+    // enabled move control, then to the same tool's row/card.
+    if (activeMove && activeTool) {
+      var sibling = document.querySelector('[data-move="' + activeMove + '"][data-tool="' + activeTool + '"]:not([disabled])');
+      if (sibling) { sibling.focus(); return; }
+      var rowSel = activeMove === "settings" ? ".settings-agent-row[data-tool]" : ".agent-profile-provider-card-wrap[data-tool]";
+      var rows = Array.prototype.slice.call(document.querySelectorAll("#" + activeMove + "-frame-root " + rowSel));
+      var at = -1;
+      for (var i = 0; i < rows.length; i += 1) {
+        if (rows[i].getAttribute("data-tool") === activeTool) { at = i; break; }
       }
-      var fallback = document.querySelector('[data-focus-key="reopen"]');
-      if (fallback) fallback.focus();
+      for (var d = 1; d <= rows.length; d += 1) {
+        var candidates = [rows[at - d], rows[at + d]];
+        for (var c = 0; c < candidates.length; c += 1) {
+          if (!candidates[c]) continue;
+          var btn = candidates[c].querySelector("[data-move]:not([disabled])");
+          if (btn) { btn.focus(); return; }
+        }
+      }
+      var own = document.querySelector('[data-focus-key="' + (activeMove === "settings" ? "row-" : "picker-card-") + activeTool + '"]');
+      if (own) { own.focus(); return; }
     }
+    var fallback = document.querySelector('[data-focus-key="reopen"]');
+    if (fallback) fallback.focus();
   }
 
   function pickerMovesDisabledForFilter() {
@@ -1070,12 +1092,12 @@
 
   /* ------------------------------------------------------------- move engine */
   function moveTool(screen, id, dir) {
-    if (state.mode[screen] !== "proposed") return;
+    if (state.mode[screen] !== "proposed") return false;
 
     // Persistent ownership: controls are rendered disabled, this is a guard.
     if (ownershipDisablesControls()) {
       announce("Los controles de movimiento no están disponibles porque settings.local.json es dueño del orden de los agentes.");
-      return;
+      return false;
     }
     // Ownership that began after this view loaded: the stale snapshot still
     // shows enabled controls, so the command side refuses and rolls back.
@@ -1094,7 +1116,7 @@
       announce("Movimiento rechazado por el lado del comando. La lista volvió al orden del overlay, Grok, Claude Code, Codex, Pi, y los movimientos quedan deshabilitados.");
       syncToolbar();
       rerender();
-      return;
+      return false;
     }
     // Stale expected neighbour: another writer changed the vector since load.
     if (state.externalPending) {
@@ -1110,7 +1132,7 @@
       setStatus("Vecino esperado obsoleto: se adoptó el orden del otro escritor.", "warn");
       announce("Conflicto: otra ventana cambió el orden. Tu movimiento no se aplicó; la lista ahora muestra el orden del otro escritor.");
       rerender();
-      return;
+      return false;
     }
     // Transient mock save failure: roll back and offer retry.
     if (state.failNextSave) {
@@ -1120,18 +1142,18 @@
         message: "No se pudo guardar el nuevo orden. La lista volvió al último orden guardado. Probá de nuevo.",
         kind: "save-failure"
       };
-      state.pendingRetry = { id: id, dir: dir };
+      state.pendingRetry = { screen: screen, id: id, dir: dir };
       setStatus("Fallo de guardado transitorio: orden revertido. Hay reintento disponible.", "error");
       announce("Falló el guardado. El orden se revirtió. Hay reintento disponible.");
       syncToolbar();
       rerender();
-      return;
+      return false;
     }
 
     var order = state.proposedOrder.slice();
     var index = toolIndex(order, id);
     var target = index + dir;
-    if (index < 0 || target < 0 || target >= order.length) return; // boundary guard
+    if (index < 0 || target < 0 || target >= order.length) return false; // boundary guard
 
     var moved = order[index];
     order[index] = order[target];
@@ -1152,17 +1174,38 @@
     announce(labelFor(moved) + " se movió " + (dir < 0 ? "hacia arriba" : "hacia abajo") + " a la posición " + (target + 1) +
              " de " + order.length + "." + draftNote);
     rerender();
+    return true;
   }
 
   function retryMove() {
     if (!state.pendingRetry) return;
     var pending = state.pendingRetry;
+    var screen = pending.screen || "settings";
     state.pendingRetry = null;
     state.moveError = null;
     state.failNextSave = false;
     syncToolbar();
-    moveTool("settings", pending.id, pending.dir);
-    setStatus("Reintento exitoso: el orden se guardó (mock).", "ok");
+    // The failed move belongs to the view where it was attempted. If that view
+    // is no longer Propuesto, retry cannot apply and must not claim success.
+    if (state.mode[screen] !== "proposed") {
+      state.pendingRetry = pending;
+      state.moveError = {
+        screen: screen, id: pending.id, dir: pending.dir, kind: "save-failure",
+        message: "El reintento no se aplicó: la vista " + (screen === "picker" ? "Step 1" : "Settings") +
+                 " ya no está en Propuesto. Cambiala a Propuesto e intentá de nuevo."
+      };
+      setStatus("Reintento no aplicado: la vista no está en Propuesto.", "warn");
+      announce("El reintento no se aplicó porque la vista no está en Propuesto. Cambiala e intentá de nuevo.");
+      rerender();
+      return;
+    }
+    var applied = moveTool(screen, pending.id, pending.dir);
+    if (applied) {
+      setStatus("Reintento exitoso: el orden se guardó (mock).", "ok");
+      return;
+    }
+    setStatus("El reintento no se aplicó; no se guardó ningún cambio.", "warn");
+    announce("El reintento no se aplicó; no se guardó ningún cambio.");
   }
 
   function setMode(screen, mode) {
@@ -1236,8 +1279,8 @@
     state.pendingRetry = null;
     state.conflict = null;
     state.externalPending = false;
-    setStatus("Se restauró el orden inicial propuesto: " + state.proposedOrder.map(labelFor).join(", ") + ".", "ok");
-    announce("Se restauró el orden inicial propuesto: " + state.proposedOrder.map(labelFor).join(", ") + ".");
+    setStatus("Se restauró el orden inicial propuesto. Orden efectivo: " + effectiveOrderLabelText() + ".", "ok");
+    announce("Se restauró el orden inicial propuesto. Orden efectivo: " + effectiveOrderLabelText() + ".");
     syncToolbar();
     rerender();
   }
@@ -1299,10 +1342,8 @@
         // disabled with the persistent reason.
         state.ownershipAfterLoad = false;
       }
-      setStatus("Vistas propuestas reabiertas con el orden guardado mock: " +
-                state.proposedOrder.map(labelFor).join(", ") + ".", "ok");
-      announce("Vistas propuestas reabiertas. El orden guardado mock sobrevivió: " +
-               state.proposedOrder.map(labelFor).join(", ") + ".");
+      setStatus("Vistas propuestas reabiertas con el orden efectivo: " + effectiveOrderLabelText() + ".", "ok");
+      announce("Vistas propuestas reabiertas. El orden efectivo es: " + effectiveOrderLabelText() + ".");
       syncToolbar();
       rerender();
     }, 550);
@@ -1327,8 +1368,8 @@
       (dir < 0 ? "\u2191" : "\u2193") + "</button>";
   }
 
-  function ownershipReasonBlock() {
-    return '<p class="settings-ownership-reason' + hlClass() + '" id="ownership-reason">' +
+  function ownershipReasonBlock(screen) {
+    return '<p class="settings-ownership-reason' + hlClass() + '" id="ownership-reason-' + attr(screen) + '">' +
       '<strong>Los controles de movimiento no están disponibles.</strong>' + changeBadge("6") + ' settings.local.json es dueño del ajuste agents de nivel superior: el orden que ves en Settings y en Step 1 es el del overlay (Grok, Claude Code, Codex, Pi), así que esta ventana no puede cambiarlo. ' +
       'Cambiá el overlay fuera de esta función y reabrí. ' +
       '(Comportamiento propuesto de producción: requiere un flag de snapshot de backend de solo lectura más el rechazo autoritativo del comando; la aplicación actual no expone ese flag.)</p>';
@@ -1360,7 +1401,7 @@
       var editing = draft !== undefined && draft !== tool.color;
       var moveOpts = {
         disabled: ownsDisabled,
-        describedBy: ownsDisabled ? "ownership-reason" : ""
+        describedBy: ownsDisabled ? "ownership-reason-settings" : ""
       };
       return '' +
         '<div class="settings-agent-row" style="--agent-color:' + attr(tool.color) + '" role="listitem"' +
@@ -1435,7 +1476,7 @@
               '<button type="button" class="settings-agents-add">Add Agent</button>' +
             '</div>' +
             '<div class="settings-agents-panel-body">' +
-              (ownsDisabled ? ownershipReasonBlock() : "") +
+              (isProposed && ownsDisabled ? ownershipReasonBlock("settings") : "") +
               '<div role="list" aria-label="Agentes de coding registrados">' + rows + '</div>' +
               '<div class="settings-actions-block">' +
                 '<div class="settings-actions-title">Actions</div>' +
@@ -1560,7 +1601,7 @@
       var boundaryUp = index === 0;
       var boundaryDown = index === order.length - 1;
       var moveDisabled = ownsDisabled || filterActive;
-      var describedBy = filterActive ? "filter-reason" : (ownsDisabled ? "ownership-reason" : "");
+      var describedBy = filterActive ? "filter-reason" : (ownsDisabled ? "ownership-reason-picker" : "");
       var moveGroup = isProposed
         ? '<div class="provider-card-moves' + (i === 0 ? hlClass() : "") + '" role="group" aria-label="Reordenar ' + attr(tool.label) + '">' +
             moveButton("picker", id, -1, order, { disabled: moveDisabled || boundaryUp, describedBy: describedBy }) +
@@ -1590,7 +1631,7 @@
     var filterReason = (isProposed && filterActive)
       ? '<p class="picker-filter-reason' + hlClass() + '" id="filter-reason">Los controles de movimiento de Step 1 están deshabilitados mientras el filtro está activo. Limpiá el filtro para cambiar el orden. Los controles de movimiento de Settings siguen habilitados (no se filtran).' + changeBadge("5") + '</p>'
       : "";
-    var ownsReason = (isProposed && ownsDisabled) ? ownershipReasonBlock() : "";
+    var ownsReason = (isProposed && ownsDisabled) ? ownershipReasonBlock("picker") : "";
 
     var comparisonRows = fullOrder.map(function (id) {
       var tool = byId(id);
@@ -1784,6 +1825,30 @@
     if (!row || event.target !== row) return;
     event.preventDefault();
     setRailTool(row.getAttribute("data-select-tool"));
+  });
+
+  // Existing app behavior kept distinct from the move controls: ArrowUp/ArrowDown
+  // move the Step 1 selection (never the order) while focus is in that screen and
+  // not in the filter input. Move controls remain separate Tab/Enter targets.
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (event.target && event.target.id === "picker-filter") return;
+    var frame = document.getElementById("picker-frame-root");
+    if (!frame || !frame.contains(document.activeElement)) return;
+    var cards = Array.prototype.slice.call(frame.querySelectorAll(".agent-profile-provider-card-wrap[data-tool]"));
+    if (cards.length === 0) return;
+    var at = -1;
+    for (var i = 0; i < cards.length; i += 1) {
+      if (cards[i].getAttribute("data-tool") === state.pickerSelected) { at = i; break; }
+    }
+    var nextAt = event.key === "ArrowDown" ? Math.min(at + 1, cards.length - 1) : Math.max(at - 1, 0);
+    if (at < 0) nextAt = 0;
+    if (nextAt === at) return;
+    event.preventDefault();
+    var nextId = cards[nextAt].getAttribute("data-tool");
+    setPickerSelected(nextId);
+    var focus = document.querySelector('[data-focus-key="picker-card-' + nextId + '"]');
+    if (focus) focus.focus();
   });
 
   document.addEventListener("input", function (event) {
