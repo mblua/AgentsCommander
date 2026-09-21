@@ -29001,7 +29001,7 @@ mod tests {
         let fixture = make_mailbox_fixture();
         let app = app_handle(&fixture.app);
         let hooks = MailboxTestHooks::default();
-        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
 
         // (a) The Co-managed queue: `action` is rejected before dispatch.
         let queue_dir = fixture
@@ -29060,7 +29060,22 @@ mod tests {
             "{reason}"
         );
 
-        // (a3) A privileged PTY-input envelope is not a wake either.
+        // (a3) A privileged PTY-input envelope is not a wake either. Drive the
+        // PRODUCTION sweep (`poll`), not the test-only `process_message`
+        // mirror, so deleting the CoManaged arm in the sweep fails this test.
+        // The production sweep discovers queues from `room-*`-shaped roots
+        // (`room_root_for_path`), so the file goes in a `room-` room next to
+        // the legacy fixture, with a live session that makes `poll` scan it.
+        let sweep_room = fixture
+            .sender_cwd
+            .parent()
+            .and_then(|wg_dir| wg_dir.parent())
+            .unwrap()
+            .join("room-1-dev-team");
+        let sweep_cwd = sweep_room.join("__agent_tech-lead");
+        std::fs::create_dir_all(&sweep_cwd).unwrap();
+        let sweep_queue = crate::config::co_managed::queue_dir(&sweep_room);
+        std::fs::create_dir_all(&sweep_queue).unwrap();
         let privileged = serde_json::json!({
             "id": "co-managed-pty",
             "token": null,
@@ -29070,22 +29085,34 @@ mod tests {
             "mode": "wake",
             "ptyInput": {}
         });
-        let privileged_file = queue_dir.join("co-managed-pty.json");
+        let privileged_file = sweep_queue.join("co-managed-pty.json");
         std::fs::write(
             &privileged_file,
             serde_json::to_string_pretty(&privileged).unwrap(),
         )
         .unwrap();
-        poller
-            .process_message(&app, &privileged_file, OutboxOrigin::CoManaged)
-            .await
-            .expect("the rejection is a settled outcome");
-        let reason =
-            std::fs::read_to_string(queue_dir.join("rejected").join("co-managed-pty.reason.txt"))
-                .expect("the rejected reason file");
+        add_mailbox_session_with_shell(
+            &app,
+            &sweep_cwd,
+            "queue-room-session",
+            "codex",
+            SessionStatus::Running,
+        )
+        .await;
+        poller.poll(&app).await.expect("a production sweep cycle");
+        let reason = std::fs::read_to_string(
+            sweep_queue
+                .join("rejected")
+                .join("co-managed-pty.reason.txt"),
+        )
+        .expect("the rejected reason file");
         assert!(
             reason.contains("privileged PTY input is rejected"),
             "{reason}"
+        );
+        assert!(
+            !privileged_file.exists(),
+            "the sweep settles the file out of the queue"
         );
         assert!(hooks.inject_calls.lock().unwrap().is_empty());
 

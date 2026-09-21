@@ -294,22 +294,42 @@ fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
 /// Co-managed provenance queue. `--outbox` takes an arbitrary path, so without
 /// this guard any caller holding a token could forge a Co-managed-origin
 /// message. Rejects both the `<room>/.co-managed/queue` shape and any aliased
-/// spelling of it that resolves to that shape.
+/// spelling of it that resolves to that shape: `.` and `..` are resolved
+/// lexically first (F3), so an alias like
+/// `<room>/.co-managed/missing/../queue` is rejected even while `missing` does
+/// not exist and `canonicalize` therefore fails.
 fn reject_comanaged_queue_outbox(outbox_dir: &Path) -> Result<(), String> {
-    fn is_queue_shape(path: &Path) -> bool {
-        path.file_name().and_then(|name| name.to_str())
-            == Some(crate::config::co_managed::QUEUE_DIR_NAME)
-            && path
-                .parent()
-                .and_then(|parent| parent.file_name())
-                .and_then(|name| name.to_str())
-                == Some(crate::config::co_managed::CO_MANAGED_DIR_NAME)
+    /// `Some(true)` = the queue shape; `Some(false)` = provably not; `None` = a
+    /// `..` escaped the path's own base, which the caller rejects because it
+    /// cannot prove the path is not the queue.
+    fn resolved_queue_shape(path: &Path) -> Option<bool> {
+        use std::path::Component;
+        let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
+                Component::ParentDir => {
+                    parts.pop()?;
+                }
+                Component::Normal(part) => parts.push(part),
+            }
+        }
+        let len = parts.len();
+        Some(
+            len >= 2
+                && parts[len - 1]
+                    == std::ffi::OsStr::new(crate::config::co_managed::QUEUE_DIR_NAME)
+                && parts[len - 2]
+                    == std::ffi::OsStr::new(crate::config::co_managed::CO_MANAGED_DIR_NAME),
+        )
     }
 
+    // A real path that canonicalizes onto the queue (a symlink or an existing
+    // alias) is rejected even when its lexical shape differs.
     let aliased = std::fs::canonicalize(outbox_dir)
         .ok()
-        .is_some_and(|canonical| is_queue_shape(&canonical));
-    if is_queue_shape(outbox_dir) || aliased {
+        .is_some_and(|canonical| resolved_queue_shape(&canonical) == Some(true));
+    if resolved_queue_shape(outbox_dir) != Some(false) || aliased {
         return Err(format!(
             "--outbox may not target the Co-managed provenance queue ({}); only the Co-managed supervisor writes there",
             outbox_dir.display()
@@ -1993,6 +2013,50 @@ mod tests {
         (code, temp, outbox)
     }
 
+    /// F5 (step 9): run `execute` with `--outbox` = `<wg_root>/<alias>` so the
+    /// guard's **call site** is under test; deleting only the function call in
+    /// `execute` would otherwise keep the old direct-function test green.
+    /// `prepare` runs against the fixture's WG root before `execute`, so a case
+    /// can create the intermediate components it wants.
+    fn execute_send_with_outbox_alias(
+        alias: &str,
+        prepare: impl FnOnce(&Path),
+    ) -> (i32, tempfile::TempDir) {
+        use clap::Parser;
+        let (temp, _paths) = make_verified_coordinator_fixture();
+        let wg_root = temp.path().join("proj-a").join(".ac").join("wg-1-dev-team");
+        let messaging = wg_root.join("messaging");
+        std::fs::create_dir_all(&messaging).unwrap();
+        std::fs::write(
+            messaging.join("20260704-000000-wg1-a-to-wg1-b-x.md"),
+            "# Hello from fixture\n\nBody.",
+        )
+        .unwrap();
+        prepare(&wg_root);
+        let outbox = wg_root.join(alias);
+        let agent_root = wg_root.join("__agent_dev-rust");
+        let argv = vec![
+            "agentscommander",
+            "send",
+            "--token",
+            "11111111-1111-1111-1111-111111111111",
+            "--to",
+            "proj-a:wg-1-dev-team/dev-rust",
+            "--send",
+            "20260704-000000-wg1-a-to-wg1-b-x.md",
+            "--root",
+            agent_root.to_str().unwrap(),
+            "--outbox",
+            outbox.to_str().unwrap(),
+        ];
+        let parsed = crate::cli::Cli::try_parse_from(argv).expect("clap should accept send args");
+        let args = match parsed.command.expect("subcommand present") {
+            crate::cli::Commands::Send(args) => args,
+            _ => panic!("expected Send subcommand"),
+        };
+        (execute(args), temp)
+    }
+
     fn outbox_json(outbox: &tempfile::TempDir) -> serde_json::Value {
         let entries: Vec<_> = std::fs::read_dir(outbox.path())
             .unwrap()
@@ -2147,6 +2211,7 @@ mod tests {
     // forge that origin.
     #[test]
     fn outbox_guard_rejects_the_co_managed_queue() {
+        // Shape-level checks, including F3's `..` aliases in both states.
         let temp = tempfile::TempDir::new().unwrap();
         let room = temp.path().join("room-1-dev-team");
         let queue = crate::config::co_managed::queue_dir(&room);
@@ -2164,6 +2229,37 @@ mod tests {
             "an aliased queue spelling must be rejected"
         );
 
+        // F3: `..` resolved lexically even when the intermediate component
+        // does not exist, so a failing `canonicalize` cannot accept the alias.
+        let missing_dotdot = room
+            .join(".co-managed")
+            .join("missing")
+            .join("..")
+            .join("queue");
+        assert!(
+            reject_comanaged_queue_outbox(&missing_dotdot).is_err(),
+            "a `..` alias with an absent component must be rejected"
+        );
+        // F3: and with every component present, when canonicalize resolves.
+        std::fs::create_dir_all(room.join(".co-managed").join("present")).unwrap();
+        let present_dotdot = room
+            .join(".co-managed")
+            .join("present")
+            .join("..")
+            .join("queue");
+        assert!(
+            reject_comanaged_queue_outbox(&present_dotdot).is_err(),
+            "a `..` alias with every component present must be rejected"
+        );
+        // F3: the sibling `.` alias is caught even while the queue is absent
+        // (canonicalize cannot resolve a directory that does not exist yet).
+        std::fs::remove_dir_all(&queue).unwrap();
+        let dot_alias = room.join(".co-managed").join(".").join("queue");
+        assert!(
+            reject_comanaged_queue_outbox(&dot_alias).is_err(),
+            "a `.` alias with the queue absent must be rejected"
+        );
+
         // Ordinary outboxes stay accepted, including one named `queue` that is
         // not under `.co-managed`.
         let ordinary = temp.path().join("project-a").join("outbox");
@@ -2171,5 +2267,46 @@ mod tests {
         let unrelated_queue = temp.path().join("queue");
         reject_comanaged_queue_outbox(&unrelated_queue)
             .expect("a directory named queue outside .co-managed is fine");
+
+        // F5: the real `execute` call site must reject too. Deleting only the
+        // call (not the function) makes the message land in the queue and
+        // fails these assertions.
+        let (code, canonical_temp) = execute_send_with_outbox_alias(".co-managed/queue", |_| {});
+        assert_eq!(code, 1, "the queue must be rejected through execute");
+        let canonical_wg = canonical_temp
+            .path()
+            .join("proj-a")
+            .join(".ac")
+            .join("wg-1-dev-team");
+        assert!(
+            !crate::config::co_managed::queue_dir(&canonical_wg).exists(),
+            "a rejected target must not be created"
+        );
+
+        let (code, absent_temp) =
+            execute_send_with_outbox_alias(".co-managed/missing/../queue", |_| {});
+        assert_eq!(
+            code, 1,
+            "the `..` alias with a missing component must be rejected through execute"
+        );
+        let absent_wg = absent_temp
+            .path()
+            .join("proj-a")
+            .join(".ac")
+            .join("wg-1-dev-team");
+        assert!(
+            !absent_wg.join(".co-managed").join("missing").exists(),
+            "the guard must fire before `create_dir_all` creates the alias path"
+        );
+
+        let (code, _present_temp) =
+            execute_send_with_outbox_alias(".co-managed/present/../queue", |wg_root| {
+                std::fs::create_dir_all(wg_root.join(".co-managed").join("present")).unwrap();
+                std::fs::create_dir_all(wg_root.join(".co-managed").join("queue")).unwrap();
+            });
+        assert_eq!(
+            code, 1,
+            "the `..` alias with present components must be rejected through execute"
+        );
     }
 }

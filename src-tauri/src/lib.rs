@@ -5114,8 +5114,11 @@ pub fn run(
 
 /// Attempts per trigger: the first plus two retries (plan section 5.1).
 const CO_MANAGED_MAX_ATTEMPTS: u32 = 3;
-/// Backoff before retry 2 and retry 3, in milliseconds.
-const CO_MANAGED_RETRY_BACKOFF_MS: [u64; 2] = [25, 50];
+/// Backoff before retry 2 and retry 3, in milliseconds. The length is derived
+/// from `CO_MANAGED_MAX_ATTEMPTS` so the two cannot drift: raising the attempt
+/// bound without extending the backoff table is a compile error, not a runtime
+/// `index out of bounds`.
+const CO_MANAGED_RETRY_BACKOFF_MS: [u64; CO_MANAGED_MAX_ATTEMPTS as usize - 1] = [25, 50];
 /// Excerpt cap in UTF-8 bytes, following the 500-byte trim the bridge logger
 /// already uses (`telegram/output.rs:403`). The excerpt is persisted and
 /// travels over IPC and `list-peers`, so it cannot be uncapped. It is never a
@@ -5597,6 +5600,28 @@ impl CoManagedRoute {
     }
 }
 
+/// Settings project paths plus the project derived from the room root, the
+/// same effective slice the CLI (`cli::send::execute`) and the mailbox's
+/// Co-managed branch build before the Root check. The queue lives under
+/// `<project>/.ac/<room>`, so the project is the room root's grandparent; a
+/// room whose project is not (or no longer) registered in settings must still
+/// let a verified coordinator reach Root (F4).
+fn co_managed_project_paths(settings_paths: &[String], room_root: &Path) -> Vec<String> {
+    let mut paths = settings_paths.to_vec();
+    let Some(project_dir) = room_root.parent().and_then(|ac_root| ac_root.parent()) else {
+        return paths;
+    };
+    let canon_project = std::fs::canonicalize(project_dir).ok();
+    let already_present = paths.iter().any(|p| match &canon_project {
+        Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+        None => Path::new(p) == project_dir,
+    });
+    if !already_present {
+        paths.push(project_dir.to_string_lossy().to_string());
+    }
+    paths
+}
+
 /// The authorization branch is mandatory, not a style choice: `can_communicate`
 /// returns false for `Root` by its own rules, because Root belongs to no team
 /// and is nobody's coordinator. Root goes through the verified-coordinator
@@ -5912,7 +5937,7 @@ async fn co_managed_cycle<R: tauri::Runtime>(
     let project_paths = {
         let settings = app.state::<SettingsState>();
         let guard = settings.read().await;
-        guard.project_paths.clone()
+        co_managed_project_paths(&guard.project_paths, room_root)
     };
     let route = resolve_co_managed_route(outcome, &catalog, &from_fqn, &project_paths, &text);
     let kind = route.kind();
@@ -6077,12 +6102,6 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
         return;
     };
 
-    // Contention leaves the candidate pending. A trigger for the SAME sequence
-    // must not re-run it; a new record changes the sequence and re-triggers.
-    if handle.is_contended(&id, state.seq) {
-        return;
-    }
-
     let session = {
         let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let guard = manager.read().await;
@@ -6122,6 +6141,15 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
 
     // Ready with an unconsumed candidate: the idle edge must find the flag set.
     handle.armed.arm(&id);
+
+    // Contention leaves the candidate pending. A trigger for the SAME sequence
+    // must not re-run it; a new record changes the sequence and re-triggers.
+    // This check sits AFTER the readiness gate (F1): a session that loses
+    // readiness while contended must clear the armed flag and publish the
+    // readiness reason, not keep reporting `comanaged: true` forever.
+    if handle.is_contended(&id, state.seq) {
+        return;
+    }
 
     let already_idle = matches!(session.status, crate::session::session::SessionStatus::Idle)
         || session.waiting_for_input;
@@ -7755,10 +7783,30 @@ mod tests {
         Arc<tokio::sync::RwLock<SessionManager>>,
         Arc<CaptureRegistry>,
     ) {
+        co_managed_app_with_project_paths(
+            fixture,
+            endpoint,
+            enabled,
+            vec![fixture.project.to_string_lossy().to_string()],
+        )
+    }
+
+    /// F4: the settings slice is a parameter so a test can omit the project the
+    /// room lives in; the supervisor must still derive it from the room root.
+    fn co_managed_app_with_project_paths(
+        fixture: &CoManagedFixture,
+        endpoint: String,
+        enabled: bool,
+        project_paths: Vec<String>,
+    ) -> (
+        tauri::App<tauri::test::MockRuntime>,
+        Arc<tokio::sync::RwLock<SessionManager>>,
+        Arc<CaptureRegistry>,
+    ) {
         write_co_managed_room_config(&fixture.room_root, enabled, Some("catalog.json"));
         write_co_managed_catalog(&fixture.room_root);
         let settings = AppSettings {
-            project_paths: vec![fixture.project.to_string_lossy().to_string()],
+            project_paths,
             jev_api_key: "test-key".to_string(),
             jev_model: "jev-1.13.0".to_string(),
             jev_endpoint: endpoint,
@@ -8747,6 +8795,131 @@ mod tests {
         assert!(comanaged, "the pending candidate stays armed");
     }
 
+    /// F1 (step 9): a contended candidate whose session loses readiness must
+    /// clear the armed flag and publish the readiness reason, without ever
+    /// re-running the candidate. Before the fix the early contended return kept
+    /// `comanaged: true` on every later idle edge for the same `seq`.
+    #[tokio::test]
+    async fn losing_readiness_clears_the_armed_flag_for_a_contended_candidate() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-peer", 0.9),
+            ("to-user", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        let (slot, _record) = install_candidate(&registry, session_id, "candidate text");
+        let seq_before = slot.seq();
+        let events = capture_events(&app);
+        let hooks = Arc::new(CoManagedTestHooks::default());
+        let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+
+        // Hold the advisory lock so the first trigger abstains on contention.
+        let lock_path = crate::config::co_managed::lock_path(&fixture.room_root);
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        lock_file.try_lock().expect("test holds the lock");
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+        assert_eq!(hooks.commit_calls(), 3, "the first trigger contends");
+        assert!(handle.armed.is_armed(&session_id.to_string()));
+
+        // The room flag goes off while the same candidate is still pending.
+        write_co_managed_room_config(&fixture.room_root, false, Some("catalog.json"));
+        emit_session_idle_edge(app.handle(), &handle.armed, Some(&handle), session_id);
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+
+        assert_eq!(
+            hooks.commit_calls(),
+            3,
+            "readiness loss must not re-run the contended candidate"
+        );
+        assert!(
+            !handle.armed.is_armed(&session_id.to_string()),
+            "readiness loss must clear the armed flag"
+        );
+        let captured = events.lock().unwrap().clone();
+        let last = captured.last().expect("events");
+        assert_eq!(last.0, "session_comanaged_state", "{captured:?}");
+        assert_eq!(last.1["active"], serde_json::Value::Bool(false));
+        assert_eq!(last.1["reason"], serde_json::json!("RoomFlagOff"));
+        assert_eq!(slot.seq(), seq_before, "the candidate is unchanged");
+        assert!(slot.snapshot().value.record().is_some());
+
+        // The next idle edge reports waiting, not red.
+        let comanaged =
+            emit_session_idle_edge(app.handle(), &handle.armed, Some(&handle), session_id);
+        assert!(!comanaged, "the cleared flag must reach the idle payload");
+    }
+
+    /// F4 (step 9): the Root branch must use the room-derived project even when
+    /// settings omit it, exactly as the CLI and the mailbox's Co-managed branch
+    /// do. Without the derived path a verified coordinator degrades to a user
+    /// message instead of the route the mailbox would accept.
+    #[tokio::test]
+    async fn root_destination_derives_the_project_from_the_room() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-root", 0.9),
+            ("to-user", 0.1),
+            ("to-peer", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        // Settings do NOT contain the project the room lives in.
+        let (app, manager, registry) =
+            co_managed_app_with_project_paths(&fixture, endpoint, true, Vec::new());
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+
+        assert!(
+            !queue_files(&fixture.room_root).is_empty(),
+            "the verified coordinator must reach Root through the room-derived project"
+        );
+        assert_eq!(
+            messaging_files(&fixture.room_root).len(),
+            1,
+            "the routed wake writes exactly one message file"
+        );
+    }
+
     /// Test 22: `commit_effect` runs on the blocking pool, so a current-thread
     /// runtime keeps making progress while the advisory lock is held.
     #[tokio::test(flavor = "current_thread")]
@@ -8805,12 +8978,18 @@ mod tests {
             pre,
         )
         .await;
+        assert!(
+            commit.is_ok(),
+            "the lock is released and the commit applies"
+        );
+        let ticks_when_commit_returned = ticks.load(Ordering::SeqCst);
         ticker.await.unwrap();
         lock_holder.join().unwrap();
 
         assert!(
-            commit.is_ok(),
-            "the lock is released and the commit applies"
+            ticks_when_commit_returned >= 1,
+            "the async worker must make real progress WHILE the blocking commit waits for the lock; \
+             a direct in-task call parks it and observes zero ticks here (F2)"
         );
         assert_eq!(
             ticks.load(Ordering::SeqCst),
