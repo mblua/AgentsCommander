@@ -26,6 +26,7 @@ import type {
   PtyOutputEvent,
   PtyScreenSnapshot,
   AppSettings,
+  MainWindowDisplayState,
   SettingsSnapshot,
   LogLevel,
   UpdateInfo,
@@ -690,6 +691,16 @@ export const WindowAPI = {
 
   setDetachedGeometry: (sessionId: string, geometry: WindowGeometry) =>
     transport.invoke<void>("set_detached_geometry", { sessionId, geometry }),
+
+  /** #2349 - the narrow owner of the main window's placement pair (`mainGeometry`
+   *  + `mainWindowDisplayState`). Never write placement through a whole-settings
+   *  `SettingsAPI.update`: a stale whole-object caller must not clobber the disk
+   *  truth, and the narrow command returns the stable overlay-pin rejection. */
+  setMainWindowPlacement: (
+    geometry: WindowGeometry,
+    displayState: MainWindowDisplayState,
+  ) =>
+    transport.invoke<void>("set_main_window_placement", { geometry, displayState }),
 
   openInExplorer: (path: string) =>
     transport.invoke<void>("open_in_explorer", { path }),
