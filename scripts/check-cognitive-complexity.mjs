@@ -37,9 +37,22 @@
  * annotations with a remedial line and returns 1. `--emit` writes the observed
  * anchors, and only after every check before the comparison has passed.
  *
+ * #2256 (phase 4 of #2234) - the baseline ratchet, the merge and the probe
+ * classifier.
+ *
+ * `--baseline-diff` validates the head and base documents against phase 3's
+ * schema, compares anchor multisets per `(id, platform)` so an equal-length
+ * swap is one addition and one removal, exempts growth only for a strictly
+ * higher toolchain with no `.rs` path in the diff, and accepts a removal only
+ * when its file changed or is gone. `--merge` builds the baseline from exactly
+ * three per-platform emissions that agree on commit and rustc version.
+ * `--classify-probe` decides a probe capture's shape, integrity first. The
+ * three modes are inert: no workflow calls them and no baseline file exists.
+ *
  * See docs/quality/cognitive-complexity-gate.md (added in phase 8).
  */
 
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -59,10 +72,15 @@ const USAGE = `Usage: node scripts/check-cognitive-complexity.mjs --self-test
        node scripts/check-cognitive-complexity.mjs --capture <file> --clippy-exit <n> \\
              --platform <platform> --rustc-version <v> [--report] [--emit <file>] \\
              [--workspace-root <dir>] [--commit <sha>]
+       node scripts/check-cognitive-complexity.mjs --baseline-diff --base-ref <ref>
+       node scripts/check-cognitive-complexity.mjs --merge <emitted.json>... --out <baseline.json>
+       node scripts/check-cognitive-complexity.mjs --classify-probe <file> --probe-exit <n>
 
 Runs the in-memory self-test of the cognitive-complexity detector, scans the
 repository for Clippy cognitive-complexity suppression routes (rules S1 to S4),
-or reads a Clippy JSON capture and applies the baseline ratchet.
+reads a Clippy JSON capture and applies the baseline ratchet, ratchets a
+baseline against a base ref, merges the three platform emissions into one
+baseline, or classifies a macOS -D warnings probe capture.
 
   --self-test         Run the in-memory self-test; touches no file.
   --scan-sources      Walk the repository (skipping target/, node_modules/,
@@ -78,6 +96,14 @@ or reads a Clippy JSON capture and applies the baseline ratchet.
                       under; defaults to the repository root.
   --commit <sha>      The commit recorded in the --emit document.
   --platform <p>      Declare the platform: windows, linux or macos.
+  --baseline-diff     Ratchet the head baseline against --base-ref: additions
+                      fail and removals must touch their file or name one gone.
+  --base-ref <ref>    The git ref --baseline-diff reads the baseline from.
+  --merge             Build the baseline from exactly three --emit documents,
+                      one per platform, agreeing on commit and rustcVersion.
+  --out <file>        Where --merge writes the merged baseline.
+  --classify-probe <file> Classify a probe capture: integrity, then the shape.
+  --probe-exit <n>    The exit code of the probe run that produced <file>.
   --help              Print this usage and exit 0.`;
 
 export class UsageError extends Error {}
@@ -590,6 +616,12 @@ export function parseArgs(argv) {
     emit: undefined,
     workspaceRoot: undefined,
     commit: undefined,
+    baselineDiff: false,
+    baseRef: undefined,
+    merge: undefined,
+    out: undefined,
+    classifyProbe: undefined,
+    probeExit: undefined,
   };
   const value = (index, name) => {
     const next = argv[index + 1];
@@ -636,6 +668,33 @@ export function parseArgs(argv) {
     } else if (arg === '--commit') {
       flags.commit = value(i, '--commit');
       i += 1;
+    } else if (arg === '--baseline-diff') {
+      flags.baselineDiff = true;
+    } else if (arg === '--base-ref') {
+      flags.baseRef = value(i, '--base-ref');
+      i += 1;
+    } else if (arg === '--merge') {
+      const files = [];
+      let next = i + 1;
+      while (next < argv.length && !argv[next].startsWith('--')) {
+        files.push(argv[next]);
+        next += 1;
+      }
+      flags.merge = files;
+      i = next - 1;
+    } else if (arg === '--out') {
+      flags.out = value(i, '--out');
+      i += 1;
+    } else if (arg === '--classify-probe') {
+      flags.classifyProbe = value(i, '--classify-probe');
+      i += 1;
+    } else if (arg === '--probe-exit') {
+      const raw = value(i, '--probe-exit');
+      if (!/^-?[0-9]+$/.test(raw)) {
+        throw new UsageError(`--probe-exit must be an integer, got ${JSON.stringify(raw)}`);
+      }
+      flags.probeExit = Number(raw);
+      i += 1;
     } else {
       throw new UsageError(`unknown argument: ${arg}`);
     }
@@ -645,8 +704,13 @@ export function parseArgs(argv) {
   if (flags.selfTest) modes.push('self-test');
   if (flags.scanSources) modes.push('scan-sources');
   if (flags.capture !== undefined) modes.push('capture');
+  if (flags.baselineDiff) modes.push('baseline-diff');
+  if (flags.merge !== undefined) modes.push('merge');
+  if (flags.classifyProbe !== undefined) modes.push('classify-probe');
   if (modes.length !== 1) {
-    throw new UsageError('exactly one mode is required: --self-test, --scan-sources or --capture');
+    throw new UsageError(
+      'exactly one mode is required: --self-test, --scan-sources, --capture, --baseline-diff, --merge or --classify-probe',
+    );
   }
   if (modes[0] === 'capture') {
     if (flags.platform === undefined) {
@@ -665,6 +729,22 @@ export function parseArgs(argv) {
       workspaceRoot: flags.workspaceRoot,
       commit: flags.commit,
     };
+  }
+  if (modes[0] === 'baseline-diff') {
+    if (flags.baseRef === undefined) {
+      throw new UsageError('--baseline-diff requires --base-ref <ref>');
+    }
+    return { mode: 'baseline-diff', baseRef: flags.baseRef };
+  }
+  if (modes[0] === 'merge') {
+    if (flags.out === undefined) throw new UsageError('--merge requires --out <file>');
+    return { mode: 'merge', mergeFiles: flags.merge, out: flags.out };
+  }
+  if (modes[0] === 'classify-probe') {
+    if (flags.probeExit === undefined) {
+      throw new UsageError('--classify-probe requires --probe-exit <n>');
+    }
+    return { mode: 'classify-probe', probeFile: flags.classifyProbe, probeExit: flags.probeExit };
   }
   return { mode: modes[0], platform: flags.platform };
 }
@@ -711,6 +791,42 @@ export function main(argv, io = {}) {
       }
       throw error;
     }
+  }
+  if (options.mode === 'baseline-diff') {
+    try {
+      return runBaselineDiff(options, {
+        stdout,
+        stderr,
+        runGit: io.runGit,
+        readWorkspace: io.readWorkspace,
+        existsWorkspace: io.existsWorkspace,
+      });
+    } catch (error) {
+      if (error instanceof ConfigError) {
+        stderr(`${error.code}: ${error.message}`);
+        return 1;
+      }
+      throw error;
+    }
+  }
+  if (options.mode === 'merge') {
+    try {
+      return runMerge(options, {
+        readInputText: io.readInputText,
+        readWorkspaceBytes: io.readWorkspaceBytes,
+        writeText: io.writeText,
+        now: io.now,
+      });
+    } catch (error) {
+      if (error instanceof ConfigError) {
+        stderr(`${error.code}: ${error.message}`);
+        return 1;
+      }
+      throw error;
+    }
+  }
+  if (options.mode === 'classify-probe') {
+    return runClassifyProbe(options, { stdout, readCaptureText: io.readCaptureText });
   }
   return runScan({
     listDir: io.listDir ?? defaultListDir,
@@ -784,6 +900,18 @@ export class ThresholdError extends Error {
     super(message);
     this.name = 'THRESHOLD';
     this.code = 'THRESHOLD';
+  }
+}
+
+/**
+ * A `git` read `--baseline-diff` needed. `notFound` marks the one failure the
+ * ratchet treats as adoption: the path does not exist in the base ref.
+ */
+class GitError extends Error {
+  constructor(message, notFound = false) {
+    super(message);
+    this.name = 'GitError';
+    this.notFound = notFound;
   }
 }
 
@@ -1309,7 +1437,15 @@ function validateBaseline(document, rustcVersion) {
   if (document.threshold !== 25) {
     throw new ConfigError(`baseline threshold must be 25, got ${JSON.stringify(document.threshold)}`);
   }
-  if (document.toolchain !== rustcVersion) {
+  if (rustcVersion === undefined) {
+    // `--baseline-diff` has no run toolchain to agree with, but the refresh
+    // comparison still needs a version string.
+    if (typeof document.toolchain !== 'string' || document.toolchain === '') {
+      throw new ConfigError(
+        `baseline toolchain must be a non-empty string, got ${JSON.stringify(document.toolchain)}`,
+      );
+    }
+  } else if (document.toolchain !== rustcVersion) {
     throw new ConfigError(
       `baseline toolchain must be ${JSON.stringify(rustcVersion)}, got ${JSON.stringify(document.toolchain)}`,
     );
@@ -1648,6 +1784,426 @@ export function runCapture(options, io = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// The baseline ratchet (#2256, phase 4 of #2234)
+//
+// `--baseline-diff` validates both documents against phase 3's schema, then
+// compares anchor multisets per `(id, platform)`: the array length is never
+// the test, so `[a, b]` becoming `[a, c]` is one addition and one removal.
+// Growth is exempt only for a strictly higher toolchain when the diff touches
+// no `.rs` file; a removal must touch its file or name one that is gone.
+// ---------------------------------------------------------------------------
+
+const GROW_REMEDIAL = 'The baseline may only shrink. Regenerating it does not legitimise new debt.';
+const REMOVE_REMEDIAL =
+  'A shrink is only credible where the pull request changed the code. Include that file, or explain the removal in a toolchain-refresh pull request.';
+
+/** Parses and validates one phase 3 baseline document. */
+function parseBaselineDocument(text, label) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new ConfigError(`${label} is not valid JSON`);
+  }
+  validateBaseline(parsed, undefined);
+  return parsed;
+}
+
+/** The file path an id records: between `rust:` and the first `::`. */
+function filePathOfId(id) {
+  const rest = id.startsWith('rust:') ? id.slice('rust:'.length) : id;
+  const separator = rest.indexOf('::');
+  return separator === -1 ? rest : rest.slice(0, separator);
+}
+
+/** Returns > 0 when `head` is strictly higher than `base`, component-wise. */
+function compareToolchainVersions(base, head) {
+  const baseParts = base.split('.');
+  const headParts = head.split('.');
+  for (const part of [...baseParts, ...headParts]) {
+    if (!/^[0-9]+$/.test(part)) {
+      throw new ConfigError(
+        `toolchain versions must be numeric, component by component: ${JSON.stringify(base)} versus ${JSON.stringify(head)}`,
+      );
+    }
+  }
+  const length = Math.max(baseParts.length, headParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = Number(headParts[index] ?? '0') - Number(baseParts[index] ?? '0');
+    if (difference !== 0) return difference > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+/** Runs git from the repository root; a missing path is a typed, non-fatal case. */
+function defaultRunGit(args) {
+  const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
+  if (result.error !== undefined) throw new GitError(result.error.message, false);
+  if (result.status !== 0) {
+    const message =
+      String(result.stderr ?? '').trim() || `git ${args.join(' ')} exited ${result.status}`;
+    const notFound =
+      result.status === 128
+      && (/does not exist in/i.test(message) || /exists on disk, but not in/i.test(message));
+    throw new GitError(message, notFound);
+  }
+  return String(result.stdout ?? '');
+}
+
+/** The `--baseline-diff` mode, in the order of phase 4 section 3. */
+export function runBaselineDiff(options, io = {}) {
+  const baseRef = options.baseRef;
+  const stdout = io.stdout ?? ((text) => console.log(text));
+  const stderr = io.stderr ?? ((text) => console.error(text));
+  const runGit = io.runGit ?? defaultRunGit;
+  const readWorkspace =
+    io.readWorkspace ?? ((file) => fs.readFileSync(path.join(ROOT, file), 'utf8'));
+  const existsWorkspace =
+    io.existsWorkspace ?? ((file) => fs.existsSync(path.join(ROOT, file)));
+
+  // 1. The base ref may predate the baseline. That is adoption, but only when
+  // git itself says the path is missing: any other read failure is CONFIG.
+  let baseText = null;
+  try {
+    baseText = runGit(['show', `${baseRef}:${BASELINE_FILE}`]);
+  } catch (error) {
+    if (!(error instanceof GitError) || error.notFound !== true) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new ConfigError(`cannot read ${BASELINE_FILE} from ${baseRef}: ${reason}`);
+    }
+  }
+
+  // 2. The head document, validated before the base document is trusted.
+  let headText = null;
+  try {
+    headText = readWorkspace(BASELINE_FILE);
+  } catch {
+    headText = null;
+  }
+  const headDocument =
+    headText === null ? null : parseBaselineDocument(headText, BASELINE_FILE);
+  if (baseText === null) {
+    stdout(`ADOPTION: no baseline in ${baseRef}; this pull request introduces it`);
+    return 0;
+  }
+  const baseDocument = parseBaselineDocument(baseText, `${BASELINE_FILE} in ${baseRef}`);
+  if (headDocument === null) {
+    throw new ConfigError(`${BASELINE_FILE} is missing from the head while ${baseRef} carries one`);
+  }
+
+  // 3. Anchor multisets per (id, platform); the array length is never the test.
+  const additions = [];
+  const removals = [];
+  const baseById = new Map(baseDocument.entries.map((entry) => [entry.id, entry]));
+  const headById = new Map(headDocument.entries.map((entry) => [entry.id, entry]));
+  const ids = [...new Set([...baseById.keys(), ...headById.keys()])].sort();
+  for (const id of ids) {
+    const baseEntry = baseById.get(id);
+    const headEntry = headById.get(id);
+    const platforms = [
+      ...new Set([
+        ...(baseEntry === undefined ? [] : Object.keys(baseEntry.sites)),
+        ...(headEntry === undefined ? [] : Object.keys(headEntry.sites)),
+      ]),
+    ].sort();
+    for (const platform of platforms) {
+      const remaining = new Map();
+      for (const anchor of baseEntry?.sites[platform] ?? []) {
+        remaining.set(anchor, (remaining.get(anchor) ?? 0) + 1);
+      }
+      for (const anchor of headEntry?.sites[platform] ?? []) {
+        const count = remaining.get(anchor) ?? 0;
+        if (count === 0) additions.push({ id, platform, anchor });
+        else remaining.set(anchor, count - 1);
+      }
+      for (const [anchor, count] of remaining) {
+        if (count > 0) removals.push({ id, platform, anchor });
+      }
+    }
+  }
+
+  // 4. A toolchain refresh exempts growth, but only with no `.rs` change and a
+  // strictly higher version.
+  let diffNames;
+  try {
+    diffNames = runGit(['diff', '--name-only', `${baseRef}...HEAD`])
+      .split('\n')
+      .map((name) => name.trim())
+      .filter((name) => name !== '');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(`cannot read git diff against ${baseRef}: ${reason}`);
+  }
+  const diffSet = new Set(diffNames);
+  const rustTouched = diffNames.some((name) => name.endsWith('.rs'));
+  if (!rustTouched && compareToolchainVersions(baseDocument.toolchain, headDocument.toolchain) > 0) {
+    stdout(
+      `TOOLCHAIN REFRESH: ${baseDocument.toolchain} -> ${headDocument.toolchain} `
+        + `(${additions.length} additions, ${removals.length} removals)`,
+    );
+    return 0;
+  }
+
+  // 5. Any addition fails; the ratchet may only shrink.
+  if (additions.length > 0) {
+    for (const addition of additions) {
+      stderr(
+        `Baseline grew without a toolchain refresh: ${addition.id}#${addition.anchor} (${addition.platform})`,
+      );
+    }
+    stderr(GROW_REMEDIAL);
+    return 1;
+  }
+
+  // 6. A removal must touch its file or name one that is gone.
+  const blocked = removals.filter((removal) => {
+    const file = filePathOfId(removal.id);
+    return !diffSet.has(file) && existsWorkspace(file);
+  });
+  if (blocked.length > 0) {
+    for (const removal of blocked) {
+      stderr(`Baseline entry removed without touching its file: ${removal.id}`);
+    }
+    stderr(REMOVE_REMEDIAL);
+    return 1;
+  }
+
+  // 7. Every accepted shrink is printed for the record.
+  for (const removal of removals) {
+    stdout(`baseline removal accepted: ${removal.id}#${removal.anchor} (${removal.platform})`);
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The three-platform merge (#2256, phase 4 of #2234)
+//
+// `--merge` reads exactly three `--emit` documents, requires one of each
+// platform, requires agreement on `commit` and `rustcVersion`, and unions the
+// per-platform anchor arrays by id. It never reads an existing baseline, so a
+// merge cannot inherit a stale entry.
+// ---------------------------------------------------------------------------
+
+/** Reads and validates the root clippy.toml, returning its threshold. */
+function readThresholdFromClippyToml(readWorkspaceBytes) {
+  let bytes;
+  try {
+    bytes = readWorkspaceBytes('clippy.toml');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(`cannot read root clippy.toml: ${reason}`);
+  }
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new ConfigError('root clippy.toml is not valid UTF-8');
+  }
+  const problem = validateRootClippyToml(text);
+  if (problem !== null) throw new ConfigError(problem.message);
+  const match = /cognitive-complexity-threshold\s*=\s*([0-9]+)/.exec(text);
+  if (match === null) {
+    throw new ConfigError('root clippy.toml must assign cognitive-complexity-threshold');
+  }
+  return Number(match[1]);
+}
+
+/** The `--merge` mode, in the order of phase 4 section 4. */
+export function runMerge(options, io = {}) {
+  const readInputText = io.readInputText ?? ((file) => fs.readFileSync(file, 'utf8'));
+  const readWorkspaceBytes =
+    io.readWorkspaceBytes ?? ((file) => fs.readFileSync(path.join(ROOT, file)));
+  const writeText = io.writeText ?? ((file, text) => fs.writeFileSync(file, text));
+  const now = io.now ?? (() => new Date());
+
+  const files = options.mergeFiles;
+  if (files.length !== 3) {
+    throw new ConfigError(`--merge requires exactly three inputs, got ${files.length}`);
+  }
+  const byPlatform = new Map();
+  for (const file of files) {
+    let text;
+    try {
+      text = readInputText(file);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new ConfigError(`cannot read ${file}: ${reason}`);
+    }
+    let document;
+    try {
+      document = JSON.parse(text);
+    } catch {
+      throw new ConfigError(`${file} is not valid JSON`);
+    }
+    if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+      throw new ConfigError(`${file} must be a JSON object`);
+    }
+    const platform = document.platform;
+    if (!PLATFORMS.includes(platform)) {
+      throw new ConfigError(
+        `${file} platform must be windows, linux or macos, got ${JSON.stringify(platform)}`,
+      );
+    }
+    if (byPlatform.has(platform)) throw new ConfigError(`--merge has two ${platform} inputs`);
+    byPlatform.set(platform, document);
+  }
+  const first = byPlatform.values().next().value;
+  for (const [platform, document] of byPlatform) {
+    if (document.commit !== first.commit) {
+      throw new ConfigError(
+        `--merge inputs must agree on commit: ${JSON.stringify(first.commit)} versus ${JSON.stringify(document.commit)} (${platform})`,
+      );
+    }
+    if (document.rustcVersion !== first.rustcVersion) {
+      throw new ConfigError(
+        `--merge inputs must agree on rustcVersion: ${JSON.stringify(first.rustcVersion)} versus ${JSON.stringify(document.rustcVersion)} (${platform})`,
+      );
+    }
+  }
+  const threshold = readThresholdFromClippyToml(readWorkspaceBytes);
+  const merged = new Map();
+  for (const platform of PLATFORMS) {
+    const document = byPlatform.get(platform);
+    if (!Array.isArray(document.entries)) {
+      throw new ConfigError(`${platform} emission entries must be an array`);
+    }
+    for (const entry of document.entries) {
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new ConfigError(`${platform} emission entries must be objects`);
+      }
+      if (typeof entry.id !== 'string' || entry.id === '') {
+        throw new ConfigError(`${platform} emission entry id must be a non-empty string`);
+      }
+      if (!Array.isArray(entry.anchors)) {
+        throw new ConfigError(`${platform} emission entry ${entry.id} anchors must be an array`);
+      }
+      for (const anchor of entry.anchors) {
+        if (typeof anchor !== 'string' || !ANCHOR_RE.test(anchor)) {
+          throw new ConfigError(
+            `${platform} emission entry ${entry.id} anchor ${JSON.stringify(anchor)} must be 12 lowercase hex characters`,
+          );
+        }
+      }
+      if (!merged.has(entry.id)) merged.set(entry.id, { id: entry.id, sites: {} });
+      merged.get(entry.id).sites[platform] = [...entry.anchors].sort();
+    }
+  }
+  const entries = [...merged.values()].sort((left, right) =>
+    (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  const document = {
+    version: 1,
+    issue: 2234,
+    threshold,
+    toolchain: first.rustcVersion,
+    capturedFrom: first.commit,
+    capturedAt: now().toISOString(),
+    entries,
+  };
+  try {
+    writeText(options.out, `${JSON.stringify(document, null, 2)}\n`);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(`cannot write ${options.out}: ${reason}`);
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The probe classifier (#2256, phase 4 of #2234)
+//
+// Integrity is decided first, whatever `--probe-exit` says: a missing, empty,
+// unparseable or non-terminal capture is STOP. Only then does the histogram of
+// `message.level == "error"` codes decide SHAPE_A, SHAPE_B or STOP.
+// ---------------------------------------------------------------------------
+
+const RUSTC_HISTOGRAM_KEY = '<rustc>';
+const RUSTC_CODE_RE = /^E[0-9]{4}$/;
+
+/** The `--classify-probe` mode, in the order of phase 4 section 5. */
+export function runClassifyProbe(options, io = {}) {
+  const stdout = io.stdout ?? ((text) => console.log(text));
+  const readCaptureText = io.readCaptureText ?? ((file) => fs.readFileSync(file, 'utf8'));
+
+  let captureText = null;
+  try {
+    captureText = readCaptureText(options.probeFile);
+  } catch {
+    captureText = null;
+  }
+  let stopReason = null;
+  const records = [];
+  if (captureText === null) {
+    stopReason = `cannot read ${options.probeFile}`;
+  } else if (captureText.length === 0) {
+    stopReason = `${options.probeFile} is empty`;
+  } else {
+    let parseError = null;
+    for (const line of captureText.split('\n')) {
+      if (!line.startsWith('{')) continue;
+      try {
+        records.push(JSON.parse(line));
+      } catch {
+        parseError = line;
+        break;
+      }
+    }
+    if (parseError !== null) {
+      stopReason =
+        `${options.probeFile} has a line starting with '{' that does not parse: ${JSON.stringify(parseError.slice(0, 120))}`;
+    } else if (records[records.length - 1]?.reason !== 'build-finished') {
+      stopReason = `${options.probeFile} has no terminal build-finished record`;
+    }
+  }
+
+  const histogram = new Map();
+  for (const record of records) {
+    if (record?.message?.level !== 'error') continue;
+    const code = record.message.code;
+    const key =
+      code === null || code === undefined || typeof code.code !== 'string' || RUSTC_CODE_RE.test(code.code)
+        ? RUSTC_HISTOGRAM_KEY
+        : code.code;
+    histogram.set(key, (histogram.get(key) ?? 0) + 1);
+  }
+  const keys = [...histogram.keys()].sort();
+  for (const key of keys) stdout(`${key} ${histogram.get(key)}`);
+
+  if (stopReason !== null) {
+    stdout(`STOP: ${stopReason}`);
+    return 1;
+  }
+  const finished = records[records.length - 1];
+  const success = finished.success;
+  const exit = options.probeExit;
+  if (exit === 0 && success === false) {
+    stdout('STOP: --probe-exit 0 disagrees with build-finished success false');
+    return 1;
+  }
+  if (exit === 0 && success === true) {
+    stdout('SHAPE_A');
+    return 0;
+  }
+  if (histogram.size > 0 && keys.every((key) => key === COGNITIVE_CODE)) {
+    stdout('SHAPE_A');
+    return 0;
+  }
+  if (histogram.size > 0 && !histogram.has(RUSTC_HISTOGRAM_KEY)) {
+    stdout('SHAPE_B');
+    return 0;
+  }
+  if (histogram.has(RUSTC_HISTOGRAM_KEY)) {
+    stdout('STOP: the histogram carries a <rustc> key; a workspace member does not compile on macOS');
+    return 1;
+  }
+  if (exit !== 0 && histogram.size === 0) {
+    stdout(`STOP: non-zero exit ${exit} with an empty histogram`);
+    return 1;
+  }
+  stdout(`STOP: probe exit ${exit} with build-finished success ${JSON.stringify(success)}`);
+  return 1;
+}
+
+// ---------------------------------------------------------------------------
 // In-memory self-test
 // ---------------------------------------------------------------------------
 
@@ -1927,6 +2483,153 @@ const MACOS_FORMS = [
   '        if cfg!(target_os = "macos") {',
   '#[cfg(all(test, unix, not(any(target_os = "linux", target_os = "macos"))))]',
 ].join('\n');
+
+// Phase 4 fixtures: git is injected for the ratchet, the emission files for the
+// merge and the probe capture for the classifier. All three modes run through
+// main(), so the self-test exercises the same dispatch a real run uses.
+
+const A12 = 'a'.repeat(12);
+const B12 = 'b'.repeat(12);
+const C12 = 'c'.repeat(12);
+const MERGE_COMMIT = '0123456789abcdef0123456789abcdef01234567';
+const MERGE_TOOLCHAIN = '1.97.1';
+const PROBE_FILE = 'probe.jsonl';
+
+function stdoutText(fixture) {
+  return fixture.state.stdout.join('\n');
+}
+
+function baselineDiffFixture({
+  base = null,
+  head = null,
+  diffPaths = [],
+  baseRef = 'origin/main',
+  showFailure = null,
+  workingFiles = [],
+} = {}) {
+  const stdoutLines = [];
+  const stderrLines = [];
+  const working = new Set(workingFiles);
+  const runGit = (args) => {
+    if (args[0] === 'show') {
+      if (showFailure !== null) throw showFailure;
+      if (base === null) {
+        throw new GitError(`fatal: path '${BASELINE_FILE}' does not exist in '${baseRef}'`, true);
+      }
+      return base;
+    }
+    if (args[0] === 'diff' && args[1] === '--name-only') return diffPaths.join('\n');
+    throw new Error(`unexpected git invocation: ${args.join(' ')}`);
+  };
+  const io = {
+    stdout: (text) => stdoutLines.push(text),
+    stderr: (text) => stderrLines.push(text),
+    runGit,
+    readWorkspace: (file) => {
+      if (file === BASELINE_FILE && head !== null) return head;
+      const error = new Error(`ENOENT: no such baseline in the fixture head: ${file}`);
+      error.code = 'ENOENT';
+      throw error;
+    },
+    existsWorkspace: (file) => working.has(file),
+  };
+  return {
+    state: { stdout: stdoutLines, stderr: stderrLines },
+    run: () => main(['--baseline-diff', '--base-ref', baseRef], io),
+  };
+}
+
+function emissionDocument({
+  platform,
+  entries,
+  commit = MERGE_COMMIT,
+  rustcVersion = MERGE_TOOLCHAIN,
+}) {
+  return JSON.stringify({ platform, commit, rustcVersion, entries }, null, 2);
+}
+
+function mergeFixture({ files = {}, clippy = PINNED_CLIPPY_TOML, now = '2026-03-04T05:06:07Z' } = {}) {
+  const stdoutLines = [];
+  const stderrLines = [];
+  const writes = new Map();
+  const io = {
+    stdout: (text) => stdoutLines.push(text),
+    stderr: (text) => stderrLines.push(text),
+    readInputText: (file) => {
+      if (file in files) return files[file];
+      const error = new Error(`ENOENT: no such input: ${file}`);
+      error.code = 'ENOENT';
+      throw error;
+    },
+    readWorkspaceBytes: (file) => {
+      if (file === 'clippy.toml') return Buffer.from(clippy, 'utf8');
+      const error = new Error(`ENOENT: no such workspace file: ${file}`);
+      error.code = 'ENOENT';
+      throw error;
+    },
+    writeText: (file, text) => writes.set(file, text),
+    now: () => new Date(now),
+  };
+  return {
+    state: { stdout: stdoutLines, stderr: stderrLines, writes },
+    run: (inputs) => main(['--merge', ...inputs, '--out', 'merged.baseline.json'], io),
+  };
+}
+
+function probeFixture({ capture = '' } = {}) {
+  const stdoutLines = [];
+  const stderrLines = [];
+  const io = {
+    stdout: (text) => stdoutLines.push(text),
+    stderr: (text) => stderrLines.push(text),
+    getEnv: () => undefined,
+    readCaptureText: (file) => {
+      if (file !== PROBE_FILE) {
+        const error = new Error(`ENOENT: no such capture: ${file}`);
+        error.code = 'ENOENT';
+        throw error;
+      }
+      return capture;
+    },
+  };
+  return {
+    state: { stdout: stdoutLines, stderr: stderrLines },
+    run: (probeExit) => main(['--classify-probe', PROBE_FILE, '--probe-exit', String(probeExit)], io),
+  };
+}
+
+function probeRecord({ code, level = 'error' } = {}) {
+  return messageRecord({
+    file: 'src/a.rs',
+    line: 1,
+    column: 1,
+    slice: 'heavy',
+    message: 'probe diagnostic',
+    level,
+    code,
+  });
+}
+
+function expectProbe({ capture, probeExit, expected, histogram = [] }) {
+  const fixture = probeFixture({ capture });
+  const code = fixture.run(probeExit);
+  const expectedExit = expected === 'STOP' ? 1 : 0;
+  if (code !== expectedExit) {
+    throw new Error(
+      `expected ${expected} (exit ${expectedExit}) for probe exit ${probeExit}, got exit ${code}: ${JSON.stringify(fixture.state.stdout)}`,
+    );
+  }
+  const lines = fixture.state.stdout;
+  if (!lines.some((line) => line === expected || line.startsWith(`${expected}:`))) {
+    throw new Error(`expected the ${expected} verdict, got ${JSON.stringify(lines)}`);
+  }
+  for (const line of histogram) {
+    if (!lines.includes(line)) {
+      throw new Error(`expected histogram line ${JSON.stringify(line)}, got ${JSON.stringify(lines)}`);
+    }
+  }
+  return fixture;
+}
 
 function selfTestCases() {
   return [
@@ -2981,6 +3684,342 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       if (findingLines(changed, 'NEW').length !== 1 || findingLines(changed, 'STALE').length !== 1) {
         throw new Error(`expected one NEW and one STALE, got ${JSON.stringify(changed.state.stderr)}`);
       }
+    }],
+    ['case 36: an addition with the same toolchain fails', () => {
+      const id = 'rust:src/a.rs::heavy';
+      const base = baselineJson([{ id, sites: { windows: [A12] } }]);
+      const head = baselineJson([{ id, sites: { windows: [A12, B12] } }]);
+      const fixture = baselineDiffFixture({ base, head, diffPaths: ['src/a.rs'] });
+      expectEqual(fixture.run(), 1, 'an addition fails');
+      if (!stderrText(fixture).includes(`Baseline grew without a toolchain refresh: ${id}#${B12} (windows)`)) {
+        throw new Error(`expected the addition message, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 37: an addition with a higher toolchain and a .rs diff still fails', () => {
+      const id = 'rust:src/a.rs::heavy';
+      const base = baselineJson([{ id, sites: { windows: [A12] } }]);
+      const head = baselineJson([{ id, sites: { windows: [A12, B12] } }], { toolchain: '1.97.2' });
+      const fixture = baselineDiffFixture({ base, head, diffPaths: ['src/a.rs'] });
+      expectEqual(fixture.run(), 1, 'a .rs change blocks the refresh exemption');
+      if (!stderrText(fixture).includes('Baseline grew without a toolchain refresh:')) {
+        throw new Error(`expected the addition message, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 38: a higher toolchain with no .rs diff is a toolchain refresh', () => {
+      const id = 'rust:src/a.rs::heavy';
+      const base = baselineJson([{ id, sites: { windows: [A12] } }]);
+      const head = baselineJson([{ id, sites: { windows: [A12, B12] } }], { toolchain: '1.97.2' });
+      const fixture = baselineDiffFixture({ base, head, diffPaths: ['docs/quality.md'] });
+      expectEqual(fixture.run(), 0, 'the refresh exemption passes');
+      if (!stdoutText(fixture).includes('TOOLCHAIN REFRESH: 1.97.1 -> 1.97.2 (1 additions, 0 removals)')) {
+        throw new Error(`expected the refresh line with counts, got ${stdoutText(fixture)}`);
+      }
+    }],
+    ['case 39: a lower toolchain is not a refresh', () => {
+      const id = 'rust:src/a.rs::heavy';
+      const base = baselineJson([{ id, sites: { windows: [A12] } }], { toolchain: '1.97.2' });
+      const head = baselineJson([{ id, sites: { windows: [A12, B12] } }], { toolchain: '1.97.1' });
+      const fixture = baselineDiffFixture({ base, head, diffPaths: ['docs/quality.md'] });
+      expectEqual(fixture.run(), 1, 'a downgrade fails');
+      if (!stderrText(fixture).includes('Baseline grew without a toolchain refresh:')) {
+        throw new Error(`expected the addition message, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 40: removals are credible only when their file is touched or gone', () => {
+      const id = 'rust:src/a.rs::heavy';
+      const base = baselineJson([{ id, sites: { windows: [A12, B12] } }]);
+      const head = baselineJson([{ id, sites: { windows: [A12] } }]);
+      const touched = baselineDiffFixture({ base, head, diffPaths: ['src/a.rs'], workingFiles: ['src/a.rs'] });
+      expectEqual(touched.run(), 0, 'a touched-file removal passes');
+      if (!stdoutText(touched).includes(`baseline removal accepted: ${id}#${B12} (windows)`)) {
+        throw new Error(`expected the removal record, got ${stdoutText(touched)}`);
+      }
+      const untouched = baselineDiffFixture({ base, head, diffPaths: [], workingFiles: ['src/a.rs'] });
+      expectEqual(untouched.run(), 1, 'an untouched-file removal fails');
+      if (!stderrText(untouched).includes(`Baseline entry removed without touching its file: ${id}`)) {
+        throw new Error(`expected the removal failure, got ${stderrText(untouched)}`);
+      }
+      const gone = baselineDiffFixture({ base, head, diffPaths: [], workingFiles: [] });
+      expectEqual(gone.run(), 0, 'a removal whose file is gone passes');
+    }],
+    ['case 41: a base ref without a baseline is adoption', () => {
+      const id = 'rust:src/a.rs::heavy';
+      const head = baselineJson([{ id, sites: { windows: [A12] } }]);
+      const fixture = baselineDiffFixture({ base: null, head });
+      expectEqual(fixture.run(), 0, 'adoption passes');
+      if (!stdoutText(fixture).includes('ADOPTION: no baseline in origin/main; this pull request introduces it')) {
+        throw new Error(`expected the adoption line, got ${stdoutText(fixture)}`);
+      }
+    }],
+    ['case 42: a base ref read failure, an invalid head, an invalid base and a vanished head are CONFIG', () => {
+      const id = 'rust:src/a.rs::heavy';
+      const valid = baselineJson([{ id, sites: { windows: [A12] } }]);
+      const invalid = baselineJson([{ id, sites: { windows: [B12, A12] } }]);
+      const failed = baselineDiffFixture({
+        base: valid,
+        head: valid,
+        showFailure: new GitError('fatal: bad object origin/nope', false),
+      });
+      expectEqual(failed.run(), 1, 'a non-missing git failure is CONFIG');
+      if (!stderrText(failed).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(failed)}`);
+      const badHead = baselineDiffFixture({ base: valid, head: invalid });
+      expectEqual(badHead.run(), 1, 'an invalid head is CONFIG');
+      if (!stderrText(badHead).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(badHead)}`);
+      const badBase = baselineDiffFixture({ base: invalid, head: valid });
+      expectEqual(badBase.run(), 1, 'an invalid base is CONFIG');
+      if (!stderrText(badBase).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(badBase)}`);
+      const headGone = baselineDiffFixture({ base: valid, head: null });
+      expectEqual(headGone.run(), 1, 'a head without the baseline is CONFIG');
+      if (!stderrText(headGone).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(headGone)}`);
+    }],
+    ['case 43: a new platform key, an added anchor and an untouched-file removal all fail', () => {
+      const id = 'rust:src/a.rs::heavy';
+      const platformKey = baselineDiffFixture({
+        base: baselineJson([{ id, sites: { windows: [A12] } }]),
+        head: baselineJson([{ id, sites: { windows: [A12], linux: [B12] } }]),
+        diffPaths: ['src/a.rs'],
+      });
+      expectEqual(platformKey.run(), 1, 'a new platform key fails');
+      if (!stderrText(platformKey).includes(`Baseline grew without a toolchain refresh: ${id}#${B12} (linux)`)) {
+        throw new Error(`expected the linux addition, got ${stderrText(platformKey)}`);
+      }
+      const addedAnchor = baselineDiffFixture({
+        base: baselineJson([{ id, sites: { windows: [A12] } }]),
+        head: baselineJson([{ id, sites: { windows: [A12, B12] } }]),
+        diffPaths: ['src/a.rs'],
+      });
+      expectEqual(addedAnchor.run(), 1, 'an added anchor fails');
+      if (!stderrText(addedAnchor).includes(`Baseline grew without a toolchain refresh: ${id}#${B12} (windows)`)) {
+        throw new Error(`expected the windows addition, got ${stderrText(addedAnchor)}`);
+      }
+      const removedAnchor = baselineDiffFixture({
+        base: baselineJson([{ id, sites: { windows: [A12, B12] } }]),
+        head: baselineJson([{ id, sites: { windows: [A12] } }]),
+        diffPaths: [],
+        workingFiles: ['src/a.rs'],
+      });
+      expectEqual(removedAnchor.run(), 1, 'an untouched-file removal fails');
+      if (!stderrText(removedAnchor).includes(`Baseline entry removed without touching its file: ${id}`)) {
+        throw new Error(`expected the removal failure, got ${stderrText(removedAnchor)}`);
+      }
+    }],
+    ['case 44: the three-platform merge unions by id into one sorted baseline', () => {
+      const sharedId = 'rust:src/shared.rs::heavy';
+      const windowsOnlyId = 'rust:src/win.rs::heavy';
+      const files = {
+        'windows.json': emissionDocument({
+          platform: 'windows',
+          entries: [
+            { id: sharedId, anchors: [A12, B12] },
+            { id: windowsOnlyId, anchors: [C12] },
+          ],
+        }),
+        'linux.json': emissionDocument({
+          platform: 'linux',
+          entries: [{ id: sharedId, anchors: [B12, C12] }],
+        }),
+        'macos.json': emissionDocument({
+          platform: 'macos',
+          entries: [{ id: sharedId, anchors: [A12] }],
+        }),
+      };
+      const fixture = mergeFixture({ files });
+      expectEqual(fixture.run(['windows.json', 'linux.json', 'macos.json']), 0, 'three platforms merge');
+      const text = fixture.state.writes.get('merged.baseline.json');
+      if (text === undefined) throw new Error('the merge wrote nothing');
+      const document = JSON.parse(text);
+      expectEqual(document.version, 1, 'version');
+      expectEqual(document.issue, 2234, 'issue');
+      expectEqual(document.threshold, 25, 'threshold');
+      expectEqual(document.toolchain, MERGE_TOOLCHAIN, 'toolchain');
+      expectEqual(document.capturedFrom, MERGE_COMMIT, 'capturedFrom');
+      expectEqual(document.capturedAt, '2026-03-04T05:06:07.000Z', 'capturedAt');
+      if (
+        document.entries.length !== 2
+        || document.entries[0].id !== sharedId
+        || document.entries[1].id !== windowsOnlyId
+      ) {
+        throw new Error(`expected the shared id first, got ${JSON.stringify(document.entries)}`);
+      }
+      const shared = document.entries[0];
+      expectEqual(JSON.stringify(shared.sites.windows), JSON.stringify([A12, B12]), 'windows anchors');
+      expectEqual(JSON.stringify(shared.sites.linux), JSON.stringify([B12, C12]), 'linux anchors');
+      expectEqual(JSON.stringify(shared.sites.macos), JSON.stringify([A12]), 'macos anchors');
+      const windowsOnly = document.entries[1];
+      expectEqual(JSON.stringify(Object.keys(windowsOnly.sites)), JSON.stringify(['windows']), 'windows-only keys');
+    }],
+    ['case 45: merge refuses duplicates, a missing platform, a short input list and version mismatches', () => {
+      const windows = emissionDocument({ platform: 'windows', entries: [] });
+      const linux = emissionDocument({ platform: 'linux', entries: [] });
+      const macos = emissionDocument({ platform: 'macos', entries: [] });
+      const duplicate = mergeFixture({ files: { 'w1.json': windows, 'w2.json': windows, 'm.json': macos } });
+      expectEqual(duplicate.run(['w1.json', 'w2.json', 'm.json']), 1, 'a duplicate platform fails');
+      if (!stderrText(duplicate).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(duplicate)}`);
+      const missing = mergeFixture({ files: {
+        'n.json': JSON.stringify({ commit: MERGE_COMMIT, rustcVersion: MERGE_TOOLCHAIN, entries: [] }),
+        'l.json': linux,
+        'm.json': macos,
+      } });
+      expectEqual(missing.run(['n.json', 'l.json', 'm.json']), 1, 'a missing platform fails');
+      if (!stderrText(missing).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(missing)}`);
+      const single = mergeFixture({ files: { 'w.json': windows } });
+      expectEqual(single.run(['w.json']), 1, 'one input fails');
+      if (!stderrText(single).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(single)}`);
+      const commitMismatch = mergeFixture({ files: {
+        'w.json': emissionDocument({ platform: 'windows', entries: [], commit: 'a'.repeat(40) }),
+        'l.json': linux,
+        'm.json': macos,
+      } });
+      expectEqual(commitMismatch.run(['w.json', 'l.json', 'm.json']), 1, 'a commit mismatch fails');
+      if (!stderrText(commitMismatch).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(commitMismatch)}`);
+      const versionMismatch = mergeFixture({ files: {
+        'w.json': emissionDocument({ platform: 'windows', entries: [], rustcVersion: '1.97.2' }),
+        'l.json': linux,
+        'm.json': macos,
+      } });
+      expectEqual(versionMismatch.run(['w.json', 'l.json', 'm.json']), 1, 'a rustcVersion mismatch fails');
+      if (!stderrText(versionMismatch).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(versionMismatch)}`);
+    }],
+    ['case 67: --merge rejects two inputs and accepts the three platforms', () => {
+      const windows = emissionDocument({ platform: 'windows', entries: [{ id: 'rust:src/w.rs::heavy', anchors: [A12] }] });
+      const linux = emissionDocument({ platform: 'linux', entries: [{ id: 'rust:src/l.rs::heavy', anchors: [B12] }] });
+      const macos = emissionDocument({ platform: 'macos', entries: [{ id: 'rust:src/m.rs::heavy', anchors: [C12] }] });
+      const two = mergeFixture({ files: { 'w.json': windows, 'l.json': linux } });
+      expectEqual(two.run(['w.json', 'l.json']), 1, 'two inputs fail');
+      if (!stderrText(two).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(two)}`);
+      const three = mergeFixture({ files: { 'w.json': windows, 'l.json': linux, 'm.json': macos } });
+      expectEqual(three.run(['w.json', 'l.json', 'm.json']), 0, 'three platforms pass');
+      const text = three.state.writes.get('merged.baseline.json');
+      if (text === undefined) throw new Error('the three-platform merge wrote nothing');
+      const document = JSON.parse(text);
+      if (document.entries.length !== 3) {
+        throw new Error(`expected three entries, got ${JSON.stringify(document.entries)}`);
+      }
+    }],
+    ['case 68: the probe classifier prints a histogram and one verdict', () => {
+      const first = expectProbe({
+        capture: jsonl(
+          messageRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'x', message: 'a warning', level: 'warning' }),
+          buildFinished(true),
+        ),
+        probeExit: 0,
+        expected: 'SHAPE_A',
+      });
+      if (stdoutText(first) !== 'SHAPE_A') {
+        throw new Error(`expected only the verdict line, got ${JSON.stringify(first.state.stdout)}`);
+      }
+      expectProbe({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+          cognitiveRecord({ file: 'src/a.rs', line: 5, column: 1, slice: 'heavy' }),
+          buildFinished(false),
+        ),
+        probeExit: 101,
+        expected: 'SHAPE_A',
+        histogram: ['clippy::cognitive_complexity 2'],
+      });
+      expectProbe({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+          probeRecord({ code: 'clippy::too_many_lines' }),
+          buildFinished(false),
+        ),
+        probeExit: 101,
+        expected: 'SHAPE_B',
+        histogram: ['clippy::cognitive_complexity 1', 'clippy::too_many_lines 1'],
+      });
+      expectProbe({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+          probeRecord({ code: 'unused_variables' }),
+          buildFinished(false),
+        ),
+        probeExit: 101,
+        expected: 'SHAPE_B',
+        histogram: ['clippy::cognitive_complexity 1', 'unused_variables 1'],
+      });
+      expectProbe({
+        capture: jsonl(probeRecord(), buildFinished(false)),
+        probeExit: 101,
+        expected: 'STOP',
+        histogram: ['<rustc> 1'],
+      });
+      expectProbe({
+        capture: jsonl(probeRecord({ code: 'E0308' }), buildFinished(false)),
+        probeExit: 101,
+        expected: 'STOP',
+        histogram: ['<rustc> 1'],
+      });
+      expectProbe({ capture: jsonl(buildFinished(false)), probeExit: 101, expected: 'STOP' });
+      expectProbe({
+        capture: jsonl(probeRecord({ code: 'clippy::too_many_lines' })),
+        probeExit: 101,
+        expected: 'STOP',
+      });
+      expectProbe({
+        capture: jsonl(probeRecord({ code: 'clippy::too_many_lines' })),
+        probeExit: 0,
+        expected: 'STOP',
+      });
+      expectProbe({ capture: jsonl(buildFinished(false)), probeExit: 0, expected: 'STOP' });
+      expectProbe({
+        capture: jsonl(
+          probeRecord({ code: 'clippy::too_many_lines' }),
+          probeRecord({ code: 'unused_variables' }),
+          buildFinished(false),
+        ),
+        probeExit: 101,
+        expected: 'SHAPE_B',
+        histogram: ['clippy::too_many_lines 1', 'unused_variables 1'],
+      });
+    }],
+    ['case 71: one intact capture read by --capture and --classify-probe', () => {
+      const capture = jsonl(probeRecord({ code: 'clippy::too_many_lines' }), buildFinished(false));
+      const captureRun = captureFixture({ capture, workspace: {} });
+      expectEqual(captureRun.run(), 1, '--capture refuses success false with a zero exit');
+      if (!stderrText(captureRun).includes('CAPTURE')) {
+        throw new Error(`expected CAPTURE from --capture, got ${stderrText(captureRun)}`);
+      }
+      const probeRun = probeFixture({ capture });
+      expectEqual(probeRun.run(101), 0, '--classify-probe reads the same capture as SHAPE_B');
+      if (!probeRun.state.stdout.includes('SHAPE_B')) {
+        throw new Error(`expected SHAPE_B, got ${JSON.stringify(probeRun.state.stdout)}`);
+      }
+    }],
+    ['case 77: an equal-length anchor swap is one addition, not a pass', () => {
+      const id = 'rust:src/a.rs::heavy';
+      const fixture = baselineDiffFixture({
+        base: baselineJson([{ id, sites: { windows: [A12, B12] } }]),
+        head: baselineJson([{ id, sites: { windows: [A12, C12] } }]),
+        diffPaths: ['src/a.rs'],
+      });
+      expectEqual(fixture.run(), 1, 'R-C1 is closed at the ratchet');
+      if (!stderrText(fixture).includes(`Baseline grew without a toolchain refresh: ${id}#${C12} (windows)`)) {
+        throw new Error(`expected ${C12} named as the addition, got ${stderrText(fixture)}`);
+      }
+    }],
+    ['case 78: shrinking one of two identical anchors passes; unsorted and malformed heads are CONFIG', () => {
+      const id = 'rust:src/a.rs::heavy';
+      const duplicate = baselineDiffFixture({
+        base: baselineJson([{ id, sites: { windows: [A12, A12] } }]),
+        head: baselineJson([{ id, sites: { windows: [A12] } }]),
+        diffPaths: ['src/a.rs'],
+      });
+      expectEqual(duplicate.run(), 0, 'a duplicate-anchor shrink passes');
+      const unsorted = baselineDiffFixture({
+        base: baselineJson([{ id, sites: { windows: [A12] } }]),
+        head: baselineJson([{ id, sites: { windows: [B12, A12] } }]),
+        diffPaths: ['src/a.rs'],
+      });
+      expectEqual(unsorted.run(), 1, 'an unsorted head is CONFIG');
+      if (!stderrText(unsorted).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(unsorted)}`);
+      const malformed = baselineDiffFixture({
+        base: baselineJson([{ id, sites: { windows: [A12] } }]),
+        head: baselineJson([{ id, sites: { windows: ['ZZZZZZZZZZZZ'] } }]),
+        diffPaths: ['src/a.rs'],
+      });
+      expectEqual(malformed.run(), 1, 'a malformed anchor head is CONFIG');
+      if (!stderrText(malformed).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(malformed)}`);
     }],
   ];
 }
