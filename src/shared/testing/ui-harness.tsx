@@ -28,12 +28,19 @@ import { __resetHomeStoreForTests } from "../../main/stores/home";
 import {
   DEFAULT_SIDEBAR_COMPACT_HOTKEY,
   registerCompactHost,
+  setPulseSeamOverridesForTests,
   setRailNudgePx,
   setRestoreWidthPx,
   setSidebarCompactHotkey,
   setSidebarCompactMode,
   type CompactHostHooks,
+  type PulseWidthSeams,
 } from "../sidebar-compact";
+
+// #2236 phase 7 — the pulse seam override is module-level state like the
+// compact signals, so tests install and clear it only through the harness.
+export { setPulseSeamOverridesForTests };
+export type { PulseWidthSeams };
 
 export function renderWithFakeTransport(
   component: () => JSX.Element,
@@ -305,6 +312,7 @@ export function resetSidebarCompactForTests(): void {
   setRailNudgePx(0);
   setRestoreWidthPx(0);
   setSidebarCompactHotkey(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
+  setPulseSeamOverridesForTests(null);
 }
 
 export function resetUiStoresForTests(): void {
