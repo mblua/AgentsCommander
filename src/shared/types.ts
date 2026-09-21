@@ -376,6 +376,16 @@ export interface PtyScreenSnapshot {
   sequence: number;
 }
 
+/** #2337 - the per-session typing-hold padlock snapshot returned by
+ *  `get_typing_hold` / `toggle_typing_hold`. `closed` is the EFFECTIVE hold
+ *  (manual padlock or the natural typing window) and `heldCount` is the number of
+ *  unique peer wake messages currently deferred for the session. The backend is
+ *  authoritative for both; the UI never infers or counts them locally. */
+export interface TypingHoldSnapshot {
+  closed: boolean;
+  heldCount: number;
+}
+
 export interface ConfigSeedConfig {
   enabled: boolean;
   dest: string;
@@ -743,6 +753,11 @@ export interface AppSettings {
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
   activityLogEnabled: boolean;
+  /** #2337 - seconds the automatic typing hold stays active after the last
+   *  qualifying keystroke in a session. The backend reads it live and clamps it
+   *  to 1..3600; optional so a snapshot saved before the field reads as the
+   *  backend default (30). */
+  typingHoldSeconds?: number;
   screenshotCaptureHotkey?: string;
   /**
    * #1171 - root-level watcher patterns, keyed by watcher id. Optional because the Rust

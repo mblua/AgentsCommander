@@ -25,6 +25,7 @@ import type {
   SessionWarning,
   PtyOutputEvent,
   PtyScreenSnapshot,
+  TypingHoldSnapshot,
   AppSettings,
   SettingsSnapshot,
   LogLevel,
@@ -309,6 +310,17 @@ export const PtyAPI = {
       sessionId,
       limit: limit ?? null,
     }),
+
+  /** #2337 - the active session's typing-hold padlock snapshot. The backend is
+   *  authoritative: `closed` is the effective hold and `heldCount` the unique
+   *  deferred peer-wake count. The status bar polls this; it never infers either. */
+  getTypingHold: (sessionId: string) =>
+    transport.invoke<TypingHoldSnapshot>("get_typing_hold", { sessionId }),
+
+  /** #2337 - flip one session's manual padlock and answer with the post-toggle
+   *  snapshot, taken under the same lock, so a click never observes a half flip. */
+  toggleTypingHold: (sessionId: string) =>
+    transport.invoke<TypingHoldSnapshot>("toggle_typing_hold", { sessionId }),
 
   /** #1171 - compile a candidate pattern and, with a session, run it against its live rows.
    *  Omitting `sessionId` compiles only, which is the common case: writing a regex in
