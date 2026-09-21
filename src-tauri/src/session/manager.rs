@@ -1083,7 +1083,18 @@ impl SessionManager {
         Some((true, communication))
     }
 
-    /// #2232 phase 7 - clears the Co-managed communication when its cycle ends.
+    /// #2232 phase 7 - clears the session's communication **only when the
+    /// single slot currently holds a visible Co-managed message**, leaving any
+    /// other kind untouched; returns whether it cleared one.
+    ///
+    /// Nothing in production calls this today. Plan section 7 makes the
+    /// Co-managed communication the user's reading surface (reason, excerpt
+    /// and message-file path) and gives the slot the single-slot overwrite
+    /// lifecycle: `raise_hand`, `set_blocked_menu` or a newer Co-managed
+    /// message replaces the current entry. The readiness-loss clear of plan
+    /// 9.3 clears the armed flag and emits its event; it deliberately does not
+    /// erase this user-visible pointer while the referenced message file stays
+    /// on disk.
     pub async fn clear_co_managed(&self, id: Uuid) -> bool {
         self.clear_communication_if_kind(id, SessionCommunicationKind::CoManaged)
             .await
