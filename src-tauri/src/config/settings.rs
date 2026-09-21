@@ -7799,6 +7799,26 @@ mod tests {
         }
     }
 
+    /// #2336 - the Settings update path rejects an out-of-range typing-hold
+    /// window and leaves the live value unchanged: the error returns before the
+    /// save, so the persisted (and live) window stays at the old value. The
+    /// valid 1/3600 boundaries are covered by the validation test above.
+    #[tokio::test]
+    async fn invalid_typing_hold_settings_update_leaves_live_settings_unchanged() {
+        let original = AppSettings::default();
+        assert_eq!(original.typing_hold_seconds, 30);
+        let state: super::SettingsState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(original.clone()));
+
+        let mut invalid = original;
+        invalid.typing_hold_seconds = 0;
+        let err = crate::commands::config::persist_protected_settings_update(&state, invalid)
+            .await
+            .expect_err("out-of-range typing hold must be rejected");
+        assert!(err.contains("typingHoldSeconds"), "{err}");
+        assert_eq!(state.read().await.typing_hold_seconds, 30);
+    }
+
     /// #2015: shared pre-v2 fixture: `letters.A.name` plus
     /// `matrix.codex.A.argv` legacy data under `codingAgentProfiles`.
     const LEGACY_PROFILES_SETTINGS_FIXTURE: &str = r##"{
