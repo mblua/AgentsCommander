@@ -70,6 +70,8 @@ pub struct SessionRepo {
 pub enum SessionCommunicationKind {
     RaiseHand,
     BlockedMenu,
+    /// #2232 phase 7: the Co-managed feature produced a user-facing communication.
+    CoManaged,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

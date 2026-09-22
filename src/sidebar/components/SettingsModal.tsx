@@ -2346,7 +2346,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         >
           Allow authorized Root Agents and same-room Orchestrators to capture live terminal
           contents as JSON or PNG. Terminal screens can contain passwords, tokens, source code,
-          prompts, and personal data. Disabled by default.
+          prompts, and personal data. Enabled by default.
         </div>
       </div>
 
