@@ -33,10 +33,23 @@ One running process bound to one agent directory, running inside a real PTY (Con
 - green — waiting for human input (the agent finished its turn and is ready for your reply)
 - amber — pending (the agent finished its turn but the row has not been focused yet)
 - red — exited (clean or crash; detail in the row tooltip)
+- red — co-managed (the room's orchestrator is in a [Co-managed](features/co-managed-rooms.md) capture cycle at its idle edge). `exited` wins over it, and it wins over waiting and pending: **the session does not show as waiting while it is lit**
 - gray — idle (no recent activity)
 - translucent — offline (no live session row, for example an inactive member)
 
 You can detach a session into its own window, attach a Telegram bot to it, or talk to it by voice. Idle teams can close their own sessions after a timeout; see [Session auto-close](features/session-auto-close.md).
+
+### Co-managed rooms
+
+A **Co-managed** room lets AC read its orchestrator's captured output and route it for you. It is **per room**, **off by default**, and applies **only to that room's orchestrator**.
+
+- It triggers **only at the orchestrator's idle edge**. Idle is the gate, not proof that the agent finished its turn.
+- It **never requires a Telegram bot**, and enabling or disabling Telegram does not change it.
+- There are four destinations, and only four: the user, another room's orchestrator, the Root Agent, and a closed-table automatic reply.
+- **An automatic reply is never your approval.** It is a fixed sentence you wrote, and the catalog rejects one that reads like approval.
+- A room whose orchestrator runs an agent with no transcript reader cannot be co-managed, and says so with a visible reason.
+
+See [Co-managed rooms](features/co-managed-rooms.md).
 
 ## Team
 

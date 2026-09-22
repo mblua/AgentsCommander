@@ -1437,16 +1437,15 @@ fn stale_prior_session_with_running_daemon_reports_automation_not_enabled_on_std
 /// `--timeout-ms` (`:1412-1464`); the only exits from that loop are a response file,
 /// which nothing writes here, and the 30 s deadline. Readiness (request file present,
 /// child alive) is asserted outside `catch_unwind`; the closure only moves the guard
-/// and panics; the caught payload must be the sentinel. Windows-only because
-/// `pid_is_alive` is a stub elsewhere.
-#[cfg(target_os = "windows")]
+/// and panics; the caught payload must be the sentinel. Cross-platform since
+/// #2382 gave `pid_is_alive` a real Unix implementation.
 #[test]
 fn reap_on_drop_kills_the_child_when_the_caller_panics() {
     use agentscommander_lib::testability::ui_automation::pid_is_alive;
     const SENTINEL: &str = "1773 ReapOnDrop sentinel panic 2b9d";
 
     let _guard = test_lock();
-    let pid = fake_live_pid().expect("PID 4 (System) is always alive on Windows");
+    let pid = fake_live_pid().expect("fake_live_pid must yield a live session pid");
     let tmp = Tmp::new("ui-reap-on-drop");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, pid, &["main"]);

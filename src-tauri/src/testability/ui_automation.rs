@@ -2052,7 +2052,54 @@ pub fn pid_is_alive(pid: u32) -> bool {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(unix)]
+pub fn pid_is_alive(pid: u32) -> bool {
+    // `kill` reads a negative pid as a process group and -1 as "every process
+    // I may signal", so a blind `u32 as pid_t` cast would turn `u32::MAX` into
+    // `kill(-1, 0)` and report a live process. Reject 0 and values a `pid_t`
+    // cannot hold before converting.
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: `pid` is a positive `pid_t` (checked above) and signal 0 is
+    // never delivered; `kill` performs only the existence and permission
+    // checks, so this call cannot affect any process.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return !pid_is_zombie(pid);
+    }
+    // Mirrors the Windows branch: ACCESS_DENIED means "alive but not ours",
+    // so EPERM is alive and every other errno (ESRCH et al.) is dead.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// #2382: Linux keeps a terminated child as a zombie until its parent waits.
+/// `kill` reports a zombie as existing, but the automation session it names
+/// can no longer answer, so treat it as dead - matching the Windows branch,
+/// which does not report an exited process as alive either.
+#[cfg(target_os = "linux")]
+fn pid_is_zombie(pid: libc::pid_t) -> bool {
+    // `/proc/<pid>/stat` is `pid (comm) state ...` and `comm` may contain
+    // spaces and parentheses, so read the state after the LAST ')'.
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.rsplit_once(')')
+                .map(|(_, rest)| rest.trim_start().starts_with('Z'))
+        })
+        .unwrap_or(false)
+}
+
+/// macOS and the BSDs have no `/proc`; plain `kill(pid, 0)` existence is the
+/// whole answer there.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn pid_is_zombie(_pid: libc::pid_t) -> bool {
+    false
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn pid_is_alive(_pid: u32) -> bool {
     true
 }
@@ -3260,5 +3307,78 @@ mod tests {
             timeout_phase(&request_path, &inflight_path, &session_path, "main"),
             "awaiting_frontend_response"
         );
+    }
+
+    #[test]
+    fn pid_is_alive_reports_the_current_process() {
+        assert!(pid_is_alive(std::process::id()));
+    }
+
+    #[test]
+    fn pid_is_alive_rejects_zero_and_unrepresentable_pids() {
+        // PID 0 names the scheduler, not a targetable process, and `u32::MAX`
+        // does not fit a `pid_t`; both must be dead without calling `kill`.
+        assert!(!pid_is_alive(0));
+        assert!(!pid_is_alive(u32::MAX));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reaped_pid_is_not_alive() {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn sh");
+        let pid = child.id();
+        child.wait().expect("reap child");
+        assert!(!pid_is_alive(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_pid_is_alive() {
+        // PID 1 always exists; when the test runs unprivileged this also pins
+        // the EPERM branch (exists, no permission => alive).
+        assert!(pid_is_alive(1));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn zombie_pid_is_not_alive() {
+        use std::time::{Duration, Instant};
+        if !std::path::Path::new("/proc/self/stat").exists() {
+            eprintln!("skip: /proc is not mounted");
+            return;
+        }
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn sh");
+        let pid = child.id();
+        // Wait until the kernel reports the unreaped child as a zombie. Calling
+        // `wait()` here would reap it and make the PID disappear, so poll
+        // /proc directly.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|stat| {
+                    stat.rsplit_once(')')
+                        .and_then(|(_, rest)| rest.trim_start().chars().next())
+                });
+            if state == Some('Z') {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child {pid} never became a zombie"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let zombie_is_alive = pid_is_alive(pid);
+        child.wait().expect("reap zombie");
+        assert!(!zombie_is_alive, "a zombie must not be reported alive");
     }
 }

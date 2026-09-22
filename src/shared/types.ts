@@ -791,7 +791,37 @@ export interface AppSettings {
   watchers?: Record<string, WatcherEntry>;
   /** #1171 - geometry of the watcher activity window; skipped while unset. */
   watchersGeometry?: WindowGeometry;
+  // #2232 phase 9 - OPTIONAL on purpose, following the #2064 block above: Rust
+  // serializes all six unconditionally, so a loaded settings object always carries
+  // them, and no complete-literal builder outside this phase needs updating.
+  jevApiKey?: string;
+  jevModel?: string;
+  jevEndpoint?: string;
+  jevTimeoutSecs?: number;
+  jevThreshold?: number;
+  jevMargin?: number;
 }
+
+// ── #2265/#2232 Co-managed: the phase-2 command wire shapes ──────────────────
+// Mirror `config::co_managed` (CoManagedConfig / CoManagedState / OffReason) in
+// src-tauri/src/config/co_managed.rs. Both enums use serde's default external
+// tagging with no rename, so the literals are `"Ready"`,
+// `{ Off: { reason: "RoomFlagOff" } }` and
+// `{ Off: { reason: { UnsupportedProvider: { agent: "pi" } } } }`.
+
+/** The per-room opt-in record `co_managed_get`/`co_managed_set_enabled` return. */
+export type CoManagedConfig = { enabled: boolean; catalogPath: string | null };
+
+/** The single reason a room is not effective. Variant names are the wire form. */
+export type OffReason =
+  | "NotAnOrchestrator"
+  | "RoomFlagOff"
+  | "NoApiKey"
+  | "NoCatalogFile"
+  | "CatalogUnreadable"
+  | { UnsupportedProvider: { agent: string } };
+
+export type CoManagedState = "Ready" | { Off: { reason: OffReason } };
 
 // ── #1077 Portable dual project paths: get_settings resolution report ────────
 // These mirror the serialize-only Rust wire shapes in

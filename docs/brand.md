@@ -26,7 +26,7 @@ the OG card, and the demo GIF render in Noir.
 
 ### Status dots
 
-The four status colors below are load-bearing UI. They appear next to every
+The five status colors below are load-bearing UI. They appear next to every
 session in the sidebar. Do not repurpose them for non-status decoration; a
 green dot must always mean "waiting for human input."
 
@@ -36,6 +36,7 @@ green dot must always mean "waiting for human input."
 | Pending | `#eab308` | Amber | Agent is queued / has work pending but no live PTY activity yet. |
 | Running | `#3a7bff` | Blue | Agent is actively running — PTY output streaming. |
 | Exited | `#ff3b5c` | Red | Session exited (clean or crash). Detail in the row tooltip. |
+| Co-managed | `#ff3b5c` dark, `#dc2626` light | Red | The room is [Co-managed](features/co-managed-rooms.md) and this orchestrator is in a capture cycle at its idle edge. Shares red with `Exited`; `Exited` wins precedence, so the two never paint the same dot at once. No glow distinguishes them, because none was approved. |
 
 Two additional status tokens exist in `variables.css` but are rarely surfaced
 in marketing material: `idle` (`#555566`) for sessions with no recent

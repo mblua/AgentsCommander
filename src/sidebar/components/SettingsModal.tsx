@@ -4456,6 +4456,99 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         </Show>
       </div>
 
+      {/* #2232 phase 9 - Co-managed (Jev). Deliberately a SIBLING of the Voice
+          to Text section, outside its <Show when={voiceToTextEnabled}>: the Jev
+          key is the feature's on-switch, while voice-to-text is off by default. */}
+      <div class="settings-section">
+        <div class="settings-section-title">Co-managed (Jev)</div>
+        <label class="settings-field">
+          <span class="settings-label">Jev API Key</span>
+          <input
+            class="settings-input"
+            type="password"
+            value={settings.data!.jevApiKey ?? ""}
+            onInput={(e) => updateField("jevApiKey", e.currentTarget.value)}
+            placeholder="Empty means Co-managed is inert"
+            data-ac-testid="settings.integrations.jevApiKey"
+          />
+        </label>
+        <PlaintextSecretHint
+          path={settingsFilePath()}
+          testId="settings.integrations.jevApiKey.plaintextWarning"
+        />
+        <label class="settings-field">
+          <span class="settings-label">Jev Model</span>
+          <input
+            class="settings-input"
+            value={settings.data!.jevModel ?? "jev-1.13.0"}
+            onInput={(e) => updateField("jevModel", e.currentTarget.value)}
+            data-ac-testid="settings.integrations.jevModel"
+          />
+        </label>
+        <div
+          class="settings-hint"
+          data-ac-testid="settings.integrations.jevModel.warning"
+        >
+          The 0.70 threshold and 0.15 margin were measured on jev-1.13.0. Changing
+          the model leaves those two numbers unmeasured.
+        </div>
+        <label class="settings-field">
+          <span class="settings-label">Jev Endpoint</span>
+          <input
+            class="settings-input"
+            value={settings.data!.jevEndpoint ?? "https://api.typesafe.ai/v1/systemone"}
+            onInput={(e) => updateField("jevEndpoint", e.currentTarget.value)}
+            data-ac-testid="settings.integrations.jevEndpoint"
+          />
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Jev Timeout (seconds)</span>
+          <input
+            class="settings-input settings-input-sm"
+            type="number"
+            min="1"
+            value={settings.data!.jevTimeoutSecs ?? 20}
+            onInput={(e) => {
+              const v = parseInt(e.currentTarget.value, 10);
+              if (!isNaN(v)) updateField("jevTimeoutSecs", Math.max(1, v));
+            }}
+            data-ac-testid="settings.integrations.jevTimeoutSecs"
+          />
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Jev Threshold</span>
+          <input
+            class="settings-input settings-input-sm"
+            type="number"
+            min="0"
+            max="1"
+            step="0.01"
+            value={settings.data!.jevThreshold ?? 0.70}
+            onInput={(e) => {
+              const v = parseFloat(e.currentTarget.value);
+              if (!isNaN(v)) updateField("jevThreshold", v);
+            }}
+            data-ac-testid="settings.integrations.jevThreshold"
+          />
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Jev Margin</span>
+          <input
+            class="settings-input settings-input-sm"
+            type="number"
+            min="0"
+            max="1"
+            step="0.01"
+            value={settings.data!.jevMargin ?? 0.15}
+            onInput={(e) => {
+              const v = parseFloat(e.currentTarget.value);
+              if (!isNaN(v)) updateField("jevMargin", v);
+            }}
+            data-ac-testid="settings.integrations.jevMargin"
+          />
+        </label>
+      </div>
+
       {/* Telegram Bots */}
       <div class="settings-section">
         <div class="settings-section-title">Telegram Bots</div>

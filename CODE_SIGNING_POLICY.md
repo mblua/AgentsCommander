@@ -37,7 +37,7 @@ For every release, also verify the exact downloaded filename against the attache
 
 ## Privacy
 
-This program does not transmit data to any networked system unless the user enables an opt-in feature (Telegram Bridge, Voice-to-Text). See [PRIVACY.md](PRIVACY.md) for the canonical statement and data flow.
+This program does not transmit data to any networked system unless the user enables an opt-in feature (Telegram Bridge, Voice-to-Text, or Jev classification for [Co-managed rooms](docs/features/co-managed-rooms.md), which requires both the room's Co-managed flag and a configured Jev API key). See [PRIVACY.md](PRIVACY.md) for the canonical statement and data flow.
 
 ## Attribution
 

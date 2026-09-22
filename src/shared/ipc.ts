@@ -116,6 +116,8 @@ import type {
   WatcherMatchBatch,
   WatcherPatternPreview,
   WatcherReachRow,
+  CoManagedConfig,
+  CoManagedState,
 } from "./types";
 import { decodeSessionSelection } from "./session-selection";
 
@@ -528,6 +530,19 @@ export const SettingsAPI = {
     }),
   getUpdateStatus: () =>
     transport.invoke<UpdateInfo | null>("get_update_status"),
+};
+
+/** #2232 phase 9 - the three phase-2 Co-managed commands, typed to the serde
+ *  shapes in `config::co_managed` (see `types.ts`). `roomRoot` is the Room root
+ *  (`wg.path`), and the backend rejects a path that is not a registered project's
+ *  Room; the frontend never re-derives it. */
+export const CoManagedAPI = {
+  get: (roomRoot: string) =>
+    transport.invoke<CoManagedConfig>("co_managed_get", { roomRoot }),
+  setEnabled: (roomRoot: string, enabled: boolean) =>
+    transport.invoke<CoManagedConfig>("co_managed_set_enabled", { roomRoot, enabled }),
+  effectiveState: (roomRoot: string, sessionId: string) =>
+    transport.invoke<CoManagedState>("co_managed_effective_state", { roomRoot, sessionId }),
 };
 
 export const AgentUpdateAPI = {

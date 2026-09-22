@@ -374,6 +374,55 @@ See [Voice-to-text setup](../integrations/voice.md).
 
 See [Telegram bridge setup](../integrations/telegram.md).
 
+### Co-managed (Jev)
+
+Six top-level keys, all in `settings.json`, all global. They configure the classifier; the per-room on/off flag is **not** here, it lives under the room root. See [Co-managed rooms](../features/co-managed-rooms.md).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `jevApiKey` | string | `""` | Jev API key. Plaintext — protect your account. **Empty means the feature is inert**, in every room, whatever the room flags say. |
+| `jevModel` | string | `jev-1.13.0` | Classification model. A **pinned** version, not a floating tag. |
+| `jevEndpoint` | string | `https://api.typesafe.ai/v1/systemone` | The Typesafe System One endpoint the candidate text and catalog questions are sent to. |
+| `jevTimeoutSecs` | u64 | `20` | Request timeout, in seconds. A timeout is an abstention. |
+| `jevThreshold` | f32 | `0.70` | Minimum absolute score for a category to win. |
+| `jevMargin` | f32 | `0.15` | Minimum margin the winner must hold over the runner-up. |
+
+**Why the model default is pinned.** The `0.70` threshold and the `0.15` margin were **measured on `jev-1.13.0`**. That is why the default is a pinned version rather than a floating tag: changing the model leaves those two numbers unmeasured, and AC cannot tell you what they should be instead.
+
+#### The room file: `<room-root>/.co-managed/config.json`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | The room's Co-managed flag. Written by the **Co-managed** toggle on the orchestrator row. |
+| `catalogPath` | string or null | `null` | Path to the category catalog. Relative paths resolve against the room root. No UI field yet; edit the file. |
+
+**Both keys absent means off.** A malformed file is **repaired to defaults on load**, never fatally rejected, and unknown keys survive a rewrite so a newer build's key is not lost by an older one. The directory also holds `state.json`, the `queue/` directory and one advisory `lock` file governing config and state. `room-*/` is gitignored, so none of it enters your repository.
+
+#### The category catalog file
+
+`catalogPath` points at a JSON document of the shape:
+
+```json
+{
+  "categories": {
+    "<your-category-id>": {
+      "question": "A yes/no question that decides this category.",
+      "destination": "user | orchestrator | root | default_reply",
+      "peer": "project:room-N-team/agent",
+      "reply": "A fixed sentence, for default_reply only."
+    }
+  }
+}
+```
+
+Three things you need to know and cannot guess:
+
+1. **Each category maps to exactly one of the four destinations**: `user`, `orchestrator`, `root`, `default_reply`. Anything else is an abstention with a visible reason naming the category. Validation is per category, so one broken entry does not disable its valid siblings.
+2. **A fixed reply that expresses approval is rejected when the catalog loads**, with the offending category named. Denied phrases are matched case-insensitively: `approved`, `go ahead`, `the user agrees`, `authorised`, `authorized`, `lgtm`, `ship it`.
+3. **The number of categories affects the classification.** The classifier's measured behaviour is order- and composition-sensitive: a faithful repeat of one measured run flipped 3.5% of bands, and changing only the question order collapsed the ranking (Spearman 0.349538 against 0.967303). AC therefore emits the questions in a fixed byte-sorted order by category id and requires both an absolute score and a margin over the runner-up, abstaining otherwise. **Adding or removing a category changes the call, so it can change outcomes** for categories you did not edit.
+
+See [Co-managed rooms](../features/co-managed-rooms.md).
+
 ### Web server (opt-in)
 
 | Field | Type | Default | Description |

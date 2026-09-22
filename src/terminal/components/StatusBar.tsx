@@ -5,14 +5,13 @@ import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder"
 import { PtyAPI, WindowAPI, emitOpenSettings } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import type { TypingHoldSnapshot } from "../../shared/types";
+import TypingHoldIcon from "./TypingHoldIcon";
 
 const MIC_DISABLED_TITLE =
   "Enable voice-to-text in Settings and set a Gemini API key to use this.";
 
 // #2337 - the backend owns the padlock; this is only the read cadence.
 const TYPING_HOLD_POLL_MS = 500;
-const OPEN_PADLOCK = "\u{1F513}";
-const CLOSED_PADLOCK = "\u{1F512}";
 
 const StatusBar: Component<{ detached?: boolean }> = (props) => {
   let mouseUpHandler: (() => void) | null = null;
@@ -120,8 +119,8 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
     // No snapshot yet: make no claim about a count.
     if (!snapshot) return "Hold message delivery to this session";
     return snapshot.closed
-      ? `Release held messages and resume delivery (#${snapshot.heldCount} held)`
-      : `Hold message delivery to this session (#${snapshot.heldCount} held)`;
+      ? `Release held messages and resume delivery (${snapshot.heldCount} held)`
+      : `Hold message delivery to this session (${snapshot.heldCount} held)`;
   };
 
   // #2337 - poll while this bar is mounted. The effect re-runs on every active
@@ -264,10 +263,13 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
               data-ac-testid="statusBar.typingHold"
               data-ac-role="button"
             >
-              <span>{typingHoldClosed() ? CLOSED_PADLOCK : OPEN_PADLOCK}</span>
+              <TypingHoldIcon
+                closed={typingHoldClosed()}
+                class="status-bar-typing-hold-icon"
+              />
               <Show when={typingHoldClosed()}>
                 <span class="status-bar-hold-count">
-                  #{typingHoldSnapshot()!.heldCount}
+                  {typingHoldSnapshot()!.heldCount}
                 </span>
               </Show>
             </button>
