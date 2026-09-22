@@ -3,6 +3,7 @@ import { Portal } from "solid-js/web";
 import type { AcAgentReplica, AcWorkgroup, NonStopGroupConfig, WorkgroupGroup } from "../../shared/types";
 import type { ProjectState } from "../stores/project";
 import { entityDirNumber, entityShortLabel } from "../../shared/entity-prefix";
+import { setSidebarCompactMode } from "../../shared/sidebar-compact";
 import { projectStore } from "../stores/project";
 import { projectCollapseStore } from "../stores/project-collapse";
 import { railCollapseStore } from "../stores/rail-collapse";
@@ -219,6 +220,7 @@ function selectFromRail(project: ProjectState, selection: WorkgroupGroupSelectio
     projectStore.projects.map((p) => p.path)
   );
   projectCollapseStore.setProjectCollapsed(project.path, false);
+  setSidebarCompactMode(false);
 }
 
 const RailButton: Component<{
