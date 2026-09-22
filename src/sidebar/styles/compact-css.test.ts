@@ -3,10 +3,9 @@ import { describe, expect, it } from "vitest";
 import { declarations, declValue, scanRules, type ScannedRule } from "./css-test-helpers";
 
 // #2236 phase 3 (#2283) - compact sidebar CSS, pinned as bytes on disk. jsdom applies no
-// stylesheet and performs no layout, so flushness and row height are D20 runtime gates, not
-// gates of this file. The sheet is CRLF, so comments are blanked with line breaks kept. Pins
-// 2-4 merge every exact block carrying a selector: base and phase blocks are separate, so a
-// first-match parser reads half the cascade and passes.
+// stylesheet and performs no layout: flushness and row height are D20 runtime gates. The sheet
+// is CRLF, so comments are blanked with line breaks kept. Pins 2-4 merge every exact block
+// carrying a selector, because base and phase blocks are separate and a first-match parser passes.
 const CSS = readFileSync(new URL("./sidebar.css", import.meta.url), "utf8");
 const RULES = scanRules(CSS.replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\r\n]/g, " ")));
 
@@ -29,11 +28,12 @@ const PLAIN_STYLES = ["deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit
 const PLAIN_INLINE = ["border", "border-left", "border-right", "margin", "margin-left", "margin-right"];
 const bannerFor = (style: string): string => `[data-sidebar-style="${style}"] .root-agent-banner`;
 
-// The lift rule names exactly these five; the component census that catches a
-// sixth control is phase 9's test 4d.
+// The lift rule names exactly these six, the #2271 dot included; the component
+// census that catches a seventh control is phase 9's test 4d.
 const LIFTED = [
   ".root-agent-banner > .session-item-mic-cancel",
   ".root-agent-banner > .session-item-bridge-icon",
+  ".root-agent-banner > .session-item-status",
   ".root-agent-banner .voice-cancel-execute",
   ".root-agent-banner .ctx-badge",
   ".root-agent-banner .profile-outdated-badge",
@@ -110,14 +110,12 @@ describe("#2236 phase 3 compact sidebar CSS bytes", () => {
     expect(decls.get("border-inline")).toBe("0");
     expect(decls.get(INSET_LEFT)).toBe("0px");
     expect(decls.get(INSET_RIGHT)).toBe("0px");
-    // Absence leg, load-bearing: a padding or margin shorthand would move the
-    // measured row height, which no jsdom test can see.
+    // Absence leg: a padding/margin shorthand would move the measured row height.
     const props = declarations(rule.body).map(([prop]) => prop);
     for (const prop of props) expect(prop, prop).not.toMatch(/^padding/);
     expect(props).not.toContain("margin");
 
-    // D19: class and rail side are read off the SAME node, never an ancestor
-    // chain. Change 2 and phase 6's toolbar rule are legitimate descendants.
+    // D19: class and rail side are read off the SAME node, never an ancestor chain.
     const bannerCompact = RULES.filter((candidate) =>
       candidate.selectors.some((selector) => selector.includes(COMPACT)),
     );
@@ -140,8 +138,7 @@ describe("#2236 phase 3 compact sidebar CSS bytes", () => {
     expect(decls.get("background")).toBe("transparent");
     expect(decls.get("inline-size")).toBe("var(--ac-rail-width)");
     expect(decls.get("inline-size")).not.toContain("68");
-    // Exactly one inline inset is set; the other stays auto, so the box is
-    // never over-constrained.
+    // Exactly one inline inset is set; the other stays auto, never over-constrained.
     expect([decls.get("left"), decls.get("right")].filter((side) => side === "auto")).toHaveLength(1);
     expect(decls.get("left")).toBe("auto");
     expect(decls.get("right")).toBe("var(--ac-banner-inset-right)");
@@ -150,14 +147,13 @@ describe("#2236 phase 3 compact sidebar CSS bytes", () => {
   it("3. every banner is a containing block with zero default insets", () => {
     const decls = merged(BANNER);
     expect(decls.get("position")).toBe("relative");
-    // Unconditional, not only on .active: otherwise a non-active banner creates
-    // no stacking context for the 0/1/2 ladder.
+    // Unconditional: an inactive banner still needs the 0/1/2 stacking context.
     expect(decls.get("isolation")).toBe("isolate");
     expect(decls.get(INSET_LEFT)).toBe("0px");
     expect(decls.get(INSET_RIGHT)).toBe("0px");
   });
 
-  it("3b. the activation overlay, toggle and five lifted names form a strict ladder", () => {
+  it("3b. the activation overlay, toggle and six lifted names form a strict ladder", () => {
     const open = merged(OPEN);
     expect(open.get("position")).toBe("absolute");
     expect(open.get("inset")).toBe("0");
@@ -176,8 +172,9 @@ describe("#2236 phase 3 compact sidebar CSS bytes", () => {
     expect(liftRules).toHaveLength(1);
     const lift = liftRules[0];
     expect([...lift.selectors].sort()).toEqual([...LIFTED].sort());
-    // Never bare: SessionItem rows share the .ctx-badge class.
+    // Never bare: SessionItem and .replica-item rows share both classes.
     expect(lift.selectors).toContain(".root-agent-banner .ctx-badge");
+    expect(lift.selectors).toContain(".root-agent-banner > .session-item-status");
     for (const name of LIFTED) {
       const decls = merged(name);
       expect(decls.get("position"), name).toBe("relative");
@@ -185,8 +182,7 @@ describe("#2236 phase 3 compact sidebar CSS bytes", () => {
       expect(Number.isFinite(liftedZ), name).toBe(true);
       expect(toggleZ).toBeLessThan(liftedZ);
     }
-    // A disabled <button> suppresses mouse events instead of retargeting them,
-    // so right-click-while-busy needs pointer-events: none.
+    // A disabled <button> swallows mouse events, so right-click-while-busy needs this.
     expect(declValue(one(`${OPEN}:disabled`).body, "pointer-events")).toBe("none");
   });
 
@@ -199,8 +195,7 @@ describe("#2236 phase 3 compact sidebar CSS bytes", () => {
     ];
     for (const [style, left, right] of expected) {
       const perStyle = merged(bannerFor(style));
-      // Both sides are computed: mirroring one from the other is the defect
-      // this pin exists to catch.
+      // Both sides are computed; mirroring one from the other is the defect.
       const computedLeft = -(inlineBorder(perStyle, "left") + inlineMargin(perStyle, "left"));
       const computedRight = inlineMargin(perStyle, "left") - inlineBorder(perStyle, "right");
       expect([computedLeft, computedRight], style).toEqual([left, right]);
@@ -228,8 +223,7 @@ describe("#2236 phase 3 compact sidebar CSS bytes", () => {
     expect(declValue(compact.body, "left")).toBe("0");
     expect(declValue(compact.body, "right")).toBe("0");
     expect(declValue(compact.body, "inline-size")).toBe("auto");
-    // The first selector ties (0,3,0) and would depend on file order; the
-    // second wins by (0,4,0), so it never does.
+    // The first selector ties (0,3,0); the second wins (0,4,0), never file order.
     expect(compareSpecificity(specificityOf(COMPACT_TOGGLE), specificityOf(LEFT_RAIL_TOGGLE))).toBe(0);
     expect(
       compareSpecificity(specificityOf(COMPACT_TOGGLE_LEFT), specificityOf(LEFT_RAIL_TOGGLE)),

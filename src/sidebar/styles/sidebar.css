@@ -9763,6 +9763,7 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
 
 .root-agent-banner > .session-item-mic-cancel,
 .root-agent-banner > .session-item-bridge-icon,
+.root-agent-banner > .session-item-status,
 .root-agent-banner .voice-cancel-execute,
 .root-agent-banner .ctx-badge,
 .root-agent-banner .profile-outdated-badge {
