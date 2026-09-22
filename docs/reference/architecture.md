@@ -238,7 +238,7 @@ Data flows one way: watcher → leaf sink → supervisor in `lib.rs` → effect 
 
 ### 2.2 Declared Co-managed behaviour differences
 
-Deliberate, so an operator is not surprised:
+For what Co-managed is and how a user configures it, see [Co-managed rooms](../features/co-managed-rooms.md). The differences below are deliberate, so an operator is not surprised:
 
 - **Claude rotation backfill is not routed**, although the Telegram bridge sends it. A legitimate first turn after a transcript rotation can be suppressed.
 - **Attaching over a live reader discards the pending buffer**, so the Telegram chat loses up to 2 s of pre-attach text.
