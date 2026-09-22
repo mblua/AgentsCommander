@@ -84,7 +84,7 @@ const RootAgentBanner: Component<{ compact?: boolean }> = (props) => {
   };
 
   // #2408 - the real activity class; Co-managed capture is an additive ring.
-  const dotClass = createMemo(() => sessionDotClass(rootSession()));
+  const dotClass = createMemo(() => `${sessionDotClass(rootSession())}${isComanaged() ? " comanaged" : ""}`);
 
   const subtitle = createMemo(() => {
     const r = rootSession();
@@ -414,7 +414,7 @@ const RootAgentBanner: Component<{ compact?: boolean }> = (props) => {
           onClick={() => void handleClick()}
         />
         <div
-          class={`session-item-status ${dotClass()}${isComanaged() ? " comanaged" : ""}`}
+          class={`session-item-status ${dotClass()}`}
           data-ac-comanaged={isComanaged() ? "true" : "false"}
           title={isComanaged() ? "Co-managed" : undefined}
         />
