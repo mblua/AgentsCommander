@@ -2,6 +2,9 @@ name: PR regression gates
 
 on:
   pull_request:
+    # `labeled` lets adding the `ci:full` label start a full run.
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
   push:
     branches-ignore:
       - main
@@ -19,6 +22,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Light tier runs on every event: rust-regression (Windows, the only job
+  # above a 2.5% failure rate), plus rust-fmt and test-debt (cheap).
+  # Full tier adds every other job on every 10th run, on the `ci:full`
+  # label, or on a manual dispatch. See #2417 for the failure-rate sample.
+  ci-tier:
+    name: ci-tier
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.tier.outputs.full }}
+    steps:
+      - id: tier
+        shell: bash
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+          HAS_FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+        run: |
+          full=false
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || [ "$HAS_FULL_LABEL" = true ] || [ $((RUN_NUMBER % 10)) -eq 0 ]; then
+            full=true
+          fi
+          echo "run_number=$RUN_NUMBER full=$full"
+          echo "full=$full" >> "$GITHUB_OUTPUT"
   test-debt:
     name: test-debt
     # Skip branch-deletion push events while still requiring pull request validation.
@@ -757,7 +782,8 @@ jobs:
   rust-regression-linux:
     name: rust-regression-linux
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    needs: ci-tier
+    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -1638,7 +1664,8 @@ jobs:
     # proves nothing.
     #
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    needs: ci-tier
+    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -1859,7 +1886,8 @@ jobs:
   rust-regression-macos:
     name: rust-regression-macos
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    needs: ci-tier
+    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -2540,7 +2568,8 @@ jobs:
   terminal-snapshot-portable:
     name: terminal-snapshot-portable (${{ matrix.os }})
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    needs: ci-tier
+    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     strategy:
       fail-fast: false
       matrix:
@@ -2570,7 +2599,8 @@ jobs:
   windows-release-cli-smoke:
     name: windows-release-cli-smoke
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    needs: ci-tier
+    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -2628,7 +2658,8 @@ jobs:
   issue-1850-windows-profile:
     name: issue-1850-windows-profile (${{ matrix.mode }})
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    needs: ci-tier
+    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: windows-latest
     timeout-minutes: 75
     strategy:
@@ -2805,7 +2836,8 @@ jobs:
   frontend-regression:
     name: frontend-regression
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    needs: ci-tier
+    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
