@@ -9,16 +9,16 @@ Use this feature when you need the current terminal state of a hidden, minimized
 You need:
 
 - AgentsCommander running with the target session already live;
-- **Settings > General > Terminal snapshots > Allow authorized terminal snapshots** enabled;
+- **Settings > General > Terminal snapshots > Allow authorized terminal snapshots** still on (it is on by default);
 - a live requester session token, not a stored Root or master token;
 - the exact canonical target name from snapshot target discovery; and
 - for a container requester, the automatically provided API URL and token.
 
-Terminal screens can contain passwords, tokens, source code, prompts, and personal data. The setting is off by default. AgentsCommander does not redact snapshot content.
+Terminal screens can contain passwords, tokens, source code, prompts, and personal data. The setting is on by default, so an authorized requester can read a screen unless you turn it off. AgentsCommander does not redact snapshot content.
 
-## Enable terminal snapshots
+## Turn terminal snapshots on or off
 
-In the app, open **Settings > General > Terminal snapshots**, select **Allow authorized terminal snapshots**, and save.
+In the app, open **Settings > General > Terminal snapshots**, set **Allow authorized terminal snapshots**, and save.
 
 The corresponding `settings.json` field is:
 
@@ -28,7 +28,15 @@ The corresponding `settings.json` field is:
 }
 ```
 
-The default is `false`. Missing, malformed, duplicated, unreadable, linked, or wrongly typed security settings fail closed. AgentsCommander changes this field through a dedicated compare-and-set operation, so a stale Settings window cannot silently re-enable a concurrently disabled gate. Direct edits from another process remain last-writer authority.
+The default is `true`. A fresh installation starts enabled, and an older `settings.json` that has no `terminalSnapshotsEnabled` key is read as enabled too. To disable the capability you must write the value explicitly:
+
+```json
+{
+  "terminalSnapshotsEnabled": false
+}
+```
+
+Only an explicit `false` disables it. Everything else about the gate still fails closed: a duplicate key, malformed JSON, a non-boolean value, an unreadable file, or a linked file denies every request as `terminal_snapshots_disabled`. AgentsCommander changes this field through a dedicated compare-and-set operation, so a stale Settings window cannot silently flip a gate another window just changed. Because an absent key now means enabled, an unrelated whole-settings save writes `true` into a legacy file that never carried the key; it never overwrites an explicit value. Direct edits from another process remain last-writer authority.
 
 See the [settings reference](../reference/settings.md#terminal-snapshots).
 
@@ -43,7 +51,18 @@ agentscommander list-peers-lean \
   --snapshot-targets
 ```
 
-Pass the returned `name` exactly to `terminal-snapshot --to`.
+Each entry carries the canonical `room-*` FQN in `name`, for example `"project:room-1-team/member"`.
+
+Pass that `name` verbatim to `terminal-snapshot --to`, including the `room-` prefix and the room number:
+
+```bash
+agentscommander terminal-snapshot \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --to "project:room-1-team/member"
+```
+
+A filesystem directory name, an alias, a wildcard, a session ID, or any hand-rewritten form is not an authorized target.
 
 This discovery view is not authorization and does not reveal session liveness:
 

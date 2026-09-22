@@ -202,7 +202,7 @@ Per-session attachment to a Telegram bot. PTY output streams to Telegram (filter
 
 ## Terminal snapshot
 
-One live backend terminal viewport read as versioned JSON or a deterministic PNG by an authorized Root Agent or room orchestrator. The read never wakes, spawns, focuses, selects, resizes, writes to, or captures OS pixels from the target, so it is how you see a hidden, minimized, detached, or never-mounted session. It is not a transcript, a frontend screenshot, or a request to wake an agent, and it stays unavailable until you enable it in **Settings > General**. See [Terminal snapshots](features/terminal-snapshots.md) and [`terminal-snapshot`](reference/cli.md#terminal-snapshot).
+One live backend terminal viewport read as versioned JSON or a deterministic PNG by an authorized Root Agent or room orchestrator. The read never wakes, spawns, focuses, selects, resizes, writes to, or captures OS pixels from the target, so it is how you see a hidden, minimized, detached, or never-mounted session. It is not a transcript, a frontend screenshot, or a request to wake an agent. It is available by default and stays available until you turn it off in **Settings > General**. See [Terminal snapshots](features/terminal-snapshots.md) and [`terminal-snapshot`](reference/cli.md#terminal-snapshot).
 
 ## Token (session token)
 

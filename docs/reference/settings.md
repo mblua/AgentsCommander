@@ -23,7 +23,7 @@ On `v0.33.0` and `main`, `agentscommander_<suffix>.exe` never uses `$HOME`. If i
 - The file is **JSON** (not JSONC, not YAML). Comments are not allowed.
 - AC reads at startup and on `update_settings` IPC calls.
 - If you edit `settings.json` **while the app is running**, your changes may be clobbered by the next in-memory save. For manual-only fields such as `specBoardEnabled`, edit while AC is closed, or reload settings before using any Settings save path.
-- `terminalSnapshotsEnabled` is security-sensitive. AgentsCommander's own writers serialize through a file lock and only the dedicated Settings compare-and-set action can change it. An out-of-process editor that ignores that lock remains last-writer authority.
+- `terminalSnapshotsEnabled` is security-sensitive and defaults to `true`. AgentsCommander's own writers serialize through a file lock, and only the dedicated Settings compare-and-set action can change an explicit value. One exception follows from the default: in a legacy file with no `terminalSnapshotsEnabled` key, any unrelated whole-settings save materializes `true`, because an absent key already means enabled. Write an explicit `false` if you want the capability off. An out-of-process editor that ignores that lock remains last-writer authority.
 - AC tolerates unknown fields (`serde` skips them) so adding a field will not break an older binary, but the older binary will not honor it.
 
 ## Recovering a previous version
@@ -80,6 +80,8 @@ A minimal `settings.json`:
   "terminalSnapshotsEnabled": false
 }
 ```
+
+The `terminalSnapshotsEnabled: false` line above is an explicit opt-out, not the default. The default is `true`, and so is an absent key.
 
 ## Top-level fields
 
@@ -187,13 +189,15 @@ The copied file is a full-account credential (access token plus long-lived refre
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `terminalSnapshotsEnabled` | bool | `false` | Permit identity-authorized Root Agents and same-room Orchestrators to read a live backend terminal viewport as JSON or PNG. |
+| `terminalSnapshotsEnabled` | bool | `true` | Permit identity-authorized Root Agents and same-room Orchestrators to read a live backend terminal viewport as JSON or PNG. On by default; set an explicit `false` to deny. |
 
 This is a disclosure gate, not a display preference. Terminal screens can contain passwords, tokens, source code, prompts, and personal data. AgentsCommander performs no automatic redaction.
 
 Use **Settings > General > Terminal snapshots > Allow authorized terminal snapshots** to change it. The UI calls a dedicated idempotent compare-and-set operation with the value that was current when the modal opened. If another window or process changed the gate, a stale save conflicts and reloads the authoritative value instead of re-enabling it.
 
-Every whole-settings writer preserves the current gate and cannot opt in. Old settings files deserialize the absent field as `false`, but the snapshot service is stricter: the on-disk key and managed in-memory value must both be exactly `true` at initial and final authorization. A missing key, duplicate key, malformed JSON, wrong type, unreadable file, or linked file fails closed as `terminal_snapshots_disabled`.
+A whole-settings writer preserves an explicit value and cannot flip `false` to `true`. It does write `true` into a legacy file whose key is absent, because both a fresh installation and an absent key already mean enabled.
+
+The snapshot service reads the gate strictly at initial and final authorization, from the on-disk key and the managed in-memory value. An absent key passes as enabled; an explicit `false` denies. A duplicate key, malformed JSON, wrong type, unreadable file, or linked file fails closed as `terminal_snapshots_disabled`.
 
 Direct out-of-process edits that ignore AgentsCommander's settings lock remain last-writer authority. If you edit this field by hand, stop the app first and keep the value a JSON boolean.
 
@@ -297,6 +301,7 @@ The two `gitSweep*` dials are manual-only (no UI) and are read from the in-memor
 | `teamIdleBeepEnabled` | bool | `true` | Beep when a team transitions from busy → all-idle. Gated by `soundsEnabled`. |
 | `coordSortByActivity` | bool | `false` | Sort the orchestrator quick-access list by most-recent activity. |
 | `screenshotCaptureHotkey` | string | `"Ctrl+Q"` | Native global hotkey for screenshot capture. One modifier plus one key; only `Ctrl` (or `Control`) and a single letter or digit are accepted. Windows, macOS and Linux/X11. See [Screenshot capture](../features/screenshot-capture.md). |
+| `sidebarCompactHotkey` | string | `"Ctrl+Shift+E"` | Hotkey that toggles the compact sidebar. Accepted range `Ctrl+Shift+<A-Z>` (parts are case-insensitive; the first part may be `Ctrl` or `Control`), excluding the reserved letters `W`, `R`, `C`, `V`. An invalid value blocks the save with an error naming the field; it is not repaired. |
 | `mainResourceMonitorAttached` | bool | `false` | Whether the Resource Monitor occupies the main central pane instead of the terminal. Restored on startup. |
 | `alwaysShowSelectedWorkgroup` | bool | `true` | Keep the selected room visible in the sidebar. |
 | `railCollapsedProjects` | string[] | `[]` | Rail project sections the user collapsed by clicking their header. Entries are frontend-normalized project paths (lowercase, forward slashes, no trailing slash). Written only by the dedicated rail collapse action; whole-settings writers restore it from live memory. |
@@ -593,6 +598,6 @@ Use any JSON validator. AC will refuse to start if the file is not valid JSON an
 
 - [Portable instances](../features/portable-instances.md) — per-instance config rules
 - [CLI reference](cli.md) — verbs that read/write this file
-- [Terminal snapshots](../features/terminal-snapshots.md) - the default-off screen-content read capability
+- [Terminal snapshots](../features/terminal-snapshots.md) - the default-on screen-content read capability
 - [Menu guard](../features/menu-guard.md) - `menuGuardEnabled` and the three `settings-blocking-menus` files in use
 - [`PRIVACY.md`](../../PRIVACY.md) — what credentials live here and how they are transmitted
