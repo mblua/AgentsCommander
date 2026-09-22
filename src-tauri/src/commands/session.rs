@@ -1622,6 +1622,51 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
     .into_finalized()
 }
 
+/// #552 Coordinator create/reopen: seed the badge clock and clear both close markers.
+/// #552 seed the badge clock for a coordinator's first spawn so it shows 0m
+/// immediately, and clear any "auto-closed" marker. An auto-closed coordinator
+/// is DESTROYED, so its reopen flows through this create path (the "create
+/// in-place" branch of handleReplicaClick), NOT restart_session_inner.
+/// seed_if_absent never overwrites, so a respawn does NOT reset the badge.
+pub(crate) fn note_coordinator_create_on_app<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    cwd: &str,
+) {
+    if let Some(clocks) =
+        app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+    {
+        // agent_fqn_from_path returns String (teams.rs:80), not Option.
+        let fqn = crate::config::teams::agent_fqn_from_path(cwd);
+        let now = chrono::Utc::now();
+        let (seeded, cleared_auto, cleared_manual) = {
+            let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                g.seed_if_absent(&fqn, now),
+                g.clear_auto_closed(&fqn),
+                g.clear_manually_closed(&fqn),
+            )
+        };
+        if seeded {
+            let _ = app.emit(
+                "coordinator_clock_updated",
+                serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": now.to_rfc3339() }),
+            );
+        }
+        if cleared_auto {
+            let _ = app.emit(
+                "coordinator_auto_close_changed",
+                serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
+            );
+        }
+        if cleared_manual {
+            let _ = app.emit(
+                "coordinator_manual_close_changed",
+                serde_json::json!({ "replicaPath": cwd, "manuallyClosedAt": null }),
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_session_inner_impl<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -1758,45 +1803,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         let is_coordinator = crate::config::teams::is_coordinator_for_cwd(&cwd, &teams);
         let is_root_agent = crate::config::root_agent::is_root_agent_path(&cwd);
 
-        // #552 seed the badge clock for a coordinator's first spawn so it shows 0m
-        // immediately, and clear any "auto-closed" marker. An auto-closed coordinator
-        // is DESTROYED, so its reopen flows through this create path (the "create
-        // in-place" branch of handleReplicaClick), NOT restart_session_inner.
-        // seed_if_absent never overwrites, so a respawn does NOT reset the badge.
         if is_coordinator {
-            if let Some(clocks) =
-                app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
-            {
-                // agent_fqn_from_path returns String (teams.rs:80), not Option.
-                let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
-                let now = chrono::Utc::now();
-                let (seeded, cleared_auto, cleared_manual) = {
-                    let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
-                    (
-                        g.seed_if_absent(&fqn, now),
-                        g.clear_auto_closed(&fqn),
-                        g.clear_manually_closed(&fqn),
-                    )
-                };
-                if seeded {
-                    let _ = app.emit(
-                    "coordinator_clock_updated",
-                    serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": now.to_rfc3339() }),
-                );
-                }
-                if cleared_auto {
-                    let _ = app.emit(
-                        "coordinator_auto_close_changed",
-                        serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
-                    );
-                }
-                if cleared_manual {
-                    let _ = app.emit(
-                        "coordinator_manual_close_changed",
-                        serde_json::json!({ "replicaPath": cwd, "manuallyClosedAt": null }),
-                    );
-                }
-            }
+            note_coordinator_create_on_app(app, &cwd);
         }
 
         // (#756) Durable fresh-intent mirror, consumed at the create path: the
@@ -8619,6 +8627,65 @@ mod tests {
             backend.sizes(),
             vec![(120, 30)],
             "a 0x0 fit must fall back to the default, never open a 0-column ConPTY"
+        );
+    }
+
+    /// #2411 T1: the coordinator-create helper seeds the badge and clears both
+    /// close markers. Deleting any of its three clock calls fails this test.
+    #[test]
+    fn note_coordinator_create_on_app_seeds_and_clears_both_markers() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
+            Arc::new(Mutex::new(Default::default()));
+        app.manage(Arc::clone(&clocks));
+        let handle = app.handle().clone();
+        let cwd = "C:/ac-test/project/.ac/wg-2411-dev-team/__agent_tech-lead";
+        let fqn = crate::config::teams::agent_fqn_from_path(cwd);
+
+        // (c) absent fqn -> badge seeded.
+        assert!(clocks.lock().unwrap().last_user_message_at(&fqn).is_none());
+        crate::commands::session::note_coordinator_create_on_app(&handle, cwd);
+        assert!(clocks.lock().unwrap().last_user_message_at(&fqn).is_some());
+
+        // (a) auto-closed marker cleared.
+        assert!(clocks
+            .lock()
+            .unwrap()
+            .mark_auto_closed(&fqn, chrono::Utc::now()));
+        crate::commands::session::note_coordinator_create_on_app(&handle, cwd);
+        assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
+
+        // (b) manual-close marker cleared.
+        assert!(clocks
+            .lock()
+            .unwrap()
+            .mark_manually_closed(&fqn, chrono::Utc::now()));
+        crate::commands::session::note_coordinator_create_on_app(&handle, cwd);
+        assert_eq!(clocks.lock().unwrap().manually_closed_at(&fqn), None);
+    }
+
+    /// #2411 T1b: `create_session_inner_impl` calls the coordinator-create helper
+    /// exactly once (source guard, same pattern as the archive-gate test below).
+    #[test]
+    fn create_session_inner_calls_note_coordinator_create_once() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let normalized = production.split_whitespace().collect::<String>();
+        assert_eq!(
+            normalized
+                .matches("note_coordinator_create_on_app(app,&cwd)")
+                .count(),
+            1,
+            "create_session_inner_impl must call note_coordinator_create_on_app once"
         );
     }
 
