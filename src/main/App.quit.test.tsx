@@ -17,6 +17,7 @@ const tauri = vi.hoisted(() => ({
     | null,
   webviews: [] as Array<{ label: string; destroy: () => Promise<void> }>,
   destroyCalls: [] as string[],
+  geometry: { x: 10, y: 20, width: 1200, height: 800 },
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -30,11 +31,20 @@ vi.mock("@tauri-apps/api/window", () => ({
         tauri.closeRequested = null;
       };
     },
+    onMoved: async () => () => {},
+    onResized: async () => () => {},
     setAlwaysOnTop: async () => undefined,
     minimize: () => undefined,
     maximize: () => undefined,
     unmaximize: () => undefined,
     isMaximized: async () => false,
+    isFullscreen: async () => false,
+    isMinimized: async () => false,
+    outerPosition: async () => ({ x: tauri.geometry.x, y: tauri.geometry.y }),
+    outerSize: async () => ({
+      width: tauri.geometry.width,
+      height: tauri.geometry.height,
+    }),
     close: () => undefined,
     destroy: async () => {
       tauri.destroyCalls.push("main");
@@ -51,9 +61,6 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 
 vi.mock("../shared/platform", () => ({ isTauri: true, isBrowser: false }));
 vi.mock("../shared/zoom", () => ({ initZoom: async () => () => {} }));
-vi.mock("../shared/window-geometry", () => ({
-  initWindowGeometry: async () => () => {},
-}));
 vi.mock("../sidebar/watchdog/non-stop-watchdog-client", () => ({
   startNonStopWatchdogClient: () => undefined,
 }));
@@ -75,7 +82,8 @@ import { __setTransportForTests } from "../shared/ipc";
 import { FakeTransport } from "../shared/testing/fake-transport";
 
 async function flush(): Promise<void> {
-  for (let pass = 0; pass < 24; pass += 1) {
+  await vi.advanceTimersByTimeAsync(0);
+  for (let pass = 0; pass < 64; pass += 1) {
     await Promise.resolve();
   }
 }
@@ -105,6 +113,7 @@ let restoreTransport: () => void;
 let cleanup: (() => void) | null = null;
 let errorSpy: ReturnType<typeof vi.spyOn>;
 let warnSpy: ReturnType<typeof vi.spyOn>;
+let alertSpy: ReturnType<typeof vi.spyOn>;
 
 async function mountMain(): Promise<HTMLDivElement> {
   const root = document.createElement("div");
@@ -182,20 +191,27 @@ describe("MainApp quit handshake (#2297)", () => {
     fake = new FakeTransport();
     restoreTransport = __setTransportForTests(fake);
     fake.resolve("get_settings", settings());
+    fake.resolve("set_main_window_placement", undefined);
     tauri.closeRequested = null;
     tauri.webviews = [];
     tauri.destroyCalls = [];
+    tauri.geometry = { x: 10, y: 20, width: 1200, height: 800 };
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup?.();
     cleanup = null;
+    // Settle a placement flush a test may have left in flight.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
     restoreTransport();
     vi.useRealTimers();
     errorSpy.mockRestore();
     warnSpy.mockRestore();
+    alertSpy.mockRestore();
     document.body.replaceChildren();
   });
 
@@ -241,6 +257,8 @@ describe("MainApp quit handshake (#2297)", () => {
     buttons[0].click();
     await flush();
     expect(fake.callsFor("quit_application")).toHaveLength(0);
+    expect(fake.callsFor("set_main_window_placement")).toHaveLength(0);
+    expect(alertSpy).not.toHaveBeenCalled();
     expect(statusText()).toBe("");
     expect(detachedButtons()).toHaveLength(0);
   });
@@ -600,5 +618,152 @@ describe("MainApp quit handshake (#2297)", () => {
       unansweredLabels: ["spec-board"],
     });
     expect(document.activeElement).toBe(closeButton);
+  });
+
+  // #2349 - the bounded placement flush precedes the first quit command.
+  it("awaits the placement save before the zero-detached quit command", async () => {
+    const placement = deferred<void>();
+    fake.onInvoke("set_main_window_placement", () => placement.promise);
+    fake.onInvoke("quit_application", () => new Promise(() => {}));
+    await mountMain();
+
+    await triggerClose();
+    expect(fake.callsFor("set_main_window_placement")).toHaveLength(1);
+    expect(fake.callsFor("quit_application")).toHaveLength(0);
+
+    placement.resolve();
+    await flush();
+    expect(fake.callsFor("quit_application")).toHaveLength(1);
+  });
+
+  it("awaits the placement save before the confirmed detached quit command", async () => {
+    tauri.webviews = [{ label: "terminal-1", destroy: async () => undefined }];
+    const placement = deferred<void>();
+    fake.onInvoke("set_main_window_placement", () => placement.promise);
+    fake.onInvoke("quit_application", () => new Promise(() => {}));
+    await mountMain();
+
+    await triggerClose();
+    expect(fake.callsFor("set_main_window_placement")).toHaveLength(0);
+    detachedButtons()[1].click();
+    await flush();
+    expect(fake.callsFor("set_main_window_placement")).toHaveLength(1);
+    expect(fake.callsFor("quit_application")).toHaveLength(0);
+
+    placement.resolve();
+    await flush();
+    expect(fake.callsFor("quit_application")).toHaveLength(1);
+  });
+
+  it("bounds a pending-forever placement save at two seconds and still issues one first quit command", async () => {
+    fake.onInvoke("set_main_window_placement", () => new Promise(() => {}));
+    fake.onInvoke("quit_application", () => ({ outcome: "InFlight", epoch: 44 }));
+    await mountMain();
+
+    await triggerClose();
+    expect(fake.callsFor("set_main_window_placement")).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1999);
+    await flush();
+    expect(fake.callsFor("quit_application")).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(fake.callsFor("quit_application")).toHaveLength(1);
+    expect(statusText()).toContain("Waiting to quit...");
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+
+    // The 10-second Force clock stays live across the bounded wait.
+    await vi.advanceTimersByTimeAsync(7999);
+    expect(forceOffer()).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(forceOffer()).not.toBeNull();
+  });
+
+  it("starts a fresh placement save with the newer bounds after the bounded attempt settles", async () => {
+    let placementInvokes = 0;
+    fake.onInvoke("set_main_window_placement", () => {
+      placementInvokes += 1;
+      return placementInvokes === 1 ? new Promise(() => {}) : undefined;
+    });
+    let quitAttempts = 0;
+    fake.onInvoke("quit_application", () => {
+      quitAttempts += 1;
+      if (quitAttempts <= 2) {
+        throw new Error(`reject-${quitAttempts}`);
+      }
+      return { outcome: "InFlight", epoch: 902 };
+    });
+    await mountMain();
+
+    await triggerClose();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(fake.callsFor("set_main_window_placement")).toHaveLength(1);
+    expect(fake.callsFor("quit_application")).toHaveLength(1);
+
+    // Both normal attempts reject: the round fails and the close latch releases.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(statusText()).toContain("Quit failed");
+
+    tauri.geometry = { x: 300, y: 200, width: 900, height: 600 };
+    await triggerClose();
+    await flush();
+    expect(fake.callsFor("set_main_window_placement")).toHaveLength(2);
+    expect(fake.lastCall("set_main_window_placement")!.args).toEqual({
+      geometry: { x: 300, y: 200, width: 900, height: 600 },
+      displayState: "normal",
+    });
+  });
+
+  it("alerts once per accepted close round for an overlay-pinned placement", async () => {
+    fake.onInvoke("set_main_window_placement", () => {
+      throw "main_window_placement_overlay_pinned";
+    });
+    let quitAttempts = 0;
+    fake.onInvoke("quit_application", (args) => {
+      if (args.force) {
+        return { outcome: "Aborted", epoch: args.epoch, reason: "refused" };
+      }
+      quitAttempts += 1;
+      if (quitAttempts === 1) {
+        throw new Error("first quit attempt failed");
+      }
+      return { outcome: "InFlight", epoch: 701 };
+    });
+    await mountMain();
+
+    await triggerClose();
+    await flush();
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy).toHaveBeenCalledWith(
+      "Window placement is pinned by the local settings overlay and was not saved.",
+    );
+    expect(errorSpy).toHaveBeenCalled();
+
+    // The retry inside the same round reuses the settled flush: no second alert.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(fake.callsFor("quit_application")).toHaveLength(2);
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+
+    // Force confirmation in the same round also reuses it: no second alert.
+    await vi.advanceTimersByTimeAsync(7999);
+    expect(forceOffer()).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(forceOffer()).not.toBeNull();
+    forceOffer()!.click();
+    await flush();
+    forceConfirm()!.click();
+    await flush();
+    expect(fake.lastCall("quit_application")!.args.force).toBe(true);
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+
+    // A newly accepted close round gets a fresh guard and may alert once again.
+    await triggerClose();
+    await flush();
+    expect(alertSpy).toHaveBeenCalledTimes(2);
   });
 });

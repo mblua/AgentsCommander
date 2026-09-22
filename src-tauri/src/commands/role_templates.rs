@@ -276,38 +276,8 @@ fn parse_template_frontmatter(content: &str) -> (Option<String>, Option<String>)
     (name, description)
 }
 
-/// Return `content` with a leading `---\n…\n---` YAML frontmatter block removed.
-/// If there is no frontmatter, returns `content` (post-BOM) unchanged.
-///
-/// Strips a leading UTF-8 BOM FIRST, then treats the input as frontmatter only
-/// if it begins with exactly `---` immediately followed by a newline (`---\n`
-/// or `---\r\n`) — this avoids mistaking a body that opens with a Markdown
-/// `---` horizontal rule for frontmatter. If no closing `---` line is found,
-/// returns `content` (post-BOM) unchanged.
-fn strip_yaml_frontmatter(content: &str) -> &str {
-    let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
-    let after_open = match content
-        .strip_prefix("---\n")
-        .or_else(|| content.strip_prefix("---\r\n"))
-    {
-        Some(rest) => rest,
-        None => return content,
-    };
-    // Scan for a closing `---` line; return the body after it. If there is no
-    // closing line, the input was not real frontmatter — return it unchanged.
-    let mut offset = 0;
-    for line in after_open.split_inclusive('\n') {
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if trimmed == "---" {
-            return &after_open[offset + line.len()..];
-        }
-        offset += line.len();
-    }
-    content
-}
-
 pub(crate) fn strip_yaml_frontmatter_for_role_template(content: &str) -> &str {
-    strip_yaml_frontmatter(content)
+    crate::config::session_context::strip_yaml_frontmatter(content)
 }
 
 #[derive(Default)]
@@ -624,7 +594,9 @@ pub(crate) fn collect_agency_templates_from_dir(
             let raw =
                 std::fs::read_to_string(&role_path).map_err(|_| "cacheInvalid".to_string())?;
             let fm = parse_agency_template_frontmatter(&raw);
-            let body = strip_yaml_frontmatter(&raw).trim().to_string();
+            let body = crate::config::session_context::strip_yaml_frontmatter(&raw)
+                .trim()
+                .to_string();
             let id = format!("agency:{}-{}", division_slug, stem_slug);
             validate_role_template_body(&id, &body).map_err(|_| "cacheInvalid".to_string())?;
             if !ids.insert(id.clone()) {
@@ -852,7 +824,9 @@ pub fn resolve_role_template(
             }
             let raw = std::fs::read_to_string(&role_md)
                 .map_err(|e| format!("Template \"{}\" has no readable Role.md: {}", folder, e))?;
-            let body = strip_yaml_frontmatter(&raw).trim().to_string();
+            let body = crate::config::session_context::strip_yaml_frontmatter(&raw)
+                .trim()
+                .to_string();
             if body.is_empty() {
                 return Err(format!("Template \"{}\" Role.md is empty", folder));
             }
@@ -1238,6 +1212,20 @@ mod tests {
             r.body.contains("---"),
             "a markdown horizontal rule must not be mis-stripped: {:?}",
             r.body
+        );
+    }
+
+    #[test]
+    fn strip_yaml_frontmatter_wrapper_delegates_to_session_context_helper() {
+        let with_frontmatter = "---\nname: Wrapper\ndescription: D\n---\n\n# Body\n\nContent.\n";
+        let without_frontmatter = "# Heading\n\n---\n\nText after a horizontal rule.\n";
+        assert_eq!(
+            strip_yaml_frontmatter_for_role_template(with_frontmatter),
+            crate::config::session_context::strip_yaml_frontmatter(with_frontmatter)
+        );
+        assert_eq!(
+            strip_yaml_frontmatter_for_role_template(without_frontmatter),
+            crate::config::session_context::strip_yaml_frontmatter(without_frontmatter)
         );
     }
 

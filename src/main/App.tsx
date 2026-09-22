@@ -23,7 +23,11 @@ import {
 } from "../shared/ipc";
 import { isTauri } from "../shared/platform";
 import { initZoom } from "../shared/zoom";
-import { initWindowGeometry } from "../shared/window-geometry";
+import {
+  flushMainWindowGeometry,
+  initWindowGeometry,
+  type MainWindowGeometryFlushResult,
+} from "../shared/window-geometry";
 import { startNonStopWatchdogClient } from "../sidebar/watchdog/non-stop-watchdog-client";
 import SidebarApp from "../sidebar/App";
 import TerminalApp from "../terminal/App";
@@ -67,6 +71,11 @@ const SIDEBAR_ANIMATION_FALLBACK_MS = 400;
 const QUIT_RETRY_GRACE_MS = 2000;
 const QUIT_FORCE_OFFER_MS = 10_000;
 
+/** #2349 - the visible carrier of an overlay-pinned placement flush. Emitted at
+ *  most once per accepted close round. */
+const PLACEMENT_OVERLAY_ALERT =
+  "Window placement is pinned by the local settings overlay and was not saved.";
+
 type QuitStatus =
   | { kind: "waiting" }
   | {
@@ -91,6 +100,8 @@ interface QuitRound {
   forceTimer: ReturnType<typeof setTimeout> | null;
   graceTimer: ReturnType<typeof setTimeout> | null;
   startedUnlisten: (() => void) | null;
+  placementFlush: Promise<MainWindowGeometryFlushResult> | null;
+  placementAlerted: boolean;
 }
 
 const isLiveEpoch = (epoch: unknown): epoch is number =>
@@ -1178,7 +1189,31 @@ const MainApp: Component = () => {
     suppressQuitForce(round);
   };
 
+  /** #2349 - one bounded placement flush per accepted close round. Retries and
+   *  Force reuse the round's promise and result, and the overlay alert is
+   *  counted per round so none of them can alert twice. */
+  const awaitPlacementFlush = async (round: QuitRound): Promise<void> => {
+    const pending = round.placementFlush ?? flushMainWindowGeometry();
+    round.placementFlush = pending;
+    let result: MainWindowGeometryFlushResult;
+    try {
+      result = await pending;
+    } catch {
+      result = { kind: "failed" };
+    }
+    if (round.ended || activeQuitRound !== round) return;
+    if (result.kind === "overlay-pinned" && !round.placementAlerted) {
+      round.placementAlerted = true;
+      console.error(
+        "[quit] Main window placement is pinned by the local settings overlay and was not saved.",
+      );
+      window.alert(PLACEMENT_OVERLAY_ALERT);
+    }
+  };
+
   async function issueNormalAttempt(round: QuitRound): Promise<void> {
+    if (round.ended || activeQuitRound !== round) return;
+    await awaitPlacementFlush(round);
     if (round.ended || activeQuitRound !== round) return;
     round.attempts += 1;
     const attemptId = newQuitAttemptId();
@@ -1286,6 +1321,8 @@ const MainApp: Component = () => {
       forceTimer: null,
       graceTimer: null,
       startedUnlisten: null,
+      placementFlush: null,
+      placementAlerted: false,
     };
     activeQuitRound = round;
     batch(() => {
@@ -1348,6 +1385,8 @@ const MainApp: Component = () => {
     // Never send force without a bound live epoch of the active round.
     if (epoch === null || !isLiveEpoch(epoch)) return;
     void (async () => {
+      await awaitPlacementFlush(round);
+      if (activeQuitRound !== round || round.ended) return;
       let result: QuitOutcome | null = null;
       try {
         result = await QuitAPI.forceQuit(epoch);

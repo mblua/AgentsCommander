@@ -12,6 +12,20 @@ pub const MESSAGING_DIR_NAME: &str = "messaging";
 pub const PTY_SAFE_MAX: usize = 1024;
 pub const FILE_NOTIFICATION_PREFIX: &str = "Process this inter-agent message: ";
 pub const FILE_NOTIFICATION_SUFFIX: &str = "";
+
+/// Display-only sender suffix for a message the Co-managed supervisor produced
+/// (#2232 phase 7). The queue file's `from` stays the exact FQN, which is what
+/// authorizes; this suffix only tells the recipient the message is automatic.
+/// The single source for the mailbox render site and the supervisor's
+/// line-budget check.
+pub const CO_MANAGED_SENDER_SUFFIX: &str = " (Co-managed)";
+
+/// Compose the sender a Co-managed-origin wake displays. Never used as an
+/// authorization input: the FQN and this string are different fields, never
+/// merged.
+pub fn compose_sender_for_comanaged_origin(from: &str) -> String {
+    format!("{from}{CO_MANAGED_SENDER_SUFFIX}")
+}
 const LEGACY_FILE_NOTIFICATION_PREFIX: &str = "New message: ";
 const LEGACY_FILE_NOTIFICATION_SUFFIX: &str = ". Read this file.";
 
@@ -167,6 +181,23 @@ pub fn root_messaging_dir(root_agent_dir: &Path) -> Result<PathBuf, MessagingErr
     let dir = root_agent_dir.join(MESSAGING_DIR_NAME);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// Prove `wg_root` sits under its project's authoritative Project AC Root
+/// before anything is written into its `messaging/` directory.
+///
+/// The CLI always did this; an in-process caller does not inherit a private
+/// helper, so the check lives here (#2232 phase 7). `phone::messaging` is
+/// already inside the 88-member SCC, so the call adds an SCC-to-leaf arc to
+/// `config::ac_root` and no new member.
+pub(crate) fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> {
+    let ac_root = wg_root.parent().ok_or_else(|| {
+        format!(
+            "room root '{}' has no parent Project AC Root directory",
+            wg_root.display()
+        )
+    })?;
+    crate::config::ac_root::ensure_authoritative_ac_root(ac_root)
 }
 
 /// Convert a full agent name (e.g. `"wg-7-dev-team/architect"`) to short form
@@ -806,6 +837,18 @@ mod tests {
     fn format_pty_wrap_matches_pty_wrap_fixed() {
         assert_eq!(format_pty_wrap("", "").len(), PTY_WRAP_FIXED);
         assert_eq!(PTY_WRAP_FIXED, 19);
+    }
+
+    /// #2232 phase 7: the composed sender is the display-only attribution for a
+    /// Co-managed-origin wake. The exact FQN stays the authorization input and
+    /// is never merged with this string.
+    #[test]
+    fn comanaged_sender_appends_the_display_suffix_without_changing_the_fqn() {
+        let fqn = "proj-a:room-1-dev-team/tech-lead";
+        let composed = compose_sender_for_comanaged_origin(fqn);
+        assert_eq!(composed, format!("{fqn}{CO_MANAGED_SENDER_SUFFIX}"));
+        assert!(composed.starts_with(fqn));
+        assert_eq!(CO_MANAGED_SENDER_SUFFIX, " (Co-managed)");
     }
 
     /// Contract test: the empty expansion of the `--get-output` marker wrap must
