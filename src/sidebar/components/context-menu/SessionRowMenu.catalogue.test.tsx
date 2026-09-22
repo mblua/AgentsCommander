@@ -413,11 +413,15 @@ describe("#1871 SessionRowMenu catalogue", () => {
     mount({ telegram: telegramSpecOf(true, { bridgeColor: "#4ade80" }) });
     const on = iconOf(q("rootAgent.menu.telegram")!) as HTMLElement;
     expect(on.querySelector("svg path")?.getAttribute("d")).toContain(TELEGRAM_D);
+    expect(on.querySelector("svg")?.getAttribute("width")).toBe("14");
+    expect(on.querySelector("svg")?.getAttribute("height")).toBe("14");
     expect(on.style.color).toBe("rgb(74, 222, 128)");
     mount({ telegram: telegramSpecOf(false, { bridgeColor: null }) });
     const both = document.querySelectorAll('[data-ac-testid="rootAgent.menu.telegram"]');
     const off = iconOf(both[1]) as HTMLElement;
     expect(off.querySelector("svg path")?.getAttribute("d")).toContain(TELEGRAM_D);
+    expect(off.querySelector("svg")?.getAttribute("width")).toBe("14");
+    expect(off.querySelector("svg")?.getAttribute("height")).toBe("14");
     expect(off.style.color).toBe("rgb(0, 136, 204)");
   });
 
