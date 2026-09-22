@@ -767,6 +767,9 @@ export interface AppSettings {
    *  backend default (30). */
   typingHoldSeconds?: number;
   screenshotCaptureHotkey?: string;
+  /** #2281 Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E". Validated on save;
+   * an invalid value blocks the save. */
+  sidebarCompactHotkey?: string;
   /**
    * #1171 - root-level watcher patterns, keyed by watcher id. Optional because the Rust
    * field skips serializing while the map is empty, so a user who configures nothing never

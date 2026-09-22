@@ -301,6 +301,7 @@ The two `gitSweep*` dials are manual-only (no UI) and are read from the in-memor
 | `teamIdleBeepEnabled` | bool | `true` | Beep when a team transitions from busy → all-idle. Gated by `soundsEnabled`. |
 | `coordSortByActivity` | bool | `false` | Sort the orchestrator quick-access list by most-recent activity. |
 | `screenshotCaptureHotkey` | string | `"Ctrl+Q"` | Native global hotkey for screenshot capture. One modifier plus one key; only `Ctrl` (or `Control`) and a single letter or digit are accepted. Windows, macOS and Linux/X11. See [Screenshot capture](../features/screenshot-capture.md). |
+| `sidebarCompactHotkey` | string | `"Ctrl+Shift+E"` | Hotkey that toggles the compact sidebar. Accepted range `Ctrl+Shift+<A-Z>` (parts are case-insensitive; the first part may be `Ctrl` or `Control`), excluding the reserved letters `W`, `R`, `C`, `V`. An invalid value blocks the save with an error naming the field; it is not repaired. |
 | `mainResourceMonitorAttached` | bool | `false` | Whether the Resource Monitor occupies the main central pane instead of the terminal. Restored on startup. |
 | `alwaysShowSelectedWorkgroup` | bool | `true` | Keep the selected room visible in the sidebar. |
 | `railCollapsedProjects` | string[] | `[]` | Rail project sections the user collapsed by clicking their header. Entries are frontend-normalized project paths (lowercase, forward slashes, no trailing slash). Written only by the dedicated rail collapse action; whole-settings writers restore it from live memory. |
