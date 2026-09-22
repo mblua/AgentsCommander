@@ -560,6 +560,11 @@ export interface WindowGeometry {
   height: number;
 }
 
+/** #2349 - saved display state of the unified main window. Deliberately only the
+ *  two states Rust can persist (`normal`, `maximized`); minimized and fullscreen
+ *  are transient and are never persisted as a placement. */
+export type MainWindowDisplayState = "normal" | "maximized";
+
 export interface ScreenshotOverlayState {
   captureId: string;
   monitorId: number;
@@ -686,6 +691,9 @@ export interface AppSettings {
   sidebarGeometry: WindowGeometry | null;
   terminalGeometry: WindowGeometry | null;
   mainGeometry: WindowGeometry | null;
+  /** #2349 - optional so existing AppSettings literals and the ui harness keep
+   *  compiling; omission means `normal`. Rust always serializes the field. */
+  mainWindowDisplayState?: MainWindowDisplayState;
   mainSidebarWidth: number;
   mainSidebarSide: MainSidebarSide;
   mainAlwaysOnTop: boolean;
