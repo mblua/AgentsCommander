@@ -907,7 +907,6 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         | "set_detached_geometry"
         | "open_in_explorer"
         | "focus_main_window"
-        | "open_guide_window"
         | "open_external_url"
         // #943 - Browse is desktop-only: `open_external_url` above is already a
         // no-op here, so the submenu is hidden in web mode (`browseSupported()`

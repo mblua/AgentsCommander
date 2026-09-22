@@ -528,7 +528,7 @@ pub struct AppSettings {
     /// Zoom level for the unified main window (1.0 = 100%). Introduced in 0.8.0.
     #[serde(default = "default_zoom")]
     pub main_zoom: f64,
-    /// Zoom level for the guide window (1.0 = 100%)
+    /// Legacy: zoom level for the removed guide window. Kept for backwards-compat reads.
     #[serde(default = "default_zoom")]
     pub guide_zoom: f64,
     /// Legacy: zoom level for the removed dark factory window. Kept for backwards-compat reads.

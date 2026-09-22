@@ -290,7 +290,7 @@ The two `gitSweep*` dials are manual-only (no UI) and are read from the in-memor
 | `raiseTerminalOnClick` | bool | `true` | Raise the terminal window when clicking a session. |
 | `mainSidebarWidth` | number | platform-default | Sidebar pane width inside the main window. Clamped to `[200, 600]`. |
 | `mainSidebarSide` | `"left" \| "right"` | `"right"` | Side of the main window where the sidebar lives. |
-| `mainZoom` / `terminalZoom` / `sidebarZoom` / `guideZoom` | number | `1.0` | Per-window zoom (1.0 = 100%). |
+| `mainZoom` / `terminalZoom` / `sidebarZoom` | number | `1.0` | Per-window zoom (1.0 = 100%). |
 | `mainGeometry` | object \| null | `null` | Saved normal bounds of the unified main window: `x`, `y`, `width` and `height` of the outer window, in physical pixels. AC seeds and updates it only from a persisted value or a normal (not maximized, fullscreen or minimized) observation. See [Main window placement](#main-window-placement). |
 | `mainWindowDisplayState` | `"normal"` \| `"maximized"` | `"normal"` | Saved display state of the unified main window. The key is optional; a missing value reads as `normal`. Fullscreen and minimized are never saved. |
 | `sidebarGeometry` / `terminalGeometry` | object \| null | `null` | Legacy keys from the two-window layout. AC reads them at load; when the file has no `mainGeometry` and no local overlay pins it, `terminalGeometry` seeds `mainGeometry`. |

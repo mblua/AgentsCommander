@@ -176,7 +176,6 @@ function settings(overrides: Partial<AppSettings> = {}): SettingsSnapshot {
     geminiModel: "gemini-2.5-flash",
     sidebarZoom: 1,
     terminalZoom: 1,
-    guideZoom: 1,
     mainZoom: 1,
     sidebarGeometry: null,
     terminalGeometry: null,

@@ -151,7 +151,6 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     voiceAutoExecuteDelay: 15,
     sidebarZoom: 1,
     terminalZoom: 1,
-    guideZoom: 1,
     mainZoom: 1,
     sidebarGeometry: null,
     terminalGeometry: null,

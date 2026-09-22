@@ -698,41 +698,6 @@ pub async fn focus_main_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the guide window (Hints, Tutorial).
-/// If already open, just focus it.
-#[tauri::command]
-pub async fn open_guide_window(app: AppHandle) -> Result<(), String> {
-    use tauri::{WebviewUrl, WebviewWindowBuilder};
-
-    if let Some(existing) = app.get_webview_window("guide") {
-        existing.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
-        .expect("Failed to load app icon");
-
-    WebviewWindowBuilder::new(
-        &app,
-        "guide",
-        WebviewUrl::App("index.html?window=guide".into()),
-    )
-    .title(format!(
-        "Guide — {}",
-        crate::config::profile::app_title_suffix()
-    ))
-    .icon(icon)
-    .map_err(|e| e.to_string())?
-    .inner_size(720.0, 560.0)
-    .min_inner_size(480.0, 380.0)
-    .decorations(false)
-    .zoom_hotkeys_enabled(false)
-    .build()
-    .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
 /// Open the floating spec/Mermaid board window.
 /// If already open, just focus it.
 #[tauri::command]
