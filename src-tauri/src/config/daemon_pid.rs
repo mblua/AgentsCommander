@@ -43,7 +43,8 @@ pub fn remove_pid_file() {
 pub enum DaemonState {
     /// PID file present and the PID corresponds to a live process (OR a process
     /// we lack rights to query — see `is_pid_alive` `ACCESS_DENIED` handling
-    /// for the elevated-daemon / non-elevated-CLI case).
+    /// for the elevated-daemon / non-elevated-CLI case). On Unix, `EPERM` from
+    /// `kill(pid, 0)` is treated the same way.
     Running { pid: u32 },
     /// PID file missing — no daemon has started, or it was force-killed and
     /// the file was cleaned by a prior CLI invocation. (We do NOT delete the
@@ -121,18 +122,12 @@ fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+/// #2394: Unix liveness shares the #2382 probe (`kill(pid, 0)`, EPERM = alive,
+/// Linux zombie = dead, pid 0 and non-`pid_t` values = dead). `testability`
+/// is compiled in every build, so this is not a test-only dependency.
 #[cfg(not(target_os = "windows"))]
-fn is_pid_alive(_pid: u32) -> bool {
-    // Windows-first stub (plan D4-b). AgentsCommander is Windows-first; the
-    // daemon-pid warning is a stderr quality-of-life signal, not a
-    // correctness-critical check. Returning `true` here means the CLI never
-    // warns about a stale snapshot on Linux/macOS — acceptable until/unless
-    // we ship for those platforms. Avoids adding a `libc` direct dep
-    // (`src-tauri/Cargo.toml` does NOT currently list libc) just for platform
-    // parity. If we later need real Unix coverage, add `libc = "0.2"` under
-    // `[target.'cfg(not(target_os = "windows"))'.dependencies]` and replace
-    // this body with `unsafe { libc::kill(_pid as libc::pid_t, 0) == 0 }`.
-    true
+fn is_pid_alive(pid: u32) -> bool {
+    crate::testability::ui_automation::pid_is_alive(pid)
 }
 
 #[cfg(test)]
@@ -142,18 +137,16 @@ mod tests {
     #[test]
     fn current_process_is_alive() {
         // On Windows, OpenProcess against our own PID succeeds and
-        // GetExitCodeProcess returns STILL_ACTIVE. On non-Windows, the stub
-        // returns true unconditionally — assertion still holds.
+        // GetExitCodeProcess returns STILL_ACTIVE. On Unix, `kill(pid, 0)`
+        // against our own PID succeeds.
         assert!(is_pid_alive(std::process::id()));
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn extremely_high_pid_is_dead_on_windows() {
+    fn extremely_high_pid_is_dead() {
         // A 32-bit max-value pid is essentially guaranteed not to be a live
-        // process. The Windows path returns false. The non-Windows stub would
-        // return true (it ignores its argument), so this assertion is
-        // Windows-only.
+        // process on Windows. On Unix, `u32::MAX` fails `pid_t::try_from`, so
+        // it is dead without ever calling `kill(-1, 0)`.
         assert!(!is_pid_alive(u32::MAX));
     }
 
@@ -187,10 +180,9 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn dead_pid_file_yields_stale_against_tempdir_on_windows() {
-        // Same Windows-only caveat as `extremely_high_pid_is_dead_on_windows`.
+    fn dead_pid_file_yields_stale_against_tempdir() {
+        // `u32::MAX` is dead on every platform; see `extremely_high_pid_is_dead`.
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("daemon.pid");
         std::fs::write(&path, u32::MAX.to_string()).unwrap();
@@ -198,5 +190,39 @@ mod tests {
             DaemonState::StalePidFile { pid } => assert_eq!(pid, u32::MAX),
             other => panic!("expected StalePidFile, got {:?}", other),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reaped_child_pid_file_yields_stale_against_tempdir() {
+        // Positive control with a real, once-valid pid: spawn a child, reap it,
+        // then its pid must read as stale.
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn sh");
+        let pid = child.id();
+        child.wait().expect("reap child");
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("daemon.pid");
+        std::fs::write(&path, pid.to_string()).unwrap();
+        match detect_daemon_state_at(&path) {
+            DaemonState::StalePidFile { pid: p } => assert_eq!(p, pid),
+            other => panic!("expected StalePidFile, got {:?}", other),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zero_pid_file_yields_stale_against_tempdir() {
+        // pid 0 would signal our own process group; the probe treats it as dead.
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("daemon.pid");
+        std::fs::write(&path, "0").unwrap();
+        assert_eq!(
+            detect_daemon_state_at(&path),
+            DaemonState::StalePidFile { pid: 0 }
+        );
     }
 }
