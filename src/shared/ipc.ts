@@ -25,7 +25,9 @@ import type {
   SessionWarning,
   PtyOutputEvent,
   PtyScreenSnapshot,
+  TypingHoldSnapshot,
   AppSettings,
+  MainWindowDisplayState,
   SettingsSnapshot,
   LogLevel,
   UpdateInfo,
@@ -309,6 +311,17 @@ export const PtyAPI = {
       sessionId,
       limit: limit ?? null,
     }),
+
+  /** #2337 - the active session's typing-hold padlock snapshot. The backend is
+   *  authoritative: `closed` is the effective hold and `heldCount` the unique
+   *  deferred peer-wake count. The status bar polls this; it never infers either. */
+  getTypingHold: (sessionId: string) =>
+    transport.invoke<TypingHoldSnapshot>("get_typing_hold", { sessionId }),
+
+  /** #2337 - flip one session's manual padlock and answer with the post-toggle
+   *  snapshot, taken under the same lock, so a click never observes a half flip. */
+  toggleTypingHold: (sessionId: string) =>
+    transport.invoke<TypingHoldSnapshot>("toggle_typing_hold", { sessionId }),
 
   /** #1171 - compile a candidate pattern and, with a session, run it against its live rows.
    *  Omitting `sessionId` compiles only, which is the common case: writing a regex in
@@ -690,6 +703,16 @@ export const WindowAPI = {
 
   setDetachedGeometry: (sessionId: string, geometry: WindowGeometry) =>
     transport.invoke<void>("set_detached_geometry", { sessionId, geometry }),
+
+  /** #2349 - the narrow owner of the main window's placement pair (`mainGeometry`
+   *  + `mainWindowDisplayState`). Never write placement through a whole-settings
+   *  `SettingsAPI.update`: a stale whole-object caller must not clobber the disk
+   *  truth, and the narrow command returns the stable overlay-pin rejection. */
+  setMainWindowPlacement: (
+    geometry: WindowGeometry,
+    displayState: MainWindowDisplayState,
+  ) =>
+    transport.invoke<void>("set_main_window_placement", { geometry, displayState }),
 
   openInExplorer: (path: string) =>
     transport.invoke<void>("open_in_explorer", { path }),
