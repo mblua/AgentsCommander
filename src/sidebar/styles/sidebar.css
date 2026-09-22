@@ -9676,3 +9676,154 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
   background: rgba(58, 123, 255, 0.066);
   border-left: 3px solid rgba(58, 123, 255, 0.28);
 }
+
+/* =============================================================================
+   #2236 phase 3 - compact sidebar: the banner overlay, the compact row, and
+   content removal (#2283). Appended, but the compact rules win by specificity,
+   never by position: each is compound-keyed on .sidebar-layout.sidebar-compact
+   and outranks its phase-1 or per-style rival.
+   ============================================================================= */
+
+/* Each banner publishes the two signed insets its own box needs and the toggle
+   reads them: left = -(border-left + margin-left), right = +(margin-left -
+   border-right). The four styles with no inline border and no margin keep 0. */
+.root-agent-banner {
+  position: relative;
+  isolation: isolate; /* ONE stacking context, active or not */
+  --ac-banner-inset-left: 0px;
+  --ac-banner-inset-right: 0px;
+}
+
+[data-sidebar-style="noir-minimal"] .root-agent-banner {
+  --ac-banner-inset-left: -3px;
+}
+
+[data-sidebar-style="command-center"] .root-agent-banner {
+  --ac-banner-inset-left: -4px;
+}
+
+/* card-sections = border 1px + margin 4px 8px; width: 100% displaces the border
+   box by the LEFT margin only, so the sides differ: -9px and +7px. */
+[data-sidebar-style="card-sections"] .root-agent-banner {
+  --ac-banner-inset-left: -9px;
+  --ac-banner-inset-right: 7px;
+}
+
+/* Out of flow, rail-wide, full row height, painting nothing. Exactly ONE inline
+   inset is set, so the box is never over-constrained (CSS 2.1 10.3.7). */
+.root-agent-banner-toggle {
+  position: absolute;
+  inset-block: 0;
+  left: auto;
+  right: var(--ac-banner-inset-right);
+  inline-size: var(--ac-rail-width);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.root-agent-banner-toggle:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.root-agent-banner-toggle:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: -3px;
+}
+
+/* The row's activation, out of flow over the padding box, painting nothing. */
+.root-agent-banner-open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.root-agent-banner-open:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: -3px;
+}
+
+/* One stacking context, explicit order: activation 0 < toggle 1 < every lifted name 2.
+   The lifted names sit ABOVE the toggle: it is a rail-width band that paints nothing, so
+   anything it covered would be unreachable by mouse. The set is the census of what the
+   activation overlay would otherwise capture; banner-scoped, so SessionItem rows keep theirs. */
+.root-agent-banner-toggle {
+  z-index: 1;
+}
+
+.root-agent-banner > .session-item-mic-cancel,
+.root-agent-banner > .session-item-bridge-icon,
+.root-agent-banner .voice-cancel-execute,
+.root-agent-banner .ctx-badge,
+.root-agent-banner .profile-outdated-badge {
+  position: relative;
+  z-index: 2;
+}
+
+/* While the row is busy the activation overlay is a disabled <button>, which suppresses
+   mouse events instead of retargeting them, so contextmenu would stop reaching the
+   container's shipped onContextMenu. Activation stays blocked by busy(). */
+.root-agent-banner-open:disabled {
+  pointer-events: none;
+}
+
+/* Rail on the left: mirror to the left edge. */
+.sidebar-layout[data-rail-side="left"] .root-agent-banner-toggle {
+  right: auto;
+  left: var(--ac-banner-inset-left);
+}
+
+/* Compact: the banner IS the rail. Zero the INLINE margin, radius and borders, so the
+   padding box is the full rail width and both insets fall to zero. Padding is NOT touched:
+   the overlay is absolute, so padding never constrained it, and zeroing it would cut 12px
+   (8px in command-center) off every row. */
+.sidebar-layout.sidebar-compact .root-agent-banner,
+[data-sidebar-style="noir-minimal"] .sidebar-layout.sidebar-compact .root-agent-banner,
+[data-sidebar-style="command-center"] .sidebar-layout.sidebar-compact .root-agent-banner,
+[data-sidebar-style="card-sections"] .sidebar-layout.sidebar-compact .root-agent-banner {
+  margin-inline: 0;
+  border-radius: 0;
+  border-inline: 0;
+  --ac-banner-inset-left: 0px;
+  --ac-banner-inset-right: 0px;
+}
+
+/* In compact the row is the toggle. visibility: hidden also removes the hidden
+   children from hit-testing, so the activation button cannot swallow a click. */
+.sidebar-layout.sidebar-compact .root-agent-banner > :not(.root-agent-banner-toggle) {
+  visibility: hidden;
+}
+
+/* Fill the padding box by construction: both insets, inline-size: auto. The second selector
+   is NOT redundant: a single (0,3,0) compact rule would tie the left-rail rule (0,3,0) and
+   the winner would depend on file order, leaving right: auto on the left rail. (0,4,0) wins. */
+.sidebar-layout.sidebar-compact .root-agent-banner-toggle,
+.sidebar-layout.sidebar-compact[data-rail-side="left"] .root-agent-banner-toggle {
+  left: 0;
+  right: 0;
+  inline-size: auto;
+}
+
+/* Compact halo = the veil tail only (epic D26): no white line, no glow. */
+.sidebar-layout.sidebar-compact .root-agent-banner.active::before {
+  inset: 0;
+  background-image: linear-gradient(90deg, rgba(128, 166, 255, 0.066), rgba(128, 166, 255, 0.05));
+  background-size: 100% 100%;
+  background-position: left top;
+}
+
+/* Content is removed from layout AND from the tab order while compact: width: 0
+   would leave it focusable by Tab while invisible. The rail is a sibling. */
+.sidebar-compact .sidebar-scrollable {
+  display: none;
+}
