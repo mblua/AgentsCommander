@@ -27,7 +27,7 @@ function agentConfig(id: string, label: string, command: string): AgentConfig {
   };
 }
 
-// codex = agents[0] = primigenio; claude is the second coding agent.
+// Vector order: codex first, claude second.
 const TWO_AGENTS: AgentConfig[] = [
   agentConfig("codex", "Codex", "codex"),
   agentConfig("claude", "Claude Code", "claude"),
@@ -111,9 +111,9 @@ describe("SessionItem profile badge tooltip (#548)", () => {
     }
   });
 
-  it("inherits the primigenio (agents[0]) label when the agent has no own label", async () => {
+  it("#2314: no longer inherits the first agent's label when the agent has none", async () => {
     const settings = baseSettings({
-      agents: TWO_AGENTS, // codex = primigenio holds the only B label
+      agents: TWO_AGENTS, // codex holds the only B label
       codingAgentProfiles: profiles({ codex: { B: "turbo" } }),
     });
     const rendered = await renderRow(
@@ -127,8 +127,9 @@ describe("SessionItem profile badge tooltip (#548)", () => {
       settings,
     );
     try {
-      // claude has no own B → inherits the primigenio (codex).
-      await waitFor(() => expect(badge(rendered.root).getAttribute("title")).toBe("B-TURBO"));
+      // claude has no own and no legacy slot B label → the bare letter, never B-TURBO.
+      await waitFor(() => expect(badge(rendered.root).getAttribute("title")).toBe("B"));
+      expect(badge(rendered.root).textContent).toBe("B");
     } finally {
       rendered.cleanup();
     }

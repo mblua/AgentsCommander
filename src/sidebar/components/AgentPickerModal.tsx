@@ -6,6 +6,7 @@ import type {
   AssignmentMode,
   CodingAgentProfileResolution,
   ConflictDecision,
+  MoveCodingAgentDirection,
   ProfileCellConfig,
   ProfileAssignmentScope,
   ProfileAssignmentError,
@@ -15,8 +16,13 @@ import type {
   SavedPair,
   SelectionError,
   SelectionState,
+  SettingsSnapshot,
 } from "../../shared/types";
-import { SettingsAPI, onCodingAgentProfileSelectionUpdated } from "../../shared/ipc";
+import {
+  SettingsAPI,
+  onCodingAgentProfileSelectionUpdated,
+  onCodingAgentSettingsUpdated,
+} from "../../shared/ipc";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { automationAttrs } from "../../shared/automation-hooks";
 import {
@@ -94,6 +100,11 @@ const SELECTION_PILL_LABEL: Record<Exclude<ProfileBadgeKind, "invalid">, string>
 const REDUNDANT_REPLICA_ASSIGN_TOOLTIP =
   "This replica already uses this Coding Agent + Profile.";
 
+/** #2306 - the one reason both surfaces disable moves when the local overlay owns
+ *  top-level `agents`. Kept identical here and in SettingsModal. */
+const MOVE_OVERLAY_REASON =
+  "Agent order is controlled by the local settings overlay (settings.local.json).";
+
 /** #1943 - the three scopes, in the order the lock radios and the independent
  *  "Remove lock from" group both render them. */
 const LOCK_SCOPES: ProfileAssignmentScope[] = ["replica", "kind", "workgroup"];
@@ -139,6 +150,13 @@ const AgentPickerModal: Component<{
   const [profileResolving, setProfileResolving] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal("");
+  // #2306 - snapshot metadata and the modal-local move state. Moves are
+  // serialized per modal: one request in flight, every move control disabled
+  // until the authoritative refetch lands.
+  const [overlayOwnsAgents, setOverlayOwnsAgents] = createSignal(false);
+  const [moveBusy, setMoveBusy] = createSignal(false);
+  const [moveError, setMoveError] = createSignal("");
+  const [moveAnnouncement, setMoveAnnouncement] = createSignal("");
 
   const [selectedScope, setSelectedScope] = createSignal<ProfileAssignmentScope>("replica");
   const [restartSessions, setRestartSessions] = createSignal(false);
@@ -226,13 +244,13 @@ const AgentPickerModal: Component<{
     if (toastTimer) clearTimeout(toastTimer);
   });
 
-  const sortedAgents = createMemo(() =>
-    [...agents()].sort((a, b) =>
-      a.label.localeCompare(b.label, "en", { sensitivity: "base", numeric: true })
-    )
-  );
+  // #2306 - the picker renders the backend's vector order verbatim: no
+  // alphabetical copy and no local re-ordering. Explicit `order` ordinals
+  // already won backend-side (P1/P2), so the received array IS the effective
+  // order.
+  const orderedAgents = createMemo(() => agents());
 
-  const selectedAgent = createMemo(() => sortedAgents()[highlightIndex()] ?? null);
+  const selectedAgent = createMemo(() => orderedAgents()[highlightIndex()] ?? null);
   const profileLetters = createMemo(() =>
     settings() ? sortedProfileLetters(settings()!.codingAgentProfiles) : ["A"]
   );
@@ -334,7 +352,7 @@ const AgentPickerModal: Component<{
   const comparisonRows = createMemo(() => {
     const current = settings();
     if (!current) return [];
-    return sortedAgents().map((agent, index) => {
+    return orderedAgents().map((agent, index) => {
       const preview = resolveProfilePreview(current.codingAgentProfiles, agent.id, selectedProfile());
       const cell = enabledLaunchCellFor(agent, preview.effectiveProfile);
       const command = expandAcPlaceholdersPreview(
@@ -362,7 +380,7 @@ const AgentPickerModal: Component<{
     () => new Map(comparisonRows().map((row) => [row.agent.id, row.launchLine]))
   );
   // #2014 - the agent filter is a LEFT-COLUMN view concern: it never
-  // re-indexes sortedAgents(), so highlightIndex keeps addressing the full list.
+  // re-indexes orderedAgents(), so highlightIndex keeps addressing the full list.
   const [agentFilter, setAgentFilter] = createSignal("");
   const filterQuery = createMemo(() => agentFilter().trim().toLowerCase());
   const matchesFilter = (agent: AgentConfig) => {
@@ -374,7 +392,7 @@ const AgentPickerModal: Component<{
         .includes(q)
     );
   };
-  const visibleAgentCount = createMemo(() => sortedAgents().filter(matchesFilter).length);
+  const visibleAgentCount = createMemo(() => orderedAgents().filter(matchesFilter).length);
   const comparisonSummary = createMemo(() => ({
     direct: comparisonRows().filter((row) => row.status === "direct").length,
     fallback: comparisonRows().filter((row) => row.status === "fallback").length,
@@ -399,37 +417,185 @@ const AgentPickerModal: Component<{
   const backendWarnings = createMemo(() => backendPreview()?.warnings ?? []);
   const hasBackendWarnings = createMemo(() => backendWarnings().length > 0);
 
+  // #2306 - one modal-local coalesced refresh. Concurrent settings events (or an
+  // event racing a move's own refetch) collapse into at most one extra fetch, so
+  // this modal never opens a second refresh owner for the same state.
+  let settingsRefreshInFlight: Promise<void> | null = null;
+  let settingsRefreshQueued = false;
+
+  const installLoadedSnapshot = (loaded: SettingsSnapshot, reconcileSelection: boolean) => {
+    setSettings(loaded);
+    setOverlayOwnsAgents(loaded.overlayOwnsAgents === true);
+    const next = loaded.agents;
+    if (!reconcileSelection) {
+      setAgents(next);
+      return;
+    }
+    const previous = agents();
+    const previousIndex = highlightIndex();
+    const previousSelectedId = previous[previousIndex]?.id ?? null;
+    setAgents(next);
+    if (next.length === 0) {
+      setHighlightIndex(0);
+      return;
+    }
+    const survivingIndex = previousSelectedId
+      ? next.findIndex((agent) => agent.id === previousSelectedId)
+      : -1;
+    // Clamped-old-position rule: a disappeared selection falls to the survivor
+    // shifted into the old numeric slot, or the new final item when the list
+    // shrank past it (successor over predecessor, deterministic for coalesced removals).
+    setHighlightIndex(
+      survivingIndex >= 0 ? survivingIndex : Math.min(previousIndex, next.length - 1),
+    );
+  };
+
+  const refreshFromSettings = (): Promise<void> => {
+    if (settingsRefreshInFlight) {
+      settingsRefreshQueued = true;
+      return settingsRefreshInFlight;
+    }
+    settingsRefreshInFlight = (async () => {
+      try {
+        do {
+          settingsRefreshQueued = false;
+          const loaded = await SettingsAPI.get();
+          installLoadedSnapshot(loaded, true);
+        } while (settingsRefreshQueued);
+      } finally {
+        settingsRefreshInFlight = null;
+        settingsRefreshQueued = false;
+      }
+    })();
+    return settingsRefreshInFlight;
+  };
+
+  const moveControlTestId = (agentId: string, direction: MoveCodingAgentDirection) =>
+    `agentPicker.provider.${agentId}.move${direction === "up" ? "Up" : "Down"}`;
+
+  const moveControlsDisabled = () =>
+    moveBusy() || overlayOwnsAgents() || filterQuery() !== "";
+  const moveUpDisabled = (index: number) => moveControlsDisabled() || index <= 0;
+  const moveDownDisabled = (index: number) =>
+    moveControlsDisabled() || index >= orderedAgents().length - 1;
+  /** Distinct tool-and-direction accessible name; when the overlay owns the
+   *  order, the name carries the backend ownership reason it is disabled for. */
+  const moveControlLabel = (agent: AgentConfig, direction: MoveCodingAgentDirection) => {
+    const name = agent.label || agent.id;
+    return overlayOwnsAgents()
+      ? `Move ${name} ${direction} \u2014 ${MOVE_OVERLAY_REASON}`
+      : `Move ${name} ${direction}`;
+  };
+  const moveControlTitle = (agent: AgentConfig, direction: MoveCodingAgentDirection) =>
+    overlayOwnsAgents() ? MOVE_OVERLAY_REASON : `Move ${agent.label || agent.id} ${direction}`;
+
+  /** Focus the corresponding moved-tool control, or its remaining direction at a
+   *  new boundary, or the tool card when both directions are gone. */
+  const focusMoveControl = (agentId: string, direction: MoveCodingAgentDirection) => {
+    queueMicrotask(() => {
+      const other: MoveCodingAgentDirection = direction === "up" ? "down" : "up";
+      for (const candidate of [direction, other]) {
+        const control = document.querySelector<HTMLButtonElement>(
+          `[data-ac-testid="${moveControlTestId(agentId, candidate)}"]`,
+        );
+        if (control && !control.disabled) {
+          control.focus();
+          return;
+        }
+      }
+      document
+        .querySelector<HTMLButtonElement>(`[data-ac-testid="agentPicker.provider.${agentId}"]`)
+        ?.focus();
+    });
+  };
+
+  /** #2306 - one adjacent move through the narrow command. The returned id order
+   *  is a consistency check only; the authoritative state always comes from the
+   *  follow-up get_settings, and a mismatch never applies a speculative order. */
+  const moveAgent = async (agent: AgentConfig, direction: MoveCodingAgentDirection) => {
+    if (moveBusy() || overlayOwnsAgents() || filterQuery() !== "") return;
+    const list = orderedAgents();
+    const index = list.findIndex((candidate) => candidate.id === agent.id);
+    const neighbor = direction === "up" ? list[index - 1] : list[index + 1];
+    if (index < 0 || !neighbor) return;
+    setMoveBusy(true);
+    setMoveError("");
+    setMoveAnnouncement("");
+    try {
+      const ids = await SettingsAPI.moveCodingAgent({
+        id: agent.id,
+        neighborId: neighbor.id,
+        direction,
+      });
+      const expectedIds = list.map((candidate) => candidate.id);
+      const consistent =
+        ids.length === expectedIds.length &&
+        new Set(ids).size === ids.length &&
+        ids.every((id) => expectedIds.includes(id));
+      if (!consistent) throw new Error("The backend returned an unexpected agent order.");
+      await refreshFromSettings();
+      const newIndex = agents().findIndex((candidate) => candidate.id === agent.id);
+      if (newIndex >= 0) {
+        setMoveAnnouncement(
+          `Moved ${agent.label || agent.id} ${direction} to position ${newIndex + 1} of ${agents().length}.`,
+        );
+      }
+    } catch (err: unknown) {
+      setMoveError(launchErrorMessage(err));
+      // Resolve possible external progress; never apply speculative order.
+      try {
+        await refreshFromSettings();
+      } catch {
+        // Keep the last authoritative order visible.
+      }
+    } finally {
+      setMoveBusy(false);
+      focusMoveControl(agent.id, direction);
+    }
+  };
+
   onMount(async () => {
     overlayRef?.focus();
     // #1943 - reload this modal's own previews and default on external updates.
-    // App already owns the global project/settings refresh; this listener is
-    // modal-scoped and adds no second refresh owner.
+    // App already owns the global project/settings refresh; these listeners are
+    // modal-scoped and add no second refresh owner.
     let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void onCodingAgentProfileSelectionUpdated(() => {
-      if (disposed) return;
-      handleExternalSelectionUpdate();
-    }).then((fn) => {
-      if (disposed) {
-        fn();
-        return;
-      }
-      unlisten = fn;
-    });
+    const unlisteners: Array<() => void> = [];
+    const bind = (pending: Promise<() => void>) => {
+      void pending.then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisteners.push(fn);
+      });
+    };
+    bind(
+      onCodingAgentProfileSelectionUpdated(() => {
+        if (disposed) return;
+        handleExternalSelectionUpdate();
+      }),
+    );
+    // #2306 - a move or any external coding-agent mutation refetches this modal
+    // through its own coalesced path; the app-lifetime store listener is not the
+    // owner of this modal's draft state.
+    bind(
+      onCodingAgentSettingsUpdated(() => {
+        if (disposed) return;
+        void refreshFromSettings().catch(() => {});
+      }),
+    );
     onCleanup(() => {
       disposed = true;
-      unlisten?.();
-      unlisten = null;
+      for (const fn of unlisteners) fn();
+      unlisteners.length = 0;
     });
 
     const loaded = await SettingsAPI.get();
-    const agentIndex = loaded.agents
-      .slice()
-      .sort((a, b) => a.label.localeCompare(b.label, "en", { sensitivity: "base", numeric: true }))
-      .findIndex((agent) => agent.id === props.currentAgentId);
+    // #2306 - vector order decides the initial selection: no alphabetical remap.
+    const agentIndex = loaded.agents.findIndex((agent) => agent.id === props.currentAgentId);
     if (agentIndex >= 0) setHighlightIndex(agentIndex);
-    setSettings(loaded);
-    setAgents(loaded.agents);
+    installLoadedSnapshot(loaded, false);
     const currentRequested = normalizeProfileLetter(props.currentRequestedProfile);
     const acDefault = isAcAgentPath(targetReplicaPath())
       ? normalizeProfileLetter(loaded.codingAgentProfiles.defaultProfileByAgent[targetName()])
@@ -1095,7 +1261,7 @@ const AgentPickerModal: Component<{
     ) {
       return;
     }
-    const list = sortedAgents();
+    const list = orderedAgents();
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setHighlightIndex((i) => Math.min(i + 1, list.length - 1));
@@ -1157,7 +1323,7 @@ const AgentPickerModal: Component<{
             {/* #2014 - the requested filter, immediately above the first Coding
                 Agent card. It hides non-matching cards only; the comparison
                 panel always keeps every row and nothing here assigns. */}
-            <Show when={sortedAgents().length > 0}>
+            <Show when={orderedAgents().length > 0}>
               <div class="agent-profile-provider-filter">
                 <label for="agentPickerAgentFilter">Filter by name or start line</label>
                 <input
@@ -1178,10 +1344,10 @@ const AgentPickerModal: Component<{
                   data-ac-testid="agentPicker.agentFilterStatus"
                 >
                   {filterQuery() === ""
-                    ? `${sortedAgents().length} agents`
+                    ? `${orderedAgents().length} agents`
                     : visibleAgentCount() === 0
-                    ? `No coding agent matches "${agentFilter().trim()}". Clear the filter to see all ${sortedAgents().length}.`
-                    : `${visibleAgentCount()} of ${sortedAgents().length} agents match "${agentFilter().trim()}".`}
+                    ? `No coding agent matches "${agentFilter().trim()}". Clear the filter to see all ${orderedAgents().length}.`
+                    : `${visibleAgentCount()} of ${orderedAgents().length} agents match "${agentFilter().trim()}".`}
                 </div>
               </div>
             </Show>
@@ -1193,45 +1359,98 @@ const AgentPickerModal: Component<{
               {...automationAttrs("agentPicker.providers", "list")}
             >
               <Show
-                when={sortedAgents().length > 0}
+                when={orderedAgents().length > 0}
                 fallback={<div class="agent-modal-empty">No agents configured. Add agents in Settings.</div>}
               >
-                <For each={sortedAgents()}>
+                <For each={orderedAgents()}>
                   {(agent, i) => {
                     const defaultPreview = () => providerDefaultPreview(agent);
                     const active = () => i() === highlightIndex();
                     return (
                       <Show when={matchesFilter(agent)}>
-                        <button
-                          type="button"
-                          class="agent-profile-provider-card"
-                          classList={{ active: active() }}
-                          aria-pressed={active()}
-                          onClick={() => setHighlightIndex(i())}
-                          data-component={`${agent.label} coding agent option`}
-                          data-ac-agent-id={agent.id}
-                          data-ac-agent-command={agent.command}
-                          data-ac-effective-profile={defaultPreview().effectiveProfile}
-                          data-ac-requested-profile={defaultPreview().requestedProfile}
-                          style={{ "--agent-color": agent.color }}
-                          {...automationAttrs(`agentPicker.provider.${agent.id}`, "button", active() ? "active" : "inactive")}
+                        <div
+                          class="agent-profile-provider-card-wrap"
+                          data-ac-testid={`agentPicker.providerWrap.${agent.id}`}
                         >
-                          <span>
-                            <span class="agent-profile-provider-name">{agent.label}</span>
-                            <span class="agent-profile-provider-command">{agent.command}</span>
-                          </span>
-                          <span class="agent-profile-provider-chip">
-                            {defaultPreview().fallbackApplied
-                              ? `${defaultPreview().requestedProfile}->${defaultPreview().effectiveProfile}`
-                              : profileLabel(defaultPreview().effectiveProfile, agent.id)}
-                          </span>
-                        </button>
+                          <button
+                            type="button"
+                            class="agent-profile-provider-card"
+                            classList={{ active: active() }}
+                            aria-pressed={active()}
+                            onClick={() => setHighlightIndex(i())}
+                            data-component={`${agent.label} coding agent option`}
+                            data-ac-agent-id={agent.id}
+                            data-ac-agent-command={agent.command}
+                            data-ac-effective-profile={defaultPreview().effectiveProfile}
+                            data-ac-requested-profile={defaultPreview().requestedProfile}
+                            style={{ "--agent-color": agent.color }}
+                            {...automationAttrs(`agentPicker.provider.${agent.id}`, "button", active() ? "active" : "inactive")}
+                          >
+                            <span>
+                              <span class="agent-profile-provider-name">{agent.label}</span>
+                              <span class="agent-profile-provider-command">{agent.command}</span>
+                            </span>
+                            <span class="agent-profile-provider-chip">
+                              {defaultPreview().fallbackApplied
+                                ? `${defaultPreview().requestedProfile}->${defaultPreview().effectiveProfile}`
+                                : profileLabel(defaultPreview().effectiveProfile, agent.id)}
+                            </span>
+                          </button>
+                          {/* #2306 - adjacent move controls are SEPARATE buttons beside
+                              the card (no nested buttons); the filter disables both. */}
+                          <div class="agent-profile-provider-moves">
+                            <button
+                              type="button"
+                              class="settings-row-btn"
+                              disabled={moveUpDisabled(i())}
+                              onClick={() => void moveAgent(agent, "up")}
+                              title={moveControlTitle(agent, "up")}
+                              aria-label={moveControlLabel(agent, "up")}
+                              data-ac-testid={moveControlTestId(agent.id, "up")}
+                              data-ac-role="button"
+                            >
+                              {"\u2191"}
+                            </button>
+                            <button
+                              type="button"
+                              class="settings-row-btn"
+                              disabled={moveDownDisabled(i())}
+                              onClick={() => void moveAgent(agent, "down")}
+                              title={moveControlTitle(agent, "down")}
+                              aria-label={moveControlLabel(agent, "down")}
+                              data-ac-testid={moveControlTestId(agent.id, "down")}
+                              data-ac-role="button"
+                            >
+                              {"\u2193"}
+                            </button>
+                          </div>
+                        </div>
                       </Show>
                     );
                   }}
                 </For>
               </Show>
             </div>
+            <Show when={moveError()}>
+              <div
+                class="agent-picker-error"
+                role="status"
+                aria-live="polite"
+                data-ac-testid="agentPicker.moveError"
+              >
+                {moveError()}
+              </div>
+            </Show>
+            <div
+              role="status"
+              aria-live="polite"
+              data-ac-testid="agentPicker.moveStatus"
+            >
+              {moveAnnouncement()}
+            </div>
+            <Show when={overlayOwnsAgents()}>
+              <div data-ac-testid="agentPicker.overlayReason">{MOVE_OVERLAY_REASON}</div>
+            </Show>
           </aside>
 
           <div class="agent-profile-assignment-scroll" data-component="Coding Agent profile selector independent scroll area">

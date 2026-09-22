@@ -29,6 +29,7 @@ import type {
   AppSettings,
   MainWindowDisplayState,
   SettingsSnapshot,
+  MoveCodingAgentRequest,
   LogLevel,
   UpdateInfo,
   AgentUpdateResult,
@@ -384,6 +385,14 @@ export const SettingsAPI = {
   // the extra report field riding along on a round-tripped object is ignored by
   // the backend (non-deny_unknown_fields) and cannot re-pair persisted state.
   get: () => transport.invoke<SettingsSnapshot>("get_settings"),
+  /** #2306 P3 - the narrow move command: only the requested adjacent swap is
+   *  persisted; the resolved value is the backend's authoritative ordered ids. */
+  moveCodingAgent: (request: MoveCodingAgentRequest) =>
+    transport.invoke<string[]>("move_coding_agent", {
+      id: request.id,
+      neighborId: request.neighborId,
+      direction: request.direction,
+    }),
   update: (settings: AppSettings) =>
     transport.invoke<void>("update_settings", { newSettings: settings }),
   saveDraft: (settings: AppSettings) =>

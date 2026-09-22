@@ -232,6 +232,7 @@ export function settingsSnapshot(
     ...baseSettings(settingsOverrides),
     projectPathResolution: projectPathResolution(resolutionOverrides),
     settingsFilePath: null,
+    overlayOwnsAgents: false,
   };
 }
 

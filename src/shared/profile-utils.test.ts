@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
   CLAUDE_CONTEXT_REGEX,
@@ -72,8 +73,7 @@ describe("profile utils", () => {
     expect(profileDisplayLabel(profiles(), agents, "codex", "A")).toBe("A");
   });
 
-  it("#548: per-agent labels — own override, primigenio inheritance, independence", () => {
-    // codex = agents[0] = primigenio; claude is the second coding agent.
+  it("#2314: per-agent labels — own override, legacy slot fallback, order independence", () => {
     const agents = [agent({ id: "codex" }), agent({ id: "claude" })];
     const p: CodingAgentProfilesConfig = {
       ...profiles(),
@@ -81,8 +81,12 @@ describe("profile utils", () => {
     };
     // codex shows its OWN label.
     expect(profileDisplayLabel(p, agents, "codex", "B")).toBe("B-TURBO");
-    // claude has no own B label → inherits the primigenio (codex).
-    expect(profileDisplayLabel(p, agents, "claude", "B")).toBe("B-TURBO");
+    // claude has no own B label → the legacy slot label, never codex's label.
+    expect(profileDisplayLabel(p, agents, "claude", "B")).toBe("B-FULL POWER");
+    // Reordering the vector changes neither agent's resolved label.
+    const reordered = [agent({ id: "claude" }), agent({ id: "codex" })];
+    expect(profileDisplayLabel(p, reordered, "codex", "B")).toBe("B-TURBO");
+    expect(profileDisplayLabel(p, reordered, "claude", "B")).toBe("B-FULL POWER");
     // After claude sets its own B, editing claude does NOT change codex.
     const p2: CodingAgentProfilesConfig = {
       ...profiles(),
@@ -103,7 +107,7 @@ describe("profile utils", () => {
     expect(profileDisplayLabel(fresh, [agent({ id: "codex" })], "codex", "A")).toBe("A");
   });
 
-  it("#548: resolveProfileLabel follows own > primigenio > legacy slot > empty", () => {
+  it("#2314: resolveProfileLabel follows own > legacy slot > empty", () => {
     const agents = [agent({ id: "codex" }), agent({ id: "claude" })];
     const base = profiles(); // legacy slot labels: B = "full power", C = "fast"
     // 1. own label wins over everything.
@@ -115,7 +119,8 @@ describe("profile utils", () => {
         "B",
       ),
     ).toBe("own");
-    // 2. else the primigenio (codex) label, when the queried agent has none.
+    // 2. no own label → the legacy shared slot label. Another agent's label is
+    // never inherited, regardless of its position in the vector.
     expect(
       resolveProfileLabel(
         { ...base, profileLabelsByAgent: { codex: { B: "prim" } } },
@@ -123,15 +128,27 @@ describe("profile utils", () => {
         "claude",
         "B",
       ),
-    ).toBe("prim");
-    // 3. else the legacy shared slot label (pre-#548 back-compat bridge).
-    expect(
-      resolveProfileLabel({ ...base, profileLabelsByAgent: {} }, agents, "claude", "B"),
     ).toBe("full power");
-    // 4. else "" — the "no name" case the rail placeholder relies on.
+    // 3. no own and no legacy label → "" — the bare letter the badge renders.
     expect(
       resolveProfileLabel({ ...base, profileLabelsByAgent: {} }, agents, "claude", "A"),
     ).toBe("");
+  });
+
+  it("#2314: the Rust mirror documents the new chain and no primigenio inheritance", () => {
+    const source = readFileSync(
+      new URL("../../src-tauri/src/config/settings.rs", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf("per-(agent, letter) label override");
+    const end = source.indexOf("pub profile_labels_by_agent", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const docComment = source.slice(start, end);
+    expect(docComment).not.toContain("primigenio");
+    expect(docComment).not.toContain("agents[0]");
+    expect(docComment).toContain("legacy profile_slots[letter].label");
+    expect(docComment).toContain("bare letter");
   });
 
   it("previews fallback to the nearest lower available cell (v2 profileSlots/profilesByAgent)", () => {

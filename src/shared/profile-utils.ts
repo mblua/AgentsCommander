@@ -55,12 +55,14 @@ export function resolveProfileLabel(
   agentId: string | null | undefined,
   letter: string,
 ): string {
+  // #2306 - no first-agent (primigenio) inheritance: the fallback chain is own
+  // per-agent label -> legacy shared slot label -> empty (bare letter). `agents`
+  // stays in the signature so call sites are untouched.
+  void agents;
   const labels = profiles.profileLabelsByAgent;
   const own = agentId ? labels?.[agentId]?.[letter]?.trim() : "";
-  const primigenioId = agents[0]?.id;
-  const inherited = primigenioId ? labels?.[primigenioId]?.[letter]?.trim() : "";
   const legacy = profiles.profileSlots[letter]?.label?.trim() ?? "";
-  return own || inherited || legacy || "";
+  return own || legacy || "";
 }
 
 export function profileDisplayLabel(
