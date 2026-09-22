@@ -11,15 +11,16 @@ use uuid::Uuid;
 use sha2::{Digest, Sha256};
 
 use crate::api::auth;
+use crate::config::coding_agent_mutations::{move_registered_agent, AgentMoveDirection};
 use crate::config::instance_artifacts::DEBUG_LOGS_FILE_NAME;
 use crate::config::projects::{
     display_canonical, IssueKind, ProjectPathPersistenceState, ProjectSource, RawJsonField,
     RawStringField, ResolvedPair, SideStatus, StructuralIssue,
 };
 use crate::config::settings::{
-    load_settings, merge_protected_coding_agent_settings, parse_api_server_socket_addr,
-    save_settings, validate_and_repair_settings, AppSettings, CodingAgentEnv,
-    CodingAgentProfilesConfig, SettingsState,
+    load_settings, merge_protected_coding_agent_settings, normalize_agent_order,
+    parse_api_server_socket_addr, save_settings, validate_and_repair_settings, AgentConfig,
+    AppSettings, CodingAgentEnv, CodingAgentProfilesConfig, SettingsState, OVERLAY_KEY_AGENTS,
 };
 use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
@@ -211,6 +212,14 @@ pub struct SettingsSnapshot {
     /// and no home dir); there is no `skip_serializing_if`, so the key is always
     /// present on the wire and is `null` in that degraded mode.
     pub settings_file_path: Option<String>,
+    /// #2306 P2 - read-only disclosure that the local `settings.local.json`
+    /// overlay owns the whole top-level `agents` key. While true, an ordered
+    /// move cannot be durable: the writer restores the overlay's base array to
+    /// `settings.json` and reapplies the overlay-effective array only to
+    /// memory, so the picker must not offer (or must explain the rejection of)
+    /// a move. Deliberately NOT a field of `AppSettings`: a client draft can
+    /// never carry or forge overlay ownership.
+    pub overlay_owns_agents: bool,
 }
 
 fn issue_source(source: ProjectSource) -> IssueSource {
@@ -417,6 +426,9 @@ pub(crate) fn settings_snapshot_from(
         // location. Same expression already used at the reconciliation site.
         settings_file_path: crate::config::config_dir()
             .map(|d| d.join("settings.json").to_string_lossy().into_owned()),
+        overlay_owns_agents: settings
+            .local_overlay_state
+            .owns_top_level(OVERLAY_KEY_AGENTS),
     }
 }
 
@@ -689,6 +701,43 @@ async fn persist_protected_settings_update_with_saver(
     Ok(written)
 }
 
+/// #2306 P2 - make the live effective order authoritative over a whole-settings
+/// payload, without letting the payload's explicit ordinals reorder anything.
+///
+/// Both whole-settings writers call this after their protected-field restores
+/// and before validation, event derivation and save. The live in-memory vector
+/// is the effective order; the incoming payload may be a snapshot that predates
+/// a move, so its `order` values carry no authority:
+///
+///   1. every incoming record whose exact id exists live survives, ordered by
+///      its live position (records sharing a live rank keep incoming order);
+///   2. incoming-only ids are appended in incoming order;
+///   3. records and membership come from the incoming payload, so a user edit,
+///      add or remove still applies;
+///   4. `order` is finally renumbered by post-merge vector position.
+///
+/// A stale draft/update therefore cannot undo an ordered move for a surviving
+/// id, and a forged incoming ordinal cannot sort the vector. Known limitation
+/// (accepted, per the phase plan): membership is still the incoming payload's,
+/// so a stale snapshot that predates an independent add omits that id here;
+/// this merge does not resurrect it.
+fn merge_live_agent_order(current: &AppSettings, incoming: &mut AppSettings) {
+    let mut survivors: Vec<(usize, AgentConfig)> = Vec::new();
+    let mut appended: Vec<AgentConfig> = Vec::new();
+    for record in incoming.agents.drain(..) {
+        match current.agents.iter().position(|live| live.id == record.id) {
+            Some(live_rank) => survivors.push((live_rank, record)),
+            None => appended.push(record),
+        }
+    }
+    // Stable sort: records sharing a live rank (duplicate ids) keep incoming order.
+    survivors.sort_by_key(|(live_rank, _)| *live_rank);
+    let mut merged: Vec<AgentConfig> = survivors.into_iter().map(|(_, record)| record).collect();
+    merged.extend(appended);
+    incoming.agents = merged;
+    normalize_agent_order(&mut incoming.agents);
+}
+
 fn build_protected_settings_candidate(
     current: &AppSettings,
     new_settings: AppSettings,
@@ -730,6 +779,7 @@ fn build_protected_settings_candidate(
     candidate.rail_favorites_collapsed = current.rail_favorites_collapsed;
     // #1173: terminal snapshot disclosure is owned only by its dedicated CAS.
     candidate.terminal_snapshots_enabled = current.terminal_snapshots_enabled;
+    merge_live_agent_order(current, &mut candidate);
     validate_and_repair_settings(&mut candidate)?;
     Ok(candidate)
 }
@@ -769,6 +819,7 @@ async fn persist_settings_draft_update_with_saver(
     draft.rail_favorites_collapsed = current.rail_favorites_collapsed;
     // #1173: a stale whole-settings draft has no disclosure-gate authority.
     draft.terminal_snapshots_enabled = current.terminal_snapshots_enabled;
+    merge_live_agent_order(&current, &mut draft);
     validate_and_repair_settings(&mut draft)?;
     let events = settings_draft_update_events(&current, &draft);
     let written = save(&draft)?;
@@ -3766,6 +3817,46 @@ async fn persist_narrow_settings_update_with_saver(
     Ok(())
 }
 
+/// #2306 P2 - the ordered-move rejection while the local overlay owns the whole
+/// top-level `agents` key. Stable token shared by the Tauri command and the
+/// browser route (transport parity).
+pub(crate) const AGENT_ORDER_OVERLAY_PINNED: &str =
+    "agent order is controlled by the local settings overlay (settings.local.json)";
+
+/// #2306 P2 - fallible sibling of `persist_narrow_settings_update_with_saver`,
+/// used by the ordered move.
+///
+/// Same candidate-save-publish pattern with two differences:
+///
+///   * the mutation is fallible, so a rejected request (boundary move, unknown
+///     or non-adjacent neighbor) returns before the saver runs and leaves live
+///     settings untouched;
+///   * while the local overlay owns the top-level `agents` key the request is
+///     rejected before the clone. `save_settings_value_locked` restores the
+///     overlay's base array to `settings.json` and reapplies the overlay-
+///     effective array only to memory, so no move could survive a restart and a
+///     "successful" move would publish a transient order. The check runs under
+///     the write guard, so an overlay appearing concurrently cannot slip
+///     between the check and the save.
+///
+/// On success it installs the written snapshot and returns it, so the caller
+/// derives the authoritative ids (and ordinals) from what was persisted.
+async fn persist_narrow_settings_update_fallible_with_saver(
+    settings: &SettingsState,
+    mutate_candidate: impl FnOnce(&mut AppSettings) -> Result<(), String>,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<AppSettings, String> {
+    let mut s = settings.write().await;
+    if s.local_overlay_state.owns_top_level(OVERLAY_KEY_AGENTS) {
+        return Err(AGENT_ORDER_OVERLAY_PINNED.to_string());
+    }
+    let mut candidate = s.clone();
+    mutate_candidate(&mut candidate)?;
+    let written = save(&candidate)?;
+    *s = written.clone();
+    Ok(written)
+}
+
 /// Narrow setter for `sounds_enabled`. Same candidate-save-publish
 /// pattern as the other narrow setters (issue #158). Replaces the toolbar's
 /// previous full-object `update_settings(next)` call, which could clobber
@@ -3862,6 +3953,76 @@ pub async fn set_rail_collapse(
     favorites_collapsed: bool,
 ) -> Result<(), String> {
     set_rail_collapse_inner(settings.inner(), collapsed_projects, favorites_collapsed).await
+}
+
+/// #2306 P2 - narrow owner of the registered-agent move. Mutates only the
+/// `agents` vector under the settings write guard, persists through the
+/// preserving `save_settings`, and returns the authoritative ordered ids.
+#[tauri::command]
+pub async fn move_coding_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    settings: State<'_, SettingsState>,
+    id: String,
+    neighbor_id: String,
+    direction: AgentMoveDirection,
+) -> Result<Vec<String>, String> {
+    move_coding_agent_command_with_saver(
+        &app,
+        settings.inner(),
+        id,
+        neighbor_id,
+        direction,
+        save_settings,
+    )
+    .await
+}
+
+/// Shared Tauri-command body. The settings write guard is released when the
+/// inner returns, so `coding_agent_settings_updated` is emitted after unlock.
+/// Split so a test can drive the real emit with a temp-path saver.
+pub(crate) async fn move_coding_agent_command_with_saver<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    settings: &SettingsState,
+    id: String,
+    neighbor_id: String,
+    direction: AgentMoveDirection,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<Vec<String>, String> {
+    let ids =
+        move_coding_agent_inner_with_saver(settings, &id, &neighbor_id, direction, save).await?;
+    let _ = app.emit(
+        "coding_agent_settings_updated",
+        move_coding_agent_event_payload(&id),
+    );
+    Ok(ids)
+}
+
+/// The shared inner owner of the move, used by the Tauri command and the
+/// browser WebSocket route.
+pub(crate) async fn move_coding_agent_inner_with_saver(
+    settings: &SettingsState,
+    id: &str,
+    neighbor_id: &str,
+    direction: AgentMoveDirection,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<Vec<String>, String> {
+    let written = persist_narrow_settings_update_fallible_with_saver(
+        settings,
+        |candidate| move_registered_agent(candidate, id, neighbor_id, direction).map(|_| ()),
+        save,
+    )
+    .await?;
+    Ok(written
+        .agents
+        .iter()
+        .map(|agent| agent.id.clone())
+        .collect())
+}
+
+/// One payload shape for the move's `coding_agent_settings_updated` event on
+/// both transports (native `app.emit` and browser `broadcast_all`).
+pub(crate) fn move_coding_agent_event_payload(id: &str) -> serde_json::Value {
+    serde_json::json!({ "op": "move", "agentId": id })
 }
 
 /// #612 apply the runtime log level (no-op under RUST_LOG) and broadcast so
@@ -4083,18 +4244,20 @@ mod tests {
     use super::{
         api_server_probe_addr, api_server_status, build_web_server_owned_status,
         classify_virtual_interface, ensure_web_remote_open_allowed, is_tcp_socket_listening,
-        map_web_server_interfaces, mint_api_client_with_path,
-        persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
-        persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
-        persist_settings_draft_update_with_saver, purge_sessions_after_settings_update_in_dir,
-        resolve_web_server_owned_status, select_current_bind_failure,
-        set_rail_collapse_inner_with_saver, start_api_server, stop_web_server_handle,
-        web_remote_url, web_server_probe_addr, WebServerOwnershipState,
-        MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
+        map_web_server_interfaces, mint_api_client_with_path, move_coding_agent_command_with_saver,
+        move_coding_agent_inner_with_saver, persist_coding_agent_env_settings_update,
+        persist_coding_agent_profiles_update, persist_narrow_settings_update_with_saver,
+        persist_protected_settings_update_with_saver, persist_settings_draft_update_with_saver,
+        purge_sessions_after_settings_update_in_dir, resolve_web_server_owned_status,
+        select_current_bind_failure, set_rail_collapse_inner_with_saver, settings_snapshot_from,
+        start_api_server, stop_web_server_handle, web_remote_url, web_server_probe_addr,
+        WebServerOwnershipState, AGENT_ORDER_OVERLAY_PINNED, MINT_API_CLIENT_DEFAULT_TTL_HOURS,
+        MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
     };
     #[cfg(windows)]
     use super::{build_profile_assignment_target, canonical_compare_key};
     use crate::api::auth;
+    use crate::config::coding_agent_mutations::AgentMoveDirection;
     use crate::config::sessions_persistence::{session_retention_project_paths, PersistedSession};
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, MainWindowDisplayState,
@@ -6332,6 +6495,436 @@ mod tests {
             |candidate| assert!(candidate.theme_light),
         )
         .await;
+    }
+
+    // ── #2306 P2 - ordered move + whole-settings order protection ────────
+
+    fn agent_with_order(id: &str, order: Option<u32>) -> AgentConfig {
+        AgentConfig {
+            id: id.to_string(),
+            label: format!("{id}-label"),
+            command: format!("{id}-cmd"),
+            color: "#000000".to_string(),
+            order,
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+            context_regex: None,
+            blocking_menus: None,
+            backend: Default::default(),
+        }
+    }
+
+    fn settings_with_agents(ids: &[&str]) -> AppSettings {
+        AppSettings {
+            agents: ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| agent_with_order(id, Some(index as u32)))
+                .collect(),
+            ..AppSettings::default()
+        }
+    }
+
+    fn order_ids(agents: &[AgentConfig]) -> Vec<String> {
+        agents.iter().map(|agent| agent.id.clone()).collect()
+    }
+
+    fn order_positions(agents: &[AgentConfig]) -> Vec<Option<u32>> {
+        agents.iter().map(|agent| agent.order).collect()
+    }
+
+    fn disk_ids_and_orders(path: &Path) -> (Vec<String>, Vec<u64>) {
+        let raw = std::fs::read_to_string(path).expect("read settings.json");
+        let disk: Value = serde_json::from_str(&raw).expect("parse settings.json");
+        let agents = disk["agents"].as_array().expect("agents array");
+        (
+            agents
+                .iter()
+                .map(|agent| agent["id"].as_str().unwrap().to_string())
+                .collect(),
+            agents
+                .iter()
+                .map(|agent| agent["order"].as_u64().unwrap())
+                .collect(),
+        )
+    }
+
+    /// Base `settings.json` + `settings.local.json` whose local overlay owns the
+    /// top-level `agents` key; returns the base path. The caller loads through
+    /// the production loader so ownership is genuine.
+    fn seed_overlay_agents_fixture(dir: &Path, local_agents: &Value) -> PathBuf {
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "rootToken": "base-token",
+                "agents": [
+                    { "id": "base-a", "label": "Base A", "command": "claude", "color": "#111111" },
+                    { "id": "base-b", "label": "Base B", "command": "claude", "color": "#222222" }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("settings.local.json"),
+            serde_json::to_string_pretty(&json!({ "agents": local_agents })).unwrap(),
+        )
+        .unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn agent_order_update_keeps_live_survivors_and_appends_incoming_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let live = settings_with_agents(&["a", "b", "d"]);
+        let state = state_for(live.clone());
+        // The incoming snapshot carries a forged/stale ordinal order and the
+        // incoming membership: `d` is gone, `c` is new, `b` was edited.
+        let mut incoming = AppSettings {
+            agents: vec![
+                agent_with_order("c", Some(9)),
+                agent_with_order("a", Some(50)),
+                agent_with_order("b", Some(0)),
+            ],
+            ..live.clone()
+        };
+        incoming.agents[2].label = "b-edited".to_string();
+
+        let written = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate, &path,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(order_ids(&written.agents), ["a", "b", "c"]);
+        assert_eq!(
+            order_positions(&written.agents),
+            [Some(0), Some(1), Some(2)]
+        );
+        assert_eq!(written.agents[1].label, "b-edited");
+        let (disk_ids, disk_orders) = disk_ids_and_orders(&path);
+        assert_eq!(disk_ids, ["a", "b", "c"]);
+        assert_eq!(disk_orders, [0, 1, 2]);
+        let reloaded = crate::config::settings::load_settings_from_path(&path);
+        assert_eq!(order_ids(&reloaded.agents), ["a", "b", "c"]);
+        let live_now = state.read().await;
+        assert_eq!(order_ids(&live_now.agents), ["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn agent_order_stale_draft_cannot_undo_a_move_and_keeps_incoming_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        // Live state after moving `b` above `a`.
+        let state = state_for(settings_with_agents(&["b", "a", "c"]));
+        // Stale draft taken before the move.
+        let mut stale = settings_with_agents(&["a", "b", "c"]);
+        stale.agents[1].label = "b-edited-in-draft".to_string();
+
+        let (written, _events) =
+            persist_settings_draft_update_with_saver(&state, stale, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate, &path,
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(order_ids(&written.agents), ["b", "a", "c"]);
+        assert_eq!(written.agents[0].label, "b-edited-in-draft");
+        assert_eq!(
+            order_positions(&written.agents),
+            [Some(0), Some(1), Some(2)]
+        );
+        let (disk_ids, disk_orders) = disk_ids_and_orders(&path);
+        assert_eq!(disk_ids, ["b", "a", "c"]);
+        assert_eq!(disk_orders, [0, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn agent_order_draft_add_appends_and_remove_compacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let live = settings_with_agents(&["a", "b", "c"]);
+        let state = state_for(live.clone());
+
+        // Remove `b`: survivors keep the live order and ordinals compact.
+        let mut removed = live.clone();
+        removed.agents.retain(|agent| agent.id != "b");
+        let (written, _) = persist_settings_draft_update_with_saver(&state, removed, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate, &path,
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(order_ids(&written.agents), ["a", "c"]);
+        assert_eq!(order_positions(&written.agents), [Some(0), Some(1)]);
+
+        // Add `d` at the end of the effective list, as the modal does.
+        let mut added = written.clone();
+        added.agents.push(agent_with_order("d", None));
+        let (written, _) = persist_settings_draft_update_with_saver(&state, added, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate, &path,
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(order_ids(&written.agents), ["a", "c", "d"]);
+        assert_eq!(
+            order_positions(&written.agents),
+            [Some(0), Some(1), Some(2)]
+        );
+        let (disk_ids, disk_orders) = disk_ids_and_orders(&path);
+        assert_eq!(disk_ids, ["a", "c", "d"]);
+        assert_eq!(disk_orders, [0, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn agent_order_case_distinct_ids_stay_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let state = state_for(settings_with_agents(&["a"]));
+        let incoming = settings_with_agents(&["a", "A"]);
+
+        let written = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate, &path,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(order_ids(&written.agents), ["a", "A"]);
+    }
+
+    #[tokio::test]
+    async fn agent_order_draft_save_failure_leaves_live_settings_unchanged() {
+        let state = state_for(settings_with_agents(&["a", "b", "c"]));
+        let stale = settings_with_agents(&["c", "b", "a"]);
+
+        let err = persist_settings_draft_update_with_saver(&state, stale, |_| {
+            Err("simulated order save failure".to_string())
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, "simulated order save failure");
+        let live = state.read().await;
+        assert_eq!(order_ids(&live.agents), ["a", "b", "c"]);
+        assert_eq!(order_positions(&live.agents), [Some(0), Some(1), Some(2)]);
+    }
+
+    #[tokio::test]
+    async fn move_coding_agent_with_saver_returns_written_order_and_persists_ordinals() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let state = state_for(settings_with_agents(&["a", "b", "c"]));
+
+        let ids = move_coding_agent_inner_with_saver(
+            &state,
+            "b",
+            "a",
+            AgentMoveDirection::Up,
+            |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate, &path,
+                )
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(ids, ["b", "a", "c"]);
+        let (disk_ids, disk_orders) = disk_ids_and_orders(&path);
+        assert_eq!(disk_ids, ["b", "a", "c"]);
+        assert_eq!(disk_orders, [0, 1, 2]);
+        let reloaded = crate::config::settings::load_settings_from_path(&path);
+        assert_eq!(order_ids(&reloaded.agents), ["b", "a", "c"]);
+        let live = state.read().await;
+        assert_eq!(order_ids(&live.agents), ["b", "a", "c"]);
+        assert_eq!(order_positions(&live.agents), [Some(0), Some(1), Some(2)]);
+    }
+
+    #[tokio::test]
+    async fn move_coding_agent_with_saver_rejection_never_calls_saver() {
+        let state = state_for(settings_with_agents(&["a", "b", "c"]));
+
+        // `c` sits below `b`, so it is not `b`'s up-neighbor in the latest order.
+        let err = move_coding_agent_inner_with_saver(
+            &state,
+            "b",
+            "c",
+            AgentMoveDirection::Up,
+            |_| -> Result<AppSettings, String> { panic!("saver must not run on a rejected move") },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("not adjacent"), "{err}");
+        let live = state.read().await;
+        assert_eq!(order_ids(&live.agents), ["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn move_coding_agent_with_saver_write_failure_leaves_live_state_unchanged() {
+        let state = state_for(settings_with_agents(&["a", "b", "c"]));
+
+        let err =
+            move_coding_agent_inner_with_saver(&state, "b", "a", AgentMoveDirection::Up, |_| {
+                Err("simulated move save failure".to_string())
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, "simulated move save failure");
+        let live = state.read().await;
+        assert_eq!(order_ids(&live.agents), ["a", "b", "c"]);
+        assert_eq!(order_positions(&live.agents), [Some(0), Some(1), Some(2)]);
+    }
+
+    #[tokio::test]
+    async fn move_coding_agent_checks_adjacency_against_the_latest_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let state = state_for(settings_with_agents(&["a", "b", "c"]));
+
+        move_coding_agent_inner_with_saver(&state, "c", "b", AgentMoveDirection::Up, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate, &path,
+            )
+        })
+        .await
+        .unwrap();
+
+        // Latest order is a, c, b: the stale neighbor is rejected without a save.
+        let err = move_coding_agent_inner_with_saver(
+            &state,
+            "c",
+            "b",
+            AgentMoveDirection::Up,
+            |_| -> Result<AppSettings, String> {
+                panic!("saver must not run on a stale-neighbor move")
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("not adjacent"), "{err}");
+        let live = state.read().await;
+        assert_eq!(order_ids(&live.agents), ["a", "c", "b"]);
+    }
+
+    #[tokio::test]
+    async fn move_coding_agent_overlay_owned_agents_rejects_before_saver_without_event() {
+        use tauri::Listener;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = seed_overlay_agents_fixture(
+            temp.path(),
+            &json!([
+                { "id": "ov-a", "label": "A", "command": "claude", "color": "#111111", "order": 1 },
+                { "id": "ov-b", "label": "B", "command": "claude", "color": "#222222" }
+            ]),
+        );
+        let settings = crate::config::settings::load_settings_from_path(&path);
+        assert!(settings
+            .local_overlay_state
+            .owns_top_level(crate::config::settings::OVERLAY_KEY_AGENTS));
+        let overlay_order = order_ids(&settings.agents);
+        let state = state_for(settings);
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build overlay rejection app");
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen_any("coding_agent_settings_updated", move |event| {
+            let _ = tx.send(event.payload().to_string());
+        });
+
+        let err = move_coding_agent_command_with_saver(
+            app.handle(),
+            &state,
+            "ov-a".to_string(),
+            "ov-b".to_string(),
+            AgentMoveDirection::Up,
+            |_| -> Result<AppSettings, String> {
+                panic!("saver must not run while the overlay owns `agents`")
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, AGENT_ORDER_OVERLAY_PINNED);
+        let live = state.read().await;
+        assert_eq!(order_ids(&live.agents), overlay_order);
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "a rejected move must not emit an event"
+        );
+    }
+
+    #[test]
+    fn settings_snapshot_exposes_overlay_owns_agents_false_and_not_in_base_settings() {
+        let settings = settings_with_agents(&["a", "b"]);
+
+        let snapshot = settings_snapshot_from(&settings, None);
+        assert!(!snapshot.overlay_owns_agents);
+        let wire = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(wire["overlayOwnsAgents"], json!(false));
+        // Read-only disclosure: the base settings object never carries the key.
+        let base = serde_json::to_value(&settings).unwrap();
+        assert!(base.get("overlayOwnsAgents").is_none());
+    }
+
+    #[test]
+    fn settings_snapshot_reports_overlay_owned_agents_with_overlay_precedence() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = seed_overlay_agents_fixture(
+            temp.path(),
+            &json!([
+                { "id": "ov-a", "label": "A", "command": "claude", "color": "#111111", "order": 2 },
+                { "id": "ov-b", "label": "B", "command": "claude", "color": "#222222" },
+                { "id": "ov-c", "label": "C", "command": "claude", "color": "#333333", "order": -1 },
+                { "id": "ov-d", "label": "D", "command": "claude", "color": "#444444", "order": "two" },
+                { "id": "ov-e", "label": "E", "command": "claude", "color": "#555555", "order": 1 }
+            ]),
+        );
+        let settings = crate::config::settings::load_settings_from_path(&path);
+        // Capture AFTER the loader: the first load of this minimal fixture may
+        // run its one-time repair write. Snapshot building must add no write.
+        let base_before = std::fs::read(&path).unwrap();
+        let local_path = temp.path().join("settings.local.json");
+        let local_before = std::fs::read(&local_path).unwrap();
+        assert!(settings
+            .local_overlay_state
+            .owns_top_level(crate::config::settings::OVERLAY_KEY_AGENTS));
+
+        let snapshot = settings_snapshot_from(&settings, None);
+        assert!(snapshot.overlay_owns_agents);
+        let wire = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(wire["overlayOwnsAgents"], json!(true));
+        // P1 effective order: valid ordinals first (1 -> ov-e, 2 -> ov-a), then
+        // absent/invalid records by their original overlay index.
+        let wire_ids: Vec<&str> = wire["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|agent| agent["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(wire_ids, ["ov-b", "ov-e", "ov-a", "ov-c", "ov-d"]);
+        // Building the snapshot must not touch either file.
+        assert_eq!(std::fs::read(&path).unwrap(), base_before);
+        assert_eq!(std::fs::read(&local_path).unwrap(), local_before);
     }
 
     #[tokio::test]

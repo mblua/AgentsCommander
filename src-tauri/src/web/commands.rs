@@ -218,6 +218,36 @@ async fn dispatch_agent_update_command(
     }
 }
 
+/// #2306 P2 - browser route body for `move_coding_agent`, factored so a test
+/// can drive it with a temp-path saver (the real one resolves the process
+/// config dir). Broadcasts `coding_agent_settings_updated` with the same payload
+/// the Tauri command emits, after the inner releases the settings write guard.
+async fn move_coding_agent_route_with_saver(
+    state: &WsState,
+    id: &str,
+    neighbor_id: &str,
+    direction: crate::config::coding_agent_mutations::AgentMoveDirection,
+    save: impl FnOnce(
+        &crate::config::settings::AppSettings,
+    ) -> Result<crate::config::settings::AppSettings, String>,
+) -> Result<Value, String> {
+    let ids = crate::commands::config::move_coding_agent_inner_with_saver(
+        &state.settings,
+        id,
+        neighbor_id,
+        direction,
+        save,
+    )
+    .await?;
+    broadcast_all(
+        &state.app_handle,
+        &state.broadcaster,
+        "coding_agent_settings_updated",
+        &crate::commands::config::move_coding_agent_event_payload(id),
+    );
+    serde_json::to_value(ids).map_err(|e| e.to_string())
+}
+
 async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Value, String> {
     if let Some(result) = dispatch_agent_update_command(state, cmd, args).await {
         return result;
@@ -564,6 +594,24 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             )
             .await?;
             Ok(json!(null))
+        }
+
+        // #2306 P2 - ordered move of a registered coding agent. The inner holds
+        // the settings write guard; the broadcast runs after it returns, so the
+        // guard is released before `broadcast_all`.
+        "move_coding_agent" => {
+            let id = require_str(args, "id")?;
+            let neighbor_id = require_str(args, "neighborId")?;
+            let direction: crate::config::coding_agent_mutations::AgentMoveDirection =
+                require_json(args, "direction")?;
+            move_coding_agent_route_with_saver(
+                state,
+                &id,
+                &neighbor_id,
+                direction,
+                crate::config::settings::save_settings,
+            )
+            .await
         }
 
         // --- Coding-agent profiles (#859 web transport parity) ---
@@ -1493,6 +1541,37 @@ mod tests {
         }
     }
 
+    /// #2306 P2 - a real `settings.json` + `settings.local.json` pair whose
+    /// overlay owns the top-level `agents` key, loaded through the production
+    /// loader so the ownership is genuine.
+    fn overlay_owned_agents_settings(dir: &std::path::Path) -> AppSettings {
+        std::fs::write(
+            dir.join("settings.json"),
+            serde_json::to_string_pretty(&json!({
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "agents": [
+                    { "id": "base-a", "label": "A", "command": "claude", "color": "#111111" },
+                    { "id": "base-b", "label": "B", "command": "claude", "color": "#222222" }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("settings.local.json"),
+            serde_json::to_string_pretty(&json!({
+                "agents": [
+                    { "id": "ov-a", "label": "A", "command": "claude", "color": "#111111", "order": 1 },
+                    { "id": "ov-b", "label": "B", "command": "claude", "color": "#222222" }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        crate::config::settings::load_settings_from_path(&dir.join("settings.json"))
+    }
+
     #[tokio::test]
     async fn drain_session_warnings_web_dispatch_drains_buffer() {
         let (state, _rx) = ws_state_for(AppSettings::default());
@@ -1563,6 +1642,151 @@ mod tests {
                 "{cmd} should be routed, got error: {error:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn move_coding_agent_route_rejects_overlay_owned_agents_without_broadcast() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings = overlay_owned_agents_settings(temp.path());
+        let overlay_order: Vec<String> = settings.agents.iter().map(|a| a.id.clone()).collect();
+        let (state, mut rx) = ws_state_for(settings);
+
+        let response = dispatch(
+            &state,
+            21,
+            "move_coding_agent",
+            &json!({ "id": "ov-a", "neighborId": "ov-b", "direction": "up" }),
+        )
+        .await;
+
+        assert_eq!(
+            response["error"],
+            json!(crate::commands::config::AGENT_ORDER_OVERLAY_PINNED)
+        );
+        let live = state.settings.read().await;
+        let live_order: Vec<String> = live.agents.iter().map(|a| a.id.clone()).collect();
+        assert_eq!(live_order, overlay_order);
+        assert!(rx.try_recv().is_err(), "a rejected move must not broadcast");
+    }
+
+    #[tokio::test]
+    async fn move_coding_agent_native_and_browser_events_are_byte_equivalent() {
+        use tauri::Listener;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("settings.json");
+        let original = AppSettings {
+            agents: vec![test_agent("a"), test_agent("b"), test_agent("c")],
+            ..AppSettings::default()
+        };
+        let (state, mut rx) = ws_state_for(original.clone());
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build native event app");
+        let (native_tx, native_rx) = std::sync::mpsc::channel();
+        app.listen_any("coding_agent_settings_updated", move |event| {
+            let _ = native_tx.send(event.payload().to_string());
+        });
+
+        let native_ids = crate::commands::config::move_coding_agent_command_with_saver(
+            app.handle(),
+            &state.settings,
+            "b".to_string(),
+            "a".to_string(),
+            crate::config::coding_agent_mutations::AgentMoveDirection::Up,
+            |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate, &path,
+                )
+            },
+        )
+        .await
+        .expect("native move succeeds");
+        assert_eq!(native_ids, ["b", "a", "c"]);
+
+        // Same starting state for the browser route.
+        *state.settings.write().await = original;
+        let browser_ids = move_coding_agent_route_with_saver(
+            &state,
+            "b",
+            "a",
+            crate::config::coding_agent_mutations::AgentMoveDirection::Up,
+            |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate, &path,
+                )
+            },
+        )
+        .await
+        .expect("browser move succeeds");
+        assert_eq!(browser_ids, json!(["b", "a", "c"]));
+
+        let native_payload: Value = serde_json::from_str(
+            &native_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("native event"),
+        )
+        .expect("parse native event");
+        let browser_event = match rx.try_recv().expect("browser event") {
+            WsOutMsg::Text(text) => {
+                serde_json::from_str::<Value>(&text).expect("parse browser event")
+            }
+            other => panic!("expected text event, got {other:?}"),
+        };
+        assert_eq!(
+            browser_event["event"],
+            json!("coding_agent_settings_updated")
+        );
+        assert_eq!(
+            native_payload,
+            crate::commands::config::move_coding_agent_event_payload("b")
+        );
+        assert_eq!(browser_event["payload"], native_payload);
+    }
+
+    #[tokio::test]
+    async fn move_coding_agent_tauri_registration_presence() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings = overlay_owned_agents_settings(temp.path());
+        let settings_state: crate::config::settings::SettingsState =
+            Arc::new(tokio::sync::RwLock::new(settings));
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![
+                crate::commands::config::move_coding_agent
+            ])
+            .manage(settings_state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build registration app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("build webview");
+
+        let error = match tauri::test::get_ipc_response(
+            &webview,
+            tauri::webview::InvokeRequest {
+                cmd: "move_coding_agent".to_string(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "http://tauri.localhost".parse().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(json!({
+                    "id": "ov-a",
+                    "neighborId": "ov-b",
+                    "direction": "up"
+                })),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        ) {
+            Ok(_) => panic!("the overlay rejection must come from the registered command"),
+            Err(error) => serde_json::to_value(error).unwrap_or(Value::Null),
+        };
+
+        assert_eq!(
+            error,
+            json!(crate::commands::config::AGENT_ORDER_OVERLAY_PINNED),
+            "unexpected registration error payload"
+        );
     }
 
     #[tokio::test]
