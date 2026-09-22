@@ -3,7 +3,6 @@ pub mod agent_version;
 pub mod api;
 pub mod capture;
 pub mod cli;
-pub mod cog_gate_probe;
 pub mod commands;
 pub mod config;
 pub mod errors;
