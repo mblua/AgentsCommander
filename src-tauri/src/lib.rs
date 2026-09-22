@@ -9009,6 +9009,53 @@ mod tests {
         let expected_seq = slot.seq();
         let expected_key =
             crate::capture::state::consumption_key(&fixture.room_root, record.as_ref());
+        // The holder signals the acquired lock before the commit starts, so the
+        // commit cannot win the race and find it free, and it holds the lock
+        // until the async worker proves progress instead of for a fixed sleep,
+        // so a descheduled test thread cannot make the commit run uncontended.
+        let lock_path = crate::config::co_managed::lock_path(&fixture.room_root);
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let lock_path_for_thread = lock_path.clone();
+        let (lock_ready_tx, lock_ready_rx) = std::sync::mpsc::channel();
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+        let lock_holder = std::thread::spawn(move || {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path_for_thread)
+                .unwrap();
+            file.try_lock().expect("lock holder");
+            lock_ready_tx.send(()).expect("announce the held lock");
+            // The bound is a liveness guard only: a runtime-parking mutant must
+            // fail the progress assertion instead of hanging the suite. The
+            // healthy path is released by the tick, never by the timeout.
+            let _ = progress_rx.recv_timeout(Duration::from_secs(10));
+            drop(file);
+        });
+        lock_ready_rx
+            .recv()
+            .expect("the lock holder must hold the lock before the commit starts");
+
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let ticker = {
+            let ticks = Arc::clone(&ticks);
+            tokio::spawn(async move {
+                // This first tick runs only once the commit has yielded the
+                // runtime: it is both the property under test and the holder's
+                // release signal, so a direct in-task call never reaches it.
+                tokio::task::yield_now().await;
+                ticks.fetch_add(1, Ordering::SeqCst);
+                let _ = progress_tx.send(());
+                for _ in 0..2 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        };
+        // Built as late as possible: the test must not spend the commit's
+        // staleness window on its own synchronization.
         let pre = crate::capture::state::EffectPreconditions {
             session_alive: true,
             session_id: session_id.to_string(),
@@ -9020,33 +9067,6 @@ mod tests {
             observed_at: Instant::now(),
             kind: crate::capture::state::EffectKind::Automatic,
         };
-
-        let lock_path = crate::config::co_managed::lock_path(&fixture.room_root);
-        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-        let lock_path_for_thread = lock_path.clone();
-        let lock_holder = std::thread::spawn(move || {
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&lock_path_for_thread)
-                .unwrap();
-            file.try_lock().expect("lock holder");
-            std::thread::sleep(Duration::from_millis(50));
-            drop(file);
-        });
-
-        let ticks = Arc::new(AtomicUsize::new(0));
-        let ticker = {
-            let ticks = Arc::clone(&ticks);
-            tokio::spawn(async move {
-                for _ in 0..3 {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    ticks.fetch_add(1, Ordering::SeqCst);
-                }
-            })
-        };
         let commit = super::commit_co_managed_effect(
             fixture.room_root.clone(),
             slot.clone(),
@@ -9055,18 +9075,20 @@ mod tests {
             pre,
         )
         .await;
-        assert!(
-            commit.is_ok(),
-            "the lock is released and the commit applies"
-        );
         let ticks_when_commit_returned = ticks.load(Ordering::SeqCst);
         ticker.await.unwrap();
         lock_holder.join().unwrap();
 
+        // Checked before `commit`: an in-task mutant can return `LockBusy`
+        // before the ticker ever runs, and the missing progress is the finding.
         assert!(
             ticks_when_commit_returned >= 1,
             "the async worker must make real progress WHILE the blocking commit waits for the lock; \
              a direct in-task call parks it and observes zero ticks here (F2)"
+        );
+        assert!(
+            commit.is_ok(),
+            "the lock is released and the commit applies"
         );
         assert_eq!(
             ticks.load(Ordering::SeqCst),
