@@ -23,11 +23,14 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Utc};
 use futures::stream::StreamExt;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
+use crate::config::remote_activity_cache::{
+    PersistedCiState, REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME, REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS,
+};
 use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
 use crate::shutdown::ShutdownSignal;
@@ -378,7 +381,18 @@ pub(crate) struct RemoteSweeperSeams {
     spawner: GhSpawner,
     local_git: LocalGitRunner,
     jitter: JitterSource,
+    /// Destination directory for the neutral snapshot, or `None` when the host
+    /// wired no instance config directory. Captured once at construction; see
+    /// [`SnapshotPersistence`].
+    snapshot_dir: Option<PathBuf>,
+    /// Reads the publication instant written as `generatedAt`, invoked once per
+    /// round immediately before the blocking write.
+    publication_clock: PublicationClock,
 }
+
+/// The publication clock seam. Production is `Utc::now`; tests inject a fixed
+/// instant so freshness assertions are exact.
+type PublicationClock = Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>;
 
 /// Program-independent failure classification, from the text `gh` prints.
 /// Deliberately textual: `gh api` reports HTTP outcomes as exit status 1 plus a
@@ -651,6 +665,51 @@ struct QueryState {
     staleness: StalenessAxis,
 }
 
+/// The named, one-time construction state of the snapshot producer. A `None`
+/// destination is a wiring fact captured by `with_capacity` together with the
+/// single diagnostic logged there: rounds read this state, so a directory that
+/// appears later cannot start writes and a missing one never warns again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SnapshotPersistence {
+    /// A destination directory was wired; every round publishes into it.
+    Enabled,
+    /// Construction had no directory: the one-time diagnostic was logged and
+    /// every round skips persistence without touching memory, emission,
+    /// transitions or later rounds.
+    DisabledMissingAtConstruction,
+}
+
+/// Rate limiter for snapshot write-failure warnings, following the observable
+/// in-module `warned_failures` precedent. A broken destination is a per-round
+/// condition at a 10 s cadence, so the log admits one warning per
+/// `REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS` window. Pure state: no logger and no
+/// clock beyond the round's injected monotonic `Instant`.
+#[derive(Default)]
+struct SnapshotWarningLimiter {
+    last_admitted: Option<Instant>,
+}
+
+impl SnapshotWarningLimiter {
+    fn admit(&mut self, now: Instant) -> bool {
+        match self.last_admitted {
+            Some(last)
+                if now.saturating_duration_since(last)
+                    < Duration::from_secs(REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS) =>
+            {
+                false
+            }
+            _ => {
+                self.last_admitted = Some(now);
+                true
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.last_admitted = None;
+    }
+}
+
 struct SweeperState {
     gh_path: Option<PathBuf>,
     keys: HashMap<QueryKey, QueryState>,
@@ -669,6 +728,8 @@ struct SweeperState {
     budget_refilled_at: Option<Instant>,
     /// While set and not elapsed, the round issues NO `gh` call at all.
     throttled_until: Option<Instant>,
+    /// One-warning-per-window limiter for snapshot write failures.
+    snapshot_warnings: SnapshotWarningLimiter,
 }
 
 impl Default for SweeperState {
@@ -685,6 +746,7 @@ impl Default for SweeperState {
             budget_tokens: GH_BUDGET_BURST,
             budget_refilled_at: None,
             throttled_until: None,
+            snapshot_warnings: SnapshotWarningLimiter::default(),
         }
     }
 }
@@ -743,6 +805,11 @@ pub(crate) struct RemoteSweeper {
     local_git_runner: LocalGitRunner,
     jitter: JitterSource,
     transitions: mpsc::Sender<RemoteTransition>,
+    /// Named one-time construction state; see [`SnapshotPersistence`].
+    snapshot_persistence: SnapshotPersistence,
+    /// `Some` iff `snapshot_persistence` is `Enabled`.
+    snapshot_dir: Option<PathBuf>,
+    publication_clock: PublicationClock,
     state: Mutex<SweeperState>,
 }
 
@@ -769,16 +836,39 @@ impl RemoteSweeper {
         seams: RemoteSweeperSeams,
         capacity: usize,
     ) -> (Arc<Self>, mpsc::Receiver<RemoteTransition>) {
+        let RemoteSweeperSeams {
+            probe,
+            spawner,
+            local_git,
+            jitter,
+            snapshot_dir,
+            publication_clock,
+        } = seams;
+        // The one-time `None`-directory state: computed, named and diagnosed
+        // exactly here. Rounds never re-check the directory, so this is the only
+        // place the condition can be observed or logged.
+        let snapshot_persistence = match &snapshot_dir {
+            Some(_) => SnapshotPersistence::Enabled,
+            None => {
+                log::warn!(
+                    "[RemoteSweeper] no snapshot directory was wired at construction; remote activity snapshots will not be published for this process"
+                );
+                SnapshotPersistence::DisabledMissingAtConstruction
+            }
+        };
         let (transitions, receiver) = mpsc::channel(capacity);
         let sweeper = Arc::new(Self {
             session_manager,
             settings,
             emit: Mutex::new(emit),
-            probe: seams.probe,
-            spawner: seams.spawner,
-            local_git_runner: seams.local_git,
-            jitter: seams.jitter,
+            probe,
+            spawner,
+            local_git_runner: local_git,
+            jitter,
             transitions,
+            snapshot_persistence,
+            snapshot_dir,
+            publication_clock,
             state: Mutex::new(SweeperState::default()),
         });
         (sweeper, receiver)
@@ -786,7 +876,10 @@ impl RemoteSweeper {
 
     /// Production seams: the real `which`, the real `gh` spawner and the real
     /// local `git` runner. Kept in one factory so `lib.rs` names no seam type.
-    pub(crate) fn production_seams() -> RemoteSweeperSeams {
+    /// `snapshot_dir` is the instance config directory (or `None` when the host
+    /// has none); the publication clock is the real wall clock, read at
+    /// publication time and never at round start.
+    pub(crate) fn production_seams(snapshot_dir: Option<PathBuf>) -> RemoteSweeperSeams {
         RemoteSweeperSeams {
             probe: Arc::new(|| which::which("gh").ok()),
             spawner: Arc::new(|spec| Box::pin(spawn_gh(spec))),
@@ -800,6 +893,8 @@ impl RemoteSweeper {
                     Err(_) => 0.5,
                 }
             }),
+            snapshot_dir,
+            publication_clock: Arc::new(Utc::now),
         }
     }
 
@@ -1299,6 +1394,44 @@ impl RemoteSweeper {
             self.lock_state().last_payload = Some(payload);
         }
 
+        // #2374 - publish the neutral whole-file snapshot. The entries are
+        // cloned from the same post-GC snapshot the payload was built from, and
+        // this runs AFTER transitions were processed and the payload was emitted,
+        // so persistence can never delay or suppress either. The publication
+        // instant is read HERE, not taken from the round-start `wall`: a round
+        // longer than the freshness window must not publish bytes that are
+        // already stale. The blocking serialization/write is offloaded, so a
+        // slow disk cannot stall the sweeper's async worker.
+        if self.snapshot_persistence == SnapshotPersistence::Enabled {
+            if let Some(snapshot_dir) = &self.snapshot_dir {
+                let path = snapshot_dir.join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
+                let entries: Vec<(String, PersistedCiState)> = {
+                    let snapshot = remote_activity_snapshot()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    snapshot
+                        .iter()
+                        .map(|(path, activity)| (path.clone(), persisted_ci_state(activity.ci)))
+                        .collect()
+                };
+                let generated_at = (self.publication_clock)();
+                let write = tokio::task::spawn_blocking(move || {
+                    crate::config::remote_activity_cache::write_snapshot(
+                        &path,
+                        generated_at,
+                        &entries,
+                    )
+                })
+                .await;
+                match write {
+                    Ok(Ok(())) => self.lock_state().snapshot_warnings.reset(),
+                    Ok(Err(error)) => self.warn_snapshot_failure(now, error),
+                    Err(error) => self
+                        .warn_snapshot_failure(now, format!("snapshot write task failed: {error}")),
+                }
+            }
+        }
+
         log::log!(
             ROUND_LOG_LEVEL,
             "[RemoteSweeper] round: {} path(s), {} key(s){}",
@@ -1306,6 +1439,14 @@ impl RemoteSweeper {
             groups.len(),
             if throttled { ", throttled" } else { "" }
         );
+    }
+
+    /// One warning per freshness window while the destination stays broken; a
+    /// successful write resets the limiter, so a later failure warns at once.
+    fn warn_snapshot_failure(&self, now: Instant, error: String) {
+        if self.lock_state().snapshot_warnings.admit(now) {
+            log::warn!("[RemoteSweeper] remote activity snapshot write failed: {error}");
+        }
     }
 
     /// Gate 1 (`.git` metadata), then at most two local git reads for the SHA and
@@ -1656,6 +1797,14 @@ impl RemoteSweeper {
                 kind
             );
         }
+    }
+}
+
+fn persisted_ci_state(state: CiState) -> PersistedCiState {
+    match state {
+        CiState::Running => PersistedCiState::Running,
+        CiState::Idle => PersistedCiState::Idle,
+        CiState::Unknown => PersistedCiState::Unknown,
     }
 }
 
@@ -2039,6 +2188,9 @@ mod tests {
         gh: Arc<Mutex<GhScripts>>,
         git: Arc<Mutex<LocalGitScripts>>,
         jitter: Arc<Mutex<f64>>,
+        /// The publication-clock seam's current value. Producer tests pin it;
+        /// everything else reads the construction instant.
+        publication_clock: Arc<Mutex<DateTime<Utc>>>,
     }
 
     impl Harness {
@@ -2046,7 +2198,25 @@ mod tests {
             Self::with_capacity(settings, TRANSITION_QUEUE_CAPACITY)
         }
 
+        /// Round tests that do not assert persistence get no snapshot
+        /// directory: the sweeper's one-time `DisabledMissingAtConstruction`
+        /// state is then exercised by the whole existing suite.
         fn with_capacity(settings: AppSettings, capacity: usize) -> Self {
+            Self::with_snapshot_dir_and_capacity(settings, capacity, None)
+        }
+
+        /// A harness with explicit snapshot wiring: `Some(dir)` publishes
+        /// `remote-activity.json` into `dir`, `None` models a host that wired
+        /// no instance config directory.
+        fn with_snapshot_dir(settings: AppSettings, snapshot_dir: Option<PathBuf>) -> Self {
+            Self::with_snapshot_dir_and_capacity(settings, TRANSITION_QUEUE_CAPACITY, snapshot_dir)
+        }
+
+        fn with_snapshot_dir_and_capacity(
+            settings: AppSettings,
+            capacity: usize,
+            snapshot_dir: Option<PathBuf>,
+        ) -> Self {
             let temp = tempfile::tempdir().expect("tempdir");
             let emitted = Arc::new(Mutex::new(Vec::new()));
             let emit: Emitter = {
@@ -2089,6 +2259,11 @@ mod tests {
                 let jitter_value = Arc::clone(&jitter_value);
                 Arc::new(move || *jitter_value.lock().unwrap_or_else(|e| e.into_inner()))
             };
+            let publication_value = Arc::new(Mutex::new(Utc::now()));
+            let publication_clock: PublicationClock = {
+                let publication_value = Arc::clone(&publication_value);
+                Arc::new(move || *publication_value.lock().unwrap_or_else(|e| e.into_inner()))
+            };
 
             let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
             let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -2101,6 +2276,8 @@ mod tests {
                     spawner,
                     local_git,
                     jitter,
+                    snapshot_dir,
+                    publication_clock,
                 },
                 capacity,
             );
@@ -2114,6 +2291,7 @@ mod tests {
                 gh,
                 git,
                 jitter: jitter_value,
+                publication_clock: publication_value,
             }
         }
 
@@ -2135,6 +2313,13 @@ mod tests {
 
         fn set_jitter(&self, value: f64) {
             *self.jitter.lock().unwrap_or_else(|e| e.into_inner()) = value;
+        }
+
+        fn set_publication_clock(&self, value: DateTime<Utc>) {
+            *self
+                .publication_clock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = value;
         }
 
         /// Pins the bucket AND clears the refill mark, so the next round refills
@@ -4383,6 +4568,8 @@ mod tests {
                 spawner,
                 local_git,
                 jitter: Arc::new(|| 0.0),
+                snapshot_dir: None,
+                publication_clock: Arc::new(Utc::now),
             },
         );
         let shutdown = ShutdownSignal::new();
@@ -4426,6 +4613,8 @@ mod tests {
                 spawner,
                 local_git,
                 jitter: Arc::new(|| 0.0),
+                snapshot_dir: None,
+                publication_clock: Arc::new(Utc::now),
             },
         );
         let shutdown = ShutdownSignal::new();
@@ -4486,6 +4675,8 @@ mod tests {
                 spawner,
                 local_git,
                 jitter: Arc::new(|| 0.0),
+                snapshot_dir: None,
+                publication_clock: Arc::new(Utc::now),
             },
         );
 
@@ -5145,5 +5336,343 @@ mod tests {
             "main on GitHub"
         );
         assert_eq!(base_branch_display("main", ""), " on GitHub");
+    }
+
+    // --- #2374: the neutral snapshot producer. Tests are prefixed
+    // `remote_activity_cache_producer_` on purpose: the cache-unit guard runs
+    // `cargo test --lib config::remote_activity_cache::` and must be satisfied
+    // only by `config/remote_activity_cache.rs`'s own unit tests. ---
+
+    /// Positive control for the factory: `production_seams` must FORWARD its
+    /// argument. `None` could be a dropped default, so only the `Some` case can
+    /// fail when the parameter is discarded.
+    #[test]
+    fn remote_activity_cache_producer_factory_keeps_snapshot_dir() {
+        let dir = PathBuf::from("snapshot-dir");
+        assert_eq!(
+            RemoteSweeper::production_seams(Some(dir.clone())).snapshot_dir,
+            Some(dir)
+        );
+        assert_eq!(RemoteSweeper::production_seams(None).snapshot_dir, None);
+    }
+
+    /// Inspection guard for the real construction site: the factory test above
+    /// is the positive control, this one refuses a `lib.rs` that stopped
+    /// passing the instance config directory. Whitespace is flattened so a
+    /// `rustfmt` re-wrap cannot hide the call.
+    #[test]
+    fn remote_activity_cache_producer_lib_call_site_passes_config_dir() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+            .expect("read lib.rs");
+        let flattened: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            flattened.contains("RemoteSweeper::production_seams(crate::config::config_dir()"),
+            "lib.rs must construct the sweeper with the instance config directory"
+        );
+    }
+
+    /// Pure state, no logger capture and no sleeping: first failure, suppressed
+    /// inside the window, admitted at the boundary and later, and immediately
+    /// re-admitted after a success reset.
+    #[test]
+    fn remote_activity_cache_producer_warning_limiter_admits_once_per_window() {
+        let mut limiter = SnapshotWarningLimiter::default();
+        let start = Instant::now();
+        assert!(limiter.admit(start), "the first failure warns");
+        assert!(
+            !limiter.admit(start + Duration::from_secs(29)),
+            "just inside the window is suppressed"
+        );
+        assert!(
+            limiter.admit(start + Duration::from_secs(30)),
+            "the exact boundary admits"
+        );
+        assert!(
+            !limiter.admit(start + Duration::from_secs(59)),
+            "the new window suppresses again"
+        );
+        limiter.reset();
+        assert!(
+            limiter.admit(start + Duration::from_secs(59)),
+            "a successful write resets the limiter"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_activity_cache_producer_positive_wiring() {
+        let _guard = round_test_lock().await;
+        let snapshot_dir = tempfile::tempdir().expect("snapshot dir");
+        let settings = AppSettings {
+            branch_staleness_enabled: false,
+            ..AppSettings::default()
+        };
+        let harness = Harness::with_snapshot_dir(settings, Some(snapshot_dir.path().to_path_buf()));
+        let repo_running = harness.repo("repo-a");
+        let repo_idle = harness.repo("repo-b");
+        publish_branch(&repo_running, "feature-a");
+        publish_branch(&repo_idle, "feature-b");
+        {
+            let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+            git.set_head_sha(&repo_running, 'a');
+            git.set_head_sha(&repo_idle, 'b');
+        }
+        harness.set_work(&[repo_running.clone(), repo_idle.clone()]);
+
+        let publication = Utc::now();
+        harness.set_publication_clock(publication);
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            // A run on the branch, then an identity compare that says the branch
+            // is ahead, so `Running` is published rather than suppressed.
+            gh.route(
+                &format!("head_sha={}", sha_of('a')),
+                Ok(ok_output(&ci_rows(&[("feature-a", "in_progress")]))),
+            );
+            gh.compare
+                .push_back(Ok(ok_output(&compare_body("ahead", 0, 1))));
+            // No run on this branch: `Idle` needs no identity call.
+            gh.route(
+                &format!("head_sha={}", sha_of('b')),
+                Ok(ok_output(&ci_rows(&[]))),
+            );
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+
+        let path = snapshot_dir.path().join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
+        let bytes = std::fs::read(&path).expect("the exact destination exists");
+        let raw: serde_json::Value = serde_json::from_slice(&bytes).expect("snapshot json");
+        assert_eq!(raw["schemaVersion"], 1);
+        assert_eq!(
+            raw["generatedAt"],
+            publication.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        );
+        let repos = raw["repos"].as_array().expect("repos array");
+        assert_eq!(repos.len(), 2);
+        let raw_paths: Vec<&str> = repos
+            .iter()
+            .map(|repo| repo["path"].as_str().expect("path"))
+            .collect();
+        let mut sorted = raw_paths.clone();
+        sorted.sort();
+        assert_eq!(raw_paths, sorted, "entries are sorted by raw path string");
+        assert_eq!(repos[0]["path"], repo_running);
+        assert_eq!(repos[0]["ciState"], "running");
+        assert_eq!(repos[1]["path"], repo_idle);
+        assert_eq!(repos[1]["ciState"], "idle");
+
+        // Producer-to-reader round trip through the validating reader the CLI
+        // uses: the produced bytes carry identical path/state data.
+        let snapshot =
+            crate::config::remote_activity_cache::read_snapshot(&path).expect("read produced");
+        assert_eq!(
+            snapshot.repos,
+            vec![
+                (
+                    repo_running.clone(),
+                    crate::config::remote_activity_cache::PersistedCiState::Running,
+                ),
+                (
+                    repo_idle.clone(),
+                    crate::config::remote_activity_cache::PersistedCiState::Idle,
+                ),
+            ]
+        );
+
+        // Empty-round GC: the next round owns an empty work list, so the file is
+        // atomically replaced with `repos: []` instead of keeping survivors.
+        tick(&mut now, &mut wall, 60);
+        harness.set_work(&[]);
+        harness.round(now, wall).await;
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read empty")).expect("empty json");
+        assert_eq!(raw["repos"].as_array().expect("repos").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn remote_activity_cache_producer_forced_write_failure_keeps_round_effects() {
+        let _guard = round_test_lock().await;
+        let blocker = tempfile::tempdir().expect("blocker dir");
+        let blocked_destination = blocker.path().join("not-a-directory");
+        std::fs::write(&blocked_destination, b"file").expect("blocker file");
+        let settings = AppSettings {
+            branch_staleness_enabled: false,
+            ..AppSettings::default()
+        };
+        let harness = Harness::with_snapshot_dir(settings, Some(blocked_destination.clone()));
+        let repo = harness.repo("repo-a");
+        publish_branch(&repo, "feature-a");
+        harness
+            .git
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_head_sha(&repo, 'a');
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.route(
+                &format!("head_sha={}", sha_of('a')),
+                Ok(ok_output(&ci_rows(&[("feature-a", "completed")]))),
+            );
+            gh.route(
+                &format!("head_sha={}", sha_of('a')),
+                Ok(ok_output(&ci_rows(&[("feature-a", "in_progress")]))),
+            );
+            for _ in 0..2 {
+                gh.compare
+                    .push_back(Ok(ok_output(&compare_body("ahead", 0, 1))));
+            }
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        tick(&mut now, &mut wall, 60);
+        harness.round(now, wall).await;
+
+        let transitions = harness.drain_transitions();
+        assert_eq!(transitions.len(), 1, "the transition still fires");
+        assert_eq!(transitions[0].kind, TransitionKind::CiStarted);
+        assert_eq!(harness.emitted_count(), 2, "both payloads were emitted");
+        assert_eq!(
+            harness.snapshot().get(&repo).expect("entry").ci,
+            CiState::Running,
+            "the in-memory snapshot still updated"
+        );
+        assert!(
+            harness
+                .sweeper
+                .lock_state()
+                .snapshot_warnings
+                .last_admitted
+                .is_some(),
+            "the forced failure was admitted once into the warning limiter"
+        );
+        assert!(
+            !blocked_destination
+                .join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME)
+                .exists(),
+            "the destination stays unwritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_activity_cache_producer_publication_time_is_not_the_round_start() {
+        let _guard = round_test_lock().await;
+        let snapshot_dir = tempfile::tempdir().expect("snapshot dir");
+        let settings = AppSettings {
+            branch_staleness_enabled: false,
+            ..AppSettings::default()
+        };
+        let harness = Harness::with_snapshot_dir(settings, Some(snapshot_dir.path().to_path_buf()));
+        let repo = harness.repo("repo-a");
+        publish_branch(&repo, "feature-a");
+        harness.set_work(std::slice::from_ref(&repo));
+
+        // Whole-second instant: the codec writes seconds precision.
+        let publication =
+            chrono::DateTime::from_timestamp(Utc::now().timestamp(), 0).expect("whole second");
+        harness.set_publication_clock(publication);
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.route(
+                &format!("head_sha={}", sha_of('a')),
+                Ok(ok_output(&ci_rows(&[]))),
+            );
+        }
+
+        // Round-start wall deliberately more than the freshness window older
+        // than the publication instant: reusing it would publish stale bytes.
+        let round_start_wall = (publication - chrono::Duration::seconds(45)).with_timezone(&Local);
+        harness.round(Instant::now(), round_start_wall).await;
+
+        let path = snapshot_dir.path().join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
+        let snapshot =
+            crate::config::remote_activity_cache::read_snapshot(&path).expect("read produced");
+        assert_eq!(snapshot.generated_at, publication);
+        assert!(crate::config::remote_activity_cache::snapshot_is_fresh(
+            &snapshot,
+            publication
+        ));
+        assert!(
+            !crate::config::remote_activity_cache::snapshot_is_fresh(
+                &snapshot,
+                round_start_wall.with_timezone(&Utc)
+            ),
+            "the round-start clock would have published already-stale bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_activity_cache_producer_missing_directory_skips_persistence_only() {
+        let _guard = round_test_lock().await;
+        let settings = AppSettings {
+            branch_staleness_enabled: false,
+            ..AppSettings::default()
+        };
+        let harness = Harness::with_snapshot_dir(settings, None);
+        assert_eq!(
+            harness.sweeper.snapshot_persistence,
+            SnapshotPersistence::DisabledMissingAtConstruction,
+            "construction records the one-time diagnostic state"
+        );
+        let repo = harness.repo("repo-a");
+        publish_branch(&repo, "feature-a");
+        harness
+            .git
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_head_sha(&repo, 'a');
+        harness.set_work(std::slice::from_ref(&repo));
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.route(
+                &format!("head_sha={}", sha_of('a')),
+                Ok(ok_output(&ci_rows(&[("feature-a", "completed")]))),
+            );
+            gh.route(
+                &format!("head_sha={}", sha_of('a')),
+                Ok(ok_output(&ci_rows(&[("feature-a", "in_progress")]))),
+            );
+            for _ in 0..2 {
+                gh.compare
+                    .push_back(Ok(ok_output(&compare_body("ahead", 0, 1))));
+            }
+        }
+
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        tick(&mut now, &mut wall, 60);
+        harness.round(now, wall).await;
+
+        assert_eq!(harness.emitted_count(), 2, "payload emission is untouched");
+        let transitions = harness.drain_transitions();
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].kind, TransitionKind::CiStarted);
+        assert_eq!(
+            harness.snapshot().get(&repo).expect("entry").ci,
+            CiState::Running,
+            "post-GC memory is untouched"
+        );
+        assert!(
+            harness
+                .sweeper
+                .lock_state()
+                .snapshot_warnings
+                .last_admitted
+                .is_none(),
+            "a missing directory is not a per-round persistence failure"
+        );
     }
 }

@@ -3855,7 +3855,12 @@ pub fn run(
                                 .emit("ac_remote_activity_updated", payload);
                         }
                     }),
-                    crate::pty::remote_watcher::RemoteSweeper::production_seams(),
+                    // #2374 - the neutral snapshot destination: the instance
+                    // config directory, resolved here and never inferred from
+                    // settings or another artifact.
+                    crate::pty::remote_watcher::RemoteSweeper::production_seams(
+                        crate::config::config_dir(),
+                    ),
                 );
             let _ = remote_sweeper.start(shutdown_for_setup.clone());
             // #2064 Phase B - the transition stream's consumer. Started beside the

@@ -150,6 +150,9 @@ pub(crate) const ORPHAN_ARCHIVE_FILENAME: &str = "orphaned-sessions.archive.json
 pub(crate) const ORPHAN_ARCHIVE_ROTATION_GLOB: &str = "orphaned-sessions.archive.json.*";
 pub(crate) const PROJECT_REFRESH_REQUESTS_DIR_NAME: &str = "project-refresh-requests";
 pub(crate) const PTY_INPUT_LOCKS_DIR_NAME: &str = "pty-input-locks";
+/// #2374 - the whole-file remote CI view the daemon republishes each sweep and
+/// `room activity` reads. Machine-local and regenerated, so never committed.
+pub(crate) const REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME: &str = "remote-activity.json";
 pub(crate) const SESSION_REQUESTS_DIR_NAME: &str = "session-requests";
 /// #1737 - operator-owned Markdown overrides. AC never creates, syncs, upgrades,
 /// retires or manifest-records one; the row exists so a machine-local override is
@@ -548,6 +551,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::Dir,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: transient cross-process PTY input locks",
+    },
+    InstanceArtifact {
+        name: REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: published remote CI activity snapshot (schema 1); replaced atomically by the sweeper",
     },
     InstanceArtifact {
         name: SESSION_REQUESTS_DIR_NAME,
