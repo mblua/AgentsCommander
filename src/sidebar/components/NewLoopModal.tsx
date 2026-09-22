@@ -233,6 +233,12 @@ const NewLoopModal: Component<{
             Continue the previous conversation each run
           </label>
 
+          <div class="entity-textarea-meta">
+            <span class="entity-textarea-hint" data-ac-testid="loop.new.scheduleStart">
+              The schedule starts when you create this Loop. The first run is counted from that moment.
+            </span>
+          </div>
+
           <Show when={creating()}>
             <div class="wizard-loading">Creating Loop...</div>
           </Show>

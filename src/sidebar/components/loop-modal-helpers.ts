@@ -1,4 +1,10 @@
-import type { AcWorkgroup, BusyCoordinatorPolicy, LoopSessionStart } from "../../shared/types";
+import type {
+  AcLoopSummary,
+  AcWorkgroup,
+  BusyCoordinatorPolicy,
+  LoopSessionStart,
+  LoopUpdateInput,
+} from "../../shared/types";
 
 export interface LoopCoordinatorOption {
   workgroup: string;
@@ -61,4 +67,49 @@ export function normalizeLoopError(error: unknown, fallback: string): string {
   if (typeof error === "string") return error;
   if (error instanceof Error && error.message) return error.message;
   return fallback;
+}
+
+export interface LoopEditBaseline {
+  summary: AcLoopSummary;
+  promptBody: string;
+}
+
+export interface LoopEditValues {
+  name: string;
+  expr: string;
+  workgroup: string;
+  promptBody: string;
+  busyCoordinator: AcLoopSummary["busyCoordinator"];
+  sessionStart: AcLoopSummary["sessionStart"];
+  enabled: boolean;
+}
+
+export function buildLoopUpdateInput(
+  baseline: LoopEditBaseline,
+  next: LoopEditValues
+): LoopUpdateInput {
+  const input: LoopUpdateInput = {};
+  if (next.name !== baseline.summary.name) input.name = next.name;
+  if (next.expr !== baseline.summary.expr) input.expr = next.expr;
+  if (next.workgroup !== baseline.summary.workgroup) input.workgroup = next.workgroup;
+  if (next.promptBody !== baseline.promptBody) input.promptBody = next.promptBody;
+  if (next.busyCoordinator !== baseline.summary.busyCoordinator) {
+    input.busyCoordinator = next.busyCoordinator;
+  }
+  if (next.sessionStart !== baseline.summary.sessionStart) input.sessionStart = next.sessionStart;
+  if (next.enabled !== baseline.summary.enabled) input.enabled = next.enabled;
+  return input;
+}
+
+export const SCHEDULE_RESET_KEYS = [
+  "expr",
+  "workgroup",
+  "promptBody",
+  "busyCoordinator",
+  "sessionStart",
+  "enabled",
+] as const;
+
+export function resetsLoopSchedule(input: LoopUpdateInput): boolean {
+  return SCHEDULE_RESET_KEYS.some((key) => input[key] !== undefined);
 }

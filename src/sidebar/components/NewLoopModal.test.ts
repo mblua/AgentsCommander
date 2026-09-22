@@ -191,6 +191,28 @@ describe("NewLoopModal", () => {
     dispose();
   });
 
+  it("always renders the exact schedule-start notice", () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () =>
+        NewLoopModal({
+          projectPath: "C:\\Project",
+          workgroups: workgroups(),
+          onClose: () => {},
+        }),
+      root,
+    );
+
+    expect(
+      document
+        .querySelector<HTMLElement>('[data-ac-testid="loop.new.scheduleStart"]')
+        ?.textContent?.trim(),
+    ).toBe("The schedule starts when you create this Loop. The first run is counted from that moment.");
+
+    dispose();
+  });
+
   it("creates with waitUntilIdle when force inject is unchecked", async () => {
     await expectCreateCalledWith({
       checkboxes: [],
