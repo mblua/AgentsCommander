@@ -7,6 +7,7 @@
 
 #[allow(clippy::cognitive_complexity)]
 pub fn cognitive_gate_probe(seed: u32) -> u32 {
+    let unused_phase8_probe_marker = seed;
     let mut accumulator = seed;
     if accumulator > 1 {
         accumulator = accumulator.wrapping_add(1);
