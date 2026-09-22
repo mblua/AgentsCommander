@@ -524,54 +524,11 @@ fn canonical_timestamp(value: &str) -> bool {
     canonical_timestamp_millis(value).is_some()
 }
 
-fn forbidden_identity_scalar(character: char) -> bool {
-    character.is_control()
-        || matches!(
-            character,
-            '\u{061c}'
-                | '\u{200e}'
-                | '\u{200f}'
-                | '\u{202a}'..='\u{202e}'
-                | '\u{2066}'..='\u{2069}'
-        )
-}
-
+/// Canonical agent FQN (`<project>:room-<n>-<team>/<agent>`; the legacy `wg-` form is still
+/// accepted until phase 2 (#1615) retires it). Delegates to the shared room-aware validator so
+/// the helper cannot drift from the canonical identity grammar again (#2361).
 fn canonical_agent_fqn(value: &str) -> bool {
-    if value.len() > 1_024 || value.matches(':').count() != 1 {
-        return false;
-    }
-    let Some((project, local)) = value.split_once(':') else {
-        return false;
-    };
-    let Some((workgroup, agent)) = local.split_once('/') else {
-        return false;
-    };
-    if project.is_empty()
-        || matches!(project, "." | "..")
-        || local.matches('/').count() != 1
-        || project.chars().any(|character| {
-            forbidden_identity_scalar(character)
-                || matches!(character, '/' | '\\' | '*' | '?' | '"' | '<' | '>' | '|')
-        })
-        || agent.is_empty()
-        || !agent
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    {
-        return false;
-    }
-    let Some(rest) = workgroup.strip_prefix("wg-") else {
-        return false;
-    };
-    let Some((digits, team)) = rest.split_once('-') else {
-        return false;
-    };
-    !digits.is_empty()
-        && digits.bytes().all(|byte| byte.is_ascii_digit())
-        && !team.is_empty()
-        && team
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    terminal_snapshot_renderer::validate_wg_fqn(value).is_ok()
 }
 
 fn sha256_hex(input: &[u8]) -> String {
@@ -2332,12 +2289,19 @@ mod tests {
 
     #[test]
     fn response_fqn_validation_rejects_path_aliases_controls_and_bidi() {
+        assert!(canonical_agent_fqn("project:room-25-ac-dev-team/member"));
         assert!(canonical_agent_fqn("project:wg-1-team/member"));
         for invalid in [
             ".:wg-1-team/member",
             "..:wg-1-team/member",
             "pro\nject:wg-1-team/member",
             "pro\u{202e}ject:wg-1-team/member",
+            "project:room-25-ac-dev-team/",
+            "project:room-25-ac-dev-team/bad_agent",
+            "project:room-25-ac-dev-team/member/more",
+            "project:room-x-ac-dev-team/member",
+            "project:room-25-/member",
+            "pro\u{2028}ject:room-25-ac-dev-team/member",
         ] {
             assert!(!canonical_agent_fqn(invalid), "accepted {invalid:?}");
         }
@@ -2377,6 +2341,29 @@ mod tests {
             payload_sha256: &digest,
         };
         assert!(parse_result(&body, &op_id, Some(&expected)).is_ok());
+
+        let room_body = serde_json::to_vec(&json!({
+            "version": 1,
+            "injectionId": injection_id,
+            "opId": op_id,
+            "sender": "project:room-25-ac-dev-team/lead",
+            "target": "project:room-25-ac-dev-team/dev",
+            "status": "queued",
+            "terminal": false,
+            "payloadBytes": 1,
+            "payloadSha256": digest,
+            "sourcePlane": "container_api",
+            "issuedAt": "2026-01-01T00:00:00.000Z",
+            "expiresAt": "2026-01-01T00:10:00.000Z",
+            "queuedAt": "2026-01-01T00:00:00.000Z"
+        }))
+        .unwrap();
+        let room_expected = ExpectedPtyResult {
+            target: "project:room-25-ac-dev-team/dev",
+            payload_bytes: 1,
+            payload_sha256: &digest,
+        };
+        assert!(parse_result(&room_body, &op_id, Some(&room_expected)).is_ok());
 
         let mut leaked: serde_json::Value = serde_json::from_slice(&body).unwrap();
         leaked["status"] = json!("rejected");

@@ -2567,8 +2567,8 @@ jobs:
       - name: Test locked terminal snapshot renderer
         run: cargo test --locked -p terminal-snapshot-renderer
 
-      - name: Test locked terminal snapshot helper
-        run: cargo test --locked -p session-bridge --bin agentscommander-api-helper terminal_snapshot
+      - name: Test locked api-helper
+        run: cargo test --locked -p session-bridge --bin agentscommander-api-helper
 
   windows-release-cli-smoke:
     name: windows-release-cli-smoke
