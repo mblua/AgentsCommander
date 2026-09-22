@@ -65,8 +65,16 @@ const RootAgentBanner: Component = () => {
     if (root && typeof root.status !== "string") voiceRecorder.revokeSession(root.id);
   });
 
+  // #2271 - keyed sidecar, read here because the dot has no session field to
+  // carry the state across a list refresh. Declared before the dotClass memo:
+  // createMemo computes eagerly, so a later declaration would sit in its TDZ.
+  const isComanaged = () => {
+    const r = rootSession();
+    return r ? sessionsStore.comanagedBySessionId[r.id] ?? false : false;
+  };
+
   const dotClass = createMemo(() => {
-    return sessionDotClass(rootSession());
+    return sessionDotClass(rootSession(), { comanaged: isComanaged() });
   });
 
   const subtitle = createMemo(() => {
@@ -387,7 +395,11 @@ const RootAgentBanner: Component = () => {
         data-ac-role="button"
         data-ac-state={rootSession() ? (hasLivePty() ? "live" : "dormant") : "missing"}
       >
-        <div class={`session-item-status ${dotClass()}`} />
+        <div
+          class={`session-item-status ${dotClass()}`}
+          data-ac-comanaged={isComanaged() ? "true" : "false"}
+          title={isComanaged() ? "Co-managed" : undefined}
+        />
         <div class="root-agent-avatar">
           <img
             src={iconUrl}

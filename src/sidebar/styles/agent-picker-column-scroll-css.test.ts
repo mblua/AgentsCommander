@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { declarations, declProps, declValue, escapeRe } from "./css-test-helpers";
 
 // #2038 — the two right-hand columns of the Coding Agent profile modal scroll
 // independently. jsdom never applies this stylesheet, so the bytes on disk are
@@ -33,35 +34,12 @@ function stripComments(css: string): string {
 
 const CSS_SCAN = stripComments(CSS);
 
-const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
 /** The body of the single top-level `selector { ... }` rule. Throws on a miss. */
 function ruleBody(selector: string): string {
   const re = new RegExp(`^${escapeRe(selector)} \\{([^}]*)\\}`, "m");
   const match = CSS_SCAN.match(re);
   if (!match) throw new Error(`missing rule: ${selector}`);
   return match[1];
-}
-
-function declarations(body: string): Array<[string, string]> {
-  return body
-    .split(";")
-    .map((d) => d.trim())
-    .filter((d) => d.includes(":"))
-    .map((d) => [
-      d.slice(0, d.indexOf(":")).trim(),
-      d.slice(d.indexOf(":") + 1).trim().replace(/\s+/g, " "),
-    ]);
-}
-
-const declProps = (body: string): string[] => declarations(body).map(([prop]) => prop);
-
-/** Last declaration of `prop` in `body`, mirroring the within-rule cascade. Throws on a miss. */
-function declValue(body: string, prop: string): string {
-  let found: string | undefined;
-  for (const [p, v] of declarations(body)) if (p === prop) found = v;
-  if (found === undefined) throw new Error(`missing declaration: ${prop}`);
-  return found;
 }
 
 // ---------------------------------------------------------------------------

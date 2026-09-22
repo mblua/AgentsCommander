@@ -25,6 +25,7 @@ import {
   resolveBlockingMenu,
   onSessionIdle,
   onSessionBusy,
+  onSessionComanagedState,
   onSessionContext,
   onSessionGitRepos,
   onSessionCoordinatorChanged,
@@ -918,15 +919,30 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     );
 
     await register(
-      onSessionIdle(({ id }) => {
+      onSessionIdle(({ id, comanaged }) => {
         sessionsStore.markActivity(id);
-        sessionsStore.setSessionWaiting(id, true);
+        if (comanaged === true) {
+          // #2271 - the idle edge carries the Co-managed decision in its own
+          // payload. Do NOT set waiting for an armed session: that is the whole
+          // point of one event, one payload (never paint idle before red).
+          sessionsStore.setSessionComanaged(id, true);
+        } else {
+          sessionsStore.setSessionWaiting(id, true);
+        }
       })
     );
 
     await register(
       onSessionBusy(({ id }) => {
         sessionsStore.setSessionWaiting(id, false);
+      })
+    );
+
+    await register(
+      onSessionComanagedState(({ id, active }) => {
+        // #2271 - transitions that do not coincide with the idle edge: trigger
+        // (b) while already idle, cycle end, exit or disable mid-cycle.
+        sessionsStore.setSessionComanaged(id, active === true);
       })
     );
 

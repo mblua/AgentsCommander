@@ -7,6 +7,10 @@ import { findReplicaSession } from "./workgroup-session";
  * watchdog's import graph never reaches SessionDotClass. Consumers must be render
  * code only; anything asking "is this replica working?" calls isReplicaWorking.
  */
-export function replicaDotClass(wg: AcWorkgroup, replica: AcAgentReplica): SessionDotClass {
-  return sessionDotClass(findReplicaSession(wg, replica));
+export function replicaDotClass(
+  wg: AcWorkgroup,
+  replica: AcAgentReplica,
+  comanaged = false,
+): SessionDotClass {
+  return sessionDotClass(findReplicaSession(wg, replica), { comanaged });
 }

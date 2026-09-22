@@ -26,6 +26,22 @@ describe("sessionDotClass", () => {
     expect(sessionDotClass(dotSession("active"))).toBe("active");
   });
 
+  // #2271 - the new variant's leg of the 1:1 projection: its own class, the two
+  // states that still win above it, and the unchanged order without the flag.
+  it("maps comanaged to its own class below exited and offline (#2271)", () => {
+    expect(sessionDotClass(dotSession("running"), { comanaged: true })).toBe("comanaged");
+    expect(sessionDotClass(dotSession("running", { waitingForInput: true }), { comanaged: true })).toBe("comanaged");
+    expect(sessionDotClass(dotSession("running", { pendingReview: true }), { comanaged: true })).toBe("comanaged");
+    expect(sessionDotClass(dotSession({ exited: 0 }), { comanaged: true })).toBe("exited");
+    expect(sessionDotClass(dotSession("running"), { inactive: true, comanaged: true })).toBe("offline");
+    expect(sessionDotClass(null, { comanaged: true })).toBe("offline");
+
+    // Test 7 leg: without comanaged the pinned order is untouched.
+    expect(sessionDotClass(dotSession("running", { waitingForInput: true }))).toBe("waiting");
+    expect(sessionDotClass(dotSession("running", { pendingReview: true }))).toBe("pending");
+    expect(sessionDotClass(dotSession({ exited: 0 }, { waitingForInput: true }))).toBe("exited");
+  });
+
   it("uses offline for missing or inactive rows", () => {
     expect(sessionDotClass(null)).toBe("offline");
     expect(sessionDotClass(dotSession("running"), { inactive: true })).toBe("offline");

@@ -135,8 +135,11 @@ function sessionStatusSearchText(status: Session["status"]): string {
   return typeof status === "string" ? status : `exited ${status.exited}`;
 }
 
-function sessionEffectiveStatusSearchText(session: Session): string {
-  const dotClass = sessionDotClass(session);
+// #2271 - the dot class doubles as this row's search text, so the sidecar flag
+// must be threaded in here or a Co-managed replica would stay searchable as
+// `waiting` (epic.md 5.5).
+function sessionEffectiveStatusSearchText(session: Session, comanaged: boolean): string {
+  const dotClass = sessionDotClass(session, { comanaged });
   return dotClass === "exited" ? sessionStatusSearchText(session.status) : dotClass;
 }
 
@@ -1097,7 +1100,10 @@ const ProjectPanel: Component = () => {
           return joinSearchText(
             session.name,
             session.agentLabel,
-            sessionEffectiveStatusSearchText(session)
+            sessionEffectiveStatusSearchText(
+              session,
+              sessionsStore.comanagedBySessionId[session.id] ?? false
+            )
           );
         };
         const sessionRepoSearchText = (session: Session | undefined) => {
@@ -2473,9 +2479,13 @@ const ProjectPanel: Component = () => {
           taskTitle?: string | null,
           rowContext = "workgroups"
         ) => {
-          const dotClass = () => replicaDotClass(wg, replica);
-          const isCoord = () => replica.isCoordinator;
           const session = () => replicaSession(wg, replica);
+          const isComanaged = () => {
+            const s = session();
+            return s ? sessionsStore.comanagedBySessionId[s.id] ?? false : false;
+          };
+          const dotClass = () => replicaDotClass(wg, replica, isComanaged());
+          const isCoord = () => replica.isCoordinator;
           const communication = createMemo(() => session()?.communication ?? null);
           const showRaiseHand = createMemo(() =>
             isCoord() &&
@@ -2606,7 +2616,11 @@ const ProjectPanel: Component = () => {
               }}
               title={replica.path}
             >
-              <div class={`session-item-status ${dotClass()}`} />
+              <div
+                class={`session-item-status ${dotClass()}`}
+                data-ac-comanaged={isComanaged() ? "true" : "false"}
+                title={isComanaged() ? "Co-managed" : undefined}
+              />
               <div class="replica-item-info">
                 <Show when={taskTitle}>
                   <div class="coord-task-line">

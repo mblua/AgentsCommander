@@ -938,15 +938,32 @@ export function onLoopEvent(
 }
 
 export function onSessionIdle(
-  callback: (data: { id: string }) => void
+  callback: (data: { id: string; comanaged?: boolean }) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<{ id: string }>("session_idle", callback);
+  // #2271 - `comanaged` is additive: an older payload that carries only `{ id }`
+  // is still valid and is treated as false by the consumer.
+  return transport.listen<{ id: string; comanaged?: boolean }>("session_idle", callback);
 }
 
 export function onSessionBusy(
   callback: (data: { id: string }) => void
 ): Promise<UnlistenFn> {
   return transport.listen<{ id: string }>("session_busy", callback);
+}
+
+/**
+ * #2271 - the Co-managed transitions that do NOT coincide with the idle edge:
+ * trigger (b) (a record arriving while already idle), cycle end, and exit or
+ * disable mid-cycle. Emitted with `emit` to every window, like `session_idle`,
+ * so a detached terminal receives it too. `reason` is null when `active` is true.
+ */
+export function onSessionComanagedState(
+  callback: (data: { id: string; active: boolean; reason: string | null }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ id: string; active: boolean; reason: string | null }>(
+    "session_comanaged_state",
+    callback
+  );
 }
 
 export function onSessionContext(
