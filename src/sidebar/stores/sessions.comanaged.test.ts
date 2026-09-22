@@ -84,10 +84,10 @@ describe("sessionsStore comanaged sidecar (#2271)", () => {
       await settingsStore.load();
       const dot = rendered.root.querySelector(".session-item-status");
       if (!dot) throw new Error("status dot missing after refresh");
-      // The refresh changed the runtime state to idle, and the row still renders
-      // the Co-managed red rather than the idle grey.
+      // The refresh changed the runtime state to idle; the row keeps the real
+      // idle colour and adds the Co-managed ring (#2408: "idle comanaged").
       expect(dot.classList.contains("comanaged")).toBe(true);
-      expect(dot.classList.contains("idle")).toBe(false);
+      expect(dot.classList.contains("idle")).toBe(true);
       expect(dot.getAttribute("data-ac-comanaged")).toBe("true");
     } finally {
       rendered.cleanup();

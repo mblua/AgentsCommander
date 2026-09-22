@@ -24,6 +24,8 @@ import type { Session } from "../../shared/types";
 
 // #2271 phase 8 - the three components that paint the circle today must carry
 // the new state: SessionItem, RootAgentBanner and the ProjectPanel replica row.
+// #2408 - Co-managed is an additive `comanaged` ring class: the dot keeps its
+// real activity class, and clearing the flag removes only `comanaged`.
 // The Co-managed flag lives in the store's sidecar map, keyed by session id, so
 // every leg drives the map through the public setter instead of a Session field.
 
@@ -65,8 +67,8 @@ function replicaSession(overrides: Partial<Session> = {}): Session {
     name: "wg-2-dev-team/dev-webpage-ui",
     workingDirectory: replicaAgentPath,
     status: "running",
-    // Today's search text for this row would be `waiting`; test 17 proves the
-    // comanaged flag replaces it and that clearing it restores `waiting`.
+    // The dot paints `waiting`; test 17 proves the search text becomes
+    // `comanaged` while the flag is set and `waiting` once it clears.
     waitingForInput: true,
     ...overrides,
   });
@@ -171,6 +173,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
       expect(stateBefore).toBe("idle");
 
       expect(dot.classList.contains("comanaged")).toBe(true);
+      expect(dot.classList.contains("running")).toBe(true);
       expect(dot.getAttribute("data-ac-comanaged")).toBe("true");
       expect(dot.getAttribute("title")).toMatch(/co-managed/i);
 
@@ -202,6 +205,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
       expect(stateBefore).toBe("live");
 
       expect(dot.classList.contains("comanaged")).toBe(true);
+      expect(dot.classList.contains("running")).toBe(true);
       expect(dot.getAttribute("data-ac-comanaged")).toBe("true");
       expect(dot.getAttribute("title")).toMatch(/co-managed/i);
 
@@ -226,6 +230,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
       expect(row.hasAttribute("data-ac-state")).toBe(false);
 
       expect(dot.classList.contains("comanaged")).toBe(true);
+      expect(dot.classList.contains("waiting")).toBe(true);
       expect(dot.getAttribute("data-ac-comanaged")).toBe("true");
       expect(dot.getAttribute("title")).toMatch(/co-managed/i);
 
@@ -238,6 +243,79 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
       expect(row.hasAttribute("data-ac-state")).toBe(false);
     } finally {
       rendered.cleanup();
+    }
+  });
+
+  // #2408 - each site's dot classes are exactly `session-item-status <activity>`
+  // plus `comanaged`; clearing the flag removes only the ring class.
+  // `active` is SessionItem-only: the store the other two sites read from
+  // settles a live session's status to `running`.
+  const ACTIVITY_CASES: Array<{ expected: string; overrides: Partial<Session> }> = [
+    { expected: "running", overrides: { status: "running" } },
+    { expected: "idle", overrides: { status: "idle" } },
+    { expected: "pending", overrides: { status: "running", pendingReview: true } },
+    { expected: "waiting", overrides: { status: "running", waitingForInput: true } },
+    { expected: "exited", overrides: { status: { exited: 1 } } },
+  ];
+
+  async function expectRingPreservesActivity(dot: HTMLElement, id: string, expected: string) {
+    await waitFor(() => expect(dot.classList.contains(expected), `${expected} vs ${dot.className}`).toBe(true));
+    expect([...dot.classList].sort()).toEqual(["comanaged", expected, "session-item-status"].sort());
+    sessionsStore.setSessionComanaged(id, false);
+    await waitFor(() => expect(dot.classList.contains("comanaged")).toBe(false));
+    expect([...dot.classList].sort()).toEqual([expected, "session-item-status"].sort());
+  }
+
+  it("SessionItem keeps every real activity class under the ring (#2408)", async () => {
+    const cases = [
+      { expected: "active", overrides: { status: "active" } as Partial<Session>, id: "cm-active" },
+      ...ACTIVITY_CASES.map((c, i) => ({ ...c, id: `cm-activity-${i}` })),
+      { expected: "offline", overrides: { status: "running" } as Partial<Session>, id: "inactive-cm-offline" },
+    ];
+    for (const c of cases) {
+      const s = session({ id: c.id, name: `wg-1-dev-team/${c.expected}`, ...c.overrides });
+      sessionsStore.setSessions([s]);
+      sessionsStore.setSessionComanaged(s.id, true);
+      const fake = new FakeTransport();
+      fake.resolve("get_settings", baseSettings());
+      const rendered = renderWithFakeTransport(() => <SessionItem session={s} isActive={false} />, fake);
+      try {
+        await settingsStore.load();
+        await expectRingPreservesActivity(dotOf(itemRow(rendered.root, s.id)), s.id, c.expected);
+      } finally {
+        rendered.cleanup();
+      }
+    }
+  });
+
+  it("RootAgentBanner keeps every real activity class under the ring (#2408)", async () => {
+    for (const c of ACTIVITY_CASES) {
+      sessionsStore.setSessions([
+        session({ id: "root-1", name: "Agent's Commander", isRootAgent: true, ...c.overrides }),
+      ]);
+      sessionsStore.setSessionComanaged("root-1", true);
+      const rendered = renderWithFakeTransport(() => <RootAgentBanner />, new FakeTransport());
+      try {
+        const row = rendered.root.querySelector<HTMLElement>(".root-agent-banner");
+        if (!row) throw new Error("root agent banner not rendered");
+        await expectRingPreservesActivity(dotOf(row), "root-1", c.expected);
+      } finally {
+        rendered.cleanup();
+      }
+    }
+  });
+
+  it("the ProjectPanel replica dot keeps every real activity class under the ring (#2408)", async () => {
+    for (const c of ACTIVITY_CASES) {
+      sessionsStore.setSessions([replicaSession({ waitingForInput: false, ...c.overrides })]);
+      sessionsStore.setSessionComanaged(REPLICA_SESSION_ID, true);
+      const rendered = await renderPanel();
+      try {
+        await expectRingPreservesActivity(dotOf(replicaRow(rendered.root)), REPLICA_SESSION_ID, c.expected);
+      } finally {
+        rendered.cleanup();
+        resetUiStoresForTests();
+      }
     }
   });
 
@@ -275,6 +353,9 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
       const pendingDot = dotOf(itemRow(rendered.root, pending.id));
       expect(waitingDot.classList.contains("comanaged")).toBe(true);
       expect(pendingDot.classList.contains("comanaged")).toBe(true);
+      // #2408 - the ring never hides the real activity colour.
+      expect(waitingDot.classList.contains("waiting")).toBe(true);
+      expect(pendingDot.classList.contains("pending")).toBe(true);
 
       sessionsStore.setSessionComanaged(waiting.id, false);
       sessionsStore.setSessionComanaged(pending.id, false);
