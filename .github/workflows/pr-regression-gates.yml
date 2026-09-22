@@ -5,14 +5,6 @@ on:
     # `labeled` lets adding the `ci:full` label start a full run.
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
-  push:
-    branches-ignore:
-      - main
-      - 'release/**'
-      - 'hotfix/**'
-      - 'dependabot/**'
-      - 'revert/**'
-      - 'gh-readonly-queue/**'
 
 permissions:
   contents: read
