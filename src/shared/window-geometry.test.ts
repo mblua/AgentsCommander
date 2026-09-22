@@ -53,6 +53,7 @@ const NORMAL = { x: 40, y: 30, width: 1100, height: 700 };
 const OTHER = { x: 300, y: 200, width: 900, height: 600 };
 const MAXED = { x: 0, y: 0, width: 2560, height: 1440 };
 const SCREEN = { x: 0, y: 0, width: 2560, height: 1440 };
+const DEGENERATE = { x: 40, y: 30, width: 0, height: 700 };
 
 let fake: FakeTransport;
 let restoreTransport: () => void;
@@ -148,6 +149,34 @@ describe("main window placement observation (#2349)", () => {
     });
   });
 
+  it("persists the startup sample on a first-run maximize with no seed", async () => {
+    fake.resolve("get_settings", { mainGeometry: null });
+    setWindowState({ geometry: NORMAL });
+    await mountMain();
+
+    setWindowState({ isMaximized: true, geometry: MAXED });
+    await moveAndSettle();
+
+    expect(placementCalls()).toHaveLength(1);
+    expect(placementCalls()[0].args).toEqual({
+      geometry: NORMAL,
+      displayState: "maximized",
+    });
+  });
+
+  it("prefers the persisted seed over the startup sample", async () => {
+    setWindowState({ geometry: OTHER });
+    await mountMain();
+
+    setWindowState({ isMaximized: true, geometry: MAXED });
+    await moveAndSettle();
+
+    expect(lastPlacementArgs()).toEqual({
+      geometry: SEED,
+      displayState: "maximized",
+    });
+  });
+
   it.each([
     ["maximized", { isMaximized: true }],
     ["fullscreen", { isFullscreen: true }],
@@ -162,6 +191,10 @@ describe("main window placement observation (#2349)", () => {
       await moveAndSettle();
       expect(placementCalls()).toHaveLength(0);
 
+      // The startup sample obeys the same special-state rule as the fold.
+      await expect(flushMainWindowGeometry()).resolves.toEqual({ kind: "noop" });
+      expect(placementCalls()).toHaveLength(0);
+
       // The first later normal observation enables saving.
       setWindowState({ geometry: NORMAL });
       await moveAndSettle();
@@ -172,6 +205,52 @@ describe("main window placement observation (#2349)", () => {
       });
     },
   );
+
+  it("ignores an unusable startup sample rectangle", async () => {
+    fake.resolve("get_settings", { mainGeometry: null });
+    setWindowState({ geometry: DEGENERATE });
+    await mountMain();
+
+    setWindowState({ isMaximized: true, geometry: MAXED });
+    await moveAndSettle();
+
+    expect(placementCalls()).toHaveLength(0);
+    await expect(flushMainWindowGeometry()).resolves.toEqual({ kind: "noop" });
+  });
+
+  it("keeps the retained rectangle on an unusable observation", async () => {
+    setWindowState({ geometry: NORMAL });
+    await mountMain();
+
+    setWindowState({ geometry: DEGENERATE });
+    await moveAndSettle();
+
+    expect(placementCalls()).toHaveLength(1);
+    expect(placementCalls()[0].args).toEqual({
+      geometry: SEED,
+      displayState: "normal",
+    });
+  });
+
+  it("treats a failing startup sample as non-fatal", async () => {
+    fake.resolve("get_settings", { mainGeometry: null });
+    setWindowState({ geometry: NORMAL });
+    tauriWindow.outerPosition.mockRejectedValueOnce(new Error("not ready"));
+
+    await mountMain();
+
+    expect(errorSpy).toHaveBeenCalled();
+    setWindowState({ isMaximized: true, geometry: MAXED });
+    await moveAndSettle();
+    expect(placementCalls()).toHaveLength(0);
+
+    setWindowState({ geometry: OTHER });
+    await moveAndSettle();
+    expect(lastPlacementArgs()).toEqual({
+      geometry: OTHER,
+      displayState: "normal",
+    });
+  });
 
   it("treats an invalid persisted seed as absent", async () => {
     fake.resolve("get_settings", {
@@ -267,6 +346,21 @@ describe("main window placement observation (#2349)", () => {
 describe("main window quit flush (#2349)", () => {
   it("resolves noop when no main controller exists", async () => {
     expect(await flushMainWindowGeometry()).toEqual({ kind: "noop" });
+  });
+
+  it("flushes a first-run maximize with no move event at all", async () => {
+    fake.resolve("get_settings", { mainGeometry: null });
+    setWindowState({ geometry: NORMAL });
+    await mountMain();
+
+    setWindowState({ isMaximized: true, geometry: MAXED });
+
+    expect(await flushMainWindowGeometry()).toEqual({ kind: "saved" });
+    expect(placementCalls()).toHaveLength(1);
+    expect(placementCalls()[0].args).toEqual({
+      geometry: NORMAL,
+      displayState: "maximized",
+    });
   });
 
   it("flushes a pending debounce immediately at the latest observation", async () => {
