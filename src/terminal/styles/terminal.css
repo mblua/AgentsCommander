@@ -709,6 +709,22 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
   color: var(--statusbar-accent);
 }
 
+/* #2379 - the padlock is a monochrome SVG (color-emoji glyphs ignore `color`),
+   so the button color paints it: dimmed status-bar foreground while inactive,
+   accent while the hold is closed. */
+.status-bar-btn-typing-hold .status-bar-typing-hold-icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--statusbar-fg);
+  opacity: 0.55;
+}
+
+.status-bar-btn-typing-hold.closed .status-bar-typing-hold-icon {
+  color: var(--statusbar-accent);
+  opacity: 1;
+}
+
 .status-bar-hold-count {
   font-size: 9px;
 }
