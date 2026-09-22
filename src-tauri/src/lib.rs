@@ -8439,14 +8439,23 @@ mod tests {
     #[tokio::test]
     async fn a_pointer_that_does_not_fit_is_rejected_and_nothing_is_queued() {
         // Deep, long path components push the absolute pointer over PTY_SAFE_MAX.
+        //
+        // The deep components are created FIRST and the root is canonicalized
+        // only afterwards, so Windows keeps the `\?\` verbatim form. The
+        // readiness gate repairs the replica `config.json` through the
+        // pre-existing `local_config_io` publisher, whose Windows step calls
+        // `ReplaceFileW`; a path beyond MAX_PATH is only reachable there when it
+        // is verbatim (Windows CI otherwise fails with os error 3, and the gate
+        // answers `NotAnOrchestrator` before the pointer check). The pointer
+        // budget invariant asserted below is the same on every OS.
         let long = "d".repeat(200);
         let temp = tempfile::TempDir::new().unwrap();
-        let mut root = crate::path_utils::normalize_windows_verbatim_path_buf(
-            &std::fs::canonicalize(temp.path()).unwrap(),
-        );
+        let mut deep = std::fs::canonicalize(temp.path()).unwrap();
         for _ in 0..5 {
-            root = root.join(&long);
+            deep = deep.join(&long);
         }
+        std::fs::create_dir_all(&deep).unwrap();
+        let root = std::fs::canonicalize(&deep).unwrap();
         let fixture = make_co_managed_fixture_in(temp, root);
         let (endpoint, _hits) = spawn_jev_listener(vec![
             ("to-peer", 0.9),
