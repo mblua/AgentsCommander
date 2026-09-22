@@ -170,9 +170,47 @@ jobs:
         working-directory: src-tauri
         run: cargo check --locked --all-targets
 
+      # IS #2234: one run serves both purposes. --force-warn emits the cognitive
+      # diagnostics without failing the build and without being silenceable by a lint
+      # attribute, while -D warnings still denies every other lint. Asking cargo for the
+      # JSON message format moves the human text into each record, so the script reprints it.
+      # `set +e` is mandatory: Actions runs `bash --noprofile --norc -eo pipefail`, so
+      # without it the step dies on the redirect line when clippy fails and the
+      # developer sees no diagnostics at all.
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          cargo clippy --locked --workspace --all-targets --message-format=json \
+            -- -D warnings --force-warn clippy::cognitive_complexity \
+            > "${RUNNER_TEMP}/cog-windows.jsonl"
+          code=$?
+          rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
+          cd "${GITHUB_WORKSPACE}"
+          node scripts/check-cognitive-complexity.mjs \
+            --capture "${RUNNER_TEMP}/cog-windows.jsonl" \
+            --clippy-exit "$code" \
+            --platform windows \
+            --rustc-version "$rustc_version" \
+            --report \
+            --commit "${GITHUB_SHA}" \
+            --emit "${RUNNER_TEMP}/cog-observed-windows.json"
+          node_code=$?
+          if [ "$rustc_version" != "1.98.1" ]; then
+            echo "::error::toolchain pin did not take effect: wanted 1.98.1, got ${rustc_version}"
+            exit 1
+          fi
+          exit "$node_code"
+
+      - name: Upload observed cognitive set
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cog-observed-windows
+          path: ${{ runner.temp }}/cog-observed-windows.json
+          if-no-files-found: warn
 
       - name: cargo test
         working-directory: src-tauri
@@ -769,9 +807,47 @@ jobs:
         working-directory: src-tauri
         run: cargo check --locked --all-targets
 
+      # IS #2234: one run serves both purposes. --force-warn emits the cognitive
+      # diagnostics without failing the build and without being silenceable by a lint
+      # attribute, while -D warnings still denies every other lint. Asking cargo for the
+      # JSON message format moves the human text into each record, so the script reprints it.
+      # `set +e` is mandatory: Actions runs `bash --noprofile --norc -eo pipefail`, so
+      # without it the step dies on the redirect line when clippy fails and the
+      # developer sees no diagnostics at all.
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          cargo clippy --locked --workspace --all-targets --message-format=json \
+            -- -D warnings --force-warn clippy::cognitive_complexity \
+            > "${RUNNER_TEMP}/cog-linux.jsonl"
+          code=$?
+          rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
+          cd "${GITHUB_WORKSPACE}"
+          node scripts/check-cognitive-complexity.mjs \
+            --capture "${RUNNER_TEMP}/cog-linux.jsonl" \
+            --clippy-exit "$code" \
+            --platform linux \
+            --rustc-version "$rustc_version" \
+            --report \
+            --commit "${GITHUB_SHA}" \
+            --emit "${RUNNER_TEMP}/cog-observed-linux.json"
+          node_code=$?
+          if [ "$rustc_version" != "1.98.1" ]; then
+            echo "::error::toolchain pin did not take effect: wanted 1.98.1, got ${rustc_version}"
+            exit 1
+          fi
+          exit "$node_code"
+
+      - name: Upload observed cognitive set
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cog-observed-linux
+          path: ${{ runner.temp }}/cog-observed-linux.json
+          if-no-files-found: warn
 
       # IS #1938: cross-process local-config write-lock proof. pipefail catches a
       # failing test, the identifier greps catch a filter that selected nothing
@@ -1817,9 +1893,47 @@ jobs:
         working-directory: src-tauri
         run: cargo check --locked --all-targets
 
+      # IS #2234: one run serves both purposes. --force-warn emits the cognitive
+      # diagnostics without failing the build and without being silenceable by a lint
+      # attribute, while -D warnings still denies every other lint. Asking cargo for the
+      # JSON message format moves the human text into each record, so the script reprints it.
+      # `set +e` is mandatory: Actions runs `bash --noprofile --norc -eo pipefail`, so
+      # without it the step dies on the redirect line when clippy fails and the
+      # developer sees no diagnostics at all.
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --locked --all-targets -- -D warnings
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          cargo clippy --locked --workspace --all-targets --message-format=json \
+            -- -D warnings --force-warn clippy::cognitive_complexity \
+            > "${RUNNER_TEMP}/cog-macos.jsonl"
+          code=$?
+          rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
+          cd "${GITHUB_WORKSPACE}"
+          node scripts/check-cognitive-complexity.mjs \
+            --capture "${RUNNER_TEMP}/cog-macos.jsonl" \
+            --clippy-exit "$code" \
+            --platform macos \
+            --rustc-version "$rustc_version" \
+            --report \
+            --commit "${GITHUB_SHA}" \
+            --emit "${RUNNER_TEMP}/cog-observed-macos.json"
+          node_code=$?
+          if [ "$rustc_version" != "1.98.1" ]; then
+            echo "::error::toolchain pin did not take effect: wanted 1.98.1, got ${rustc_version}"
+            exit 1
+          fi
+          exit "$node_code"
+
+      - name: Upload observed cognitive set
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cog-observed-macos
+          path: ${{ runner.temp }}/cog-observed-macos.json
+          if-no-files-found: warn
 
       # IS #2079: compiling is not running. Without this step the macOS leg
       # never executes the screenshot module, so the CoreGraphics link proof
