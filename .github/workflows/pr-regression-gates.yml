@@ -2,14 +2,6 @@ name: PR regression gates
 
 on:
   pull_request:
-  push:
-    branches-ignore:
-      - main
-      - 'release/**'
-      - 'hotfix/**'
-      - 'dependabot/**'
-      - 'revert/**'
-      - 'gh-readonly-queue/**'
 
 permissions:
   contents: read
