@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Agents Commander** is a local desktop application. It does not collect telemetry, analytics, or usage data. There are no tracking mechanisms and no crash reporting services. It makes a small number of automatic outbound requests. The [Network Features](#network-features) section describes them together with the features you start yourself.
+**Agents Commander** is a local desktop application. It does not collect telemetry, analytics, or usage data. There are no tracking mechanisms and no crash reporting services. It makes a small number of automatic outbound requests, and some features you start yourself send your content to third parties. The [Network Features](#network-features) section describes both, one entry per feature.
 
 All configuration and session data is stored locally on your machine in `~/.agentscommander/`.
 
@@ -25,6 +25,17 @@ Agents Commander transmits data to external services in two ways: when you enabl
 - **Data received**: Transcribed text, which is then written to the terminal session
 - **When**: Only when the user explicitly presses the record button and stops recording
 - **Credentials**: The Gemini API key is configured by the user and stored locally in `~/.agentscommander/settings.json`
+
+### Jev Classification (Co-managed)
+
+**User-initiated.** When the user turns a room's [Co-managed](docs/features/co-managed-rooms.md) flag on **and** configures a Jev API key:
+
+- **Data sent**: The captured candidate text from that room's orchestrator, plus the questions from the user's category catalog, sent to the Jev endpoint (Typesafe System One, `jevEndpoint`, by default `https://api.typesafe.ai/v1/systemone`)
+- **Data received**: A per-category judgment, used to route the message to one of four destinations
+- **When**: Only at the idle edge of an orchestrator in a room whose Co-managed flag is on and whose Jev key is set. A room without the flag, or an empty key, makes zero requests
+- **Before it is sent**: A pre-egress secret detector runs before any file is written and before any network call. A flagged candidate produces no file, no request and no excerpt
+- **How to turn it off**: Clear the room's Co-managed flag, or clear `jevApiKey` in Settings > Integrations > Co-managed (Jev). Either one is sufficient
+- **Credentials**: The Jev API key is configured by the user and stored locally in `~/.agentscommander/settings.json`
 
 ### Inter-Agent Messaging
 
@@ -132,6 +143,7 @@ When a network feature contacts a third-party service, the respective third-part
 - [Telegram Privacy Policy](https://telegram.org/privacy)
 - [Google API Privacy Policy](https://policies.google.com/privacy)
 - [npm Privacy Policy](https://www.npmjs.com/policies/privacy)
+- Typesafe (Jev): when a room is Co-managed and a Jev key is set, the captured candidate text and the catalog questions are sent to the configured `jevEndpoint`, whose default is `https://api.typesafe.ai/v1/systemone`. Typesafe's third-party privacy policy applies. User configuration may change that endpoint, in which case the policy of the host you point it at applies instead
 - [GitHub Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-privacy-statement)
 - Coding-agent vendors: when you allow startup auto-update, each coding agent's own CLI contacts its vendor. The shipped catalog covers Anthropic, OpenAI, Nous Research, Earendil, Anomaly, and Google. The vendor's privacy policy applies.
 - Destinations you choose: your team repository hosts, your container registries, and the operator-configured `AGENTSCOMMANDER_API_URL`. These are not fixed services, so the privacy policy of the host you or your operator point AC at applies.

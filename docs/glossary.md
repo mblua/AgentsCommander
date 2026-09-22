@@ -32,6 +32,18 @@ A project AC still has registered but hides from the sidebar. Archiving moves th
 
 The plain-language description of a room's goal. Lives at `<room>/TASK.md` with YAML frontmatter title + freeform body.
 
+## Co-managed
+
+A per-room, off-by-default flag that lets AC read the room **orchestrator's** captured output at its idle edge, classify it with Jev, and route it to one of [four destinations](#co-managed-destinations). It applies only to that room's orchestrator, never requires a Telegram bot, and dies with the room: the flag lives in `<room-root>/.co-managed/config.json`, which is gitignored. **Idle is the gate, not proof that the agent finished its turn**, and **an automatic reply is never the user's approval**: the `default_reply` destination sends a fixed sentence the user wrote, and the catalog rejects one that reads like approval. See [Co-managed rooms](features/co-managed-rooms.md).
+
+## Co-managed category catalog
+
+The user-owned JSON file a Co-managed room points at with `catalogPath`. It maps each user-named category to one yes/no question and exactly one of the four destinations, plus a peer FQN for `orchestrator` and a fixed reply for `default_reply`. AC invents no category vocabulary. Any other destination, a missing question or a missing required field makes that one category an abstention with a visible reason naming it; a fixed reply that expresses approval is rejected when the catalog loads. The number of categories is part of the call, so adding or removing one can change outcomes. See [the catalog](features/co-managed-rooms.md#the-category-catalog).
+
+## Co-managed destinations
+
+The four, and only four, places a classified Co-managed candidate can go: `user` (surfaced in the app), `orchestrator` (another room's orchestrator, named by peer FQN), `root` (the Root Agent) and `default_reply` (a fixed reply the user wrote). Anything else is an abstention with a visible reason.
+
 ## Coding agent
 
 The CLI process that runs the LLM work: Claude Code, Codex, Antigravity, or Pi. AC is **not** a coding agent.
@@ -178,7 +190,7 @@ A token-authorized two-phase operation on the caller's own session that carries 
 
 ## Session
 
-A running process bound to one agent directory and one coding-agent CLI. Sessions live in the sidebar with status dots: cyan active, blue running, green waiting (ready for your input), amber pending, red exited, gray idle, translucent offline.
+A running process bound to one agent directory and one coding-agent CLI. Sessions live in the sidebar with status dots: cyan active, blue running, green waiting (ready for your input), amber pending, red exited, red co-managed, gray idle, translucent offline. `exited` wins over co-managed, and co-managed wins over waiting and pending.
 
 ## Session auto-close
 

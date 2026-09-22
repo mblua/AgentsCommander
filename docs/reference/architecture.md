@@ -112,6 +112,7 @@ graph LR
         C_TEMPL["role_templates.rs<br/>role-template picker"]
         C_PROJSET["project_settings.rs<br/>per-project settings"]
         C_NONSTOP["non_stop.rs<br/>non-stop mode"]
+        C_CM["co_managed.rs<br/>get, set_enabled, effective_state"]
         C_WGDEL["wg_delete_diagnostic.rs<br/>room delete diagnostics"]
         C_TEST["testability.rs<br/>test-only bridges"]
     end
@@ -150,7 +151,19 @@ graph LR
         PH_MSG["messaging.rs<br/>message pump"]
     end
 
+    subgraph "capture/ (#2232 Co-managed, all leaves)"
+        CAP_REC["record.rs<br/>CapturedRecord, provider_final,<br/>turn_identified"]
+        CAP_KERNEL["key.rs, registry.rs<br/>consumption keys, per-session owners"]
+        CAP_SINK["sink.rs, state.rs<br/>CaptureSlot, epochs, watermark,<br/>budget, abstain reasons"]
+        CAP_ARMED["armed.rs<br/>one AtomicBool per session,<br/>read lock-free at the idle edge"]
+        CAP_TURN["turn_codex.rs<br/>Codex turn-boundary state machine"]
+        CAP_CAT["catalog.rs<br/>user category catalog,<br/>four destinations"]
+        CAP_JEV["jev.rs<br/>the single typed Jev call"]
+        CAP_SEC["secrets.rs<br/>pre-egress secret detector"]
+    end
+
     subgraph "config/"
+        CFG_CM["co_managed.rs<br/>per-room config.json,<br/>CoManagedState, OffReason (leaf)"]
         CFG_SET["settings.rs<br/>AppSettings, load/save JSON"]
         CFG_TEAMS["teams.rs<br/>team discovery, FQNs, routing"]
         CFG_PROJ["projects.rs<br/>dual-path project registry"]
@@ -192,6 +205,15 @@ graph LR
     P_BE --> P_CONT
     P_MGR --> T_MGR
 
+    T_WATCH --> CAP_REC
+    CAP_REC --> CAP_SINK
+    CAP_SINK --> CAP_ARMED
+    BOOTSTRAP --> CAP_SINK
+    BOOTSTRAP --> CAP_JEV
+    BOOTSTRAP --> CAP_SEC
+    BOOTSTRAP --> PH_MSG
+    C_CM --> CFG_CM
+
     style BOOTSTRAP fill:#e94560,stroke:#fff,color:#fff
     style C_SESSION fill:#0f3460,stroke:#53a8b6,color:#fff
     style C_PTY fill:#0f3460,stroke:#53a8b6,color:#fff
@@ -201,6 +223,27 @@ graph LR
     style O_LOOPS fill:#533483,stroke:#fff,color:#fff
     style O_API fill:#533483,stroke:#fff,color:#fff
 ```
+
+### 2.1 The `capture::*` layering rule (#2232)
+
+> Every `capture::*` module must have zero paths into the pre-existing module cycle. The
+> transcript watchers sit downstream of that cycle; giving a `capture::*` module a path
+> back into it would pull the watchers into the cycle. The effect side lives in modules
+> that are already inside it, and the supervisor in `lib.rs` bridges the two by calling
+> **down** into the leaves. A second, independent gate,
+> `src-tauri/tests/claude_watcher_layering.rs`, equality-pins the Claude watcher's
+> dependency set, so any new watcher arc must be recorded there deliberately.
+
+Data flows one way: watcher → leaf sink → supervisor in `lib.rs` → effect inside the cycle. `config::co_managed` and `capture::catalog`, `capture::jev` and `capture::secrets` are leaves for the same reason, and none of them may name the `phone`, `session` or `commands` subtrees, or `config::settings` and `config::teams`.
+
+### 2.2 Declared Co-managed behaviour differences
+
+Deliberate, so an operator is not surprised:
+
+- **Claude rotation backfill is not routed**, although the Telegram bridge sends it. A legitimate first turn after a transcript rotation can be suppressed.
+- **Attaching over a live reader discards the pending buffer**, so the Telegram chat loses up to 2 s of pre-attach text.
+- **The origin suffix can make a deep-room pointer not fit.** Composing it lengthens the sender, and an over-long pointer is **rejected with a visible reason**, never truncated.
+- **`messaging/` grows by up to one file per orchestrator turn**, and nothing is auto-deleted, matching current behaviour for every other message.
 
 ---
 
@@ -322,6 +365,7 @@ Rust handlers live in `src-tauri/src/commands/`; the frontend invokes them throu
 | RoleTemplatesAPI | `commands/role_templates.rs` | role-template picker |
 | ProjectSettingsAPI | `commands/project_settings.rs` | per-project settings |
 | NonStopAPI | `commands/non_stop.rs` | non-stop mode |
+| CoManagedAPI | `commands/co_managed.rs` | `co_managed_get`, `co_managed_set_enabled`, `co_managed_effective_state` |
 | TestabilityAPI | `commands/testability.rs` | test-only bridges and resets |
 
 ---
@@ -336,7 +380,7 @@ graph LR
         E3["session_destroyed<br/>{id}"]
         E4["session_switched<br/>{SessionSelection}<br/>authoritative"]
         E5["session_renamed<br/>{id, name}"]
-        E6["session_idle / session_busy<br/>{id}"]
+        E6["session_idle / session_busy<br/>{id}<br/>session_idle also carries {comanaged}"]
         E7["last_prompt<br/>{sessionId, text}"]
         E8["pty_input_status<br/>{sessionId, status}"]
         E9["telegram_bridge_attached / detached / error / warning"]
@@ -347,6 +391,7 @@ graph LR
         E14["spec_board_changed / conflict / file_missing"]
         E15["ac_discovery_branch_updated"]
         E16["log_level_changed, npm_update_available"]
+        E17["session_comanaged_state<br/>{id, active, reason}"]
     end
 
     subgraph "Frontend listeners"
@@ -368,6 +413,12 @@ graph LR
     E9 --> L5
     E10 --> L5
 ```
+
+### 5.0 Co-managed events (#2232)
+
+`session_idle`'s payload is `{ id: string, comanaged: boolean }`. The added field is **additive**, so an older listener is unaffected. It carries the decision in the idle event itself, rather than in a second, later event, because `session_idle` is emitted synchronously first and any later event would paint `waiting` and then red.
+
+`session_comanaged_state`, payload `{ id: string, active: boolean, reason: string | null }`, carries only the transitions that do **not** coincide with the idle edge: the cycle ending, and a record arriving while the session is already idle. It is emitted to every window.
 
 ### 5.1 Authoritative session selection contract
 
@@ -655,12 +706,14 @@ graph TD
         AGENTS["_agent_&lt;id&gt;/<br/>Role.md + memory/plans/skills"]
         TEAMS["_team_&lt;name&gt;/<br/>config.json"]
         WGS["room-&lt;N&gt;-&lt;team&gt;/<br/>__agent_* replicas, repo-*,<br/>messaging/, TASK.md"]
+        CM[".co-managed/<br/>config.json, state.json,<br/>queue/, lock"]
         LOOPS["_loop_&lt;id&gt;/config.toml"]
         SEED["seed-manifest.json,<br/>.gitignore sweep"]
     end
 
     TEAMS -->|"roster"| WGS
     AGENTS -->|"replicated into"| WGS
+    WGS -->|"per-room Co-managed"| CM
 
     style SETTINGS fill:#0f3460,stroke:#53a8b6,color:#fff
     style TEAMS fill:#e94560,stroke:#fff,color:#fff
@@ -668,6 +721,8 @@ graph TD
 ```
 
 Inter-agent messaging is file-based: senders write Markdown into `<room>/messaging/` and the daemon mailbox delivers it to the recipient's session PTY.
+
+`<room-root>/.co-managed/` holds the per-room Co-managed state (#2232): `config.json` (the `enabled` flag and `catalogPath`), `state.json` (per-file epochs and fingerprints, watermark, cut, budget), `queue/` (the provenance queue) and one advisory `lock` file governing config and state. The flag dies with the room, and `room-*/` is gitignored, so nothing here enters the repository.
 
 ---
 
@@ -763,6 +818,7 @@ graph TD
 | `phone/terminal_snapshot.rs` | Snapshot request/response plumbing |
 | `config/mod.rs` | `config_dir()`: current `main` override, adjacent-candidate, write-probe, and home-fallback resolution; inspect release tags for shipped behavior |
 | `config/settings.rs` | `AppSettings`, `AgentConfig`, load/save JSON |
+| `config/co_managed.rs` | Per-room Co-managed `config.json`, `CoManagedState`, `OffReason` (leaf) |
 | `config/teams.rs` | Team discovery, FQNs, routing rules |
 | `config/projects.rs` | Dual-path project registry |
 | `config/ac_root.rs` | Project AC Root discovery |
@@ -799,6 +855,7 @@ graph TD
 | `commands/project_settings.rs` | per-project settings |
 | `commands/non_stop.rs` | non-stop mode |
 | `commands/wg_delete_diagnostic.rs` | room delete diagnostics |
+| `commands/co_managed.rs` | `co_managed_get`, `co_managed_set_enabled`, `co_managed_effective_state` |
 | `commands/testability.rs` | test-only bridges |
 | `cli/` | CLI verbs: send, list-peers, terminal-snapshot, coding-agent, api-client, window-list, window-screenshot, ... |
 | `api/` | Control-plane API server: auth, audit, dispatcher, handlers, message store |
@@ -807,6 +864,15 @@ graph TD
 | `screenshot/` | Screenshot capture (Windows, macOS, Linux/X11) |
 | `voice/` | Voice transcription tracking |
 | `web/` | Embedded web server, WebSocket broadcast, embedded auth |
+| `capture/mod.rs` | Co-managed capture subtree (#2232); every module in it is a leaf |
+| `capture/record.rs` | `CapturedRecord`, with `provider_final` and `turn_identified` |
+| `capture/key.rs`, `capture/registry.rs` | Consumption keys and per-session owners |
+| `capture/sink.rs`, `capture/state.rs` | `CaptureSlot`, epochs and fingerprints, watermark, cut, budget, abstain reasons |
+| `capture/armed.rs` | One `AtomicBool` per session, read lock-free at the idle edge |
+| `capture/turn_codex.rs` | Codex turn-boundary state machine |
+| `capture/catalog.rs` | The user's category catalog and the four destinations |
+| `capture/jev.rs` | The single typed Jev call |
+| `capture/secrets.rs` | Pre-egress secret detector, runs before any write and any network call |
 | `network/` | Network helpers |
 | `testability/` | Test-only reset, window info, UI automation verbs |
 

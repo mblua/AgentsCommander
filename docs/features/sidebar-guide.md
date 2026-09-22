@@ -72,6 +72,7 @@ A session row packs several indicators. Each belongs to a feature documented els
 | Indicator | What it means | Page |
 |---|---|---|
 | Status dot | The session's lifecycle state | [Concepts: Session](../concepts.md#session) |
+| Co-managed circle and toggle | The orchestrator is in a Co-managed capture cycle; the toggle turns the room's flag on | [Co-managed rooms](co-managed-rooms.md) |
 | Profile drift badge | The session's coding-agent profile no longer matches its definition | [Coding Agent Profiles](coding-agent-profiles.md#drift-the-outdated-badge) |
 | Context badge | How much of the agent's context window is used | [Context tracking](context-tracking.md) |
 | Idle badge and AUTO-CLOSED badge | How long the team has been idle, and that auto-close already closed it | [Session auto-close](session-auto-close.md) |
@@ -80,6 +81,22 @@ A session row packs several indicators. Each belongs to a feature documented els
 | Git branch | The session's current branch and whether its repository is dirty | The next section |
 
 The row also carries the actions for the session: close, detach, Telegram and the file explorer.
+
+## The Co-managed circle
+
+A [Co-managed](co-managed-rooms.md) orchestrator paints its status circle **red**: `#ff3b5c` in the dark theme, `#dc2626` in the light theme. It carries no glow, and its tooltip reads `Co-managed`.
+
+**It lights** at the idle edge of an orchestrator in a room whose Co-managed flag is on, when a captured candidate is waiting. While it is lit, the session **does not show as waiting**.
+
+**It goes out** when the cycle ends, through an action, an abstention, or a local result.
+
+**Merely enabling the room flag does not light it.** The toggle arms the room; the circle follows the capture cycle.
+
+Precedence: `exited` wins over Co-managed, so the two never paint the same circle at once even though they share red. Co-managed wins over `waiting` and `pending`, on purpose: the idle edge is exactly where those would otherwise light up.
+
+The orchestrator row also carries the room's **Co-managed** checkbox, tooltipped `Let Jev read this room's orchestrator activity and route it when the room is idle`, with the reason underneath when the room is not effective.
+
+A co-managed replica row is **findable by searching for `comanaged`**: the circle's class is the row's search text.
 
 ## The git branch badge
 
