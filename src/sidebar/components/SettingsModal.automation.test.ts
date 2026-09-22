@@ -3572,6 +3572,12 @@ describe("SettingsModal compact hotkey capture (#2236)", () => {
     dispose();
   });
 
+  it("displays an accepted variant spelling as Ctrl+Shift+<LETTER>", async () => {
+    const dispose = await mountModal({ sidebarCompactHotkey: " control + SHIFT + e " });
+    expect(captureInput().value).toBe("Ctrl+Shift+E");
+    dispose();
+  });
+
   it("blocks Save for a hand-edited value the backend would reject", async () => {
     const dispose = await mountModal({ sidebarCompactHotkey: "Ctrl+Shift+2" });
     expect(document.querySelector(".modal-save-error")?.textContent).toContain(

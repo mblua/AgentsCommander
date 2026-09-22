@@ -59,6 +59,13 @@ vi.mock("../../shared/platform", () => ({ isTauri: true, isBrowser: false }));
 function key(init: KeyboardEventInit): KeyboardEvent {
   return new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
 }
+// jsdom has no clipboard; the copy branch needs writeText to resolve.
+function installClipboard(): void {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn(() => Promise.resolve()) },
+  });
+}
 const hotkey = () => key({ key: "E", code: "KeyE", ctrlKey: true, shiftKey: true });
 
 describe("TerminalView hotkey handler (#2236 D9a)", () => {
@@ -106,10 +113,7 @@ describe("TerminalView hotkey handler (#2236 D9a)", () => {
     expect(stop).not.toHaveBeenCalled();
 
     xterm.selection = true;
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: vi.fn(() => Promise.resolve()) },
-    });
+    installClipboard();
     const copy = key({ key: "C", code: "KeyC", ctrlKey: true, shiftKey: true });
     const copyStop = vi.spyOn(copy, "stopPropagation");
     handler()(copy);
@@ -144,10 +148,7 @@ describe("TerminalView hotkey handler (#2236 D9a)", () => {
   it("5. cross-domain: Dvorak KeyI/'c' on Ctrl+Shift+I falls through to copy", () => {
     compact.setSidebarCompactHotkey("Ctrl+Shift+I");
     xterm.selection = true;
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: vi.fn(() => Promise.resolve()) },
-    });
+    installClipboard();
     const event = key({ key: "c", code: "KeyI", ctrlKey: true, shiftKey: true });
     const stop = vi.spyOn(event, "stopPropagation");
     expect(handler()(event)).toBe(false);

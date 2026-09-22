@@ -2102,6 +2102,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       settings.data?.screenshotCaptureHotkey ?? "Ctrl+Q"
     );
 
+  // Normalizes an accepted spelling (`ctrl+shift+e`, `Control`, padding) to `Ctrl+Shift+<LETTER>`.
+  const displaySidebarCompactHotkey = (): string => {
+    const raw = settings.data?.sidebarCompactHotkey ?? DEFAULT_SIDEBAR_COMPACT_HOTKEY;
+    const parsed = parseAppHotkey(raw);
+    return parsed ? "Ctrl+Shift+" + parsed.letter.toUpperCase() : raw;
+  };
+
   const validateSidebarCompactHotkey = (): string | null =>
     parseAppHotkey(settings.data?.sidebarCompactHotkey ?? DEFAULT_SIDEBAR_COMPACT_HOTKEY)
       ? null
@@ -2320,7 +2327,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <input
             class="settings-input settings-input-sm"
             readOnly
-            value={settings.data!.sidebarCompactHotkey ?? DEFAULT_SIDEBAR_COMPACT_HOTKEY}
+            value={displaySidebarCompactHotkey()}
             onFocus={() => setCapturingHotkey(true)}
             onBlur={() => setCapturingHotkey(false)}
             data-ac-testid="settings.general.sidebarCompactHotkey"
