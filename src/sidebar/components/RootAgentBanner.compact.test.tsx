@@ -234,7 +234,8 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
     const ALLOWED_INTERPOLATIONS = new Set(["${dotClass()}"]);
     const read = (file: string) => readFileSync(new URL(`./${file}`, moduleUrl), "utf8");
 
-    // Opening tags, skipping `>` inside braces, quotes and template literals.
+    // Opening tags, skipping `>` inside braces, quotes and template literals;
+    // tags nested in attribute values are scanned as well.
     const tags = (src: string): Array<{ name: string; attrs: string }> => {
       const out: Array<{ name: string; attrs: string }> = [];
       for (let i = 0; i < src.length; i++) {
@@ -253,7 +254,10 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
         }
         const body = src.slice(i + 1, j);
         const name = /^[\w.]+/.exec(body)![0];
-        out.push({ name, attrs: body.slice(name.length) });
+        const attrs = body.slice(name.length);
+        out.push({ name, attrs });
+        // JSX passed as an attribute (e.g. <Show fallback={<span ...>}>) renders too.
+        out.push(...tags(attrs));
         i = j;
       }
       return out;
