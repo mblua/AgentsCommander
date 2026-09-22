@@ -39,8 +39,8 @@ diagnostic first and then a line like the first one below; a STALE finding print
 because Clippy no longer reports that site:
 
 ```text
-NEW cognitive complexity above 25: rust:src-tauri/src/worker.rs::impl:Worker::run#a3d53f9cd47b (observed 1, baseline absent) on windows
-STALE baseline entry: rust:src-tauri/src/worker.rs::impl:Worker::run#a3d53f9cd47b (baseline 1, observed none) on windows
+NEW cognitive complexity above 25: rust:src-tauri/src/agent_update.rs::impl:TargetProcessOwner::settle#a3d53f9cd47b (observed 1, baseline absent) on windows
+STALE baseline entry: rust:src-tauri/src/agent_update.rs::impl:TargetProcessOwner::settle#a3d53f9cd47b (baseline 1, observed none) on windows
 ```
 
 ### NEW: a function that was not baselined
@@ -109,11 +109,17 @@ Clippy does not report these forms, whatever their complexity:
 An ordinary `pub async fn` **is** reported, and so is an ordinary `#[test] fn`.
 
 The lexical weight of the excluded forms at adoption, counted with `ripgrep` over `src-tauri` and
-`crates` and reported as occurrences, **not** as violations:
+`crates` and reported as occurrences, **not** as violations. They were measured on
+`ffaa504816a9d60bbea9c60e893a66b43721dbe9`, the commit this page was written for; the counts move
+with every pull request, so they are a snapshot of that commit, not a property the gate maintains:
 
-- 896 `#[tokio::test` against 4193 `#[test]`;
-- 610 `async {` / `async move {`;
-- 2 `#[tokio::main`.
+```bash
+rg -o '#\[tokio::test' src-tauri crates | wc -l     # 1051
+rg -o '#\[test\b' src-tauri crates | wc -l          # 4452
+rg -o 'async move \{' src-tauri crates | wc -l      # 503
+rg -o 'async \{' src-tauri crates | wc -l           # 140
+rg -o '#\[tokio::main' src-tauri crates | wc -l     # 2
+```
 
 Nobody has measured how many of those occurrences would exceed 25; they are counts of text.
 
@@ -187,10 +193,10 @@ rust:<file>::<container>::<name>
   F` from `impl Debug for F`. Nothing is cut at `<`.
 - `<name>` is the function or method name; a closure is `{closure}`.
 
-A closure inside `run` of `impl Worker` in `src-tauri/src/worker.rs` therefore ids as:
+A closure inside `run` in `src-tauri/src/lib.rs` therefore ids as:
 
 ```text
-rust:src-tauri/src/worker.rs::impl:Worker::fn:run::{closure}
+rust:src-tauri/src/lib.rs::fn:run::{closure}
 ```
 
 ### 5.2 The site anchor
@@ -201,7 +207,8 @@ position to the `{` that opens its body, with whitespace runs collapsed to one s
 and strings contributing nothing. The **body is not in it** - that is what lets a baselined
 function grow (section 4). A signature edit **does** move it.
 
-The baseline stores, for each id and platform, the sorted list of its anchors, for example:
+The baseline stores, for each id, the sorted list of anchors observed per platform; a platform that
+observed no site of an id has no entry for it there. For example:
 
 ```json
 {
