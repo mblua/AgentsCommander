@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { JSX } from "solid-js";
 import RootAgentBanner from "./RootAgentBanner";
 import SidebarApp from "../App";
 import { FakeTransport } from "../../shared/testing/fake-transport";
@@ -47,8 +48,16 @@ function bannerFake(): FakeTransport {
   return fake;
 }
 
+// Every render is released in afterEach, so no test needs its own try/finally.
+const mounted: Array<() => void> = [];
+function mount(component: () => JSX.Element, fake: FakeTransport) {
+  const rendered = renderWithFakeTransport(component, fake);
+  mounted.push(rendered.cleanup);
+  return rendered;
+}
+
 function renderBanner(fake = bannerFake()) {
-  const rendered = renderWithFakeTransport(() => <RootAgentBanner />, fake);
+  const rendered = mount(() => <RootAgentBanner />, fake);
   const banner = rendered.root.querySelector(BANNER_SEL) as HTMLElement;
   const toggle = banner.querySelector(".root-agent-banner-toggle") as HTMLButtonElement;
   const open = banner.querySelector(".root-agent-banner-open") as HTMLButtonElement;
@@ -84,6 +93,7 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
   });
 
   afterEach(() => {
+    while (mounted.length > 0) mounted.pop()?.();
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
@@ -92,90 +102,70 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
 
   it("1. expanded: the toggle is the last child, shows >> and aria-expanded=true", () => {
     const r = renderBanner();
-    try {
-      expect(r.banner.lastElementChild).toBe(r.toggle);
-      expect(r.toggle.textContent).toBe(">>");
-      expect(r.toggle.getAttribute("aria-expanded")).toBe("true");
-    } finally {
-      r.cleanup();
-    }
+    expect(r.banner.lastElementChild).toBe(r.toggle);
+    expect(r.toggle.textContent).toBe(">>");
+    expect(r.toggle.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("2. compact: the toggle shows << and aria-expanded=false", () => {
     setSidebarCompactMode(true);
     const r = renderBanner();
-    try {
-      expect(r.toggle.textContent).toBe("<<");
-      expect(r.toggle.getAttribute("aria-expanded")).toBe("false");
-    } finally {
-      r.cleanup();
-    }
+    expect(r.toggle.textContent).toBe("<<");
+    expect(r.toggle.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("3. clicking the toggle toggles compact and does not select the Root Agent", async () => {
     sessionsStore.setSessions([rootLive()]);
     const r = renderBanner();
-    try {
-      r.toggle.click();
-      expect(sidebarCompact()).toBe(true);
-      expect(r.toggle.textContent).toBe("<<");
-      r.toggle.click();
-      expect(sidebarCompact()).toBe(false);
-      await Promise.resolve();
-      expect(selections(r.fake)).toBe(0);
-    } finally {
-      r.cleanup();
-    }
+    r.toggle.click();
+    expect(sidebarCompact()).toBe(true);
+    expect(r.toggle.textContent).toBe("<<");
+    r.toggle.click();
+    expect(sidebarCompact()).toBe(false);
+    await Promise.resolve();
+    expect(selections(r.fake)).toBe(0);
   });
 
   it("4. the open button selects while expanded; compact hides it by stylesheet and the toggle never selects", async () => {
     sessionsStore.setSessions([rootLive()]);
     const r = renderBanner();
-    try {
-      r.open.click();
-      await waitFor(() => expect(selections(r.fake)).toBe(1));
+    r.open.click();
+    await waitFor(() => expect(selections(r.fake)).toBe(1));
 
-      const css = readFileSync(new URL("../styles/sidebar.css", moduleUrl), "utf8");
-      const rules = scanRules(css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " ")));
-      const hidden = ".sidebar-layout.sidebar-compact .root-agent-banner > :not(.root-agent-banner-toggle)";
-      const rule = rules.find((x) => x.selectors.includes(hidden));
-      expect(rule, hidden).toBeDefined();
-      expect(declValue(rule!.body, "visibility")).toBe("hidden");
-      // The open button is a direct child and not the toggle, so the complement matches it.
-      expect(r.open.parentElement).toBe(r.banner);
-      expect(r.open.matches(":not(.root-agent-banner-toggle)")).toBe(true);
+    const css = readFileSync(new URL("../styles/sidebar.css", moduleUrl), "utf8");
+    const rules = scanRules(css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " ")));
+    const hidden = ".sidebar-layout.sidebar-compact .root-agent-banner > :not(.root-agent-banner-toggle)";
+    const rule = rules.find((x) => x.selectors.includes(hidden));
+    expect(rule, hidden).toBeDefined();
+    expect(declValue(rule!.body, "visibility")).toBe("hidden");
+    // The open button is a direct child and not the toggle, so the complement matches it.
+    expect(r.open.parentElement).toBe(r.banner);
+    expect(r.open.matches(":not(.root-agent-banner-toggle)")).toBe(true);
 
-      setSidebarCompactMode(true);
-      r.toggle.click();
-      await Promise.resolve();
-      expect(selections(r.fake)).toBe(1);
-    } finally {
-      r.cleanup();
-    }
+    setSidebarCompactMode(true);
+    r.toggle.click();
+    await Promise.resolve();
+    expect(selections(r.fake)).toBe(1);
   });
 
   it("4b. accessibility: a group with a real open button and no widget inside a widget", () => {
     sessionsStore.setSessions([rootLive()]);
     const r = renderBanner();
-    try {
-      expect(r.banner.getAttribute("role")).toBe("group");
-      expect(r.banner.hasAttribute("tabindex")).toBe(false);
-      expect(r.banner.getAttribute("data-ac-testid")).toBe("rootAgent.banner");
-      expect(r.banner.getAttribute("data-ac-role")).toBe("button");
-      expect(r.banner.getAttribute("data-ac-state")).toBe("live");
-      expect(r.banner.getAttribute("aria-disabled")).toBe("false");
+    expect(r.banner.getAttribute("role")).toBe("group");
+    expect(r.banner.hasAttribute("tabindex")).toBe(false);
+    expect(r.banner.getAttribute("data-ac-testid")).toBe("rootAgent.banner");
+    expect(r.banner.getAttribute("data-ac-role")).toBe("button");
+    expect(r.banner.getAttribute("data-ac-state")).toBe("live");
+    expect(r.banner.getAttribute("aria-disabled")).toBe("false");
 
-      expect(r.open.tagName).toBe("BUTTON");
-      expect(r.banner.firstElementChild).toBe(r.open);
-      expect(r.open.getAttribute("aria-label")).toBe(r.banner.getAttribute("aria-label"));
-      expect(r.open.disabled).toBe(false);
+    expect(r.open.tagName).toBe("BUTTON");
+    expect(r.banner.firstElementChild).toBe(r.open);
+    expect(r.open.getAttribute("aria-label")).toBe(r.banner.getAttribute("aria-label"));
+    expect(r.open.disabled).toBe(false);
 
-      const widget = "button, a[href], [role='button'], [role='link'], [role='menuitem']";
-      for (const button of r.banner.querySelectorAll("button")) {
-        expect(button.parentElement!.closest(widget), button.className).toBeNull();
-      }
-    } finally {
-      r.cleanup();
+    const widget = "button, a[href], [role='button'], [role='link'], [role='menuitem']";
+    for (const button of r.banner.querySelectorAll("button")) {
+      expect(button.parentElement!.closest(widget), button.className).toBeNull();
     }
   });
 
@@ -185,31 +175,23 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
     let release = (): void => undefined;
     fake.onInvoke("switch_session", () => new Promise<void>((done) => (release = done)));
     const r = renderBanner(fake);
-    try {
-      r.open.click();
-      expect(r.open.disabled).toBe(true);
-      expect(r.banner.getAttribute("aria-disabled")).toBe("true");
-      release();
-      await waitFor(() => expect(r.open.disabled).toBe(false));
-      expect(r.banner.getAttribute("aria-disabled")).toBe("false");
-    } finally {
-      r.cleanup();
-    }
+    r.open.click();
+    expect(r.open.disabled).toBe(true);
+    expect(r.banner.getAttribute("aria-disabled")).toBe("true");
+    release();
+    await waitFor(() => expect(r.open.disabled).toBe(false));
+    expect(r.banner.getAttribute("aria-disabled")).toBe("false");
   });
 
   it("4c. the open button and the bridge's container click() each select exactly once", async () => {
     sessionsStore.setSessions([rootLive()]);
     const r = renderBanner();
-    try {
-      r.open.click();
-      await waitFor(() => expect(r.open.disabled).toBe(false));
-      expect(selections(r.fake)).toBe(1);
-      r.banner.click();
-      await waitFor(() => expect(r.open.disabled).toBe(false));
-      expect(selections(r.fake)).toBe(2);
-    } finally {
-      r.cleanup();
-    }
+    r.open.click();
+    await waitFor(() => expect(r.open.disabled).toBe(false));
+    expect(selections(r.fake)).toBe(1);
+    r.banner.click();
+    await waitFor(() => expect(r.open.disabled).toBe(false));
+    expect(selections(r.fake)).toBe(2);
   });
 
   it("4c. mutant kill (dropped guard): toggle and nested-control clicks leave the selection count unchanged", async () => {
@@ -217,30 +199,22 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
     vi.spyOn(voiceRecorder, "autoExecuteSessionId").mockReturnValue("root");
     const cancel = vi.spyOn(voiceRecorder, "cancelAutoExecute").mockImplementation(() => undefined);
     const r = renderBanner();
-    try {
-      r.toggle.click();
-      const nested = r.banner.querySelector(".voice-cancel-execute") as HTMLButtonElement;
-      expect(nested).not.toBeNull();
-      nested.click();
-      expect(cancel).toHaveBeenCalledTimes(1);
-      await Promise.resolve();
-      expect(selections(r.fake)).toBe(0);
-    } finally {
-      r.cleanup();
-    }
+    r.toggle.click();
+    const nested = r.banner.querySelector(".voice-cancel-execute") as HTMLButtonElement;
+    expect(nested).not.toBeNull();
+    nested.click();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    expect(selections(r.fake)).toBe(0);
   });
 
   it("4c. mutant kill (narrowed guard): a click on the lifted status dot selects exactly once", async () => {
     sessionsStore.setSessions([rootLive()]);
     const r = renderBanner();
-    try {
-      const dot = r.banner.querySelector(":scope > .session-item-status") as HTMLElement;
-      expect(dot).not.toBeNull();
-      dot.click();
-      await waitFor(() => expect(selections(r.fake)).toBe(1));
-    } finally {
-      r.cleanup();
-    }
+    const dot = r.banner.querySelector(":scope > .session-item-status") as HTMLElement;
+    expect(dot).not.toBeNull();
+    dot.click();
+    await waitFor(() => expect(selections(r.fake)).toBe(1));
   });
 
   it("4d. every button, onClick or title holder in the banner subtree maps to one of nine declared names", () => {
@@ -330,89 +304,73 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
   it("5. compact row composition: DOM kept, no inline style or hiding class, compact + rail side on .sidebar-layout", async () => {
     const fake = new FakeTransport();
     setupApp(fake);
-    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
-    try {
-      await appSettled(fake);
-      const layout = rendered.root.querySelector(".sidebar-layout") as HTMLElement;
-      const banner = rendered.root.querySelector(BANNER_SEL) as HTMLElement;
-      const classesOf = () => [...banner.children].map((c) => c.className);
-      const expanded = classesOf();
-      expect(layout.classList.contains("sidebar-compact")).toBe(false);
+    const rendered = mount(() => <SidebarApp embedded />, fake);
+    await appSettled(fake);
+    const layout = rendered.root.querySelector(".sidebar-layout") as HTMLElement;
+    const banner = rendered.root.querySelector(BANNER_SEL) as HTMLElement;
+    const classesOf = () => [...banner.children].map((c) => c.className);
+    const expanded = classesOf();
+    expect(layout.classList.contains("sidebar-compact")).toBe(false);
 
-      setSidebarCompactMode(true);
-      await waitFor(() => expect(layout.classList.contains("sidebar-compact")).toBe(true));
-      expect(layout.getAttribute("data-rail-side")).toMatch(/^(left|right)$/);
-      expect(banner.closest(".sidebar-layout.sidebar-compact[data-rail-side]")).toBe(layout);
-      for (const cls of ["session-item-status", "root-agent-avatar", "root-agent-text", "root-agent-banner-toggle"]) {
-        expect(banner.querySelector(`:scope > .${cls}`), cls).not.toBeNull();
-      }
-      expect(classesOf()).toEqual(expanded);
-      expect(banner.getAttribute("style")).toBeNull();
-      for (const child of banner.children) expect(child.getAttribute("style"), child.className).toBeNull();
-    } finally {
-      rendered.cleanup();
+    setSidebarCompactMode(true);
+    await waitFor(() => expect(layout.classList.contains("sidebar-compact")).toBe(true));
+    expect(layout.getAttribute("data-rail-side")).toMatch(/^(left|right)$/);
+    expect(banner.closest(".sidebar-layout.sidebar-compact[data-rail-side]")).toBe(layout);
+    for (const cls of ["session-item-status", "root-agent-avatar", "root-agent-text", "root-agent-banner-toggle"]) {
+      expect(banner.querySelector(`:scope > .${cls}`), cls).not.toBeNull();
     }
+    expect(classesOf()).toEqual(expanded);
+    expect(banner.getAttribute("style")).toBeNull();
+    for (const child of banner.children) expect(child.getAttribute("style"), child.className).toBeNull();
   });
 
   it("6. the toggle's aria-label and title name currentHotkey(), never a hard-coded shortcut", () => {
     const r = renderBanner();
-    try {
-      expect(r.toggle.getAttribute("aria-label")).toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
-      expect(r.toggle.getAttribute("title")).toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
-      setSidebarCompactHotkey("Ctrl+Shift+B");
-      expect(r.toggle.getAttribute("aria-label")).toContain("Ctrl+Shift+B");
-      expect(r.toggle.getAttribute("title")).toContain("Ctrl+Shift+B");
-      expect(r.toggle.getAttribute("aria-label")).not.toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
-    } finally {
-      r.cleanup();
-    }
+    expect(r.toggle.getAttribute("aria-label")).toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
+    expect(r.toggle.getAttribute("title")).toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
+    setSidebarCompactHotkey("Ctrl+Shift+B");
+    expect(r.toggle.getAttribute("aria-label")).toContain("Ctrl+Shift+B");
+    expect(r.toggle.getAttribute("title")).toContain("Ctrl+Shift+B");
+    expect(r.toggle.getAttribute("aria-label")).not.toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
   });
 
   it("7. SidebarApp hydrates the configured shortcut on load and every refresh, without a remount", async () => {
     const fake = new FakeTransport();
     setupApp(fake);
-    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
-    try {
-      await appSettled(fake);
-      const toggle = rendered.root.querySelector(".root-agent-banner-toggle") as HTMLElement;
-      fake.resolve("get_settings", baseSettings({ projectPaths: [], sidebarCompactHotkey: "Ctrl+Shift+B" }));
-      await settingsStore.load();
-      await waitFor(() => expect(currentHotkey()).toBe("Ctrl+Shift+B"));
-      expect(toggle.getAttribute("aria-label")).toContain("Ctrl+Shift+B");
+    const rendered = mount(() => <SidebarApp embedded />, fake);
+    await appSettled(fake);
+    const toggle = rendered.root.querySelector(".root-agent-banner-toggle") as HTMLElement;
+    fake.resolve("get_settings", baseSettings({ projectPaths: [], sidebarCompactHotkey: "Ctrl+Shift+B" }));
+    await settingsStore.load();
+    await waitFor(() => expect(currentHotkey()).toBe("Ctrl+Shift+B"));
+    expect(toggle.getAttribute("aria-label")).toContain("Ctrl+Shift+B");
 
-      fake.resolve("get_settings", baseSettings({ projectPaths: [], sidebarCompactHotkey: "Ctrl+Alt+K" }));
-      settingsStore.refresh();
-      await waitFor(() => expect(currentHotkey()).toBe("Ctrl+Alt+K"));
-      expect(rendered.root.querySelector(".root-agent-banner-toggle")).toBe(toggle);
+    fake.resolve("get_settings", baseSettings({ projectPaths: [], sidebarCompactHotkey: "Ctrl+Alt+K" }));
+    settingsStore.refresh();
+    await waitFor(() => expect(currentHotkey()).toBe("Ctrl+Alt+K"));
+    expect(rendered.root.querySelector(".root-agent-banner-toggle")).toBe(toggle);
 
-      const absent = baseSettings({ projectPaths: [] });
-      delete absent.sidebarCompactHotkey;
-      fake.resolve("get_settings", absent);
-      const errors = vi.spyOn(console, "error");
-      settingsStore.refresh();
-      await waitFor(() => expect(settingsStore.current).toBe(absent));
-      await waitFor(() => expect(currentHotkey()).toBe(DEFAULT_SIDEBAR_COMPACT_HOTKEY));
-      expect(toggle.getAttribute("aria-label")).toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
-      expect(errors).not.toHaveBeenCalled();
-    } finally {
-      rendered.cleanup();
-    }
+    const absent = baseSettings({ projectPaths: [] });
+    delete absent.sidebarCompactHotkey;
+    fake.resolve("get_settings", absent);
+    const errors = vi.spyOn(console, "error");
+    settingsStore.refresh();
+    await waitFor(() => expect(settingsStore.current).toBe(absent));
+    await waitFor(() => expect(currentHotkey()).toBe(DEFAULT_SIDEBAR_COMPACT_HOTKEY));
+    expect(toggle.getAttribute("aria-label")).toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
+    expect(errors).not.toHaveBeenCalled();
   });
 
   it("8. negative control for 7: the banner alone never hydrates the shortcut", async () => {
     const fake = bannerFake();
     const r = renderBanner(fake);
-    try {
-      fake.resolve("get_settings", baseSettings({ projectPaths: [], sidebarCompactHotkey: "Ctrl+Shift+B" }));
-      await settingsStore.load();
-      expect(settingsStore.current?.sidebarCompactHotkey).toBe("Ctrl+Shift+B");
-      settingsStore.refresh();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(currentHotkey()).toBe(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
-      expect(r.toggle.getAttribute("aria-label")).toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
-    } finally {
-      r.cleanup();
-    }
+    fake.resolve("get_settings", baseSettings({ projectPaths: [], sidebarCompactHotkey: "Ctrl+Shift+B" }));
+    await settingsStore.load();
+    expect(settingsStore.current?.sidebarCompactHotkey).toBe("Ctrl+Shift+B");
+    settingsStore.refresh();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(currentHotkey()).toBe(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
+    expect(r.toggle.getAttribute("aria-label")).toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
   });
 });
