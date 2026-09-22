@@ -1482,6 +1482,7 @@ mod tests {
             label: id.to_string(),
             command: id.to_string(),
             color: "#10b981".to_string(),
+            order: None,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,

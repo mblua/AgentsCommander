@@ -215,6 +215,24 @@ const cloneSettings = (value: AppSettings | null): AppSettings | null => {
   return JSON.parse(JSON.stringify(value)) as AppSettings;
 };
 
+// #2337 - the typing-hold bounds the backend enforces in
+// `validate_typing_hold_settings` (settings.rs). The draft is checked against the
+// same numbers so the modal refuses an invalid window before the save round-trip.
+const TYPING_HOLD_SECONDS_DEFAULT = 30;
+const TYPING_HOLD_SECONDS_MIN = 1;
+const TYPING_HOLD_SECONDS_MAX = 3600;
+
+/** Whole seconds in range, or null. A blank or a fraction is invalid and is
+ *  NEVER coerced: the input keeps the user's text and Save stays blocked. */
+function parseTypingHoldSeconds(raw: string): number | null {
+  const text = raw.trim();
+  if (!/^\d+$/.test(text)) return null;
+  const value = Number(text);
+  return value >= TYPING_HOLD_SECONDS_MIN && value <= TYPING_HOLD_SECONDS_MAX
+    ? value
+    : null;
+}
+
 /** #1347 - the notice shown under every settings input whose value is persisted
  *  unencrypted in the instance settings.json. `path` is the backend-resolved
  *  absolute file path (SettingsSnapshot.settingsFilePath); a null path degrades
@@ -681,6 +699,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   );
   const [terminalSnapshotsOpeningValue, setTerminalSnapshotsOpeningValue] =
     createSignal(seededSettings?.terminalSnapshotsEnabled ?? false);
+  // #2337 - the input's own text, so an invalid draft (blank or fractional) can
+  // stay on screen and keep Save disabled instead of being coerced to a number.
+  const [typingHoldSecondsText, setTypingHoldSecondsText] = createSignal(
+    String(seededSettings?.typingHoldSeconds ?? TYPING_HOLD_SECONDS_DEFAULT),
+  );
   const [draftDirty, setDraftDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
@@ -1052,6 +1075,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const loadedSeed = cloneSettings(loaded);
       setModalSeed(loadedSeed);
       setTerminalSnapshotsOpeningValue(loaded.terminalSnapshotsEnabled);
+      setTypingHoldSecondsText(
+        String(nextSettings?.typingHoldSeconds ?? TYPING_HOLD_SECONDS_DEFAULT),
+      );
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
     }
   });
@@ -1816,10 +1842,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       settings.data?.screenshotCaptureHotkey ?? "Ctrl+Q"
     );
 
+  const validateTypingHoldSeconds = (): string | null => {
+    if (!settings.data) return null;
+    if (parseTypingHoldSeconds(typingHoldSecondsText()) === null) {
+      return `Typing hold: seconds must be a whole number from ${TYPING_HOLD_SECONDS_MIN} to ${TYPING_HOLD_SECONDS_MAX}`;
+    }
+    return null;
+  };
+
   const currentValidationError = (): string | null =>
     validateAgents() ??
     validateResources() ??
     validateCoordinatorIdle() ??
+    validateTypingHoldSeconds() ??
     validateApiServerSettings() ??
     validateScreenshotHotkey();
 
@@ -2073,6 +2108,37 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             data-ac-testid="settings.general.restartResumeAgentPrompt"
           />
         </label>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Typing hold</div>
+        <label class="settings-field">
+          <span class="settings-label">Hold message delivery after typing (seconds)</span>
+          <input
+            class="settings-input settings-input-sm"
+            type="number"
+            min={TYPING_HOLD_SECONDS_MIN}
+            max={TYPING_HOLD_SECONDS_MAX}
+            step="1"
+            value={typingHoldSecondsText()}
+            onInput={(e) => {
+              const raw = e.currentTarget.value;
+              setTypingHoldSecondsText(raw);
+              const value = parseTypingHoldSeconds(raw);
+              if (value !== null) updateField("typingHoldSeconds", value);
+            }}
+            data-ac-testid="settings.general.typingHoldSeconds"
+            data-ac-role="spinbutton"
+          />
+        </label>
+        <Show when={validateTypingHoldSeconds()}>
+          <div
+            class="settings-hint settings-hint-error"
+            data-ac-testid="settings.general.typingHoldSeconds.error"
+          >
+            {validateTypingHoldSeconds()}
+          </div>
+        </Show>
       </div>
 
       <div class="settings-section">
