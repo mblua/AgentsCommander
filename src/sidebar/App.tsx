@@ -66,6 +66,11 @@ import { primeAudio } from "../shared/sound";
 import { voiceRecorder } from "../shared/voice-recorder";
 import { settingsStore } from "../shared/stores/settings";
 import { railCollapseStore } from "./stores/rail-collapse";
+import {
+  DEFAULT_SIDEBAR_COMPACT_HOTKEY,
+  setSidebarCompactHotkey,
+  sidebarCompact,
+} from "../shared/sidebar-compact";
 import Titlebar from "./components/Titlebar";
 import ActionBar from "./components/ActionBar";
 import RootAgentBanner from "./components/RootAgentBanner";
@@ -308,6 +313,14 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       setContextTemplateUpdateBusy(false);
     }
   };
+
+  // #2236 D16a - only SidebarApp hydrates the configured shortcut, on load and
+  // on every refresh; a detached window keeps the default.
+  createEffect(() => {
+    setSidebarCompactHotkey(
+      settingsStore.current?.sidebarCompactHotkey ?? DEFAULT_SIDEBAR_COMPACT_HOTKEY,
+    );
+  });
 
   createEffect(() => {
     if (activeContextTemplateUpdate()) return;
@@ -1040,6 +1053,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     <>
       <div
         class="sidebar-layout"
+        classList={{ "sidebar-compact": sidebarCompact() }}
+        data-rail-side={railSide()}
         onPointerEnter={() => sessionsStore.setSidebarPointerInside(true)}
         onPointerLeave={() => sessionsStore.setSidebarPointerInside(false)}
         data-ac-testid="sidebar.root"
@@ -1049,7 +1064,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
           <Titlebar />
         </Show>
         <ActionBar />
-        <RootAgentBanner />
+        <RootAgentBanner compact={sidebarCompact()} />
         <div class="sidebar-body" data-rail-side={railSide()}>
           <Show when={railSide() === "left"}>
             <WorkgroupGroupRail projects={projectStore.projects} />

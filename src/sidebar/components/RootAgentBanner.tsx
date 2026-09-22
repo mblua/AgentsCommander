@@ -34,8 +34,18 @@ import {
   taskTitleSpec,
   telegramSpec,
 } from "./context-menu/session-row-menu-specs";
+import {
+  currentHotkey,
+  sidebarCompact,
+  toggleSidebarCompact,
+} from "../../shared/sidebar-compact";
 
-const RootAgentBanner: Component = () => {
+// #2236 D23 - a click whose target sits inside one of these is a nested
+// control's own click and must not also activate the row.
+const CONTROL_SEL = "button, a, [role='button'], [role='menuitem']";
+
+const RootAgentBanner: Component<{ compact?: boolean }> = (props) => {
+  const compact = () => props.compact ?? sidebarCompact();
   const [busy, setBusy] = createSignal(false);
   // #1871 - the menu is open iff menuPos() !== null. menuEpoch is a plain let,
   // not a signal, exactly as replicaCtxMenuEpoch is in ProjectPanel: nothing
@@ -362,28 +372,30 @@ const RootAgentBanner: Component = () => {
     }
   };
 
+  const rowLabel = () =>
+    rootSession()
+      ? typeof rootSession()!.status === "string"
+        ? "Open Root Agent session"
+        : "Wake Root Agent session"
+      : "Create Root Agent session";
+  const toggleLabel = () =>
+    `${compact() ? "Expand" : "Collapse"} sidebar (${currentHotkey()})`;
+
   return (
     <>
+      {/* #2236 D23 - a group, not a widget: the row's activation is the real
+          .root-agent-banner-open button and the toggle is its sibling. The
+          guarded onClick keeps automation-bridge's container click() working. */}
       <div
         class="root-agent-banner"
         classList={{ active: isActive(), disabled: busy() }}
-        role="button"
-        tabIndex={busy() ? -1 : 0}
+        role="group"
         aria-disabled={busy()}
-        aria-label={
-          rootSession()
-            ? typeof rootSession()!.status === "string"
-              ? "Open Root Agent session"
-              : "Wake Root Agent session"
-            : "Create Root Agent session"
-        }
-        onClick={handleClick}
-        onKeyDown={(e) => {
-          if (e.currentTarget !== e.target) return;
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            handleClick();
-          }
+        aria-label={rowLabel()}
+        onClick={(e) => {
+          const t = e.target as Element;
+          if (t !== e.currentTarget && t.closest(CONTROL_SEL)) return;
+          void handleClick();
         }}
         onContextMenu={handleContextMenu}
         title={
@@ -395,6 +407,13 @@ const RootAgentBanner: Component = () => {
         data-ac-role="button"
         data-ac-state={rootSession() ? (hasLivePty() ? "live" : "dormant") : "missing"}
       >
+        <button
+          type="button"
+          class="root-agent-banner-open"
+          aria-label={rowLabel()}
+          disabled={busy()}
+          onClick={() => void handleClick()}
+        />
         <div
           class={`session-item-status ${dotClass()}`}
           data-ac-comanaged={isComanaged() ? "true" : "false"}
@@ -510,6 +529,16 @@ const RootAgentBanner: Component = () => {
             </Show>
           </Show>
         </Show>
+        <button
+          type="button"
+          class="root-agent-banner-toggle"
+          aria-expanded={!compact()}
+          aria-label={toggleLabel()}
+          title={toggleLabel()}
+          onClick={() => toggleSidebarCompact()}
+        >
+          {compact() ? "<<" : ">>"}
+        </button>
       </div>
       <Show when={showAgentPicker()}>
         <Portal>
