@@ -8,6 +8,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { resourceMonitorStore } from "../../shared/stores/resourceMonitor";
 import { setSoundsEnabled } from "../../shared/sound";
 import { isBrowser } from "../../shared/platform";
+import { sidebarCompact } from "../../shared/sidebar-compact";
 import { homeStore } from "../../main/stores/home";
 import { centralViewStore } from "../../main/stores/centralView";
 import SettingsModal from "./SettingsModal";
@@ -223,6 +224,7 @@ const ActionBar: Component = () => {
         data-ac-testid="actionBar"
         data-ac-role="surface"
       >
+        <Show when={!sidebarCompact()}>
         <div class="action-bar-dropdown" ref={dropdownRef}>
           <button
             class="action-bar-dropdown-btn"
@@ -267,7 +269,9 @@ const ActionBar: Component = () => {
             </div>
           </Show>
         </div>
+        </Show>
         <div class="action-bar-icons">
+          <Show when={!sidebarCompact()}>
           <Show when={settingsStore.current?.specBoardEnabled === true}>
             <button
               class="toolbar-gear-btn"
@@ -361,6 +365,7 @@ const ActionBar: Component = () => {
           >
             <span class="resource-monitor-glyph" aria-hidden="true">&#x25A6;</span>
           </button>
+          </Show>
           <button
             class="toolbar-gear-btn"
             disabled={!settingsStore.current}

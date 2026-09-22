@@ -1337,6 +1337,13 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+/* #2236 phase 6: compact toolbar fit. Only the inline padding shrinks; the
+   block padding stays, so the toolbar keeps its height. */
+.sidebar-compact .action-bar {
+  padding-inline: 2px;
+  gap: 2px;
+}
+
 /* Root Agent Banner */
 .root-agent-banner {
   display: flex;
