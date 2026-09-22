@@ -1591,6 +1591,36 @@ where
     }
 }
 
+/// Return `content` with a leading `---\n…\n---` YAML frontmatter block removed.
+/// If there is no frontmatter, returns `content` (post-BOM) unchanged.
+///
+/// Strips a leading UTF-8 BOM FIRST, then treats the input as frontmatter only
+/// if it begins with exactly `---` immediately followed by a newline (`---\n`
+/// or `---\r\n`) — this avoids mistaking a body that opens with a Markdown
+/// `---` horizontal rule for frontmatter. If no closing `---` line is found,
+/// returns `content` (post-BOM) unchanged.
+pub(crate) fn strip_yaml_frontmatter(content: &str) -> &str {
+    let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
+    let after_open = match content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))
+    {
+        Some(rest) => rest,
+        None => return content,
+    };
+    // Scan for a closing `---` line; return the body after it. If there is no
+    // closing line, the input was not real frontmatter — return it unchanged.
+    let mut offset = 0;
+    for line in after_open.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+        if trimmed == "---" {
+            return &after_open[offset + line.len()..];
+        }
+        offset += line.len();
+    }
+    content
+}
+
 fn write_combined_context_file(
     cwd: &str,
     resolved_paths: &[(String, std::path::PathBuf)],
@@ -1606,12 +1636,17 @@ fn write_combined_context_file(
         let base_content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read context file {}: {}", path.display(), e))?;
         let content = managed_template_local_override(path).unwrap_or(base_content);
+        let content: &str = if path.file_name() == Some(OsStr::new(ROLE_MD_FILENAME)) {
+            strip_yaml_frontmatter(&content)
+        } else {
+            &content
+        };
         if first {
-            combined.push_str(&content);
+            combined.push_str(content);
             first = false;
         } else {
             combined.push_str(&format!("\n\n---\n\n# Context: {}\n\n", label));
-            combined.push_str(&content);
+            combined.push_str(content);
         }
     }
 
@@ -10813,6 +10848,243 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "an edited Root supplement can neither suppress nor duplicate the prologue"
         );
         assert!(content.contains("You are the personal Root Agent for AgentsCommander."));
+    }
+
+    #[test]
+    fn role_frontmatter_stripped_in_replica_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("AgentsCommander_ac");
+        let ac_root = project.join(".ac");
+        let matrix_root = ac_root.join("_agent_tech-lead");
+        let replica_root = ac_root.join("wg-2-dev-team").join("__agent_tech-lead");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::write(
+            matrix_root.join(ROLE_MD_FILENAME),
+            "---\nname: replica-hidden-role-name\n---\nREPLICA_ROLE_BODY_2364\n",
+        )
+        .expect("write Role.md");
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write replica config");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&replica_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        let role_heading = content
+            .find("# Context: Role.md")
+            .expect("Role heading present");
+        let role_section = &content[role_heading..];
+        assert!(
+            role_section.contains("REPLICA_ROLE_BODY_2364"),
+            "{role_section}"
+        );
+        assert!(
+            !role_section.contains("replica-hidden-role-name"),
+            "frontmatter value must not leak into the Role section: {role_section}"
+        );
+        assert!(
+            !role_section.contains("name:"),
+            "frontmatter key must not leak into the Role section: {role_section}"
+        );
+    }
+
+    #[test]
+    fn role_frontmatter_stripped_in_direct_matrix_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let matrix_root = temp.path().join(".ac").join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(
+            matrix_root.join("config.json"),
+            r#"{"tooling":{},"context":["$AGENTSCOMMANDER_CONTEXT","Role.md"]}"#,
+        )
+        .expect("write config");
+        std::fs::write(
+            matrix_root.join(ROLE_MD_FILENAME),
+            "---\nname: direct-hidden-role-name\n---\nDIRECT_ROLE_BODY_2364\n",
+        )
+        .expect("write Role.md");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert_global_context_before_one_role(&content, "DIRECT_ROLE_BODY_2364");
+        assert!(
+            !content.contains("direct-hidden-role-name"),
+            "frontmatter value must not leak into the direct-matrix context: {content}"
+        );
+        let role_heading = content
+            .find("# Context: Role.md")
+            .expect("Role heading present");
+        assert!(
+            !content[role_heading..].contains("name:"),
+            "frontmatter key must not leak into the Role section: {content}"
+        );
+    }
+
+    #[test]
+    fn role_frontmatter_stripped_in_root_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        crate::config::root_agent::ensure_root_agent_dir_at(&root).expect("ensure root agent dir");
+        std::fs::write(
+            root.join("config.json"),
+            r#"{"tooling":{},"context":["../Context.root-agent.md","Role.md"]}"#,
+        )
+        .expect("write root config");
+        std::fs::write(
+            root.join(ROLE_MD_FILENAME),
+            "---\nname: root-hidden-role-name\n---\nROOT_ROLE_BODY_2364\n",
+        )
+        .expect("write root Role.md");
+
+        let materialized =
+            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
+                .expect("materialize context")
+                .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        let prologue = content
+            .find("# AgentsCommander Root Runtime Context")
+            .expect("prologue present");
+        let supplement = content
+            .find("You are the AgentsCommander Root Agent")
+            .expect("root supplement present");
+        let role = content
+            .find("ROOT_ROLE_BODY_2364")
+            .expect("role body present");
+        assert!(
+            prologue < supplement && supplement < role,
+            "prologue, then the Root supplement, then Role"
+        );
+        assert!(
+            !content.contains("root-hidden-role-name"),
+            "frontmatter value must not leak into the Root context: {content}"
+        );
+        let role_heading = content
+            .find("# Context: Role.md")
+            .expect("Role heading present");
+        assert!(
+            !content[role_heading..].contains("name:"),
+            "frontmatter key must not leak into the Role section: {content}"
+        );
+    }
+
+    #[test]
+    fn role_frontmatter_strip_handles_lf_crlf_and_bom() {
+        assert_eq!(
+            strip_yaml_frontmatter("---\nname: X\n---\nBODY\n"),
+            "BODY\n"
+        );
+        assert_eq!(
+            strip_yaml_frontmatter("---\r\nname: X\r\n---\r\nBODY\r\n"),
+            "BODY\r\n"
+        );
+        assert_eq!(
+            strip_yaml_frontmatter("\u{FEFF}---\nname: X\n---\nBODY\n"),
+            "BODY\n"
+        );
+    }
+
+    #[test]
+    fn role_md_unterminated_frontmatter_is_preserved() {
+        assert_eq!(
+            strip_yaml_frontmatter("---\nname: X\nBODY\n"),
+            "---\nname: X\nBODY\n"
+        );
+        assert_eq!(strip_yaml_frontmatter("---x\nBODY\n"), "---x\nBODY\n");
+    }
+
+    #[test]
+    fn non_role_context_source_keeps_frontmatter() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("AgentsCommander_ac");
+        let ac_root = project.join(".ac");
+        let matrix_root = ac_root.join("_agent_tech-lead");
+        let replica_root = ac_root.join("wg-2-dev-team").join("__agent_tech-lead");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::write(
+            matrix_root.join(ROLE_MD_FILENAME),
+            "---\nname: hidden-role-name-2364\n---\nROLE_BODY_2364\n",
+        )
+        .expect("write Role.md");
+        std::fs::write(
+            replica_root.join("notes.md"),
+            "---\ntitle: keep-notes-title\n---\nNOTES_BODY_2364\n",
+        )
+        .expect("write notes.md");
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT","notes.md"]}"#,
+        )
+        .expect("write replica config");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&replica_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(
+            content.contains("---\ntitle: keep-notes-title\n---\nNOTES_BODY_2364"),
+            "a non-Role source keeps its frontmatter: {content}"
+        );
+        assert!(content.contains("ROLE_BODY_2364"), "{content}");
+        assert!(
+            !content.contains("hidden-role-name-2364"),
+            "Role.md frontmatter must be stripped: {content}"
+        );
+    }
+
+    #[test]
+    fn role_frontmatter_strip_keeps_heading_and_separator_bytes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let matrix_root = temp.path().join(".ac").join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(
+            matrix_root.join("config.json"),
+            r#"{"tooling":{},"context":["$AGENTSCOMMANDER_CONTEXT","Role.md"]}"#,
+        )
+        .expect("write config");
+        std::fs::write(
+            matrix_root.join(ROLE_MD_FILENAME),
+            "---\nname: separator-hidden-role-name\n---\nROLE_BODY_2364\n",
+        )
+        .expect("write Role.md");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(
+            content.contains("\n\n---\n\n# Context: Role.md\n\nROLE_BODY_2364"),
+            "separator and heading bytes must be unchanged: {content}"
+        );
     }
 
     #[test]

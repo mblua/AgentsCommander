@@ -584,9 +584,12 @@ pub struct AppSettings {
     #[serde(default = "default_api_bind")]
     pub api_server_bind: String,
     /// #1173 - disclosure gate for authorized backend terminal snapshots.
-    /// Whole-settings writers preserve the authoritative value. Only the
-    /// dedicated compare-and-set command may change it.
-    #[serde(default)]
+    /// Whole-settings writers preserve an explicit on-disk value; a legacy
+    /// settings object whose key is absent is materialized as true (the
+    /// default-on phase deliberately reversed the absent-key rule), and a
+    /// malformed value fails closed. Only the dedicated compare-and-set
+    /// command may change an explicit value.
+    #[serde(default = "default_terminal_snapshots_enabled")]
     pub terminal_snapshots_enabled: bool,
     /// Currently loaded project path (legacy single-project, kept for backward compat)
     #[serde(default)]
@@ -1107,6 +1110,10 @@ fn default_resource_monitor_enabled() -> bool {
     true
 }
 
+fn default_terminal_snapshots_enabled() -> bool {
+    true
+}
+
 fn default_max_concurrent_agent_processes() -> u32 {
     32
 }
@@ -1213,7 +1220,7 @@ impl Default for AppSettings {
             api_server_enabled: false,
             api_server_port: default_api_port(),
             api_server_bind: default_api_bind(),
-            terminal_snapshots_enabled: false,
+            terminal_snapshots_enabled: true,
             project_path: None,
             project_paths: vec![],
             archived_project_paths: vec![],
@@ -5052,15 +5059,17 @@ fn save_settings_value_locked(
         }
     }
 
-    // #1173: a whole-settings writer cannot opt in or re-enable a stale
-    // terminal snapshot gate. The on-disk boolean is authoritative. An absent
-    // legacy key is authoritative false. Only the dedicated CAS uses Explicit.
+    // #1173: a whole-settings writer cannot opt in or re-enable an explicit
+    // value, and a present malformed gate is an error. An absent file or a
+    // valid object with an absent legacy key materializes true: the default-on
+    // phase deliberately reverses the shipped absent-key rule. Only the
+    // dedicated CAS uses Explicit.
     let terminal_snapshots_enabled = match terminal_snapshot_gate_mode {
         TerminalSnapshotGateWriteMode::Explicit(enabled) => enabled,
         TerminalSnapshotGateWriteMode::Preserve => match &disk {
             Some(disk) => match disk.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED) {
                 Some(Value::Bool(enabled)) => *enabled,
-                None => false,
+                None => true,
                 Some(_) => {
                     return Err(SettingsSaveError::semantic(
                         disk_gate_stage,
@@ -5073,7 +5082,7 @@ fn save_settings_value_locked(
                     ));
                 }
             },
-            None => false,
+            None => true,
         },
     };
     out.insert(
@@ -5316,10 +5325,11 @@ fn read_terminal_snapshot_security_settings_strict_from_path(
     let object = value
         .as_object()
         .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
-    let enabled = object
-        .get(FIELD_TERMINAL_SNAPSHOTS_ENABLED)
-        .and_then(Value::as_bool)
-        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let enabled = match object.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED) {
+        Some(Value::Bool(enabled)) => *enabled,
+        Some(_) => return Err("snapshot_settings_invalid".to_string()),
+        None => true,
+    };
     let paths = object
         .get(FIELD_PROJECT_PATHS)
         .and_then(Value::as_array)
@@ -5395,12 +5405,17 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
             return Err(report_typed_persistence_failure(error));
         }
     };
+    let disk_file_absent = disk.is_none();
+    // An absent file compares as the default-on value, but its absence is
+    // tracked separately: the idempotent early return below may not report
+    // success before a valid settings file exists, because the strict reader
+    // cannot authorize anything without one.
     let disk_gate = match disk
         .as_ref()
         .and_then(|object| object.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED))
     {
         Some(Value::Bool(value)) => *value,
-        None => false,
+        None => true,
         Some(_) => return Err("terminal_snapshot_setting_save_failed".to_string()),
     };
     if disk_gate != expected && disk_gate != enabled {
@@ -5430,7 +5445,7 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
     };
     candidate.local_overlay_state = current.local_overlay_state.clone();
     candidate.terminal_snapshots_enabled = enabled;
-    if disk_gate == enabled {
+    if !disk_file_absent && disk_gate == enabled {
         return Ok(candidate);
     }
 
@@ -7557,19 +7572,32 @@ mod tests {
     }
 
     #[test]
-    fn terminal_snapshot_gate_defaults_false_and_strict_reader_fails_closed() {
+    fn terminal_snapshot_gate_defaults_true_and_strict_reader_fails_closed() {
+        assert!(super::AppSettings::default().terminal_snapshots_enabled);
         let mut legacy = serde_json::to_value(super::AppSettings::default()).unwrap();
         legacy
             .as_object_mut()
             .unwrap()
             .remove("terminalSnapshotsEnabled");
         let decoded: super::AppSettings = serde_json::from_value(legacy).unwrap();
-        assert!(!decoded.terminal_snapshots_enabled);
+        assert!(decoded.terminal_snapshots_enabled);
 
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("settings.json");
         std::fs::write(&path, r#"{"projectPaths":[]}"#).unwrap();
-        assert!(super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err());
+        let absent = super::read_terminal_snapshot_security_settings_strict_from_path(&path)
+            .expect("an absent legacy gate key is a valid default-on object");
+        assert!(absent.terminal_snapshots_enabled);
+        for malformed in [
+            r#"{"terminalSnapshotsEnabled":null,"projectPaths":[]}"#,
+            r#"{"terminalSnapshotsEnabled":"invalid","projectPaths":[]}"#,
+        ] {
+            std::fs::write(&path, malformed).unwrap();
+            assert!(
+                super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err(),
+                "{malformed} must fail closed"
+            );
+        }
         std::fs::write(
             &path,
             r#"{"terminalSnapshotsEnabled":true,"terminalSnapshotsEnabled":false,"projectPaths":[]}"#,
@@ -7596,6 +7624,42 @@ mod tests {
         assert!(diagnostic.contains("terminal_snapshots_enabled: true"));
         assert!(diagnostic.contains("project_paths: 1"));
         assert!(diagnostic.contains(&format!("project_path_bytes: {}", PATH_CANARY.len())));
+    }
+
+    #[test]
+    fn terminal_snapshot_gate_cas_initializes_an_absent_file_before_success() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        assert!(!path.exists());
+        let current = super::AppSettings {
+            project_paths: vec![temp.path().to_string_lossy().to_string()],
+            ..super::AppSettings::default()
+        };
+
+        // The absent file compares as the default-on value: an explicit false
+        // request is stale against a missing file and must not write anything.
+        assert_eq!(
+            super::compare_and_set_terminal_snapshots_enabled_at_path(
+                &current, &path, false, false,
+            )
+            .unwrap_err(),
+            "terminal_snapshot_setting_conflict"
+        );
+        assert!(!path.exists());
+
+        // A matching default-on request may not report idempotent success while
+        // no valid settings file exists: it must materialize the file first.
+        let written =
+            super::compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, true, true)
+                .unwrap();
+        assert!(written.terminal_snapshots_enabled);
+        assert!(
+            path.exists(),
+            "an absent file must be written before the strict reader can authorize"
+        );
+        let strict =
+            super::read_terminal_snapshot_security_settings_strict_from_path(&path).unwrap();
+        assert!(strict.terminal_snapshots_enabled);
     }
 
     #[test]
@@ -7639,6 +7703,48 @@ mod tests {
         let stale = super::AppSettings::default();
         let written = super::save_settings_to_path_preserving_project_paths(&stale, &path).unwrap();
         assert!(written.terminal_snapshots_enabled);
+
+        let false_path = temp.path().join("settings-false.json");
+        let mut false_object = serde_json::to_value(super::AppSettings::default()).unwrap();
+        false_object.as_object_mut().unwrap().insert(
+            "terminalSnapshotsEnabled".to_string(),
+            serde_json::json!(false),
+        );
+        std::fs::write(&false_path, serde_json::to_vec(&false_object).unwrap()).unwrap();
+        let written = super::save_settings_to_path_preserving_project_paths(
+            &super::AppSettings::default(),
+            &false_path,
+        )
+        .unwrap();
+        assert!(!written.terminal_snapshots_enabled);
+        let object: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&false_path).unwrap()).unwrap();
+        assert_eq!(object["terminalSnapshotsEnabled"], serde_json::json!(false));
+        let strict =
+            super::read_terminal_snapshot_security_settings_strict_from_path(&false_path).unwrap();
+        assert!(!strict.terminal_snapshots_enabled);
+    }
+
+    #[test]
+    fn whole_settings_writer_materializes_true_for_an_absent_legacy_gate_key() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        let mut legacy_object = serde_json::to_value(super::AppSettings::default()).unwrap();
+        legacy_object
+            .as_object_mut()
+            .unwrap()
+            .remove("terminalSnapshotsEnabled");
+        std::fs::write(&path, serde_json::to_vec(&legacy_object).unwrap()).unwrap();
+
+        let written = super::save_settings_to_path_preserving_project_paths(
+            &super::AppSettings::default(),
+            &path,
+        )
+        .unwrap();
+        assert!(written.terminal_snapshots_enabled);
+        let object: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(object["terminalSnapshotsEnabled"], serde_json::json!(true));
     }
 
     #[test]
@@ -11445,6 +11551,10 @@ mod tests {
         /// AC-7's control, captured by running `s6_normalized_non_project_settings`
         /// on the pinned base `ac845616` BEFORE the first edit of this change
         /// (delivery gate 8). Two capture runs produced byte-identical files.
+        /// #2317 (phase 2) deliberately reverses the shipped absent-key gate
+        /// rule, so an absent-key fixture now pins `terminalSnapshotsEnabled`
+        /// true instead of the false the pinned base captured. Explicit-false
+        /// coverage lives in the dedicated gate tests, not in this control.
         /// The six `FIELD_*` project keys and `rootToken` are removed because their
         /// values depend on `production_instance_base()` and the filesystem; every
         /// remaining key is pinned. The fixture pins `defaultShell`,
@@ -11596,7 +11706,7 @@ mod tests {
     "sustainedRepeatSeconds": 60,
     "transientRepeatLevel": "debug"
   },
-  "terminalSnapshotsEnabled": false,
+  "terminalSnapshotsEnabled": true,
   "terminalZoom": 1.0,
   "themeLight": false,
   "typingHoldSeconds": 30,

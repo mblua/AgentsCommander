@@ -77,6 +77,9 @@ const WORKGROUP: &str = "wg-1-dev-team";
 /// dual-prefix acceptance is testable at all (Rule P2), so this file keeps
 /// exercising `wg-1-dev-team` and gains the Room case.
 const ROOM: &str = "room-1-dev-team";
+/// #2317: a second room, distinct workgroup, used by a foreign-room
+/// coordinator to prove cross-room denial.
+const ROOM2: &str = "room-2-dev-team";
 
 struct ConfigEnvGuard {
     previous: Option<OsString>,
@@ -248,6 +251,9 @@ struct ReplicaPaths {
     worker: PathBuf,
     live_member: PathBuf,
     exited_member: PathBuf,
+    room_coordinator: PathBuf,
+    room_live_member: PathBuf,
+    room2_coordinator: PathBuf,
 }
 
 impl ReplicaPaths {
@@ -286,12 +292,33 @@ impl ReplicaPaths {
             r#"{"identity":"../../_agent_worker"}"#,
         )
         .expect("tampered replica config");
+        // #2317: sibling Room trees beside the legacy workgroup. The same
+        // project, team config and agent matrices are reused, so the existing
+        // wg sessions and tests stay untouched; only the room directories and
+        // their replica configs are new.
+        let room = ac_root.join(ROOM);
+        let room2 = ac_root.join(ROOM2);
+        for (replica, name) in [
+            (room.join("__agent_coordinator"), "coordinator"),
+            (room.join("__agent_member-live"), "member-live"),
+            (room2.join("__agent_coordinator"), "coordinator"),
+        ] {
+            std::fs::create_dir_all(&replica).expect("room replica directory");
+            std::fs::write(
+                replica.join("config.json"),
+                format!(r#"{{"identity":"../../_agent_{name}"}}"#),
+            )
+            .expect("room replica config");
+        }
         Self {
             collection,
             coordinator: workgroup.join("__agent_coordinator"),
             worker: workgroup.join("__agent_worker"),
             live_member: workgroup.join("__agent_member-live"),
             exited_member: workgroup.join("__agent_member-exited"),
+            room_coordinator: room.join("__agent_coordinator"),
+            room_live_member: room.join("__agent_member-live"),
+            room2_coordinator: room2.join("__agent_coordinator"),
         }
     }
 }
@@ -310,6 +337,9 @@ struct AcceptanceFixture {
     host_coordinator: Session,
     host_worker: Session,
     live_member: Session,
+    room_coordinator: Session,
+    room_live_member: Session,
+    room2_coordinator: Session,
     api_coordinator_token: crate::pty::container_tokens::ContainerApiToken,
     api_worker_token: crate::pty::container_tokens::ContainerApiToken,
     _container_receivers:
@@ -373,6 +403,27 @@ impl AcceptanceFixture {
             SessionBackendKind::LocalProcess,
         )
         .await;
+        let room_coordinator = create_session(
+            &manager,
+            &paths.room_coordinator,
+            true,
+            SessionBackendKind::LocalProcess,
+        )
+        .await;
+        let room_live_member = create_session(
+            &manager,
+            &paths.room_live_member,
+            false,
+            SessionBackendKind::LocalProcess,
+        )
+        .await;
+        let room2_coordinator = create_session(
+            &manager,
+            &paths.room2_coordinator,
+            true,
+            SessionBackendKind::LocalProcess,
+        )
+        .await;
         let exited_member = create_session(
             &manager,
             &paths.exited_member,
@@ -401,6 +452,9 @@ impl AcceptanceFixture {
         local_backend.install(host_coordinator.id, b"host coordinator");
         local_backend.install(host_worker.id, b"host worker");
         local_backend.install(live_member.id, &terminal_canary_output());
+        local_backend.install(room_live_member.id, &terminal_canary_output());
+        local_backend.install(room_coordinator.id, b"room coordinator");
+        local_backend.install(room2_coordinator.id, b"room 2 coordinator");
         local_backend.install(exited_member.id, b"exited target");
 
         let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
@@ -479,6 +533,24 @@ impl AcceptanceFixture {
         );
         record_route(
             &pty,
+            room_coordinator.id,
+            SessionBackendKind::LocalProcess,
+            &paths.room_coordinator,
+        );
+        record_route(
+            &pty,
+            room_live_member.id,
+            SessionBackendKind::LocalProcess,
+            &paths.room_live_member,
+        );
+        record_route(
+            &pty,
+            room2_coordinator.id,
+            SessionBackendKind::LocalProcess,
+            &paths.room2_coordinator,
+        );
+        record_route(
+            &pty,
             exited_member.id,
             SessionBackendKind::LocalProcess,
             &paths.exited_member,
@@ -497,7 +569,12 @@ impl AcceptanceFixture {
         );
         let pty_manager = Arc::new(std::sync::Mutex::new(pty));
 
-        for root in [&paths.coordinator, &paths.worker] {
+        for root in [
+            &paths.coordinator,
+            &paths.worker,
+            &paths.room_coordinator,
+            &paths.room2_coordinator,
+        ] {
             create_mailbox_directories(root);
         }
         let shutdown = crate::shutdown::ShutdownSignal::new();
@@ -537,6 +614,9 @@ impl AcceptanceFixture {
             host_coordinator,
             host_worker,
             live_member,
+            room_coordinator,
+            room_live_member,
+            room2_coordinator,
             api_coordinator_token,
             api_worker_token,
             _container_receivers: container_receivers,
@@ -6705,4 +6785,134 @@ fn room_and_legacy_entity_names_are_both_accepted_and_distinct() {
     let room_fqn = format!("{PROJECT}:{ROOM}/coordinator");
     assert_ne!(legacy_fqn, room_fqn);
     assert!(room_fqn.contains("room-1-dev-team"));
+}
+
+const ROOM_ACCEPTANCE_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_ROOM_ACCEPTANCE_CHILD";
+const ROOM_ACCEPTANCE_TEST_NAME: &str =
+    "pty::terminal_snapshot::acceptance_tests::room_target_capture_and_cross_room_denial_use_the_discovered_fqn";
+
+/// #2317: an authorized same-room coordinator captures the discovered room
+/// member FQN, while a different room's coordinator is denied without content.
+/// The target is the value discovery returned, not a hand-built string, so
+/// discovery and capture must agree on one identity.
+#[test]
+fn room_target_capture_and_cross_room_denial_use_the_discovered_fqn() {
+    if std::env::var_os(ROOM_ACCEPTANCE_CHILD_ENV).is_none() {
+        let status = std::process::Command::new(
+            std::env::current_exe().expect("terminal snapshot acceptance test executable"),
+        )
+        .args([
+            "--exact",
+            ROOM_ACCEPTANCE_TEST_NAME,
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env(ROOM_ACCEPTANCE_CHILD_ENV, "1")
+        .status()
+        .expect("spawn isolated room snapshot acceptance test");
+        assert!(
+            status.success(),
+            "isolated room snapshot acceptance test failed"
+        );
+        return;
+    }
+
+    let temporary_root = std::env::current_dir()
+        .expect("room acceptance current directory")
+        .join("target")
+        .join("terminal-snapshot-acceptance-temp");
+    std::fs::create_dir_all(&temporary_root).expect("room acceptance temporary root");
+    let temporary = tempfile::Builder::new()
+        .prefix("room-target-")
+        .tempdir_in(temporary_root)
+        .expect("room acceptance temporary directory");
+    let config = temporary.path().join("config");
+    std::fs::create_dir_all(&config).expect("room acceptance config directory");
+    let _env = ConfigEnvGuard::set(&config);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("room acceptance runtime");
+    runtime.block_on(async move {
+        let fixture = AcceptanceFixture::new(temporary).await;
+        let mut scanner = crate::phone::terminal_snapshot::SnapshotMailboxScanner::default();
+        let project_paths = fixture.settings.read().await.project_paths.clone();
+
+        let discovered =
+            crate::config::teams::discover_verified_terminal_snapshot_targets(&project_paths)
+                .expect("room target discovery");
+        let target = discovered
+            .iter()
+            .map(|identity| identity.canonical_fqn.clone())
+            .find(|fqn| fqn == &format!("{PROJECT}:{ROOM}/member-live"))
+            .expect("the room member target is discoverable");
+
+        let same_room_coordinator = format!("{PROJECT}:{ROOM}/coordinator");
+        let request = host_request(&fixture.room_coordinator, &same_room_coordinator, &target);
+        let bytes = submit_host_request(
+            &fixture,
+            &mut scanner,
+            &fixture.paths.room_coordinator,
+            &request,
+        )
+        .await;
+        let response = decode_host_response(
+            &bytes,
+            &request.request_id,
+            &request.confirmation_tag,
+            &target,
+            TerminalSnapshotFormat::Json,
+        )
+        .expect("room host capture envelope");
+        assert_eq!(response.error, None);
+        let payload = response.result.as_ref().expect("room capture payload");
+        match payload {
+            TerminalSnapshotPayload::Json { snapshot } => {
+                assert_eq!(snapshot.schema_version, 1);
+                assert_eq!(snapshot.target, target);
+            }
+            TerminalSnapshotPayload::Png { .. } => panic!("JSON capture returned PNG"),
+        }
+        assert!(payload_has_sentinel(payload));
+        let room_copies = fixture
+            .local_backend
+            .counts(fixture.room_live_member.id)
+            .copies;
+        assert!(room_copies >= 1, "the room member viewport must be copied");
+
+        let other_room_coordinator = format!("{PROJECT}:{ROOM2}/coordinator");
+        let denial = host_request(&fixture.room2_coordinator, &other_room_coordinator, &target);
+        let denial_bytes = submit_host_request(
+            &fixture,
+            &mut scanner,
+            &fixture.paths.room2_coordinator,
+            &denial,
+        )
+        .await;
+        let denial_response = decode_host_response(
+            &denial_bytes,
+            &denial.request_id,
+            &denial.confirmation_tag,
+            &target,
+            TerminalSnapshotFormat::Json,
+        )
+        .expect("room cross-room denial envelope");
+        assert_eq!(
+            denial_response.error,
+            Some(TerminalSnapshotReasonCode::NotAuthorized)
+        );
+        assert!(denial_response.result.is_none());
+        assert!(!denial_bytes
+            .windows(SCREEN_SENTINEL.len())
+            .any(|window| window == SCREEN_SENTINEL.as_bytes()));
+        assert_eq!(
+            fixture
+                .local_backend
+                .counts(fixture.room_live_member.id)
+                .copies,
+            room_copies,
+            "cross-room denial must not read the room member viewport"
+        );
+    });
 }

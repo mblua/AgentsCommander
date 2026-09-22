@@ -699,6 +699,20 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
   color: #ffaa00;
 }
 
+/* #2337 - typing-hold padlock. While closed it widens for the held count
+   instead of clipping the digits. */
+.status-bar-btn-typing-hold.closed {
+  width: auto;
+  min-width: 24px;
+  gap: 2px;
+  padding: 0 4px;
+  color: var(--statusbar-accent);
+}
+
+.status-bar-hold-count {
+  font-size: 9px;
+}
+
 /* Terminal content area. Lives between the context panels
  * (WorkgroupTask/LastPrompt) and StatusBar, and wraps the terminal/empty
  * Show block. The Home overlay (#164) is a sibling of this element inside

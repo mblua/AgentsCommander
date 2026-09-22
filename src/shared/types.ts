@@ -376,6 +376,16 @@ export interface PtyScreenSnapshot {
   sequence: number;
 }
 
+/** #2337 - the per-session typing-hold padlock snapshot returned by
+ *  `get_typing_hold` / `toggle_typing_hold`. `closed` is the EFFECTIVE hold
+ *  (manual padlock or the natural typing window) and `heldCount` is the number of
+ *  unique peer wake messages currently deferred for the session. The backend is
+ *  authoritative for both; the UI never infers or counts them locally. */
+export interface TypingHoldSnapshot {
+  closed: boolean;
+  heldCount: number;
+}
+
 export interface ConfigSeedConfig {
   enabled: boolean;
   dest: string;
@@ -550,6 +560,11 @@ export interface WindowGeometry {
   height: number;
 }
 
+/** #2349 - saved display state of the unified main window. Deliberately only the
+ *  two states Rust can persist (`normal`, `maximized`); minimized and fullscreen
+ *  are transient and are never persisted as a placement. */
+export type MainWindowDisplayState = "normal" | "maximized";
+
 export interface ScreenshotOverlayState {
   captureId: string;
   monitorId: number;
@@ -676,6 +691,9 @@ export interface AppSettings {
   sidebarGeometry: WindowGeometry | null;
   terminalGeometry: WindowGeometry | null;
   mainGeometry: WindowGeometry | null;
+  /** #2349 - optional so existing AppSettings literals and the ui harness keep
+   *  compiling; omission means `normal`. Rust always serializes the field. */
+  mainWindowDisplayState?: MainWindowDisplayState;
   mainSidebarWidth: number;
   mainSidebarSide: MainSidebarSide;
   mainAlwaysOnTop: boolean;
@@ -743,6 +761,11 @@ export interface AppSettings {
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
   activityLogEnabled: boolean;
+  /** #2337 - seconds the automatic typing hold stays active after the last
+   *  qualifying keystroke in a session. The backend reads it live and clamps it
+   *  to 1..3600; optional so a snapshot saved before the field reads as the
+   *  backend default (30). */
+  typingHoldSeconds?: number;
   screenshotCaptureHotkey?: string;
   /**
    * #1171 - root-level watcher patterns, keyed by watcher id. Optional because the Rust

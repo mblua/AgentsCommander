@@ -861,3 +861,62 @@ fn terminal_snapshot_host_process_transport_deadline_collision_and_output_failur
         ],
     );
 }
+
+/// #2317: a canonical room target is valid target syntax. The CLI must pass
+/// target validation and stop at the next gate: requester root verification.
+/// A malformed room-shaped target still returns the fixed
+/// `target_syntax_invalid` error, and neither line may leak caller data.
+#[test]
+fn terminal_snapshot_room_target_syntax_passes_and_stops_at_requester_identity() {
+    let _guard = host_process_guard();
+    let temporary = TempDirectory::new();
+    let binary = copied_binary(&temporary.0);
+    let root = temporary.0.join("sentinel-room-root");
+    let root_text = root.to_string_lossy();
+
+    let malformed = run(
+        &binary,
+        &[
+            "terminal-snapshot",
+            "--token",
+            HOST_TOKEN_CANARY,
+            "--root",
+            &root_text,
+            "--to",
+            "project:room-x-team/member",
+            "--timeout",
+            "15",
+        ],
+    );
+    assert_fixed_failure(
+        &malformed,
+        "invalid_request",
+        "field=to reason=target_syntax_invalid",
+    );
+    let malformed_stderr = String::from_utf8(malformed.stderr).unwrap();
+    assert!(!malformed_stderr.contains(HOST_TOKEN_CANARY));
+    assert!(!malformed_stderr.contains(root_text.as_ref()));
+
+    let valid = run(
+        &binary,
+        &[
+            "terminal-snapshot",
+            "--token",
+            HOST_TOKEN_CANARY,
+            "--root",
+            &root_text,
+            "--to",
+            "project:room-1-team/member",
+            "--timeout",
+            "15",
+        ],
+    );
+    assert_fixed_failure(
+        &valid,
+        "requester_unavailable",
+        "field=root reason=requester_root_unverified",
+    );
+    let valid_stderr = String::from_utf8(valid.stderr).unwrap();
+    assert!(!valid_stderr.contains(HOST_TOKEN_CANARY));
+    assert!(!valid_stderr.contains(root_text.as_ref()));
+}
