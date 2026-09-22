@@ -278,6 +278,11 @@ const SessionItem: Component<{
 
   const isInactive = () => props.session.id.startsWith("inactive-");
 
+  // #2271 - the Co-managed sidecar is keyed by session id and deliberately
+  // outside Session, so a list refresh cannot wipe it.
+  const isComanaged = () =>
+    sessionsStore.comanagedBySessionId[props.session.id] ?? false;
+
   const displayName = () => {
     const wd = props.session.workingDirectory;
     if (wd) {
@@ -332,7 +337,9 @@ const SessionItem: Component<{
       data-ac-state={props.isActive ? "active" : isInactive() ? "inactive" : "idle"}
     >
       <div
-        class={`session-item-status ${sessionDotClass(props.session, { inactive: isInactive() })}`}
+        class={`session-item-status ${sessionDotClass(props.session, { inactive: isInactive(), comanaged: isComanaged() })}`}
+        data-ac-comanaged={isComanaged() ? "true" : "false"}
+        title={isComanaged() ? "Co-managed" : undefined}
       />
       <div class="session-item-info">
 

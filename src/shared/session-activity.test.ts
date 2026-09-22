@@ -46,10 +46,44 @@ describe("sessionActivity", () => {
     expect(sessionDotClass(both)).toBe("pending");
   });
 
+  // #2271 - Co-managed precedence, one test per decision the epic fixes.
+  it("comanaged beats waitingForInput (test 2)", () => {
+    const waiting = activitySession("running", { waitingForInput: true });
+    expect(sessionActivity(waiting, { comanaged: true })).toBe("comanaged");
+    expect(sessionDotClass(waiting, { comanaged: true })).toBe("comanaged");
+  });
+
+  it("comanaged beats pendingReview (test 3)", () => {
+    const pending = activitySession("running", { pendingReview: true });
+    expect(sessionActivity(pending, { comanaged: true })).toBe("comanaged");
+    expect(sessionDotClass(pending, { comanaged: true })).toBe("comanaged");
+  });
+
+  it("comanaged beats both flags at once (test 4)", () => {
+    const both = activitySession("running", { pendingReview: true, waitingForInput: true });
+    expect(sessionActivity(both, { comanaged: true })).toBe("comanaged");
+    expect(sessionDotClass(both, { comanaged: true })).toBe("comanaged");
+  });
+
+  it("exited beats comanaged (test 5)", () => {
+    const dead = activitySession({ exited: 0 }, { waitingForInput: true, pendingReview: true });
+    expect(sessionActivity(dead, { comanaged: true })).toBe("exited");
+    expect(sessionDotClass(dead, { comanaged: true })).toBe("exited");
+  });
+
+  it("offline beats comanaged (test 6)", () => {
+    expect(sessionActivity(null, { comanaged: true })).toBe("offline");
+    expect(sessionActivity(activitySession("running"), { inactive: true, comanaged: true })).toBe("offline");
+    expect(sessionDotClass(null, { comanaged: true })).toBe("offline");
+    expect(sessionDotClass(activitySession("running"), { inactive: true, comanaged: true })).toBe("offline");
+  });
+
   it("pins every domain activity to its visual dot projection", () => {
-    const cases: Record<SessionActivity, { session: ActivitySession | null; inactive?: boolean; dot: string }> = {
+    const cases: Record<SessionActivity, { session: ActivitySession | null; inactive?: boolean; comanaged?: boolean; dot: string }> = {
       offline: { session: null, dot: "offline" },
       exited: { session: activitySession({ exited: 0 }), dot: "exited" },
+      // #2271 - totality: the new variant maps 1:1 like every other one.
+      comanaged: { session: activitySession("running"), comanaged: true, dot: "comanaged" },
       pendingReview: { session: activitySession("running", { pendingReview: true }), dot: "pending" },
       waitingForInput: { session: activitySession("running", { waitingForInput: true }), dot: "waiting" },
       active: { session: activitySession("active"), dot: "active" },
@@ -59,10 +93,10 @@ describe("sessionActivity", () => {
 
     for (const [activity, spec] of Object.entries(cases) as Array<[
       SessionActivity,
-      { session: ActivitySession | null; inactive?: boolean; dot: string },
+      { session: ActivitySession | null; inactive?: boolean; comanaged?: boolean; dot: string },
     ]>) {
-      expect(sessionActivity(spec.session, { inactive: spec.inactive })).toBe(activity);
-      expect(sessionDotClass(spec.session, { inactive: spec.inactive })).toBe(spec.dot);
+      expect(sessionActivity(spec.session, { inactive: spec.inactive, comanaged: spec.comanaged })).toBe(activity);
+      expect(sessionDotClass(spec.session, { inactive: spec.inactive, comanaged: spec.comanaged })).toBe(spec.dot);
     }
 
     expect(sessionDotClass(activitySession("running"), { inactive: true })).toBe("offline");
@@ -72,6 +106,7 @@ describe("sessionActivity", () => {
     const expected: Record<SessionActivity, boolean> = {
       offline: false,
       exited: false,
+      comanaged: false,
       pendingReview: false,
       waitingForInput: false,
       active: true,
