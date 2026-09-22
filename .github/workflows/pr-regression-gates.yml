@@ -67,6 +67,10 @@ jobs:
         run: |
           npm run cog:self
           npm run cog:scan
+      - name: "Check cognitive-complexity baseline growth (#2234)"
+        env:
+          GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: npm run cog:baseline -- --base-ref "${GATE_BASE_REF:-origin/main}"
 
   rust-regression:
     name: rust-regression
