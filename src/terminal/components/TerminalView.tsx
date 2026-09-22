@@ -35,6 +35,8 @@ import {
 import type { UnlistenFn } from "../../shared/transport";
 import { updatePromptCapture } from "./prompt-input-capture";
 import { createTerminalOptions } from "./terminal-options";
+import { matchesHotkeyEvent } from "../../shared/app-hotkey";
+import { currentHotkey } from "../../shared/sidebar-compact";
 import {
   createTerminalSessionRegistry,
   type SessionTerminalEntry,
@@ -309,8 +311,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       webglAddon = null;
     }
 
-    terminal.attachCustomKeyEventHandler((event) => {
+    const handleTerminalKeyEvent = (event: KeyboardEvent): boolean => {
       if (event.isComposing) return true;
+      // #2236 D9: veto only; no stopPropagation, so shortcuts.ts still toggles.
+      if (matchesHotkeyEvent(event, currentHotkey())) return false;
 
       const isCtrlShift = event.ctrlKey && event.shiftKey;
       const key = event.key.toLowerCase();
@@ -355,7 +359,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         return false; // suppress both keydown and keyup
       }
       return true;
-    });
+    };
+    terminal.attachCustomKeyEventHandler(handleTerminalKeyEvent);
 
     terminal.onData((data) => {
       if (visibleSessionId !== sessionId) {
