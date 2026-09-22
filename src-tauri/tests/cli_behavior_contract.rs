@@ -354,8 +354,9 @@ fn public_subcommand_help_contracts() {
         (&["open-project", "--help"], &["PATH"]),
         (&["new-project", "--help"], &["PATH"]),
         (&["telegram-send-image", "--help"], &["--path", "--caption"]),
-        (&["room", "--help"], &["list", "add", "remove"]),
+        (&["room", "--help"], &["list", "activity", "add", "remove"]),
         (&["room", "list", "--help"], &["--project"]),
+        (&["room", "activity", "--help"], &["--project"]),
         (
             &["room", "add", "--help"],
             &["--project", "--team", "--title"],
@@ -363,7 +364,11 @@ fn public_subcommand_help_contracts() {
         (&["room", "remove", "--help"], &["--project", "--room"]),
         // The deprecated spelling still reaches the same help, and help renders
         // the CANONICAL name for it (section 5.8 fact 4).
-        (&["workgroup", "--help"], &["list", "add", "remove"]),
+        (
+            &["workgroup", "--help"],
+            &["list", "activity", "add", "remove"],
+        ),
+        (&["workgroup", "activity", "--help"], &["--project"]),
         (&["workgroup", "remove", "--help"], &["--project", "--room"]),
         (
             &["team", "--help"],

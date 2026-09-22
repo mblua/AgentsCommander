@@ -7,13 +7,20 @@ use serde::Serialize;
 use crate::cli::create_agent_matrix::{write_project_refresh_request, ProjectRefreshRequest};
 use crate::commands::entity_creation::{
     acquire_lifecycle_project_gate, check_workgroup_repos_dirty, clone_missing_repos_for_workgroup,
-    create_workgroup_on_disk, list_workgroup_dirs, prune_workgroup_config_scope, read_team_config,
-    resolve_agent_ref, sanitize_name, validate_delete_root_not_link_or_reparse,
+    create_workgroup_on_disk, list_workgroup_dirs, parse_task_title, prune_workgroup_config_scope,
+    read_team_config, resolve_agent_ref, sanitize_name, validate_delete_root_not_link_or_reparse,
     validate_existing_name, RepoAssignment, TeamConfigResult, WgDeleteOutcome,
     WorkgroupDiskCreateArgs,
 };
 use crate::config::ac_root::existing_ac_root;
+use crate::config::daemon_pid::{detect_daemon_state, DaemonState};
 use crate::config::projects::resolve_project_reference;
+use crate::config::remote_activity_cache::{
+    read_snapshot, snapshot_is_fresh, PersistedCiState, RemoteActivitySnapshot,
+    REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME, REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS,
+};
+use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
+use crate::session::session::persisted_is_working;
 
 #[derive(Args)]
 pub struct WorkgroupArgs {
@@ -25,10 +32,18 @@ pub struct WorkgroupArgs {
 enum WorkgroupCommand {
     /// List rooms in a project
     List(WorkgroupListArgs),
+    /// Show each room's working state, CI state and task title
+    Activity(WorkgroupActivityArgs),
     /// Create an auto-numbered room
     Add(WorkgroupAddArgs),
     /// Remove a room
     Remove(WorkgroupRemoveArgs),
+}
+
+#[derive(Args)]
+struct WorkgroupActivityArgs {
+    #[arg(long)]
+    project: String,
 }
 
 #[derive(Args)]
@@ -78,9 +93,23 @@ struct WorkgroupListItem {
     replicas: Vec<String>,
 }
 
+/// One room's aggregate activity. `working` is a persisted observation only,
+/// never a proxy: an idle coordinator does not make its room work. `ci_state`
+/// is exactly `running`, `idle` or `unknown`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkgroupActivityItem {
+    name: String,
+    team: String,
+    working: bool,
+    ci_state: &'static str,
+    task_title: Option<String>,
+}
+
 pub fn execute(args: WorkgroupArgs) -> i32 {
     let result = match args.command {
         WorkgroupCommand::List(args) => list(args),
+        WorkgroupCommand::Activity(args) => activity(args),
         WorkgroupCommand::Add(args) => add(args),
         WorkgroupCommand::Remove(args) => remove(args),
     };
@@ -166,6 +195,314 @@ fn list(args: WorkgroupListArgs) -> Result<(), String> {
         })
         .collect();
     print_json(&items)
+}
+
+/// `room activity` / `workgroup activity`: every room of the project, in the
+/// same enumeration order `room list` uses, with aggregate working state, CI
+/// state and TASK title. Read-only: no TASK, cache, session, daemon or project
+/// write belongs to this verb.
+fn activity(args: WorkgroupActivityArgs) -> Result<(), String> {
+    let project_path = resolve_cli_project(&args.project)?;
+    let ac_root = resolve_cli_ac_root(&project_path)?;
+    // One instant for the whole run, captured before the cache read, so every
+    // room is judged against the same freshness boundary.
+    let now = chrono::Utc::now();
+    let settings = crate::config::settings::load_settings_for_cli();
+    let daemon_state = detect_daemon_state();
+
+    let ci_entries: HashMap<String, PersistedCiState> = match ci_gate(
+        settings.ci_activity_enabled,
+        daemon_state_is_live(&daemon_state),
+    ) {
+        CiGate::CiDisabled => {
+            warn_activity(
+                "room activity: CI activity is disabled; ciState is reported as \"unknown\"",
+            );
+            HashMap::new()
+        }
+        CiGate::DaemonNotLive => {
+            warn_activity(&format!(
+                "room activity: AgentsCommander daemon is not live ({daemon_state:?}); ciState is reported as \"unknown\""
+            ));
+            HashMap::new()
+        }
+        CiGate::Usable => {
+            let cache_dir = crate::config::config_dir();
+            match read_fresh_ci_snapshot(cache_dir.as_deref(), now) {
+                Ok(snapshot) => index_ci_entries(&snapshot),
+                Err(reason) => {
+                    warn_activity(&format!(
+                        "room activity: {reason}; ciState is reported as \"unknown\""
+                    ));
+                    HashMap::new()
+                }
+            }
+        }
+    };
+
+    let sessions = load_sessions_raw();
+    let mut items: Vec<WorkgroupActivityItem> = Vec::new();
+    for path in list_workgroup_dirs(&ac_root) {
+        let Some(name) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let Ok(team) = crate::commands::entity_creation::parse_team_from_workgroup_name(&name)
+        else {
+            continue;
+        };
+        let working = room_is_working(&path, &name, &sessions);
+        let repo_keys: Vec<String> = list_room_repo_dirs(&path)
+            .iter()
+            .map(|repo| canonical_activity_path_key(repo))
+            .collect();
+        let ci_state = aggregate_room_ci(&repo_keys, &ci_entries);
+        let task_title = read_task_title(&path);
+        items.push(WorkgroupActivityItem {
+            name,
+            team,
+            working,
+            ci_state,
+            task_title,
+        });
+    }
+    print_json(&items)
+}
+
+/// The three states of the CI gate, evaluated once per invocation before any
+/// cache file is read. Named so the warning and the tests can tell the reasons
+/// apart instead of collapsing them into one silent boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CiGate {
+    /// The snapshot may be read (it still has to be current).
+    Usable,
+    /// `ciActivityEnabled` is false: no producer exists to trust.
+    CiDisabled,
+    /// The daemon is not live: the snapshot is not being refreshed.
+    DaemonNotLive,
+}
+
+fn ci_gate(ci_activity_enabled: bool, daemon_live: bool) -> CiGate {
+    if !ci_activity_enabled {
+        CiGate::CiDisabled
+    } else if !daemon_live {
+        CiGate::DaemonNotLive
+    } else {
+        CiGate::Usable
+    }
+}
+
+fn daemon_state_is_live(state: &DaemonState) -> bool {
+    matches!(state, DaemonState::Running { .. })
+}
+
+/// One runtime warning. When `AC_MACHINE_OUTPUT` is set the caller asked for
+/// log-only warnings; otherwise stderr is the channel. stdout is never used.
+fn warn_activity(message: &str) {
+    if std::env::var_os("AC_MACHINE_OUTPUT").is_some() {
+        log::warn!("{message}");
+    } else {
+        eprintln!("{message}");
+    }
+}
+
+/// Read and freshness-check the snapshot at `<config_dir>/remote-activity.json`.
+/// A missing directory, an unreadable or malformed file, an unsupported schema,
+/// an invalid timestamp and a stale (or far-future) one are all `Err` with the
+/// reason the caller warns about; none is a panic.
+fn read_fresh_ci_snapshot(
+    dir: Option<&Path>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<RemoteActivitySnapshot, String> {
+    let dir = dir.ok_or_else(|| "the instance config directory is unavailable".to_string())?;
+    let path = dir.join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
+    let snapshot = read_snapshot(&path)?;
+    if !snapshot_is_fresh(&snapshot, now) {
+        return Err(format!(
+            "the remote activity snapshot is not current (window {REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS}s)"
+        ));
+    }
+    Ok(snapshot)
+}
+
+/// Canonical-key index over the snapshot's path/state pairs. A duplicate key
+/// with conflicting states collapses to `Unknown`: two observations that
+/// disagree are not authority.
+fn index_ci_entries(snapshot: &RemoteActivitySnapshot) -> HashMap<String, PersistedCiState> {
+    let mut entries = HashMap::new();
+    for (path, state) in &snapshot.repos {
+        let key = canonical_activity_path_key(Path::new(path));
+        match entries.entry(key) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(*state);
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                if *slot.get() != *state {
+                    slot.insert(PersistedCiState::Unknown);
+                }
+            }
+        }
+    }
+    entries
+}
+
+/// The room's CI state: `running` if any room repo is running; `idle` only if
+/// the room has at least one immediate `repo-*` and EVERY repo has a matched
+/// idle entry; `unknown` for no repositories, any missing match, or any
+/// explicit unknown unless another repository is running. Pure, so the whole
+/// tri-state is unit-tested without files.
+fn aggregate_room_ci(
+    repo_keys: &[String],
+    entries: &HashMap<String, PersistedCiState>,
+) -> &'static str {
+    if repo_keys.is_empty() {
+        return "unknown";
+    }
+    let mut any_running = false;
+    let mut all_idle = true;
+    for key in repo_keys {
+        match entries.get(key) {
+            Some(PersistedCiState::Running) => any_running = true,
+            Some(PersistedCiState::Idle) => {}
+            Some(PersistedCiState::Unknown) | None => all_idle = false,
+        }
+    }
+    if any_running {
+        "running"
+    } else if all_idle {
+        "idle"
+    } else {
+        "unknown"
+    }
+}
+
+/// The path identity applied to EVERY operand of a room/session/cache match:
+/// `canonicalize` first (resolves `.`/`..` and symlinks when the path exists),
+/// the original bytes on failure, then the four Windows verbatim/UNC prefixes
+/// removed unconditionally, and only then separators, ASCII case and a trailing
+/// separator normalized. Applying one function to both sides makes one-sided
+/// normalization impossible.
+pub(crate) fn canonical_activity_path_key(path: &Path) -> String {
+    let raw = match std::fs::canonicalize(path) {
+        Ok(canonical) => canonical.to_string_lossy().to_string(),
+        Err(_) => path.to_string_lossy().to_string(),
+    };
+    strip_windows_verbatim_prefix(&raw)
+        .replace('\\', "/")
+        .to_lowercase()
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// The four Windows verbatim/UNC prefix forms, rewritten on EVERY host so the
+/// same bytes normalize identically on Linux CI and Windows. The UNC arms
+/// produce `\\` (the ordinary UNC lead-in), mirroring the `path_utils`
+/// precedent; this module deliberately does not call that helper, which is
+/// private and cfg-gated.
+fn strip_windows_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else if let Some(rest) = path.strip_prefix(r"\??\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = path.strip_prefix(r"\??\") {
+        rest.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+/// A room is working only when one of its own immediate `__agent_*` replicas
+/// has a persisted row that names exactly `<room>/<agent>`, resolves to that
+/// replica's path, and passes `persisted_is_working`. A coordinator counts only
+/// through its own matched row; it is never substituted for the other agents.
+fn room_is_working(room_dir: &Path, room_name: &str, sessions: &[PersistedSession]) -> bool {
+    list_replica_activity_dirs(room_dir)
+        .iter()
+        .any(|(replica_path, agent)| {
+            let replica_key = canonical_activity_path_key(replica_path);
+            let expected_name = format!("{room_name}/{agent}");
+            sessions.iter().any(|row| {
+                row.id.is_some()
+                    && row.name == expected_name
+                    && canonical_activity_path_key(Path::new(&row.working_directory)) == replica_key
+                    && persisted_is_working(row.status.as_ref(), row.waiting_for_input)
+            })
+        })
+}
+
+/// Immediate `__agent_*` directories of a room as (path, agent-name) pairs,
+/// sorted by agent name. The agent name is the directory name with the existing
+/// `__agent_` prefix removed, so directory `__agent_x` matches only the
+/// persisted name `<room>/x`.
+fn list_replica_activity_dirs(wg_dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut replicas = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(wg_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if let Some(agent) = name.strip_prefix("__agent_") {
+                replicas.push((path, agent.to_string()));
+            }
+        }
+    }
+    replicas.sort_by(|left, right| left.1.cmp(&right.1));
+    replicas
+}
+
+/// Immediate `repo-*` directories of a room, sorted by file name. The CI axis
+/// is aggregated over exactly these, never over arbitrary descendants.
+fn list_room_repo_dirs(wg_dir: &Path) -> Vec<PathBuf> {
+    let mut repos = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(wg_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("repo-") {
+                repos.push(path);
+            }
+        }
+    }
+    repos.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+    repos
+}
+
+/// Read `<room>/TASK.md` once. A missing file and a present-but-titleless file
+/// are both `None` WITHOUT a warning; every other read failure and invalid
+/// UTF-8 warn once for that room and still report `None`. Never locks, writes,
+/// backs up or repairs the file.
+fn read_task_title(room_dir: &Path) -> Option<String> {
+    let path = room_dir.join("TASK.md");
+    match std::fs::read(&path) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => parse_task_title(&text),
+            Err(_) => {
+                warn_activity(&format!(
+                    "room activity: {} is not valid UTF-8; taskTitle is null",
+                    path.display()
+                ));
+                None
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            warn_activity(&format!(
+                "room activity: cannot read {}: {error}; taskTitle is null",
+                path.display()
+            ));
+            None
+        }
+    }
 }
 
 fn add(args: WorkgroupAddArgs) -> Result<(), String> {
@@ -495,21 +832,10 @@ pub(crate) fn push_unique(items: &mut Vec<String>, value: String) {
 }
 
 fn list_replicas(wg_dir: &Path) -> Vec<String> {
-    let mut replicas = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(wg_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().to_string();
-            if let Some(agent) = name.strip_prefix("__agent_") {
-                replicas.push(agent.to_string());
-            }
-        }
-    }
-    replicas.sort();
-    replicas
+    list_replica_activity_dirs(wg_dir)
+        .into_iter()
+        .map(|(_, agent)| agent)
+        .collect()
 }
 
 pub(crate) async fn clone_missing_for_config(
@@ -529,6 +855,290 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::session::SessionStatus;
+
+    fn activity_row(
+        name: &str,
+        working_directory: &Path,
+        status: SessionStatus,
+        waiting_for_input: bool,
+    ) -> PersistedSession {
+        PersistedSession {
+            name: name.to_string(),
+            shell: "powershell.exe".to_string(),
+            shell_args: Vec::new(),
+            working_directory: working_directory.to_string_lossy().to_string(),
+            id: Some(uuid::Uuid::new_v4().to_string()),
+            status: Some(status),
+            waiting_for_input: Some(waiting_for_input),
+            ..PersistedSession::default()
+        }
+    }
+
+    fn activity_instant(text: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(text)
+            .expect("instant")
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn activity_path_key_normalizes_all_four_verbatim_forms_on_every_host() {
+        // Host-independent by construction: these paths do not exist, so
+        // `canonicalize` fails and the raw bytes go through the four-arm
+        // normalizer on Linux and Windows alike.
+        let plain_drive = canonical_activity_path_key(Path::new(r"C:\Repo\Rooms\A"));
+        assert_eq!(
+            canonical_activity_path_key(Path::new(r"\\?\C:\Repo\Rooms\A")),
+            plain_drive
+        );
+        assert_eq!(
+            canonical_activity_path_key(Path::new(r"\??\C:\Repo\Rooms\A")),
+            plain_drive
+        );
+        assert_eq!(
+            canonical_activity_path_key(Path::new("c:/repo/rooms/a/")),
+            plain_drive
+        );
+
+        let plain_unc = canonical_activity_path_key(Path::new(r"\\server\share\repo"));
+        assert_eq!(
+            canonical_activity_path_key(Path::new(r"\\?\UNC\server\share\repo")),
+            plain_unc
+        );
+        assert_eq!(
+            canonical_activity_path_key(Path::new(r"\??\UNC\server\share\repo")),
+            plain_unc
+        );
+        assert_eq!(
+            canonical_activity_path_key(Path::new("//SERVER/SHARE/REPO/")),
+            plain_unc
+        );
+        assert_ne!(plain_drive, plain_unc);
+    }
+
+    #[test]
+    fn activity_path_key_resolves_dot_segments_for_existing_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo");
+        let detoured = tmp.path().join("repo").join(".").join("..").join("repo");
+        assert_eq!(
+            canonical_activity_path_key(&repo),
+            canonical_activity_path_key(&detoured)
+        );
+    }
+
+    #[test]
+    fn activity_ci_aggregation_is_the_documented_tri_state() {
+        let entries = HashMap::from([
+            ("a".to_string(), PersistedCiState::Running),
+            ("b".to_string(), PersistedCiState::Idle),
+        ]);
+        assert_eq!(aggregate_room_ci(&[], &entries), "unknown");
+        assert_eq!(aggregate_room_ci(&["a".to_string()], &entries), "running");
+        assert_eq!(aggregate_room_ci(&["b".to_string()], &entries), "idle");
+        assert_eq!(
+            aggregate_room_ci(&["b".to_string(), "missing".to_string()], &entries),
+            "unknown"
+        );
+        assert_eq!(
+            aggregate_room_ci(
+                &["b".to_string(), "c".to_string()],
+                &HashMap::from([
+                    ("b".to_string(), PersistedCiState::Idle),
+                    ("c".to_string(), PersistedCiState::Unknown),
+                ])
+            ),
+            "unknown"
+        );
+        assert_eq!(
+            aggregate_room_ci(&["a".to_string(), "c".to_string()], &entries),
+            "running",
+            "a running repo outranks an unmatched one"
+        );
+    }
+
+    #[test]
+    fn activity_ci_index_matches_verbatim_case_separator_and_trailing_variants() {
+        let snapshot = RemoteActivitySnapshot {
+            generated_at: chrono::Utc::now(),
+            repos: vec![(r"\\?\C:\Repo\Rooms\A\".to_string(), PersistedCiState::Idle)],
+        };
+        let entries = index_ci_entries(&snapshot);
+        let room_repo_keys = vec![canonical_activity_path_key(Path::new("c:/repo/rooms/a"))];
+        assert_eq!(aggregate_room_ci(&room_repo_keys, &entries), "idle");
+    }
+
+    #[test]
+    fn activity_ci_index_collapses_conflicting_duplicates_to_unknown() {
+        let snapshot = RemoteActivitySnapshot {
+            generated_at: chrono::Utc::now(),
+            repos: vec![
+                ("A:/repo".to_string(), PersistedCiState::Running),
+                ("a:/repo/".to_string(), PersistedCiState::Idle),
+            ],
+        };
+        let entries = index_ci_entries(&snapshot);
+        assert_eq!(
+            aggregate_room_ci(&["a:/repo".to_string()], &entries),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn activity_ci_gate_prefers_disabled_then_daemon() {
+        assert_eq!(ci_gate(true, true), CiGate::Usable);
+        assert_eq!(ci_gate(false, true), CiGate::CiDisabled);
+        assert_eq!(ci_gate(false, false), CiGate::CiDisabled);
+        assert_eq!(ci_gate(true, false), CiGate::DaemonNotLive);
+    }
+
+    #[test]
+    fn activity_cache_read_rejects_missing_stale_future_and_malformed_and_accepts_fresh() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
+        let now = activity_instant("2026-09-22T11:41:41Z");
+        let entry = vec![("a:/repo".to_string(), PersistedCiState::Running)];
+
+        assert!(
+            read_fresh_ci_snapshot(Some(tmp.path()), now).is_err(),
+            "a missing snapshot is an error"
+        );
+        assert!(
+            read_fresh_ci_snapshot(None, now).is_err(),
+            "an unavailable config directory is a missing snapshot"
+        );
+
+        crate::config::remote_activity_cache::write_snapshot(
+            &path,
+            now - chrono::Duration::seconds(30),
+            &entry,
+        )
+        .expect("write fresh snapshot");
+        let fresh = read_fresh_ci_snapshot(Some(tmp.path()), now).expect("fresh snapshot");
+        assert_eq!(fresh.repos, entry);
+
+        crate::config::remote_activity_cache::write_snapshot(
+            &path,
+            now - chrono::Duration::seconds(31),
+            &entry,
+        )
+        .expect("write stale snapshot");
+        assert!(read_fresh_ci_snapshot(Some(tmp.path()), now).is_err());
+
+        crate::config::remote_activity_cache::write_snapshot(
+            &path,
+            now + chrono::Duration::seconds(31),
+            &entry,
+        )
+        .expect("write future snapshot");
+        assert!(read_fresh_ci_snapshot(Some(tmp.path()), now).is_err());
+
+        std::fs::write(&path, b"{not json").expect("write malformed");
+        assert!(read_fresh_ci_snapshot(Some(tmp.path()), now).is_err());
+    }
+
+    #[test]
+    fn activity_working_requires_exact_name_path_and_working_status() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let room = tmp.path().join("room-1-dev-team");
+        let coord = room.join("__agent_coord");
+        let dev = room.join("__agent_dev");
+        std::fs::create_dir_all(&coord).expect("coord replica");
+        std::fs::create_dir_all(&dev).expect("dev replica");
+        let foreign = tmp.path().join("ForeignProject").join("__agent_dev");
+        std::fs::create_dir_all(&foreign).expect("foreign replica");
+
+        let idle_coordinator =
+            activity_row("room-1-dev-team/coord", &coord, SessionStatus::Idle, true);
+        assert!(
+            !room_is_working(
+                &room,
+                "room-1-dev-team",
+                std::slice::from_ref(&idle_coordinator)
+            ),
+            "an idle coordinator must not make its room work"
+        );
+
+        let mut no_id = activity_row("room-1-dev-team/dev", &dev, SessionStatus::Running, false);
+        no_id.id = None;
+        let rejected = vec![
+            // The raw directory name is not the persisted session name.
+            activity_row(
+                "room-1-dev-team/__agent_dev",
+                &dev,
+                SessionStatus::Running,
+                false,
+            ),
+            // Similarly prefixed room and agent names are not this room's.
+            activity_row("room-1-dev-teams/dev", &dev, SessionStatus::Running, false),
+            activity_row("room-2-dev-team/dev", &dev, SessionStatus::Running, false),
+            activity_row("room-1-dev-team/dev-2", &dev, SessionStatus::Running, false),
+            // Same name, different normalized working directory.
+            activity_row(
+                "room-1-dev-team/dev",
+                &foreign,
+                SessionStatus::Running,
+                false,
+            ),
+            // Waiting/exited rows are not working.
+            activity_row("room-1-dev-team/dev", &dev, SessionStatus::Running, true),
+            activity_row("room-1-dev-team/dev", &dev, SessionStatus::Idle, false),
+            no_id,
+        ];
+        for row in rejected {
+            assert!(
+                !room_is_working(&room, "room-1-dev-team", &[row]),
+                "the row must not count as working"
+            );
+        }
+
+        let running_dev = activity_row("room-1-dev-team/dev", &dev, SessionStatus::Running, false);
+        assert!(
+            room_is_working(&room, "room-1-dev-team", &[idle_coordinator, running_dev]),
+            "a local non-coordinator working row flips the room true"
+        );
+    }
+
+    #[test]
+    fn activity_repo_dirs_are_immediate_prefix_matches_only() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let room = tmp.path().join("room-1-dev-team");
+        std::fs::create_dir_all(room.join("repo-b")).expect("repo-b");
+        std::fs::create_dir_all(room.join("repo-a")).expect("repo-a");
+        std::fs::create_dir_all(room.join("repo-a").join("nested")).expect("nested");
+        std::fs::create_dir_all(room.join("not-a-repo")).expect("not-a-repo");
+        std::fs::write(room.join("repo-file"), b"file").expect("repo-file");
+        let names: Vec<String> = list_room_repo_dirs(&room)
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .expect("file name")
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(names, vec!["repo-a", "repo-b"]);
+    }
+
+    #[test]
+    fn activity_task_title_reads_quoted_and_bare_titles_and_ignores_missing_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(read_task_title(tmp.path()), None, "missing TASK.md is null");
+
+        std::fs::write(tmp.path().join("TASK.md"), "---\ntitle: 'Quoted'\n---\n")
+            .expect("write quoted");
+        assert_eq!(read_task_title(tmp.path()).as_deref(), Some("Quoted"));
+
+        std::fs::write(tmp.path().join("TASK.md"), "---\ntitle: Bare\n---\n").expect("write bare");
+        assert_eq!(read_task_title(tmp.path()).as_deref(), Some("Bare"));
+
+        std::fs::write(tmp.path().join("TASK.md"), "---\ntitle: ''\n---\n").expect("write empty");
+        assert_eq!(read_task_title(tmp.path()), None, "an empty title is null");
+
+        std::fs::write(tmp.path().join("TASK.md"), [0xFF_u8, 0xFE]).expect("write invalid");
+        assert_eq!(read_task_title(tmp.path()), None, "invalid UTF-8 is null");
+    }
 
     #[test]
     fn partial_delete_outcome_does_not_authorize_removed_refresh() {

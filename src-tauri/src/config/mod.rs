@@ -23,6 +23,7 @@ pub mod placeholders;
 pub mod profile;
 pub mod project_settings;
 pub mod projects;
+pub(crate) mod remote_activity_cache;
 pub mod replica_identity;
 pub mod root_agent;
 pub mod seed_manifest;
