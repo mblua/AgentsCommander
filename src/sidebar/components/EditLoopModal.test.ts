@@ -63,6 +63,19 @@ function workgroups(): AcWorkgroup[] {
         },
       ],
     },
+    {
+      name: "wg-11-ops-team",
+      path: "C:\\Project\\.ac\\wg-11-ops-team",
+      task: null,
+      agents: [
+        {
+          name: "ops-lead",
+          path: "C:\\Project\\.ac\\wg-11-ops-team\\__agent_ops-lead",
+          repoPaths: [],
+          isCoordinator: true,
+        },
+      ],
+    },
   ];
 }
 
@@ -110,6 +123,13 @@ function setCheckbox(selector: string, checked: boolean): void {
   if (!checkbox) throw new Error(`Missing checkbox ${selector}`);
   checkbox.checked = checked;
   checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function setSelect(selector: string, value: string): void {
+  const select = document.querySelector<HTMLSelectElement>(selector);
+  if (!select) throw new Error(`Missing select ${selector}`);
+  select.value = value;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 async function clickSave(): Promise<void> {
@@ -294,5 +314,111 @@ describe("EditLoopModal", () => {
     expect(LoopAPI.update).toHaveBeenCalledWith("C:\\Project", "weekday-standup", {
       name: "Renamed standup",
     });
+  });
+  function scheduleResetNotice(): HTMLElement | null {
+    return document.querySelector<HTMLElement>('[data-ac-testid="loop.edit.scheduleReset"]');
+  }
+
+  it("shows the exact schedule-reset notice when the cron expression changed", async () => {
+    renderModal();
+    await settle();
+
+    changeInput('[data-ac-testid="loop.edit.cron"]', "0 10 * * 1-5");
+    await settle();
+
+    expect(scheduleResetNotice()?.textContent?.trim()).toBe(
+      "Saving this change restarts the schedule. The next run is counted from the moment you save.",
+    );
+  });
+
+  it("shows the schedule-reset notice when the room orchestrator changed", async () => {
+    renderModal();
+    await settle();
+
+    setSelect('[data-ac-testid="loop.edit.workgroup"]', "wg-11-ops-team");
+    await settle();
+
+    expect(scheduleResetNotice()).not.toBeNull();
+  });
+
+  it("shows the schedule-reset notice when the prompt body changed", async () => {
+    renderModal();
+    await settle();
+
+    changeInput('[data-ac-testid="loop.edit.prompt"]', "Full prompt body from config ");
+    await settle();
+
+    expect(scheduleResetNotice()).not.toBeNull();
+  });
+
+  it("shows the schedule-reset notice when the busy policy changed", async () => {
+    renderModal();
+    await settle();
+
+    setCheckbox('[data-ac-testid="loop.edit.forceInject"]', true);
+    await settle();
+
+    expect(scheduleResetNotice()).not.toBeNull();
+  });
+
+  it("shows the schedule-reset notice when the session start changed", async () => {
+    renderModal();
+    await settle();
+
+    setCheckbox('[data-ac-testid="loop.edit.accumulate"]', true);
+    await settle();
+
+    expect(scheduleResetNotice()).not.toBeNull();
+  });
+
+  it("shows the schedule-reset notice when enabled changed", async () => {
+    renderModal();
+    await settle();
+
+    setCheckbox('[data-ac-testid="loop.edit.enabled"]', false);
+    await settle();
+
+    expect(scheduleResetNotice()).not.toBeNull();
+  });
+
+  it("hides the schedule-reset notice for a name-only edit", async () => {
+    renderModal();
+    await settle();
+
+    changeInput('[data-ac-testid="loop.edit.name"]', "Renamed standup");
+    await settle();
+
+    expect(scheduleResetNotice()).toBeNull();
+  });
+
+  it("hides the schedule-reset notice on an untouched form after load", async () => {
+    renderModal();
+    await settle();
+
+    expect(scheduleResetNotice()).toBeNull();
+  });
+
+  it("hides the schedule-reset notice while the Loop config is still loading", async () => {
+    m.getConfig.mockReturnValue(new Promise(() => {}));
+
+    renderModal();
+    await settle();
+
+    expect(document.body.textContent).toContain("Loading Loop...");
+    expect(scheduleResetNotice()).toBeNull();
+  });
+
+  it("hides the schedule-reset notice when a changed cron expression is reverted", async () => {
+    renderModal();
+    await settle();
+
+    changeInput('[data-ac-testid="loop.edit.cron"]', "0 10 * * 1-5");
+    await settle();
+    expect(scheduleResetNotice()).not.toBeNull();
+
+    changeInput('[data-ac-testid="loop.edit.cron"]', "0 9 * * 1-5");
+    await settle();
+
+    expect(scheduleResetNotice()).toBeNull();
   });
 });

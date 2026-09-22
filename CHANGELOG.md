@@ -6,6 +6,10 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Fixed
+
+- **A window maximized on a first run is now remembered.** With no placement saved yet, AC samples the window's rectangle at startup, so launch, maximize and close stores that rectangle with `"maximized"` and the next start comes back maximized. A saved rectangle still wins over the startup sample, and a window that is already maximized, fullscreen or minimized when AC starts still stores no rectangle. ([#2393](https://github.com/mblua/AgentsCommander/issues/2393))
+
 ## 0.38.0
 
 ### Added

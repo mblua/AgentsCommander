@@ -101,6 +101,24 @@ async function observeMainWindow(): Promise<MainWindowObservation> {
   };
 }
 
+/** #2393 - the rectangle an observation may contribute as normal bounds, or
+ *  `null` when the window is in a special state or the rectangle is unusable.
+ *  Shared by the fold and by the startup sample so both obey one rule. */
+function normalBoundsOf(
+  observation: MainWindowObservation,
+): WindowGeometry | null {
+  if (
+    observation.isMaximized ||
+    observation.isFullscreen ||
+    observation.isMinimized
+  ) {
+    return null;
+  }
+  return isValidGeometry(observation.geometry)
+    ? { ...observation.geometry }
+    : null;
+}
+
 async function createMainWindowGeometryController(): Promise<MainWindowGeometryController> {
   // The retained rectangle is seeded from persisted normal bounds only. A
   // special-state observation above never feeds it.
@@ -123,8 +141,9 @@ async function createMainWindowGeometryController(): Promise<MainWindowGeometryC
       return;
     }
     retainedDisplayState = observation.isMaximized ? "maximized" : "normal";
-    if (!observation.isMaximized && isValidGeometry(observation.geometry)) {
-      retainedBounds = { ...observation.geometry };
+    const bounds = normalBoundsOf(observation);
+    if (bounds !== null) {
+      retainedBounds = bounds;
     }
   };
 
@@ -158,6 +177,20 @@ async function createMainWindowGeometryController(): Promise<MainWindowGeometryC
 
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const win = getCurrentWindow();
+
+  // #2393 - with no valid persisted rectangle, sample the window once before the
+  // listeners attach. Otherwise a first run whose first event arrives maximized
+  // retains no rectangle at all and persists nothing, not on the debounce and not
+  // on the quit flush. The special-state rule is unchanged: a maximized,
+  // fullscreen or minimized sample contributes nothing.
+  if (retainedBounds === null) {
+    try {
+      retainedBounds = normalBoundsOf(await observeMainWindow());
+    } catch (error) {
+      console.error("Failed to sample main window placement at startup:", error);
+    }
+  }
+
   const unlistenMove = await win.onMoved(scheduleSave);
   const unlistenResize = await win.onResized(scheduleSave);
 

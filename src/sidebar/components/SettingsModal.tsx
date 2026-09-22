@@ -7,19 +7,30 @@ import type {
   CodingAgentEnv,
   CodingAgentDefinition,
   LogLevel,
+  MoveCodingAgentDirection,
   TelegramBotConfig,
   ProfileCellConfig,
   ApiClientMintResponse,
   ApiClientMintScope,
   SessionBackendKind,
   Session,
+  SettingsSnapshot,
   WatcherConfig,
   WatcherEntry,
   WatcherPatternPreview,
   WatcherReachEntry,
   WatcherReachRow,
 } from "../../shared/types";
-import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI, PtyAPI } from "../../shared/ipc";
+import {
+  SettingsAPI,
+  TelegramAPI,
+  ReposAPI,
+  CodingAgentsAPI,
+  PtyAPI,
+  assertCodingAgentMoveOrder,
+  expectedCodingAgentMoveOrder,
+  onCodingAgentSettingsUpdated,
+} from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
 import { validateScreenshotHotkeySyntax } from "../../shared/screenshot-hotkey";
 import { settingsStore } from "../../shared/stores/settings";
@@ -121,6 +132,11 @@ const API_CLIENT_EXPIRY_MS: Record<Exclude<ApiClientExpiryOption, "default">, nu
 const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
+/** #2306 - the one reason both surfaces disable moves when the local overlay owns
+ *  top-level `agents`. Kept identical here and in AgentPickerModal. */
+const MOVE_OVERLAY_REASON =
+  "Agent order is controlled by the local settings overlay (settings.local.json).";
+
 /** #1313 - shape-only check: a plausible complete executable path must contain
  *  a directory separator (`\` or `/`). Bare names like `powershell.exe` or
  *  `pwsh` warn; anything with a separator is the user's responsibility from
@@ -213,6 +229,20 @@ const cloneSettings = (value: AppSettings | null): AppSettings | null => {
     }
   }
   return JSON.parse(JSON.stringify(value)) as AppSettings;
+};
+
+/** #2306 - `SettingsSnapshot` carries response-only metadata beside
+ *  `AppSettings`. None of it is a setting: strip it before a snapshot ever
+ *  reaches the draft, so no Save payload can echo it back. */
+const appSettingsOnly = (snapshot: AppSettings | null): AppSettings | null => {
+  if (!snapshot) return null;
+  const {
+    projectPathResolution: _projectPathResolution,
+    settingsFilePath: _settingsFilePath,
+    overlayOwnsAgents: _overlayOwnsAgents,
+    ...settingsOnly
+  } = snapshot as SettingsSnapshot;
+  return settingsOnly;
 };
 
 // #2337 - the typing-hold bounds the backend enforces in
@@ -690,7 +720,7 @@ const WatcherRow: Component<{
 };
 
 const SettingsModal: Component<{ onClose: () => void; section?: string }> = (props) => {
-  const seededSettings = cloneSettings(settingsStore.current);
+  const seededSettings = cloneSettings(appSettingsOnly(settingsStore.current));
   const [settings, setSettings] = createStore<{ data: AppSettings | null }>({
     data: seededSettings,
   });
@@ -742,6 +772,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   // is not a setting, must never enter the draft, the dirty check, or the save
   // payload, and the draft store is typed AppSettings and cannot carry it.
   const [settingsFilePath, setSettingsFilePath] = createSignal<string | null>(null);
+  // #2306 - snapshot metadata and modal-local move state. Moves are serialized
+  // per modal and never touch the draft until the refetch installs the order.
+  const [overlayOwnsAgents, setOverlayOwnsAgents] = createSignal(false);
+  const [moveBusy, setMoveBusy] = createSignal(false);
+  const [moveError, setMoveError] = createSignal("");
+  const [moveAnnouncement, setMoveAnnouncement] = createSignal("");
   const [profileCellText, setProfileCellText] = createStore<Record<string, string>>({});
   const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
   const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
@@ -1057,6 +1093,198 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const toggleCell = (agentId: string, letter: string) =>
     setExpandedCells(`${agentId}:${letter}`, !isCellExpanded(agentId, letter));
 
+  // #2306 - every refetch installs the read-only snapshot metadata; neither the
+  // flag nor the path is ever part of the draft or a save payload.
+  const installSnapshotMetadata = (loaded: SettingsSnapshot) => {
+    setSettingsFilePath(loaded.settingsFilePath ?? null);
+    setOverlayOwnsAgents(loaded.overlayOwnsAgents === true);
+  };
+
+  /** Keep the draft's agent records and membership exactly as drafted and apply
+   *  only the authoritative ORDER of the IDs the backend knows about; IDs the
+   *  draft added but has not saved keep their relative place after those. P2's
+   *  save helper protects survivors and appends incoming-only IDs, so this merge
+   *  is what stops a stale draft from echoing an old order. */
+  const mergeAuthoritativeOrder = (loaded: SettingsSnapshot) => {
+    if (!settings.data) return;
+    const rank = new Map(loaded.agents.map((agent, index) => [agent.id, index]));
+    const ordered = [...settings.data.agents].sort((a, b) => {
+      const aRank = rank.get(a.id);
+      const bRank = rank.get(b.id);
+      if (aRank === undefined && bRank === undefined) return 0;
+      if (aRank === undefined) return 1;
+      if (bRank === undefined) return -1;
+      return aRank - bRank;
+    });
+    setSettings("data", "agents", ordered);
+  };
+
+  const reconcileRails = (agents: AgentConfig[]) => {
+    const ids = new Set(agents.map((agent) => agent.id));
+    if (leftRailId() !== null && !ids.has(leftRailId()!)) setLeftRailId(null);
+    if (rightRailId() !== null && !ids.has(rightRailId()!)) setRightRailId(null);
+    if (leftRailId() === null && agents[0]) setLeftRailId(agents[0].id);
+  };
+
+  /** #2306 - install a refreshed snapshot without discarding unsaved edits: a
+   *  dirty draft keeps every record and only receives the authoritative order
+   *  and metadata; a clean draft is replaced wholesale like the mount path. The
+   *  expanded row and rail IDs are then reconciled by stable ID. */
+  const applyRefreshedSnapshot = (loaded: SettingsSnapshot) => {
+    const previousAgents = settings.data?.agents ?? [];
+    const previousActiveId = activeAgentId();
+    const previousActiveIndex = previousActiveId
+      ? previousAgents.findIndex((agent) => agent.id === previousActiveId)
+      : -1;
+    installSnapshotMetadata(loaded);
+    if (draftDirty() && settings.data) {
+      mergeAuthoritativeOrder(loaded);
+    } else {
+      const nextSettings = cloneSettings(appSettingsOnly(loaded));
+      if (nextSettings) {
+        nextSettings.apiServerEnabled = apiServerRunning();
+        setSettings("data", nextSettings);
+        setModalSeed(cloneSettings(appSettingsOnly(loaded)));
+      }
+    }
+    const resultingAgents = settings.data?.agents ?? [];
+    if (previousActiveId !== null) {
+      if (resultingAgents.length === 0) {
+        setActiveAgentId(null);
+      } else if (!resultingAgents.some((agent) => agent.id === previousActiveId)) {
+        // Clamped-old-position rule (shared with the picker): the survivor at
+        // the old numeric position, or the new final item when it shrank past it.
+        const nextIndex =
+          previousActiveIndex >= 0
+            ? Math.min(previousActiveIndex, resultingAgents.length - 1)
+            : 0;
+        setActiveAgentId(resultingAgents[nextIndex]?.id ?? null);
+      }
+    }
+    reconcileRails(resultingAgents);
+  };
+
+  // #2306 - one modal-local coalesced refresh for coding_agent_settings_updated.
+  let settingsRefreshInFlight: Promise<void> | null = null;
+  let settingsRefreshQueued = false;
+  const refreshCodingAgentSettings = (): Promise<void> => {
+    if (settingsRefreshInFlight) {
+      settingsRefreshQueued = true;
+      return settingsRefreshInFlight;
+    }
+    settingsRefreshInFlight = (async () => {
+      try {
+        do {
+          settingsRefreshQueued = false;
+          const loaded = await SettingsAPI.get();
+          applyRefreshedSnapshot(loaded);
+        } while (settingsRefreshQueued);
+      } finally {
+        settingsRefreshInFlight = null;
+        settingsRefreshQueued = false;
+      }
+    })();
+    return settingsRefreshInFlight;
+  };
+
+  const settingsMoveTestId = (index: number, direction: MoveCodingAgentDirection) =>
+    `settings.agentRow.${index}.move${direction === "up" ? "Up" : "Down"}`;
+
+  const focusSettingsMoveControl = (agentId: string, direction: MoveCodingAgentDirection) => {
+    queueMicrotask(() => {
+      const agents = settings.data?.agents ?? [];
+      const index = agents.findIndex((agent) => agent.id === agentId);
+      if (index < 0) return;
+      const order: MoveCodingAgentDirection[] =
+        direction === "up" ? ["up", "down"] : ["down", "up"];
+      for (const candidate of order) {
+        const control = document.querySelector<HTMLButtonElement>(
+          `[data-ac-testid="${settingsMoveTestId(index, candidate)}"]`,
+        );
+        if (control && !control.disabled) {
+          control.focus();
+          return;
+        }
+      }
+      document
+        .querySelector<HTMLElement>(`[data-ac-testid="settings.agentRow.${index}.select"]`)
+        ?.focus();
+    });
+  };
+
+  const settingsMoveDisabled = () => moveBusy() || overlayOwnsAgents();
+  const settingsMoveUpDisabled = (index: number) => settingsMoveDisabled() || index <= 0;
+  const settingsMoveDownDisabled = (index: number) =>
+    settingsMoveDisabled() || index >= (settings.data?.agents.length ?? 0) - 1;
+  /** Distinct tool-and-direction accessible name; when the overlay owns the
+   *  order, the name carries the backend ownership reason it is disabled for. */
+  const settingsMoveLabel = (agent: AgentConfig, direction: MoveCodingAgentDirection) => {
+    const name = agent.label || agent.id || "agent";
+    return overlayOwnsAgents()
+      ? `Move ${name} ${direction} \u2014 ${MOVE_OVERLAY_REASON}`
+      : `Move ${name} ${direction}`;
+  };
+  const settingsMoveTitle = (agent: AgentConfig, direction: MoveCodingAgentDirection) =>
+    overlayOwnsAgents()
+      ? MOVE_OVERLAY_REASON
+      : `Move ${agent.label || agent.id || "agent"} ${direction}`;
+
+  /** #2306 - one adjacent move through the narrow command for this surface. The
+   *  returned order is a consistency check only; the authoritative state always
+   *  comes from the follow-up get_settings. */
+  const moveSettingsAgent = async (agent: AgentConfig, direction: MoveCodingAgentDirection) => {
+    if (!settings.data || moveBusy() || overlayOwnsAgents()) return;
+    const list = settings.data.agents;
+    const index = list.findIndex((candidate) => candidate.id === agent.id);
+    const neighbor = direction === "up" ? list[index - 1] : list[index + 1];
+    if (index < 0 || !neighbor) return;
+    setMoveBusy(true);
+    setMoveError("");
+    setMoveAnnouncement("");
+    try {
+      const ids = await SettingsAPI.moveCodingAgent({
+        id: agent.id,
+        neighborId: neighbor.id,
+        direction,
+      });
+      assertCodingAgentMoveOrder(
+        ids,
+        expectedCodingAgentMoveOrder(list.map((candidate) => candidate.id), agent.id, direction),
+      );
+      await refreshCodingAgentSettings();
+      const nextIndex = (settings.data?.agents ?? []).findIndex(
+        (candidate) => candidate.id === agent.id,
+      );
+      if (nextIndex >= 0) {
+        setMoveAnnouncement(
+          `Moved ${agent.label || agent.id} ${direction} to position ${nextIndex + 1} of ${settings.data?.agents.length ?? 0}.`,
+        );
+      }
+    } catch (err: unknown) {
+      setMoveError(errorMessage(err));
+      try {
+        await refreshCodingAgentSettings();
+      } catch {
+        // Keep the last authoritative order visible.
+      }
+    } finally {
+      setMoveBusy(false);
+      focusSettingsMoveControl(agent.id, direction);
+    }
+  };
+
+  onMount(() => {
+    let disposed = false;
+    const pending = onCodingAgentSettingsUpdated(() => {
+      if (disposed) return;
+      void refreshCodingAgentSettings().catch(() => {});
+    });
+    onCleanup(() => {
+      disposed = true;
+      void pending.then((fn) => fn()).catch(() => {});
+    });
+  });
+
   onMount(async () => {
     void codingAgentsStore.ensureLoaded();
     const [loaded, wsRunning, apiRunning] = await Promise.all([
@@ -1067,12 +1295,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setWebServerRunning(wsRunning);
     setApiServerRunning(apiRunning);
     // `?? null` tolerates a mixed-version backend that predates #1347.
-    setSettingsFilePath(loaded.settingsFilePath ?? null);
+    installSnapshotMetadata(loaded);
     if (!draftDirty()) {
-      const nextSettings = cloneSettings(loaded);
+      const nextSettings = cloneSettings(appSettingsOnly(loaded));
       if (nextSettings) nextSettings.apiServerEnabled = apiRunning;
       setSettings("data", nextSettings);
-      const loadedSeed = cloneSettings(loaded);
+      const loadedSeed = cloneSettings(appSettingsOnly(loaded));
       setModalSeed(loadedSeed);
       setTerminalSnapshotsOpeningValue(loaded.terminalSnapshotsEnabled);
       setTypingHoldSecondsText(
@@ -2955,6 +3183,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               </span>
             </div>
           </div>
+          <div
+            class="settings-agent-row-action-cluster"
+            style={{ display: "flex", "align-items": "center", gap: "4px", "flex": "0 0 auto" }}
+          >
           <div class="settings-agent-row-actions">
             {/* #526: the rail indicator is shown once, on the color line. #895:
                 Keep this action column symmetric across every configured row. Do not add a
@@ -3002,6 +3234,37 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               data-ac-state={expanded() ? "expanded" : "collapsed"}
             >
               {expanded() ? "▾" : "▸"}
+            </button>
+          </div>
+            {/* #2306 - adjacent move controls live OUTSIDE the rail/remove/toggle
+                action column and never nest inside another button. */}
+            <button
+              class="settings-row-btn"
+              disabled={settingsMoveUpDisabled(i())}
+              onClick={(e) => {
+                e.stopPropagation();
+                void moveSettingsAgent(agent, "up");
+              }}
+              title={settingsMoveTitle(agent, "up")}
+              aria-label={settingsMoveLabel(agent, "up")}
+              data-ac-testid={`settings.agentRow.${i()}.moveUp`}
+              data-ac-role="button"
+            >
+              {"\u2191"}
+            </button>
+            <button
+              class="settings-row-btn"
+              disabled={settingsMoveDownDisabled(i())}
+              onClick={(e) => {
+                e.stopPropagation();
+                void moveSettingsAgent(agent, "down");
+              }}
+              title={settingsMoveTitle(agent, "down")}
+              aria-label={settingsMoveLabel(agent, "down")}
+              data-ac-testid={`settings.agentRow.${i()}.moveDown`}
+              data-ac-role="button"
+            >
+              {"\u2193"}
             </button>
           </div>
         </div>
@@ -4022,6 +4285,24 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               <For each={settings.data!.agents}>
                 {(agent, i) => renderAgentRow(agent, i)}
               </For>
+            </Show>
+
+            {/* #2306 - move outcomes: inline error + polite announcements. */}
+            <Show when={moveError()}>
+              <div
+                class="settings-hint settings-hint-error"
+                role="status"
+                aria-live="polite"
+                data-ac-testid="settings.agents.moveError"
+              >
+                {moveError()}
+              </div>
+            </Show>
+            <div role="status" aria-live="polite" data-ac-testid="settings.agents.moveStatus">
+              {moveAnnouncement()}
+            </div>
+            <Show when={overlayOwnsAgents()}>
+              <div data-ac-testid="settings.agents.overlayReason">{MOVE_OVERLAY_REASON}</div>
             </Show>
 
             <div class="settings-agents-actions-block">

@@ -788,6 +788,7 @@ agentscommander_lib::phone::mailbox -> agentscommander_lib::config::agent_config
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::co_managed
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::coding_agent_mutations
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::coding_agent_profiles
+agentscommander_lib::phone::mailbox -> agentscommander_lib::config::coordinator_clocks
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::injected_messages
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::instance_artifacts

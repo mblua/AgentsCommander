@@ -36,4 +36,31 @@ describe("settingsStore #786 coding_agent_settings_updated", () => {
       expect(fake.callsFor("get_settings").length).toBe(before + 1);
     });
   });
+
+  it("installs the authoritative order from a move event shared by both surfaces", async () => {
+    const fake = new FakeTransport();
+    restore = __setTransportForTests(fake);
+    fake.resolve("get_settings", {
+      soundsEnabled: true,
+      agents: [
+        { id: "claude", order: 0 },
+        { id: "codex", order: 1 },
+      ],
+    } as unknown);
+
+    const settings = await import("./settings");
+    settings.__subscribeCodingAgentSettingsUpdates();
+
+    fake.emitFromBackend("coding_agent_settings_updated", {
+      op: "move",
+      agentId: "claude",
+    });
+
+    await vi.waitFor(() => {
+      const current = settings.settingsStore.current as unknown as {
+        agents?: { id: string }[];
+      } | null;
+      expect(current?.agents?.map((agent) => agent.id)).toEqual(["claude", "codex"]);
+    });
+  });
 });

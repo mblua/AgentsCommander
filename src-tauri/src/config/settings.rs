@@ -244,9 +244,9 @@ pub struct CodingAgentProfilesConfig {
     pub default_profile_by_agent: BTreeMap<String, String>,
     #[serde(default)]
     pub profiles_by_agent: BTreeMap<String, BTreeMap<String, ProfileCellConfig>>,
-    /// #548: per-(agent, letter) label override. Empty for an agent/letter means
-    /// "inherit": primigenio (agents[0]) label, else legacy profile_slots[letter].label,
-    /// else the bare letter. Always serializes (no skip_serializing_if) like
+    /// #548: per-(agent, letter) label override. Resolution is own label ->
+    /// legacy profile_slots[letter].label -> bare letter; there is no first-agent
+    /// inheritance. Always serializes (no skip_serializing_if) like
     /// profiles_by_agent, so the key is always present on disk.
     #[serde(default)]
     pub profile_labels_by_agent: BTreeMap<String, BTreeMap<String, String>>,

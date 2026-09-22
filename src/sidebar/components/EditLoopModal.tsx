@@ -1,20 +1,17 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import type {
-  AcLoopSummary,
-  AcWorkgroup,
-  LoopConfigDetails,
-  LoopUpdateInput,
-} from "../../shared/types";
+import type { AcLoopSummary, AcWorkgroup, LoopConfigDetails } from "../../shared/types";
 import { LoopAPI } from "../../shared/ipc";
 import { projectStore } from "../stores/project";
 import {
   accumulateCheckboxFromSessionStart,
+  buildLoopUpdateInput,
   busyPolicyForEdit,
   sessionStartFromAccumulateCheckbox,
   coordinatorOptionsFromWorkgroups,
   formatLoopNextDue,
   hasFiveCronFields,
   normalizeLoopError,
+  resetsLoopSchedule,
 } from "./loop-modal-helpers";
 
 type PreviewState =
@@ -126,6 +123,26 @@ const EditLoopModal: Component<{
     );
   });
 
+  const editValues = (baseline: LoopConfigDetails) => ({
+    name: name().trim(),
+    expr: expr().trim(),
+    workgroup: selectedWorkgroup(),
+    promptBody: promptBody(),
+    busyCoordinator: busyPolicyForEdit(
+      baseline.summary.busyCoordinator,
+      forceInject(),
+      forceCheckboxTouched()
+    ),
+    sessionStart: sessionStartFromAccumulateCheckbox(accumulate()),
+    enabled: enabled(),
+  });
+
+  const willResetSchedule = createMemo(() => {
+    const baseline = loadedDetails();
+    if (!baseline) return false;
+    return resetsLoopSchedule(buildLoopUpdateInput(baseline, editValues(baseline)));
+  });
+
   const handleSave = async () => {
     if (!canSave() || saving()) return;
     setSaving(true);
@@ -138,23 +155,7 @@ const EditLoopModal: Component<{
         return;
       }
 
-      const nextBusyPolicy = busyPolicyForEdit(
-        baseline.summary.busyCoordinator,
-        forceInject(),
-        forceCheckboxTouched()
-      );
-      const input: LoopUpdateInput = {};
-      const nextName = name().trim();
-      const nextExpr = expr().trim();
-
-      if (nextName !== baseline.summary.name) input.name = nextName;
-      if (nextExpr !== baseline.summary.expr) input.expr = nextExpr;
-      if (selectedWorkgroup() !== baseline.summary.workgroup) input.workgroup = selectedWorkgroup();
-      if (promptBody() !== baseline.promptBody) input.promptBody = promptBody();
-      if (nextBusyPolicy !== baseline.summary.busyCoordinator) input.busyCoordinator = nextBusyPolicy;
-      const nextSessionStart = sessionStartFromAccumulateCheckbox(accumulate());
-      if (nextSessionStart !== baseline.summary.sessionStart) input.sessionStart = nextSessionStart;
-      if (enabled() !== baseline.summary.enabled) input.enabled = enabled();
+      const input = buildLoopUpdateInput(baseline, editValues(baseline));
 
       await LoopAPI.update(props.projectPath, props.loop.id, input);
       await projectStore.reloadProject(props.projectPath);
@@ -304,6 +305,14 @@ const EditLoopModal: Component<{
           <Show when={!loading() && loadedBusyPolicy() === "skip" && !forceCheckboxTouched()}>
             <div class="loop-preview">
               Existing busy policy is skip. Saving without changing the checkbox preserves it.
+            </div>
+          </Show>
+
+          <Show when={!loading() && willResetSchedule()}>
+            <div class="entity-textarea-meta">
+              <span class="entity-textarea-hint" data-ac-testid="loop.edit.scheduleReset">
+                Saving this change restarts the schedule. The next run is counted from the moment you save.
+              </span>
             </div>
           </Show>
 

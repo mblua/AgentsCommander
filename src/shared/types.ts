@@ -407,6 +407,19 @@ export interface AgentConfig {
   configSeed?: ConfigSeedConfig;
   contextRegex?: string;
   backend?: AgentBackendConfig;
+  /** #2306 - backend-owned zero-based position in the registered `agents` vector.
+   *  Read-only mirror of P1's serialized Rust field; the UI renders the vector
+   *  order it receives and never writes ordinals itself. */
+  order?: number;
+}
+
+/** #2306 P3 - the one narrow move request both UI surfaces send. */
+export type MoveCodingAgentDirection = "up" | "down";
+
+export interface MoveCodingAgentRequest {
+  id: string;
+  neighborId: string;
+  direction: MoveCodingAgentDirection;
 }
 
 export type CodingAgentEnvSource = "user" | "system";
@@ -918,6 +931,10 @@ export interface SettingsSnapshot extends AppSettings {
    *  from, or null when the backend could not resolve its config dir. Read-only
    *  metadata: it is never edited, never part of a save payload. */
   settingsFilePath: string | null;
+  /** #2306 - read-only response metadata: true when the local settings overlay
+   *  owns top-level `agents`, so the backend refuses moves. Never part of
+   *  AppSettings or a draft. */
+  overlayOwnsAgents: boolean;
 }
 
 export interface UpdateInfo {
