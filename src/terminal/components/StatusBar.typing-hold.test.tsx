@@ -27,8 +27,16 @@ import {
 } from "../../shared/testing/ui-harness";
 
 const HOLD_BTN = '[data-ac-testid="statusBar.typingHold"]';
-const OPEN = "\u{1F513}";
-const CLOSED = "\u{1F512}";
+const HOLD_ICON = '[data-ac-testid="statusBar.typingHoldIcon"]';
+
+// #2379 - the counter never renders a `#`, and the padlock state is asserted
+// through the monochrome SVG (the color-emoji glyph could not be painted).
+function holdIcon(root: HTMLElement): SVGElement {
+  return root.querySelector<SVGElement>(HOLD_ICON)!;
+}
+function holdCount(root: HTMLElement): HTMLSpanElement | null {
+  return root.querySelector<HTMLSpanElement>(".status-bar-hold-count");
+}
 
 // #2337 — the padlock is a mirror of the backend's per-session typing hold.
 // These tests pin the states it must show, the session it must target, the
@@ -68,12 +76,17 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
     try {
       await waitFor(() => expect(holdButton(rendered.root)).toBeTruthy());
       const button = holdButton(rendered.root);
-      expect(button.textContent).toContain(OPEN);
+      await waitFor(() =>
+        expect(button.getAttribute("aria-label")).toBe(
+          "Hold message delivery to this session (0 held)",
+        ),
+      );
+      expect(holdIcon(rendered.root).getAttribute("data-state")).toBe("open");
+      expect(holdIcon(rendered.root).getAttribute("fill")).toBe("currentColor");
       expect(button.textContent).not.toContain("#");
+      expect(holdCount(rendered.root)).toBeNull();
       // Same action group as the watcher and clear-input controls.
       expect(button.closest(".status-bar-actions")).toBeTruthy();
-      // Accessible name explains the action; no closed count is claimed.
-      expect(button.getAttribute("aria-label")).toContain("Hold message delivery");
       expect(button.getAttribute("title")).toBe(button.getAttribute("aria-label"));
     } finally {
       rendered.cleanup();
@@ -86,11 +99,12 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
     fake.resolve("get_typing_hold", { closed: true, heldCount: 2 });
     const rendered = renderStatusBar(fake);
     try {
-      await waitFor(() => expect(holdButton(rendered.root).textContent).toContain("#2"));
+      await waitFor(() => expect(holdCount(rendered.root)?.textContent).toBe("2"));
       const button = holdButton(rendered.root);
-      expect(button.textContent).toContain(CLOSED);
+      expect(holdIcon(rendered.root).getAttribute("data-state")).toBe("closed");
+      expect(button.textContent).not.toContain("#");
       expect(button.getAttribute("aria-label")).toBe(
-        "Release held messages and resume delivery (#2 held)",
+        "Release held messages and resume delivery (2 held)",
       );
       expect(button.getAttribute("aria-pressed")).toBe("true");
     } finally {
@@ -98,14 +112,15 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
     }
   });
 
-  it("shows a closed padlock with #0 when nothing is held", async () => {
+  it("shows a closed padlock with a 0 count when nothing is held", async () => {
     terminalStore.setActiveSessionForTests("session-1");
     const fake = new FakeTransport();
     fake.resolve("get_typing_hold", { closed: true, heldCount: 0 });
     const rendered = renderStatusBar(fake);
     try {
-      await waitFor(() => expect(holdButton(rendered.root).textContent).toContain("#0"));
-      expect(holdButton(rendered.root).textContent).toContain(CLOSED);
+      await waitFor(() => expect(holdCount(rendered.root)?.textContent).toBe("0"));
+      expect(holdIcon(rendered.root).getAttribute("data-state")).toBe("closed");
+      expect(holdButton(rendered.root).textContent).not.toContain("#");
     } finally {
       rendered.cleanup();
     }
@@ -128,8 +143,11 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
       );
       resolveGet({ closed: false, heldCount: 0 });
       await waitFor(() =>
-        expect(holdButton(rendered.root).getAttribute("aria-label")).toContain("#0 held"),
+        expect(holdButton(rendered.root).getAttribute("aria-label")).toBe(
+          "Hold message delivery to this session (0 held)",
+        ),
       );
+      expect(holdButton(rendered.root).getAttribute("aria-label")).not.toContain("#");
     } finally {
       rendered.cleanup();
     }
@@ -184,7 +202,8 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
       );
       resolveA({ closed: true, heldCount: 5 });
       await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(holdButton(rendered.root).textContent).not.toContain("#5");
+      expect(holdCount(rendered.root)).toBeNull();
+      expect(holdIcon(rendered.root).getAttribute("data-state")).toBe("open");
     } finally {
       rendered.cleanup();
     }
@@ -237,7 +256,7 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
       expect(fake.callsFor("toggle_typing_hold")).toHaveLength(1);
       resolveToggle({ closed: true, heldCount: 1 });
       await waitFor(() => expect(holdButton(rendered.root).disabled).toBe(false));
-      expect(holdButton(rendered.root).textContent).toContain("#1");
+      expect(holdCount(rendered.root)?.textContent).toBe("1");
     } finally {
       rendered.cleanup();
     }
@@ -265,7 +284,7 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
     const rendered = renderStatusBar(fake);
     try {
       await vi.advanceTimersByTimeAsync(0);
-      expect(holdButton(rendered.root).textContent).toContain(OPEN);
+      expect(holdIcon(rendered.root).getAttribute("data-state")).toBe("open");
       // A poll is in flight when the click happens; it still answers with the
       // pre-toggle snapshot and must not land after the toggle result.
       await vi.advanceTimersByTimeAsync(500);
@@ -274,12 +293,12 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
       click(holdButton(rendered.root));
       resolveToggle({ closed: true, heldCount: 2 });
       await vi.advanceTimersByTimeAsync(0);
-      expect(holdButton(rendered.root).textContent).toContain("#2");
+      expect(holdCount(rendered.root)?.textContent).toBe("2");
 
       resolvePendingPoll({ closed: false, heldCount: 0 });
       await vi.advanceTimersByTimeAsync(0);
-      expect(holdButton(rendered.root).textContent).toContain(CLOSED);
-      expect(holdButton(rendered.root).textContent).toContain("#2");
+      expect(holdIcon(rendered.root).getAttribute("data-state")).toBe("closed");
+      expect(holdCount(rendered.root)?.textContent).toBe("2");
     } finally {
       rendered.cleanup();
     }
@@ -335,13 +354,13 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
     const rendered = renderStatusBar(fake);
     try {
       await vi.advanceTimersByTimeAsync(0);
-      expect(holdButton(rendered.root).textContent).toContain(OPEN);
+      expect(holdIcon(rendered.root).getAttribute("data-state")).toBe("open");
       snapshot = { closed: true, heldCount: 4 };
       click(holdButton(rendered.root));
       await vi.advanceTimersByTimeAsync(0);
       // The refetch happened without waiting for the next 500 ms poll.
       expect(getCalls).toBe(2);
-      expect(holdButton(rendered.root).textContent).toContain("#4");
+      expect(holdCount(rendered.root)?.textContent).toBe("4");
     } finally {
       rendered.cleanup();
     }
@@ -362,11 +381,11 @@ describe("the StatusBar typing-hold padlock (#2337)", () => {
     try {
       await vi.advanceTimersByTimeAsync(0);
       // A failed poll keeps the last known state (initial open)...
-      expect(holdButton(rendered.root).textContent).toContain(OPEN);
+      expect(holdIcon(rendered.root).getAttribute("data-state")).toBe("open");
       // ...and the next tick retries.
       await vi.advanceTimersByTimeAsync(500);
       expect(attempts).toBe(2);
-      expect(holdButton(rendered.root).textContent).toContain("#3");
+      expect(holdCount(rendered.root)?.textContent).toBe("3");
 
       rendered.cleanup();
       unmounted = true;
