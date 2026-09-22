@@ -18,6 +18,10 @@ import {
 } from "../../shared/profile-utils";
 
 vi.mock("../../shared/ipc", async () => {
+  // #2306 - the pure move-order contract helpers are the real shared code, not a mock.
+  const { assertCodingAgentMoveOrder, expectedCodingAgentMoveOrder } = await vi.importActual<
+    typeof import("../../shared/ipc")
+  >("../../shared/ipc");
   // #769 — SettingsModal mounts codingAgentsStore.ensureLoaded(), so the ipc mock
   // must expose CodingAgentsAPI or the store hits an undefined export. Resolve the
   // catalog with the real built-in list so the preset quick-add buttons these
@@ -108,6 +112,8 @@ vi.mock("../../shared/ipc", async () => {
     onAgentInstallStateChanged: vi.fn(async () => () => {}),
     onAgentUpdatesFinished: vi.fn(async () => () => {}),
     onCodingAgentSettingsUpdated: vi.fn((_callback?: () => void) => Promise.resolve(() => {})),
+    assertCodingAgentMoveOrder,
+    expectedCodingAgentMoveOrder,
   };
 });
 

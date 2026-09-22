@@ -112,24 +112,14 @@ describe("SessionItem profile badge tooltip (#548)", () => {
   });
 
   it("#2314: no longer inherits the first agent's label when the agent has none", async () => {
-    const settings = baseSettings({
-      agents: TWO_AGENTS, // codex holds the only B label
-      codingAgentProfiles: profiles({ codex: { B: "turbo" } }),
-    });
-    const rendered = await renderRow(
-      {
-        agentId: "claude",
-        agentLabel: "Claude Code",
-        requestedProfile: "B",
-        effectiveProfile: "B",
-        profileFallbackApplied: false,
-      },
-      settings,
-    );
+    const settings = baseSettings({ agents: TWO_AGENTS, codingAgentProfiles: profiles({ codex: { B: "turbo" } }) });
+    const rendered = await renderRow({ agentId: "claude", agentLabel: "Claude Code", requestedProfile: "B", effectiveProfile: "B", profileFallbackApplied: false }, settings);
     try {
       // claude has no own and no legacy slot B label → the bare letter, never B-TURBO.
-      await waitFor(() => expect(badge(rendered.root).getAttribute("title")).toBe("B"));
-      expect(badge(rendered.root).textContent).toBe("B");
+      await waitFor(() => {
+        expect(badge(rendered.root).getAttribute("title")).toBe("B");
+        expect(badge(rendered.root).textContent).toBe("B");
+      });
     } finally {
       rendered.cleanup();
     }

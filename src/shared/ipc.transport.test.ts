@@ -117,6 +117,33 @@ describe("shared ipc transport seam", () => {
     }
   });
 
+  it("#2306: derives and enforces the exact requested adjacent move order", async () => {
+    const ipc = await import("./ipc");
+    expect(ipc.expectedCodingAgentMoveOrder(["a", "b", "c", "d", "e"], "c", "up")).toEqual([
+      "a",
+      "c",
+      "b",
+      "d",
+      "e",
+    ]);
+    expect(ipc.expectedCodingAgentMoveOrder(["a", "b", "c", "d", "e"], "c", "down")).toEqual([
+      "a",
+      "b",
+      "d",
+      "c",
+      "e",
+    ]);
+    // A boundary or unknown id leaves the vector untouched for the caller's guard.
+    expect(ipc.expectedCodingAgentMoveOrder(["a", "b"], "a", "up")).toEqual(["a", "b"]);
+    // Same length and same ids is not enough: only the exact swap is accepted.
+    expect(() =>
+      ipc.assertCodingAgentMoveOrder(["a", "b", "c", "d", "e"], ["a", "c", "b", "d", "e"]),
+    ).toThrow("unexpected agent order");
+    expect(() =>
+      ipc.assertCodingAgentMoveOrder(["a", "c", "b", "d", "e"], ["a", "c", "b", "d", "e"]),
+    ).not.toThrow();
+  });
+
   it("decodes selection hydration and events before invoking consumers", async () => {
     vi.resetModules();
     const ipc = await import("./ipc");

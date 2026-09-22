@@ -27,6 +27,8 @@ import {
   ReposAPI,
   CodingAgentsAPI,
   PtyAPI,
+  assertCodingAgentMoveOrder,
+  expectedCodingAgentMoveOrder,
   onCodingAgentSettingsUpdated,
 } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
@@ -1245,13 +1247,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         neighborId: neighbor.id,
         direction,
       });
-      const expectedIds = list.map((candidate) => candidate.id);
-      const to = direction === "up" ? index - 1 : index + 1;
-      expectedIds.splice(to, 0, expectedIds.splice(index, 1)[0]);
-      const consistent =
-        ids.length === expectedIds.length &&
-        ids.every((id, position) => id === expectedIds[position]);
-      if (!consistent) throw new Error("The backend returned an unexpected agent order.");
+      assertCodingAgentMoveOrder(
+        ids,
+        expectedCodingAgentMoveOrder(list.map((candidate) => candidate.id), agent.id, direction),
+      );
       await refreshCodingAgentSettings();
       const nextIndex = (settings.data?.agents ?? []).findIndex(
         (candidate) => candidate.id === agent.id,

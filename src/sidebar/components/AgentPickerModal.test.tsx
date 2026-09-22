@@ -36,21 +36,29 @@ const mockSettingsApi = vi.hoisted(() => ({
   onCodingAgentSettingsUpdated: vi.fn(),
 }));
 
-vi.mock("../../shared/ipc", () => ({
-  SettingsAPI: {
-    get: mockSettingsApi.get,
-    moveCodingAgent: mockSettingsApi.moveCodingAgent,
-    resolveCodingAgentProfile: mockSettingsApi.resolveCodingAgentProfile,
-    previewCodingAgentProfileSelection: mockSettingsApi.previewCodingAgentProfileSelection,
-    applyCodingAgentProfileSelection: mockSettingsApi.applyCodingAgentProfileSelection,
-    previewSelectionLockRemoval: mockSettingsApi.previewSelectionLockRemoval,
-    applySelectionLockRemoval: mockSettingsApi.applySelectionLockRemoval,
-    getReplicaSelectionDefault: mockSettingsApi.getReplicaSelectionDefault,
-    setReplicaSelectionDefault: mockSettingsApi.setReplicaSelectionDefault,
-  },
-  onCodingAgentProfileSelectionUpdated: mockSettingsApi.onCodingAgentProfileSelectionUpdated,
-  onCodingAgentSettingsUpdated: mockSettingsApi.onCodingAgentSettingsUpdated,
-}));
+vi.mock("../../shared/ipc", async () => {
+  // #2306 - the pure move-order contract helpers are the real shared code, not a mock.
+  const { assertCodingAgentMoveOrder, expectedCodingAgentMoveOrder } = await vi.importActual<
+    typeof import("../../shared/ipc")
+  >("../../shared/ipc");
+  return {
+    SettingsAPI: {
+      get: mockSettingsApi.get,
+      moveCodingAgent: mockSettingsApi.moveCodingAgent,
+      resolveCodingAgentProfile: mockSettingsApi.resolveCodingAgentProfile,
+      previewCodingAgentProfileSelection: mockSettingsApi.previewCodingAgentProfileSelection,
+      applyCodingAgentProfileSelection: mockSettingsApi.applyCodingAgentProfileSelection,
+      previewSelectionLockRemoval: mockSettingsApi.previewSelectionLockRemoval,
+      applySelectionLockRemoval: mockSettingsApi.applySelectionLockRemoval,
+      getReplicaSelectionDefault: mockSettingsApi.getReplicaSelectionDefault,
+      setReplicaSelectionDefault: mockSettingsApi.setReplicaSelectionDefault,
+    },
+    onCodingAgentProfileSelectionUpdated: mockSettingsApi.onCodingAgentProfileSelectionUpdated,
+    onCodingAgentSettingsUpdated: mockSettingsApi.onCodingAgentSettingsUpdated,
+    assertCodingAgentMoveOrder,
+    expectedCodingAgentMoveOrder,
+  };
+});
 
 const ORIGIN_AGENT_PATH = "C:\\Users\\maria\\0_repos\\AgentsCommander_ac\\.ac\\_agent_architect";
 const REPO_PATH = "C:\\work\\repo";
@@ -2762,27 +2770,16 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    it("treats an unexpected returned order as an error and applies nothing", async () => {
+    it.each([
+      { label: "a shorter order", returned: ["b", "a"] },
+      {
+        label: "a same-length order that is not the requested swap",
+        returned: ["a", "b", "c", "d", "e"],
+      },
+    ])("rejects $label as a successful move", async ({ returned }) => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValue(currentSettings);
-      mockSettingsApi.moveCodingAgent.mockResolvedValue(["b", "a"]);
-      const { dispose } = renderPicker({ currentAgentId: "c" });
-      await settle();
-
-      target<HTMLButtonElement>("agentPicker.provider.c.moveUp").click();
-      await settle();
-
-      expect(cardIds()).toEqual(["a", "b", "c", "d", "e"]);
-      expect(text("agentPicker.moveError")).toContain("unexpected agent order");
-
-      dispose();
-    });
-
-    it("rejects a same-length returned order that is not the exact requested swap", async () => {
-      currentSettings = orderedSnapshot(FIVE);
-      mockSettingsApi.get.mockResolvedValue(currentSettings);
-      // Same ids, same length, but the requested c-up swap never happened.
-      mockSettingsApi.moveCodingAgent.mockResolvedValue(["a", "b", "c", "d", "e"]);
+      mockSettingsApi.moveCodingAgent.mockResolvedValue(returned);
       const { dispose } = renderPicker({ currentAgentId: "c" });
       await settle();
 

@@ -20,6 +20,8 @@ import type {
 } from "../../shared/types";
 import {
   SettingsAPI,
+  assertCodingAgentMoveOrder,
+  expectedCodingAgentMoveOrder,
   onCodingAgentProfileSelectionUpdated,
   onCodingAgentSettingsUpdated,
 } from "../../shared/ipc";
@@ -527,13 +529,10 @@ const AgentPickerModal: Component<{
         neighborId: neighbor.id,
         direction,
       });
-      const expectedIds = list.map((candidate) => candidate.id);
-      const to = direction === "up" ? index - 1 : index + 1;
-      expectedIds.splice(to, 0, expectedIds.splice(index, 1)[0]);
-      const consistent =
-        ids.length === expectedIds.length &&
-        ids.every((id, position) => id === expectedIds[position]);
-      if (!consistent) throw new Error("The backend returned an unexpected agent order.");
+      assertCodingAgentMoveOrder(
+        ids,
+        expectedCodingAgentMoveOrder(list.map((candidate) => candidate.id), agent.id, direction),
+      );
       await refreshFromSettings();
       const newIndex = agents().findIndex((candidate) => candidate.id === agent.id);
       if (newIndex >= 0) {

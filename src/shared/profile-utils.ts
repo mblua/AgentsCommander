@@ -57,8 +57,7 @@ export function resolveProfileLabel(
 ): string {
   // #2306 - no first-agent (primigenio) inheritance: the fallback chain is own
   // per-agent label -> legacy shared slot label -> empty (bare letter). `agents`
-  // stays in the signature so call sites are untouched.
-  void agents;
+  // stays in the signature so call sites are untouched; it is no longer read.
   const labels = profiles.profileLabelsByAgent;
   const own = agentId ? labels?.[agentId]?.[letter]?.trim() : "";
   const legacy = profiles.profileSlots[letter]?.label?.trim() ?? "";
