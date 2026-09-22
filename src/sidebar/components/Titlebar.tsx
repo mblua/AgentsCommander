@@ -2,6 +2,7 @@ import { Component, Show, For, createSignal, createMemo, onMount, onCleanup } fr
 import iconUrl from "../../assets/icon-16.png";
 import { InstanceAPI, ScreenshotAPI, SettingsAPI } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
+import { sidebarCompact } from "../../shared/sidebar-compact";
 import { extractWorkgroupName, computeTrailingText } from "../../shared/path-extractors";
 import { terminalStore } from "../../terminal/stores/terminal";
 import type { MainSidebarSide } from "../../shared/types";
@@ -151,6 +152,7 @@ const Titlebar: Component = () => {
 
   const applyWidthPreset = async (width: number) => {
     setLayoutMenuOpen(false);
+    if (sidebarCompact()) return;          // epic D12: no event, no persist, while compact
     window.dispatchEvent(new CustomEvent("main-sidebar-width-change", { detail: { width } }));
     try {
       const settings = await SettingsAPI.get();
@@ -261,6 +263,7 @@ const Titlebar: Component = () => {
                 {(preset) => (
                   <button
                     class="layout-option"
+                    disabled={sidebarCompact()}
                     onClick={() => applyWidthPreset(preset.width)}
                   >
                     <span class="layout-option-icon">&#x2630;</span>

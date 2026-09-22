@@ -231,8 +231,12 @@ struct TypingHoldSession {
     /// `note_qualifying_key`, which every desktop `pty_write` chunk that passes
     /// [`chunk_qualifies_typing_hold`] reaches. `None` until the first one.
     last_qualifying_key: Option<Instant>,
-    /// Manual padlock: `true` holds until the user releases it, with no expiry.
-    manual_closed: bool,
+    /// #2379 - when the manual padlock was closed; `None` when no manual hold
+    /// is set. The manual hold has its own clock: it stays closed for twice the
+    /// `typing_hold_seconds` window in force at read time, so a forgotten close
+    /// cannot defer delivery forever. Only the instant is stored; the deadline
+    /// is recomputed on every read, so a settings change applies immediately.
+    manual_closed_at: Option<Instant>,
     /// Incremented by every manual release (closed click). The pair with
     /// `suppressed_generation` is how one release suppresses exactly the natural
     /// window that existed at that moment, and nothing later.
@@ -257,8 +261,17 @@ impl TypingHoldSession {
             .is_some_and(|last| last.elapsed() <= window)
     }
 
+    /// #2379 - the manual padlock window: twice the live `window` since the
+    /// close. Evaluated against the `window` passed at read time, never against
+    /// a captured or hardcoded duration, so a settings change moves the
+    /// deadline of an existing close.
+    fn manual_window_active(&self, window: Duration) -> bool {
+        self.manual_closed_at
+            .is_some_and(|closed_at| closed_at.elapsed() <= window.saturating_mul(2))
+    }
+
     fn effective_closed(&self, window: Duration) -> bool {
-        self.manual_closed || self.natural_window_active(window)
+        self.manual_window_active(window) || self.natural_window_active(window)
     }
 }
 
@@ -297,16 +310,17 @@ impl TypingHoldTracker {
     /// Atomic padlock toggle. An effective-closed session releases: manual state
     /// drops, the generation advances and that generation's natural window is
     /// suppressed, so the pending queue becomes eligible immediately. An
-    /// effective-open session takes the manual hold. Returns the post-toggle
-    /// snapshot under the same lock, so the UI cannot observe a half-flip.
+    /// effective-open session takes the manual hold, which itself expires after
+    /// 2x `window`. Returns the post-toggle snapshot under the same lock, so the
+    /// UI cannot observe a half-flip.
     pub fn toggle_manual(&mut self, id: Uuid, window: Duration) -> TypingHoldSnapshot {
         let session = self.sessions.entry(id).or_default();
         if session.effective_closed(window) {
-            session.manual_closed = false;
+            session.manual_closed_at = None;
             session.release_generation = session.release_generation.wrapping_add(1);
             session.suppressed_generation = Some(session.release_generation);
         } else {
-            session.manual_closed = true;
+            session.manual_closed_at = Some(Instant::now());
         }
         TypingHoldSnapshot {
             closed: session.effective_closed(window),
@@ -346,6 +360,19 @@ impl TypingHoldTracker {
             .and_then(|session| session.last_qualifying_key.as_mut())
         {
             *last = Instant::now()
+                .checked_sub(age)
+                .expect("process uptime exceeds the backdated age");
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backdate_manual_close_for_test(&mut self, id: Uuid, age: Duration) {
+        if let Some(closed_at) = self
+            .sessions
+            .get_mut(&id)
+            .and_then(|session| session.manual_closed_at.as_mut())
+        {
+            *closed_at = Instant::now()
                 .checked_sub(age)
                 .expect("process uptime exceeds the backdated age");
         }
@@ -958,18 +985,82 @@ mod tests {
         assert!(tracker.is_hold_active(id, window));
 
         // Release the re-armed window, then an open click takes the MANUAL hold:
-        // it stays closed even after the natural window ages out.
+        // it outlives the natural window...
         assert!(!tracker.toggle_manual(id, window).closed);
         let held = tracker.toggle_manual(id, window);
         assert!(held.closed);
         tracker.backdate_last_key_for_test(id, window + Duration::from_secs(1));
         assert!(tracker.is_hold_active(id, window));
 
-        // Clicking again releases the manual hold and suppresses the (expired)
-        // window generation.
-        let released_again = tracker.toggle_manual(id, window);
-        assert!(!released_again.closed);
+        // ...and an explicit click before its own deadline still releases now.
+        assert!(!tracker.toggle_manual(id, window).closed);
         assert!(!tracker.is_hold_active(id, window));
+
+        // A fresh manual close auto-releases after 2x the window with no click.
+        assert!(tracker.toggle_manual(id, window).closed);
+        tracker
+            .backdate_manual_close_for_test(id, window.saturating_mul(2) + Duration::from_secs(1));
+        assert!(!tracker.is_hold_active(id, window));
+    }
+
+    /// #2379 - a manual close expires at exactly twice the window passed in:
+    /// inside 2x it stays closed (a 1x implementation fails this), past 2x it
+    /// opens with no click (a 3x implementation fails this), and the held count
+    /// survives the auto-release. Re-taking the hold then clicking before its
+    /// deadline releases immediately.
+    #[test]
+    fn typing_hold_manual_close_expires_at_twice_the_window_and_count_survives() {
+        let mut tracker = TypingHoldTracker::default();
+        let id = Uuid::new_v4();
+        let window = Duration::from_secs(30);
+        let deadline = window.saturating_mul(2);
+
+        tracker.record_held_message(id, "msg-1");
+        tracker.toggle_manual(id, window);
+        assert!(tracker.snapshot(id, window).closed);
+
+        tracker.backdate_manual_close_for_test(id, deadline - Duration::from_secs(1));
+        assert!(
+            tracker.is_hold_active(id, window),
+            "inside 2x the window the manual hold stands"
+        );
+
+        tracker.backdate_manual_close_for_test(id, deadline + Duration::from_secs(1));
+        let snapshot = tracker.snapshot(id, window);
+        assert!(
+            !snapshot.closed,
+            "a manual close must auto-release after 2x the window"
+        );
+        assert_eq!(
+            snapshot.held_count, 1,
+            "auto-release must not touch the held count"
+        );
+
+        assert!(tracker.toggle_manual(id, window).closed);
+        assert!(!tracker.toggle_manual(id, window).closed);
+        assert!(!tracker.is_hold_active(id, window));
+    }
+
+    /// #2379 - the manual deadline is recomputed from the window passed at
+    /// evaluation time, not from a hardcoded 60 and not from a deadline frozen
+    /// at close time. The same close after 50s of silence: closed under the 30s
+    /// window (2x = 60s), already open under a 20s window (2x = 40s). A
+    /// hardcoded 60 keeps it closed here and fails this test.
+    #[test]
+    fn typing_hold_manual_expiry_follows_the_live_window_not_a_hardcoded_sixty() {
+        let mut tracker = TypingHoldTracker::default();
+        let id = Uuid::new_v4();
+
+        let thirty = Duration::from_secs(30);
+        tracker.toggle_manual(id, thirty);
+        tracker.backdate_manual_close_for_test(id, Duration::from_secs(50));
+
+        assert!(tracker.snapshot(id, thirty).closed, "50s is inside 2x30s");
+        let twenty = Duration::from_secs(20);
+        assert!(
+            !tracker.snapshot(id, twenty).closed,
+            "50s is past 2x20s; the deadline must follow the live window"
+        );
     }
 
     /// #2336 - the count is a unique set of message IDs, repeated recordings do
