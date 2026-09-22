@@ -5,6 +5,7 @@ export type SessionDotClass =
   | "running"
   | "idle"
   | "exited"
+  | "comanaged"
   | "pending"
   | "waiting"
   | "offline";
@@ -16,6 +17,7 @@ export type SessionDotClass =
 const DOT_CLASS: Record<SessionActivity, SessionDotClass> = {
   offline: "offline",
   exited: "exited",
+  comanaged: "comanaged",
   pendingReview: "pending",
   waitingForInput: "waiting",
   active: "active",
@@ -25,7 +27,7 @@ const DOT_CLASS: Record<SessionActivity, SessionDotClass> = {
 
 export function sessionDotClass(
   session: ActivitySession | null | undefined,
-  options: { inactive?: boolean } = {},
+  options: { inactive?: boolean; comanaged?: boolean } = {},
 ): SessionDotClass {
   return DOT_CLASS[sessionActivity(session, options)];
 }
