@@ -4284,6 +4284,7 @@ const ProjectPanel: Component = () => {
                           <Show when={titleEdit() && titleEdit()!.wgPath === menu().wg.path}>
                             <div
                               class="session-context-title-edit"
+                              role="presentation"
                               onClick={(e) => e.stopPropagation()}
                             >
                               <input
