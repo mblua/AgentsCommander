@@ -121,7 +121,11 @@ describe("session workflow automation hooks", () => {
       // menu-only. The banner itself is a div with role="button", so the count
       // is over descendants. Quiet: not recording, no auto-execute countdown,
       // profileOutdated unset (ProfileOutdatedBadge renders a <button>).
-      expect(banner!.querySelectorAll("button")).toHaveLength(0);
+      // #2236 - the two exceptions are chrome, not row actions: the compact
+      // toggle and the row's own activation button.
+      expect(banner!.querySelectorAll("button:not(.root-agent-banner-toggle):not(.root-agent-banner-open)")).toHaveLength(0);
+      expect(banner!.querySelectorAll(".root-agent-banner-toggle")).toHaveLength(1);
+      expect(banner!.querySelectorAll(".root-agent-banner-open")).toHaveLength(1);
       for (const cls of [
         "session-item-mic",
         "session-item-explorer",
@@ -236,7 +240,9 @@ describe("session workflow automation hooks", () => {
     try {
       const banner = rendered.root.querySelector('[data-ac-testid="rootAgent.banner"]');
       expect(banner?.getAttribute("data-ac-state")).toBe("dormant");
-      expect(banner!.querySelectorAll("button")).toHaveLength(0);
+      expect(banner!.querySelectorAll("button:not(.root-agent-banner-toggle):not(.root-agent-banner-open)")).toHaveLength(0);
+      expect(banner!.querySelectorAll(".root-agent-banner-toggle")).toHaveLength(1);
+      expect(banner!.querySelectorAll(".root-agent-banner-open")).toHaveLength(1);
       expect(rendered.root.querySelector(".session-item-mic")).toBeNull();
       expect(rendered.root.querySelector(".session-item-detach")).toBeNull();
       expect(rendered.root.querySelector(".session-item-telegram")).toBeNull();
@@ -399,7 +405,11 @@ describe("Telegram indicator after #1730", () => {
       expect(icon?.querySelector("svg")).not.toBeNull();
       expect(rendered.root.querySelector(".session-item-telegram")).toBeNull();
       expect(rendered.root.querySelector(".session-item-bridge-dot")).toBeNull();
-      expect(rendered.root.querySelector(".root-agent-banner button")).toBeNull();
+      expect(
+        rendered.root.querySelector(
+          ".root-agent-banner button:not(.root-agent-banner-toggle):not(.root-agent-banner-open)",
+        ),
+      ).toBeNull();
     } finally {
       rendered.cleanup();
     }
