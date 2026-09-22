@@ -309,7 +309,7 @@ The two `gitSweep*` dials are manual-only (no UI) and are read from the in-memor
 
 #### Main window placement
 
-The main window's placement is the pair `mainGeometry` + `mainWindowDisplayState`. `mainGeometry` holds the last normal rectangle: a maximized window records `"maximized"` in `mainWindowDisplayState` but keeps the previous rectangle, while a fullscreen or minimized observation changes nothing. That pairing is what returns the window to its pre-maximized size and position later.
+The main window's placement is the pair `mainGeometry` + `mainWindowDisplayState`. `mainGeometry` holds the last normal rectangle: a maximized window records `"maximized"` in `mainWindowDisplayState` but keeps the previous rectangle, while a fullscreen or minimized observation changes nothing. On a first run with nothing saved yet, AC samples the window once at startup and keeps that rectangle as the normal one, so launch, maximize and close does persist the placement; a saved rectangle always wins over that sample, and if the startup sample is itself maximized, fullscreen or minimized AC keeps no rectangle and saves nothing until the window is next seen normal. That pairing is what returns the window to its pre-maximized size and position later.
 
 While the app runs, AC coalesces moves and resizes for 500 ms and then saves both keys. On every accepted quit route it awaits one flush of the latest placement for at most 2 seconds before quitting; a flush that times out or fails logs the failure and the quit continues, so the next start uses the placement already on disk.
 

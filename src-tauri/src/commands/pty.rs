@@ -2224,6 +2224,25 @@ mod tests {
     /// substantive submission that follows clears the mark. The \x1b[I step is the
     /// control, and the last step is the assertion that goes red if the clear is
     /// omitted from the `if substantive` block.
+    /// #2411 Typed input clears the auto-closed marker (production `pty.rs` clear).
+    #[tokio::test]
+    async fn typed_input_clears_auto_closed_marker() {
+        let f = fresh_intent_fixture().await;
+        {
+            let mut guard = f.clocks.lock().unwrap_or_else(|e| e.into_inner());
+            assert!(guard.mark_auto_closed(&f.fqn, chrono::Utc::now()));
+        }
+        let handle = f.app.handle().clone();
+        note_user_message_to_session(&handle, f.session_id, UserInputSource::CompleteMessage).await;
+        assert_eq!(
+            f.clocks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .auto_closed_at(&f.fqn),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn a_terminal_write_marks_and_a_substantive_one_clears() {
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));

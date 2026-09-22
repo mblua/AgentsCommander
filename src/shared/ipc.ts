@@ -29,6 +29,8 @@ import type {
   AppSettings,
   MainWindowDisplayState,
   SettingsSnapshot,
+  MoveCodingAgentDirection,
+  MoveCodingAgentRequest,
   LogLevel,
   UpdateInfo,
   AgentUpdateResult,
@@ -380,12 +382,50 @@ export const CodingAgentsAPI = {
     transport.invoke<ReseedResult>("reseed_coding_agent_default", { command }),
 };
 
+/** #2306 P3 - the exact id order a successful adjacent move must produce:
+ *  `id` swapped with its immediate neighbor in `direction`. Both reorder surfaces
+ *  derive the expectation from the vector they display. */
+export function expectedCodingAgentMoveOrder(
+  ids: readonly string[],
+  id: string,
+  direction: MoveCodingAgentDirection,
+): string[] {
+  const from = ids.indexOf(id);
+  const to = direction === "up" ? from - 1 : from + 1;
+  if (from < 0 || to < 0 || to >= ids.length) return [...ids];
+  const next = [...ids];
+  next.splice(to, 0, next.splice(from, 1)[0]);
+  return next;
+}
+
+/** #2306 P3 - the move's consistency check: the backend's authoritative order
+ *  must be EXACTLY the requested swap, never merely a permutation of the same ids. */
+export function assertCodingAgentMoveOrder(
+  returned: readonly string[],
+  expected: readonly string[],
+): void {
+  if (
+    returned.length !== expected.length ||
+    !returned.every((value, position) => value === expected[position])
+  ) {
+    throw new Error("The backend returned an unexpected agent order.");
+  }
+}
+
 export const SettingsAPI = {
   // #1077: get_settings returns the flattened SettingsSnapshot (AppSettings +
   // projectPathResolution). update/save-draft still take a plain AppSettings;
   // the extra report field riding along on a round-tripped object is ignored by
   // the backend (non-deny_unknown_fields) and cannot re-pair persisted state.
   get: () => transport.invoke<SettingsSnapshot>("get_settings"),
+  /** #2306 P3 - the narrow move command: only the requested adjacent swap is
+   *  persisted; the resolved value is the backend's authoritative ordered ids. */
+  moveCodingAgent: (request: MoveCodingAgentRequest) =>
+    transport.invoke<string[]>("move_coding_agent", {
+      id: request.id,
+      neighborId: request.neighborId,
+      direction: request.direction,
+    }),
   update: (settings: AppSettings) =>
     transport.invoke<void>("update_settings", { newSettings: settings }),
   saveDraft: (settings: AppSettings) =>
