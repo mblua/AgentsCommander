@@ -319,6 +319,90 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
+  // #2408 round 4 - a reactive `class` rewrite must not drop the ring. Solid's
+  // `class` wipes classList-owned names and an unchanged classList value does
+  // not restore them, so each site is driven through an activity change with
+  // capture held, then through a capture toggle with activity held.
+  const exactDot = (dot: HTMLElement) => [...dot.classList].sort();
+  const ringed = (activity: string) => ["comanaged", activity, "session-item-status"].sort();
+  const bare = (activity: string) => [activity, "session-item-status"].sort();
+
+  async function expectTransitions(
+    dot: () => HTMLElement,
+    id: string,
+    before: string,
+    after: string,
+    changeActivity: () => void,
+  ) {
+    await waitFor(() => expect(exactDot(dot())).toEqual(ringed(before)));
+    // (a) capture held true, activity changes: new class present, ring survives.
+    changeActivity();
+    await waitFor(() => expect(dot().classList.contains(after), dot().className).toBe(true));
+    expect(exactDot(dot())).toEqual(ringed(after));
+    // (b) activity held, capture on -> off -> on: only `comanaged` changes.
+    sessionsStore.setSessionComanaged(id, false);
+    await waitFor(() => expect(exactDot(dot())).toEqual(bare(after)));
+    sessionsStore.setSessionComanaged(id, true);
+    await waitFor(() => expect(exactDot(dot())).toEqual(ringed(after)));
+  }
+
+  it("SessionItem keeps the ring across activity changes and toggles (#2408 round 4)", async () => {
+    const id = "cm-transition";
+    const running = session({ id, name: "wg-1-dev-team/transition", status: "running" });
+    sessionsStore.setSessions([running]);
+    sessionsStore.setSessionComanaged(id, true);
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    const rendered = renderWithFakeTransport(
+      () => (
+        <SessionItem session={sessionsStore.sessions.find((s) => s.id === id) ?? running} isActive={false} />
+      ),
+      fake,
+    );
+    try {
+      await settingsStore.load();
+      await expectTransitions(() => dotOf(itemRow(rendered.root, id)), id, "running", "idle", () =>
+        sessionsStore.setSessions([{ ...running, status: "idle" }]),
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("RootAgentBanner keeps the ring across activity changes and toggles (#2408 round 4)", async () => {
+    // Grinch reproduction: capture held, the root session goes running -> idle.
+    const root = session({ id: "root-1", name: "Agent's Commander", isRootAgent: true, status: "running" });
+    sessionsStore.setSessions([root]);
+    sessionsStore.setSessionComanaged("root-1", true);
+    const rendered = renderWithFakeTransport(() => <RootAgentBanner />, new FakeTransport());
+    try {
+      const row = rendered.root.querySelector<HTMLElement>(".root-agent-banner");
+      if (!row) throw new Error("root agent banner not rendered");
+      await expectTransitions(() => dotOf(row), "root-1", "running", "idle", () =>
+        sessionsStore.setSessions([{ ...root, status: "idle" }]),
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("the ProjectPanel replica dot keeps the ring across activity changes and toggles (#2408 round 4)", async () => {
+    sessionsStore.setSessions([replicaSession()]);
+    sessionsStore.setSessionComanaged(REPLICA_SESSION_ID, true);
+    const rendered = await renderPanel();
+    try {
+      await expectTransitions(
+        () => dotOf(replicaRow(rendered.root)),
+        REPLICA_SESSION_ID,
+        "waiting",
+        "running",
+        () => sessionsStore.setSessionWaiting(REPLICA_SESSION_ID, false),
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("clearing the flag returns the row to the state it would otherwise have had, including waiting (test 13)", async () => {
     const waiting = session({
       id: "cm-waiting",

@@ -2789,8 +2789,7 @@ const ProjectPanel: Component = () => {
               title={replica.path}
             >
               <div
-                class={`session-item-status ${dotClass()}`}
-                classList={{ comanaged: isComanaged() }}
+                class={`session-item-status ${dotClass()}${isComanaged() ? " comanaged" : ""}`}
                 data-ac-comanaged={isComanaged() ? "true" : "false"}
                 title={isComanaged() ? "Co-managed" : undefined}
               />
