@@ -66,7 +66,13 @@ function installSidebarMenuLockObserver(): void {
 }
 installSidebarMenuLockObserver();
 
-const [state, setState] = createStore<SessionsState>({
+// #2271 - types.ts is not widened for this field, so the sidecar is part of the
+// local store type only; every reader goes through `comanagedBySessionId`.
+type SessionsStateWithComanaged = SessionsState & {
+  comanagedBySessionId: Record<string, boolean>;
+};
+
+const [state, setState] = createStore<SessionsStateWithComanaged>({
   sessions: [],
   activeId: null,
   selection: null,
@@ -86,6 +92,10 @@ const [state, setState] = createStore<SessionsState>({
   coordSortByActivity: false,
   lastActivityBySessionId: {},
   contextPercentBySessionId: {},
+  // #2271 - keyed sidecar, deliberately beside contextPercentBySessionId: a
+  // wholesale `state.sessions` replacement in projectStoredSelection cannot
+  // touch it, so a list refresh never wipes an event-only Co-managed flag.
+  comanagedBySessionId: {},
   hydrated: false,
 });
 
@@ -106,6 +116,16 @@ function projectStoredSelection(sessions: Session[]): void {
   const applied = applySelectionToSessionList(sessions, state.selection);
   setState("sessions", applied.sessions);
   setState("activeId", applied.activeId);
+}
+
+function clearComanagedEntry(id: string): void {
+  // A plain object assignment to a store node MERGES, so it cannot delete a
+  // key; reconcile is the only supported way to make the map shrink. Read the
+  // current map untracked (callers are event handlers and removal paths).
+  if (!(id in state.comanagedBySessionId)) return;
+  const next = { ...state.comanagedBySessionId };
+  delete next[id];
+  setState("comanagedBySessionId", reconcile(next));
 }
 
 function advanceRowMembershipGeneration(): void {
@@ -363,6 +383,9 @@ export const sessionsStore = {
     // currently present; an older pending list may still contain that ID.
     advanceRowMembershipGeneration();
     projectStoredSelection(state.sessions.filter((session) => session.id !== id));
+    // #2271 - a removed session must not leave its sidecar entry behind, or the
+    // event-fed map grows without bound across a long-lived sidebar.
+    clearComanagedEntry(id);
     if (state.activeId === id) setState("activeId", null);
   },
 
@@ -499,6 +522,16 @@ export const sessionsStore = {
     }
   },
 
+  setSessionComanaged(id: string, active: boolean) {
+    if (!active) {
+      clearComanagedEntry(id);
+      return;
+    }
+    setState("comanagedBySessionId", (prev) =>
+      prev[id] ? prev : { ...prev, [id]: true },
+    );
+  },
+
   setCommunication(sessionId: string, communication: SessionCommunication | null) {
     communicationGeneration += 1;
     setState("sessions", (s) => s.id === sessionId, "communication", communication);
@@ -568,6 +601,9 @@ export const sessionsStore = {
   },
   get contextPercentBySessionId() {
     return state.contextPercentBySessionId;
+  },
+  get comanagedBySessionId() {
+    return state.comanagedBySessionId;
   },
   get hydrated() {
     return state.hydrated;
@@ -656,6 +692,10 @@ export const sessionsStore = {
       "contextPercentBySessionId",
       reconcile(emptyReadings),
     );
+  },
+
+  resetComanagedForTests() {
+    setState("comanagedBySessionId", reconcile({}));
   },
 
   resetActivityForTests() {

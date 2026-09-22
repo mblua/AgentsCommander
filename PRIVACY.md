@@ -32,7 +32,7 @@ The internal messaging system between agents is **local by default**: the file-b
 
 ### Terminal Snapshots
 
-**User-initiated.** Terminal snapshots are off by default. When the user enables `terminalSnapshotsEnabled`, an identity-authorized Root Agent or same-room Orchestrator can request the current backend terminal viewport as JSON or deterministic PNG.
+**User-controlled.** Terminal snapshots are on by default, both on a fresh installation and in an older settings file that has no `terminalSnapshotsEnabled` key. While the setting is on, an identity-authorized Root Agent or same-room Orchestrator can request the current backend terminal viewport as JSON or deterministic PNG. No snapshot is ever taken on its own: each one is an explicit authorized request. To deny every request, turn off **Settings > General > Terminal snapshots > Allow authorized terminal snapshots**, which writes an explicit `terminalSnapshotsEnabled: false`.
 
 - **Data processed locally**: Current visible backend rows, cells, text, colors, represented styles, cursor, dimensions, selected session metadata, and fidelity metadata. Terminal content can include passwords, tokens, source code, prompts, and personal data. Agents Commander does not redact it.
 - **Host transport**: A host requester exchanges bounded transient files in dedicated requester-side terminal snapshot directories. Snapshot content does not enter ordinary messages, conversations, delivered or rejected message artifacts, or PTY-input state. The daemon normally removes identity-stable protocol files after use or 60 seconds. A crash plus removal of the only project registration can leave an undiscoverable residual.

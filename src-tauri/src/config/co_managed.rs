@@ -34,6 +34,8 @@ pub const CO_MANAGED_DIR_NAME: &str = ".co-managed";
 pub const CONFIG_FILE_NAME: &str = "config.json";
 /// Advisory lock file governing `config.json` (and the phase-3 `state.json`).
 pub const LOCK_FILE_NAME: &str = "lock";
+/// The phase-7 provenance queue directory, directly under `.co-managed/`.
+pub const QUEUE_DIR_NAME: &str = "queue";
 
 const ENABLED_KEY: &str = "enabled";
 const CATALOG_PATH_KEY: &str = "catalogPath";
@@ -118,6 +120,16 @@ pub fn config_path(room_root: &Path) -> PathBuf {
 /// `<room-root>/.co-managed/lock`.
 pub fn lock_path(room_root: &Path) -> PathBuf {
     co_managed_dir(room_root).join(LOCK_FILE_NAME)
+}
+
+/// `<room-root>/.co-managed/queue` (phase 7).
+///
+/// A **sibling** of `config.json` and `state.json`, never a subdirectory of any
+/// outbox: the mailbox sweep classifies a message's origin by directory and
+/// skips subdirectories. The phase-7 supervisor writes here and nothing else
+/// may; `cli::send` rejects this path as an `--outbox` target.
+pub fn queue_dir(room_root: &Path) -> PathBuf {
+    co_managed_dir(room_root).join(QUEUE_DIR_NAME)
 }
 
 /// Read the config, repairing anything malformed to defaults.
@@ -568,6 +580,18 @@ mod tests {
         );
         let default = serde_json::to_string(&CoManagedConfig::default()).unwrap();
         assert_eq!(default, "{\"enabled\":false,\"catalogPath\":null}");
+    }
+
+    /// #2232 phase 7: the queue is a sibling of `config.json` and `state.json`,
+    /// directly under `.co-managed/`, never a subdirectory of an outbox.
+    #[test]
+    fn queue_dir_is_a_sibling_of_the_config_and_state_files() {
+        let room = Path::new("/tmp/proj-a/.ac/room-1-dev-team");
+        let queue = queue_dir(room);
+        assert_eq!(queue, room.join(".co-managed").join("queue"));
+        assert_eq!(queue.parent(), Some(co_managed_dir(room).as_path()));
+        assert_eq!(queue.parent(), config_path(room).parent());
+        assert_eq!(queue.parent(), lock_path(room).parent());
     }
 
     /// The room-root walk mirrors the messaging rule (`room-<digits>-*`).

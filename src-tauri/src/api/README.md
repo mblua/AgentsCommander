@@ -125,8 +125,10 @@ probing.
 
 `POST /api/v1/terminal-snapshot` reads the current backend terminal viewport
   for a live automatically bound container Coordinator. It requires the
-  distinct `terminal-snapshot` scope and the default-off
-  `terminalSnapshotsEnabled` security gate. Root is host-only. The strict body
+  distinct `terminal-snapshot` scope and the default-on
+  `terminalSnapshotsEnabled` security gate, which denies only on an explicit
+  `false` or a malformed, duplicated, wrongly typed, linked or unreadable
+  security settings file. Root is host-only. The strict body
   rejects unknown and duplicate fields:
   ```json
   {

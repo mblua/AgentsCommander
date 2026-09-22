@@ -1,19 +1,22 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { render } from "solid-js/web";
 import SidebarApp from "./App";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import { __setTransportForTests } from "../shared/ipc";
 import {
-  baseSettings,
-  discovery,
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
   session,
   waitFor,
 } from "../shared/testing/ui-harness";
-import { liveSelection, SESSION_A, SESSION_B } from "../shared/testing/session-selection";
+import { SESSION_A, SESSION_B } from "../shared/testing/session-selection";
+import {
+  installReconcileIntervalSpy,
+  setupAppTransport,
+  type ReconcileIntervalSpy,
+} from "./testing/app-harness";
 import { sessionsStore } from "./stores/sessions";
 import type { Session, SessionStatus } from "../shared/types";
 
@@ -67,31 +70,17 @@ function backendRows(): Session[] {
 }
 
 function setupTransport(fake: FakeTransport): void {
-  fake.resolve(
-    "get_settings",
-    baseSettings({ projectPaths: [projectPath], projectPath }),
-  );
-  fake.resolve("open_project", { path: projectPath, registered: true, created: false });
-  fake.resolve(
-    "discover_project",
-    discovery({
-      agents: [
-        { name: "General", path: agentAPath, roleExists: true },
-        { name: "Worker", path: agentBPath, roleExists: true },
-        { name: "Worker2", path: agentCPath, roleExists: true },
-      ],
-      teams: [],
-      workgroups: [],
-    }),
-  );
-  fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
-  fake.resolve("search_repos", []);
   // Always in the order [A, B, C]: the settling gate below and M3's kill both
   // depend on SESSION_C being the last row the reconcile loop visits.
-  fake.onInvoke("list_sessions", () => backendRows());
-  fake.resolve("get_active_session", liveSelection(SESSION_A));
-  fake.resolve("list_detached_sessions", []);
-  fake.resolve("telegram_list_bridges", []);
+  setupAppTransport(fake, {
+    projectPath,
+    agents: [
+      { name: "General", path: agentAPath },
+      { name: "Worker", path: agentBPath },
+      { name: "Worker2", path: agentCPath },
+    ],
+    rows: backendRows,
+  });
 }
 
 function row(root: HTMLElement, id: string): HTMLElement {
@@ -112,9 +101,7 @@ function badge(root: HTMLElement, id: string): Element | null {
 
 describe("SidebarApp pending-review latch reconciliation (#1779)", () => {
   let cleanupDom: (() => void) | null = null;
-  let reconcileTicks: () => unknown[][];
-  let clearReconcileIntervals: () => void;
-  let restoreIntervalSpy: () => void;
+  let reconcileIntervals: ReconcileIntervalSpy;
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
@@ -124,30 +111,17 @@ describe("SidebarApp pending-review latch reconciliation (#1779)", () => {
     backendC = { status: "running", waitingForInput: false };
     outdatedC = false;
 
-    // vi.spyOn with no implementation keeps the real setInterval, so the app's
-    // timers still run and mock.results[i].value is the real handle, index-aligned
-    // with mock.calls[i]. File-wide rather than per-test because under M6 the
-    // component stops clearing its interval and would otherwise leak a live 5000 ms
-    // timer into every test that follows.
-    const intervalSpy = vi.spyOn(globalThis, "setInterval");
-    reconcileTicks = () => intervalSpy.mock.calls.filter((c) => c[1] === 5000);
-    clearReconcileIntervals = () => {
-      intervalSpy.mock.calls.forEach((call, i) => {
-        if (call[1] !== 5000) return;
-        const handle = intervalSpy.mock.results[i]?.value as
-          | ReturnType<typeof setInterval>
-          | undefined;
-        if (handle !== undefined) clearInterval(handle);
-      });
-    };
-    restoreIntervalSpy = () => intervalSpy.mockRestore();
+    // File-wide rather than per-test because under M6 the component stops
+    // clearing its interval and would otherwise leak a live 5000 ms timer into
+    // every test that follows.
+    reconcileIntervals = installReconcileIntervalSpy({ periodMs: 5000 });
   });
 
   afterEach(() => {
     // The sweep MUST precede the restore: mockRestore() discards mock.calls and
     // mock.results and the handles become unrecoverable.
-    clearReconcileIntervals();
-    restoreIntervalSpy();
+    reconcileIntervals.clear();
+    reconcileIntervals.restore();
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
@@ -190,7 +164,7 @@ describe("SidebarApp pending-review latch reconciliation (#1779)", () => {
       outdatedC = true;
 
       // The delay, the count and the wiring in one assertion.
-      const ticks = reconcileTicks();
+      const ticks = reconcileIntervals.ticks();
       expect(ticks.length).toBe(1);
 
       (ticks[0][0] as () => void)();
@@ -324,10 +298,10 @@ describe("SidebarApp pending-review latch reconciliation (#1779)", () => {
         // assert: under M6 the expect throws, and a sweep written after it would
         // never run on the one path that actually leaks.
         const after = fake.callsFor("list_sessions").length;
-        clearReconcileIntervals();
+        reconcileIntervals.clear();
         expect(after).toBe(before);
       } finally {
-        clearReconcileIntervals();
+        reconcileIntervals.clear();
         disposeOnce();
         restoreTransport();
         root.remove();
@@ -466,7 +440,7 @@ describe("SidebarApp pending-review latch reconciliation (#1779)", () => {
       fake.emitFromBackend("session_idle", { id: SESSION_B });
       expect(dot(rendered.root, SESSION_B).classList.contains("pending")).toBe(true);
 
-      const ticks = reconcileTicks();
+      const ticks = reconcileIntervals.ticks();
       expect(ticks.length).toBe(1);
       const hiddenBefore = fake.callsFor("list_sessions").length;
 
@@ -563,7 +537,7 @@ describe("SidebarApp pending-review latch reconciliation (#1779)", () => {
       expect(storedB.waitingForInput).toBe(true);
       expect(storedB.pendingReview).toBe(true);
     } finally {
-      clearReconcileIntervals();
+      reconcileIntervals.clear();
       disposeOnce();
       restoreTransport();
       root.remove();

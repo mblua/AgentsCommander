@@ -938,10 +938,18 @@ html, body, #root {
 .session-item .session-item-status.pending,
 .replica-item .session-item-status.pending,
 .root-agent-banner .session-item-status.pending { background: var(--status-pending); box-shadow: 0 0 6px var(--status-pending); }
-/* .waiting must override all other status colors (active, running, idle, exited) */
+/* .waiting must override the other status colors (active, running, idle,
+   exited), but it yields to .comanaged: a Co-managed session is never idle, so
+   the idle edge must not paint waiting first. */
 .session-item .session-item-status.waiting,
 .replica-item .session-item-status.waiting,
 .root-agent-banner .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
+/* #2271 - Co-managed red, container-scoped at the same specificity as .waiting
+   and declared after it. No box-shadow: the user approved colour only, so this
+   state declares background alone. */
+.session-item .session-item-status.comanaged,
+.replica-item .session-item-status.comanaged,
+.root-agent-banner .session-item-status.comanaged { background: var(--status-comanaged); }
 
 /* Inactive team member (no active session) */
 .session-item.inactive-member {
@@ -1335,6 +1343,13 @@ html, body, #root {
   gap: 2px;
   margin-left: auto;
   flex-shrink: 0;
+}
+
+/* #2236 phase 6: compact toolbar fit. Only the inline padding shrinks; the
+   block padding stays, so the toolbar keeps its height. */
+.sidebar-compact .action-bar {
+  padding-inline: 2px;
+  gap: 2px;
 }
 
 /* Root Agent Banner */

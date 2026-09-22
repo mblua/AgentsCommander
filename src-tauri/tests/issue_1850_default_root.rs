@@ -26,8 +26,28 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// Excludes this crate's in-flight copy write descriptor on a freshly copied
+/// product binary from overlapping another thread's fork/exec of its copy.
+///
+/// The suite runs its tests on parallel threads and `Command::spawn` forks. A
+/// fork performed while another thread still holds the write descriptor from
+/// `fs::copy` lets the child inherit that descriptor, and exec'ing a binary
+/// any process holds open for writing fails with `ETXTBSY`. One process-local
+/// mutex covering every write of the copy and every spawn of it closes that
+/// window. The guard is released before the child is waited for, so child runs
+/// still overlap.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 const CANONICAL: &str = ".agentscommander";
 const LEGACY_HOME_NEW: &str = ".agentscommander-new";
@@ -838,13 +858,16 @@ fn copy_product_binary(bin_dir: &Path) -> Result<PathBuf, String> {
     };
     let source = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let destination = bin_dir.join(name);
-    fs::copy(source, &destination).map_err(|error| {
-        format!(
-            "copy {} -> {} failed: {error}",
-            source.display(),
-            destination.display()
-        )
-    })?;
+    {
+        let _guard = spawn_lock();
+        fs::copy(source, &destination).map_err(|error| {
+            format!(
+                "copy {} -> {} failed: {error}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1127,12 +1150,16 @@ struct ChildRun {
 }
 
 fn run_child(command: &mut Command, label: &str) -> Result<ChildRun, String> {
-    let mut child = command
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("spawn child for {label} failed: {error}"))?;
+        .stderr(Stdio::piped());
+    let mut child = {
+        let _guard = spawn_lock();
+        command
+            .spawn()
+            .map_err(|error| format!("spawn child for {label} failed: {error}"))?
+    };
     let deadline = Instant::now() + CHILD_TIMEOUT;
     let mut status_poll_error = None;
     let terminal_status = loop {

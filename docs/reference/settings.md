@@ -23,7 +23,7 @@ On `v0.33.0` and `main`, `agentscommander_<suffix>.exe` never uses `$HOME`. If i
 - The file is **JSON** (not JSONC, not YAML). Comments are not allowed.
 - AC reads at startup and on `update_settings` IPC calls.
 - If you edit `settings.json` **while the app is running**, your changes may be clobbered by the next in-memory save. For manual-only fields such as `specBoardEnabled`, edit while AC is closed, or reload settings before using any Settings save path.
-- `terminalSnapshotsEnabled` is security-sensitive. AgentsCommander's own writers serialize through a file lock and only the dedicated Settings compare-and-set action can change it. An out-of-process editor that ignores that lock remains last-writer authority.
+- `terminalSnapshotsEnabled` is security-sensitive and defaults to `true`. AgentsCommander's own writers serialize through a file lock, and only the dedicated Settings compare-and-set action can change an explicit value. One exception follows from the default: in a legacy file with no `terminalSnapshotsEnabled` key, any unrelated whole-settings save materializes `true`, because an absent key already means enabled. Write an explicit `false` if you want the capability off. An out-of-process editor that ignores that lock remains last-writer authority.
 - AC tolerates unknown fields (`serde` skips them) so adding a field will not break an older binary, but the older binary will not honor it.
 
 ## Recovering a previous version
@@ -80,6 +80,8 @@ A minimal `settings.json`:
   "terminalSnapshotsEnabled": false
 }
 ```
+
+The `terminalSnapshotsEnabled: false` line above is an explicit opt-out, not the default. The default is `true`, and so is an absent key.
 
 ## Top-level fields
 
@@ -187,13 +189,15 @@ The copied file is a full-account credential (access token plus long-lived refre
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `terminalSnapshotsEnabled` | bool | `false` | Permit identity-authorized Root Agents and same-room Orchestrators to read a live backend terminal viewport as JSON or PNG. |
+| `terminalSnapshotsEnabled` | bool | `true` | Permit identity-authorized Root Agents and same-room Orchestrators to read a live backend terminal viewport as JSON or PNG. On by default; set an explicit `false` to deny. |
 
 This is a disclosure gate, not a display preference. Terminal screens can contain passwords, tokens, source code, prompts, and personal data. AgentsCommander performs no automatic redaction.
 
 Use **Settings > General > Terminal snapshots > Allow authorized terminal snapshots** to change it. The UI calls a dedicated idempotent compare-and-set operation with the value that was current when the modal opened. If another window or process changed the gate, a stale save conflicts and reloads the authoritative value instead of re-enabling it.
 
-Every whole-settings writer preserves the current gate and cannot opt in. Old settings files deserialize the absent field as `false`, but the snapshot service is stricter: the on-disk key and managed in-memory value must both be exactly `true` at initial and final authorization. A missing key, duplicate key, malformed JSON, wrong type, unreadable file, or linked file fails closed as `terminal_snapshots_disabled`.
+A whole-settings writer preserves an explicit value and cannot flip `false` to `true`. It does write `true` into a legacy file whose key is absent, because both a fresh installation and an absent key already mean enabled.
+
+The snapshot service reads the gate strictly at initial and final authorization, from the on-disk key and the managed in-memory value. An absent key passes as enabled; an explicit `false` denies. A duplicate key, malformed JSON, wrong type, unreadable file, or linked file fails closed as `terminal_snapshots_disabled`.
 
 Direct out-of-process edits that ignore AgentsCommander's settings lock remain last-writer authority. If you edit this field by hand, stop the app first and keep the value a JSON boolean.
 
@@ -287,7 +291,9 @@ The two `gitSweep*` dials are manual-only (no UI) and are read from the in-memor
 | `mainSidebarWidth` | number | platform-default | Sidebar pane width inside the main window. Clamped to `[200, 600]`. |
 | `mainSidebarSide` | `"left" \| "right"` | `"right"` | Side of the main window where the sidebar lives. |
 | `mainZoom` / `terminalZoom` / `sidebarZoom` / `guideZoom` | number | `1.0` | Per-window zoom (1.0 = 100%). |
-| `mainGeometry` / `sidebarGeometry` / `terminalGeometry` | object \| null | `null` | Persisted window geometry. AC writes these on close. |
+| `mainGeometry` | object \| null | `null` | Saved normal bounds of the unified main window: `x`, `y`, `width` and `height` of the outer window, in physical pixels. AC seeds and updates it only from a persisted value or a normal (not maximized, fullscreen or minimized) observation. See [Main window placement](#main-window-placement). |
+| `mainWindowDisplayState` | `"normal"` \| `"maximized"` | `"normal"` | Saved display state of the unified main window. The key is optional; a missing value reads as `normal`. Fullscreen and minimized are never saved. |
+| `sidebarGeometry` / `terminalGeometry` | object \| null | `null` | Legacy keys from the two-window layout. AC reads them at load; when the file has no `mainGeometry` and no local overlay pins it, `terminalGeometry` seeds `mainGeometry`. |
 | `themeLight` | bool | `false` | Light theme on; dark theme when false. Fresh and missing values default to dark. |
 | `specBoardEnabled` | bool | `false` | Shows the Spec Board toolbar button when true. This only controls the sidebar toolbar entrypoint; backend Spec Board commands remain callable and this is not an access-control or security boundary. |
 | `sidebarStyle` | string | `"noir-minimal"` | Sidebar visual variant. Options: `noir-minimal`, `card-sections`, `command-center`, `deep-space`, `arctic-ops`, `obsidian-mesh`, `neon-circuit`. |
@@ -295,10 +301,23 @@ The two `gitSweep*` dials are manual-only (no UI) and are read from the in-memor
 | `teamIdleBeepEnabled` | bool | `true` | Beep when a team transitions from busy → all-idle. Gated by `soundsEnabled`. |
 | `coordSortByActivity` | bool | `false` | Sort the orchestrator quick-access list by most-recent activity. |
 | `screenshotCaptureHotkey` | string | `"Ctrl+Q"` | Native global hotkey for screenshot capture. One modifier plus one key; only `Ctrl` (or `Control`) and a single letter or digit are accepted. Windows, macOS and Linux/X11. See [Screenshot capture](../features/screenshot-capture.md). |
+| `sidebarCompactHotkey` | string | `"Ctrl+Shift+E"` | Hotkey that toggles the compact sidebar. Accepted range `Ctrl+Shift+<A-Z>` (parts are case-insensitive; the first part may be `Ctrl` or `Control`), excluding the reserved letters `W`, `R`, `C`, `V`. An invalid value blocks the save with an error naming the field; it is not repaired. |
 | `mainResourceMonitorAttached` | bool | `false` | Whether the Resource Monitor occupies the main central pane instead of the terminal. Restored on startup. |
 | `alwaysShowSelectedWorkgroup` | bool | `true` | Keep the selected room visible in the sidebar. |
 | `railCollapsedProjects` | string[] | `[]` | Rail project sections the user collapsed by clicking their header. Entries are frontend-normalized project paths (lowercase, forward slashes, no trailing slash). Written only by the dedicated rail collapse action; whole-settings writers restore it from live memory. |
 | `railFavoritesCollapsed` | bool | `false` | Collapsed state of the rail's cross-project Favorites section. Same protection as `railCollapsedProjects`. |
+
+#### Main window placement
+
+The main window's placement is the pair `mainGeometry` + `mainWindowDisplayState`. `mainGeometry` holds the last normal rectangle: a maximized window records `"maximized"` in `mainWindowDisplayState` but keeps the previous rectangle, while a fullscreen or minimized observation changes nothing. That pairing is what returns the window to its pre-maximized size and position later.
+
+While the app runs, AC coalesces moves and resizes for 500 ms and then saves both keys. On every accepted quit route it awaits one flush of the latest placement for at most 2 seconds before quitting; a flush that times out or fails logs the failure and the quit continues, so the next start uses the placement already on disk.
+
+At startup AC converts the saved physical rectangle to logical pixels and restores it when it is still visible on a connected monitor (more than a 50 px overlap in both axes). An off-screen rectangle falls back to the centered default: no larger than 1400x900, centered on the primary monitor (with no monitor reported, AC assumes a 1920x1080 screen at the origin). A saved `"maximized"` state is requested after the window opens; if maximizing fails, AC logs a warning and leaves the window normal. On a testable build, a launch placement (`AC_TEST_WINDOW_PLACEMENT` or its CLI flags) overrides both saved keys for that launch. See [Windowing and multimonitor tests](../testing/10-windowing-and-multimonitor.md).
+
+Every writer that saves the whole settings object keeps a present, non-`null` on-disk value of each key, so unrelated settings saves do not clobber a hand-edited placement; a missing key or an explicit `null` counts as absent and can be filled from the caller's value. The narrow placement command is the only writer that changes the values deliberately. A window move or an accepted quit rewrites them, so edit these keys while AC is closed.
+
+If `settings.local.json` pins either key, the placement command refuses with `main_window_placement_overlay_pinned` and changes neither the file nor memory. On quit, AC shows one alert per accepted close round: `Window placement is pinned by the local settings overlay and was not saved.` Quitting continues after the alert.
 
 ### On app restart
 
@@ -579,6 +598,6 @@ Use any JSON validator. AC will refuse to start if the file is not valid JSON an
 
 - [Portable instances](../features/portable-instances.md) — per-instance config rules
 - [CLI reference](cli.md) — verbs that read/write this file
-- [Terminal snapshots](../features/terminal-snapshots.md) - the default-off screen-content read capability
+- [Terminal snapshots](../features/terminal-snapshots.md) - the default-on screen-content read capability
 - [Menu guard](../features/menu-guard.md) - `menuGuardEnabled` and the three `settings-blocking-menus` files in use
 - [`PRIVACY.md`](../../PRIVACY.md) — what credentials live here and how they are transmitted

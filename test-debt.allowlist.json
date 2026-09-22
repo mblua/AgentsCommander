@@ -248,6 +248,14 @@
       "issue": 1171,
       "reason": "#1171 reference measurement for the watcher read seam, not a behavior test. It prints the three numbers recorded in the module doc comment (the full read, the unchanged read and the changed read) via println and asserts nothing, so as a standard cargo test lane member it would be a timing gate with no pass criterion and would go flaky under parallel load. The behavior these numbers exist to justify is pinned by the type instead, in an_unchanged_frame_returns_unchanged_and_carries_no_rows (plan section 7.3, acceptance criterion A10).",
       "resolution": "Stays ignored by design as a measurement. Re-take the numbers by hand with cargo test --config profile.dev.opt-level=2 --lib read_seam_timing -- --ignored --nocapture and update the module doc comment when the read seam changes."
+    },
+    {
+      "id": "rust:src-tauri/src/config/settings.rs::tests::local_overlay_1737::print_s6_normalized_non_project_settings",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 2281,
+      "reason": "#2236 S6 fixture capture helper, not a behavior test. It only prints the normalized non-project settings JSON via println and asserts nothing, so as a standard debug-lane member it would have no pass criterion. The S6 behavior it supports is pinned by a_no_overlay_save_writes_the_control_captured_on_the_pinned_base.",
+      "resolution": "Stays ignored by design as a print-only capture helper; it runs manually to re-capture the S6 control with cargo test --lib print_s6_normalized_non_project_settings -- --ignored --nocapture."
     }
   ]
 }
