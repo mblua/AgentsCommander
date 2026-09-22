@@ -919,3 +919,136 @@ describe("selection-lock transport contract (#1942)", () => {
     }
   });
 });
+
+describe("loop ipc payload contract (#2289)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("pins create and update request payloads in both directions", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    fake.resolve("create_loop", undefined);
+    fake.resolve("update_loop", undefined);
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      await ipc.LoopAPI.create("C:\\Project", {
+        id: "nightly-audit",
+        name: "Nightly audit",
+        expr: "0 3 * * *",
+        workgroup: "wg-17-dev-team",
+        promptBody: "Audit the repository",
+        busyCoordinator: "forceInject",
+        sessionStart: "accumulate",
+        enabled: false,
+      });
+      await ipc.LoopAPI.create("C:\\Project", {
+        name: "Daily standup",
+        expr: "0 9 * * 1-5",
+        workgroup: "wg-17-dev-team",
+        promptBody: "Post the standup digest",
+      });
+      await ipc.LoopAPI.update("C:\\Project", "nightly-audit", {
+        sessionStart: "fresh",
+        enabled: true,
+      });
+      await ipc.LoopAPI.update("C:\\Project", "weekly-audit", {
+        name: "Weekly audit renamed",
+        expr: "0 4 * * 1",
+        workgroup: "wg-18-dev-team",
+        promptBody: "Audit the repository weekly",
+        busyCoordinator: "forceInject",
+        sessionStart: "accumulate",
+        enabled: false,
+      });
+      await ipc.LoopAPI.update("C:\\Project", "legacy-standup", {});
+    } finally {
+      restore();
+    }
+    expect(fake.callsFor("create_loop")).toEqual([
+      {
+        cmd: "create_loop",
+        args: {
+          request: {
+            projectPath: "C:\\Project",
+            id: "nightly-audit",
+            name: "Nightly audit",
+            expr: "0 3 * * *",
+            workgroup: "wg-17-dev-team",
+            promptBody: "Audit the repository",
+            busyCoordinator: "forceInject",
+            sessionStart: "accumulate",
+            enabled: false,
+          },
+        },
+      },
+      {
+        cmd: "create_loop",
+        args: {
+          request: {
+            projectPath: "C:\\Project",
+            id: null,
+            name: "Daily standup",
+            expr: "0 9 * * 1-5",
+            workgroup: "wg-17-dev-team",
+            promptBody: "Post the standup digest",
+            busyCoordinator: null,
+            sessionStart: null,
+            enabled: null,
+          },
+        },
+      },
+    ]);
+    expect(fake.callsFor("update_loop")).toEqual([
+      {
+        cmd: "update_loop",
+        args: {
+          request: {
+            projectPath: "C:\\Project",
+            id: "nightly-audit",
+            name: null,
+            expr: null,
+            workgroup: null,
+            promptBody: null,
+            busyCoordinator: null,
+            sessionStart: "fresh",
+            enabled: true,
+          },
+        },
+      },
+      {
+        cmd: "update_loop",
+        args: {
+          request: {
+            projectPath: "C:\\Project",
+            id: "weekly-audit",
+            name: "Weekly audit renamed",
+            expr: "0 4 * * 1",
+            workgroup: "wg-18-dev-team",
+            promptBody: "Audit the repository weekly",
+            busyCoordinator: "forceInject",
+            sessionStart: "accumulate",
+            enabled: false,
+          },
+        },
+      },
+      {
+        cmd: "update_loop",
+        args: {
+          request: {
+            projectPath: "C:\\Project",
+            id: "legacy-standup",
+            name: null,
+            expr: null,
+            workgroup: null,
+            promptBody: null,
+            busyCoordinator: null,
+            sessionStart: null,
+            enabled: null,
+          },
+        },
+      },
+    ]);
+  });
+});
