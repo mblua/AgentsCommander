@@ -1,7 +1,7 @@
 # Cognitive complexity gate
 
 AgentsCommander caps a function's cognitive complexity at **25**. Every pull request is measured
-by Clippy on Windows, and on Linux and macOS as well when the run is a full-tier run (section 6);
+by Clippy on Windows and Linux, and on macOS as well when the run is a full-tier run (section 6);
 the measured sites are checked against a committed baseline.
 This page says what the gate blocks, how to get past a failing check, and exactly what the
 measurement cannot see.
@@ -10,7 +10,7 @@ The gate has two parts:
 
 - `test-debt` runs the suppression scan and the baseline ratchet through
   `scripts/check-cognitive-complexity.mjs`.
-- each of the three Rust legs - `rust-regression` (Windows), `rust-regression-linux` and
+- each of the three Rust legs - `rust-regression` (Windows), `clippy-linux` (Linux) and
   `rust-regression-macos` - runs
 
   ```bash
@@ -18,8 +18,8 @@ The gate has two parts:
     -- -D warnings --force-warn clippy::cognitive_complexity
   ```
 
-  and hands the JSON capture to the same script. `test-debt` and the Windows leg run on every
-  pull request event; the Linux and macOS legs run only in the full tier (section 6).
+  and hands the JSON capture to the same script. `test-debt`, the Windows leg and the Linux leg run on
+  every pull request event; the macOS leg runs only in the full tier (section 6).
 
 The threshold comes from the root `clippy.toml`, pinned there so a future change of Clippy's
 default cannot move the gate:
@@ -134,7 +134,8 @@ Nobody has measured how many of those occurrences would exceed 25; they are coun
 Clippy only measures code that the leg compiles, so `cfg`-excluded code is invisible on the
 platform that excludes it. Every leg measures the whole workspace and all targets (section 6), so
 in a full-tier run the residual here is code excluded on all three platforms at once. In a
-light-tier run only Windows measures, so code that Windows excludes is not measured by that run;
+light-tier run only Windows and Linux measure, so code that both of them exclude is not measured
+by that run;
 section 6.2 says what that means for a pull request.
 
 ## 3. The baseline may only shrink
@@ -291,9 +292,10 @@ Not every run has all three legs. `.github/workflows/pr-regression-gates.yml` sp
 two tiers, decided by its `ci-tier` job:
 
 - **Light tier, on every event:** `test-debt` (suppression scan and baseline ratchet),
-  `rust-regression` (Windows leg) and `rust-fmt`.
+  `rust-regression` (Windows leg), `clippy-linux` (Linux leg) and `rust-fmt`.
 - **Full tier, only when `ci-tier` sets `full=true`:** everything else, including
-  `rust-regression-linux` and `rust-regression-macos`.
+  `rust-regression-macos` (macOS leg). `rust-regression-linux` is also full-tier only, but it no
+  longer carries the gate; the Linux leg is `clippy-linux`.
 
 `ci-tier` sets `full=true` when any of these holds:
 
@@ -305,17 +307,18 @@ two tiers, decided by its `ci-tier` job:
   this workflow in the repository, so it is roughly one run in ten, not one pull request in ten,
   and nobody chooses which.
 
-So on every pull request the Windows leg and the baseline ratchet enforce, and the Linux and macOS
-legs enforce only in full-tier runs. Issue #2423 tracks a planned change to measure Linux, and if
-possible macOS, on every pull request; until it lands, the tiers above are the behaviour.
+So on every pull request the Windows leg, the Linux leg and the baseline ratchet enforce, and the
+macOS leg enforces only in full-tier runs. macOS stays in the full tier because the Linux runner
+cannot stand in for it: in #2424, `cargo clippy --target aarch64-apple-darwin` on ubuntu failed
+with exit 101, since `objc2-exception-helper` compiles C for Darwin and needs the Apple SDK.
 
-### 6.2 A Linux- or macOS-only finding can surface on someone else's pull request
+### 6.2 A macOS-only finding can surface on someone else's pull request
 
-A site that only Linux or macOS compiles - typically code under a `cfg` for that platform - is not
-measured by a light-tier run. A pull request that adds such a site above 25, or that fixes or
-moves a baselined site only those platforms observe without removing its entry, can therefore pass
-its light-tier checks and be merged. The finding then appears as `NEW` or `STALE ... on linux` or `on macos` in the next
-full-tier run of **any** pull request based on that main, which may not have caused it.
+A site that only macOS compiles - typically code under a `cfg` for that platform - is not measured
+by a light-tier run. A pull request that adds such a site above 25, or that fixes or moves a
+baselined site only macOS observes without removing its entry, can therefore pass its light-tier
+checks and be merged. The finding then appears as `NEW ... on macos` or `STALE ... on macos` in the
+next full-tier run of **any** pull request based on that main, which may not have caused it.
 
 If that happens to your pull request:
 
@@ -330,11 +333,11 @@ If that happens to your pull request:
    and left its entry behind, any pull request, yours included, may remove the entry.
 3. Otherwise fix it at the source: a separate pull request that brings the function to 25 or below
    (for `NEW`), or that removes the entry under the same rule (for `STALE`), labelled `ci:full` so
-   its Linux and macOS legs run. Once it merges, merge main into your pull request and rerun.
+   its macOS leg runs. Once it merges, merge main into your pull request and rerun.
 
 To avoid causing this, add the `ci:full` label **before merging** any pull request that changes
-code under a Linux- or macOS-only `cfg`, or that edits or removes baseline entries whose sites only
-those platforms observe. Its checks then run all three legs.
+code under a macOS-only `cfg`, or that edits or removes baseline entries whose sites only macOS
+observes. Its checks then run all three legs.
 
 ### 6.3 One invocation on macOS
 
@@ -348,10 +351,10 @@ excluded on all three platforms at once (section 2.3).
 
 ## 7. Bumping the pinned Rust version
 
-The pin is local to five CI invocations and frozen nowhere else:
+The pin is local to six CI invocations and frozen nowhere else:
 
-- three `toolchain:` inputs in `.github/workflows/pr-regression-gates.yml`, for `rust-regression`,
-  `rust-regression-linux` and `rust-regression-macos`;
+- four `toolchain:` inputs in `.github/workflows/pr-regression-gates.yml`, for `rust-regression`,
+  `clippy-linux`, `rust-regression-linux` and `rust-regression-macos`;
 - two in `.github/workflows/cache-warm.yml`, for `warm-debug` and `verify-debug-cache`.
 
 No `rust-toolchain.toml` exists: local development, `release.yml`, `bundle-validation.yml` and the
@@ -359,12 +362,12 @@ other workflows stay on floating stable, and the pin must not be widened to them
 
 To bump:
 
-1. Change the version in the five places above, and in the three run-time assertions in
-   `pr-regression-gates.yml` that compare `rustc -vV` with the pin - otherwise each leg fails with
+1. Change the version in the six places above, and in the three run-time assertions in
+   `pr-regression-gates.yml` that compare `rustc -vV` with the pin (one in each gate leg) - otherwise each leg fails with
    `toolchain pin did not take effect`.
 2. Regenerate the baseline from the three platforms' emissions, merged by the script's `--merge`
-   (it refuses unless all three agree on commit and rustc version). A light-tier run produces only
-   the Windows emission, so label the pull request `ci:full` to get all three. The toolchain-refresh
+   (it refuses unless all three agree on commit and rustc version). A light-tier run produces the
+   Windows and Linux emissions but not macOS, so label the pull request `ci:full` to get all three. The toolchain-refresh
    exemption of section 3 accepts the resulting additions.
 3. Touch no `.rs` file in that pull request. The exemption requires a diff with no `.rs` path;
    that is what keeps a toolchain bump from smuggling source changes.
