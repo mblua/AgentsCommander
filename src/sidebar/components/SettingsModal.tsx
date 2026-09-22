@@ -229,6 +229,20 @@ const cloneSettings = (value: AppSettings | null): AppSettings | null => {
   return JSON.parse(JSON.stringify(value)) as AppSettings;
 };
 
+/** #2306 - `SettingsSnapshot` carries response-only metadata beside
+ *  `AppSettings`. None of it is a setting: strip it before a snapshot ever
+ *  reaches the draft, so no Save payload can echo it back. */
+const appSettingsOnly = (snapshot: AppSettings | null): AppSettings | null => {
+  if (!snapshot) return null;
+  const {
+    projectPathResolution: _projectPathResolution,
+    settingsFilePath: _settingsFilePath,
+    overlayOwnsAgents: _overlayOwnsAgents,
+    ...settingsOnly
+  } = snapshot as SettingsSnapshot;
+  return settingsOnly;
+};
+
 // #2337 - the typing-hold bounds the backend enforces in
 // `validate_typing_hold_settings` (settings.rs). The draft is checked against the
 // same numbers so the modal refuses an invalid window before the save round-trip.
@@ -704,7 +718,7 @@ const WatcherRow: Component<{
 };
 
 const SettingsModal: Component<{ onClose: () => void; section?: string }> = (props) => {
-  const seededSettings = cloneSettings(settingsStore.current);
+  const seededSettings = cloneSettings(appSettingsOnly(settingsStore.current));
   const [settings, setSettings] = createStore<{ data: AppSettings | null }>({
     data: seededSettings,
   });
@@ -1124,11 +1138,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     if (draftDirty() && settings.data) {
       mergeAuthoritativeOrder(loaded);
     } else {
-      const nextSettings = cloneSettings(loaded);
+      const nextSettings = cloneSettings(appSettingsOnly(loaded));
       if (nextSettings) {
         nextSettings.apiServerEnabled = apiServerRunning();
         setSettings("data", nextSettings);
-        setModalSeed(cloneSettings(loaded));
+        setModalSeed(cloneSettings(appSettingsOnly(loaded)));
       }
     }
     const resultingAgents = settings.data?.agents ?? [];
@@ -1232,10 +1246,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         direction,
       });
       const expectedIds = list.map((candidate) => candidate.id);
+      const to = direction === "up" ? index - 1 : index + 1;
+      expectedIds.splice(to, 0, expectedIds.splice(index, 1)[0]);
       const consistent =
         ids.length === expectedIds.length &&
-        new Set(ids).size === ids.length &&
-        ids.every((id) => expectedIds.includes(id));
+        ids.every((id, position) => id === expectedIds[position]);
       if (!consistent) throw new Error("The backend returned an unexpected agent order.");
       await refreshCodingAgentSettings();
       const nextIndex = (settings.data?.agents ?? []).findIndex(
@@ -1283,10 +1298,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     // `?? null` tolerates a mixed-version backend that predates #1347.
     installSnapshotMetadata(loaded);
     if (!draftDirty()) {
-      const nextSettings = cloneSettings(loaded);
+      const nextSettings = cloneSettings(appSettingsOnly(loaded));
       if (nextSettings) nextSettings.apiServerEnabled = apiRunning;
       setSettings("data", nextSettings);
-      const loadedSeed = cloneSettings(loaded);
+      const loadedSeed = cloneSettings(appSettingsOnly(loaded));
       setModalSeed(loadedSeed);
       setTerminalSnapshotsOpeningValue(loaded.terminalSnapshotsEnabled);
       setTypingHoldSecondsText(

@@ -3326,6 +3326,73 @@ describe("SettingsModal automation hooks", () => {
       dispose();
     });
 
+    it("retains a surviving expanded row across a live add and renders the incoming ID in place", async () => {
+      let current = orderSnapshot(ORDER_AGENTS);
+      const fire = captureSettingsEvent();
+      const dispose = await mountAgents(() => current);
+
+      expandAgentRow(1);
+      await settle();
+      expect(byTestId("settings.agentRow.1.editor")).toBeTruthy();
+
+      current = orderSnapshot([
+        agentById("codex"),
+        agentById("pi"),
+        agentById("claude"),
+        agentById("opencode"),
+      ]);
+      fire();
+      await settle();
+
+      expect(rowIds()).toEqual(["codex", "pi", "claude", "opencode"]);
+      expect(byTestId("settings.agentRow.2").getAttribute("data-ac-agent-id")).toBe("claude");
+      expect(byTestId("settings.agentRow.2.editor")).toBeTruthy();
+
+      dispose();
+    });
+
+    it("never serializes snapshot-only metadata into the save payload", async () => {
+      const current = orderSnapshot(ORDER_AGENTS, true);
+      const dispose = await mountAgents(() => current);
+
+      byTestId<HTMLButtonElement>("settings.save").click();
+      await settle();
+
+      const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+      expect(saved).toBeTruthy();
+      expect(Object.prototype.hasOwnProperty.call(saved, "overlayOwnsAgents")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(saved, "settingsFilePath")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(saved, "projectPathResolution")).toBe(false);
+      expect(saved?.agents.map((agent) => agent.id)).toEqual([
+        "codex",
+        "claude",
+        "opencode",
+      ]);
+
+      dispose();
+    });
+
+    it("rejects a same-length returned order that is not the exact requested swap", async () => {
+      let current = orderSnapshot(ORDER_AGENTS);
+      // Same ids, same length, but the requested claude-up swap never happened.
+      vi.mocked(SettingsAPI.moveCodingAgent).mockResolvedValue([
+        "codex",
+        "opencode",
+        "claude",
+      ]);
+      const dispose = await mountAgents(() => current);
+
+      byTestId<HTMLButtonElement>("settings.agentRow.1.moveUp").click();
+      await settle();
+
+      expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
+      expect(byTestId("settings.agents.moveError").textContent).toContain(
+        "unexpected agent order",
+      );
+
+      dispose();
+    });
+
     it("restores focus to the moved control, or the remaining direction at a boundary", async () => {
       let current = orderSnapshot(FOUR_AGENTS);
       setMoveSucceeds(() => current, (next) => { current = next; });

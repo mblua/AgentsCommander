@@ -528,10 +528,11 @@ const AgentPickerModal: Component<{
         direction,
       });
       const expectedIds = list.map((candidate) => candidate.id);
+      const to = direction === "up" ? index - 1 : index + 1;
+      expectedIds.splice(to, 0, expectedIds.splice(index, 1)[0]);
       const consistent =
         ids.length === expectedIds.length &&
-        new Set(ids).size === ids.length &&
-        ids.every((id) => expectedIds.includes(id));
+        ids.every((id, position) => id === expectedIds[position]);
       if (!consistent) throw new Error("The backend returned an unexpected agent order.");
       await refreshFromSettings();
       const newIndex = agents().findIndex((candidate) => candidate.id === agent.id);

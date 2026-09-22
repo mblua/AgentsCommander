@@ -2778,6 +2778,23 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
+    it("rejects a same-length returned order that is not the exact requested swap", async () => {
+      currentSettings = orderedSnapshot(FIVE);
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      // Same ids, same length, but the requested c-up swap never happened.
+      mockSettingsApi.moveCodingAgent.mockResolvedValue(["a", "b", "c", "d", "e"]);
+      const { dispose } = renderPicker({ currentAgentId: "c" });
+      await settle();
+
+      target<HTMLButtonElement>("agentPicker.provider.c.moveUp").click();
+      await settle();
+
+      expect(cardIds()).toEqual(["a", "b", "c", "d", "e"]);
+      expect(text("agentPicker.moveError")).toContain("unexpected agent order");
+
+      dispose();
+    });
+
     it("treats a refetch failure as an error and keeps the last authoritative order", async () => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValueOnce(currentSettings);
