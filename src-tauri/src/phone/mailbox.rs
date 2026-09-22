@@ -1908,6 +1908,12 @@ pub(crate) fn wake_spawn_skip_auto_resume(spawn_with_resume: bool) -> bool {
     !spawn_with_resume
 }
 
+/// #2411 Internal-system wake resume rule: a surviving exited record resumes
+/// (unchanged); with no record, resume only if idle auto-close closed it.
+pub(crate) fn internal_wake_resumes(had_exited_record: bool, auto_closed: bool) -> bool {
+    had_exited_record || auto_closed
+}
+
 /// Decide whether a session is a viable candidate for the mailbox to attempt
 /// delivery to. Pure function — unit-testable without a tauri runtime.
 ///
@@ -3141,6 +3147,9 @@ struct MailboxTestHooks {
     /// wake that respawns a coordinator target yields a coordinator record;
     /// tests exercising the raised-hand carry set this to mirror that.
     spawn_is_coordinator: Arc<Mutex<bool>>,
+    /// (#2411) One-shot error for the test spawn arm, returned after the real
+    /// coordinator-create clear runs, mirroring a create that fails after it.
+    internal_spawn_error: Arc<Mutex<Option<String>>>,
 }
 
 #[cfg(test)]
@@ -8357,6 +8366,26 @@ impl MailboxPoller {
         if cancellation.is_cancelled() {
             return Err("Context alert delivery was canceled before background spawn".to_string());
         }
+        // #2411 An idle auto-close destroys the record, so a no-session wake of an
+        // auto-closed orchestrator resumes its conversation. Same key as create and
+        // auto-close. The std mutex is never held across an await.
+        let marker_fqn = crate::config::teams::agent_fqn_from_path(&cwd);
+        let auto_closed_at = app
+            .try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+            .and_then(|clocks| {
+                clocks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .auto_closed_at(&marker_fqn)
+            });
+        let spawn_with_resume = internal_wake_resumes(spawn_with_resume, auto_closed_at.is_some());
+        log::info!(
+            "[internal-wake] '{}' no-live-session spawn resume={} auto_closed_at={:?}",
+            target.fqn(),
+            spawn_with_resume,
+            auto_closed_at
+        );
+        let restore_cwd = cwd.clone();
         let (_, local) = crate::config::teams::split_project_prefix(target.fqn());
         let spawn = self.spawn_wake_session(
             app,
@@ -8381,13 +8410,37 @@ impl MailboxPoller {
             }
             result = &mut spawn => result,
         };
-        let info = spawn_result.map_err(|error| {
-            format!(
-                "Failed to spawn supported orchestrator session for '{}': {}",
-                target.fqn(),
-                error
-            )
-        })?;
+        let info = match spawn_result {
+            Ok(info) => info,
+            Err(error) => {
+                // #2411 The create path clears the auto-closed marker before admission
+                // and the PTY spawn. Put the same timestamp back so a later wake still
+                // resumes. `mark_auto_closed` is a no-op if the marker was set again or
+                // the user closed by hand.
+                if let Some(t) = auto_closed_at {
+                    let restored = app
+                        .try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+                        .map(|clocks| {
+                            clocks
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .mark_auto_closed(&marker_fqn, t)
+                        })
+                        .unwrap_or(false);
+                    if restored {
+                        let _ = app.emit(
+                            "coordinator_auto_close_changed",
+                            serde_json::json!({ "replicaPath": restore_cwd, "autoClosedAt": t.to_rfc3339() }),
+                        );
+                    }
+                }
+                return Err(format!(
+                    "Failed to spawn supported orchestrator session for '{}': {}",
+                    target.fqn(),
+                    error
+                ));
+            }
+        };
         let session_id = Uuid::parse_str(&info.id)
             .map_err(|e| format!("Invalid spawned orchestrator session id: {}", e))?;
 
@@ -8953,6 +9006,14 @@ impl MailboxPoller {
             }
 
             let spawn_is_coordinator = *hooks.spawn_is_coordinator.lock().unwrap();
+            // #2411 Mirror production create: the coordinator clear runs before the
+            // create can fail, on both the failure and the success path.
+            if spawn_is_coordinator {
+                crate::commands::session::note_coordinator_create_on_app(app, &cwd);
+            }
+            if let Some(msg) = hooks.internal_spawn_error.lock().unwrap().take() {
+                return Err(msg);
+            }
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let mgr = session_mgr.read().await;
             let session = mgr
@@ -16421,6 +16482,177 @@ mod tests {
         assert_eq!(spawn.cwd, expected_spawn_cwd);
         assert_ne!(hooks.inject_calls.lock().unwrap()[0], wrong_id);
         assert_eq!(hooks.destroy_calls.lock().unwrap().len(), 0);
+    }
+
+    // ── #2411 internal wake of an auto-closed orchestrator ──
+
+    fn manage_i2411_clocks(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    ) -> crate::config::coordinator_clocks::CoordinatorClocksState {
+        let clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
+            Arc::new(Mutex::new(Default::default()));
+        app.manage(Arc::clone(&clocks));
+        clocks
+    }
+
+    fn i2411_target_and_notice(
+        fixture: &MailboxFixture,
+    ) -> (InternalSystemTarget, InternalSystemNotice) {
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        (target, notice)
+    }
+
+    #[test]
+    fn internal_wake_resumes_truth_table() {
+        assert!(!internal_wake_resumes(false, false));
+        assert!(internal_wake_resumes(false, true));
+        assert!(internal_wake_resumes(true, false));
+        assert!(internal_wake_resumes(true, true));
+    }
+
+    #[tokio::test]
+    async fn internal_no_session_auto_closed_recipient_spawns_with_resume() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let clocks = manage_i2411_clocks(&app);
+        let (target, notice) = i2411_target_and_notice(&fixture);
+        let spawn_cwd = target.replica_dir().to_string_lossy().into_owned();
+        let fqn = crate::config::teams::agent_fqn_from_path(&spawn_cwd);
+        assert!(clocks
+            .lock()
+            .unwrap()
+            .mark_auto_closed(&fqn, chrono::Utc::now()));
+        let hooks = MailboxTestHooks::default();
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+
+        let spawns = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].cwd, spawn_cwd);
+        assert!(
+            !spawns[0].skip_auto_resume,
+            "auto-closed recipient must resume"
+        );
+        let injected = hooks.inject_calls.lock().unwrap().clone();
+        assert_eq!(injected.len(), 1);
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let spawned = session_mgr
+            .read()
+            .await
+            .get_session(injected[0])
+            .await
+            .expect("notice injected into the spawned session");
+        assert_eq!(spawned.working_directory, spawn_cwd);
+        assert_eq!(hooks.destroy_calls.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn internal_no_session_without_marker_spawns_fresh() {
+        for other_fqn_marker in [false, true] {
+            let fixture = make_mailbox_fixture();
+            let app = app_handle(&fixture.app);
+            let clocks = manage_i2411_clocks(&app);
+            if other_fqn_marker {
+                assert!(clocks
+                    .lock()
+                    .unwrap()
+                    .mark_auto_closed("proj-a:wg-9-other/someone", chrono::Utc::now()));
+            }
+            let (target, notice) = i2411_target_and_notice(&fixture);
+            let hooks = MailboxTestHooks::default();
+            let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+            poller
+                .deliver_internal_system_notice(
+                    &app,
+                    target,
+                    notice,
+                    CancellationToken::new(),
+                    Arc::new(|| Ok(())),
+                )
+                .await
+                .unwrap();
+
+            let spawns = hooks.spawn_calls.lock().unwrap().clone();
+            assert_eq!(spawns.len(), 1);
+            assert!(
+                spawns[0].skip_auto_resume,
+                "no marker for this fqn (other_fqn_marker={other_fqn_marker}) must stay fresh"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn internal_auto_closed_spawn_failure_restores_marker_then_retry_resumes() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let clocks = manage_i2411_clocks(&app);
+        let (target, notice) = i2411_target_and_notice(&fixture);
+        let fqn =
+            crate::config::teams::agent_fqn_from_path(&target.replica_dir().to_string_lossy());
+        let t = chrono::Utc::now() - chrono::Duration::minutes(30);
+        assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, t));
+        let hooks = MailboxTestHooks::default();
+        *hooks.spawn_is_coordinator.lock().unwrap() = true;
+        *hooks.internal_spawn_error.lock().unwrap() = Some("admission denied".to_string());
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        let first = poller
+            .deliver_internal_system_notice(
+                &app,
+                target.clone(),
+                notice.clone(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await;
+        assert!(first.is_err(), "failed spawn must surface the error");
+        assert_eq!(
+            clocks.lock().unwrap().auto_closed_at(&fqn),
+            Some(t),
+            "failed wake spawn must restore the original auto-closed timestamp"
+        );
+        {
+            let spawns = hooks.spawn_calls.lock().unwrap();
+            assert_eq!(spawns.len(), 1);
+            assert!(!spawns[0].skip_auto_resume);
+        }
+
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+        let spawns = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(spawns.len(), 2);
+        assert!(!spawns[1].skip_auto_resume, "retry must resume");
+        assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
     }
 
     #[tokio::test]
