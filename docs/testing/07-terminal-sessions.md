@@ -309,7 +309,7 @@ Preconditions:
 
 - A disposable local-process or protocol-fake container target has one eligible persistent live session.
 - The requester is either a verified same-room Orchestrator or canonical host Root with a live session UUID-v4 token.
-- `terminalSnapshotsEnabled` is explicitly enabled for this disposable run.
+- `terminalSnapshotsEnabled` is on for this disposable run. The default is on, so verify the state instead of assuming it: either write an explicit `true`, or use a settings file with no `terminalSnapshotsEnabled` key at all to exercise the default-on legacy path.
 - The target viewport contains only harmless deterministic markers and no account-backed or personal content.
 - The evidence directory is private and approved for terminal content.
 
@@ -325,6 +325,9 @@ Steps:
 8. Assert color, width, wide-pair, cursor, sequence, parser error, wrap, and style values are structurally valid. Confirm blank cells are present instead of truncated.
 9. Assert the full `fidelity` object equals the documented version-1 constants, including `scope=currentBackendViewport`, `backendParser=vt100-0.15.2`, zero backend scrollback, `applicationFrameAtomic=false`, and the exact ordered `omitted` and `unsupported` arrays.
 10. Confirm the harmless marker is represented when it remains inside the current viewport. Do not fail a coherent capture merely because concurrent output moved the marker before the parser-lock boundary.
+11. Default-on absent key: with the app closed, remove the `terminalSnapshotsEnabled` key from `settings.json`, restart, and repeat steps 5 through 7. Assert exit 0 and a complete version-1 document, proving an absent key authorizes.
+12. Explicit false denies: with the app closed, write `"terminalSnapshotsEnabled": false`, restart, and repeat step 5. Assert a `terminal_snapshots_disabled` denial, exit 1, and zero snapshot content bytes on stdout.
+13. Cross-room denial: with the gate on, repeat step 5 against a verified member of a different room in the same project. Assert `not_authorized`, exit 1, zero content bytes, and no disclosure of target liveness.
 
 Expected Result:
 
@@ -336,11 +339,12 @@ Evidence Required:
 - `TRM-008-snapshot-targets.stdout.json`, stderr, command, and exit record.
 - `TRM-008-terminal-snapshot.stdout.json`, raw-byte hash, stderr, command, and exit record.
 - `TRM-008-schema-validation.json` with each asserted count and constant.
+- `TRM-008-absent-key.stdout.json`, `TRM-008-explicit-false.stderr`, and `TRM-008-cross-room.stderr` with the exact `settings.json` gate bytes, command, and exit code for each of steps 11 through 13.
 - The exact app version, commit, platform, requester kind, target backend, and setting state.
 
 Pass/Fail Criteria:
 
-PASS if every structural, identity, fidelity, ASCII, and output assertion succeeds. FAIL if fields are missing or extra, counts mismatch, raw controls leak, unauthorized data appears, or the model contradicts one capture boundary. BLOCKED if no safe authorized disposable route can be provisioned. Do not mark PARTIAL for a schema or privacy assertion.
+PASS if every structural, identity, fidelity, ASCII, and output assertion succeeds and steps 11 through 13 give default-on success, `terminal_snapshots_disabled` on explicit `false`, and `not_authorized` across rooms. FAIL if fields are missing or extra, counts mismatch, raw controls leak, unauthorized data appears, an absent key denies, an explicit `false` discloses content, a cross-room request succeeds, or the model contradicts one capture boundary. BLOCKED if no safe authorized disposable route can be provisioned. Do not mark PARTIAL for a schema or privacy assertion.
 
 ### TRM-009: PNG snapshot follows the fixed renderer contract
 
@@ -395,7 +399,7 @@ Preconditions:
 - One harmless target session can remain stable without producing autonomous output.
 - The tester can observe session IDs, backend route, dimensions, sequence, focus/window state, and session count.
 - A hidden, minimized, detached, or never-mounted frontend state is available where supported.
-- Separate authorized, unauthorized, disabled, and invalid-output fixtures are available without real model workflows.
+- Separate authorized, unauthorized, explicitly disabled, and invalid-output fixtures are available without real model workflows. The gate is on by default, so the disabled fixture must carry an explicit `terminalSnapshotsEnabled: false`.
 
 Steps:
 
@@ -405,7 +409,7 @@ Steps:
 4. Record the same target fields immediately after each request. Confirm session ID/backend and dimensions did not change; sequence remains unchanged unless independently observed PTY output occurred.
 5. Confirm the frontend did not focus, raise, select, repaint, or switch active session because of the request.
 6. Confirm no input marker, Enter, wake, spawn, resize, screenshot overlay, notification, ordinary message, conversation entry, PTY-input row, or standard delivered/rejected artifact was created.
-7. Repeat with the setting disabled, an unauthorized shape-valid route, and an unsafe existing PNG path. Confirm zero snapshot content bytes and the same no-mutation properties.
+7. Repeat with the setting explicitly set to `false`, an unauthorized shape-valid route, and an unsafe existing PNG path. Confirm zero snapshot content bytes and the same no-mutation properties.
 8. Inspect only metadata-safe audit and logs. Confirm snapshot content, ANSI, target title, token, nonce, PNG/base64 prefix, and output path are absent.
 9. Confirm a consumed host response is removed. After 60 seconds, confirm identity-stable protocol files are swept where the requester directories remain discoverable. Record, rather than conceal, any documented crash/unregistration residual.
 

@@ -33,7 +33,7 @@ First-run stamping means AC pre-accepts Claude Code's **"do you trust this folde
 
 An automatically bound live container Orchestrator receives the distinct `terminal-snapshot` API scope in addition to its ordinary bridge scopes. It can read one verified non-Orchestrator member in the same exact physical project and room. A worker token never receives the scope, and a manual API client remains unauthorized even if its registry entry lists the string.
 
-Enable the default-off **Settings > General > Terminal snapshots** gate first. The screen can contain credentials, source, prompts, and personal data, and AgentsCommander does not redact it.
+The **Settings > General > Terminal snapshots** gate is on by default, so this works without any setup; confirm it has not been turned off. The screen can contain credentials, source, prompts, and personal data, and AgentsCommander does not redact it.
 
 Use the helper with the automatically injected environment:
 
