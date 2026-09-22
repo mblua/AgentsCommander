@@ -43,6 +43,9 @@ NEW cognitive complexity above 25: rust:src-tauri/src/agent_update.rs::impl:Targ
 STALE baseline entry: rust:src-tauri/src/agent_update.rs::impl:TargetProcessOwner::settle#a3d53f9cd47b (baseline 1, observed none) on windows
 ```
 
+Both lines sample the message format, not a real gate run: the id and anchor name a real baselined
+site, and only the parenthesised state is illustrative.
+
 ### NEW: a function that was not baselined
 
 Fix it by **bringing the function to 25 or below**. No attribute will help:
@@ -110,12 +113,13 @@ An ordinary `pub async fn` **is** reported, and so is an ordinary `#[test] fn`.
 
 The lexical weight of the excluded forms at adoption, counted with `ripgrep` over `src-tauri` and
 `crates` and reported as occurrences, **not** as violations. They were measured on
-`ffaa504816a9d60bbea9c60e893a66b43721dbe9`, the commit this page was written for; the counts move
-with every pull request, so they are a snapshot of that commit, not a property the gate maintains:
+`28e2180a94ee6d6da93b7f4ad0c0ebd076309471`, the phase 7 merge that adopted the gate; the counts
+move with every pull request, so they are a snapshot of that commit, not a property the gate
+maintains:
 
 ```bash
-rg -o '#\[tokio::test' src-tauri crates | wc -l     # 1051
-rg -o '#\[test\b' src-tauri crates | wc -l          # 4452
+rg -o '#\[tokio::test' src-tauri crates | wc -l     # 1047
+rg -o '#\[test\b' src-tauri crates | wc -l          # 4418
 rg -o 'async move \{' src-tauri crates | wc -l      # 503
 rg -o 'async \{' src-tauri crates | wc -l           # 140
 rg -o '#\[tokio::main' src-tauri crates | wc -l     # 2
