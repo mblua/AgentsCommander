@@ -327,7 +327,7 @@ Steps:
 10. Confirm the harmless marker is represented when it remains inside the current viewport. Do not fail a coherent capture merely because concurrent output moved the marker before the parser-lock boundary.
 11. Default-on absent key: with the app closed, remove the `terminalSnapshotsEnabled` key from `settings.json`, restart, and repeat steps 5 through 7. Assert exit 0 and a complete version-1 document, proving an absent key authorizes.
 12. Explicit false denies: with the app closed, write `"terminalSnapshotsEnabled": false`, restart, and repeat step 5. Assert a `terminal_snapshots_disabled` denial, exit 1, and zero snapshot content bytes on stdout.
-13. Cross-room denial: with the gate on, repeat step 5 against a verified member of a different room in the same project. Assert `not_authorized`, exit 1, zero content bytes, and no disclosure of target liveness.
+13. Cross-room denial for an Orchestrator: with the gate on, use a verified Orchestrator of its own room as the requester and repeat step 5 against a verified member of a different room in the same project. Assert `not_authorized`, exit 1, zero content bytes, and no disclosure of target liveness. Do not run this step with a canonical host Root requester: Root is authorized for any verified room in an active project, so a Root request here is expected to succeed.
 
 Expected Result:
 
@@ -344,7 +344,7 @@ Evidence Required:
 
 Pass/Fail Criteria:
 
-PASS if every structural, identity, fidelity, ASCII, and output assertion succeeds and steps 11 through 13 give default-on success, `terminal_snapshots_disabled` on explicit `false`, and `not_authorized` across rooms. FAIL if fields are missing or extra, counts mismatch, raw controls leak, unauthorized data appears, an absent key denies, an explicit `false` discloses content, a cross-room request succeeds, or the model contradicts one capture boundary. BLOCKED if no safe authorized disposable route can be provisioned. Do not mark PARTIAL for a schema or privacy assertion.
+PASS if every structural, identity, fidelity, ASCII, and output assertion succeeds and steps 11 through 13 give default-on success, `terminal_snapshots_disabled` on explicit `false`, and `not_authorized` for an Orchestrator requester crossing rooms. FAIL if fields are missing or extra, counts mismatch, raw controls leak, unauthorized data appears, an absent key denies, an explicit `false` discloses content, a cross-room Orchestrator request succeeds, or the model contradicts one capture boundary. BLOCKED if no safe authorized disposable route can be provisioned. Do not mark PARTIAL for a schema or privacy assertion.
 
 ### TRM-009: PNG snapshot follows the fixed renderer contract
 
