@@ -1,7 +1,8 @@
 # Cognitive complexity gate
 
 AgentsCommander caps a function's cognitive complexity at **25**. Every pull request is measured
-by Clippy on three platforms, and the measured sites are checked against a committed baseline.
+by Clippy on Windows, and on Linux and macOS as well when the run is a full-tier run (section 6);
+the measured sites are checked against a committed baseline.
 This page says what the gate blocks, how to get past a failing check, and exactly what the
 measurement cannot see.
 
@@ -17,7 +18,8 @@ The gate has two parts:
     -- -D warnings --force-warn clippy::cognitive_complexity
   ```
 
-  and hands the JSON capture to the same script.
+  and hands the JSON capture to the same script. `test-debt` and the Windows leg run on every
+  pull request event; the Linux and macOS legs run only in the full tier (section 6).
 
 The threshold comes from the root `clippy.toml`, pinned there so a future change of Clippy's
 default cannot move the gate:
@@ -130,8 +132,10 @@ Nobody has measured how many of those occurrences would exceed 25; they are coun
 ### 2.3 Code the platform does not compile
 
 Clippy only measures code that the leg compiles, so `cfg`-excluded code is invisible on the
-platform that excludes it. All three legs measure the whole workspace and all targets (section 6),
-so the residual here is code excluded on all three platforms at once.
+platform that excludes it. Every leg measures the whole workspace and all targets (section 6), so
+in a full-tier run the residual here is code excluded on all three platforms at once. In a
+light-tier run only Windows measures, so code that Windows excludes is not measured by that run;
+section 6.2 says what that means for a pull request.
 
 ## 3. The baseline may only shrink
 
@@ -275,19 +279,68 @@ as an edit would.
 No case pins CRLF against LF, and none needs to: each platform captures and enforces against its
 own checkout, so a line ending never crosses between the two sides of a comparison.
 
-## 6. Coverage: three platforms, the whole workspace
+## 6. Coverage: three platforms, the whole workspace, two tiers
 
-All three Rust legs run the same command over `--workspace --all-targets`, so a function above 25
-is measured on every platform where it compiles, tests and benches included, and macOS is no
-longer narrower than Windows and Linux.
+### 6.1 Which leg runs when
+
+All three Rust legs run the same command over `--workspace --all-targets`, so in a run where a leg
+runs, a function above 25 is measured on that platform wherever it compiles, tests and benches
+included, and macOS is no longer narrower than Windows and Linux.
+
+Not every run has all three legs. `.github/workflows/pr-regression-gates.yml` splits its jobs into
+two tiers, decided by its `ci-tier` job:
+
+- **Light tier, on every event:** `test-debt` (suppression scan and baseline ratchet),
+  `rust-regression` (Windows leg) and `rust-fmt`.
+- **Full tier, only when `ci-tier` sets `full=true`:** everything else, including
+  `rust-regression-linux` and `rust-regression-macos`.
+
+`ci-tier` sets `full=true` when any of these holds:
+
+- the run was started by `workflow_dispatch`;
+- the pull request carries the `ci:full` label. Adding the label starts a run by itself, because
+  the workflow also triggers on `labeled`, and while the label stays on, every later push runs the
+  full tier too;
+- the workflow's `github.run_number` is a multiple of 10. The counter is shared by every run of
+  this workflow in the repository, so it is roughly one run in ten, not one pull request in ten,
+  and nobody chooses which.
+
+So on every pull request the Windows leg and the baseline ratchet enforce, and the Linux and macOS
+legs enforce only in full-tier runs. Issue #2423 tracks a planned change to measure Linux, and if
+possible macOS, on every pull request; until it lands, the tiers above are the behaviour.
+
+### 6.2 A Linux- or macOS-only finding can surface on someone else's pull request
+
+A site that only Linux or macOS compiles - typically code under a `cfg` for that platform - is not
+measured by a light-tier run. A pull request that adds such a site above 25, or that fixes or
+moves a baselined site only those platforms observe without removing its entry, can therefore pass
+its light-tier checks and be merged. The finding then appears as `NEW` or `STALE ... on linux` or `on macos` in the next
+full-tier run of **any** pull request based on that main, which did not cause it.
+
+If that happens to your pull request:
+
+1. Check whether your diff touches the reported file. If it does not, the finding came from main,
+   and your change is not the cause.
+2. Do not grow the baseline to get past it: the ratchet in section 3 refuses the addition. A
+   `STALE` entry for a file your pull request did not touch cannot be removed there either, because
+   a shrink is only accepted where the pull request touched that file.
+3. Fix it at the source: a separate pull request that brings the function to 25 or below (for
+   `NEW`), or that touches the file and removes the entry (for `STALE`), labelled `ci:full` so its
+   Linux and macOS legs run. Once it merges, merge main into your pull request and rerun.
+
+To avoid causing this, add the `ci:full` label **before merging** any pull request that changes
+code under a Linux- or macOS-only `cfg`, or that edits or removes baseline entries whose sites only
+those platforms observe. Its checks then run all three legs.
+
+### 6.3 One invocation on macOS
 
 macOS carries one invocation, not two: the workspace measured clean under `-D warnings` there, so
 enforcement and measurement share a single compile. The alternative shape - keeping the enforcing
 invocation on `src-tauri` only and adding a second, measurement-only invocation over the whole
-workspace - would cost **one extra macOS compile per pull request**. It is not in use.
+workspace - would cost **one extra macOS compile per full-tier run**. It is not in use.
 
-Because a leg sees only what it compiles, the residual scope is the code excluded on all three
-platforms at once (section 2.3).
+Because a leg sees only what it compiles, the residual scope of a full-tier run is the code
+excluded on all three platforms at once (section 2.3).
 
 ## 7. Bumping the pinned Rust version
 
@@ -306,7 +359,8 @@ To bump:
    `pr-regression-gates.yml` that compare `rustc -vV` with the pin - otherwise each leg fails with
    `toolchain pin did not take effect`.
 2. Regenerate the baseline from the three platforms' emissions, merged by the script's `--merge`
-   (it refuses unless all three agree on commit and rustc version). The toolchain-refresh
+   (it refuses unless all three agree on commit and rustc version). A light-tier run produces only
+   the Windows emission, so label the pull request `ci:full` to get all three. The toolchain-refresh
    exemption of section 3 accepts the resulting additions.
 3. Touch no `.rs` file in that pull request. The exemption requires a diff with no `.rs` path;
    that is what keeps a toolchain bump from smuggling source changes.
