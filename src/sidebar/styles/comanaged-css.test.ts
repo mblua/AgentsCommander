@@ -1,5 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import {
+  declProps,
+  declValue,
+  escapeRe,
+  scanRules,
+  type ScannedRule,
+} from "./css-test-helpers";
 
 // #2271 - the Co-managed dot. jsdom never applies sidebar.css and resolves the
 // cascade by order rather than by specificity (see
@@ -22,35 +29,6 @@ function stripComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " "));
 }
 
-const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-interface ScannedRule {
-  selectors: string[];
-  body: string;
-  index: number;
-}
-
-/** Every innermost `selector-list { ... }` in the sheet, byte-indexed. */
-function scanRules(css: string): ScannedRule[] {
-  const out: ScannedRule[] = [];
-  const re = /([^{}]*)\{([^{}]*)\}/g;
-  let m: RegExpExecArray | null = re.exec(css);
-  while (m !== null) {
-    const lead = m[1];
-    const raw = lead.trim();
-    if (raw !== "") {
-      out.push({
-        selectors: raw.split(",").map((s) => s.trim()).filter((s) => s !== ""),
-        body: m[2],
-        index: m.index + (lead.length - lead.trimStart().length),
-      });
-    }
-    m = re.exec(css);
-  }
-  if (out.length === 0) throw new Error("scanRules found no rules at all");
-  return out;
-}
-
 const RULES = scanRules(stripComments(CSS));
 
 /** The rule whose selector list contains `selector` exactly. Throws on a miss. */
@@ -65,27 +43,6 @@ function varsBlock(selector: string): string {
   const match = stripComments(VARS).match(re);
   if (!match) throw new Error(`missing variables.css block: ${selector}`);
   return match[1];
-}
-
-function declarations(body: string): Array<[string, string]> {
-  return body
-    .split(";")
-    .map((d) => d.trim())
-    .filter((d) => d.includes(":"))
-    .map((d) => [
-      d.slice(0, d.indexOf(":")).trim(),
-      d.slice(d.indexOf(":") + 1).trim().replace(/\s+/g, " "),
-    ]);
-}
-
-const declProps = (body: string): string[] => declarations(body).map(([prop]) => prop);
-
-/** Last declaration of `prop` in `body`, mirroring the within-rule cascade. */
-function declValue(body: string, prop: string): string {
-  let found: string | undefined;
-  for (const [p, v] of declarations(body)) if (p === prop) found = v;
-  if (found === undefined) throw new Error(`missing declaration: ${prop}`);
-  return found;
 }
 
 /**

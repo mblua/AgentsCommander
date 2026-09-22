@@ -3,15 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SidebarApp from "./App";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import {
-  baseSettings,
-  discovery,
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
   session,
   waitFor,
 } from "../shared/testing/ui-harness";
-import { liveSelection, SESSION_A, SESSION_B } from "../shared/testing/session-selection";
+import { SESSION_A, SESSION_B } from "../shared/testing/session-selection";
+import {
+  installReconcileIntervalSpy,
+  setupAppTransport,
+  type ReconcileIntervalSpy,
+} from "./testing/app-harness";
 import { sessionsStore } from "./stores/sessions";
 import type { Session } from "../shared/types";
 
@@ -47,28 +50,14 @@ function backendRows(): Session[] {
 }
 
 function setupTransport(fake: FakeTransport): void {
-  fake.resolve(
-    "get_settings",
-    baseSettings({ projectPaths: [projectPath], projectPath }),
-  );
-  fake.resolve("open_project", { path: projectPath, registered: true, created: false });
-  fake.resolve(
-    "discover_project",
-    discovery({
-      agents: [
-        { name: "General", path: agentAPath, roleExists: true },
-        { name: "Worker", path: agentBPath, roleExists: true },
-      ],
-      teams: [],
-      workgroups: [],
-    }),
-  );
-  fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
-  fake.resolve("search_repos", []);
-  fake.onInvoke("list_sessions", () => backendRows());
-  fake.resolve("get_active_session", liveSelection(SESSION_A));
-  fake.resolve("list_detached_sessions", []);
-  fake.resolve("telegram_list_bridges", []);
+  setupAppTransport(fake, {
+    projectPath,
+    agents: [
+      { name: "General", path: agentAPath },
+      { name: "Worker", path: agentBPath },
+    ],
+    rows: backendRows,
+  });
 }
 
 function dot(root: HTMLElement, id: string): HTMLElement {
@@ -85,8 +74,7 @@ function currentRow(id: string): Session | undefined {
 
 describe("SidebarApp Co-managed idle edge (#2271)", () => {
   let cleanupDom: (() => void) | null = null;
-  let clearReconcileIntervals: () => void;
-  let restoreIntervalSpy: () => void;
+  let reconcileIntervals: ReconcileIntervalSpy;
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
@@ -96,24 +84,14 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     // Keep the real setInterval so the app's timers still run, then sweep the
     // 5000 ms reconcile handles in afterEach. Mocking the implementation would
     // hide a leak instead of exposing it.
-    const intervalSpy = vi.spyOn(globalThis, "setInterval");
-    clearReconcileIntervals = () => {
-      intervalSpy.mock.calls.forEach((call, i) => {
-        if (call[1] !== 5000) return;
-        const handle = intervalSpy.mock.results[i]?.value as
-          | ReturnType<typeof setInterval>
-          | undefined;
-        if (handle !== undefined) clearInterval(handle);
-      });
-    };
-    restoreIntervalSpy = () => intervalSpy.mockRestore();
+    reconcileIntervals = installReconcileIntervalSpy({ periodMs: 5000 });
   });
 
   afterEach(() => {
     // The sweep MUST precede the restore: mockRestore() discards mock.calls and
     // mock.results and the handles become unrecoverable.
-    clearReconcileIntervals();
-    restoreIntervalSpy();
+    reconcileIntervals.clear();
+    reconcileIntervals.restore();
     cleanupDom?.();
     cleanupDom = null;
     sessionsStore.resetComanagedForTests();
