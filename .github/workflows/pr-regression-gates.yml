@@ -198,7 +198,6 @@ jobs:
             --clippy-exit "$code" \
             --platform windows \
             --rustc-version "$rustc_version" \
-            --report \
             --commit "${GITHUB_SHA}" \
             --emit "${RUNNER_TEMP}/cog-observed-windows.json"
           node_code=$?
@@ -835,7 +834,6 @@ jobs:
             --clippy-exit "$code" \
             --platform linux \
             --rustc-version "$rustc_version" \
-            --report \
             --commit "${GITHUB_SHA}" \
             --emit "${RUNNER_TEMP}/cog-observed-linux.json"
           node_code=$?
@@ -1921,7 +1919,6 @@ jobs:
             --clippy-exit "$code" \
             --platform macos \
             --rustc-version "$rustc_version" \
-            --report \
             --commit "${GITHUB_SHA}" \
             --emit "${RUNNER_TEMP}/cog-observed-macos.json"
           node_code=$?
