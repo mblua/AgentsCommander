@@ -287,7 +287,9 @@ The two `gitSweep*` dials are manual-only (no UI) and are read from the in-memor
 | `mainSidebarWidth` | number | platform-default | Sidebar pane width inside the main window. Clamped to `[200, 600]`. |
 | `mainSidebarSide` | `"left" \| "right"` | `"right"` | Side of the main window where the sidebar lives. |
 | `mainZoom` / `terminalZoom` / `sidebarZoom` / `guideZoom` | number | `1.0` | Per-window zoom (1.0 = 100%). |
-| `mainGeometry` / `sidebarGeometry` / `terminalGeometry` | object \| null | `null` | Persisted window geometry. AC writes these on close. |
+| `mainGeometry` | object \| null | `null` | Saved normal bounds of the unified main window: `x`, `y`, `width` and `height` of the outer window, in physical pixels. AC seeds and updates it only from a persisted value or a normal (not maximized, fullscreen or minimized) observation. See [Main window placement](#main-window-placement). |
+| `mainWindowDisplayState` | `"normal"` \| `"maximized"` | `"normal"` | Saved display state of the unified main window. The key is optional; a missing value reads as `normal`. Fullscreen and minimized are never saved. |
+| `sidebarGeometry` / `terminalGeometry` | object \| null | `null` | Legacy keys from the two-window layout. AC reads them at load; when the file has no `mainGeometry` and no local overlay pins it, `terminalGeometry` seeds `mainGeometry`. |
 | `themeLight` | bool | `false` | Light theme on; dark theme when false. Fresh and missing values default to dark. |
 | `specBoardEnabled` | bool | `false` | Shows the Spec Board toolbar button when true. This only controls the sidebar toolbar entrypoint; backend Spec Board commands remain callable and this is not an access-control or security boundary. |
 | `sidebarStyle` | string | `"noir-minimal"` | Sidebar visual variant. Options: `noir-minimal`, `card-sections`, `command-center`, `deep-space`, `arctic-ops`, `obsidian-mesh`, `neon-circuit`. |
@@ -300,6 +302,18 @@ The two `gitSweep*` dials are manual-only (no UI) and are read from the in-memor
 | `alwaysShowSelectedWorkgroup` | bool | `true` | Keep the selected room visible in the sidebar. |
 | `railCollapsedProjects` | string[] | `[]` | Rail project sections the user collapsed by clicking their header. Entries are frontend-normalized project paths (lowercase, forward slashes, no trailing slash). Written only by the dedicated rail collapse action; whole-settings writers restore it from live memory. |
 | `railFavoritesCollapsed` | bool | `false` | Collapsed state of the rail's cross-project Favorites section. Same protection as `railCollapsedProjects`. |
+
+#### Main window placement
+
+The main window's placement is the pair `mainGeometry` + `mainWindowDisplayState`. `mainGeometry` holds the last normal rectangle: a maximized window records `"maximized"` in `mainWindowDisplayState` but keeps the previous rectangle, while a fullscreen or minimized observation changes nothing. That pairing is what returns the window to its pre-maximized size and position later.
+
+While the app runs, AC coalesces moves and resizes for 500 ms and then saves both keys. On every accepted quit route it awaits one flush of the latest placement for at most 2 seconds before quitting; a flush that times out or fails logs the failure and the quit continues, so the next start uses the placement already on disk.
+
+At startup AC converts the saved physical rectangle to logical pixels and restores it when it is still visible on a connected monitor (more than a 50 px overlap in both axes). An off-screen rectangle falls back to the centered default: no larger than 1400x900, centered on the primary monitor (with no monitor reported, AC assumes a 1920x1080 screen at the origin). A saved `"maximized"` state is requested after the window opens; if maximizing fails, AC logs a warning and leaves the window normal. On a testable build, a launch placement (`AC_TEST_WINDOW_PLACEMENT` or its CLI flags) overrides both saved keys for that launch. See [Windowing and multimonitor tests](../testing/10-windowing-and-multimonitor.md).
+
+Every writer that saves the whole settings object keeps a present, non-`null` on-disk value of each key, so unrelated settings saves do not clobber a hand-edited placement; a missing key or an explicit `null` counts as absent and can be filled from the caller's value. The narrow placement command is the only writer that changes the values deliberately. A window move or an accepted quit rewrites them, so edit these keys while AC is closed.
+
+If `settings.local.json` pins either key, the placement command refuses with `main_window_placement_overlay_pinned` and changes neither the file nor memory. On quit, AC shows one alert per accepted close round: `Window placement is pinned by the local settings overlay and was not saved.` Quitting continues after the alert.
 
 ### On app restart
 
