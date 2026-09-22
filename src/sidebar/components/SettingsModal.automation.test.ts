@@ -108,10 +108,18 @@ vi.mock("../../shared/ipc", async () => {
   };
 });
 
+// #2318 — the loading-shell case needs `settingsStore.current` to be nullable
+// before the deferred `SettingsAPI.get` resolves; `undefined` keeps the fixture default.
+const settingsStoreMock = vi.hoisted(() => ({
+  current: undefined as SettingsSnapshot | null | undefined,
+}));
+
 vi.mock("../../shared/stores/settings", () => ({
   settingsStore: {
     get current() {
-      return settings();
+      return settingsStoreMock.current === undefined
+        ? settings()
+        : settingsStoreMock.current;
     },
     refresh: vi.fn(),
   },
@@ -345,6 +353,7 @@ describe("SettingsModal automation hooks", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    settingsStoreMock.current = undefined;
   });
 
   it("keeps row parent and disabled Codex preset selectors addressable", async () => {
@@ -1997,7 +2006,67 @@ describe("SettingsModal automation hooks", () => {
     expect(warning).toContain("authorized Root Agents and same-room Orchestrators");
     expect(warning).toContain("JSON or PNG");
     expect(warning).toContain("passwords, tokens, source code, prompts, and personal data");
-    expect(warning).toContain("Disabled by default");
+    expect(warning).toContain("Enabled by default");
+
+    dispose();
+  });
+
+  it("loads terminal snapshots checked without saving on open", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(
+      settings({ terminalSnapshotsEnabled: true }),
+    );
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>(
+      "settings.general.terminalSnapshotsEnabled",
+    );
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.getAttribute("data-ac-state")).toBe("checked");
+    expect(SettingsAPI.saveDraft).not.toHaveBeenCalled();
+    expect(SettingsAPI.setTerminalSnapshotsEnabled).not.toHaveBeenCalled();
+
+    dispose();
+  });
+
+  it("shows the Loading shell until the deferred settings response resolves", async () => {
+    settingsStoreMock.current = null;
+    let resolveSettings!: (value: SettingsSnapshot) => void;
+    const deferredSettings = new Promise<SettingsSnapshot>((resolve) => {
+      resolveSettings = resolve;
+    });
+    vi.mocked(SettingsAPI.get).mockReturnValueOnce(deferredSettings);
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    expect(document.querySelector(".modal-body")?.textContent?.trim()).toBe(
+      "Loading...",
+    );
+    expect(
+      document.querySelector(
+        '[data-ac-testid="settings.general.terminalSnapshotsEnabled"]',
+      ),
+    ).toBeNull();
+
+    resolveSettings(settings({ terminalSnapshotsEnabled: true }));
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>(
+      "settings.general.terminalSnapshotsEnabled",
+    );
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.getAttribute("data-ac-state")).toBe("checked");
 
     dispose();
   });
