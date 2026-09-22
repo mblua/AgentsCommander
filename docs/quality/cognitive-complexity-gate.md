@@ -315,18 +315,22 @@ A site that only Linux or macOS compiles - typically code under a `cfg` for that
 measured by a light-tier run. A pull request that adds such a site above 25, or that fixes or
 moves a baselined site only those platforms observe without removing its entry, can therefore pass
 its light-tier checks and be merged. The finding then appears as `NEW` or `STALE ... on linux` or `on macos` in the next
-full-tier run of **any** pull request based on that main, which did not cause it.
+full-tier run of **any** pull request based on that main, which may not have caused it.
 
 If that happens to your pull request:
 
-1. Check whether your diff touches the reported file. If it does not, the finding came from main,
-   and your change is not the cause.
+1. Reproduce the finding against your pull request's base, on the same platform, with the same
+   toolchain and the same configuration (features and `cfg`). Not touching the reported file does
+   not prove the cause is in main: a change to a parent module's `cfg` or to the features in a
+   `Cargo.toml` can make functions of an untouched file appear or disappear. Only if the base shows
+   the same finding did it come from main.
 2. Do not grow the baseline to get past it: the ratchet in section 3 refuses the addition. A
-   `STALE` entry for a file your pull request did not touch cannot be removed there either, because
-   a shrink is only accepted where the pull request touched that file.
-3. Fix it at the source: a separate pull request that brings the function to 25 or below (for
-   `NEW`), or that touches the file and removes the entry (for `STALE`), labelled `ci:full` so its
-   Linux and macOS legs run. Once it merges, merge main into your pull request and rerun.
+   `STALE` entry can be removed only where section 3 accepts the shrink: the pull request touched
+   the entry's `.rs` file, or that file is gone from the working tree. So if main deleted the file
+   and left its entry behind, any pull request, yours included, may remove the entry.
+3. Otherwise fix it at the source: a separate pull request that brings the function to 25 or below
+   (for `NEW`), or that removes the entry under the same rule (for `STALE`), labelled `ci:full` so
+   its Linux and macOS legs run. Once it merges, merge main into your pull request and rerun.
 
 To avoid causing this, add the `ci:full` label **before merging** any pull request that changes
 code under a Linux- or macOS-only `cfg`, or that edits or removes baseline entries whose sites only
