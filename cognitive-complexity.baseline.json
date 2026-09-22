@@ -1,0 +1,651 @@
+{
+  "version": 1,
+  "issue": 2234,
+  "threshold": 25,
+  "toolchain": "1.98.1",
+  "capturedFrom": "dc3d2a18bc9c9c17b3a6a047fba6d8fa9e5c2102",
+  "capturedAt": "2026-09-22T08:35:09.139Z",
+  "entries": [
+    {
+      "id": "rust:src-tauri/src/agent_update.rs::impl:TargetProcessOwner::settle",
+      "sites": {
+        "windows": [
+          "a3d53f9cd47b"
+        ],
+        "linux": [
+          "a3d53f9cd47b"
+        ],
+        "macos": [
+          "a3d53f9cd47b"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/agent_update.rs::mod:tests::agent_update_result_contract",
+      "sites": {
+        "windows": [
+          "75668b3ada4d"
+        ],
+        "linux": [
+          "75668b3ada4d"
+        ],
+        "macos": [
+          "75668b3ada4d"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/agent_version.rs::impl:ProbeProcessOwner::settle",
+      "sites": {
+        "windows": [
+          "059ee76b179f"
+        ],
+        "linux": [
+          "059ee76b179f"
+        ],
+        "macos": [
+          "059ee76b179f"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/cli/list_peers.rs::discover_origin_peers",
+      "sites": {
+        "windows": [
+          "10a4c04d2673"
+        ],
+        "linux": [
+          "10a4c04d2673"
+        ],
+        "macos": [
+          "10a4c04d2673"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/cli/send.rs::execute",
+      "sites": {
+        "windows": [
+          "59138f0839a8"
+        ],
+        "linux": [
+          "59138f0839a8"
+        ],
+        "macos": [
+          "59138f0839a8"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/commands/ac_discovery.rs::discover_ac_agents",
+      "sites": {
+        "windows": [
+          "6ebd70a2edba"
+        ],
+        "linux": [
+          "6ebd70a2edba"
+        ],
+        "macos": [
+          "6ebd70a2edba"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/commands/ac_discovery.rs::discover_project_inner",
+      "sites": {
+        "windows": [
+          "b5d5eb92c7cf"
+        ],
+        "linux": [
+          "b5d5eb92c7cf"
+        ],
+        "macos": [
+          "b5d5eb92c7cf"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/commands/resource_monitor.rs::mod:tests::assert_serialized_resource_kills",
+      "sites": {
+        "windows": [
+          "ca1a701fe5fe"
+        ],
+        "linux": [
+          "ca1a701fe5fe"
+        ],
+        "macos": [
+          "ca1a701fe5fe"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/commands/session.rs::execute_destroy_transaction",
+      "sites": {
+        "windows": [
+          "3de3e5b76bb8"
+        ],
+        "linux": [
+          "3de3e5b76bb8"
+        ],
+        "macos": [
+          "3de3e5b76bb8"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/commands/session.rs::execute_restart_transaction",
+      "sites": {
+        "windows": [
+          "bee66e294490"
+        ],
+        "linux": [
+          "bee66e294490"
+        ],
+        "macos": [
+          "bee66e294490"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/config/root_agent.rs::mod:tests::ensure_root_agent_dir_at_creates_layout_role_and_config",
+      "sites": {
+        "windows": [
+          "856575bd7902"
+        ],
+        "linux": [
+          "856575bd7902"
+        ],
+        "macos": [
+          "856575bd7902"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/config/session_context.rs::mod:token_accounting::summarized_default_context_meets_size_budget",
+      "sites": {
+        "windows": [
+          "24924aced08a"
+        ],
+        "linux": [
+          "24924aced08a"
+        ],
+        "macos": [
+          "24924aced08a"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/config/settings.rs::load_settings_from_path",
+      "sites": {
+        "windows": [
+          "b1087fb21839"
+        ],
+        "linux": [
+          "b1087fb21839"
+        ],
+        "macos": [
+          "b1087fb21839"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/config/settings.rs::mod:tests::settings_save_error_preserves_sources_and_separates_diagnostic_from_outward",
+      "sites": {
+        "windows": [
+          "826617b3bb4f"
+        ],
+        "linux": [
+          "826617b3bb4f"
+        ],
+        "macos": [
+          "826617b3bb4f"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/lib.rs::fn:run::{closure}",
+      "sites": {
+        "windows": [
+          "b15c5c1ba62b",
+          "b8704b1cb37a"
+        ],
+        "linux": [
+          "b15c5c1ba62b",
+          "b8704b1cb37a"
+        ],
+        "macos": [
+          "b15c5c1ba62b",
+          "b8704b1cb37a"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/loops/delivery.rs::deliver_loop_prompt",
+      "sites": {
+        "windows": [
+          "dde9f0bac0a2"
+        ],
+        "linux": [
+          "dde9f0bac0a2"
+        ],
+        "macos": [
+          "dde9f0bac0a2"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::deliver_internal_system_wake",
+      "sites": {
+        "windows": [
+          "bb794053ede9"
+        ],
+        "linux": [
+          "bb794053ede9"
+        ],
+        "macos": [
+          "bb794053ede9"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::deliver_peer_wake",
+      "sites": {
+        "windows": [
+          "c266d667407c"
+        ],
+        "linux": [
+          "c266d667407c"
+        ],
+        "macos": [
+          "c266d667407c"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::dispatch_pty_input_operation",
+      "sites": {
+        "windows": [
+          "106d13910f26"
+        ],
+        "linux": [
+          "106d13910f26"
+        ],
+        "macos": [
+          "106d13910f26"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::handle_close_session",
+      "sites": {
+        "windows": [
+          "1d959a229655"
+        ],
+        "linux": [
+          "1d959a229655"
+        ],
+        "macos": [
+          "1d959a229655"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::handle_purge_wg",
+      "sites": {
+        "windows": [
+          "40cfe953061c"
+        ],
+        "linux": [
+          "40cfe953061c"
+        ],
+        "macos": [
+          "40cfe953061c"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::poll",
+      "sites": {
+        "windows": [
+          "dff40736a7a2"
+        ],
+        "linux": [
+          "dff40736a7a2"
+        ],
+        "macos": [
+          "dff40736a7a2"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::process_message_content",
+      "sites": {
+        "windows": [
+          "9cff13e57760"
+        ],
+        "linux": [
+          "9cff13e57760"
+        ],
+        "macos": [
+          "9cff13e57760"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::process_pty_input_file",
+      "sites": {
+        "windows": [
+          "34a3d771ff0c"
+        ],
+        "linux": [
+          "34a3d771ff0c"
+        ],
+        "macos": [
+          "34a3d771ff0c"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::resolve_repo_path",
+      "sites": {
+        "windows": [
+          "81f48c31ba89"
+        ],
+        "linux": [
+          "81f48c31ba89"
+        ],
+        "macos": [
+          "81f48c31ba89"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::spawn_pty_input_target",
+      "sites": {
+        "windows": [
+          "0e2097deada7"
+        ],
+        "linux": [
+          "0e2097deada7"
+        ],
+        "macos": [
+          "0e2097deada7"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/pty/container_backend.rs::impl:ContainerTransportBackend::stop_all_started_containers_blocking",
+      "sites": {
+        "windows": [
+          "a5be566e0b77"
+        ],
+        "linux": [
+          "a5be566e0b77"
+        ],
+        "macos": [
+          "a5be566e0b77"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/pty/docker_runtime.rs::mod:tests::run_command_is_detached_labeled_and_has_expected_env_without_interactive_flags",
+      "sites": {
+        "windows": [
+          "f8134bd5fb6d"
+        ],
+        "linux": [
+          "f8134bd5fb6d"
+        ],
+        "macos": [
+          "f8134bd5fb6d"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/pty/inject.rs::mod:tests::direct_shell_capability_matrix",
+      "sites": {
+        "windows": [
+          "3f7dd75374cc"
+        ],
+        "linux": [
+          "3f7dd75374cc"
+        ],
+        "macos": [
+          "3f7dd75374cc"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/pty/remote_watcher.rs::impl:RemoteSweeper::run_round",
+      "sites": {
+        "windows": [
+          "1592dfac14cb"
+        ],
+        "linux": [
+          "1592dfac14cb"
+        ],
+        "macos": [
+          "1592dfac14cb"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs::run_composed_scanner_shutdown_phase",
+      "sites": {
+        "windows": [
+          "54c3e1498939"
+        ],
+        "linux": [
+          "54c3e1498939"
+        ],
+        "macos": [
+          "54c3e1498939"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/pty/terminal_snapshot/resource_tests.rs::run_resource_child",
+      "sites": {
+        "windows": [
+          "e82d3852dd26"
+        ],
+        "linux": [
+          "e82d3852dd26"
+        ],
+        "macos": [
+          "e82d3852dd26"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/resource_monitor/registry.rs::impl:ResourceMonitorState::kill_group_inner",
+      "sites": {
+        "windows": [
+          "2b38f536fd94"
+        ],
+        "linux": [
+          "2b38f536fd94"
+        ],
+        "macos": [
+          "2b38f536fd94"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/session/auto_close.rs::tick",
+      "sites": {
+        "windows": [
+          "75fe61f787ea"
+        ],
+        "linux": [
+          "75fe61f787ea"
+        ],
+        "macos": [
+          "75fe61f787ea"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/session/context_alerts.rs::run_context_alert_actor",
+      "sites": {
+        "windows": [
+          "3e40c43d5adf"
+        ],
+        "linux": [
+          "3e40c43d5adf"
+        ],
+        "macos": [
+          "3e40c43d5adf"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/session/manager.rs::impl:SessionManager::commit_selection_transition",
+      "sites": {
+        "windows": [
+          "5d7ebb93c414"
+        ],
+        "linux": [
+          "5d7ebb93c414"
+        ],
+        "macos": [
+          "5d7ebb93c414"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/session/profile.rs::mod:tests::muse_serde_profile_detection_and_submission_boundary_are_stable",
+      "sites": {
+        "windows": [
+          "db5b2c3aa862"
+        ],
+        "linux": [
+          "db5b2c3aa862"
+        ],
+        "macos": [
+          "db5b2c3aa862"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/session/selection.rs::drain_after_shutdown",
+      "sites": {
+        "windows": [
+          "7318d4f04c6b"
+        ],
+        "linux": [
+          "7318d4f04c6b"
+        ],
+        "macos": [
+          "7318d4f04c6b"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/session/selection.rs::execute_envelope",
+      "sites": {
+        "windows": [
+          "4643d8506375"
+        ],
+        "linux": [
+          "4643d8506375"
+        ],
+        "macos": [
+          "4643d8506375"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/session/selection.rs::mod:tests::assert_pending_container_shutdown_waits_for_stop",
+      "sites": {
+        "windows": [
+          "baf671e2fa4e"
+        ],
+        "linux": [
+          "baf671e2fa4e"
+        ],
+        "macos": [
+          "baf671e2fa4e"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/session/selection.rs::mod:tests::assert_real_pending_container_start_shutdown_waits_for_stop",
+      "sites": {
+        "windows": [
+          "c1c6c13921ef"
+        ],
+        "linux": [
+          "c1c6c13921ef"
+        ],
+        "macos": [
+          "c1c6c13921ef"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/telegram/bridge.rs::poll_task",
+      "sites": {
+        "windows": [
+          "eb863678ef0e"
+        ],
+        "linux": [
+          "eb863678ef0e"
+        ],
+        "macos": [
+          "eb863678ef0e"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/telegram/claude_watcher.rs::watch_loop",
+      "sites": {
+        "windows": [
+          "705e1e465aae"
+        ],
+        "linux": [
+          "705e1e465aae"
+        ],
+        "macos": [
+          "705e1e465aae"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/telegram/codex_watcher.rs::watch_loop",
+      "sites": {
+        "windows": [
+          "7ddd274890a3"
+        ],
+        "linux": [
+          "7ddd274890a3"
+        ],
+        "macos": [
+          "7ddd274890a3"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/web/commands.rs::dispatch_inner",
+      "sites": {
+        "windows": [
+          "b6351f6c625d"
+        ],
+        "linux": [
+          "b6351f6c625d"
+        ],
+        "macos": [
+          "b6351f6c625d"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/tests/cli_powershell_capture.rs::issue_1867_isolation_source_contract",
+      "sites": {
+        "windows": [
+          "ad9bd7fafaee"
+        ]
+      }
+    }
+  ]
+}
