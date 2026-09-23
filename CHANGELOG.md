@@ -6,9 +6,27 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- **The sidebar can collapse to a compact rail.** A `>>` control on the groups rail collapses the sidebar to the rail, theme, settings and `<<` controls, and the terminal takes the released space. Selecting any group expands it again and restores the width it had before collapsing. A configurable shortcut toggles it (default `Ctrl+Shift+E`, set in Settings); it works with terminal focus and the matched key never reaches the terminal. ([#2236](https://github.com/mblua/AgentsCommander/issues/2236), [#2283](https://github.com/mblua/AgentsCommander/issues/2283), [#2284](https://github.com/mblua/AgentsCommander/issues/2284), [#2285](https://github.com/mblua/AgentsCommander/issues/2285))
+- **Coding agents can be reordered.** Move controls on the Settings rows and the profile-assignment Step 1 cards change the order, and both lists now show the saved order instead of an alphabetical one. A failed move shows an inline error and never applies a guessed order. ([#2314](https://github.com/mblua/AgentsCommander/issues/2314))
+- **`room activity --project <PROJECT>` lists every room of a project** with its working state, CI state (`running`, `idle` or `unknown`) and task title. It is read-only. ([#2374](https://github.com/mblua/AgentsCommander/issues/2374))
+- **Loop modals say when saving restarts the schedule.** Editing a Loop shows a notice only when the save would move the next run; creating a Loop always says the schedule starts at creation. ([#2288](https://github.com/mblua/AgentsCommander/issues/2288))
+
+### Removed
+
+- **The Guide window (Hints and Tutorial) and its ActionBar button are gone.** Home is unchanged, and existing settings files keep loading. ([#2412](https://github.com/mblua/AgentsCommander/issues/2412))
+
 ### Fixed
 
 - **A window maximized on a first run is now remembered.** With no placement saved yet, AC samples the window's rectangle at startup, so launch, maximize and close stores that rectangle with `"maximized"` and the next start comes back maximized. A saved rectangle still wins over the startup sample, and a window that is already maximized, fullscreen or minimized when AC starts still stores no rectangle. ([#2393](https://github.com/mblua/AgentsCommander/issues/2393))
+- **The Resource Monitor no longer runs out of memory on a process-tree cycle.** Windows PID reuse could leave a parent-PID cycle that made the tree walk loop until the app aborted; each process is now visited once. ([#2443](https://github.com/mblua/AgentsCommander/issues/2443))
+- **Codex turns are closed reliably.** The `turn_complete` closure is accepted as well as `task_complete`, and a late answer for a superseded turn is no longer emitted. ([#2356](https://github.com/mblua/AgentsCommander/issues/2356))
+- **Config files publish on deep Windows paths.** Paths longer than `MAX_PATH` no longer fail with os error 3. ([#2378](https://github.com/mblua/AgentsCommander/issues/2378))
+- **An auto-closed orchestrator keeps its context.** A CI or other internal wake resumes its previous session, and a failed reopen keeps the close markers so a retry still resumes. ([#2411](https://github.com/mblua/AgentsCommander/issues/2411), [#2413](https://github.com/mblua/AgentsCommander/issues/2413))
+- **Process liveness is real on Linux and macOS.** Session and `daemon.pid` checks no longer treat every process as alive. ([#2382](https://github.com/mblua/AgentsCommander/issues/2382), [#2394](https://github.com/mblua/AgentsCommander/issues/2394))
+- **The Telegram icon in the sidebar menu renders on Linux and macOS.** It was drawn at 0x0 in WebKit. ([#2399](https://github.com/mblua/AgentsCommander/issues/2399))
+- **Typing-hold padlock corrections.** The held count has no `#` prefix, the padlock is open and dimmed while inactive and closed and colored while holding, and a manual close releases itself after twice the `typingHoldSeconds` window. ([#2379](https://github.com/mblua/AgentsCommander/issues/2379))
 
 ## 0.38.0
 
