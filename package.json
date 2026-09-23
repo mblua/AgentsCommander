@@ -29,6 +29,8 @@
     "check:skills:self": "node scripts/01-skills-checker.mjs --self-test",
     "record:arcs": "node scripts/02-module-arc-record.mjs",
     "record:arcs:self": "node scripts/02-module-arc-record.mjs --self-test",
+    "check:arcs": "node scripts/check-module-arcs.mjs",
+    "check:arcs:self": "node scripts/check-module-arcs.mjs --self-test",
     "check:served-paths": "node scripts/check-served-paths.mjs",
     "check:served-paths:self": "node scripts/check-served-paths.mjs --self-test",
     "cog:self": "node scripts/check-cognitive-complexity.mjs --self-test",
