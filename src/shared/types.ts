@@ -27,7 +27,7 @@ export interface RemoteActivityUpdate {
   behindBy: (number | null)[];
 }
 
-export type SessionCommunicationKind = "raiseHand" | "blockedMenu";
+export type SessionCommunicationKind = "raiseHand" | "blockedMenu" | "coManaged";
 
 export interface SessionCommunication {
   kind: SessionCommunicationKind;

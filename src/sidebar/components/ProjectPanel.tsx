@@ -2668,6 +2668,12 @@ const ProjectPanel: Component = () => {
           const showBlockedMenu = createMemo(() =>
             communication()?.kind === "blockedMenu" && communication()?.visible === true
           );
+          // #2452 - no gate, like blockedMenu: every replica row shows the text.
+          const showCoManaged = createMemo(() =>
+            communication()?.kind === "coManaged" &&
+            communication()?.visible === true &&
+            !!communication()?.message
+          );
           const repoBadges = createMemo(() => {
             const s = session();
             return s && s.gitRepos.length > 0
@@ -2820,6 +2826,16 @@ const ProjectPanel: Component = () => {
                       aria-label="Interactive menu requires user input"
                     >
                       <BlockedMenuIcon class="coord-communication-icon" />
+                    </span>
+                  </Show>
+                  <Show when={showCoManaged()}>
+                    <span
+                      class="coord-communication-slot coord-communication-slot--co-managed"
+                      data-kind="coManaged"
+                      data-ac-testid={`${communicationSlotTestId()}.coManaged`}
+                      title={communication()?.message ?? undefined}
+                    >
+                      {communication()?.message}
                     </span>
                   </Show>
                   {/* #592 - drift indicator for a WG replica session. Mirrors the
