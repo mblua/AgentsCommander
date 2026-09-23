@@ -1,6 +1,8 @@
 import { SessionAPI } from "./ipc";
 import { voiceRecorder } from "./voice-recorder";
 import { requestCoordinatorCloseById } from "../sidebar/stores/coordinator-close";
+import { matchesHotkeyEvent } from "./app-hotkey";
+import { currentHotkey, toggleSidebarCompact } from "./sidebar-compact";
 
 type ShortcutHandler = (e: KeyboardEvent) => void;
 
@@ -58,6 +60,11 @@ export function registerShortcuts(): ShortcutHandler {
         shortcut.handler();
         return;
       }
+    }
+    // #2236 phase 5: after the shipped bindings, so a reserved letter never reaches here.
+    if (matchesHotkeyEvent(e, currentHotkey())) {
+      e.preventDefault();
+      toggleSidebarCompact();
     }
   };
 

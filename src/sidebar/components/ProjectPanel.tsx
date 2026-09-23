@@ -1560,6 +1560,140 @@ const ProjectPanel: Component = () => {
           const m = replicaCtxMenu();
           return m && m.kind === "inactive" ? m : null;
         };
+        // #2408 - per-room Co-managed enablement lives in the orchestrator's
+        // replica menu. `co_managed_get` reads the stored flag;
+        // `co_managed_effective_state` answers WHY the room is not effective for
+        // the orchestrator session. Every continuation is pinned to the menu
+        // epoch and identity it started under, so close, A->B replacement, and
+        // disposal turn late reads/writes into no-ops. Enabling alone never
+        // lights the dot: only a real capture cycle does.
+        type CoManagedMenuToken = {
+          epoch: number;
+          wgPath: string;
+          replicaPath: string;
+          sessionId: string | null;
+        };
+        const [coManagedEnabled, setCoManagedEnabled] = createSignal<boolean | null>(null);
+        const [coManagedReason, setCoManagedReason] = createSignal<OffReason | null>(null);
+        const [coManagedError, setCoManagedError] = createSignal<string | null>(null);
+        const [coManagedBusy, setCoManagedBusy] = createSignal(false);
+        let coManagedToken: CoManagedMenuToken | null = null;
+        const coManagedTokenLive = (token: CoManagedMenuToken) => {
+          const m = replicaCtxMenu();
+          return (
+            token === coManagedToken &&
+            token.epoch === replicaCtxMenuEpoch &&
+            !!m &&
+            m.wg.path === token.wgPath &&
+            m.replica.path === token.replicaPath &&
+            (m.kind === "active" ? m.sessionId : null) === token.sessionId
+          );
+        };
+        const coManagedReasonLine = () => {
+          const reason = coManagedReason();
+          return reason === null ? null : coManagedReasonTextOf(reason);
+        };
+        // Unknown state, a pending read/write, or an off room with a visible
+        // blocker cannot be activated. An enabled room stays clickable so the
+        // user can always turn it off.
+        const coManagedDisabled = () =>
+          coManagedBusy() ||
+          coManagedEnabled() === null ||
+          (coManagedEnabled() === false && coManagedReasonLine() !== null);
+        const startCoManagedMenu = (wg: AcWorkgroup, replica: AcAgentReplica, sessionId: string | null) => {
+          setCoManagedEnabled(null);
+          setCoManagedReason(null);
+          setCoManagedError(null);
+          setCoManagedBusy(false);
+          coManagedToken = null;
+          if (!replica.isCoordinator) return;
+          const token: CoManagedMenuToken = {
+            epoch: replicaCtxMenuEpoch,
+            wgPath: wg.path,
+            replicaPath: replica.path,
+            sessionId,
+          };
+          coManagedToken = token;
+          setCoManagedBusy(true);
+          void (async () => {
+            try {
+              const config = await CoManagedAPI.get(token.wgPath);
+              if (!coManagedTokenLive(token)) return;
+              setCoManagedEnabled(config.enabled);
+              if (token.sessionId) {
+                const state = await CoManagedAPI.effectiveState(token.wgPath, token.sessionId);
+                if (!coManagedTokenLive(token)) return;
+                setCoManagedReason(coManagedReasonFromState(state));
+              }
+            } catch (err) {
+              if (!coManagedTokenLive(token)) return;
+              setCoManagedError(coManagedErrorText(err));
+            }
+            setCoManagedBusy(false);
+          })();
+        };
+        const toggleCoManaged = async () => {
+          const token = coManagedToken;
+          const current = coManagedEnabled();
+          if (!token || !coManagedTokenLive(token) || coManagedDisabled() || current === null) return;
+          setCoManagedBusy(true);
+          setCoManagedError(null);
+          try {
+            // Never optimistically flip: a failed call leaves the stored value.
+            const config = await CoManagedAPI.setEnabled(token.wgPath, !current);
+            if (!coManagedTokenLive(token)) return;
+            setCoManagedEnabled(config.enabled);
+            if (token.sessionId) {
+              // Phase 4 raises or releases the reader inside set_enabled, so one
+              // re-query is all the reason line needs.
+              const state = await CoManagedAPI.effectiveState(token.wgPath, token.sessionId);
+              if (!coManagedTokenLive(token)) return;
+              setCoManagedReason(coManagedReasonFromState(state));
+            }
+          } catch (err) {
+            if (!coManagedTokenLive(token)) return;
+            setCoManagedError(coManagedErrorText(err));
+          }
+          setCoManagedBusy(false);
+        };
+        const renderCoManagedMenuItem = (
+          kind: "active" | "inactive",
+          menu: () => { wg: AcWorkgroup; replica: AcAgentReplica }
+        ) => {
+          const testId = () =>
+            `replica.coManaged.${kind}.${automationIdPart(menu().wg.name)}.${automationIdPart(menu().replica.name)}`;
+          return (
+            <Show when={menu().replica.isCoordinator}>
+              <button
+                class="session-context-option"
+                classList={{ "context-option-disabled": coManagedDisabled() }}
+                disabled={coManagedDisabled()}
+                aria-pressed={coManagedEnabled() === true}
+                title="Let Jev read this room's orchestrator activity and route it when the room is idle"
+                onClick={() => void toggleCoManaged()}
+                data-ac-testid={testId()}
+                data-ac-state={coManagedEnabled() ? "on" : "off"}
+              >
+                <span class="session-context-option-check">{coManagedEnabled() ? "\u2713" : ""}</span>
+                <span>Co-managed</span>
+              </button>
+              <Show when={coManagedReasonLine()}>
+                {(line) => (
+                  <div class="session-context-note" data-ac-testid={`${testId()}.reason`}>
+                    {line()}
+                  </div>
+                )}
+              </Show>
+              <Show when={coManagedError()}>
+                {(text) => (
+                  <div class="session-context-error" data-ac-testid={`${testId()}.error`}>
+                    {text()}
+                  </div>
+                )}
+              </Show>
+            </Show>
+          );
+        };
         const activeReplicaMenuSession = () => {
           const menu = activeReplicaMenu();
           return menu
@@ -2461,6 +2595,7 @@ const ProjectPanel: Component = () => {
             x: e.clientX,
             y: e.clientY,
           });
+          startCoManagedMenu(wg, replica, session.id); // #2408
           resolveRepoRemotes(replicaRepoMenuEntries(wg, replica)); // #943 - one call per repo path
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -2492,6 +2627,7 @@ const ProjectPanel: Component = () => {
           resetTitleEditState(); // #1536 - opening any menu closes any in-flight editor
           closeRepoFlyout(); // #943 - the A->B switch never nulls replicaCtxMenu()
           setReplicaCtxMenu({ kind: "inactive", wg, replica, x: e.clientX, y: e.clientY });
+          startCoManagedMenu(wg, replica, null); // #2408
           resolveRepoRemotes(replicaRepoMenuEntries(wg, replica)); // #943 - one call per repo path
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -2519,66 +2655,8 @@ const ProjectPanel: Component = () => {
             const s = session();
             return s ? sessionsStore.comanagedBySessionId[s.id] ?? false : false;
           };
-          const dotClass = () => replicaDotClass(wg, replica, isComanaged());
-          // #2232 phase 9 - per-room enablement. `co_managed_get` reads the stored
-          // flag; `co_managed_effective_state` answers WHY the room is not effective
-          // for the orchestrator session. Enabling alone never lights the dot: only a
-          // real capture cycle does, so `isComanaged` above stays untouched here.
-          const [coManagedEnabled, setCoManagedEnabled] = createSignal<boolean | null>(null);
-          const [coManagedReason, setCoManagedReason] = createSignal<OffReason | null>(null);
-          const [coManagedError, setCoManagedError] = createSignal<string | null>(null);
-          const coManagedReasonLine = () => {
-            const reason = coManagedReason();
-            return reason === null ? null : coManagedReasonTextOf(reason);
-          };
-          const refreshCoManaged = async (sessionId: string | null) => {
-            try {
-              const config = await CoManagedAPI.get(wg.path);
-              setCoManagedEnabled(config.enabled);
-              setCoManagedError(null);
-              if (!sessionId) {
-                setCoManagedReason(null);
-                return;
-              }
-              const state = await CoManagedAPI.effectiveState(wg.path, sessionId);
-              setCoManagedReason(coManagedReasonFromState(state));
-            } catch (err) {
-              setCoManagedError(coManagedErrorText(err));
-            }
-          };
-          createEffect(
-            on(
-              () => (replica.isCoordinator ? session()?.id ?? null : null),
-              (sessionId) => {
-                if (!replica.isCoordinator) return;
-                void refreshCoManaged(sessionId);
-              }
-            )
-          );
-          const toggleCoManaged = async (input: HTMLInputElement) => {
-            const next = input.checked;
-            setCoManagedError(null);
-            const config = await CoManagedAPI.setEnabled(wg.path, next).catch(
-              (err: unknown) => {
-                // Never optimistically flip: a failed call restores the previous value.
-                input.checked = coManagedEnabled() ?? false;
-                setCoManagedError(coManagedErrorText(err));
-                return null;
-              }
-            );
-            if (!config) return;
-            setCoManagedEnabled(config.enabled);
-            const s = session();
-            if (!s) return;
-            try {
-              // Phase 4 raises or releases the reader inside set_enabled, so one
-              // re-query is all the reason line needs (plan section 6).
-              const state = await CoManagedAPI.effectiveState(wg.path, s.id);
-              setCoManagedReason(coManagedReasonFromState(state));
-            } catch (err) {
-              setCoManagedError(coManagedErrorText(err));
-            }
-          };
+          // #2408 - the real activity class; Co-managed capture is an additive ring.
+          const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => replica.isCoordinator;
           const communication = createMemo(() => session()?.communication ?? null);
           const showRaiseHand = createMemo(() =>
@@ -2644,12 +2722,6 @@ const ProjectPanel: Component = () => {
               : "");
           const rowTestId = () =>
             `replica.row.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
-          // A top-level `replica.` test id, like the row's other sub-surfaces
-          // (badges, lockChip, contextBadge): existing suites select rows with
-          // `[data-ac-testid^="replica.row."]`, so a nested id would be counted as
-          // an extra row.
-          const coManagedTestId = () =>
-            `replica.coManaged.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const communicationSlotTestId = () => `${rowTestId()}.communicationSlot`;
           const badgesTestId = () =>
             `replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
@@ -2717,7 +2789,7 @@ const ProjectPanel: Component = () => {
               title={replica.path}
             >
               <div
-                class={`session-item-status ${dotClass()}`}
+                class={`session-item-status ${dotClass()}${isComanaged() ? " comanaged" : ""}`}
                 data-ac-comanaged={isComanaged() ? "true" : "false"}
                 title={isComanaged() ? "Co-managed" : undefined}
               />
@@ -2868,52 +2940,6 @@ const ProjectPanel: Component = () => {
                   </Show>
                 </div>
               </div>
-              <Show when={isCoord()}>
-                {/* #2232 phase 9 - one control per room, on the orchestrator row
-                    (the row that already carries the dot). stopPropagation keeps a
-                    toggle click from selecting the session under the control. */}
-                <div
-                  class="replica-comanaged"
-                  data-ac-testid={coManagedTestId()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <label
-                    class="replica-comanaged-toggle"
-                    title="Let Jev read this room's orchestrator activity and route it when the room is idle"
-                  >
-                    <input
-                      type="checkbox"
-                      class="replica-comanaged-checkbox"
-                      checked={coManagedEnabled() ?? false}
-                      onChange={(e) => void toggleCoManaged(e.currentTarget)}
-                      data-ac-testid={`${coManagedTestId()}.toggle`}
-                      data-ac-role="switch"
-                      data-ac-state={coManagedEnabled() ? "on" : "off"}
-                    />
-                    <span class="replica-comanaged-label">Co-managed</span>
-                  </label>
-                  <Show when={coManagedReasonLine()}>
-                    {(line) => (
-                      <span
-                        class="replica-comanaged-reason"
-                        data-ac-testid={`${coManagedTestId()}.reason`}
-                      >
-                        {line()}
-                      </span>
-                    )}
-                  </Show>
-                  <Show when={coManagedError()}>
-                    {(text) => (
-                      <span
-                        class="replica-comanaged-error"
-                        data-ac-testid={`${coManagedTestId()}.error`}
-                      >
-                        {text()}
-                      </span>
-                    )}
-                  </Show>
-                </div>
-              </Show>
               <Show when={isLive()}>
                 <Show when={isRecording()}>
                   <button class="session-item-mic-cancel" onClick={handleCancelRecording} title="Cancel recording">&#x2715;</button>
@@ -4223,6 +4249,7 @@ const ProjectPanel: Component = () => {
                         >
                           <span class="session-context-option-icon" aria-hidden="true">&#x1F9F9;</span> Clear task title
                         </button>
+                        {renderCoManagedMenuItem("active", menu)}
                       </>
                       );
                     }}
@@ -4339,6 +4366,7 @@ const ProjectPanel: Component = () => {
                           >
                             <span class="session-context-option-icon" aria-hidden="true">&#x1F9F9;</span> Clear task title
                           </button>
+                          {renderCoManagedMenuItem("inactive", menu)}
                         </>
                       );
                     }}

@@ -1559,14 +1559,21 @@ mod tests {
             let record = record_with_origin(&file, &format!("{origin:?}"), start, 0, origin);
             let (seq, key) = arm(&slot, Arc::clone(&record), 0);
 
-            let committed = commit_effect(
-                &root,
-                &slot,
-                seq,
-                &key,
-                &preconditions(EffectKind::Automatic),
-            )
-            .expect("a baseline commits, so it can never be offered again");
+            // A starved runner can age `pre` past STALE_PRECONDITIONS before the
+            // check (#2389). Retry only when that is measurably what happened;
+            // a stale abstain mutates nothing, and test 19 pins the staleness path.
+            let mut attempts = 0;
+            let committed = loop {
+                attempts += 1;
+                let pre = preconditions(EffectKind::Automatic);
+                match commit_effect(&root, &slot, seq, &key, &pre) {
+                    Err(AbstainReason::PreconditionsStale)
+                        if attempts < 5 && pre.observed_at.elapsed() > STALE_PRECONDITIONS => {}
+                    result => {
+                        break result.expect("a baseline commits, so it can never be offered again")
+                    }
+                }
+            };
 
             assert!(
                 !committed.routable,

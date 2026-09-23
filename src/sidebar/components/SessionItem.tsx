@@ -337,7 +337,7 @@ const SessionItem: Component<{
       data-ac-state={props.isActive ? "active" : isInactive() ? "inactive" : "idle"}
     >
       <div
-        class={`session-item-status ${sessionDotClass(props.session, { inactive: isInactive(), comanaged: isComanaged() })}`}
+        class={`session-item-status ${sessionDotClass(props.session, { inactive: isInactive() })}${isComanaged() ? " comanaged" : ""}`}
         data-ac-comanaged={isComanaged() ? "true" : "false"}
         title={isComanaged() ? "Co-managed" : undefined}
       />

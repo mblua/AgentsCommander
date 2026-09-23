@@ -16,6 +16,16 @@ import {
   AC_WORKSPACE_ROOT_PLACEHOLDER,
   PI_CONTEXT_REGEX,
 } from "../../shared/profile-utils";
+import { registerShortcuts, unregisterShortcuts } from "../../shared/shortcuts";
+import {
+  setSidebarCompactHotkey,
+  setSidebarCompactMode,
+  sidebarCompact,
+} from "../../shared/sidebar-compact";
+import {
+  registerCompactHostForTests,
+  resetSidebarCompactForTests,
+} from "../../shared/testing/ui-harness";
 import { baseSettings } from "../../shared/testing/base-settings";
 
 vi.mock("../../shared/ipc", async () => {
@@ -3419,5 +3429,141 @@ describe("SettingsModal automation hooks", () => {
       await settle();
       expect(unlisten).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// #2236 phase 5 — the compact-hotkey capture control. Every leg dispatches on a
+// focused element (the production path), never on `document`.
+describe("SettingsModal compact hotkey capture (#2236)", () => {
+  let release: (() => void) | null = null;
+  let shortcutHandler: ((e: KeyboardEvent) => void) | null = null;
+  let probe: ReturnType<typeof vi.fn<(e: Event) => void>> | null = null;
+
+  afterEach(() => {
+    if (shortcutHandler) unregisterShortcuts(shortcutHandler);
+    if (probe) document.removeEventListener("keydown", probe);
+    shortcutHandler = null;
+    probe = null;
+    release?.();
+    release = null;
+    resetSidebarCompactForTests();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+    settingsStoreMock.current = undefined;
+  });
+
+  async function mountModal(overrides: Partial<AppSettings> = {}): Promise<() => void> {
+    if (Object.keys(overrides).length > 0) {
+      vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings(overrides));
+    }
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(() => SettingsModal({ onClose: () => {} }), root);
+    await settle();
+    return dispose;
+  }
+
+  function hotkeyKeydown(init: KeyboardEventInit): KeyboardEvent {
+    return new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      shiftKey: true,
+      ...init,
+    });
+  }
+
+  function captureInput(): HTMLInputElement {
+    return byTestId<HTMLInputElement>("settings.general.sidebarCompactHotkey");
+  }
+
+  it("saves a captured Ctrl+Shift+B through saveDraft", async () => {
+    const dispose = await mountModal();
+    captureInput().focus();
+    captureInput().dispatchEvent(hotkeyKeydown({ key: "B", code: "KeyB" }));
+    await settle();
+    expect(captureInput().value).toBe("Ctrl+Shift+B");
+
+    await saveAndReadDraft();
+    const matcher = expect.objectContaining({ sidebarCompactHotkey: "Ctrl+Shift+B" });
+    expect(SettingsAPI.saveDraft).toHaveBeenCalledWith(matcher);
+    // Anti-vacuous: the same matcher rejects an empty-object call.
+    expect(matcher.asymmetricMatch({})).toBe(false);
+    dispose();
+  });
+
+  it("displays an accepted variant spelling as Ctrl+Shift+<LETTER>", async () => {
+    const dispose = await mountModal({ sidebarCompactHotkey: " control + SHIFT + e " });
+    expect(captureInput().value).toBe("Ctrl+Shift+E");
+    dispose();
+  });
+
+  it("blocks Save for a hand-edited value the backend would reject", async () => {
+    const dispose = await mountModal({ sidebarCompactHotkey: "Ctrl+Shift+2" });
+    expect(document.querySelector(".modal-save-error")?.textContent).toContain(
+      "Sidebar compact hotkey",
+    );
+    expect(byTestId<HTMLButtonElement>("settings.save").disabled).toBe(true);
+    dispose();
+  });
+
+  it("shows a conflict for a reserved key and leaves the draft unchanged", async () => {
+    const dispose = await mountModal();
+    captureInput().focus();
+    captureInput().dispatchEvent(hotkeyKeydown({ key: "w", code: "KeyZ" }));
+    await settle();
+    expect(byTestId("settings.general.sidebarCompactHotkey.error").textContent).toContain(
+      "conflicts",
+    );
+    expect(captureInput().value).toBe("Ctrl+Shift+E");
+    dispose();
+  });
+
+  it("isolates capture keys with a capture-phase listener guarded by focus (D17)", async () => {
+    release = registerCompactHostForTests();
+    // K, not the default E, so leg (b) shows the draft actually changed.
+    setSidebarCompactHotkey("Ctrl+Shift+K");
+    probe = vi.fn<(e: Event) => void>();
+    document.addEventListener("keydown", probe);
+    shortcutHandler = registerShortcuts();
+    const dispose = await mountModal();
+
+    // (a) positive control: another focused control, the shortcut toggles once.
+    const other = byTestId<HTMLInputElement>("settings.general.screenshotCaptureHotkey");
+    other.focus();
+    other.dispatchEvent(hotkeyKeydown({ key: "K", code: "KeyK" }));
+    expect(sidebarCompact()).toBe(true);
+    expect(probe).toHaveBeenCalledTimes(1);
+    setSidebarCompactMode(false);
+    probe.mockClear();
+
+    // (b) focused capture input: no toggle, the draft takes the letter.
+    captureInput().focus();
+    const captured = hotkeyKeydown({ key: "K", code: "KeyK" });
+    const preventSpy = vi.spyOn(captured, "preventDefault");
+    const stopSpy = vi.spyOn(captured, "stopImmediatePropagation");
+    captureInput().dispatchEvent(captured);
+    await settle();
+    expect(sidebarCompact()).toBe(false);
+    expect(captureInput().value).toBe("Ctrl+Shift+K");
+
+    // (c) consumed before the bubble phase; a plain KeyA still reaches it.
+    expect(preventSpy).toHaveBeenCalled();
+    expect(stopSpy).toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+    captureInput().dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "a", code: "KeyA" }),
+    );
+    expect(probe).toHaveBeenCalledTimes(1);
+
+    // (d) Tab passes through untouched.
+    const tab = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab", code: "Tab" });
+    const tabPrevent = vi.spyOn(tab, "preventDefault");
+    const tabStop = vi.spyOn(tab, "stopImmediatePropagation");
+    captureInput().dispatchEvent(tab);
+    expect(tabPrevent).not.toHaveBeenCalled();
+    expect(tabStop).not.toHaveBeenCalled();
+    expect(probe).toHaveBeenCalledTimes(2);
+    dispose();
   });
 });
