@@ -16,7 +16,8 @@ import {
   type ReconcileIntervalSpy,
 } from "./testing/app-harness";
 import { sessionsStore } from "./stores/sessions";
-import type { Session } from "../shared/types";
+import { sessionActivity } from "../shared/session-activity";
+import type { Session, SessionStatus } from "../shared/types";
 
 // #2271 phase 8 - the idle edge is the only place the Co-managed decision can
 // reach the dot without painting `waiting` first: lib.rs emits `session_idle`
@@ -29,6 +30,9 @@ import type { Session } from "../shared/types";
 const projectPath = "C:\\Project";
 const agentAPath = `${projectPath}\\.ac\\_agent_General`;
 const agentBPath = `${projectPath}\\.ac\\_agent_Worker`;
+
+// #2453 test 5 - the status the backend snapshot reports for SESSION_B.
+let backendStatusB: SessionStatus = "running";
 
 function backendRows(): Session[] {
   return [
@@ -43,7 +47,7 @@ function backendRows(): Session[] {
       id: SESSION_B,
       name: "Worker",
       workingDirectory: agentBPath,
-      status: "running",
+      status: backendStatusB,
       waitingForInput: false,
     }),
   ];
@@ -72,6 +76,12 @@ function currentRow(id: string): Session | undefined {
   return sessionsStore.sessions.find((s) => s.id === id);
 }
 
+function activity(id: string) {
+  return sessionActivity(currentRow(id), {
+    comanaged: sessionsStore.comanagedBySessionId[id] ?? false,
+  });
+}
+
 describe("SidebarApp Co-managed idle edge (#2271)", () => {
   let cleanupDom: (() => void) | null = null;
   let reconcileIntervals: ReconcileIntervalSpy;
@@ -80,6 +90,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
     sessionsStore.resetComanagedForTests();
+    backendStatusB = "running";
 
     // Keep the real setInterval so the app's timers still run, then sweep the
     // 5000 ms reconcile handles in afterEach. Mocking the implementation would
@@ -98,7 +109,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     resetUiStoresForTests();
   });
 
-  it("the idle edge arms comanaged and never paints waiting (test 8)", async () => {
+  it("the idle edge arms Co-managed, still paints Co-managed, and records waiting underneath (test 8, #2453)", async () => {
     const fake = new FakeTransport();
     setupTransport(fake);
     const waitingSpy = vi.spyOn(sessionsStore, "setSessionWaiting");
@@ -116,12 +127,18 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
       observedClasses.push(dot(rendered.root, SESSION_B).className);
 
       expect(sessionsStore.comanagedBySessionId[SESSION_B]).toBe(true);
-      expect(currentRow(SESSION_B)?.waitingForInput).toBe(false);
-      expect(currentRow(SESSION_B)?.pendingReview).toBe(false);
+      expect(currentRow(SESSION_B)?.waitingForInput).toBe(true);
+      // SESSION_A is activeId in this fixture, so B's idle edge raises pendingReview.
+      expect(currentRow(SESSION_B)?.pendingReview).toBe(true);
       expect(
         waitingSpy.mock.calls.filter(([id, waiting]) => id === SESSION_B && waiting === true),
-      ).toEqual([]);
-      expect(observedClasses.some((c) => c.includes("waiting") || c.includes("pending"))).toBe(false);
+      ).toHaveLength(1);
+      // #2442 D4-g - the dot keeps its real activity colour; the Co-managed
+      // signal is the additive ring, which the armed idle edge must add.
+      expect(observedClasses.map((c) => c.split(/\s+/).includes("comanaged"))).toEqual([
+        false,
+        true,
+      ]);
 
       const renderedDot = dot(rendered.root, SESSION_B);
       expect(renderedDot.classList.contains("comanaged")).toBe(true);
@@ -186,6 +203,91 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
       expect(dot(rendered.root, SESSION_B).classList.contains("running")).toBe(true);
     } finally {
       rendered.cleanup();
+    }
+  });
+  // #2453 - a Co-managed cycle must leave the row as a plain idle edge would.
+  async function mountApp(): Promise<{ fake: FakeTransport; cleanup: () => void }> {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+    await waitFor(() => {
+      expect(fake.listensFor("session_idle").length).toBeGreaterThan(0);
+      expect(fake.listensFor("session_comanaged_state").length).toBeGreaterThan(0);
+      expect(sessionsStore.activeId).toBe(SESSION_A);
+    });
+    return { fake, cleanup: rendered.cleanup };
+  }
+
+  // Handlers run synchronously on emit, so `during` is read inside the window.
+  function runCycle(fake: FakeTransport, id: string, during: string[]): void {
+    fake.emitFromBackend("session_busy", { id });
+    fake.emitFromBackend("session_idle", { id, comanaged: true });
+    during.push(activity(id));
+    fake.emitFromBackend("session_comanaged_state", { id, active: false, reason: null });
+  }
+
+  it("the Co-managed cycle ends in waitingForInput on the active session (#2453 test 1)", async () => {
+    const { fake, cleanup } = await mountApp();
+    try {
+      runCycle(fake, SESSION_A, []);
+      expect(activity(SESSION_A)).toBe("waitingForInput");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("the Co-managed cycle ends in pendingReview on a non-active session (#2453 test 2)", async () => {
+    const { fake, cleanup } = await mountApp();
+    try {
+      runCycle(fake, SESSION_B, []);
+      expect(activity(SESSION_B)).toBe("pendingReview");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("paints exactly comanaged during the armed window on both legs (#2453 test 3)", async () => {
+    const { fake, cleanup } = await mountApp();
+    try {
+      const during: string[] = [];
+      runCycle(fake, SESSION_A, during);
+      runCycle(fake, SESSION_B, during);
+      expect(during).toEqual(["comanaged", "comanaged"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("a plain idle edge never paints comanaged (#2453 test 4)", async () => {
+    const { fake, cleanup } = await mountApp();
+    try {
+      fake.emitFromBackend("session_busy", { id: SESSION_A });
+      fake.emitFromBackend("session_idle", { id: SESSION_A, comanaged: false });
+      fake.emitFromBackend("session_busy", { id: SESSION_B });
+      fake.emitFromBackend("session_idle", { id: SESSION_B });
+      expect(activity(SESSION_A)).toBe("waitingForInput");
+      expect(activity(SESSION_B)).toBe("pendingReview");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("the 250 ms reconciler keeps the waiting recorded by the armed idle edge (#2453 test 5)", async () => {
+    const { fake, cleanup } = await mountApp();
+    try {
+      fake.emitFromBackend("session_busy", { id: SESSION_B });
+      fake.emitFromBackend("session_idle", { id: SESSION_B, comanaged: true });
+      backendStatusB = "idle";
+      const listsBefore = fake.callsFor("list_sessions").length;
+      window.dispatchEvent(new Event("focus"));
+      // Real timers: the debounced refresh fires after 250 ms and lists once.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(fake.callsFor("list_sessions").length).toBe(listsBefore + 1);
+      expect(currentRow(SESSION_B)?.waitingForInput).toBe(true);
+      fake.emitFromBackend("session_comanaged_state", { id: SESSION_B, active: false, reason: null });
+      expect(activity(SESSION_B)).toBe("pendingReview");
+    } finally {
+      cleanup();
     }
   });
 });
