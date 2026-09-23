@@ -47,6 +47,7 @@ import {
   beepIdleTransitions,
   GRACE_MS,
   hasBusyToIdleTransition,
+  isBusy,
   pruneExpiredGrace,
   shouldSuppressBeep,
   startTeamIdleWatcher,
@@ -75,6 +76,20 @@ vi.mock("@tauri-apps/api/window", () => ({
     throw new Error("tauri unavailable in tests");
   },
 }));
+
+describe("isBusy (#2453)", () => {
+  it("counts a waiting session as busy while it is armed for Co-managed (test 6)", () => {
+    const waiting = session({ waitingForInput: true });
+    expect(isBusy(waiting, true)).toBe(true);
+    expect(isBusy(waiting, false)).toBe(false);
+  });
+
+  it("never counts an exited session as busy, armed or not (test 7)", () => {
+    const exited = session({ status: { exited: 0 }, waitingForInput: false });
+    expect(isBusy(exited, true)).toBe(false);
+    expect(isBusy(exited, false)).toBe(false);
+  });
+});
 
 describe("shouldSuppressBeep (#254)", () => {
   it("suppresses the focused workgroup", () => {
@@ -326,7 +341,7 @@ describe("startTeamIdleWatcher wiring (#2109)", () => {
     projectStore.clear();
   });
 
-  it("beeps once on the first busy→idle transition and honours the enabled and focus gates", async () => {
+  function arrangeRoom(): FakeTransport {
     const fake = new FakeTransport();
     fake.resolve("new_project", {
       path: projectPath,
@@ -357,7 +372,39 @@ describe("startTeamIdleWatcher wiring (#2109)", () => {
       }),
     );
     fake.resolve("get_settings", baseSettings({ teamIdleBeepEnabled: true }));
+    return fake;
+  }
 
+  it("does not beep for a room whose only idle session is armed for Co-managed (#2453 test 8)", async () => {
+    const restoreTransport = __setTransportForTests(arrangeRoom());
+    let dispose: (() => void) | null = null;
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await settingsStore.load();
+      sessionsStore.setSessions([session()]);
+      sessionsStore.setVisibleActiveIdForTests(null);
+
+      dispose = startTeamIdleWatcher();
+      await hop();
+
+      // The armed idle edge records both the flag and waiting (App.tsx).
+      sessionsStore.setSessionComanaged("session-1", true);
+      sessionsStore.setSessionWaiting("session-1", true);
+      await hop();
+      expect(beepSpy).not.toHaveBeenCalled();
+
+      // Positive control: clearing the flag reveals the idle room and beeps.
+      sessionsStore.setSessionComanaged("session-1", false);
+      await waitFor(() => expect(beepSpy).toHaveBeenCalledTimes(1));
+    } finally {
+      dispose?.();
+      sessionsStore.resetComanagedForTests();
+      restoreTransport();
+    }
+  });
+
+  it("beeps once on the first busy→idle transition and honours the enabled and focus gates", async () => {
+    const fake = arrangeRoom();
     const restoreTransport = __setTransportForTests(fake);
     let dispose: (() => void) | null = null;
     try {
