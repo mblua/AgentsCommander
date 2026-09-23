@@ -1,7 +1,8 @@
 //! Codex turn-boundary parsing and assembly (#2232 phase 5).
 //!
 //! A Codex rollout persists a turn's boundary as `event_msg` records:
-//! `task_started` opens a turn and `task_complete` closes it, carrying the flat
+//! `task_started` opens a turn and `task_complete` (or its `turn_complete`
+//! alias) closes it, carrying the flat
 //! `turn_id` and the provider's `last_agent_message`. The assistant prose of
 //! the same turn lives in one or more `final_answer` records whose `turn_id` is
 //! nested at `payload.internal_chat_message_metadata_passthrough.turn_id`
@@ -20,7 +21,7 @@
 //! enters this module at all, and the watcher emits it immediately as its own
 //! candidate.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 /// The open-turn bound of plan section 5.2: at most eight open turns are kept,
 /// the oldest evicted with a counted log line.
@@ -54,8 +55,8 @@ pub enum ClosureParse {
 
 /// Parse one rollout line as a closure record.
 ///
-/// Accepts exactly `type=event_msg` with `payload.type` `task_started` or
-/// `task_complete`. The `turn_id` is read **flat from the payload** and must be
+/// Accepts exactly `type=event_msg` with `payload.type` `task_started`,
+/// `task_complete` or its `turn_complete` alias (parsed as `TaskComplete`). The `turn_id` is read **flat from the payload** and must be
 /// a non-empty string; a closure without one is [`ClosureParse::Malformed`]
 /// rather than a silent no-op. `last_agent_message` is optional by design: its
 /// absence is what makes the completeness check abstain with a reason.
@@ -82,7 +83,7 @@ pub fn parse_closure_record(line: &str) -> ClosureParse {
             Some(turn_id) => ClosureParse::Closure(ClosureRecord::TaskStarted { turn_id }),
             None => ClosureParse::Malformed,
         },
-        "task_complete" => match turn_id {
+        "task_complete" | "turn_complete" => match turn_id {
             Some(turn_id) => {
                 let last_agent_message = payload
                     .get("last_agent_message")
@@ -142,6 +143,8 @@ pub enum AbstainReason {
     CompletenessMismatch,
     /// A whole candidate already left this turn; nothing may leave it twice.
     AlreadyRouted,
+    /// A newer `task_started` already superseded this turn; it is never routed.
+    Superseded,
 }
 
 impl AbstainReason {
@@ -151,6 +154,7 @@ impl AbstainReason {
             Self::MissingLastAgentMessage => "missing-last-agent-message",
             Self::CompletenessMismatch => "completeness-mismatch",
             Self::AlreadyRouted => "already-routed",
+            Self::Superseded => "superseded",
         }
     }
 }
@@ -172,6 +176,9 @@ pub enum TurnEvent {
     /// A `final_answer` arrived after its turn already emitted; ignored so the
     /// turn yields exactly one candidate.
     LateAfterRoute { turn_id: String },
+    /// A `final_answer` for a turn that a newer `task_started` already
+    /// superseded; ignored, never routed.
+    LateAfterSuperseded { turn_id: String },
     /// An `event_msg` closure record could not be parsed; skipped and counted.
     MalformedClosure,
 }
@@ -185,6 +192,7 @@ pub struct TurnCounters {
     pub superseded: u64,
     pub evicted: u64,
     pub late_after_route: u64,
+    pub late_after_superseded: u64,
     pub malformed_closures: u64,
 }
 
@@ -210,6 +218,10 @@ struct OpenTurn {
 pub struct TurnAccumulator {
     open: VecDeque<OpenTurn>,
     counters: TurnCounters,
+    /// Ids of closed turns a newer `task_started` superseded. Never bounded and
+    /// never shrunk: forgetting an id would let a late fragment plus closure
+    /// re-emit it (#2356). Growth is one entry per superseded turn.
+    superseded: HashSet<String>,
 }
 
 impl TurnAccumulator {
@@ -241,6 +253,12 @@ impl TurnAccumulator {
             self.open[index].fragments.push(fragment);
             return Vec::new();
         }
+        if self.superseded.contains(turn_id) {
+            self.counters.late_after_superseded += 1;
+            return vec![TurnEvent::LateAfterSuperseded {
+                turn_id: turn_id.to_owned(),
+            }];
+        }
         let events = self.make_room();
         self.open.push_back(OpenTurn {
             turn_id: turn_id.to_owned(),
@@ -264,6 +282,7 @@ impl TurnAccumulator {
         while let Some(turn) = self.open.pop_front() {
             if turn.turn_id != turn_id && turn.closure_seen {
                 self.counters.superseded += 1;
+                self.superseded.insert(turn.turn_id.clone());
                 events.push(TurnEvent::Superseded {
                     turn_id: turn.turn_id,
                 });
@@ -288,6 +307,13 @@ impl TurnAccumulator {
         last_agent_message: Option<&str>,
     ) -> Vec<TurnEvent> {
         let Some(index) = self.index_of(turn_id) else {
+            if self.superseded.contains(turn_id) {
+                self.counters.abstained += 1;
+                return vec![TurnEvent::Abstain {
+                    turn_id: turn_id.to_owned(),
+                    reason: AbstainReason::Superseded,
+                }];
+            }
             let mut events = self.make_room();
             self.open.push_back(OpenTurn {
                 turn_id: turn_id.to_owned(),
@@ -729,5 +755,162 @@ mod tests {
         assert_eq!(events, vec![TurnEvent::MalformedClosure]);
         assert_eq!(turns.counters().malformed_closures, 1);
         assert_eq!(turns.open_turns(), 0);
+    }
+
+    // #2356 item 1: `turn_complete` is an alias of `task_complete`.
+    #[test]
+    fn parse_accepts_the_turn_complete_alias() {
+        assert_eq!(
+            parse_closure_record(&closure_line(serde_json::json!({
+                "type": "turn_complete",
+                "turn_id": "t-1",
+                "last_agent_message": "m"
+            }))),
+            ClosureParse::Closure(ClosureRecord::TaskComplete {
+                turn_id: "t-1".to_owned(),
+                last_agent_message: Some("m".to_owned()),
+            })
+        );
+        assert_eq!(
+            parse_closure_record(&closure_line(
+                serde_json::json!({"type": "turn_complete", "turn_id": "t-1"})
+            )),
+            ClosureParse::Closure(ClosureRecord::TaskComplete {
+                turn_id: "t-1".to_owned(),
+                last_agent_message: None,
+            })
+        );
+        for payload in [
+            serde_json::json!({"type": "turn_complete", "last_agent_message": "m"}),
+            serde_json::json!({"type": "turn_complete", "turn_id": ""}),
+            serde_json::json!({"type": "turn_complete", "turn_id": 7}),
+        ] {
+            assert_eq!(
+                parse_closure_record(&closure_line(payload.clone())),
+                ClosureParse::Malformed,
+                "payload={payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_alias_closure_emits_the_turn_through_on_line() {
+        let mut turns = TurnAccumulator::new();
+        assert!(turns.on_final_answer("t", fragment("body", 3)).is_empty());
+        let events = turns.on_line(&closure_line(serde_json::json!({
+            "type": "turn_complete",
+            "turn_id": "t",
+            "last_agent_message": "body"
+        })));
+        assert_eq!(events.len(), 1);
+        let emitted = emit_text(&events).expect("the alias must close the turn");
+        assert_eq!(emitted.text, "body");
+        assert_eq!(emitted.first_record_start, Some(3));
+        assert_eq!(turns.counters().emitted, 1);
+    }
+
+    // #2356 item 2, the section 5.1 fixture of #2268: a superseded turn is
+    // never recreated by a late fragment and its closure.
+    #[test]
+    fn a_superseded_turn_is_not_recreated_by_a_late_fragment() {
+        let mut turns = TurnAccumulator::new();
+        turns.on_final_answer("s", fragment("a", 0));
+        assert_eq!(
+            turns.on_task_complete("s", Some("mismatch")),
+            vec![TurnEvent::Abstain {
+                turn_id: "s".to_owned(),
+                reason: AbstainReason::CompletenessMismatch
+            }]
+        );
+        assert_eq!(
+            turns.on_task_started("newer"),
+            vec![TurnEvent::Superseded {
+                turn_id: "s".to_owned()
+            }]
+        );
+        assert_eq!(
+            turns.on_final_answer("s", fragment("late", 1)),
+            vec![TurnEvent::LateAfterSuperseded {
+                turn_id: "s".to_owned()
+            }]
+        );
+        assert_eq!(
+            turns.on_task_complete("s", Some("late")),
+            vec![TurnEvent::Abstain {
+                turn_id: "s".to_owned(),
+                reason: AbstainReason::Superseded
+            }]
+        );
+        assert_eq!(turns.counters().emitted, 0);
+        assert_eq!(turns.counters().superseded, 1);
+        assert_eq!(turns.counters().late_after_superseded, 1);
+        assert_eq!(turns.open_turns(), 0);
+    }
+
+    #[test]
+    fn a_superseded_empty_marker_is_not_recreated_either() {
+        let mut turns = TurnAccumulator::new();
+        turns.on_task_complete("s", Some("x"));
+        turns.on_task_started("n");
+        let late = turns.on_final_answer("s", fragment("x", 0));
+        let closure = turns.on_task_complete("s", Some("x"));
+        assert!(emit_text(&late).is_none());
+        assert!(emit_text(&closure).is_none());
+        assert_eq!(turns.open_turns(), 0);
+    }
+
+    #[test]
+    fn a_routed_turn_superseded_then_replayed_emits_only_once() {
+        let mut turns = TurnAccumulator::new();
+        turns.on_final_answer("r", fragment("body", 0));
+        assert!(emit_text(&turns.on_task_complete("r", Some("body"))).is_some());
+        assert_eq!(
+            turns.on_task_started("n"),
+            vec![TurnEvent::Superseded {
+                turn_id: "r".to_owned()
+            }]
+        );
+        let late = turns.on_final_answer("r", fragment("body", 1));
+        let closure = turns.on_task_complete("r", Some("body"));
+        assert!(emit_text(&late).is_none());
+        assert!(emit_text(&closure).is_none());
+        assert_eq!(turns.counters().emitted, 1);
+    }
+
+    /// Emit and supersede 200 turns `id0`..`id199`.
+    fn supersede_many(turns: &mut TurnAccumulator) {
+        for i in 0..200u64 {
+            let id = format!("id{i}");
+            turns.on_final_answer(&id, fragment("x", i));
+            assert!(emit_text(&turns.on_task_complete(&id, Some("x"))).is_some());
+            turns.on_task_started(&format!("next{i}"));
+        }
+    }
+
+    #[test]
+    fn overflow_replay_past_many_supersedes_still_never_emits() {
+        let mut turns = TurnAccumulator::new();
+        supersede_many(&mut turns);
+        for id in ["id0", "id64", "id199"] {
+            let late = turns.on_final_answer(id, fragment("x", 0));
+            let closure = turns.on_task_complete(id, Some("x"));
+            assert!(emit_text(&late).is_none(), "{id}");
+            assert!(emit_text(&closure).is_none(), "{id}");
+        }
+        assert_eq!(turns.counters().emitted, 200);
+        assert_eq!(turns.counters().late_after_superseded, 3);
+    }
+
+    // Delivery control: the fix must not block a healthy fresh turn.
+    #[test]
+    fn a_healthy_turn_still_emits_after_many_supersedes() {
+        let mut turns = TurnAccumulator::new();
+        supersede_many(&mut turns);
+        turns.on_final_answer("fresh", fragment("fresh body", 5));
+        let events = turns.on_task_complete("fresh", Some("fresh body"));
+        assert_eq!(events.len(), 1);
+        let emitted = emit_text(&events).expect("a fresh turn still emits");
+        assert_eq!(emitted.text, "fresh body");
+        assert_eq!(emitted.first_record_start, Some(5));
     }
 }
