@@ -33,6 +33,8 @@ import {
 } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
 import { validateScreenshotHotkeySyntax } from "../../shared/screenshot-hotkey";
+import { letterFromCaptureEvent, parseAppHotkey } from "../../shared/app-hotkey";
+import { DEFAULT_SIDEBAR_COMPACT_HOTKEY } from "../../shared/sidebar-compact";
 import { settingsStore } from "../../shared/stores/settings";
 import { setSoundsEnabled } from "../../shared/sound";
 import { sessionsStore } from "../stores/sessions";
@@ -1319,6 +1321,36 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSettings("data", key as any, value as any);
   };
 
+  // #2236 D17: capture-phase document listener, so it runs before Solid's
+  // delegated handlers and shortcuts.ts, and only while the control is focused.
+  const [capturingHotkey, setCapturingHotkey] = createSignal(false);
+  const [hotkeyCaptureError, setHotkeyCaptureError] = createSignal<string | null>(null);
+  const onHotkeyCapture = (e: KeyboardEvent) => {
+    if (!capturingHotkey()) return;
+    if (e.key === "Tab" || ["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setHotkeyCaptureError(null);
+      updateField("sidebarCompactHotkey", DEFAULT_SIDEBAR_COMPACT_HOTKEY);
+      return;
+    }
+    const result = letterFromCaptureEvent(e);
+    if (result === null) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if ("error" in result) {
+      setHotkeyCaptureError(result.error);
+      return;
+    }
+    setHotkeyCaptureError(null);
+    updateField("sidebarCompactHotkey", "Ctrl+Shift+" + result.letter.toUpperCase());
+  };
+  onMount(() => {
+    document.addEventListener("keydown", onHotkeyCapture, true);
+    onCleanup(() => document.removeEventListener("keydown", onHotkeyCapture, true));
+  });
+
   /** #1796 - one shape for both selected-row rail fields, written once. `updateField`
    *  writes the store synchronously, so `draft` already holds this keystroke in the
    *  edited field's own position and the sibling's stored value in the other. An invalid
@@ -2070,6 +2102,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       settings.data?.screenshotCaptureHotkey ?? "Ctrl+Q"
     );
 
+  // Normalizes an accepted spelling (`ctrl+shift+e`, `Control`, padding) to `Ctrl+Shift+<LETTER>`.
+  const displaySidebarCompactHotkey = (): string => {
+    const raw = settings.data?.sidebarCompactHotkey ?? DEFAULT_SIDEBAR_COMPACT_HOTKEY;
+    const parsed = parseAppHotkey(raw);
+    return parsed ? "Ctrl+Shift+" + parsed.letter.toUpperCase() : raw;
+  };
+
+  const validateSidebarCompactHotkey = (): string | null =>
+    parseAppHotkey(settings.data?.sidebarCompactHotkey ?? DEFAULT_SIDEBAR_COMPACT_HOTKEY)
+      ? null
+      : "Sidebar compact hotkey: expected Ctrl+Shift+<A-Z>, excluding W, R, C and V";
+
   const validateTypingHoldSeconds = (): string | null => {
     if (!settings.data) return null;
     if (parseTypingHoldSeconds(typingHoldSecondsText()) === null) {
@@ -2084,7 +2128,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateCoordinatorIdle() ??
     validateTypingHoldSeconds() ??
     validateApiServerSettings() ??
-    validateScreenshotHotkey();
+    validateScreenshotHotkey() ??
+    validateSidebarCompactHotkey();
 
   const handleSave = async () => {
     if (!settings.data) return;
@@ -2276,6 +2321,24 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             }
             data-ac-testid="settings.general.screenshotCaptureHotkey"
           />
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Compact sidebar hotkey</span>
+          <input
+            class="settings-input settings-input-sm"
+            readOnly
+            value={displaySidebarCompactHotkey()}
+            onFocus={() => setCapturingHotkey(true)}
+            onBlur={() => setCapturingHotkey(false)}
+            data-ac-testid="settings.general.sidebarCompactHotkey"
+          />
+          <Show when={hotkeyCaptureError()}>
+            {(message) => (
+              <div class="settings-hint settings-hint-error" data-ac-testid="settings.general.sidebarCompactHotkey.error">
+                {message()}
+              </div>
+            )}
+          </Show>
         </label>
       </div>
 
