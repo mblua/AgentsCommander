@@ -56,7 +56,7 @@ A link that leads outside the app is confirmed before it opens. The dialog says:
 
 `Open anyway` proceeds and hands the URL to your browser. Declining leaves you where you were and opens nothing.
 
-The confirmation is hosted by more than one window, including the Guide, so you get the same prompt wherever the link was.
+The confirmation is hosted by more than one window, so you get the same prompt wherever the link was.
 
 ## Onboarding
 

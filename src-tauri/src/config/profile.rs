@@ -80,7 +80,7 @@ pub fn app_title() -> &'static str {
     })
 }
 
-/// Title suffix appended to secondary windows (guide, etc.).
+/// Title suffix appended to secondary windows (spec board, etc.).
 /// Delegates to app_title().
 pub fn app_title_suffix() -> &'static str {
     app_title()

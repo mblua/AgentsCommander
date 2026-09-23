@@ -4691,7 +4691,6 @@ pub fn run(
                 commands::window::set_watchers_geometry,
                 commands::window::set_main_window_placement,
                 commands::window::open_in_explorer,
-                commands::window::open_guide_window,
                 commands::window::open_spec_board_window,
                 commands::window::open_resource_monitor_window,
                 commands::window::dock_resource_monitor_window,

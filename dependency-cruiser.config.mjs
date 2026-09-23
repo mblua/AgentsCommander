@@ -33,7 +33,7 @@ export default {
       },
       to: {
         path: "([/\\\\]TerminalView\\.tsx$" +
-          "|^src/(sidebar|browser|guide|main|resource-monitor|screenshot-overlay|spec-board|watchers)/" +
+          "|^src/(sidebar|browser|main|resource-monitor|screenshot-overlay|spec-board|watchers)/" +
           "|^src/terminal/(components|stores)/" +
           "|^src/shared/ipc\\.ts$" +
           "|^scripts/fixtures/frontend-dependency-cycle/seams/(terminal-session-registry|terminal-output-admission|sidebar|ipc)\\.ts$" +

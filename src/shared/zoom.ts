@@ -12,14 +12,13 @@ export const ZOOM_STEP = 0.1;
 export const ZOOM_MIN = 0.5;
 export const ZOOM_MAX = 3.0;
 
-export type WindowType = "sidebar" | "terminal" | "main" | "detached" | "guide";
+export type WindowType = "sidebar" | "terminal" | "main" | "detached";
 
 const zoomKeyMap: Record<WindowType, keyof AppSettings> = {
   sidebar: "sidebarZoom",
   terminal: "terminalZoom",
   main: "mainZoom",
   detached: "terminalZoom",
-  guide: "guideZoom",
 };
 
 export interface ZoomState {
