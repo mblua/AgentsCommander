@@ -1674,6 +1674,11 @@ pub(crate) fn note_coordinator_create_on_app<R: tauri::Runtime>(
         // agent_fqn_from_path returns String (teams.rs:80), not Option.
         let fqn = crate::config::teams::agent_fqn_from_path(cwd);
         let now = chrono::Utc::now();
+        // Held through the emits below: a restore can never emit its timestamp
+        // after this create's clear has emitted null.
+        let _order = CLOSE_MARKER_EVENT_ORDER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (seeded, cleared_auto, cleared_manual) = {
             let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
             let seeded = g.seed_if_absent(&fqn, now);
@@ -1715,6 +1720,47 @@ pub(crate) fn note_coordinator_create_on_app<R: tauri::Runtime>(
             done: false,
             session_may_exist: false,
         })
+    }
+}
+
+/// (#2413) Orders close-marker changes made by coordinator creates with their
+/// events. The create's clear and a failed create's restore each hold it from
+/// the clocks change through their emits, so the UI receives their events in
+/// the same order as the clock changes. Taken before the clocks lock, never
+/// held across an `.await`.
+static CLOSE_MARKER_EVENT_ORDER: Mutex<()> = Mutex::new(());
+
+/// (#2413) Test-only pause in a failed create's restore, after the clocks lock
+/// is dropped and before its events are emitted. Keyed by FQN.
+#[cfg(test)]
+pub(crate) mod restore_emit_seam {
+    use std::collections::HashMap;
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::sync::Mutex;
+
+    type Seam = (Sender<()>, Receiver<()>);
+    static SEAMS: Mutex<Option<HashMap<String, Seam>>> = Mutex::new(None);
+
+    /// Arm the pause for `fqn`: `reached` gets a message when the restore
+    /// pauses; the restore resumes when `release` gets one.
+    pub(crate) fn install(fqn: &str, reached: Sender<()>, release: Receiver<()>) {
+        SEAMS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashMap::new)
+            .insert(fqn.to_string(), (reached, release));
+    }
+
+    pub(crate) fn hit(fqn: &str) {
+        let seam = SEAMS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .and_then(|map| map.remove(fqn));
+        if let Some((reached, release)) = seam {
+            let _ = reached.send(());
+            let _ = release.recv();
+        }
     }
 }
 
@@ -1769,6 +1815,10 @@ impl<R: tauri::Runtime> CoordinatorCreateTicket<R> {
         else {
             return;
         };
+        // Held through the emits below (see `CLOSE_MARKER_EVENT_ORDER`).
+        let _order = CLOSE_MARKER_EVENT_ORDER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (escrow, manual, auto) = {
             let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
             let escrow = g.finish_coordinator_create(&self.fqn, false);
@@ -1788,6 +1838,8 @@ impl<R: tauri::Runtime> CoordinatorCreateTicket<R> {
             }
             (escrow, manual, auto)
         };
+        #[cfg(test)]
+        restore_emit_seam::hit(&self.fqn);
         if let Some(t) = manual {
             let _ = self.app.emit(
                 "coordinator_manual_close_changed",
@@ -9076,6 +9128,57 @@ mod tests {
         a.failed();
         assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
         assert_eq!(drain(&events), vec![auto_event("null")]);
+    }
+
+    /// #2413 grinch step-9: a failed create's restore paused before its emit must
+    /// not deliver its timestamp after a newer create's clear. The UI-visible
+    /// state (last event) must match the clock.
+    #[test]
+    fn restore_emit_never_lands_after_newer_create_clear() {
+        let (app, clocks, events) = marker_unit_app();
+        let fqn = crate::config::teams::agent_fqn_from_path(MARKER_CWD);
+        let t = marker_ts(0);
+        assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, t));
+        let failing =
+            super::note_coordinator_create_on_app(app.handle(), MARKER_CWD).expect("ticket");
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        super::restore_emit_seam::install(&fqn, reached_tx, release_rx);
+
+        let restorer = std::thread::spawn(move || failing.failed());
+        reached_rx.recv().expect("restore paused before its emit");
+        // The clock holds the restored marker; its event is not out yet.
+        assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), Some(t));
+
+        let handle = app.handle().clone();
+        let (newer_done_tx, newer_done_rx) = std::sync::mpsc::channel();
+        let newer = std::thread::spawn(move || {
+            super::note_coordinator_create_on_app(&handle, MARKER_CWD)
+                .expect("ticket")
+                .succeeded();
+            let _ = newer_done_tx.send(());
+        });
+        // Without ordering the newer create finishes while the restore is
+        // paused; with it, it waits. Either way, release afterwards.
+        let _ = newer_done_rx.recv_timeout(Duration::from_millis(200));
+        release_tx.send(()).unwrap();
+        restorer.join().unwrap();
+        newer.join().unwrap();
+
+        assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
+        let auto_events: Vec<_> = drain(&events)
+            .into_iter()
+            .filter(|(name, _)| name == "coordinator_auto_close_changed")
+            .collect();
+        assert_eq!(
+            auto_events,
+            vec![
+                auto_event("null"),
+                auto_event(&t.to_rfc3339()),
+                auto_event("null")
+            ],
+            "last event must match the cleared clock"
+        );
     }
 
     /// #2413 T5: the spawn fence is set before the spawn await and cleared only
