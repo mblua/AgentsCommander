@@ -89,9 +89,72 @@ pub struct CoordinatorClocks {
     map: HashMap<String, ClockEntry>,
     #[serde(skip)]
     dirty: bool,
+    /// (#2413) In-flight coordinator creates per FQN. In-memory only; never
+    /// persisted, never marks dirty.
+    #[serde(skip)]
+    creates: HashMap<String, CreateLedger>,
+}
+
+/// (#2413) Close markers a coordinator create cleared, kept so a failed create
+/// can put them back with their original timestamps.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ClearedCloseMarkers {
+    pub auto_closed_at: Option<DateTime<Utc>>,
+    pub manually_closed_at: Option<DateTime<Utc>>,
+}
+
+/// (#2413) Creates still running for one FQN and the markers they cleared.
+#[derive(Debug, Default)]
+struct CreateLedger {
+    active: u32,
+    escrow: ClearedCloseMarkers,
 }
 
 impl CoordinatorClocks {
+    /// (#2413) Record the start of a coordinator create that cleared `cleared`.
+    /// Per field, a newly cleared value replaces the escrowed one (it is the
+    /// latest state).
+    pub fn begin_coordinator_create(&mut self, fqn: &str, cleared: ClearedCloseMarkers) {
+        let l = self.creates.entry(fqn.to_string()).or_default();
+        l.active += 1;
+        if cleared.auto_closed_at.is_some() {
+            l.escrow.auto_closed_at = cleared.auto_closed_at;
+        }
+        if cleared.manually_closed_at.is_some() {
+            l.escrow.manually_closed_at = cleared.manually_closed_at;
+        }
+    }
+
+    /// (#2413) End one coordinator create. Returns the markers to restore: only
+    /// for a failure that ends the last in-flight create. A success wipes the
+    /// escrow: a session opened, so the markers must stay cleared.
+    pub fn finish_coordinator_create(
+        &mut self,
+        fqn: &str,
+        ok: bool,
+    ) -> Option<ClearedCloseMarkers> {
+        let l = self.creates.get_mut(fqn)?;
+        l.active = l.active.saturating_sub(1);
+        if ok {
+            l.escrow = ClearedCloseMarkers::default();
+        }
+        if l.active > 0 {
+            // Hand off to the creates still running.
+            return None;
+        }
+        let e = self.creates.remove(fqn).map(|l| l.escrow)?;
+        if ok || e == ClearedCloseMarkers::default() {
+            None
+        } else {
+            Some(e)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_create_ledger(&self, fqn: &str) -> bool {
+        self.creates.contains_key(fqn)
+    }
+
     /// Record a user message for `fqn` at `now`. Coalesces: returns `true`
     /// (caller should emit/flag dirty) only if no value existed or the prior
     /// value is older than COALESCE_SECS. Returns `false` when skipped.
@@ -335,7 +398,11 @@ pub fn load() -> CoordinatorClocks {
         },
         Err(_) => HashMap::new(), // first run / missing file
     };
-    CoordinatorClocks { map, dirty: false }
+    CoordinatorClocks {
+        map,
+        dirty: false,
+        creates: HashMap::new(),
+    }
 }
 
 /// Atomic save of the flat map. Symmetric with `load`. Reuses the hardened
@@ -504,7 +571,11 @@ pub fn load_from(path: &Path) -> CoordinatorClocks {
         Ok(raw) => serde_json::from_str::<HashMap<String, ClockEntry>>(&raw).unwrap_or_default(),
         Err(_) => HashMap::new(),
     };
-    CoordinatorClocks { map, dirty: false }
+    CoordinatorClocks {
+        map,
+        dirty: false,
+        creates: HashMap::new(),
+    }
 }
 
 #[cfg(test)]
@@ -674,7 +745,11 @@ mod tests {
         let raw = r#"{ "proj:wg-1-team/coord": { "lastUserMessageAt": "2023-11-14T22:13:20Z" } }"#;
         let map: HashMap<String, ClockEntry> =
             serde_json::from_str(raw).expect("legacy JSON must deserialize");
-        let clocks = CoordinatorClocks { map, dirty: false };
+        let clocks = CoordinatorClocks {
+            map,
+            dirty: false,
+            creates: HashMap::new(),
+        };
         assert_eq!(clocks.start_fresh_at("proj:wg-1-team/coord"), None);
         assert_eq!(
             clocks.last_user_message_at("proj:wg-1-team/coord"),
@@ -1046,5 +1121,71 @@ mod tests {
             "live key protected"
         );
         assert!(clocks.last_user_message_at("app:wg-5-team/coord").is_some());
+    }
+
+    /// (#2413) T9: the create ledger restores only when every overlapping create
+    /// failed, exactly once, on the last finish; any success wipes the escrow.
+    #[test]
+    fn create_ledger_handoff() {
+        let fqn = "proj:wg-1-team/coord";
+        let cleared = ClearedCloseMarkers {
+            auto_closed_at: Some(ts(0)),
+            manually_closed_at: None,
+        };
+        // Single create.
+        let mut c = CoordinatorClocks::default();
+        c.begin_coordinator_create(fqn, cleared);
+        assert_eq!(c.finish_coordinator_create(fqn, false), Some(cleared));
+        assert!(!c.has_create_ledger(fqn), "entry removed at active 0");
+        c.begin_coordinator_create(fqn, cleared);
+        assert_eq!(c.finish_coordinator_create(fqn, true), None);
+        assert!(!c.has_create_ledger(fqn));
+        // Unknown FQN -> None.
+        assert_eq!(c.finish_coordinator_create(fqn, false), None);
+
+        // Two overlapping creates: A cleared the marker, B cleared nothing.
+        for (first_ok, second_ok) in [(true, true), (true, false), (false, true), (false, false)] {
+            let mut c = CoordinatorClocks::default();
+            c.begin_coordinator_create(fqn, cleared);
+            c.begin_coordinator_create(fqn, ClearedCloseMarkers::default());
+            assert_eq!(
+                c.finish_coordinator_create(fqn, first_ok),
+                None,
+                "first finish always hands off"
+            );
+            assert!(c.has_create_ledger(fqn));
+            let expected = (!first_ok && !second_ok).then_some(cleared);
+            assert_eq!(
+                c.finish_coordinator_create(fqn, second_ok),
+                expected,
+                "first_ok={first_ok} second_ok={second_ok}"
+            );
+            assert!(!c.has_create_ledger(fqn), "entry removed at active 0");
+            assert!(!c.take_dirty(), "begin/finish never dirty the store");
+        }
+
+        // A newer cleared value replaces the escrowed one per field.
+        let mut c = CoordinatorClocks::default();
+        c.begin_coordinator_create(fqn, cleared);
+        let manual = ClearedCloseMarkers {
+            auto_closed_at: None,
+            manually_closed_at: Some(ts(5)),
+        };
+        c.begin_coordinator_create(fqn, manual);
+        assert_eq!(c.finish_coordinator_create(fqn, false), None);
+        assert_eq!(
+            c.finish_coordinator_create(fqn, false),
+            Some(ClearedCloseMarkers {
+                auto_closed_at: Some(ts(0)),
+                manually_closed_at: Some(ts(5)),
+            })
+        );
+
+        // The ledger is never serialized.
+        let mut c = CoordinatorClocks::default();
+        c.begin_coordinator_create(fqn, cleared);
+        let json = serde_json::to_string(&c).expect("serialize");
+        assert!(!json.contains("creates"), "{json}");
+        assert!(!json.contains("escrow"), "{json}");
     }
 }

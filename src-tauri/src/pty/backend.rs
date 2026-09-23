@@ -1,5 +1,7 @@
 use std::any::Any;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -181,6 +183,24 @@ pub(crate) struct BackendSpawnSpec {
     /// #935 - read-write repo bind mounts for container sessions. Empty for
     /// local-process sessions and when the replica has no admissible repos.
     pub container_repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
+    /// #2413 - set by the backend BEFORE any process or runtime for this spec can
+    /// exist; never cleared.
+    pub launch_witness: LaunchWitness,
+}
+
+/// #2413 - shared flag a backend marks right before it can launch a process or
+/// runtime. Unset after a spawn `Err` proves nothing was launched.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct LaunchWitness(Arc<AtomicBool>);
+
+impl LaunchWitness {
+    pub(crate) fn mark(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn launched(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
 }
 
 pub(crate) trait PtyBackend: Any + Send + Sync {

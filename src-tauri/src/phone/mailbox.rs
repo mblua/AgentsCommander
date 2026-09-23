@@ -8385,7 +8385,6 @@ impl MailboxPoller {
             spawn_with_resume,
             auto_closed_at
         );
-        let restore_cwd = cwd.clone();
         let (_, local) = crate::config::teams::split_project_prefix(target.fqn());
         let spawn = self.spawn_wake_session(
             app,
@@ -8413,27 +8412,8 @@ impl MailboxPoller {
         let info = match spawn_result {
             Ok(info) => info,
             Err(error) => {
-                // #2411 The create path clears the auto-closed marker before admission
-                // and the PTY spawn. Put the same timestamp back so a later wake still
-                // resumes. `mark_auto_closed` is a no-op if the marker was set again or
-                // the user closed by hand.
-                if let Some(t) = auto_closed_at {
-                    let restored = app
-                        .try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
-                        .map(|clocks| {
-                            clocks
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .mark_auto_closed(&marker_fqn, t)
-                        })
-                        .unwrap_or(false);
-                    if restored {
-                        let _ = app.emit(
-                            "coordinator_auto_close_changed",
-                            serde_json::json!({ "replicaPath": restore_cwd, "autoClosedAt": t.to_rfc3339() }),
-                        );
-                    }
-                }
+                // #2413 A failed create restores its cleared close markers itself
+                // (commands::session::CoordinatorCreateTicket), for every caller.
                 return Err(format!(
                     "Failed to spawn supported orchestrator session for '{}': {}",
                     target.fqn(),
@@ -9008,11 +8988,20 @@ impl MailboxPoller {
             let spawn_is_coordinator = *hooks.spawn_is_coordinator.lock().unwrap();
             // #2411 Mirror production create: the coordinator clear runs before the
             // create can fail, on both the failure and the success path.
-            if spawn_is_coordinator {
-                crate::commands::session::note_coordinator_create_on_app(app, &cwd);
-            }
+            // #2413 The ticket ends like production: `failed()` on the create error.
+            let ticket = if spawn_is_coordinator {
+                crate::commands::session::note_coordinator_create_on_app(app, &cwd)
+            } else {
+                None
+            };
             if let Some(msg) = hooks.internal_spawn_error.lock().unwrap().take() {
+                if let Some(t) = ticket {
+                    t.failed();
+                }
                 return Err(msg);
+            }
+            if let Some(t) = ticket {
+                t.succeeded();
             }
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let mgr = session_mgr.read().await;
@@ -13548,6 +13537,32 @@ mod tests {
 
         let remote = remote_activity_notice(RemoteNoticeKind::CiStarted, "", None, None).unwrap();
         assert_eq!(remote.thresholds(), None);
+    }
+
+    /// #2413 T10: the only close-marker restore goes through the create ledger
+    /// (commands::session::CoordinatorCreateTicket); mailbox has none of its own.
+    #[test]
+    fn mailbox_has_no_unchecked_close_marker_restore() {
+        let src = include_str!("mailbox.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let boundary = lines
+            .iter()
+            .enumerate()
+            .find(|(index, line)| {
+                **line == "mod tests {"
+                    && lines[..*index]
+                        .iter()
+                        .rev()
+                        .find(|previous| !previous.trim().is_empty())
+                        == Some(&"#[cfg(test)]")
+            })
+            .map(|(index, _)| index)
+            .expect("the tests module boundary");
+        let production = lines[..boundary].join("\n");
+        assert_eq!(
+            production.matches("mark_auto_closed(&marker_fqn").count(),
+            0
+        );
     }
 
     #[test]
