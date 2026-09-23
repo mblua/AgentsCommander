@@ -180,7 +180,7 @@ See [CLI reference](../reference/cli.md#injected-messages) for `--all` and the b
 
 The zoom control sits in the titlebar as a group labelled `UI zoom`: a `Zoom out` button, the current percentage, and a `Zoom in` button. Steps are 10 percentage points, and the range runs from **50% to 300%**. Each button disables at its end of the range.
 
-The value persists per window. `mainZoom`, `terminalZoom`, `sidebarZoom` and `guideZoom` each default to `1.0`, which is 100%.
+The value persists per window. `mainZoom`, `terminalZoom` and `sidebarZoom` each default to `1.0`, which is 100%.
 
 ## Settings
 

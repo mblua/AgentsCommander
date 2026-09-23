@@ -60,9 +60,6 @@ vi.mock("../../shared/ipc", () => ({
   ProjectAPI: {
     checkPath: vi.fn(),
   },
-  GuideAPI: {
-    open: vi.fn(),
-  },
   SettingsAPI: {
     setSoundsEnabled: vi.fn(() => Promise.resolve()),
     setThemeLight: vi.fn(() => Promise.resolve()),

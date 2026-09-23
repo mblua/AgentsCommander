@@ -35,7 +35,6 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Toggle sounds | `actionBar.sounds` | `click` |
 | Toggle category visibility | `actionBar.categories` | `click` |
 | Toggle selected room pin | `actionBar.pinSelectedWorkgroup` | `click` |
-| Open guide | `actionBar.guide` | `click` |
 | Open spec board when enabled | `actionBar.specBoard` | `click` |
 | Detect terminal empty state | `terminal.empty` | `query` |
 

@@ -2,7 +2,7 @@
  *
  * CRITICAL (dev-webpage-ui enrichment §A): src/main.tsx bundles EVERY window App
  * (and its CSS) into ONE bundle, so a BARE `html, body, #root { background:
- * transparent }` rule would leak into the main/terminal/RM/guide/spec-board
+ * transparent }` rule would leak into the main/terminal/RM/spec-board
  * windows and turn their background transparent. The document-level rules below
  * are therefore SCOPED to `html[data-window="screenshot-overlay"]`, which
  * main.tsx sets only for this window before rendering. The `.screenshot-overlay`

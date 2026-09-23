@@ -1374,10 +1374,6 @@ export const AgentCreatorAPI = {
     transport.invoke<string>("create_agent_folder", { parentPath, agentName }),
 };
 
-export const GuideAPI = {
-  open: () => transport.invoke<void>("open_guide_window"),
-};
-
 export const HomeAPI = {
   fetchMarkdown: () => transport.invoke<string>("fetch_home_markdown"),
 };

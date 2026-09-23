@@ -2,7 +2,6 @@ import "./shared/console-capture";
 import { render } from "solid-js/web";
 import { isTauri } from "./shared/platform";
 import TerminalApp from "./terminal/App";
-import GuideApp from "./guide/App";
 import BrowserApp from "./browser/App";
 import SpecBoardApp from "./spec-board/App";
 import ResourceMonitorApp from "./resource-monitor/App";
@@ -47,8 +46,6 @@ if (!isTauri) {
     () => <TerminalApp lockedSessionId={lockedSessionId} detached={true} />,
     root
   );
-} else if (windowType === "guide") {
-  render(() => <GuideApp />, root);
 } else if (windowType === "resource-monitor") {
   render(() => <ResourceMonitorApp />, root);
 } else if (windowType === "watchers") {

@@ -52,7 +52,7 @@ The served page is **the full AgentsCommander UI**: it renders the same sidebar 
 What is not there:
 
 - **No desktop titlebar.** The web view has no native window frame, so the sidebar left/right preset appears as a compact toggle anchored to the terminal pane instead.
-- **Only the sidebar and the terminal.** The served page renders those two. AC's separate windows, the Resource Monitor, Watchers, the Spec Board and the Guide, are desktop windows and are not part of the page you are served.
+- **Only the sidebar and the terminal.** The served page renders those two. AC's separate windows, the Resource Monitor, Watchers and the Spec Board, are desktop windows and are not part of the page you are served.
 
 ## Authentication
 

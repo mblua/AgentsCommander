@@ -11,7 +11,6 @@ AC is one application that opens several windows. One page routes them all: the 
 | Sidebar | Projects, rooms, replicas and sessions, plus the room rail | Part of the main window; also runs on its own in the browser build |
 | Main | The default window: the sidebar beside a central pane | Starting AC |
 | Terminal | The central pane's terminal, or a detached window locked to one session | Part of the main window; detaching moves one session into its own window |
-| Guide | Hints and a tutorial | A button in the sidebar action bar |
 | Watchers | Watcher match activity | A button in the terminal status bar, which opens it scoped to that session. See [Watchers](watchers.md) |
 | Resource Monitor | Per-agent memory, CPU and process counts | Its own window, or attached to the main window's central pane. See [Resource monitor](resource-monitor.md) |
 | Spec Board | One Mermaid file with a live preview | The Spec Board button in the sidebar toolbar, once `specBoardEnabled` is on. See [Spec Board](spec-board.md) |
@@ -52,12 +51,6 @@ Around the terminal itself:
 **The room task** strip shows the title from the room's `TASK.md`, parsed from the file's frontmatter. You can edit the title in place: `Enter` saves it, `Escape` cancels. The control refuses an empty title with `Title cannot be empty.`, and it stops if the session changed underneath the edit, with `Session changed; cancel and retry.` Both the edit and the clean control are disabled when there is no session or the session is not inside a room.
 
 **Cleaning the task** asks first. The confirmation is titled `Clean TASK?` and states what it will do: it resets the room `TASK.md`, replacing all frontmatter fields and body content with `title: 'Clean'` and the body `Ready to start a new topic`. If a `TASK.md` exists, a timestamped backup is saved alongside it before the reset. The buttons are `Cancel`, which has focus when the dialog opens, and `Clean`. `Escape` cancels, and `Enter` cleans only when `Clean` already has focus.
-
-## Guide
-
-The Guide is a small separate window with its own titlebar, holding two tabs: **Hints**, which opens first, and **Tutorial**.
-
-The tutorial covers the same ground as [Quickstart](../quickstart.md). Read whichever you prefer; they are not different procedures.
 
 ## Other windows
 

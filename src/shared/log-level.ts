@@ -9,10 +9,10 @@ let wired = false;
  * #612 Initialize THIS window's console log-level gate from the persisted
  * setting and keep it live via the backend `log_level_changed` event.
  *
- * Called ONCE from `src/main.tsx` for every window root (main/terminal/guide/
+ * Called ONCE from `src/main.tsx` for every window root (main/terminal/
  * browser/spec-board/resource-monitor). It does NOT depend on `settingsStore`:
  * it reads the level via `SettingsAPI.get()` directly, so it works for windows
- * (guide, spec-board) that never hydrate the store. The `wired` guard makes it
+ * (spec-board) that never hydrate the store. The `wired` guard makes it
  * idempotent, and both async calls are wrapped in try/catch so a non-Tauri /
  * pure-web context (where `listen` may be unavailable) falls back to a static
  * Info level without throwing.
