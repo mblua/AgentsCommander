@@ -136,5 +136,6 @@ The manifest never tracks the selected application config dir. Under the `v0.33.
 - [Config seed](../features/config-seed.md): how replica config folders are seeded from the masters
 - [Portable instances](../features/portable-instances.md): the config-dir rule and instance isolation
 - [Settings reference](settings.md): the per-instance `settings.json`
+- [File naming convention](file-naming.md): the target naming rule for config files (mostly not implemented yet)
 - [Agent Matrix conventions](../agent-matrix-conventions.md): the `_agent_*` and `room-*` layout
 - [Architecture map](architecture.md): where the code that manages these trees lives
