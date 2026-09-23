@@ -83,9 +83,8 @@ const RootAgentBanner: Component<{ compact?: boolean }> = (props) => {
     return r ? sessionsStore.comanagedBySessionId[r.id] ?? false : false;
   };
 
-  const dotClass = createMemo(() => {
-    return sessionDotClass(rootSession(), { comanaged: isComanaged() });
-  });
+  // #2408 - the real activity class; Co-managed capture is an additive ring.
+  const dotClass = createMemo(() => `${sessionDotClass(rootSession())}${isComanaged() ? " comanaged" : ""}`);
 
   const subtitle = createMemo(() => {
     const r = rootSession();
