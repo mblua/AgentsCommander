@@ -2207,6 +2207,7 @@ impl ContainerTransportBackend {
             logical_resource_slot,
             container_credential,
             container_repo_mounts,
+            launch_witness,
         } = spec;
 
         let shutdown_producer = self.shutdown_work.register_producer().ok_or_else(|| {
@@ -2360,6 +2361,8 @@ impl ContainerTransportBackend {
         let canceled_cleanup_ownership = Arc::clone(&self.cleanup_ownership);
         let canceled_cleanup_epoch = self.cleanup_attempt_epoch.fetch_add(1, Ordering::Relaxed);
         let (start_result_sender, start_result_receiver) = oneshot::channel();
+        // #2413 - the runtime may start from here on; every later `Err` is fenced.
+        launch_witness.mark();
         start_producer.spawn_owned(Some(id), "runtime-start", move |control| {
             let result = (|| {
                 let handle = start_runtime.start(request, control)?;
@@ -3976,6 +3979,7 @@ mod tests {
             logical_resource_slot: None,
             container_credential: None,
             container_repo_mounts: Vec::new(),
+            launch_witness: Default::default(),
         }
     }
 
@@ -5685,6 +5689,55 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("canceled handshake leaked its runtime handle or pending state");
+    }
+
+    /// #2413 T16: the runtime path marks the launch witness before the start job,
+    /// so a handshake timeout that removed the session state still reports a
+    /// launch; a pre-start `Err` does not.
+    #[tokio::test]
+    async fn runtime_spawn_marks_launch_witness_before_start_and_keeps_it_after_state_removal() {
+        let id = Uuid::new_v4();
+        let root_dir = tempfile::TempDir::new().unwrap();
+        let root = root_dir.path().to_string_lossy().into_owned();
+        // A permanently blocked stop would keep `spawn` awaiting its cleanup
+        // forever (no `Err` to observe), so the stop here returns.
+        let runtime = Arc::new(RecordingRuntime::default());
+        let token_dir = tempfile::TempDir::new().unwrap();
+        let token_manager =
+            ContainerApiTokenManager::new_for_path(token_dir.path().join("api-clients.json"));
+        let (mut backend, _manager) = backend_with_tuning(ContainerTransportTuning {
+            handshake_timeout: Duration::from_millis(100),
+            ..ContainerTransportTuning::default()
+        });
+        backend.runtime = Some(runtime.clone());
+        backend.token_manager = Some(token_manager);
+        backend.runtime_settings_override = Some(api_enabled_settings());
+        let mut spec = test_spec(id, &root, PtyOutputTarget::noop());
+        spec.container_image = Some("agentscommander/test:latest".to_string());
+        let witness = spec.launch_witness.clone();
+        tokio::time::timeout(Duration::from_secs(10), backend.spawn(spec))
+            .await
+            .expect("spawn returns on handshake timeout")
+            .expect_err("no bridge attaches");
+        assert!(!backend.has_session(id), "session state removed");
+        assert!(witness.launched(), "runtime start was queued: launched");
+
+        // Pre-start `Err`: no API token manager -> nothing launched.
+        let id = Uuid::new_v4();
+        let (mut backend, _manager) = backend_with_tuning(ContainerTransportTuning::default());
+        backend.runtime = Some(Arc::new(RecordingRuntime::default()));
+        backend.runtime_settings_override = Some(api_enabled_settings());
+        let mut spec = test_spec(id, &root, PtyOutputTarget::noop());
+        spec.container_image = Some("agentscommander/test:latest".to_string());
+        let witness = spec.launch_witness.clone();
+        let error = backend.spawn(spec).await.expect_err("no token manager");
+        assert!(
+            error
+                .to_string()
+                .contains("token manager is not configured"),
+            "{error}"
+        );
+        assert!(!witness.launched(), "pre-start Err: nothing launched");
     }
 
     // #930 plan section 9.a - a teardown funnel (kill -> remove_session_state ->

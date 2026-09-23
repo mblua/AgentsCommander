@@ -7,11 +7,11 @@ use uuid::Uuid;
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::config::agent_config::{self, AgentLocalConfig};
 use crate::config::coding_agents_catalog::{command_executable_basename, CodingAgentDefinition};
-use crate::config::coordinator_clocks::CoordinatorClocksState;
+use crate::config::coordinator_clocks::{ClearedCloseMarkers, CoordinatorClocksState};
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::backend::{
-    BackendSpawnSpec, PtyViewport, ResolvedAgentHostShell, SessionBackendKind,
+    BackendSpawnSpec, LaunchWitness, PtyViewport, ResolvedAgentHostShell, SessionBackendKind,
 };
 use crate::pty::container_paths::{
     claude_config_dir_no_value_warning, container_config_dir, ContainerEnvWarning,
@@ -1406,6 +1406,40 @@ pub(crate) mod seed_race_barriers {
     }
 }
 
+/// (#2413) Test-only coordinator override for `create_session_inner_impl`.
+/// `is_coordinator` comes from `discover_teams()`, which reads the real
+/// settings, so a lib test cannot make a temp cwd a coordinator otherwise.
+/// Keyed by the normalized cwd, like `seed_race_barriers`.
+#[cfg(test)]
+pub(crate) mod coordinator_create_seam {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    static FORCED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+    pub(crate) fn force(key: &str) {
+        FORCED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashSet::new)
+            .insert(key.to_string());
+    }
+
+    pub(crate) fn unforce(key: &str) {
+        if let Some(set) = FORCED.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            set.remove(key);
+        }
+    }
+
+    pub(crate) fn forced(key: &str) -> bool {
+        FORCED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|set| set.contains(key))
+    }
+}
+
 /// Test-only rendezvous inside `execute_restart_transaction`, after the old
 /// id's reader demands are released and before the replacement is created
 /// (#2232 phase 4 test 9).
@@ -1628,23 +1662,33 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
 /// is DESTROYED, so its reopen flows through this create path (the "create
 /// in-place" branch of handleReplicaClick), NOT restart_session_inner.
 /// seed_if_absent never overwrites, so a respawn does NOT reset the badge.
+/// (#2413) Returns the create's marker ticket (`None` = no clocks state); the
+/// caller ends it with `succeeded()` or `failed()` so a failed create puts the
+/// cleared markers back.
 pub(crate) fn note_coordinator_create_on_app<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     cwd: &str,
-) {
-    if let Some(clocks) =
-        app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+) -> Option<CoordinatorCreateTicket<R>> {
+    let clocks = app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()?;
     {
         // agent_fqn_from_path returns String (teams.rs:80), not Option.
         let fqn = crate::config::teams::agent_fqn_from_path(cwd);
         let now = chrono::Utc::now();
         let (seeded, cleared_auto, cleared_manual) = {
             let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                g.seed_if_absent(&fqn, now),
-                g.clear_auto_closed(&fqn),
-                g.clear_manually_closed(&fqn),
-            )
+            let seeded = g.seed_if_absent(&fqn, now);
+            let auto_before = g.auto_closed_at(&fqn);
+            let manual_before = g.manually_closed_at(&fqn);
+            let cleared_auto = g.clear_auto_closed(&fqn);
+            let cleared_manual = g.clear_manually_closed(&fqn);
+            g.begin_coordinator_create(
+                &fqn,
+                ClearedCloseMarkers {
+                    auto_closed_at: auto_before.filter(|_| cleared_auto),
+                    manually_closed_at: manual_before.filter(|_| cleared_manual),
+                },
+            );
+            (seeded, cleared_auto, cleared_manual)
         };
         if seeded {
             let _ = app.emit(
@@ -1664,6 +1708,117 @@ pub(crate) fn note_coordinator_create_on_app<R: tauri::Runtime>(
                 serde_json::json!({ "replicaPath": cwd, "manuallyClosedAt": null }),
             );
         }
+        Some(CoordinatorCreateTicket {
+            app: app.clone(),
+            cwd: cwd.to_string(),
+            fqn,
+            done: false,
+            session_may_exist: false,
+        })
+    }
+}
+
+/// (#2413) One in-flight coordinator create. Must end with `succeeded()` or
+/// `failed()`; Drop without either counts as `failed()` (cancel/panic safety);
+/// `failed()`/Drop with the spawn fence set counts as `succeeded()`.
+pub(crate) struct CoordinatorCreateTicket<R: tauri::Runtime> {
+    app: tauri::AppHandle<R>,
+    cwd: String,
+    fqn: String,
+    done: bool,
+    /// Spawn fence: true once a PTY may exist. Then every end counts as success.
+    session_may_exist: bool,
+}
+
+impl<R: tauri::Runtime> CoordinatorCreateTicket<R> {
+    pub(crate) fn succeeded(mut self) {
+        self.done = true;
+        self.finish_ok();
+    }
+
+    pub(crate) fn failed(mut self) {
+        self.finish_failed();
+    }
+
+    fn finish_ok(&self) {
+        if let Some(clocks) = self
+            .app
+            .try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+        {
+            let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+            g.finish_coordinator_create(&self.fqn, true);
+        }
+    }
+
+    fn finish_failed(&mut self) {
+        if self.done {
+            return;
+        }
+        self.done = true;
+        if self.session_may_exist {
+            self.finish_ok();
+            log::info!(
+                "[coordinator-create] create failed after spawn attempt; close markers stay cleared fqn={}",
+                self.fqn
+            );
+            return;
+        }
+        let Some(clocks) = self
+            .app
+            .try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+        else {
+            return;
+        };
+        let (escrow, manual, auto) = {
+            let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+            let escrow = g.finish_coordinator_create(&self.fqn, false);
+            let mut manual = None;
+            let mut auto = None;
+            if let Some(c) = escrow {
+                if let Some(t) = c.manually_closed_at {
+                    if g.mark_manually_closed(&self.fqn, t) {
+                        manual = Some(t);
+                    }
+                }
+                if let Some(t) = c.auto_closed_at {
+                    if g.mark_auto_closed(&self.fqn, t) {
+                        auto = Some(t);
+                    }
+                }
+            }
+            (escrow, manual, auto)
+        };
+        if let Some(t) = manual {
+            let _ = self.app.emit(
+                "coordinator_manual_close_changed",
+                serde_json::json!({ "replicaPath": self.cwd, "manuallyClosedAt": t.to_rfc3339() }),
+            );
+        }
+        if let Some(t) = auto {
+            let _ = self.app.emit(
+                "coordinator_auto_close_changed",
+                serde_json::json!({ "replicaPath": self.cwd, "autoClosedAt": t.to_rfc3339() }),
+            );
+        }
+        if manual.is_some() || auto.is_some() {
+            log::info!(
+                "[coordinator-create] restored close markers after failed create fqn={} auto={:?} manual={:?}",
+                self.fqn,
+                auto,
+                manual
+            );
+        } else if escrow.is_none() {
+            log::info!(
+                "[coordinator-create] failed create handed markers to an in-flight create fqn={}",
+                self.fqn
+            );
+        }
+    }
+}
+
+impl<R: tauri::Runtime> Drop for CoordinatorCreateTicket<R> {
+    fn drop(&mut self) {
+        self.finish_failed();
     }
 }
 
@@ -1765,6 +1920,9 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     let coordinator_shutdown = coordinator.shutdown_token();
     let inline_pending_binding = Arc::new(Mutex::new(None));
     let inline_pending_for_body = Arc::clone(&inline_pending_binding);
+    // (#2413) Close-marker ticket of this create; the body fills it, the outer
+    // scope ends it after the select.
+    let marker_ticket = Mutex::new(None::<CoordinatorCreateTicket<R>>);
     let create_body = async {
         // §1295 5.1a creation gate: FIRST statement of create_body, BEFORE the
         // existing `enforce_unarchived_for_spawn` (which the archive-gate source
@@ -1801,10 +1959,13 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             .await
             .map_err(|e| e.to_string())?;
         let is_coordinator = crate::config::teams::is_coordinator_for_cwd(&cwd, &teams);
+        #[cfg(test)]
+        let is_coordinator = is_coordinator || coordinator_create_seam::forced(&cwd);
         let is_root_agent = crate::config::root_agent::is_root_agent_path(&cwd);
 
         if is_coordinator {
-            note_coordinator_create_on_app(app, &cwd);
+            *marker_ticket.lock().unwrap_or_else(|e| e.into_inner()) =
+                note_coordinator_create_on_app(app, &cwd);
         }
 
         // (#756) Durable fresh-intent mirror, consumed at the create path: the
@@ -2639,6 +2800,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 }
             }
         };
+        let launch_witness = LaunchWitness::default();
         let spawn_spec = BackendSpawnSpec {
             id,
             agent_id: agent_id.clone(),
@@ -2691,10 +2853,34 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                         .collect()
                 })
                 .unwrap_or_default(),
+            launch_witness: launch_witness.clone(),
         };
+        // (#2413) Spawn fence: set BEFORE the first await of spawn, so a drop at
+        // any point inside or after spawn keeps the close markers cleared.
+        if let Some(t) = marker_ticket
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            t.session_may_exist = true;
+        }
         let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
         drop(spawn_mark);
         if let Err(e) = spawn_result {
+            if !launch_witness.launched() {
+                if let Some(t) = marker_ticket
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_mut()
+                {
+                    t.session_may_exist = false;
+                }
+            } else {
+                log::warn!(
+                    "[coordinator-create] spawn failed after process launch; close markers stay cleared session={}",
+                    id
+                );
+            }
             let err = e.to_string();
             drop(mgr);
             rollback_pre_created_session(app, session_mgr, pty_mgr, id, &err).await;
@@ -2937,6 +3123,17 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         }
         result = create_body => result,
     };
+    let marker = marker_ticket
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(t) = marker {
+        if result.is_err() {
+            t.failed();
+        } else {
+            t.succeeded();
+        }
+    }
     if result.is_err() {
         let binding = {
             inline_pending_binding
@@ -8646,7 +8843,9 @@ mod tests {
 
         // (c) absent fqn -> badge seeded.
         assert!(clocks.lock().unwrap().last_user_message_at(&fqn).is_none());
-        crate::commands::session::note_coordinator_create_on_app(&handle, cwd);
+        crate::commands::session::note_coordinator_create_on_app(&handle, cwd)
+            .expect("clocks managed")
+            .succeeded();
         assert!(clocks.lock().unwrap().last_user_message_at(&fqn).is_some());
 
         // (a) auto-closed marker cleared.
@@ -8654,7 +8853,9 @@ mod tests {
             .lock()
             .unwrap()
             .mark_auto_closed(&fqn, chrono::Utc::now()));
-        crate::commands::session::note_coordinator_create_on_app(&handle, cwd);
+        crate::commands::session::note_coordinator_create_on_app(&handle, cwd)
+            .expect("clocks managed")
+            .succeeded();
         assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
 
         // (b) manual-close marker cleared.
@@ -8662,8 +8863,567 @@ mod tests {
             .lock()
             .unwrap()
             .mark_manually_closed(&fqn, chrono::Utc::now()));
-        crate::commands::session::note_coordinator_create_on_app(&handle, cwd);
+        crate::commands::session::note_coordinator_create_on_app(&handle, cwd)
+            .expect("clocks managed")
+            .succeeded();
         assert_eq!(clocks.lock().unwrap().manually_closed_at(&fqn), None);
+    }
+
+    // ---- #2413: close markers survive a failed coordinator create ----
+
+    const MARKER_CWD: &str = "C:/ac-test/project/.ac/wg-2413-dev-team/__agent_tech-lead";
+
+    fn marker_ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
+    }
+
+    /// Mock app with a clocks store and a recorder for both close-marker events.
+    fn marker_unit_app() -> (
+        tauri::App<tauri::test::MockRuntime>,
+        crate::config::coordinator_clocks::CoordinatorClocksState,
+        std::sync::mpsc::Receiver<(String, String)>,
+    ) {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
+            Arc::new(Mutex::new(Default::default()));
+        app.manage(Arc::clone(&clocks));
+        let events = marker_events(&app);
+        (app, clocks, events)
+    }
+
+    /// Records `(event, value)` for both close-marker events; `value` is the
+    /// timestamp field (`null` for a clear).
+    fn marker_events(
+        app: &tauri::App<tauri::test::MockRuntime>,
+    ) -> std::sync::mpsc::Receiver<(String, String)> {
+        use tauri::Listener;
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for (event_name, field) in [
+            ("coordinator_auto_close_changed", "autoClosedAt"),
+            ("coordinator_manual_close_changed", "manuallyClosedAt"),
+        ] {
+            let sender = sender.clone();
+            app.listen_any(event_name, move |event| {
+                let payload: serde_json::Value =
+                    serde_json::from_str(event.payload()).expect("event payload json");
+                let value = match &payload[field] {
+                    serde_json::Value::String(t) => t.clone(),
+                    other => other.to_string(),
+                };
+                let _ = sender.send((event_name.to_string(), value));
+            });
+        }
+        receiver
+    }
+
+    fn drain(events: &std::sync::mpsc::Receiver<(String, String)>) -> Vec<(String, String)> {
+        events.try_iter().collect()
+    }
+
+    fn auto_event(value: &str) -> (String, String) {
+        (
+            "coordinator_auto_close_changed".to_string(),
+            value.to_string(),
+        )
+    }
+
+    fn manual_event(value: &str) -> (String, String) {
+        (
+            "coordinator_manual_close_changed".to_string(),
+            value.to_string(),
+        )
+    }
+
+    /// #2413 T1
+    #[test]
+    fn restore_close_markers_puts_back_original_auto_timestamp() {
+        let (app, clocks, events) = marker_unit_app();
+        let fqn = crate::config::teams::agent_fqn_from_path(MARKER_CWD);
+        let t = marker_ts(0);
+        assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, t));
+        let k = super::note_coordinator_create_on_app(app.handle(), MARKER_CWD).expect("ticket");
+        assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
+        k.failed();
+        assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), Some(t));
+        assert_eq!(
+            drain(&events),
+            vec![auto_event("null"), auto_event(&t.to_rfc3339())]
+        );
+        assert!(!clocks.lock().unwrap().has_create_ledger(&fqn));
+    }
+
+    /// #2413 T2
+    #[test]
+    fn restore_close_markers_puts_back_original_manual_timestamp() {
+        let (app, clocks, events) = marker_unit_app();
+        let fqn = crate::config::teams::agent_fqn_from_path(MARKER_CWD);
+        let t = marker_ts(0);
+        assert!(clocks.lock().unwrap().mark_manually_closed(&fqn, t));
+        let k = super::note_coordinator_create_on_app(app.handle(), MARKER_CWD).expect("ticket");
+        assert_eq!(clocks.lock().unwrap().manually_closed_at(&fqn), None);
+        k.failed();
+        assert_eq!(clocks.lock().unwrap().manually_closed_at(&fqn), Some(t));
+        assert_eq!(
+            drain(&events),
+            vec![manual_event("null"), manual_event(&t.to_rfc3339())]
+        );
+    }
+
+    /// #2413 T3: a manual close during the failing create wins over the auto restore.
+    #[test]
+    fn restore_close_markers_manual_wins() {
+        let (app, clocks, events) = marker_unit_app();
+        let fqn = crate::config::teams::agent_fqn_from_path(MARKER_CWD);
+        let t = marker_ts(0);
+        let manual = marker_ts(50);
+        assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, t));
+        let k = super::note_coordinator_create_on_app(app.handle(), MARKER_CWD).expect("ticket");
+        assert!(clocks.lock().unwrap().mark_manually_closed(&fqn, manual));
+        k.failed();
+        assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
+        assert_eq!(
+            clocks.lock().unwrap().manually_closed_at(&fqn),
+            Some(manual)
+        );
+        assert_eq!(drain(&events), vec![auto_event("null")]);
+    }
+
+    /// #2413 T4
+    #[test]
+    fn restore_close_markers_noop_when_nothing_cleared() {
+        let (app, clocks, events) = marker_unit_app();
+        let fqn = crate::config::teams::agent_fqn_from_path(MARKER_CWD);
+        super::note_coordinator_create_on_app(app.handle(), MARKER_CWD)
+            .expect("ticket")
+            .failed();
+        assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
+        assert_eq!(clocks.lock().unwrap().manually_closed_at(&fqn), None);
+        assert!(drain(&events).is_empty());
+        assert!(!clocks.lock().unwrap().has_create_ledger(&fqn));
+    }
+
+    /// #2413 T4
+    #[test]
+    fn restore_close_markers_succeeded_never_restores() {
+        let (app, clocks, events) = marker_unit_app();
+        let fqn = crate::config::teams::agent_fqn_from_path(MARKER_CWD);
+        assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, marker_ts(0)));
+        super::note_coordinator_create_on_app(app.handle(), MARKER_CWD)
+            .expect("ticket")
+            .succeeded();
+        assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
+        assert_eq!(drain(&events), vec![auto_event("null")]);
+        assert!(!clocks.lock().unwrap().has_create_ledger(&fqn));
+    }
+
+    /// #2413 T12: a ticket dropped without an end counts as a failure.
+    #[test]
+    fn dropped_ticket_restores_marker() {
+        let (app, clocks, _events) = marker_unit_app();
+        let fqn = crate::config::teams::agent_fqn_from_path(MARKER_CWD);
+        let t = marker_ts(0);
+        assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, t));
+        drop(super::note_coordinator_create_on_app(app.handle(), MARKER_CWD).expect("ticket"));
+        assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), Some(t));
+        assert!(!clocks.lock().unwrap().has_create_ledger(&fqn));
+    }
+
+    /// #2413 T13: once the spawn fence is set, no end restores anything.
+    #[test]
+    fn fenced_ticket_never_restores() {
+        for use_drop in [false, true] {
+            let (app, clocks, events) = marker_unit_app();
+            let fqn = crate::config::teams::agent_fqn_from_path(MARKER_CWD);
+            assert!(clocks
+                .lock()
+                .unwrap()
+                .mark_manually_closed(&fqn, marker_ts(5)));
+            // `mark_manually_closed` clears auto, so both markers cannot be set at
+            // once: a first create escrows manual, a second one escrows auto.
+            let first =
+                super::note_coordinator_create_on_app(app.handle(), MARKER_CWD).expect("ticket");
+            assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, marker_ts(0)));
+            let mut k =
+                super::note_coordinator_create_on_app(app.handle(), MARKER_CWD).expect("ticket");
+            drop(first); // hands off: k is still running
+            k.session_may_exist = true;
+            if use_drop {
+                drop(k);
+            } else {
+                k.failed();
+            }
+            assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
+            assert_eq!(clocks.lock().unwrap().manually_closed_at(&fqn), None);
+            assert!(
+                drain(&events).iter().all(|(_, v)| v == "null"),
+                "no timestamp event"
+            );
+            assert!(!clocks.lock().unwrap().has_create_ledger(&fqn));
+        }
+
+        // Overlap: an unfenced ticket that fails after a fenced end restores nothing.
+        let (app, clocks, events) = marker_unit_app();
+        let fqn = crate::config::teams::agent_fqn_from_path(MARKER_CWD);
+        assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, marker_ts(0)));
+        let a = super::note_coordinator_create_on_app(app.handle(), MARKER_CWD).expect("ticket");
+        let mut k =
+            super::note_coordinator_create_on_app(app.handle(), MARKER_CWD).expect("ticket");
+        k.session_may_exist = true;
+        k.failed();
+        a.failed();
+        assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
+        assert_eq!(drain(&events), vec![auto_event("null")]);
+    }
+
+    /// #2413 T5: the spawn fence is set before the spawn await and cleared only
+    /// on a spawn `Err` without a launch.
+    #[test]
+    fn create_session_inner_fences_marker_ticket_around_spawn() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let normalized = production.split_whitespace().collect::<String>();
+        let fence = "t.session_may_exist=true;";
+        let spawn = "letspawn_result=PtyManager::spawn(";
+        let unfence = "if!launch_witness.launched(){";
+        assert_eq!(normalized.matches(fence).count(), 1);
+        assert_eq!(normalized.matches(spawn).count(), 1);
+        assert_eq!(normalized.matches(unfence).count(), 1);
+        let fence_at = normalized.find(fence).unwrap();
+        let spawn_at = normalized.find(spawn).unwrap();
+        let unfence_at = normalized.find(unfence).unwrap();
+        assert!(fence_at < spawn_at, "fence must precede the spawn await");
+        assert!(spawn_at < unfence_at, "unfence only after the spawn result");
+        assert_eq!(normalized.matches("has_backend_session").count(), 0);
+        assert!(normalized.contains("letpending_result=ifletSome(ticket)=create_ticket.as_mut(){"));
+    }
+
+    struct MarkerCreateFixture {
+        _temp: tempfile::TempDir,
+        cwd: String,
+        fqn: String,
+        app: tauri::App<tauri::test::MockRuntime>,
+        clocks: crate::config::coordinator_clocks::CoordinatorClocksState,
+        events: std::sync::mpsc::Receiver<(String, String)>,
+        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: Arc<Mutex<crate::pty::manager::PtyManager>>,
+    }
+
+    impl MarkerCreateFixture {
+        fn new(backend: Arc<dyn crate::pty::backend::PtyBackend>) -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let cwd =
+                crate::path_utils::normalize_windows_verbatim_path(&temp.path().to_string_lossy());
+            let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
+            let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+            let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+                backend,
+            )));
+            let app = session_test_app(
+                test_settings(),
+                Arc::clone(&session_mgr),
+                Arc::clone(&pty_mgr),
+            );
+            let clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
+                Arc::new(Mutex::new(Default::default()));
+            app.manage(Arc::clone(&clocks));
+            let events = marker_events(&app);
+            super::coordinator_create_seam::force(&cwd);
+            Self {
+                _temp: temp,
+                cwd,
+                fqn,
+                app,
+                clocks,
+                events,
+                session_mgr,
+                pty_mgr,
+            }
+        }
+
+        fn create(&self) -> impl std::future::Future<Output = Result<SessionInfo, String>> + '_ {
+            super::create_session_inner(
+                self.app.handle(),
+                &self.session_mgr,
+                &self.pty_mgr,
+                "missing-ac-test-command".to_string(),
+                Vec::new(),
+                self.cwd.clone(),
+                None,
+                None,
+                None,
+                true,
+                Vec::new(),
+                true,
+                None,
+                None,
+                None,
+                CreateSelectionIntent::User,
+            )
+        }
+
+        fn auto(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+            self.clocks.lock().unwrap().auto_closed_at(&self.fqn)
+        }
+
+        fn ledger(&self) -> bool {
+            self.clocks.lock().unwrap().has_create_ledger(&self.fqn)
+        }
+    }
+
+    impl Drop for MarkerCreateFixture {
+        fn drop(&mut self) {
+            super::coordinator_create_seam::unforce(&self.cwd);
+        }
+    }
+
+    /// #2413 T6
+    #[tokio::test]
+    async fn create_session_inner_restores_auto_closed_marker_on_spawn_failure() {
+        let f = MarkerCreateFixture::new(Arc::new(FailingSpawnBackend::default()));
+        let t = marker_ts(0);
+        assert!(f.clocks.lock().unwrap().mark_auto_closed(&f.fqn, t));
+        let err = f.create().await.expect_err("spawn should fail");
+        assert!(err.contains("synthetic spawn failure"), "{err}");
+        assert_eq!(f.auto(), Some(t));
+        assert_eq!(
+            drain(&f.events),
+            vec![auto_event("null"), auto_event(&t.to_rfc3339())]
+        );
+        assert!(!f.ledger());
+        close_test_coordinator(&f.app).await;
+    }
+
+    /// #2413 T7
+    #[tokio::test]
+    async fn create_session_inner_restores_manual_closed_marker_on_spawn_failure() {
+        let f = MarkerCreateFixture::new(Arc::new(FailingSpawnBackend::default()));
+        let t = marker_ts(0);
+        assert!(f.clocks.lock().unwrap().mark_manually_closed(&f.fqn, t));
+        let err = f.create().await.expect_err("spawn should fail");
+        assert!(err.contains("synthetic spawn failure"), "{err}");
+        assert_eq!(f.clocks.lock().unwrap().manually_closed_at(&f.fqn), Some(t));
+        assert_eq!(
+            drain(&f.events),
+            vec![manual_event("null"), manual_event(&t.to_rfc3339())]
+        );
+        close_test_coordinator(&f.app).await;
+    }
+
+    /// #2413 T8: a newer overlapping create that succeeded wins; no stale restore.
+    #[tokio::test]
+    async fn create_session_inner_failed_create_does_not_restore_after_newer_create() {
+        let f = MarkerCreateFixture::new(Arc::new(FailingSpawnBackend::default()));
+        assert!(f
+            .clocks
+            .lock()
+            .unwrap()
+            .mark_auto_closed(&f.fqn, marker_ts(0)));
+        let barrier = super::seed_race_barriers::install_before_project_gate(&f.cwd);
+        let driver = async {
+            barrier.reached.notified().await;
+            assert_eq!(f.auto(), None);
+            super::note_coordinator_create_on_app(f.app.handle(), &f.cwd)
+                .expect("ticket")
+                .succeeded();
+            barrier.release.notify_one();
+        };
+        let (result, ()) = tokio::join!(f.create(), driver);
+        result.expect_err("spawn should fail");
+        assert_eq!(f.auto(), None);
+        assert_eq!(drain(&f.events), vec![auto_event("null")]);
+        assert!(!f.ledger());
+        close_test_coordinator(&f.app).await;
+    }
+
+    /// #2413 T11: overlapping creates that all fail restore the marker exactly once.
+    #[tokio::test]
+    async fn create_session_inner_two_failed_overlapping_creates_restore_marker() {
+        let f = MarkerCreateFixture::new(Arc::new(FailingSpawnBackend::default()));
+        let t = marker_ts(0);
+        assert!(f.clocks.lock().unwrap().mark_auto_closed(&f.fqn, t));
+        let barrier = super::seed_race_barriers::install_before_project_gate(&f.cwd);
+        let driver = async {
+            barrier.reached.notified().await;
+            super::note_coordinator_create_on_app(f.app.handle(), &f.cwd)
+                .expect("ticket")
+                .failed();
+            // Handed off to the running create: nothing restored yet.
+            assert_eq!(f.auto(), None);
+            assert_eq!(drain(&f.events), vec![auto_event("null")]);
+            barrier.release.notify_one();
+        };
+        let (result, ()) = tokio::join!(f.create(), driver);
+        result.expect_err("spawn should fail");
+        assert_eq!(f.auto(), Some(t));
+        assert_eq!(drain(&f.events), vec![auto_event(&t.to_rfc3339())]);
+        assert!(!f.ledger());
+        close_test_coordinator(&f.app).await;
+    }
+
+    /// Test backend for #2413 T14/T15.
+    /// `block`: `spawn` records the id (live) and parks forever after signaling `entered`.
+    /// Otherwise: `spawn` marks the launch witness, then fails with no session.
+    #[derive(Default)]
+    struct MarkerSpawnBackend {
+        block: bool,
+        entered: tokio::sync::Notify,
+        never: tokio::sync::Notify,
+        live: Mutex<Vec<Uuid>>,
+    }
+
+    impl crate::pty::backend::PtyBackend for MarkerSpawnBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async move {
+                spec.launch_witness.mark();
+                if self.block {
+                    self.live.lock().unwrap().push(spec.id);
+                    self.entered.notify_one();
+                    self.never.notified().await;
+                }
+                Err(crate::errors::AppError::PtyError(
+                    "synthetic post-launch failure".to_string(),
+                ))
+            })
+        }
+
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            _id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn kill(&self, _id: Uuid) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+            None
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
+    /// #2413 T14: a create cancelled while spawn runs keeps the markers cleared.
+    #[tokio::test]
+    async fn create_session_inner_keeps_markers_cleared_when_cancelled_after_spawn() {
+        // Variant 1: the create future is dropped mid-spawn.
+        let backend = Arc::new(MarkerSpawnBackend {
+            block: true,
+            ..Default::default()
+        });
+        let f = MarkerCreateFixture::new(backend.clone());
+        assert!(f
+            .clocks
+            .lock()
+            .unwrap()
+            .mark_auto_closed(&f.fqn, marker_ts(0)));
+        let mut create = Box::pin(f.create());
+        tokio::select! {
+            _ = backend.entered.notified() => {}
+            _ = &mut create => panic!("create must stay parked in spawn"),
+        }
+        drop(create);
+        assert_eq!(f.auto(), None);
+        assert_eq!(drain(&f.events), vec![auto_event("null")]);
+        assert!(!f.ledger());
+        close_test_coordinator(&f.app).await;
+
+        // Variant 2: the selection coordinator shuts down mid-spawn.
+        let backend = Arc::new(MarkerSpawnBackend {
+            block: true,
+            ..Default::default()
+        });
+        let f = MarkerCreateFixture::new(backend.clone());
+        assert!(f
+            .clocks
+            .lock()
+            .unwrap()
+            .mark_auto_closed(&f.fqn, marker_ts(0)));
+        let shutdown = async {
+            backend.entered.notified().await;
+            f.app
+                .state::<crate::session::selection::SelectionCoordinator>()
+                .shutdown_token()
+                .cancel();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(f.create(), shutdown)
+        })
+        .await
+        .expect("create ends on shutdown");
+        result.expect_err("shutdown ends the create");
+        assert_eq!(f.auto(), None);
+        assert_eq!(drain(&f.events), vec![auto_event("null")]);
+        assert!(!f.ledger());
+        close_test_coordinator(&f.app).await;
+    }
+
+    /// #2413 T15: a spawn `Err` after the backend launched keeps the markers cleared,
+    /// even though the backend reports no session.
+    #[tokio::test]
+    async fn create_session_inner_keeps_markers_cleared_when_spawn_fails_after_launch() {
+        let f = MarkerCreateFixture::new(Arc::new(MarkerSpawnBackend::default()));
+        assert!(f
+            .clocks
+            .lock()
+            .unwrap()
+            .mark_auto_closed(&f.fqn, marker_ts(0)));
+        let err = f.create().await.expect_err("spawn should fail");
+        assert!(err.contains("synthetic post-launch failure"), "{err}");
+        assert_eq!(f.auto(), None);
+        assert_eq!(drain(&f.events), vec![auto_event("null")]);
+        assert!(!f.ledger());
+        close_test_coordinator(&f.app).await;
     }
 
     /// #2411 T1b: `create_session_inner_impl` calls the coordinator-create helper
