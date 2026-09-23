@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import type { UnlistenFn } from "../../shared/transport";
-import { ProjectAPI, GuideAPI, SettingsAPI, SpecBoardAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
+import { ProjectAPI, SettingsAPI, SpecBoardAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
 import { resourceMonitorStore } from "../../shared/stores/resourceMonitor";
 import { setSoundsEnabled } from "../../shared/sound";
@@ -343,15 +343,6 @@ const ActionBar: Component = () => {
             data-ac-state={sessionsStore.alwaysShowSelectedWorkgroup ? "pinned" : "default"}
           >
             &#x1F4CC;
-          </button>
-          <button
-            class="toolbar-gear-btn"
-            onClick={() => GuideAPI.open()}
-            title="Hints"
-            data-ac-testid="actionBar.guide"
-            data-ac-role="button"
-          >
-            &#x1F4A1;
           </button>
           <button
             class={`toolbar-gear-btn resource-monitor-btn state-${resourceBadgeState()} ${centralViewStore.isResourceMonitor ? "active" : ""}`}

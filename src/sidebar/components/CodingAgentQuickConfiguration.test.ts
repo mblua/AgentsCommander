@@ -12,6 +12,7 @@ import { SettingsAPI, CodingAgentsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
 import { codingAgentsStore } from "../stores/coding-agents";
 import { input as inputValue } from "../../shared/testing/ui-harness";
+import { onboardingPendingSettings } from "../../shared/testing/base-settings";
 
 // #1965 — the cards are driven by codingAgentsStore, which reads the catalog
 // report (never a bundled fallback). Resolve a report carrying Codex, the
@@ -40,6 +41,10 @@ function defaultReport(): CatalogReport {
   };
 }
 
+function settings(overrides: Partial<AppSettings> = {}): AppSettings {
+  return onboardingPendingSettings(overrides);
+}
+
 vi.mock("../../shared/ipc", () => ({
   SettingsAPI: {
     get: vi.fn(() => Promise.resolve(settings())),
@@ -57,100 +62,6 @@ vi.mock("../../shared/stores/settings", () => ({
     refresh: vi.fn(),
   },
 }));
-
-function settings(overrides: Partial<AppSettings> = {}): AppSettings {
-  return {
-    defaultShell: "pwsh",
-    defaultShellArgs: [],
-    sidebarAlwaysOnTop: false,
-    sidebarStyle: "noir-minimal",
-    selectedRowRailWidth: "9px",
-    selectedRowRailColor: "#00ff5f",
-    themeLight: true,
-    telegramNetworkPollErrorLogging: {
-      firstFailureLevel: "warn",
-      transientRepeatLevel: "debug",
-      sustainedLevel: "warn",
-      sustainedAfterSeconds: 60,
-      sustainedRepeatSeconds: 300,
-      recoveryLevel: "info",
-    },
-    raiseTerminalOnClick: true,
-    coordSortByActivity: false,
-    alwaysShowSelectedWorkgroup: true,
-    restoreCoordinatorWakeState: true,
-    restartResumeWakeWorkingAgents: false,
-    restartResumeOrchestratorPrompt:
-      "AgentsCommander was restarted. Continue with the work that was in flight.",
-    restartResumeAgentPrompt: ".",
-    soundsEnabled: true,
-    teamIdleBeepEnabled: true,
-    webServerEnabled: false,
-    webServerPort: 8765,
-    webServerBind: "127.0.0.1",
-    apiServerEnabled: false,
-    apiServerPort: 8766,
-    apiServerBind: "127.0.0.1",
-    terminalSnapshotsEnabled: false,
-    voiceToTextEnabled: false,
-    voiceAutoExecute: false,
-    voiceAutoExecuteDelay: 15,
-    geminiApiKey: "",
-    geminiModel: "gemini-2.5-flash",
-    sidebarZoom: 1,
-    terminalZoom: 1,
-    guideZoom: 1,
-    mainZoom: 1,
-    sidebarGeometry: null,
-    terminalGeometry: null,
-    mainGeometry: null,
-    mainSidebarWidth: 360,
-    mainSidebarSide: "right",
-    mainAlwaysOnTop: false,
-    mainResourceMonitorAttached: false,
-    agents: [],
-    codingAgentProfiles: {
-      schemaVersion: 2,
-      profileSlots: { A: { label: "" } },
-      defaultProfileByAgent: {},
-      profilesByAgent: {},
-      profileLabelsByAgent: {},
-    },
-    telegramBots: [],
-    onboardingDismissed: false,
-    projectPaths: [],
-    projectPath: null,
-    autoGenerateTaskTitle: true,
-    agentTemplatesPath: null,
-    specBoardEnabled: false,
-    gitSweepConcurrency: 1,
-    gitSweepMinIntervalSecs: 10,
-    resourceMonitorEnabled: true,
-    maxConcurrentAgentProcesses: 3,
-    resourceWatchdogAction: "warn",
-    agentGroupWarnPrivateBytes: 8 * 1024 ** 3,
-    agentGroupKillPrivateBytes: 12 * 1024 ** 3,
-    agentProcessKillPrivateBytes: 12 * 1024 ** 3,
-    resourceKeepLastSnapshot: true,
-    resourceBackoffPolling: true,
-    coordinatorIdleBadgeYellowMinutes: 30,
-    coordinatorIdleBadgeRedMinutes: 60,
-    coordinatorAutoCloseEnabled: true,
-    coordinatorAutoCloseMinutes: 60,
-    coordinatorAutoCloseSkipTelegramAssigned: false,
-    coordinatorCascadeCloseEnabled: true,
-    npmUpdateNotificationsEnabled: true,
-    remoteBlockingMenusEnabled: true,
-    autoSelfClearEnabled: true,
-    autoSelfClearByAgent: {},
-    agentAutoUpdateByCommand: {},
-    containerCredentialsFromHost: true,
-    logLevel: null,
-    activityLogEnabled: false,
-    ...overrides,
-    archivedProjectPaths: overrides.archivedProjectPaths ?? [],
-  };
-}
 
 function catalogDef(key: string, label: string, command: string): CodingAgentDefinition {
   return {

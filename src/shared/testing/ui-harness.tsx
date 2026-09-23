@@ -5,12 +5,12 @@ import type {
   AcDiscoveryResult,
   AppSettings,
   BridgeInfo,
-  CodingAgentProfilesConfig,
   ProjectPathResolution,
   Session,
   SettingsSnapshot,
 } from "../types";
 import { FakeTransport } from "./fake-transport";
+import { baseSettings } from "./base-settings";
 import { toastStore } from "../stores/toasts";
 import { projectStore } from "../../sidebar/stores/project";
 import { replicaVolatileStore } from "../../sidebar/stores/replica-volatile";
@@ -40,6 +40,7 @@ import {
 // #2236 phase 7 — the pulse seam override is module-level state like the
 // compact signals, so tests install and clear it only through the harness.
 export { setPulseSeamOverridesForTests };
+export { baseSettings };
 export type { PulseWidthSeams };
 
 export function renderWithFakeTransport(
@@ -107,106 +108,6 @@ export async function waitFor(
     throw lastError;
   }
   throw new Error(`Timed out after ${timeoutMs}ms`);
-}
-
-function defaultCodingAgentProfiles(): CodingAgentProfilesConfig {
-  return {
-    schemaVersion: 2,
-    profileSlots: {
-      A: { label: "" },
-    },
-    defaultProfileByAgent: {},
-    profilesByAgent: {},
-    profileLabelsByAgent: {},
-  };
-}
-
-export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings {
-  return {
-    defaultShell: "pwsh",
-    defaultShellArgs: [],
-    agents: [],
-    telegramBots: [],
-    telegramNetworkPollErrorLogging: {
-      firstFailureLevel: "warn",
-      transientRepeatLevel: "debug",
-      sustainedLevel: "warn",
-      sustainedAfterSeconds: 60,
-      sustainedRepeatSeconds: 300,
-      recoveryLevel: "info",
-    },
-    restoreCoordinatorWakeState: true,
-    restartResumeWakeWorkingAgents: false,
-    restartResumeOrchestratorPrompt:
-      "AgentsCommander was restarted. Continue with the work that was in flight.",
-    restartResumeAgentPrompt: ".",
-    sidebarAlwaysOnTop: false,
-    raiseTerminalOnClick: true,
-    soundsEnabled: false,
-    teamIdleBeepEnabled: false,
-    voiceToTextEnabled: false,
-    geminiApiKey: "",
-    geminiModel: "gemini-2.5-flash",
-    voiceAutoExecute: false,
-    voiceAutoExecuteDelay: 15,
-    sidebarZoom: 1,
-    terminalZoom: 1,
-    guideZoom: 1,
-    mainZoom: 1,
-    sidebarGeometry: null,
-    terminalGeometry: null,
-    mainGeometry: null,
-    mainSidebarWidth: 360,
-    mainSidebarSide: "right",
-    mainAlwaysOnTop: false,
-    mainResourceMonitorAttached: false,
-    webServerEnabled: false,
-    webServerPort: 8765,
-    webServerBind: "127.0.0.1",
-    apiServerEnabled: false,
-    apiServerPort: 8766,
-    apiServerBind: "127.0.0.1",
-    terminalSnapshotsEnabled: false,
-    projectPath: null,
-    projectPaths: [],
-    archivedProjectPaths: [],
-    sidebarStyle: "noir-minimal",
-    selectedRowRailWidth: "9px",
-    selectedRowRailColor: "#00ff5f",
-    onboardingDismissed: true,
-    coordSortByActivity: false,
-    alwaysShowSelectedWorkgroup: true,
-    autoGenerateTaskTitle: true,
-    agentTemplatesPath: null,
-    themeLight: false,
-    specBoardEnabled: false,
-    gitSweepConcurrency: 1,
-    gitSweepMinIntervalSecs: 10,
-    resourceMonitorEnabled: true,
-    maxConcurrentAgentProcesses: 3,
-    resourceWatchdogAction: "warn",
-    agentGroupWarnPrivateBytes: 8 * 1024 ** 3,
-    agentGroupKillPrivateBytes: 12 * 1024 ** 3,
-    agentProcessKillPrivateBytes: 12 * 1024 ** 3,
-    resourceKeepLastSnapshot: true,
-    resourceBackoffPolling: true,
-    coordinatorIdleBadgeYellowMinutes: 30,
-    coordinatorIdleBadgeRedMinutes: 60,
-    coordinatorAutoCloseEnabled: true,
-    coordinatorAutoCloseMinutes: 60,
-    coordinatorAutoCloseSkipTelegramAssigned: false,
-    coordinatorCascadeCloseEnabled: true,
-    npmUpdateNotificationsEnabled: true,
-    remoteBlockingMenusEnabled: true,
-    autoSelfClearEnabled: true,
-    autoSelfClearByAgent: {},
-    agentAutoUpdateByCommand: {},
-    containerCredentialsFromHost: true,
-    logLevel: null,
-    activityLogEnabled: false,
-    ...overrides,
-    codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),
-  };
 }
 
 // #1077: baseSettings() stays legacy-shaped (no report) so existing suites keep

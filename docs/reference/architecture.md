@@ -12,7 +12,6 @@ graph TB
         MAIN["main.tsx<br/>Routes on ?window= param"]
         MAIN -->|"default"| SB["Main window<br/>Sidebar + Terminal panes"]
         MAIN -->|"detached"| DT["Detached Terminal<br/>(locked to one session)"]
-        MAIN -->|"?window=guide"| GU["Guide window"]
         MAIN -->|"?window=resource-monitor"| RM["Resource Monitor window"]
         MAIN -->|"?window=watchers"| WA["Watchers window"]
         MAIN -->|"?window=screenshot-overlay"| SO["Screenshot overlay"]
@@ -937,7 +936,6 @@ graph TD
 | `terminal/components/LastPrompt.tsx` | Last command display per session |
 | `terminal/components/WorkgroupTask.tsx` | TASK.md title/status |
 | `terminal/components/TaskCleanConfirmModal.tsx` | Task clean confirmation |
-| `guide/` | Guide window app (hints, tutorial) |
 | `resource-monitor/` | Resource Monitor window app |
 | `watchers/` | Watchers window app |
 | `screenshot-overlay/` | Screenshot selection overlay |

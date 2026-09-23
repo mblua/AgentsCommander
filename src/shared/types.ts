@@ -699,7 +699,6 @@ export interface AppSettings {
   voiceAutoExecuteDelay: number;
   sidebarZoom: number;
   terminalZoom: number;
-  guideZoom: number;
   mainZoom: number;
   sidebarGeometry: WindowGeometry | null;
   terminalGeometry: WindowGeometry | null;

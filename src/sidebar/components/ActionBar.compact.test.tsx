@@ -30,7 +30,6 @@ const EXPANDED_ONLY_TEST_IDS = [
   "actionBar.sounds",
   "actionBar.categories",
   "actionBar.pinSelectedWorkgroup",
-  "actionBar.guide",
   "actionBar.resourceMonitor",
 ] as const;
 
@@ -67,7 +66,7 @@ describe("ActionBar compact composition (#2236)", () => {
     const rendered = renderWithFakeTransport(() => <ActionBar />, fake);
     try {
       await settingsStore.load();
-      await waitFor(() => expect(gearButtons(rendered.root)).toHaveLength(10));
+      await waitFor(() => expect(gearButtons(rendered.root)).toHaveLength(9));
 
       registerCompactHostForTests();
       setSidebarCompactMode(true);
@@ -85,24 +84,24 @@ describe("ActionBar compact composition (#2236)", () => {
     }
   });
 
-  it("keeps the nine shipped controls expanded when specBoardEnabled is falsy", async () => {
+  it("keeps the eight shipped controls expanded when specBoardEnabled is falsy", async () => {
     const fake = setup({ specBoardEnabled: false });
     const rendered = renderWithFakeTransport(() => <ActionBar />, fake);
     try {
       await settingsStore.load();
-      await waitFor(() => expect(gearButtons(rendered.root)).toHaveLength(9));
+      await waitFor(() => expect(gearButtons(rendered.root)).toHaveLength(8));
       expect(rendered.root.querySelector('[data-ac-testid="actionBar.specBoard"]')).toBeNull();
     } finally {
       rendered.cleanup();
     }
   });
 
-  it("renders specBoard as the tenth control expanded when specBoardEnabled is true", async () => {
+  it("renders specBoard as the ninth control expanded when specBoardEnabled is true", async () => {
     const fake = setup({ specBoardEnabled: true });
     const rendered = renderWithFakeTransport(() => <ActionBar />, fake);
     try {
       await settingsStore.load();
-      await waitFor(() => expect(gearButtons(rendered.root)).toHaveLength(10));
+      await waitFor(() => expect(gearButtons(rendered.root)).toHaveLength(9));
       expect(rendered.root.querySelector('[data-ac-testid="actionBar.specBoard"]')).not.toBeNull();
     } finally {
       rendered.cleanup();
