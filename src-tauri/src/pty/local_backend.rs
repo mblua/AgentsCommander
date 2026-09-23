@@ -4470,11 +4470,15 @@ mod launch_witness_tests {
     fn local_spawn_witness_unset_when_spawn_command_fails() {
         let (backend, _app) = test_backend();
 
-        let spec = spawn_spec("ac-2413-no-such-program-xyz", &[]);
+        // A `.exe` name is launched directly on every OS. Without it, Windows
+        // wraps the command in `cmd.exe /C`, which does start (and so is
+        // correctly marked launched).
+        let spec = spawn_spec("ac-2413-no-such-program-xyz.exe", &[]);
         let witness = spec.launch_witness.clone();
-        backend
+        let error = backend
             .spawn_sync(spec)
             .expect_err("a missing program must fail to spawn");
+        assert!(matches!(error, AppError::PtyError(_)), "{error}");
         assert!(!witness.launched(), "no child exists: witness stays unset");
 
         #[cfg(windows)]
