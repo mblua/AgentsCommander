@@ -70,7 +70,7 @@ function splitLines(text) {
 // Lines keep their terminator, so a CRLF line, or a last line without a newline, differs from
 // its LF twin.
 function terminatedLines(text) {
-  return text.match(/[^\n]*\n|[^\n]+$/g) || [];
+  return text.split(/(?<=\n)/).filter((line) => line !== '');
 }
 
 const CONTEXT = 3;
