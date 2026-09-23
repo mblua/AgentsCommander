@@ -33,7 +33,7 @@ const USAGE = `Usage: node scripts/check-module-arcs.mjs [--self-test] [--help]
 Regenerates the module-arc record from the current tree into a temp directory and
 fails when it differs from src-tauri/module-arcs.txt byte for byte.
 
-  --self-test  Run the embedded self-test (9 cases).
+  --self-test  Run the embedded self-test (10 cases).
   --help       Print this usage and exit 0.`;
 
 class GateError extends Error {}
@@ -67,10 +67,20 @@ function splitLines(text) {
   return lines;
 }
 
-// Line-level diff (LCS). Carriage returns are shown as \r so an EOL-only difference is visible.
+// Lines keep their terminator, so a CRLF line, or a last line without a newline, differs from
+// its LF twin.
+function terminatedLines(text) {
+  return text.match(/[^\n]*\n|[^\n]+$/g) || [];
+}
+
+const CONTEXT = 3;
+const NO_NEWLINE = '\\ No newline at end of file';
+
+// A unified diff (git-style headers, @@ hunks, 3 context lines, LCS) from the committed record to
+// the regenerated one, so `git apply` accepts it. Line ends are kept verbatim, never escaped.
 export function unifiedDiff(oldText, newText) {
-  const a = splitLines(oldText);
-  const b = splitLines(newText);
+  const a = terminatedLines(oldText);
+  const b = terminatedLines(newText);
   const n = a.length;
   const m = b.length;
   const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
@@ -79,24 +89,100 @@ export function unifiedDiff(oldText, newText) {
       lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
     }
   }
-  const show = (s) => s.replace(/\r/g, '\\r');
-  const out = ['--- committed src-tauri/module-arcs.txt', '+++ regenerated from the current tree'];
+  // ops: [kind, oldIndex, newIndex]
+  const ops = [];
   let i = 0;
   let j = 0;
   while (i < n || j < m) {
     if (i < n && j < m && a[i] === b[j]) {
+      ops.push([' ', i, j]);
       i += 1;
       j += 1;
     } else if (j < m && (i === n || lcs[i][j + 1] >= lcs[i + 1][j])) {
-      out.push(`+${show(b[j])}  (line ${j + 1})`);
+      ops.push(['+', i, j]);
       j += 1;
     } else {
-      out.push(`-${show(a[i])}  (line ${i + 1})`);
+      ops.push(['-', i, j]);
       i += 1;
     }
   }
-  if (out.length === 2) out.push('(no line differs; the byte difference is in line endings or the final newline)');
-  return out.join('\n');
+  const out = ['--- a/src-tauri/module-arcs.txt', '+++ b/src-tauri/module-arcs.txt'];
+  const emit = (prefix, line) => {
+    if (line.endsWith('\n')) out.push(prefix + line.slice(0, -1));
+    else out.push(prefix + line, NO_NEWLINE);
+  };
+  let k = 0;
+  while (k < ops.length) {
+    if (ops[k][0] === ' ') {
+      k += 1;
+      continue;
+    }
+    // One hunk absorbs every later change that sits within 2 * CONTEXT unchanged lines.
+    const first = Math.max(0, k - CONTEXT);
+    let last = k;
+    for (let e = k + 1; e < ops.length && e - last <= 2 * CONTEXT; e += 1) {
+      if (ops[e][0] !== ' ') last = e;
+    }
+    const stop = Math.min(ops.length, last + CONTEXT + 1);
+    const hunk = ops.slice(first, stop);
+    const oldCount = hunk.filter((op) => op[0] !== '+').length;
+    const newCount = hunk.filter((op) => op[0] !== '-').length;
+    const oldStart = oldCount === 0 ? hunk[0][1] : hunk[0][1] + 1;
+    const newStart = newCount === 0 ? hunk[0][2] : hunk[0][2] + 1;
+    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
+    for (const [kind, oi, ni] of hunk) emit(kind, kind === '+' ? b[ni] : a[oi]);
+    k = stop;
+  }
+  return `${out.join('\n')}\n`;
+}
+
+// Applies a diff produced by unifiedDiff to `oldText`, strictly: headers, hunk counts and every
+// context or removed line must match. Used only by the self-test to prove the format.
+export function applyUnifiedDiff(oldText, diff) {
+  const a = terminatedLines(oldText);
+  const lines = diff.split('\n');
+  if (lines.pop() !== '') throw new Error('diff must end with a newline');
+  if (lines[0] !== '--- a/src-tauri/module-arcs.txt' || lines[1] !== '+++ b/src-tauri/module-arcs.txt') {
+    throw new Error('missing ---/+++ headers');
+  }
+  const result = [];
+  let pos = 0;
+  let li = 2;
+  if (li === lines.length) throw new Error('no hunk');
+  while (li < lines.length) {
+    const h = /^@@ -(\d+),(\d+) \+(\d+),(\d+) @@$/.exec(lines[li]);
+    if (!h) throw new Error(`bad hunk header: ${lines[li]}`);
+    li += 1;
+    let [oldStart, oldCount, , newCount] = h.slice(1).map(Number);
+    const start = oldCount === 0 ? oldStart : oldStart - 1;
+    if (start < pos) throw new Error('overlapping hunks');
+    result.push(...a.slice(pos, start));
+    pos = start;
+    while (oldCount > 0 || newCount > 0) {
+      const line = lines[li];
+      if (line === undefined) throw new Error('hunk shorter than its header');
+      li += 1;
+      let body = line.slice(1);
+      if (lines[li] === NO_NEWLINE) li += 1;
+      else body += '\n';
+      if (line[0] === '+') {
+        result.push(body);
+        newCount -= 1;
+        continue;
+      }
+      if (line[0] !== ' ' && line[0] !== '-') throw new Error(`bad hunk line: ${line}`);
+      if (a[pos] !== body) throw new Error(`hunk does not match line ${pos + 1}`);
+      pos += 1;
+      oldCount -= 1;
+      if (line[0] === ' ') {
+        result.push(body);
+        newCount -= 1;
+      }
+    }
+    if (oldCount !== 0 || newCount !== 0) throw new Error('hunk counts do not match its lines');
+  }
+  result.push(...a.slice(pos));
+  return result.join('');
 }
 
 // Runs the two steps with `runner` and compares. Returns { ok, message }; throws GateError.
@@ -142,10 +228,13 @@ export async function checkModuleArcs({ runner = realRunner, recordPath = RECORD
       return { ok: true, message: `module-arcs.txt is current: ${arcs} arcs, ${committed.length} bytes.` };
     }
     const diff = unifiedDiff(committed.toString('utf8'), candidate.toString('utf8'));
+    const crNote = committed.includes(13) || candidate.includes(13)
+      ? ' A carriage return is present; the diff keeps line endings verbatim.'
+      : '';
     return {
       ok: false,
       message: `module-arcs.txt is STALE: it does not match the current tree `
-        + `(committed ${committed.length} bytes, regenerated ${candidate.length} bytes).\n\n${diff}\n\n${REGENERATE}`,
+        + `(committed ${committed.length} bytes, regenerated ${candidate.length} bytes).${crNote}\n\n${diff}\n${REGENERATE}`,
     };
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -208,6 +297,29 @@ async function expectGateError(recordBytes, runner, needle) {
   });
 }
 
+// Every pair must round-trip through a strict unified-diff parser: headers, @@ counts, context.
+function diffFormatCase() {
+  const many = Array.from({ length: 40 }, (_, n) => `m${String(n).padStart(2, '0')} -> x\n`);
+  const pairs = [
+    ['a -> b\n', 'a -> b\na -> c\n'],
+    [RECORD_TEXT, 'a -> b\nb -> c\n'],
+    [RECORD_TEXT, RECORD_TEXT.replace(/\n/g, '\r\n')],
+    [RECORD_TEXT, RECORD_TEXT.slice(0, -1)],
+    [many.join(''), [...many.slice(0, 5), 'new -> y\n', ...many.slice(5, 30), ...many.slice(31)].join('')],
+    ['', RECORD_TEXT],
+  ];
+  for (const [oldText, newText] of pairs) {
+    const diff = unifiedDiff(oldText, newText);
+    if (!/^--- a\/\S+\n\+\+\+ b\/\S+\n@@ -\d+,\d+ \+\d+,\d+ @@\n/.test(diff)) {
+      throw new Error(`not a unified diff:\n${diff}`);
+    }
+    if (/\(line \d+\)/.test(diff)) throw new Error('diff lines must carry the arc text only');
+    if (applyUnifiedDiff(oldText, diff) !== newText) throw new Error(`diff does not reproduce the candidate:\n${diff}`);
+  }
+  const twoHunks = unifiedDiff(pairs[4][0], pairs[4][1]);
+  if ((twoHunks.match(/^@@ /gm) || []).length !== 2) throw new Error(`expected two hunks:\n${twoHunks}`);
+}
+
 const CASES = [
   ['equal bytes pass', () => expectResult(RECORD_TEXT, stubRunner(), true)],
   ['one arc removed fails', () => expectResult(RECORD_TEXT, stubRunner({ candidate: 'a -> b\nb -> c\n' }), false)],
@@ -218,6 +330,7 @@ const CASES = [
   ['detector exit 1 with a written graph passes', () => expectResult(RECORD_TEXT, stubRunner({ detectorExit: 1 }), true)],
   ['detector exit 3 is a gate error', () => expectGateError(RECORD_TEXT, stubRunner({ detectorExit: 3 }), 'detector exit 3')],
   ['detector exit 7 is a gate error naming the code', () => expectGateError(RECORD_TEXT, stubRunner({ detectorExit: 7 }), 'detector exit 7')],
+  ['the diff is a valid unified diff that turns the committed record into the candidate', diffFormatCase],
 ];
 
 async function selfTest() {
