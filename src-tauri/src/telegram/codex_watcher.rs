@@ -396,6 +396,11 @@ fn log_turn_event(turns: &TurnAccumulator, event: &TurnEvent) {
             turn_id,
             counters.late_after_route
         ),
+        TurnEvent::LateAfterSuperseded { turn_id } => log::info!(
+            "[CODEX_TURN] ignored late final_answer for superseded turn {} (late_after_superseded={})",
+            turn_id,
+            counters.late_after_superseded
+        ),
         TurnEvent::MalformedClosure => log::info!(
             "[CODEX_TURN] skipped unparseable closure record (malformed_closures={})",
             counters.malformed_closures
@@ -2010,6 +2015,82 @@ mod tests {
             payload["last_agent_message"] = serde_json::json!(last);
         }
         serde_json::json!({"type": "event_msg", "payload": payload}).to_string()
+    }
+
+    /// A `turn_complete` closure line: the alias of `task_complete` (#2356).
+    fn turn_complete_record(turn_id: &str, last_agent_message: Option<&str>) -> String {
+        let mut payload = serde_json::json!({"type": "turn_complete", "turn_id": turn_id});
+        if let Some(last) = last_agent_message {
+            payload["last_agent_message"] = serde_json::json!(last);
+        }
+        serde_json::json!({"type": "event_msg", "payload": payload}).to_string()
+    }
+
+    /// A `task_started` closure line with the flat turn id.
+    fn task_started_record(turn_id: &str) -> String {
+        serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": turn_id}
+        })
+        .to_string()
+    }
+
+    /// #2356 item 1: a `turn_complete` closes the turn like `task_complete`.
+    #[test]
+    fn turn_complete_alias_emits_exactly_one_record() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut reader_seq = 0u64;
+        let mut turns = TurnAccumulator::new();
+        let records = capture_live_lines(
+            vec![
+                (100, current_final_record_with_turn("body", "turn-a")),
+                (200, turn_complete_record("turn-a", Some("body"))),
+            ],
+            "codex-session",
+            Path::new("rollout.jsonl"),
+            &mut reader_seq,
+            Some(&tx),
+            RecordOrigin::Live,
+            &ReaderAttachment::default(),
+            &mut turns,
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].text, "body");
+        assert_eq!(records[0].record_start, Some(100));
+        assert_eq!(rx.try_recv().unwrap().text, "body");
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// #2356 item 2: a superseded turn never reaches the sink, even when a late
+    /// fragment and a matching closure follow; a healthy turn still does.
+    #[test]
+    fn a_superseded_turn_never_reaches_the_sink() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut reader_seq = 0u64;
+        let mut turns = TurnAccumulator::new();
+        let records = capture_live_lines(
+            vec![
+                (0, task_complete_record("turn-s", Some("late"))),
+                (10, task_started_record("turn-n")),
+                (20, current_final_record_with_turn("late", "turn-s")),
+                (30, task_complete_record("turn-s", Some("late"))),
+                (40, current_final_record_with_turn("ok", "turn-h")),
+                (50, task_complete_record("turn-h", Some("ok"))),
+            ],
+            "codex-session",
+            Path::new("rollout.jsonl"),
+            &mut reader_seq,
+            Some(&tx),
+            RecordOrigin::Live,
+            &ReaderAttachment::default(),
+            &mut turns,
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].text, "ok");
+        assert_eq!(rx.try_recv().unwrap().text, "ok");
+        assert!(rx.try_recv().is_err());
+        assert_eq!(turns.counters().late_after_superseded, 1);
+        assert_eq!(turns.counters().emitted, 1);
     }
 
     /// Tests 1 and 9 (#2232 phase 5): the real fixture's nested turn id groups
