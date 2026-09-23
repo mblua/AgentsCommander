@@ -205,18 +205,16 @@ function evaluate(
 }
 
 function loadRealTree() {
-  const sources = SRC_PATHS.filter(isSourcePath).map((path) => ({
-    path,
-    text: readRoot(path) ?? "",
-  }));
+  const readSources = SRC_PATHS.filter(isSourcePath).map((p) => ({ p, text: readRoot(p) }));
+  const sources = readSources.flatMap((r) => (r.text === undefined ? [] : [{ path: r.p, text: r.text }]));
   const bareImports = findBareCssImports(sources);
   const sheetPaths = [
     ...SRC_PATHS.filter((p) => p.endsWith(".css")),
     ...bareImports.map((spec) => `node_modules/${spec}`),
   ];
-  const read = sheetPaths.map((p) => ({ p, text: readRoot(p) }));
-  const missing = read.filter((r) => r.text === undefined).map((r) => r.p);
-  const sheets = read.flatMap((r) => (r.text === undefined ? [] : [r.text]));
+  const readSheets = sheetPaths.map((p) => ({ p, text: readRoot(p) }));
+  const missing = [...readSources, ...readSheets].filter((r) => r.text === undefined).map((r) => r.p);
+  const sheets = readSheets.flatMap((r) => (r.text === undefined ? [] : [r.text]));
   const allowlist = JSON.parse(readRoot(ALLOWLIST_PATH) ?? "null") as Allowlist;
   return { sources, bareImports, missing, sheets, allowlist };
 }
