@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "class": "agent-profile-provider-card-wrap",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "agent-profile-provider-moves",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "agent-projection-status",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "agent-scope-error-row",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "agent-update-node-detail",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "attached",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "auto-unarchive-overlay",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "cancel",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "default",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "error-modal-meta-target",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "error-modal-meta-time",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "home-toggle-btn",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "lock-conflict-head",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "lock-conflict-who",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "new-agent-input",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "new-agent-modal",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "quit-force-offer",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "quit-status",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "rm-filter-pid",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "rm-filter-search",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "rm-pid-chip-pid",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "save",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "settings-agent-row-action-cluster",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "settings-agents-panel-heading",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "settings-auto-update-block",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "sounds-mute-btn",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "spec-board-controls",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "spec-board-gate-status",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "src-agency",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "terminal-agent-message-status",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "terminal-grid-status",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "terminal-pending",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "terminal-status-strip",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "titlebar-btn-attach",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "workgroup-group-rail-counter-line",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    },
+    {
+      "class": "workgroup-task-label-sep",
+      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
+    }
+  ]
+}
