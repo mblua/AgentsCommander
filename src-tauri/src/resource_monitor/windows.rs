@@ -5,7 +5,7 @@ use super::types::{
 
 #[cfg(windows)]
 mod platform {
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::{HashMap, HashSet, VecDeque};
 
     use super::*;
     use windows_sys::Win32::Foundation::{
@@ -163,6 +163,9 @@ mod platform {
     /// identities are already verified at terminate time; this makes the root just as
     /// strict at observe time. Memory lookups are injected so the walk is a pure
     /// function over the snapshot and can be unit-tested without real processes.
+    /// Each pid is marked when enqueued, so a parent-PID cycle left by PID reuse
+    /// (#2443) cannot re-enqueue a pid: the walk visits each pid at most once and
+    /// always terminates.
     fn build_observed_tree(
         entries: &HashMap<u32, ProcessEntry>,
         root: ProcessIdentity,
@@ -180,6 +183,7 @@ mod platform {
         let mut processes = Vec::new();
         let mut errors = Vec::new();
         let mut queue = VecDeque::from([(root.pid, 0_u32)]);
+        let mut enqueued: HashSet<u32> = HashSet::from([root.pid]);
         while let Some((pid, depth)) = queue.pop_front() {
             let Some(entry) = entries.get(&pid) else {
                 if pid == root.pid {
@@ -232,7 +236,9 @@ mod platform {
 
             if let Some(children) = by_parent.get(&pid) {
                 for child in children {
-                    queue.push_back((*child, depth.saturating_add(1)));
+                    if enqueued.insert(*child) {
+                        queue.push_back((*child, depth.saturating_add(1)));
+                    }
                 }
             }
         }
@@ -617,6 +623,156 @@ mod platform {
                 !probed.contains(&2000) && !probed.contains(&2001),
                 "identity resolver must not touch processes outside the subtree, probed={probed:?}"
             );
+        }
+
+        /// #2443 bounded fixture: panics on the first `memory_for` call beyond the
+        /// snapshot size, so a looping walk fails fast instead of growing without limit.
+        fn bounded_memory(limit: usize) -> impl FnMut(u32) -> ProcessMemory {
+            let mut calls: u32 = 0;
+            move |_pid| {
+                calls += 1;
+                assert!(calls <= limit as u32, "walk revisited a pid (#2443)");
+                ProcessMemory::default()
+            }
+        }
+
+        #[test]
+        fn self_parent_root_is_observed_once() {
+            let entries = HashMap::from([
+                (1000, entry(1000, 1000, "agent.exe")),
+                (1001, entry(1001, 1000, "child.exe")),
+            ]);
+            let identities =
+                HashMap::from([(1000, identity(1000, 111)), (1001, identity(1001, 222))]);
+            let tree = build_observed_tree(
+                &entries,
+                identity(1000, 111),
+                |pid| identities.get(&pid).copied(),
+                bounded_memory(entries.len()),
+            );
+
+            let pids: Vec<u32> = tree.processes.iter().map(|p| p.identity.pid).collect();
+            let depths: Vec<u32> = tree.processes.iter().map(|p| p.depth).collect();
+            assert_eq!(pids, vec![1000, 1001]);
+            assert_eq!(depths, vec![0, 1]);
+            assert!(tree.processes.iter().all(|p| p.kill_allowed));
+            assert!(
+                tree.errors.is_empty(),
+                "unexpected errors: {:?}",
+                tree.errors
+            );
+        }
+
+        #[test]
+        fn cycle_through_root_terminates_with_each_pid_once() {
+            let entries = HashMap::from([
+                (1000, entry(1000, 1002, "agent.exe")),
+                (1001, entry(1001, 1000, "child.exe")),
+                (1002, entry(1002, 1001, "grandchild.exe")),
+            ]);
+            let identities = HashMap::from([
+                (1000, identity(1000, 111)),
+                (1001, identity(1001, 222)),
+                (1002, identity(1002, 333)),
+            ]);
+            let tree = build_observed_tree(
+                &entries,
+                identity(1000, 111),
+                |pid| identities.get(&pid).copied(),
+                bounded_memory(entries.len()),
+            );
+
+            let pids: Vec<u32> = tree.processes.iter().map(|p| p.identity.pid).collect();
+            let depths: Vec<u32> = tree.processes.iter().map(|p| p.depth).collect();
+            assert_eq!(pids, vec![1000, 1001, 1002]);
+            assert_eq!(depths, vec![0, 1, 2]);
+            assert!(tree.processes.iter().all(|p| p.kill_allowed));
+            assert!(
+                tree.errors.is_empty(),
+                "unexpected errors: {:?}",
+                tree.errors
+            );
+        }
+
+        #[test]
+        fn unreachable_cycle_is_not_walked() {
+            let entries = HashMap::from([
+                (1000, entry(1000, 4, "agent.exe")),
+                (1001, entry(1001, 1000, "child.exe")),
+                (2001, entry(2001, 2002, "cycle-a.exe")),
+                (2002, entry(2002, 2001, "cycle-b.exe")),
+            ]);
+            let identities = HashMap::from([
+                (1000, identity(1000, 111)),
+                (1001, identity(1001, 222)),
+                (2001, identity(2001, 333)),
+                (2002, identity(2002, 444)),
+            ]);
+            let mut probed: Vec<u32> = Vec::new();
+            let tree = build_observed_tree(
+                &entries,
+                identity(1000, 111),
+                |pid| {
+                    probed.push(pid);
+                    identities.get(&pid).copied()
+                },
+                no_memory,
+            );
+
+            let pids: Vec<u32> = tree.processes.iter().map(|p| p.identity.pid).collect();
+            assert_eq!(pids, vec![1000, 1001]);
+            assert!(
+                !probed.contains(&2001) && !probed.contains(&2002),
+                "identity resolver must not touch the unreachable cycle, probed={probed:?}"
+            );
+        }
+
+        #[test]
+        fn cycle_with_recycled_root_still_drops_subtree() {
+            let entries = HashMap::from([
+                (1000, entry(1000, 1002, "foreign.exe")),
+                (1001, entry(1001, 1000, "child.exe")),
+                (1002, entry(1002, 1001, "grandchild.exe")),
+            ]);
+            let identities = HashMap::from([
+                (1000, identity(1000, 222)),
+                (1001, identity(1001, 333)),
+                (1002, identity(1002, 444)),
+            ]);
+            let tree = build_observed_tree(
+                &entries,
+                identity(1000, 111),
+                |pid| identities.get(&pid).copied(),
+                no_memory,
+            );
+
+            assert!(tree.processes.is_empty());
+            assert_eq!(
+                tree.errors,
+                vec!["root pid 1000 was not in process snapshot".to_string()]
+            );
+        }
+
+        #[test]
+        fn long_cycle_emits_each_pid_at_most_once() {
+            let mut entries = HashMap::from([(1000, entry(1000, 1005, "agent.exe"))]);
+            let mut identities = HashMap::from([(1000, identity(1000, 111))]);
+            for pid in 1001..=1005 {
+                entries.insert(pid, entry(pid, pid - 1, "child.exe"));
+                identities.insert(pid, identity(pid, u64::from(pid)));
+            }
+            let tree = build_observed_tree(
+                &entries,
+                identity(1000, 111),
+                |pid| identities.get(&pid).copied(),
+                bounded_memory(entries.len()),
+            );
+
+            let unique: HashSet<u32> = tree.processes.iter().map(|p| p.identity.pid).collect();
+            let depths: Vec<u32> = tree.processes.iter().map(|p| p.depth).collect();
+            assert_eq!(tree.processes.len(), 6);
+            assert_eq!(unique.len(), 6);
+            assert_eq!(depths, vec![0, 1, 2, 3, 4, 5]);
         }
 
         /// #1438 - real-process guard for the corpse-aware probe, following the
