@@ -936,9 +936,11 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         sessionsStore.markActivity(id);
         if (comanaged === true) {
           // #2271 - the idle edge carries the Co-managed decision in its own
-          // payload. Do NOT set waiting for an armed session: that is the whole
-          // point of one event, one payload (never paint idle before red).
+          // payload. #2442 - record waiting too, or the row latches busy once
+          // the flag clears. It cannot paint idle before red: while the flag is
+          // set, sessionActivity returns "comanaged" before it reads waiting.
           sessionsStore.setSessionComanaged(id, true);
+          sessionsStore.setSessionWaiting(id, true);
         } else {
           sessionsStore.setSessionWaiting(id, true);
         }

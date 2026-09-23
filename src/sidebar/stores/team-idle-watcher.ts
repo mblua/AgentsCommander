@@ -57,8 +57,10 @@ function isExited(status: Session["status"]): boolean {
   return typeof status === "object" && status !== null && "exited" in status;
 }
 
-function isBusy(session: Session): boolean {
+export function isBusy(session: Session, comanaged: boolean): boolean {
   if (isExited(session.status)) return false;
+  // #2442 - an armed Co-managed session records waiting but is mid-cycle.
+  if (comanaged) return true;
   return !session.waitingForInput;
 }
 
@@ -93,7 +95,10 @@ function collectBusyByWg(
       inner = new Map<string, boolean>();
       currentByWg.set(wgPath, inner);
     }
-    inner.set(sessionId, isBusy(session));
+    inner.set(
+      sessionId,
+      isBusy(session, sessionsStore.comanagedBySessionId[session.id] ?? false),
+    );
   }
   return currentByWg;
 }
