@@ -3839,8 +3839,9 @@ html.light-theme .settings-hint-error {
 
 .workgroup-group-rail-project-label {
   margin-bottom: 5px;
-  color: var(--sidebar-fg-dim);
+  color: var(--sidebar-fg);
   font-size: 9px;
+  font-weight: 700;
   line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
