@@ -46,8 +46,10 @@
  * higher toolchain with no `.rs` path in the diff, and accepts a removal only
  * when its file changed or is gone. `--merge` builds the baseline from exactly
  * three per-platform emissions that agree on commit and rustc version.
- * `--classify-probe` decides a probe capture's shape, integrity first. The
- * three modes are inert: no workflow calls them and no baseline file exists.
+ * `--classify-probe` decides a probe capture's shape, integrity first. Every
+ * PR runs `--baseline-diff` (`npm run cog:baseline`) against the committed
+ * `cognitive-complexity.baseline.json`; no workflow or npm script calls
+ * `--merge` or `--classify-probe`, so run them by hand.
  *
  * See docs/quality/cognitive-complexity-gate.md (added in phase 8).
  */
