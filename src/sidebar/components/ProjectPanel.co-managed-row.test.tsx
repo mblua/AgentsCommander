@@ -248,14 +248,20 @@ describe("Co-managed slot stylesheet rule (#2452)", () => {
     expect(ruleAt).toBeGreaterThan(-1);
     const block = sidebarCss.slice(ruleAt, sidebarCss.indexOf("}", ruleAt));
     for (const decl of [
+      "display: block",
       "width: auto",
       "height: auto",
       "min-width: 0",
       "flex: 0 1 auto",
-      "justify-content: flex-start",
+      "white-space: nowrap",
+      "overflow: hidden",
+      "text-overflow: ellipsis",
     ]) {
       expect(block).toContain(decl);
     }
+    // justify-content is dead on a block container; its presence invites the
+    // flex display back, which is what clipped the text with no ellipsis.
+    expect(block).not.toContain("justify-content");
     expect(ruleAt).toBeGreaterThan(sidebarCss.indexOf(".coord-communication-slot {"));
   });
 });
