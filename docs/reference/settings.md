@@ -18,6 +18,8 @@ Published `v0.30.3` has no public override or writability probe; it does not fal
 
 On `v0.33.0` and `main`, `agentscommander_<suffix>.exe` never uses `$HOME`. If its adjacent folder cannot be written, it does not start. A conclusively unwritable folder gives a message that tells you to move the executable to a writable folder or set `AGENTSCOMMANDER_CONFIG_DIR`; when the write result is indeterminate, the message tells you to set `AGENTSCOMMANDER_CONFIG_DIR`. Neither a `v0.33.0` nor a `main` build moves, copies or merges settings from an older folder; each reads a folder only when its own rule selects it. To find and reuse them, see [Settings left by published releases](../features/portable-instances.md#settings-left-by-published-releases).
 
+A future release renames `settings.json` to `settings.30.instance.no-git.json`. This is not implemented yet; see [File naming convention](file-naming.md).
+
 ## Editing rules
 
 - The file is **JSON** (not JSONC, not YAML). Comments are not allowed.
