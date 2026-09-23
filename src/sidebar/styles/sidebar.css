@@ -939,17 +939,16 @@ html, body, #root {
 .replica-item .session-item-status.pending,
 .root-agent-banner .session-item-status.pending { background: var(--status-pending); box-shadow: 0 0 6px var(--status-pending); }
 /* .waiting must override the other status colors (active, running, idle,
-   exited), but it yields to .comanaged: a Co-managed session is never idle, so
-   the idle edge must not paint waiting first. */
+   exited). */
 .session-item .session-item-status.waiting,
 .replica-item .session-item-status.waiting,
 .root-agent-banner .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
-/* #2271 - Co-managed red, container-scoped at the same specificity as .waiting
-   and declared after it. No box-shadow: the user approved colour only, so this
-   state declares background alone. */
+/* #2408 - Co-managed capture is an additive ring around the real activity
+   colour. Outline takes no layout box, so the dot stays 8x8px, and the 2px
+   offset gap shows the row background between dot and ring. */
 .session-item .session-item-status.comanaged,
 .replica-item .session-item-status.comanaged,
-.root-agent-banner .session-item-status.comanaged { background: var(--status-comanaged); }
+.root-agent-banner .session-item-status.comanaged { outline: 2px solid var(--status-comanaged); outline-offset: 2px; }
 
 /* Inactive team member (no active session) */
 .session-item.inactive-member {
