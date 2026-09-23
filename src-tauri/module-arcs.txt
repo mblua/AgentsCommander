@@ -647,6 +647,7 @@ agentscommander_lib::config::coordinator_clocks -> agentscommander_lib::config::
 agentscommander_lib::config::coordinator_clocks -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::config::coordinator_clocks -> agentscommander_lib::config::teams
 agentscommander_lib::config::daemon_pid -> agentscommander_lib::config
+agentscommander_lib::config::daemon_pid -> agentscommander_lib::testability::ui_automation
 agentscommander_lib::config::injected_messages -> agentscommander_lib::config
 agentscommander_lib::config::injected_messages -> agentscommander_lib::config::local_config_io
 agentscommander_lib::config::injected_messages -> agentscommander_lib::pty::inject
