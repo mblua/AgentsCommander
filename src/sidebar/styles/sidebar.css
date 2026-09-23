@@ -6759,16 +6759,22 @@ html.light-theme .settings-hint-error {
 /* #2442 - the Co-managed message is TEXT, not a 15px icon chip. It must keep
    .coord-communication-slot (the narrow-width keep-list at :8257 is a child
    combinator on that class), so this sibling undoes the icon box instead.
+   display: block is load-bearing: the base slot is inline-flex, so without it
+   the text is an anonymous flex item and text-overflow never reaches it - the
+   message would clip with no ellipsis. The parent .ac-discovery-badges is the
+   flex container here; a block child of a flex container is still a flex item,
+   so the row layout is unchanged.
    It MUST stay after --blocked-menu: same specificity, source order decides.
    Colour is inherited from the base slot on purpose (see D2-h). */
 .coord-communication-slot--co-managed {
+  display: block;
   flex: 0 1 auto;
   width: auto;
   height: auto;
   min-width: 0;
   max-width: 14ch;
-  justify-content: flex-start;
   padding: 0 4px;
+  line-height: 1.4;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
