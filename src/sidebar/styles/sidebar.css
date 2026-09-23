@@ -6756,6 +6756,25 @@ html.light-theme .settings-hint-error {
   color: var(--status-blocked);
 }
 
+/* #2442 - the Co-managed message is TEXT, not a 15px icon chip. It must keep
+   .coord-communication-slot (the narrow-width keep-list at :8257 is a child
+   combinator on that class), so this sibling undoes the icon box instead.
+   It MUST stay after --blocked-menu: same specificity, source order decides.
+   Colour is inherited from the base slot on purpose (see D2-h). */
+.coord-communication-slot--co-managed {
+  flex: 0 1 auto;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  max-width: 14ch;
+  justify-content: flex-start;
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--font-size-sm);
+}
+
 /* #775 — the raise-hand glyph inside the amber coordinator-row slot is now the
    shared SVG hand (RaiseHandIcon), sized to sit in the 15px amber chip and
    tinted by the slot's amber `color` via fill: currentColor. */
