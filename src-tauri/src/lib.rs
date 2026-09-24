@@ -6310,7 +6310,10 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
         CoManagedOutcome::Done(reason) => {
             handle.clear_contended(&id);
             handle.armed.disarm(&id);
-            log::info!("[co-managed] cycle end [{id}]: Done({reason}); flag disarmed");
+            log::info!(
+                "[co-managed] cycle end [{id}]: Done({}); flag disarmed",
+                capture::jev::redact_quoted(&reason)
+            );
             emit_co_managed_state(app, session_id, false, Some(&reason));
         }
     }
@@ -9370,6 +9373,151 @@ mod tests {
         assert!(
             !all.iter().any(|line| line.contains(KEY_MARKER)),
             "the API key leaked into the log"
+        );
+
+        // E2 leg 1: a catalog whose `categories` key holds a marker string.
+        // Readiness rejects such a catalog before a cycle, so `classify` is
+        // called directly, which is the only site that logs this reason.
+        const CATALOG_MARKER: &str = "CATMARK-p4-51d0";
+        let catalog = crate::capture::catalog::Catalog::from_json_str(&format!(
+            "{{\"categories\": \"{CATALOG_MARKER}\"}}"
+        ));
+        let network = crate::network::OutboundNetwork::new().expect("network");
+        let settings = crate::capture::jev::JevSettings {
+            api_key: "k".to_string(),
+            model: "m".to_string(),
+            endpoint: "http://127.0.0.1:9/".to_string(),
+            timeout_secs: 1,
+            threshold: 0.7,
+            margin: 0.15,
+        };
+        let catalog_tag = format!("e2cat-{}", p4_short(session_id));
+        let before = p4_tee_len();
+        let returned =
+            crate::capture::jev::classify(&network, &settings, &catalog, "text", &catalog_tag)
+                .await;
+        let catalog_lines = p4_lines_since(before, &catalog_tag);
+        assert!(
+            matches!(&returned, crate::capture::jev::ClassifyOutcome::Abstained { reason } if reason.contains(CATALOG_MARKER)),
+            "the RETURNED reason is unchanged: {returned:?}"
+        );
+        assert!(
+            catalog_lines
+                .iter()
+                .any(|line| line.contains("catalog invalid") && line.contains("column")),
+            "the diagnosis must survive redaction: {catalog_lines:?}"
+        );
+
+        // E2 leg 2: a 200 response whose result id is a marker.
+        const ID_MARKER: &str = "IDMARK-p4-e3b8";
+        let id_fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-user", 0.9),
+            ("to-peer", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+            (ID_MARKER, 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&id_fixture, endpoint, true);
+        let id_session = add_claude_session(
+            &manager,
+            &id_fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &id_fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, id_session, "candidate text");
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let before = p4_tee_len();
+        let trigger = CoManagedTrigger::IdleEdge(id_session);
+        super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+        let id_lines = p4_lines_since(before, &p4_short(id_session));
+        assert!(
+            id_lines.iter().any(
+                |line| line.contains("abstained after response") && line.contains("unknown id")
+            ),
+            "the classify diagnosis must survive redaction: {id_lines:?}"
+        );
+        assert!(
+            id_lines
+                .iter()
+                .any(|line| line.contains("cycle end") && line.contains("unknown id")),
+            "the cycle-end diagnosis must survive redaction: {id_lines:?}"
+        );
+
+        let all = crate::logging::test_tee_snapshot();
+        assert!(
+            !all.iter().any(|line| line.contains(CATALOG_MARKER)),
+            "catalog content leaked into the log"
+        );
+        assert!(
+            !all.iter().any(|line| line.contains(ID_MARKER)),
+            "a remote response id leaked into the log"
+        );
+    }
+
+    /// #2455 test 8 (D, round 7): the request-build and malformed-body legs
+    /// of `send_once` each log a warn line of their own.
+    #[tokio::test]
+    async fn p4_send_once_logs_request_build_and_malformed_body_failures() {
+        use tokio::io::AsyncWriteExt;
+        crate::logging::test_install_logger();
+        let network = crate::network::OutboundNetwork::new().expect("network");
+        let fixture = make_co_managed_fixture();
+        write_co_managed_catalog(&fixture.room_root);
+        let catalog =
+            crate::capture::catalog::Catalog::load(&fixture.room_root.join("catalog.json"));
+        let tag = format!("d8-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let mut settings = crate::capture::jev::JevSettings {
+            api_key: "k".to_string(),
+            model: "m".to_string(),
+            endpoint: "not a url".to_string(),
+            timeout_secs: 5,
+            threshold: 0.7,
+            margin: 0.15,
+        };
+
+        let before = p4_tee_len();
+        crate::capture::jev::classify(&network, &settings, &catalog, "text", &tag).await;
+        let build_lines = p4_lines_since(before, &format!("jev send [{tag}]"));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                read_http_request(&mut stream).await;
+                let body = r#"{"results":[{"id":"to-user"}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        settings.endpoint = format!("http://127.0.0.1:{port}/v1/systemone");
+        let before = p4_tee_len();
+        crate::capture::jev::classify(&network, &settings, &catalog, "text", &tag).await;
+        let body_lines = p4_lines_since(before, &format!("[{tag}]"));
+
+        assert!(
+            build_lines
+                .iter()
+                .any(|line| line.starts_with("WARN ") && line.contains("request build failed")),
+            "{build_lines:?}"
+        );
+        assert!(
+            body_lines.iter().any(|line| line.starts_with("WARN ")
+                && line.contains("malformed body after status=200")),
+            "{body_lines:?}"
+        );
+        assert!(
+            body_lines
+                .last()
+                .is_some_and(|line| line.starts_with("WARN ") && line.contains("permanent error")),
+            "a failed call must not end on an INFO line: {body_lines:?}"
         );
     }
 

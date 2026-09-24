@@ -128,7 +128,8 @@ pub async fn classify(
     }
     if let Some(reason) = catalog.unparseable_reason() {
         log::info!(
-            "[co-managed] jev classify [{session_tag}]: abstained, catalog invalid: {reason}"
+            "[co-managed] jev classify [{session_tag}]: abstained, catalog invalid: {}",
+            redact_quoted(&reason)
         );
         return ClassifyOutcome::abstained(format!("catalog invalid: {reason}"));
     }
@@ -170,19 +171,30 @@ pub async fn classify(
                         "[co-managed] jev classify [{session_tag}]: category={category} score={score} runner_up={runner_up}"
                     ),
                     ClassifyOutcome::Abstained { reason } => log::info!(
-                        "[co-managed] jev classify [{session_tag}]: abstained after response: {reason}"
+                        "[co-managed] jev classify [{session_tag}]: abstained after response: {}",
+                        redact_quoted(reason)
                     ),
                 }
                 return outcome;
             }
             Attempt::Transport(reason) => {
                 if attempt >= MAX_ATTEMPTS {
+                    log::warn!(
+                        "[co-managed] jev classify [{session_tag}]: abstained, transport error after one retry: {}",
+                        redact_quoted(&reason)
+                    );
                     return ClassifyOutcome::abstained(format!(
                         "transport error after one retry: {reason}"
                     ));
                 }
             }
-            Attempt::Permanent(reason) => return ClassifyOutcome::abstained(reason),
+            Attempt::Permanent(reason) => {
+                log::warn!(
+                    "[co-managed] jev classify [{session_tag}]: abstained, permanent error: {}",
+                    redact_quoted(&reason)
+                );
+                return ClassifyOutcome::abstained(reason);
+            }
         }
     }
 }
@@ -200,7 +212,13 @@ async fn send_once(
     let client = network.general();
     let request = match build_request(client, settings, catalog, text) {
         Ok(request) => request,
-        Err(reason) => return Attempt::Permanent(reason),
+        Err(reason) => {
+            log::warn!(
+                "[co-managed] jev send [{session_tag}]: attempt={attempt} request build failed: {}",
+                redact_quoted(&reason)
+            );
+            return Attempt::Permanent(reason);
+        }
     };
     let started = std::time::Instant::now();
     match client.execute(request).await {
@@ -219,7 +237,13 @@ async fn send_once(
             if status.is_success() {
                 match response.json::<JevResponse>().await {
                     Ok(parsed) => Attempt::Response(parsed.results),
-                    Err(error) => Attempt::Permanent(format!("malformed response: {error}")),
+                    Err(error) => {
+                        log::warn!(
+                            "[co-managed] jev send [{session_tag}]: attempt={attempt} malformed body after status={status}: {}",
+                            redact_quoted(&error.to_string())
+                        );
+                        Attempt::Permanent(format!("malformed response: {error}"))
+                    }
                 }
             } else if is_transport_status(status) {
                 Attempt::Transport(format!("HTTP {status}"))
@@ -242,6 +266,26 @@ async fn send_once(
             }
         }
     }
+}
+
+/// #2455 E2: the logged projection of a reason this module did not build.
+/// Every double-quoted span (serde's rejected value, a rejected response id)
+/// becomes a fixed placeholder; the diagnosis around it survives. Only ever
+/// applied to what is LOGGED, never to what is returned.
+pub(crate) fn redact_quoted(reason: &str) -> String {
+    let mut out = String::with_capacity(reason.len());
+    let mut quoted = false;
+    for ch in reason.chars() {
+        if ch == '"' {
+            if !quoted {
+                out.push_str("\"<redacted>\"");
+            }
+            quoted = !quoted;
+        } else if !quoted {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn is_transport_status(status: reqwest::StatusCode) -> bool {
