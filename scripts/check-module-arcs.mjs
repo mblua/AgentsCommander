@@ -18,7 +18,7 @@ const DETECTOR = path.join(ROOT, 'scripts', '01-rust_module-dependency-cycles.mj
 const PROJECTION = path.join(ROOT, 'scripts', '02-module-arc-record.mjs');
 const RECORD = path.join(ROOT, 'src-tauri', 'module-arcs.txt');
 const CRATE = path.join(ROOT, 'src-tauri');
-const EXPECTED_TOOL_VERSION = '1.1.0';
+const EXPECTED_TOOL_VERSION = '1.1.1';
 
 const REGENERATE = `To regenerate the record, from the repo root:
 

@@ -31,7 +31,7 @@ import { createHash } from 'node:crypto';
  * ------------------------------------------------------------------ */
 
 const TOOL_NAME = 'rust-module-dependency-cycles';
-const TOOL_VERSION = '1.1.0';
+const TOOL_VERSION = '1.1.1';
 const SCHEMA_VERSION = 1;
 const BASELINE_SCHEMA_VERSION = 1;
 const BASELINE_KIND = 'rust-cycles-baseline';
@@ -42,6 +42,15 @@ const BASELINE_KIND = 'rust-cycles-baseline';
 const GRAPH_SCHEMA_VERSION = 1;
 const GRAPH_KIND = 'dependency-graph';
 const GRAPH_LANGUAGE = 'rust';
+
+// Every sort in this file orders strings by UTF-16 code unit, the order the
+// default Array.prototype.sort already used; naming it keeps the output stable
+// and explicit. localeCompare is not used: it would reorder case and punctuation.
+function compareCodeUnits(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
 
 /** Always applied, matched on any path segment. */
 const DEFAULT_EXCLUDES = ['target', '.git', 'node_modules', '.direnv', '.cargo', 'vendor'];
@@ -633,8 +642,8 @@ function findRustFiles(root, compiledExcludes, ctx) {
     }
   }
 
-  rustFiles.sort();
-  manifests.sort();
+  rustFiles.sort(compareCodeUnits);
+  manifests.sort(compareCodeUnits);
   return { rustFiles, manifests };
 }
 
@@ -1890,7 +1899,7 @@ function buildModuleGraph(targets, trees, opts, ctx) {
     }
   }
 
-  nodes.sort();
+  nodes.sort(compareCodeUnits);
   return { nodes, edges, adjacency, nodeMeta };
 }
 
@@ -2274,11 +2283,11 @@ function silentStats() {
 
 /** Iterative, so a large graph cannot blow the JS stack. */
 function tarjan(nodeIds, adjacency) {
-  const ids = nodeIds.slice().sort();
+  const ids = nodeIds.slice().sort(compareCodeUnits);
   const neighbours = new Map();
   for (const id of ids) {
     const set = adjacency.get(id);
-    neighbours.set(id, set ? Array.from(set).filter((n) => adjacency.has(n) || ids.includes(n)).sort() : []);
+    neighbours.set(id, set ? Array.from(set).filter((n) => adjacency.has(n) || ids.includes(n)).sort(compareCodeUnits) : []);
   }
 
   const index = new Map();
@@ -2329,7 +2338,7 @@ function tarjan(nodeIds, adjacency) {
           component.push(popped);
           if (popped === frame.node) break;
         }
-        component.sort();
+        component.sort(compareCodeUnits);
         sccs.push(component);
       }
     }
@@ -2353,7 +2362,7 @@ function hasSelfEdge(adjacency, id) {
  * a line does not change it, while adding or removing a member does.
  */
 function cycleId(members) {
-  return createHash('sha256').update(members.slice().sort().join('\n')).digest('hex').slice(0, 16);
+  return createHash('sha256').update(members.slice().sort(compareCodeUnits).join('\n')).digest('hex').slice(0, 16);
 }
 
 function edgesWithin(edges, memberSet) {
@@ -2388,7 +2397,7 @@ function buildModuleCycles(graph) {
     cycles.push({
       id: cycleId(members),
       size: members.length,
-      members: members.slice().sort(),
+      members: members.slice().sort(compareCodeUnits),
       edges: edgesWithin(graph.edges, memberSet),
     });
   }
@@ -2420,12 +2429,12 @@ function classifyFunctionCycles(graph, ctx) {
       continue;
     }
     const memberSet = new Set(members);
-    const modules = Array.from(new Set(members.map((id) => graph.nodes.get(id).moduleId))).sort();
+    const modules = Array.from(new Set(members.map((id) => graph.nodes.get(id).moduleId))).sort(compareCodeUnits);
     cycles.push({
       id: cycleId(members),
       scope: modules.length === 1 ? 'intra-module' : 'cross-module',
       size: members.length,
-      members: members.slice().sort(),
+      members: members.slice().sort(compareCodeUnits),
       modules,
       edges: edgesWithin(graph.edges, memberSet),
     });
@@ -2659,7 +2668,7 @@ function analyze(opts) {
   for (const file of rustFiles) {
     if (!reached.has(file)) ctx.blindSpots.unreachableFiles.push(relPath(rootAbs, file));
   }
-  ctx.blindSpots.unreachableFiles.sort();
+  ctx.blindSpots.unreachableFiles.sort(compareCodeUnits);
 
   const wantModule = opts.level === 'module' || opts.level === 'all';
   const wantFunction = opts.level === 'function' || opts.level === 'all';
@@ -4356,7 +4365,7 @@ function hasModuleEdge(res, from, to) {
 }
 
 function materialize(dir, files) {
-  for (const rel of Object.keys(files).sort()) {
+  for (const rel of Object.keys(files).sort(compareCodeUnits)) {
     const abs = path.join(dir, ...rel.split('/'));
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, files[rel], 'utf8');
