@@ -74,6 +74,10 @@ jobs:
         run: |
           npm run check:served-paths:self
           npm run check:served-paths
+      - name: "Check module-arc record is current (#2447)"
+        run: |
+          npm run check:arcs:self
+          npm run check:arcs
       - name: "Check test-code duplication (#2155)"
         env:
           GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}

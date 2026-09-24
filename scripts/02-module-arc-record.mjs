@@ -24,7 +24,7 @@
 // src-tauri/module-arcs.txt is pinned to LF in .gitattributes. Without that pin,
 // core.autocrlf=true checks it out as CRLF and every run rewrites all 972 lines.
 //
-// REGENERATING (manual; there is no CI or hook wiring, by design). From the repo root, with
+// REGENERATING (manual; `check:arcs` in the test-debt CI job fails when it is stale). From the repo root, with
 // <VAULT> = repo-personal/ObsidianVault/Coding Agents/IA-Programming/rust:
 //
 //   node "<VAULT>/01-rust_module-dependency-cycles.mjs" src-tauri --emit-graph graph.json --quiet
