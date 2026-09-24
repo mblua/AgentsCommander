@@ -6938,6 +6938,27 @@ html.light-theme .settings-hint-error {
   text-transform: none;
 }
 
+/* #2482 - the weekly-quota fill. ONE background-image layer and nothing else, so
+   `background-color`, `color`, `border-radius`, padding and font are untouched and
+   the only new composite is the chip text over the red tint, on the used portion.
+   The remaining-side stop is `transparent`, NOT the green tint: the base rule above
+   uses the `background` SHORTHAND, so `background-color` is already
+   rgba(16,185,129,0.14), and a green stop would composite green on green for an
+   effective alpha of 1 - (1 - 0.14)^2 = 0.2604, leaving the remaining half visibly
+   darker than an unfilled chip. `transparent` makes it byte-identical instead.
+   #2064 rejected a fill on `.branch` on measured contrast grounds, so this rule is
+   measured, not assumed. Text #34d399 over rgba(239,68,68,0.16) over
+   rgba(16,185,129,0.14) over rows #0a0a0f / #12121e / #222227, WCAG 2.x from
+   unrounded composited channels: used 7.53 / 6.92 / 5.86, unfilled control
+   8.61 / 7.89 / 6.59. All six clear 4.5:1. Re-measure if the red alpha changes. */
+.ac-discovery-badge.agent.quota-fill {
+  background-image: linear-gradient(
+    to right,
+    transparent 0 var(--ac-quota-remaining),
+    rgba(239, 68, 68, 0.16) var(--ac-quota-remaining) 100%
+  );
+}
+
 .ac-discovery-badge.running-peer {
   background: rgba(58, 123, 255, 0.15);
   color: #6aa0ff;
