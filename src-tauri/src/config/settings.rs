@@ -8,7 +8,8 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 use crate::config::instance_artifacts::{
-    AGENT_HELP_LOCAL_FILE_NAME, AGENT_HELP_SHIPPED_FILE_NAME, BLOCKING_MENUS_LOCAL_FILE_NAME,
+    AGENT_HELP_LOCAL_FILE_NAME, AGENT_HELP_REMOTE_CHECK_FILE_NAME, AGENT_HELP_REMOTE_FILE_NAME,
+    AGENT_HELP_SHIPPED_FILE_NAME, BLOCKING_MENUS_LOCAL_FILE_NAME,
     BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME, BLOCKING_MENUS_REMOTE_FILE_NAME,
     BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_SUFFIX,
     SETTINGS_LOCK_FILE_NAME,
@@ -802,6 +803,10 @@ pub struct AppSettings {
     /// (<=1x/24h); a downloaded file applies at the next start. Default true.
     #[serde(default = "default_true")]
     pub remote_blocking_menus_enabled: bool,
+    /// #2133 When true, download the remote per-agent help on startup
+    /// (<=1x/24h); a downloaded file applies at the next start. Default true.
+    #[serde(default = "default_true")]
+    pub remote_agent_help_enabled: bool,
     /// #640 Global master for auto self-handoff-and-clear. Absolute kill switch:
     /// false => off for every agent. When true, the class-aware default applies
     /// (ON for coordinator/Root, OFF for specialists), subject to per-agent
@@ -844,6 +849,12 @@ pub struct AppSettings {
     /// user's file on the next save, so configuring nothing would still leave a trace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watchers_geometry: Option<WindowGeometry>,
+    /// #2482 - where each agent's weekly (7-day) quota reading comes from, keyed by
+    /// agent id. Root-level, not a field on `AgentConfig`, for the reason `watchers`
+    /// is: the 34 literal `AgentConfig` construction sites stay untouched. Absent or
+    /// empty = off for every agent: no reading, no compile, no event.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub quota_sources: BTreeMap<String, QuotaSourceEntry>,
     /// #1646 / #1647 - master kill switch for proactive detection of terminal blocking menus.
     #[serde(default = "default_true")]
     pub menu_guard_enabled: bool,
@@ -942,6 +953,47 @@ pub enum WatcherDedupe {
     Capture,
     /// Every match counts.
     None,
+}
+
+/// #2482 - one entry of the root `quotaSources` map, or whatever the user wrote
+/// there. Same wrapper, same reason, as `WatcherEntry`: settings deserialize in
+/// one shot and any failure is replaced by `AppSettings::default()`, so a
+/// hand-written or newer-AC entry must cost one skipped source and never the whole
+/// file. `untagged` tries `Valid` first, so `Invalid` only catches what
+/// `QuotaSourceConfig` rejected, and its bytes are kept verbatim so a save
+/// round-trips what the user wrote.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum QuotaSourceEntry {
+    Valid(QuotaSourceConfig),
+    Invalid(serde_json::Value),
+}
+
+impl QuotaSourceEntry {
+    pub fn valid(&self) -> Option<&QuotaSourceConfig> {
+        match self {
+            QuotaSourceEntry::Valid(config) => Some(config),
+            QuotaSourceEntry::Invalid(_) => None,
+        }
+    }
+}
+
+/// #2482 - one configured quota source. **The multi-agent extension point.**
+/// `kind` is the discriminant: adding Codex, Gemini or any other agent is one new
+/// variant here plus one match arm in `pty::agent_quota::source`. Nothing else in
+/// the engine changes, and an unrecognized `kind` from a newer AC lands in
+/// `QuotaSourceEntry::Invalid` rather than destroying the file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum QuotaSourceConfig {
+    /// Read the percentage from what the agent draws in its terminal, with the
+    /// screen-row scrape #1032 uses for the context badge. Capture group 1 is the
+    /// USED percentage of the 7-day window.
+    ScreenRegex {
+        pattern: String,
+        #[serde(default = "default_true")]
+        enabled: bool,
+    },
 }
 
 fn default_dedupe_window_ms() -> u64 {
@@ -1282,12 +1334,14 @@ impl Default for AppSettings {
             coordinator_cascade_close_enabled: true,
             npm_update_notifications_enabled: true,
             remote_blocking_menus_enabled: true,
+            remote_agent_help_enabled: true,
             auto_self_clear_enabled: true,
             auto_self_clear_by_agent: std::collections::BTreeMap::new(),
             agent_auto_update_by_command: std::collections::BTreeMap::new(),
             container_credentials_from_host: true,
             watchers: BTreeMap::new(),
             watchers_geometry: None,
+            quota_sources: BTreeMap::new(),
             menu_guard_enabled: true,
             typing_hold_seconds: default_typing_hold_seconds(),
         }
@@ -1854,14 +1908,12 @@ pub(crate) fn parse_agent_help_file(contents: &str) -> Result<AgentHelpFile, Str
 }
 
 /// #2133 - the operator-owned overlay lives next to `settings.json`.
-#[allow(dead_code)] // #2133: P4 (the IPC command) is the first production caller.
 pub(crate) fn agent_help_local_path(settings_path: &Path) -> PathBuf {
     settings_path.with_file_name(AGENT_HELP_LOCAL_FILE_NAME)
 }
 
 /// #2133 (D7) - the user layer, no caps. A missing file is silent; any other rejection logs
 /// once and yields an empty layer plus the reason, which P4 hands to the UI.
-#[allow(dead_code)] // #2133: P4 (the IPC command) is the first production caller.
 pub(crate) fn load_local_agent_help_file(settings_path: &Path) -> (AgentHelpFile, Option<String>) {
     let path = agent_help_local_path(settings_path);
     let contents = match std::fs::read_to_string(&path) {
@@ -1926,6 +1978,205 @@ pub fn refresh_shipped_agent_help_from_config_dir() {
         }
         None => log::debug!("[agent-help] no config dir; the shipped help is not written"),
     }
+}
+
+/// #2133 - the git ref the published per-agent help is served from; named in every
+/// cache note. The URL literal that embeds it is P7's, with the SERVED-PATHS row.
+pub(crate) const REMOTE_AGENT_HELP_SOURCE_REF: &str = "main";
+
+/// #2133 - the published file: one pinned literal whose ref segment must equal
+/// `REMOTE_AGENT_HELP_SOURCE_REF` (P6's) and whose `v1` segment must equal
+/// `AGENT_HELP_SCHEMA_VERSION`; T1 pins both.
+pub(crate) const REMOTE_AGENT_HELP_URL: &str =
+    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/agent-help/v1/agent-help.json";
+
+/// #2133 (D4) - hard caps on the downloaded layer. Every cap counts UTF-8 bytes
+/// (`str::len()`), not characters; TypeScript's `.length` counts UTF-16 code units instead.
+pub(crate) const REMOTE_AGENT_HELP_MAX_BYTES: usize = 64 * 1024;
+pub(crate) const REMOTE_AGENT_HELP_MAX_ENTRIES: usize = 40;
+pub(crate) const REMOTE_AGENT_HELP_LABEL_MAX_BYTES: usize = 80;
+pub(crate) const REMOTE_AGENT_HELP_PARAMS_MAX_BYTES: usize = 256;
+pub(crate) const REMOTE_AGENT_HELP_URL_MAX_BYTES: usize = 512;
+pub(crate) const REMOTE_AGENT_HELP_MAX_TIPS: usize = 12;
+pub(crate) const REMOTE_AGENT_HELP_TITLE_MAX_BYTES: usize = 120;
+pub(crate) const REMOTE_AGENT_HELP_BODY_MAX_BYTES: usize = 1200;
+
+/// UTF-8 bytes, as every remote cap.
+fn check_remote_agent_help_cap(
+    at: &str,
+    field: &str,
+    value: &str,
+    cap: usize,
+) -> Result<(), String> {
+    if value.len() > cap {
+        return Err(format!(
+            "{at}: {field} is {} bytes; more than {cap} bytes are not allowed",
+            value.len()
+        ));
+    }
+    Ok(())
+}
+
+fn check_remote_agent_help_entry(key: &str, entry: &AgentHelpEntry) -> Result<(), String> {
+    let at = format!("entry {key}");
+    let optional = [
+        ("label", &entry.label, REMOTE_AGENT_HELP_LABEL_MAX_BYTES),
+        (
+            "paramsExample",
+            &entry.params_example,
+            REMOTE_AGENT_HELP_PARAMS_MAX_BYTES,
+        ),
+        ("docsUrl", &entry.docs_url, REMOTE_AGENT_HELP_URL_MAX_BYTES),
+    ];
+    for (field, value, cap) in optional {
+        if let Some(value) = value {
+            check_remote_agent_help_cap(&at, field, value, cap)?;
+        }
+    }
+    if entry.tips.len() > REMOTE_AGENT_HELP_MAX_TIPS {
+        return Err(format!(
+            "{at}: holds {} tips; more than {REMOTE_AGENT_HELP_MAX_TIPS} are not allowed",
+            entry.tips.len()
+        ));
+    }
+    for (index, tip) in entry.tips.iter().enumerate() {
+        let at = format!("entry {key} tip {index}");
+        check_remote_agent_help_cap(&at, "title", &tip.title, REMOTE_AGENT_HELP_TITLE_MAX_BYTES)?;
+        check_remote_agent_help_cap(&at, "body", &tip.body, REMOTE_AGENT_HELP_BODY_MAX_BYTES)?;
+        if let Some(link) = &tip.link {
+            check_remote_agent_help_cap(
+                &at,
+                "link url",
+                &link.url,
+                REMOTE_AGENT_HELP_URL_MAX_BYTES,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// #2133 (D4, D10) - the whole-file gate for the downloaded layer, shaped like
+/// `validate_remote_blocking_menus_file`. The first failed check rejects the whole file,
+/// never one entry; `byAgent` is rejected because the remote layer is `byCommand`-only.
+pub(crate) fn validate_remote_agent_help_file(contents: &str) -> Result<AgentHelpFile, String> {
+    let file = parse_agent_help_file(contents)?;
+    if !file.by_agent.is_empty() {
+        return Err("byAgent must be empty".to_string());
+    }
+    if file.by_command.len() > REMOTE_AGENT_HELP_MAX_ENTRIES {
+        return Err(format!(
+            "holds {} entries; more than {REMOTE_AGENT_HELP_MAX_ENTRIES} entries are not allowed",
+            file.by_command.len()
+        ));
+    }
+    if let Some(general) = &file.general {
+        check_remote_agent_help_entry("general", general)?;
+    }
+    for (key, entry) in &file.by_command {
+        check_remote_agent_help_entry(key, entry)?;
+    }
+    Ok(file)
+}
+
+/// #2133 - the response gate: status, body size and UTF-8 before the whole-file validator.
+pub(crate) fn accept_remote_agent_help_response(
+    status: u16,
+    body: &[u8],
+) -> Result<AgentHelpFile, String> {
+    if status != 200 {
+        return Err(format!("HTTP status {status}"));
+    }
+    if body.len() > REMOTE_AGENT_HELP_MAX_BYTES {
+        return Err(format!(
+            "body larger than {REMOTE_AGENT_HELP_MAX_BYTES} bytes"
+        ));
+    }
+    let text = std::str::from_utf8(body).map_err(|_| "body is not UTF-8".to_string())?;
+    validate_remote_agent_help_file(text)
+}
+
+pub(crate) fn agent_help_remote_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(AGENT_HELP_REMOTE_FILE_NAME)
+}
+
+/// #2133 (D4) - the downloaded layer, re-validated at every read because the cache sits in a
+/// directory the local user can edit. A rejected or unreadable cache yields an empty layer and
+/// one warning; a missing cache is silent.
+pub(crate) fn load_remote_agent_help_file(settings_path: &Path) -> AgentHelpFile {
+    let path = agent_help_remote_path(settings_path);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AgentHelpFile::default(),
+        Err(e) => {
+            log::warn!("[agent-help] could not read {}: {e}", path.display());
+            return AgentHelpFile::default();
+        }
+    };
+    match validate_remote_agent_help_file(&contents) {
+        Ok(file) => file,
+        Err(e) => {
+            log::warn!(
+                "[agent-help] {} {e}; ignoring the downloaded help",
+                path.display()
+            );
+            AgentHelpFile::default()
+        }
+    }
+}
+
+/// #2133 - replace the downloaded cache only after validation passed. The note records where
+/// and when the bytes came from; `source_url` is the caller's, so this phase holds no URL.
+pub(crate) fn write_remote_agent_help_cache(
+    settings_path: &Path,
+    mut file: AgentHelpFile,
+    source_url: &str,
+    fetched_at: chrono::DateTime<chrono::Utc>,
+) -> Result<(), String> {
+    file.note = Some(format!(
+        "Downloaded by AgentsCommander from {source_url} (source ref {REMOTE_AGENT_HELP_SOURCE_REF}) at {}. Replaced by the next accepted download and ignored at start if it fails validation; put your own help in agent-help.local.json.",
+        fetched_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    ));
+    let bytes = pretty_json_bytes(&file).map_err(|e| e.to_string())?;
+    crate::config::local_config_io::write_file_atomic(
+        &agent_help_remote_path(settings_path),
+        &bytes,
+    )
+}
+
+/// #2133 (D4) - the throttle stamp lives next to `settings.json`.
+pub(crate) fn agent_help_remote_check_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(AGENT_HELP_REMOTE_CHECK_FILE_NAME)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteAgentHelpCheckStamp {
+    last_checked_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// #2133 (D4) - missing, unreadable and malformed stamps all mean "no throttle": the caller
+/// treats `None` as due.
+pub(crate) fn read_remote_agent_help_check_stamp(
+    settings_path: &Path,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let bytes = std::fs::read(agent_help_remote_check_path(settings_path)).ok()?;
+    let stamp: RemoteAgentHelpCheckStamp = serde_json::from_slice(&bytes).ok()?;
+    Some(stamp.last_checked_at)
+}
+
+/// #2133 (D4) - written after every attempt that passed the due check, accepted or not.
+pub(crate) fn write_remote_agent_help_check_stamp(
+    settings_path: &Path,
+    at: chrono::DateTime<chrono::Utc>,
+) -> Result<(), String> {
+    let stamp = RemoteAgentHelpCheckStamp {
+        last_checked_at: at,
+    };
+    let bytes = pretty_json_bytes(&stamp).map_err(|e| e.to_string())?;
+    crate::config::local_config_io::write_file_atomic(
+        &agent_help_remote_check_path(settings_path),
+        &bytes,
+    )
 }
 
 /// #2133 - a parse failure is a build defect T1 catches; production logs once and serves an
@@ -10698,6 +10949,53 @@ mod tests {
         assert_eq!(written, expected);
     }
 
+    /// #2482 - absent `quotaSources` stays absent on save; an unknown `kind` costs one
+    /// skipped entry and round-trips verbatim.
+    #[test]
+    fn quota_sources_round_trip_and_an_unknown_kind_is_kept_verbatim() {
+        let bare = serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": []
+        })
+        .to_string();
+        let (settings, _) = super::parse_settings_json(&bare, "test", None).expect("parses");
+        assert!(settings.quota_sources.is_empty());
+        let written = serde_json::to_value(&settings).expect("serializes");
+        assert!(!written.as_object().unwrap().contains_key("quotaSources"));
+
+        let contents = serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": [],
+            "quotaSources": {
+                "claude": { "kind": "screenRegex", "pattern": r"Weekly (\d+)%" },
+                "codex": { "kind": "fromTheFuture", "endpoint": "x" }
+            }
+        })
+        .to_string();
+        let (settings, _) = super::parse_settings_json(&contents, "test", None).expect("parses");
+
+        assert_eq!(
+            settings.quota_sources["claude"].valid(),
+            Some(&super::QuotaSourceConfig::ScreenRegex {
+                pattern: r"Weekly (\d+)%".to_string(),
+                enabled: true,
+            })
+        );
+        assert!(settings.quota_sources["codex"].valid().is_none());
+
+        let written = serde_json::to_value(&settings.quota_sources).expect("serializes");
+        assert_eq!(
+            written["codex"],
+            serde_json::json!({ "kind": "fromTheFuture", "endpoint": "x" })
+        );
+        assert_eq!(
+            written["claude"],
+            serde_json::json!({ "kind": "screenRegex", "pattern": r"Weekly (\d+)%", "enabled": true })
+        );
+    }
+
     #[test]
     fn save_settings_preserve_twice_succeeds_no_sharing_violation() {
         // G4a: the preserve-read closes its handle before the #774 rename, so two
@@ -12113,6 +12411,7 @@ mod tests {
   "railCollapsedProjects": [],
   "railFavoritesCollapsed": false,
   "raiseTerminalOnClick": true,
+  "remoteAgentHelpEnabled": true,
   "remoteBlockingMenusEnabled": true,
   "resourceBackoffPolling": true,
   "resourceKeepLastSnapshot": true,
@@ -15364,6 +15663,305 @@ mod tests {
 
             assert!(!refresh_shipped_agent_help_file(&settings_path));
             assert!(!agent_help_shipped_path(&settings_path).exists());
+        }
+
+        // ---- #2133 (P6) - the remote validator, caps, cache and stamp. ----
+
+        fn remote_with_entries(entries: Vec<(String, AgentHelpEntry)>) -> String {
+            let file = AgentHelpFile {
+                by_command: entries.into_iter().collect(),
+                ..AgentHelpFile::default()
+            };
+            serde_json::to_string(&file).unwrap()
+        }
+
+        fn labelled(index: usize) -> (String, AgentHelpEntry) {
+            (
+                format!("cmd{index:02}"),
+                AgentHelpEntry {
+                    label: Some(format!("C{index}")),
+                    ..AgentHelpEntry::default()
+                },
+            )
+        }
+
+        fn with_params(params: String) -> String {
+            remote_with_entries(vec![(
+                "claude".to_string(),
+                AgentHelpEntry {
+                    params_example: Some(params),
+                    ..AgentHelpEntry::default()
+                },
+            )])
+        }
+
+        fn tip(body: String) -> AgentHelpTip {
+            AgentHelpTip {
+                title: "t".to_string(),
+                body,
+                link: None,
+            }
+        }
+
+        fn with_tips(tips: Vec<AgentHelpTip>) -> String {
+            remote_with_entries(vec![(
+                "claude".to_string(),
+                AgentHelpEntry {
+                    tips,
+                    ..AgentHelpEntry::default()
+                },
+            )])
+        }
+
+        #[test]
+        fn a_by_agent_row_is_rejected_in_the_remote_layer() {
+            let contents = r#"{"schemaVersion":1,"byAgent":{"a1":{"label":"x"}}}"#;
+            assert!(parse_agent_help_file(contents).is_ok());
+            let err = validate_remote_agent_help_file(contents).unwrap_err();
+            assert_eq!(err, "byAgent must be empty");
+        }
+
+        #[test]
+        fn too_many_entries_are_rejected() {
+            let forty = remote_with_entries((0..40).map(labelled).collect());
+            assert_eq!(
+                validate_remote_agent_help_file(&forty)
+                    .unwrap()
+                    .by_command
+                    .len(),
+                40
+            );
+            let forty_one = remote_with_entries((0..41).map(labelled).collect());
+            let err = validate_remote_agent_help_file(&forty_one).unwrap_err();
+            assert!(err.contains("41 entries"), "{err}");
+        }
+
+        #[test]
+        fn an_oversized_params_example_is_rejected() {
+            assert!(validate_remote_agent_help_file(&with_params("p".repeat(256))).is_ok());
+            let err = validate_remote_agent_help_file(&with_params("p".repeat(257))).unwrap_err();
+            assert_eq!(
+                err,
+                "entry claude: paramsExample is 257 bytes; more than 256 bytes are not allowed"
+            );
+        }
+
+        #[test]
+        fn an_oversized_tip_body_is_rejected() {
+            assert!(
+                validate_remote_agent_help_file(&with_tips(vec![tip("b".repeat(1200))])).is_ok()
+            );
+            let err = validate_remote_agent_help_file(&with_tips(vec![
+                tip("ok".to_string()),
+                tip("b".repeat(1201)),
+            ]))
+            .unwrap_err();
+            assert_eq!(
+                err,
+                "entry claude tip 1: body is 1201 bytes; more than 1200 bytes are not allowed"
+            );
+        }
+
+        #[test]
+        fn too_many_tips_are_rejected() {
+            let twelve = (0..12).map(|_| tip("b".to_string())).collect();
+            assert!(validate_remote_agent_help_file(&with_tips(twelve)).is_ok());
+            let thirteen = (0..13).map(|_| tip("b".to_string())).collect();
+            let err = validate_remote_agent_help_file(&with_tips(thirteen)).unwrap_err();
+            assert!(err.starts_with("entry claude: holds 13 tips"), "{err}");
+        }
+
+        #[test]
+        fn the_caps_are_measured_in_utf8_bytes() {
+            let ok = "\u{e9}".repeat(128);
+            assert_eq!((ok.chars().count(), ok.len()), (128, 256));
+            assert!(validate_remote_agent_help_file(&with_params(ok)).is_ok());
+            let over = "\u{e9}".repeat(129);
+            assert_eq!(over.len(), 258);
+            let err = validate_remote_agent_help_file(&with_params(over)).unwrap_err();
+            assert!(err.contains("258 bytes"), "{err}");
+        }
+
+        #[test]
+        fn one_violation_rejects_the_whole_file() {
+            let mut entries: Vec<(String, AgentHelpEntry)> = (0..39).map(labelled).collect();
+            entries.push((
+                "zz-oversized".to_string(),
+                AgentHelpEntry {
+                    label: Some("L".repeat(81)),
+                    ..AgentHelpEntry::default()
+                },
+            ));
+            let result = validate_remote_agent_help_file(&remote_with_entries(entries));
+            let err = result.expect_err("one bad entry rejects the file, no partial layer");
+            assert!(err.starts_with("entry zz-oversized: label"), "{err}");
+        }
+
+        #[test]
+        fn a_non_200_status_is_rejected() {
+            let body = br#"{"schemaVersion":1}"#;
+            assert!(accept_remote_agent_help_response(200, body).is_ok());
+            let err = accept_remote_agent_help_response(404, body).unwrap_err();
+            assert_eq!(err, "HTTP status 404");
+        }
+
+        #[test]
+        fn an_oversized_body_is_rejected() {
+            let mut body = br#"{"schemaVersion":1,"note":""#.to_vec();
+            body.resize(REMOTE_AGENT_HELP_MAX_BYTES - 2, b'n');
+            body.extend_from_slice(br#""}"#);
+            assert_eq!(body.len(), REMOTE_AGENT_HELP_MAX_BYTES);
+            assert!(accept_remote_agent_help_response(200, &body).is_ok());
+            body.insert(30, b'n');
+            let err = accept_remote_agent_help_response(200, &body).unwrap_err();
+            assert_eq!(err, "body larger than 65536 bytes");
+        }
+
+        #[test]
+        fn a_non_utf8_body_is_rejected() {
+            let err = accept_remote_agent_help_response(200, &[b'{', 0xff, b'}']).unwrap_err();
+            assert_eq!(err, "body is not UTF-8");
+        }
+
+        #[test]
+        fn a_corrupt_cache_is_revalidated_and_ignored() {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = settings_path_in(&dir);
+            let cache = agent_help_remote_path(&settings_path);
+            assert_eq!(cache, dir.path().join("agent-help.remote.json"));
+            assert_eq!(
+                load_remote_agent_help_file(&settings_path),
+                AgentHelpFile::default()
+            );
+
+            std::fs::write(&cache, b"{ not json").unwrap();
+            assert_eq!(
+                load_remote_agent_help_file(&settings_path),
+                AgentHelpFile::default()
+            );
+            // Valid JSON the remote gate rejects: re-validated at read, not just parsed.
+            std::fs::write(
+                &cache,
+                r#"{"schemaVersion":1,"byAgent":{"a":{"label":"x"}}}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_remote_agent_help_file(&settings_path),
+                AgentHelpFile::default()
+            );
+        }
+
+        #[test]
+        fn the_cache_round_trips() {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = settings_path_in(&dir);
+            let entry = AgentHelpEntry {
+                label: Some("Codex".to_string()),
+                docs_url: Some("https://r.dev/codex".to_string()),
+                tips: vec![tip("b".to_string())],
+                ..AgentHelpEntry::default()
+            };
+            let written = AgentHelpFile {
+                by_command: BTreeMap::from([("codex".to_string(), entry.clone())]),
+                ..AgentHelpFile::default()
+            };
+            let source_url = "https://example.test/agent-help.json";
+            let fetched_at = chrono::DateTime::parse_from_rfc3339("2026-09-24T12:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            write_remote_agent_help_cache(&settings_path, written, source_url, fetched_at).unwrap();
+
+            let loaded = load_remote_agent_help_file(&settings_path);
+            assert_eq!(loaded.by_command["codex"], entry);
+            let note = loaded.note.expect("the cache carries a note");
+            assert!(note.contains(source_url), "{note}");
+            assert!(
+                note.contains(&format!("source ref {REMOTE_AGENT_HELP_SOURCE_REF}")),
+                "{note}"
+            );
+            assert!(note.contains("2026-09-24T12:00:00Z"), "{note}");
+            assert!(note.contains("agent-help.local.json"), "{note}");
+        }
+
+        #[test]
+        fn the_check_stamp_round_trips() {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = settings_path_in(&dir);
+            assert_eq!(
+                agent_help_remote_check_path(&settings_path),
+                dir.path().join("agent-help-remote-check.json")
+            );
+            assert_eq!(read_remote_agent_help_check_stamp(&settings_path), None);
+            let at = chrono::DateTime::parse_from_rfc3339("2026-09-24T12:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            write_remote_agent_help_check_stamp(&settings_path, at).unwrap();
+            assert_eq!(read_remote_agent_help_check_stamp(&settings_path), Some(at));
+        }
+
+        #[test]
+        fn the_settings_bool_defaults_to_true() {
+            assert!(AppSettings::default().remote_agent_help_enabled);
+            let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+            let obj = value.as_object_mut().unwrap();
+            assert_eq!(
+                obj.remove("remoteAgentHelpEnabled"),
+                Some(Value::Bool(true))
+            );
+            let back: AppSettings = serde_json::from_value(value.clone()).unwrap();
+            assert!(back.remote_agent_help_enabled);
+            value["remoteAgentHelpEnabled"] = Value::Bool(false);
+            let off: AppSettings = serde_json::from_value(value).unwrap();
+            assert!(!off.remote_agent_help_enabled);
+            assert!(off.remote_blocking_menus_enabled);
+        }
+
+        #[test]
+        fn the_shipped_agent_help_passes_the_remote_validator() {
+            let validated = validate_remote_agent_help_file(EMBEDDED_AGENT_HELP_JSON)
+                .expect("the published bytes pass the remote gate as they are");
+            assert_eq!(&validated, shipped_agent_help());
+        }
+
+        // ---- #2133 (P7) - the published URL and file. ----
+
+        #[test]
+        fn the_remote_agent_help_url_pins_the_schema_version_and_source_ref() {
+            let segments: Vec<&str> = REMOTE_AGENT_HELP_URL.split('/').collect();
+            assert_eq!(segments.len(), 10);
+            assert_eq!(
+                &segments[..5],
+                [
+                    "https:",
+                    "",
+                    "raw.githubusercontent.com",
+                    "mblua",
+                    "AgentsCommander"
+                ]
+            );
+            assert_eq!(segments[5], REMOTE_AGENT_HELP_SOURCE_REF);
+            assert_eq!(segments[8], format!("v{AGENT_HELP_SCHEMA_VERSION}"));
+        }
+
+        #[test]
+        fn the_remote_agent_help_url_matches_the_served_path() {
+            let prefix = format!(
+                "https://raw.githubusercontent.com/mblua/AgentsCommander/{REMOTE_AGENT_HELP_SOURCE_REF}/"
+            );
+            assert_eq!(
+                REMOTE_AGENT_HELP_URL.strip_prefix(&prefix),
+                Some("remote-resources/agent-help/v1/agent-help.json")
+            );
+        }
+
+        #[test]
+        fn the_published_remote_file_passes_the_validator() {
+            let raw = include_str!("../../../remote-resources/agent-help/v1/agent-help.json");
+            let published = validate_remote_agent_help_file(raw)
+                .expect("the published agent-help passes the remote gate");
+            assert!(published.by_agent.is_empty());
+            assert_eq!(published.by_command, shipped_agent_help().by_command);
+            assert_eq!(published.general, shipped_agent_help().general);
         }
     }
 }

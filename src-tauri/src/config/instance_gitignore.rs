@@ -1088,6 +1088,9 @@ mod tests {
             "agent-help.local.json",
             // #2133: the shipped per-agent help, rewritten by AC at every start.
             "agent-help.json",
+            // #2133: the remote per-agent help cache and its throttle stamp.
+            "agent-help-remote-check.json",
+            "agent-help.remote.json",
             // #1737: the operator-owned overlay and the two managed context
             // template overrides. The `settings.json` row is an exact-name rule and
             // does not reach `settings.local.json`, which is why the row exists.

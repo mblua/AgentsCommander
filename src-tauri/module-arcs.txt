@@ -22,6 +22,8 @@ agentscommander_lib -> agentscommander_lib::loops::non_stop_watchdog
 agentscommander_lib -> agentscommander_lib::network
 agentscommander_lib -> agentscommander_lib::phone::messaging
 agentscommander_lib -> agentscommander_lib::phone::types
+agentscommander_lib -> agentscommander_lib::pty::agent_quota
+agentscommander_lib -> agentscommander_lib::pty::agent_quota::source
 agentscommander_lib -> agentscommander_lib::pty::backend
 agentscommander_lib -> agentscommander_lib::pty::container_backend
 agentscommander_lib -> agentscommander_lib::pty::container_runtime
@@ -356,6 +358,7 @@ agentscommander_lib::cli::workgroup -> agentscommander_lib::config
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::ac_root
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::coordinator_clocks
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::daemon_pid
+agentscommander_lib::cli::workgroup -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::projects
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::remote_activity_cache
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::seed_manifest
@@ -478,6 +481,7 @@ agentscommander_lib::commands::pty -> agentscommander_lib::config::sessions_pers
 agentscommander_lib::commands::pty -> agentscommander_lib::config::settings
 agentscommander_lib::commands::pty -> agentscommander_lib::config::teams
 agentscommander_lib::commands::pty -> agentscommander_lib::errors
+agentscommander_lib::commands::pty -> agentscommander_lib::pty::agent_quota
 agentscommander_lib::commands::pty -> agentscommander_lib::pty::context_scrape
 agentscommander_lib::commands::pty -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::commands::pty -> agentscommander_lib::pty::input_activity
@@ -529,6 +533,7 @@ agentscommander_lib::commands::session -> agentscommander_lib::config::settings
 agentscommander_lib::commands::session -> agentscommander_lib::config::teams
 agentscommander_lib::commands::session -> agentscommander_lib::path_identity
 agentscommander_lib::commands::session -> agentscommander_lib::path_utils
+agentscommander_lib::commands::session -> agentscommander_lib::pty::agent_quota
 agentscommander_lib::commands::session -> agentscommander_lib::pty::backend
 agentscommander_lib::commands::session -> agentscommander_lib::pty::container_backend
 agentscommander_lib::commands::session -> agentscommander_lib::pty::container_credentials
@@ -832,6 +837,11 @@ agentscommander_lib::phone::terminal_snapshot -> agentscommander_lib::pty::termi
 agentscommander_lib::phone::terminal_snapshot -> agentscommander_lib::session::manager
 agentscommander_lib::phone::terminal_snapshot -> agentscommander_lib::session::purge_guard
 agentscommander_lib::phone::types -> agentscommander_lib::pty::backend
+agentscommander_lib::pty::agent_quota -> agentscommander_lib::pty::agent_quota::source
+agentscommander_lib::pty::agent_quota -> agentscommander_lib::pty::context_scrape
+agentscommander_lib::pty::agent_quota -> agentscommander_lib::shutdown
+agentscommander_lib::pty::agent_quota::source -> agentscommander_lib::pty::context_scrape::pattern
+agentscommander_lib::pty::agent_quota::source -> agentscommander_lib::pty::context_scrape::rows
 agentscommander_lib::pty::backend -> agentscommander_lib::errors
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::container_credentials
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::container_repos

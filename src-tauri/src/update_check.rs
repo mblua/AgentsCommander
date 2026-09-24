@@ -510,6 +510,134 @@ pub async fn run_remote_blocking_menus_startup(app: AppHandle) {
     }
 }
 
+// ---- Remote per-agent help download (#2133) -------------------------------
+
+/// What the remote agent-help download did, for the caller's log line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RemoteAgentHelpCheck {
+    Disabled,
+    NotDue,
+    Accepted,
+    Rejected(String),
+    Unreachable(String),
+    WriteFailed(String),
+}
+
+/// One GET under the 10 s timeout, as `fetch_remote_blocking_menus`. The body read stops as
+/// soon as it passes the cap, so an oversized response is never fully buffered.
+async fn fetch_remote_agent_help(
+    network: &crate::network::OutboundNetwork,
+    url: &str,
+) -> Result<(u16, Vec<u8>), String> {
+    let attempt = tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), async {
+        let mut response = network
+            .general()
+            .get(url)
+            .header(
+                reqwest::header::USER_AGENT,
+                concat!("agentscommander/", env!("CARGO_PKG_VERSION")),
+            )
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        let status = response.status().as_u16();
+        let mut body = Vec::new();
+        if status == 200 {
+            while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+                body.extend_from_slice(&chunk);
+                if body.len() > crate::config::settings::REMOTE_AGENT_HELP_MAX_BYTES {
+                    break;
+                }
+            }
+        }
+        Ok((status, body))
+    })
+    .await;
+    match attempt {
+        Err(_) => Err("timed out".to_string()),
+        Ok(result) => result,
+    }
+}
+
+/// #2133 - the download itself, as `run_remote_blocking_menus_check`. The flag is checked
+/// first so a disabled run touches no disk and no network; `NotDue` likewise. Every attempt
+/// that passes the due check stamps `now` afterwards, accepted, rejected or unreachable, so
+/// the 24 h throttle stays literal and a retry storm is impossible.
+pub(crate) async fn run_remote_agent_help_check(
+    network: &crate::network::OutboundNetwork,
+    settings_path: &Path,
+    enabled: bool,
+    url: &str,
+    now: DateTime<Utc>,
+) -> RemoteAgentHelpCheck {
+    if !enabled {
+        return RemoteAgentHelpCheck::Disabled;
+    }
+    if !interval_elapsed(
+        crate::config::settings::read_remote_agent_help_check_stamp(settings_path),
+        now,
+    ) {
+        return RemoteAgentHelpCheck::NotDue;
+    }
+
+    let outcome = match network.acquire("update_check.remote_agent_help").await {
+        Err(error) => RemoteAgentHelpCheck::Unreachable(error),
+        Ok(_permit) => match fetch_remote_agent_help(network, url).await {
+            Err(error) => RemoteAgentHelpCheck::Unreachable(error),
+            Ok((status, body)) => {
+                match crate::config::settings::accept_remote_agent_help_response(status, &body) {
+                    Err(reason) => RemoteAgentHelpCheck::Rejected(reason),
+                    Ok(file) => match crate::config::settings::write_remote_agent_help_cache(
+                        settings_path,
+                        file,
+                        url,
+                        now,
+                    ) {
+                        Ok(()) => RemoteAgentHelpCheck::Accepted,
+                        Err(error) => RemoteAgentHelpCheck::WriteFailed(error),
+                    },
+                }
+            }
+        },
+    };
+
+    if let Err(error) =
+        crate::config::settings::write_remote_agent_help_check_stamp(settings_path, now)
+    {
+        log::debug!("[agent-help] could not write the throttle stamp: {error}");
+    }
+    outcome
+}
+
+/// #2133 - the detached startup wrapper. Fail-silent: an accepted download logs one info line,
+/// every other outcome logs at debug, and this never returns an error to the caller.
+pub async fn run_remote_agent_help_startup(app: AppHandle) {
+    let Some(settings_path) = crate::config::settings::settings_path() else {
+        log::debug!("[agent-help] no settings path; skipping the remote download");
+        return;
+    };
+    let enabled = {
+        let settings_state = app.state::<crate::config::settings::SettingsState>();
+        let settings = settings_state.read().await;
+        settings.remote_agent_help_enabled
+    };
+    let network = app.state::<crate::network::OutboundNetwork>();
+    let outcome = run_remote_agent_help_check(
+        &network,
+        &settings_path,
+        enabled,
+        crate::config::settings::REMOTE_AGENT_HELP_URL,
+        Utc::now(),
+    )
+    .await;
+    match outcome {
+        RemoteAgentHelpCheck::Accepted => {
+            log::info!("[agent-help] downloaded the remote help; it applies at the next start")
+        }
+        outcome => log::debug!("[agent-help] {outcome:?}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,7 +837,7 @@ mod tests {
         /// One HTTP/1.1 response, then close. Every accept/read/write/shutdown error is
         /// ignored and the task never panics, so a client that stops reading at the cap
         /// (and resets the socket) cannot fail or flake the test.
-        async fn serve_once(status: u16, body: Vec<u8>) -> String {
+        pub(super) async fn serve_once(status: u16, body: Vec<u8>) -> String {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("bind a loopback listener");
@@ -745,7 +873,7 @@ mod tests {
             )
         }
 
-        async fn offline_url() -> String {
+        pub(super) async fn offline_url() -> String {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("bind a loopback listener");
@@ -1056,6 +1184,113 @@ mod tests {
                     .acquired_labels_for_tests(),
                 vec!["update_check.remote_blocking_menus"]
             );
+        }
+    }
+
+    /// #2133 (P7) - the agent-help download over an injected temp `settings_path`.
+    mod remote_agent_help_2133 {
+        use super::super::*;
+        use super::remote_blocking_menus_1925::{offline_url, serve_once};
+
+        fn now() -> DateTime<Utc> {
+            "2026-09-24T12:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_disabled_run_touches_no_disk_and_no_network() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let network = crate::network::OutboundNetwork::new_for_tests(4);
+            let outcome = run_remote_agent_help_check(
+                &network,
+                &settings_path,
+                false,
+                crate::config::settings::REMOTE_AGENT_HELP_URL,
+                now(),
+            )
+            .await;
+            assert_eq!(outcome, RemoteAgentHelpCheck::Disabled);
+            assert!(network.acquired_labels_for_tests().is_empty());
+            assert!(
+                !crate::config::settings::agent_help_remote_check_path(&settings_path).exists()
+            );
+            assert!(!crate::config::settings::agent_help_remote_path(&settings_path).exists());
+        }
+
+        #[tokio::test]
+        async fn a_not_due_run_does_not_fetch() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let network = crate::network::OutboundNetwork::new_for_tests(4);
+            let stamped = now() - chrono::Duration::hours(23);
+            crate::config::settings::write_remote_agent_help_check_stamp(&settings_path, stamped)
+                .unwrap();
+            let outcome = run_remote_agent_help_check(
+                &network,
+                &settings_path,
+                true,
+                crate::config::settings::REMOTE_AGENT_HELP_URL,
+                now(),
+            )
+            .await;
+            assert_eq!(outcome, RemoteAgentHelpCheck::NotDue);
+            assert!(network.acquired_labels_for_tests().is_empty());
+            assert_eq!(
+                crate::config::settings::read_remote_agent_help_check_stamp(&settings_path),
+                Some(stamped)
+            );
+            assert!(!crate::config::settings::agent_help_remote_path(&settings_path).exists());
+        }
+
+        #[tokio::test]
+        async fn every_due_attempt_stamps_now() {
+            let valid = br#"{"schemaVersion":1,"byCommand":{"codex":{"label":"Codex"}}}"#.to_vec();
+            let by_agent = br#"{"schemaVersion":1,"byAgent":{"a1":{"label":"x"}}}"#.to_vec();
+            for label in ["accepted", "rejected", "unreachable"] {
+                let temp = tempfile::TempDir::new().unwrap();
+                let settings_path = temp.path().join("settings.json");
+                let network = crate::network::OutboundNetwork::new_for_tests(4);
+                // A stamp older than 24 h: the attempt is due and must move it to `now`.
+                crate::config::settings::write_remote_agent_help_check_stamp(
+                    &settings_path,
+                    now() - chrono::Duration::hours(25),
+                )
+                .unwrap();
+                let url = match label {
+                    "accepted" => serve_once(200, valid.clone()).await,
+                    "rejected" => serve_once(200, by_agent.clone()).await,
+                    _ => offline_url().await,
+                };
+                let outcome =
+                    run_remote_agent_help_check(&network, &settings_path, true, &url, now()).await;
+                match (label, &outcome) {
+                    ("accepted", RemoteAgentHelpCheck::Accepted) => {
+                        let cached =
+                            crate::config::settings::load_remote_agent_help_file(&settings_path);
+                        assert_eq!(cached.by_command["codex"].label.as_deref(), Some("Codex"));
+                        assert!(cached.note.unwrap().contains(&url));
+                    }
+                    ("rejected", RemoteAgentHelpCheck::Rejected(reason)) => {
+                        assert_eq!(reason, "byAgent must be empty");
+                        assert!(
+                            !crate::config::settings::agent_help_remote_path(&settings_path)
+                                .exists()
+                        );
+                    }
+                    ("unreachable", RemoteAgentHelpCheck::Unreachable(_)) => {}
+                    _ => panic!("{label}: unexpected outcome {outcome:?}"),
+                }
+                assert_eq!(
+                    network.acquired_labels_for_tests(),
+                    vec!["update_check.remote_agent_help"],
+                    "{label}"
+                );
+                assert_eq!(
+                    crate::config::settings::read_remote_agent_help_check_stamp(&settings_path),
+                    Some(now()),
+                    "{label}: every due attempt stamps now"
+                );
+            }
         }
     }
 }

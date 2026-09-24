@@ -39,6 +39,10 @@ use commands::ac_discovery::DiscoveryBranchWatcher;
 use config::sessions_persistence;
 use config::settings::SettingsState;
 use futures_util::FutureExt;
+use pty::agent_quota::source::SourceSpec;
+use pty::agent_quota::{
+    AgentQuotaEngine, AgentQuotaPayload, QuotaEventSink, QuotaRowsSource, QuotaSourceProvider,
+};
 use pty::context_scrape::{
     ContextEventSink, ContextPatternSource, ContextPersistSink, ContextSample, ContextSampleSink,
     ContextScraper, ContextSessionLiveness, ContextUsagePayload, ScreenRowsRead, ScreenRowsSource,
@@ -1221,6 +1225,181 @@ struct ScraperSink {
 impl ContextEventSink for ScraperSink {
     fn emit(&self, payload: ContextUsagePayload) {
         let _ = self.app_handle.emit("session_context", payload);
+    }
+}
+
+// ---- #2482: the three quota adapters ----------------------------------------------
+//
+// Each is its `context_scrape` twin above, narrowed. They live here, and only here, because
+// this is the file allowed to touch both the engine and the settings / session / Tauri world;
+// `pty::agent_quota` names none of those, which keeps it out of the cyclic SCC.
+
+/// Rows and liveness, via the routed backend. `ScraperRows` in shape.
+struct QuotaRows {
+    pty_mgr: Arc<Mutex<PtyManager>>,
+    /// A poisoned `PtyManager` is app-wide and permanent: one line, not one per tick.
+    poison_logged: AtomicBool,
+}
+
+impl QuotaRowsSource for QuotaRows {
+    fn get_screen_rows(&self, id: uuid::Uuid) -> ScreenRowsRead {
+        match self.pty_mgr.lock() {
+            Ok(mgr) => mgr.get_screen_rows(id),
+            Err(_) => {
+                if !self
+                    .poison_logged
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    log::warn!(
+                        "[quota] PtyManager lock is poisoned; quota readings are unavailable"
+                    );
+                }
+                ScreenRowsRead::Unavailable
+            }
+        }
+    }
+
+    /// `Unavailable` and never `SessionOver` on a poisoned lock: that lock is app-wide, and
+    /// `SessionOver` would deregister every session for life.
+    fn get_session_liveness(&self, id: uuid::Uuid) -> ContextSessionLiveness {
+        match self.pty_mgr.lock() {
+            Ok(mgr) => mgr.context_session_liveness(id),
+            Err(_) => {
+                if !self
+                    .poison_logged
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    log::warn!(
+                        "[quota] PtyManager lock is poisoned; quota liveness is unavailable"
+                    );
+                }
+                ContextSessionLiveness::Unavailable
+            }
+        }
+    }
+}
+
+/// Every agent's ENABLED quota source, read fresh from settings each tick. One `RwLock` read
+/// per tick for all sessions. Maps the settings type onto the engine's settings-free
+/// `SourceSpec`.
+///
+/// **The `match` in `specs` is the multi-agent extension point's second and last site.** A new
+/// source kind adds one arm in `pty::agent_quota::source` and one arm here. There is no
+/// registry to go looking for.
+struct QuotaSources {
+    settings: SettingsState,
+}
+
+impl QuotaSources {
+    fn specs(settings: &config::settings::AppSettings) -> HashMap<String, SourceSpec> {
+        use config::settings::QuotaSourceConfig;
+        settings
+            .quota_sources
+            .iter()
+            .filter_map(|(agent_id, entry)| match entry.valid()? {
+                QuotaSourceConfig::ScreenRegex { pattern, enabled } => {
+                    if !*enabled {
+                        return None;
+                    }
+                    // Emptiness is tested on a TRIMMED view; the value handed over is the
+                    // user's string byte for byte. `ScraperPatterns` documents why: leading
+                    // spaces ARE the column anchor, and trimming makes the reading fail OPEN.
+                    (!pattern.trim().is_empty()).then(|| {
+                        (
+                            agent_id.clone(),
+                            SourceSpec::ScreenRegex {
+                                pattern: pattern.clone(),
+                            },
+                        )
+                    })
+                }
+            })
+            .collect()
+    }
+}
+
+impl QuotaSourceProvider for QuotaSources {
+    fn sources(&self) -> futures::future::BoxFuture<'_, HashMap<String, SourceSpec>> {
+        Box::pin(async move {
+            let settings = self.settings.read().await;
+            Self::specs(&settings)
+        })
+    }
+}
+
+/// The sink. Emitted UNSCOPED, exactly like `session_context`, so a detached terminal window
+/// receives it too.
+struct QuotaSink {
+    app_handle: tauri::AppHandle,
+}
+
+impl QuotaEventSink for QuotaSink {
+    fn emit(&self, payload: AgentQuotaPayload) {
+        let _ = self.app_handle.emit("session_agent_quota", payload);
+    }
+}
+
+#[cfg(test)]
+mod quota_sources_tests {
+    use super::*;
+    use crate::config::settings::{AppSettings, QuotaSourceConfig, QuotaSourceEntry};
+
+    const PATTERN: &str = r"Weekly (\d{1,3})% used";
+
+    fn screen(pattern: &str, enabled: bool) -> QuotaSourceEntry {
+        QuotaSourceEntry::Valid(QuotaSourceConfig::ScreenRegex {
+            pattern: pattern.to_string(),
+            enabled,
+        })
+    }
+
+    fn specs(entries: Vec<(&str, QuotaSourceEntry)>) -> HashMap<String, SourceSpec> {
+        let mut settings = AppSettings::default();
+        for (agent_id, entry) in entries {
+            settings.quota_sources.insert(agent_id.to_string(), entry);
+        }
+        QuotaSources::specs(&settings)
+    }
+
+    #[test]
+    fn quota_sources_adapter_skips_a_disabled_entry() {
+        let specs = specs(vec![
+            ("off", screen(PATTERN, false)),
+            ("on", screen(PATTERN, true)),
+        ]);
+        assert!(!specs.contains_key("off"));
+        assert!(specs.contains_key("on"));
+    }
+
+    #[test]
+    fn quota_sources_adapter_skips_an_invalid_entry() {
+        let specs = specs(vec![(
+            "codex",
+            QuotaSourceEntry::Invalid(serde_json::json!({ "kind": "fromTheFuture" })),
+        )]);
+        assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn quota_sources_adapter_skips_a_blank_pattern_but_hands_over_untrimmed_bytes() {
+        let anchored = "  Weekly (\\d{1,3})% used ";
+        let specs = specs(vec![
+            ("blank", screen("   ", true)),
+            ("anchored", screen(anchored, true)),
+        ]);
+        assert!(!specs.contains_key("blank"));
+        assert_eq!(
+            specs.get("anchored"),
+            Some(&SourceSpec::ScreenRegex {
+                pattern: anchored.to_string()
+            }),
+            "the leading spaces are the column anchor and must survive"
+        );
+    }
+
+    #[test]
+    fn quota_sources_adapter_returns_an_empty_map_for_empty_settings() {
+        assert!(QuotaSources::specs(&AppSettings::default()).is_empty());
     }
 }
 
@@ -3952,6 +4131,23 @@ pub fn run(
             context_scraper.start(shutdown_for_setup.clone());
             app.manage(Arc::clone(&context_scraper));
 
+            // #2482 agent quota engine. A sibling of the scraper, same construction shape, and
+            // like it must come after `.manage(settings)`.
+            let agent_quota_engine = AgentQuotaEngine::new(
+                Arc::new(QuotaRows {
+                    pty_mgr: pty_mgr.clone(),
+                    poison_logged: AtomicBool::new(false),
+                }),
+                Arc::new(QuotaSources {
+                    settings: app.state::<SettingsState>().inner().clone(),
+                }),
+                Arc::new(QuotaSink {
+                    app_handle: app.handle().clone(),
+                }),
+            );
+            agent_quota_engine.start(shutdown_for_setup.clone());
+            app.manage(Arc::clone(&agent_quota_engine));
+
             // #1171 watcher engine. A SIBLING of the scraper above, not an extension of it:
             // different interval, different modes, its own history. Same construction shape,
             // and for the same reason it must come after `.manage(settings)`.
@@ -4088,6 +4284,16 @@ pub fn run(
                 tauri::async_runtime::spawn(async move {
                     crate::update_check::run_remote_blocking_menus_startup(
                         app_handle_for_remote_menus,
+                    )
+                    .await;
+                });
+            }
+            // #2133 - detached remote per-agent help download. Fail-silent; applies at the next start.
+            {
+                let app_handle_for_remote_agent_help = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::update_check::run_remote_agent_help_startup(
+                        app_handle_for_remote_agent_help,
                     )
                     .await;
                 });
@@ -4635,6 +4841,7 @@ pub fn run(
                 commands::pty::activate_terminal_output,
                 commands::pty::detach_terminal_output,
                 commands::pty::get_session_context,
+                commands::pty::get_session_agent_quota,
                 commands::pty::get_watcher_activity,
                 commands::pty::preview_watcher_pattern,
                 commands::pty::preview_watcher_reach,
@@ -5922,6 +6129,19 @@ async fn commit_co_managed_with_retries<R: tauri::Runtime>(
             pre,
         )
         .await;
+        match &result {
+            Ok(committed) => log::info!(
+                "[co-managed] commit [{session_id}]: attempt={} committed kind={:?} routable={}",
+                attempt + 1,
+                committed.kind,
+                committed.routable
+            ),
+            Err(reason) => log::info!(
+                "[co-managed] commit [{session_id}]: attempt={} abstained: {}",
+                attempt + 1,
+                abstain_reason_label(reason)
+            ),
+        }
         match result {
             Ok(committed) => return CoManagedCommit::Committed(committed),
             Err(capture::state::AbstainReason::PreconditionsStale)
@@ -6000,7 +6220,14 @@ async fn co_managed_cycle<R: tauri::Runtime>(
     let settings = co_managed_jev_settings(app).await;
     let outcome = {
         let network = app.state::<crate::network::OutboundNetwork>();
-        capture::jev::classify(&network, &settings, &catalog, &text).await
+        capture::jev::classify(
+            &network,
+            &settings,
+            &catalog,
+            &text,
+            &session_id.to_string()[..8],
+        )
+        .await
     };
 
     // (3) Decide before committing, so an unreachable peer never spends budget.
@@ -6010,6 +6237,14 @@ async fn co_managed_cycle<R: tauri::Runtime>(
         co_managed_project_paths(&guard.project_paths, room_root)
     };
     let route = resolve_co_managed_route(outcome, &catalog, &from_fqn, &project_paths, &text);
+    log::info!(
+        "[co-managed] route [{session_id}]: variant={} kind={:?}",
+        match &route {
+            CoManagedRoute::User { .. } => "User",
+            CoManagedRoute::Wake { .. } => "Wake",
+        },
+        route.kind()
+    );
     let kind = route.kind();
 
     // (4) The bounded commit.
@@ -6158,9 +6393,13 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
     let id = session_id.to_string();
 
     let Some(registry) = app.try_state::<Arc<capture::registry::CaptureRegistry>>() else {
+        log::info!("[co-managed] trigger dropped [{id}]: no capture registry in state");
         return;
     };
     let Some(slot) = registry.slot(&id) else {
+        log::info!(
+            "[co-managed] trigger dropped [{id}]: no capture slot for the session; flag removed"
+        );
         handle.armed.remove(&id);
         return;
     };
@@ -6168,6 +6407,9 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
     let Some(candidate) = state.value.record().cloned() else {
         // Consumed, invalidated or cleared: the candidate this flag described
         // is gone, so the flag goes with it.
+        log::info!(
+            "[co-managed] trigger dropped [{id}]: slot holds no candidate record; flag removed"
+        );
         handle.armed.remove(&id);
         return;
     };
@@ -6178,12 +6420,17 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
         guard.get_session(session_id).await
     };
     let Some(session) = session else {
+        log::info!("[co-managed] trigger dropped [{id}]: session is gone; flag removed");
         handle.armed.remove(&id);
         return;
     };
     let Some(room_root) =
         crate::config::co_managed::room_root_for_path(Path::new(&session.working_directory))
     else {
+        log::info!(
+            "[co-managed] trigger dropped [{id}]: working directory {} resolves to no room root; flag removed",
+            session.working_directory
+        );
         handle.armed.remove(&id);
         return;
     };
@@ -6197,6 +6444,15 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
     );
     let was_armed = handle.armed.is_armed(&id);
     if !ready {
+        let catalog_path = crate::config::co_managed::load_config(&room_root)
+            .catalog_path
+            .map(|path| room_root.join(path));
+        log::warn!(
+            "[co-managed] trigger dropped [{id}]: not ready ({}); room {}, catalog {:?}; flag removed",
+            co_managed_state_reason(&effective),
+            room_root.display(),
+            catalog_path
+        );
         if was_armed {
             emit_co_managed_state(
                 app,
@@ -6218,6 +6474,10 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
     // readiness while contended must clear the armed flag and publish the
     // readiness reason, not keep reporting `comanaged: true` forever.
     if handle.is_contended(&id, state.seq) {
+        log::info!(
+            "[co-managed] trigger dropped [{id}]: already contended for sequence {}",
+            state.seq
+        );
         return;
     }
 
@@ -6225,6 +6485,9 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
         || session.waiting_for_input;
     let is_idle_edge = matches!(trigger, CoManagedTrigger::IdleEdge(_));
     if !is_idle_edge && !already_idle {
+        log::info!(
+            "[co-managed] trigger dropped [{id}]: not an idle edge and the session is not idle"
+        );
         return;
     }
     if !is_idle_edge {
@@ -6234,18 +6497,31 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
         emit_co_managed_state(app, session_id, true, None);
     }
 
+    log::info!(
+        "[co-managed] cycle start [{id}]: trigger={} seq={}",
+        match trigger {
+            CoManagedTrigger::IdleEdge(_) => "IdleEdge",
+            CoManagedTrigger::SlotChanged(_) => "SlotChanged",
+        },
+        state.seq
+    );
     let outcome = co_managed_cycle(
         app, handle, session_id, &room_root, &slot, state.seq, &candidate,
     )
     .await;
     match outcome {
         CoManagedOutcome::Contention => {
+            log::info!("[co-managed] cycle end [{id}]: Contention, reason contention; candidate stays pending");
             emit_co_managed_state(app, session_id, false, Some("contention"));
             // The flag stays set while the unchanged candidate remains pending.
         }
         CoManagedOutcome::Done(reason) => {
             handle.clear_contended(&id);
             handle.armed.disarm(&id);
+            log::info!(
+                "[co-managed] cycle end [{id}]: Done({}); flag disarmed",
+                capture::jev::safe_reason(&reason)
+            );
             emit_co_managed_state(app, session_id, false, Some(&reason));
         }
     }
@@ -9199,6 +9475,628 @@ mod tests {
                 .join(crate::phone::messaging::MESSAGING_DIR_NAME)
                 .exists(),
             "nothing may be created under a refused root"
+        );
+    }
+
+    // ── #2455 - Co-managed logging, read through the test tee ───────────────
+
+    /// The lines the tee saw after `before`, filtered by `needle`. The tee
+    /// only appends, so skipping the first `before` entries is the difference
+    /// between two snapshots.
+    fn p4_lines_since(before: usize, needle: &str) -> Vec<String> {
+        crate::logging::test_tee_snapshot()
+            .into_iter()
+            .skip(before)
+            .filter(|line| line.contains(needle))
+            .collect()
+    }
+
+    fn p4_tee_len() -> usize {
+        crate::logging::test_tee_snapshot().len()
+    }
+
+    fn p4_short(session_id: uuid::Uuid) -> String {
+        session_id.to_string()[..8].to_string()
+    }
+
+    /// `spawn_jev_listener` with the status line taken from an argument.
+    async fn spawn_jev_listener_with_status(
+        status_line: &'static str,
+        scores: Vec<(&'static str, f32)>,
+    ) -> (String, Arc<AtomicUsize>) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                read_http_request(&mut stream).await;
+                let body = jev_response_body(&scores);
+                let response = format!(
+                    "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        (format!("http://127.0.0.1:{port}/v1/systemone"), hits)
+    }
+
+    fn p4_all_scores() -> Vec<(&'static str, f32)> {
+        vec![
+            ("to-user", 0.9),
+            ("to-peer", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ]
+    }
+
+    /// #2455 test 1 (E): no candidate text and no API key reach the log.
+    #[tokio::test]
+    async fn p4_co_managed_logs_never_carry_candidate_text_or_the_api_key() {
+        crate::logging::test_install_logger();
+        const CANDIDATE_MARKER: &str = "CANDMARK-p4-7c1e";
+        const KEY_MARKER: &str = "KEYMARK-p4-9f3a";
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(p4_all_scores()).await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        tauri::Manager::state::<SettingsState>(&app)
+            .write()
+            .await
+            .jev_api_key = format!("key-{KEY_MARKER}");
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        let mut big = "x".repeat(50 * 1024);
+        big.replace_range(100..100 + CANDIDATE_MARKER.len(), CANDIDATE_MARKER);
+        install_candidate(&registry, session_id, &big);
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+
+        let before = p4_tee_len();
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+
+        let mine = p4_lines_since(before, &p4_short(session_id));
+        assert!(
+            mine.iter().any(|line| line.contains("cycle start")),
+            "positive control: this run's cycle-start line must be captured: {mine:?}"
+        );
+        assert!(
+            mine.iter().any(|line| line.contains("jev classify")),
+            "positive control: this run's classify line must be captured: {mine:?}"
+        );
+        let all = crate::logging::test_tee_snapshot();
+        assert!(
+            !all.iter().any(|line| line.contains(CANDIDATE_MARKER)),
+            "candidate text leaked into the log"
+        );
+        assert!(
+            !all.iter().any(|line| line.contains(KEY_MARKER)),
+            "the API key leaked into the log"
+        );
+
+        // E2 marker 1: a catalog whose `categories` key holds `A"MARK1"A`,
+        // which serde escapes. Readiness rejects such a catalog before a
+        // cycle, so `classify` is called directly: it is the only site that
+        // logs this reason.
+        const MARK1: &str = "MARK1-p4-51d0";
+        let catalog = crate::capture::catalog::Catalog::from_json_str(&format!(
+            "{{\"categories\": \"A\\\"{MARK1}\\\"A\"}}"
+        ));
+        let network = crate::network::OutboundNetwork::new().expect("network");
+        let settings = crate::capture::jev::JevSettings {
+            api_key: "k".to_string(),
+            model: "m".to_string(),
+            endpoint: "http://127.0.0.1:9/".to_string(),
+            timeout_secs: 1,
+            threshold: 0.7,
+            margin: 0.15,
+        };
+        let catalog_tag = format!("e2cat-{}", p4_short(session_id));
+        let before = p4_tee_len();
+        let returned =
+            crate::capture::jev::classify(&network, &settings, &catalog, "text", &catalog_tag)
+                .await;
+        let catalog_lines = p4_lines_since(before, &catalog_tag);
+        assert!(
+            matches!(&returned, crate::capture::jev::ClassifyOutcome::Abstained { reason } if reason.contains(MARK1)),
+            "the RETURNED reason is unchanged: {returned:?}"
+        );
+        assert!(
+            catalog_lines
+                .iter()
+                .any(|line| line
+                    .contains("catalog invalid: catalog is not valid JSON: <redacted len=")),
+            "the class label and length must survive: {catalog_lines:?}"
+        );
+
+        // E2 markers 2 and 3: a raw `"MARK2"` response id (the round-7
+        // bypass) and an id mimicking an allowlisted prefix.
+        const MARK2: &str = "MARK2-p4-e3b8";
+        const MARK3: &str = "MARK3-p4-9a17";
+        let id2 = format!("\"{MARK2}\"");
+        let id3 = format!("catalog invalid: {MARK3}");
+        for hostile_id in [id2.as_str(), id3.as_str()] {
+            let id_fixture = make_co_managed_fixture();
+            let hostile: &'static str = Box::leak(hostile_id.to_string().into_boxed_str());
+            let (endpoint, _hits) = spawn_jev_listener(vec![
+                ("to-user", 0.9),
+                ("to-peer", 0.1),
+                ("to-root", 0.0),
+                ("to-reply", 0.0),
+                (hostile, 0.0),
+            ])
+            .await;
+            let (app, manager, registry) = co_managed_app(&id_fixture, endpoint, true);
+            let id_session = add_claude_session(
+                &manager,
+                &id_fixture.coordinator_cwd,
+                SessionStatus::Running,
+                &id_fixture.projects_dir,
+            )
+            .await;
+            install_candidate(&registry, id_session, "candidate text");
+            let (handle, _rx) = CoManagedSupervisorHandle::new();
+            let before = p4_tee_len();
+            let trigger = CoManagedTrigger::IdleEdge(id_session);
+            super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+            let id_lines = p4_lines_since(before, &p4_short(id_session));
+            assert!(
+                id_lines.iter().any(|line| line.contains(
+                    "abstained after response: malformed response: unknown id <redacted len="
+                )),
+                "the classify class label and length must survive: {id_lines:?}"
+            );
+            assert!(
+                id_lines.iter().any(|line| line
+                    .contains("Done(abstained: malformed response: unknown id <redacted len=")),
+                "the cycle-end class label and length must survive: {id_lines:?}"
+            );
+        }
+
+        let all = crate::logging::test_tee_snapshot();
+        for marker in [MARK1, MARK2, MARK3] {
+            assert!(
+                !all.iter().any(|line| line.contains(marker)),
+                "untrusted bytes {marker} leaked into the log"
+            );
+        }
+    }
+
+    /// #2455 test 8 (D, round 7): the request-build and malformed-body legs
+    /// of `send_once` each log a warn line of their own.
+    #[tokio::test]
+    async fn p4_send_once_logs_request_build_and_malformed_body_failures() {
+        use tokio::io::AsyncWriteExt;
+        crate::logging::test_install_logger();
+        let network = crate::network::OutboundNetwork::new().expect("network");
+        let fixture = make_co_managed_fixture();
+        write_co_managed_catalog(&fixture.room_root);
+        let catalog =
+            crate::capture::catalog::Catalog::load(&fixture.room_root.join("catalog.json"));
+        let tag = format!("d8-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let mut settings = crate::capture::jev::JevSettings {
+            api_key: "k".to_string(),
+            model: "m".to_string(),
+            endpoint: "not a url".to_string(),
+            timeout_secs: 5,
+            threshold: 0.7,
+            margin: 0.15,
+        };
+
+        let before = p4_tee_len();
+        crate::capture::jev::classify(&network, &settings, &catalog, "text", &tag).await;
+        let build_lines = p4_lines_since(before, &format!("jev send [{tag}]"));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                read_http_request(&mut stream).await;
+                let body = r#"{"results":[{"id":"to-user"}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        settings.endpoint = format!("http://127.0.0.1:{port}/v1/systemone");
+        let before = p4_tee_len();
+        crate::capture::jev::classify(&network, &settings, &catalog, "text", &tag).await;
+        let body_lines = p4_lines_since(before, &format!("[{tag}]"));
+
+        assert!(
+            build_lines
+                .iter()
+                .any(|line| line.starts_with("WARN ")
+                    && line.contains("attempt=1 request build failed")),
+            "{build_lines:?}"
+        );
+        assert!(
+            body_lines.iter().any(|line| line.starts_with("WARN ")
+                && line.contains("malformed body after status=200 OK: <unclassified reason len=")),
+            "{body_lines:?}"
+        );
+        assert!(
+            body_lines
+                .last()
+                .is_some_and(|line| line.starts_with("WARN ") && line.contains("permanent error")),
+            "a failed call must not end on an INFO line: {body_lines:?}"
+        );
+    }
+
+    /// #2455 test 2 (F): the discovery tick adds no line for a steady state.
+    #[tokio::test]
+    async fn p4_discovery_tick_logs_nothing_for_a_steady_state() {
+        crate::logging::test_install_logger();
+        let fixture = make_co_managed_fixture();
+        let (app, manager, registry) =
+            co_managed_app(&fixture, "http://127.0.0.1:9/".to_string(), true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+
+        let before = p4_tee_len();
+        let mut ticks = 0_usize;
+        for _ in 0..12 {
+            super::watch_capture_slots(app.handle(), &handle).await;
+            ticks += 1;
+        }
+
+        assert_eq!(ticks, 12, "every tick must have run");
+        assert!(
+            handle.is_watching(&session_id.to_string()),
+            "the ticks saw the session"
+        );
+        let grown = p4_lines_since(before, &p4_short(session_id));
+        assert!(grown.is_empty(), "the tick must stay silent: {grown:?}");
+    }
+
+    /// One trigger that must end in exactly one drop line; returns its reason.
+    async fn p4_drop_reason<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        handle: &CoManagedSupervisorHandle,
+        trigger: CoManagedTrigger,
+    ) -> (String, String) {
+        let id = trigger.session_id().to_string();
+        let before = p4_tee_len();
+        super::handle_co_managed_trigger(app, handle, trigger).await;
+        let lines: Vec<String> = p4_lines_since(before, &id)
+            .into_iter()
+            .filter(|line| line.contains("trigger dropped"))
+            .collect();
+        assert_eq!(lines.len(), 1, "exactly one drop line for {id}: {lines:?}");
+        let reason = lines[0]
+            .split_once("]: ")
+            .map(|(_, reason)| reason.to_string())
+            .expect("reason after the session id");
+        (lines[0].clone(), reason)
+    }
+
+    /// #2455 test 3 (A): the eight trigger drops carry eight distinct reasons.
+    #[tokio::test]
+    async fn p4_eight_trigger_drops_log_eight_distinct_reasons() {
+        crate::logging::test_install_logger();
+        let fixture = make_co_managed_fixture();
+        let endpoint = "http://127.0.0.1:9/".to_string();
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let mut reasons = Vec::new();
+
+        // 1. No capture registry in state.
+        let bare = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build bare app");
+        let trigger = CoManagedTrigger::IdleEdge(uuid::Uuid::new_v4());
+        reasons.push(p4_drop_reason(bare.handle(), &handle, trigger).await.1);
+
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint.clone(), true);
+        // 2. No slot for the session.
+        let trigger = CoManagedTrigger::IdleEdge(uuid::Uuid::new_v4());
+        reasons.push(p4_drop_reason(app.handle(), &handle, trigger).await.1);
+        // 3. A slot with no candidate record.
+        let empty_id = uuid::Uuid::new_v4();
+        let (_empty_capture, _empty_rx) = registry.open(&empty_id.to_string());
+        let trigger = CoManagedTrigger::IdleEdge(empty_id);
+        reasons.push(p4_drop_reason(app.handle(), &handle, trigger).await.1);
+        // 4. A candidate for a session that is gone.
+        let gone_id = uuid::Uuid::new_v4();
+        install_candidate(&registry, gone_id, "candidate text");
+        let trigger = CoManagedTrigger::IdleEdge(gone_id);
+        reasons.push(p4_drop_reason(app.handle(), &handle, trigger).await.1);
+        // 5. A session outside any room.
+        let roomless = add_claude_session(
+            &manager,
+            &fixture.project,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, roomless, "candidate text");
+        let trigger = CoManagedTrigger::IdleEdge(roomless);
+        reasons.push(p4_drop_reason(app.handle(), &handle, trigger).await.1);
+        // 6. Readiness is not Ready (room flag off), logged at warn.
+        let off = make_co_managed_fixture();
+        let (off_app, off_manager, off_registry) = co_managed_app(&off, endpoint, false);
+        let off_id = add_claude_session(
+            &off_manager,
+            &off.coordinator_cwd,
+            SessionStatus::Running,
+            &off.projects_dir,
+        )
+        .await;
+        install_candidate(&off_registry, off_id, "candidate text");
+        let trigger = CoManagedTrigger::IdleEdge(off_id);
+        let (off_line, off_reason) = p4_drop_reason(off_app.handle(), &handle, trigger).await;
+        assert!(
+            off_line.starts_with("WARN ") && off_line.contains("RoomFlagOff"),
+            "readiness loss is a warn naming the reason: {off_line}"
+        );
+        reasons.push(off_reason);
+        // 7. Contended for the same sequence, in a ready room.
+        let contended = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        let (slot, _) = install_candidate(&registry, contended, "candidate text");
+        handle.mark_contended(&contended.to_string(), slot.seq());
+        let trigger = CoManagedTrigger::IdleEdge(contended);
+        reasons.push(p4_drop_reason(app.handle(), &handle, trigger).await.1);
+        // 8. Not an idle edge, and the session is busy.
+        let busy = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, busy, "candidate text");
+        let trigger = CoManagedTrigger::SlotChanged(busy);
+        reasons.push(p4_drop_reason(app.handle(), &handle, trigger).await.1);
+
+        let distinct: std::collections::HashSet<&String> = reasons.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            8,
+            "eight distinct drop reasons: {reasons:#?}"
+        );
+    }
+
+    /// #2455 test 4 (D4-b): classify lines carry the cycle's session tag, and
+    /// the dry run carries `dry-run`.
+    #[tokio::test]
+    async fn p4_classify_lines_carry_the_session_tag_and_the_dry_run_tag() {
+        crate::logging::test_install_logger();
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(p4_all_scores()).await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let before = p4_tee_len();
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+        let tag = format!("jev classify [{}]", p4_short(session_id));
+        let tagged = p4_lines_since(before, &tag);
+
+        let settings = crate::capture::jev::JevSettings {
+            api_key: "k".to_string(),
+            model: "m".to_string(),
+            endpoint: "http://127.0.0.1:9/".to_string(),
+            timeout_secs: 1,
+            threshold: 0.7,
+            margin: 0.15,
+        };
+        let before = p4_tee_len();
+        crate::commands::co_managed::classify_dry_run(
+            &crate::capture::catalog::Catalog::missing(),
+            "dry text",
+            &settings,
+        )
+        .await
+        .unwrap();
+        let dry = p4_lines_since(before, "jev classify [dry-run]");
+
+        assert!(!dry.is_empty(), "the dry run must log with its own tag");
+        assert!(!tagged.is_empty(), "classify must log with the cycle's tag");
+    }
+
+    /// #2455 test 5 (D): the success status reaches the log; a retried 503
+    /// logs two warn lines, attempt 1 and attempt 2.
+    #[tokio::test]
+    async fn p4_send_once_logs_the_status_attempt_and_latency() {
+        crate::logging::test_install_logger();
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener_with_status("200 OK", p4_all_scores()).await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let ok_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, ok_id, "candidate text");
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let before = p4_tee_len();
+        let trigger = CoManagedTrigger::IdleEdge(ok_id);
+        super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+        let ok_lines = p4_lines_since(before, &format!("jev send [{}]", p4_short(ok_id)));
+
+        let failing = make_co_managed_fixture();
+        let (endpoint, hits) =
+            spawn_jev_listener_with_status("503 Service Unavailable", p4_all_scores()).await;
+        let (app, manager, registry) = co_managed_app(&failing, endpoint, true);
+        let bad_id = add_claude_session(
+            &manager,
+            &failing.coordinator_cwd,
+            SessionStatus::Running,
+            &failing.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, bad_id, "candidate text");
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let before = p4_tee_len();
+        let trigger = CoManagedTrigger::IdleEdge(bad_id);
+        super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+        let bad_lines = p4_lines_since(before, &format!("jev send [{}]", p4_short(bad_id)));
+
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "503 is retried once");
+        assert_eq!(bad_lines.len(), 2, "{bad_lines:?}");
+        for (index, line) in bad_lines.iter().enumerate() {
+            assert!(line.starts_with("WARN "), "{line}");
+            assert!(line.contains("status=503"), "{line}");
+            assert!(line.contains(&format!("attempt={}", index + 1)), "{line}");
+        }
+        assert_eq!(ok_lines.len(), 1, "{ok_lines:?}");
+        assert!(ok_lines[0].starts_with("INFO "), "{ok_lines:?}");
+        assert!(ok_lines[0].contains("attempt=1"), "{ok_lines:?}");
+        assert!(ok_lines[0].contains("status=200 OK"), "{ok_lines:?}");
+        assert!(ok_lines[0].contains("latency_ms="), "{ok_lines:?}");
+    }
+
+    /// #2455 test 6 (B): the cycle-start line names the trigger kind.
+    #[tokio::test]
+    async fn p4_cycle_start_names_the_trigger_kind() {
+        crate::logging::test_install_logger();
+        let mut kinds = Vec::new();
+        for idle_edge in [true, false] {
+            let status = if idle_edge {
+                SessionStatus::Running
+            } else {
+                SessionStatus::Idle
+            };
+            let fixture = make_co_managed_fixture();
+            let (endpoint, _hits) = spawn_jev_listener(p4_all_scores()).await;
+            let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+            let session_id = add_claude_session(
+                &manager,
+                &fixture.coordinator_cwd,
+                status,
+                &fixture.projects_dir,
+            )
+            .await;
+            install_candidate(&registry, session_id, "candidate text");
+            let (handle, _rx) = CoManagedSupervisorHandle::new();
+            let before = p4_tee_len();
+            super::handle_co_managed_trigger(
+                app.handle(),
+                &handle,
+                if idle_edge {
+                    CoManagedTrigger::IdleEdge(session_id)
+                } else {
+                    CoManagedTrigger::SlotChanged(session_id)
+                },
+            )
+            .await;
+            let start: Vec<String> = p4_lines_since(before, &session_id.to_string())
+                .into_iter()
+                .filter(|line| line.contains("cycle start"))
+                .collect();
+            assert_eq!(start.len(), 1, "{start:?}");
+            let kind = start[0]
+                .split("trigger=")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next())
+                .expect("trigger kind")
+                .to_string();
+            kinds.push(kind);
+        }
+        assert_ne!(
+            kinds[0], kinds[1],
+            "two trigger kinds must differ: {kinds:?}"
+        );
+        assert_eq!(
+            kinds,
+            vec!["IdleEdge".to_string(), "SlotChanged".to_string()]
+        );
+    }
+
+    /// #2455 test 7 (B, round 6): the route line names the resolved variant
+    /// and its effect kind, from inside `co_managed_cycle`.
+    #[tokio::test]
+    async fn p4_route_line_names_the_variant_and_kind() {
+        crate::logging::test_install_logger();
+        let mut routes = Vec::new();
+        for winner in ["to-user", "to-peer"] {
+            let fixture = make_co_managed_fixture();
+            let scores: Vec<(&'static str, f32)> = ["to-user", "to-peer", "to-root", "to-reply"]
+                .into_iter()
+                .map(|id| (id, if id == winner { 0.9 } else { 0.0 }))
+                .collect();
+            let (endpoint, _hits) = spawn_jev_listener(scores).await;
+            let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+            let session_id = add_claude_session(
+                &manager,
+                &fixture.coordinator_cwd,
+                SessionStatus::Running,
+                &fixture.projects_dir,
+            )
+            .await;
+            install_candidate(&registry, session_id, "candidate text");
+            let (handle, _rx) = CoManagedSupervisorHandle::new();
+            let before = p4_tee_len();
+            let trigger = CoManagedTrigger::IdleEdge(session_id);
+            super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+            let lines = p4_lines_since(before, &format!("route [{session_id}]"));
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            let route = lines[0]
+                .split_once("]: ")
+                .map(|(_, rest)| rest.to_string())
+                .expect("route fields");
+            routes.push(route);
+            let outcome: Vec<String> = p4_lines_since(before, &session_id.to_string())
+                .into_iter()
+                .filter(|line| line.contains("cycle end"))
+                .collect();
+            assert_eq!(outcome.len(), 1, "{outcome:?}");
+            assert!(
+                !outcome[0].contains("route none") && !outcome[0].contains("route done"),
+                "the outcome arm must not be called a route: {outcome:?}"
+            );
+        }
+        assert_eq!(
+            routes,
+            vec![
+                "variant=User kind=TextToUser".to_string(),
+                "variant=Wake kind=Automatic".to_string(),
+            ]
         );
     }
 

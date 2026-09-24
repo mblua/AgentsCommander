@@ -71,9 +71,13 @@ pub(crate) fn agent_help_overlay_payload(
     let (file, local_error) = crate::config::settings::load_local_agent_help_file(&path);
     let has_content =
         file.general.is_some() || !file.by_command.is_empty() || !file.by_agent.is_empty();
+    // #2133 (P6) - the downloaded layer, served under the same non-empty rule as `local`.
+    let remote = crate::config::settings::load_remote_agent_help_file(&path);
+    let remote_has_content =
+        remote.general.is_some() || !remote.by_command.is_empty() || !remote.by_agent.is_empty();
     AgentHelpOverlayPayload {
         local: has_content.then_some(file),
-        remote: None,
+        remote: remote_has_content.then_some(remote),
         local_error,
     }
 }
@@ -1426,9 +1430,12 @@ pub async fn preview_coding_agent_profile_selection(
     // (the transport discards the late response) without cancelling the read.
     let session_mgr = Arc::clone(session_mgr.inner());
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation(move || async move {
-        preview_coding_agent_profile_selection_inner(&session_mgr, &settings, request).await
-    })
+    crate::session::selection::run_owned_selection_operation_timed(
+        "preview_coding_agent_profile_selection",
+        move || async move {
+            preview_coding_agent_profile_selection_inner(&session_mgr, &settings, request).await
+        },
+    )
     .await
 }
 
@@ -2815,9 +2822,12 @@ pub async fn preview_selection_lock_removal(
 ) -> Result<PreviewSelectionLockRemovalResult, String> {
     let session_mgr = Arc::clone(session_mgr.inner());
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation(move || async move {
-        preview_selection_lock_removal_inner(&session_mgr, &settings, request).await
-    })
+    crate::session::selection::run_owned_selection_operation_timed(
+        "preview_selection_lock_removal",
+        move || async move {
+            preview_selection_lock_removal_inner(&session_mgr, &settings, request).await
+        },
+    )
     .await
 }
 
@@ -3003,9 +3013,10 @@ pub async fn get_replica_selection_default(
     request: GetReplicaSelectionDefaultRequest,
 ) -> Result<ReplicaSelectionDefaultResult, String> {
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation(move || async move {
-        get_replica_selection_default_inner(&settings, request).await
-    })
+    crate::session::selection::run_owned_selection_operation_timed(
+        "get_replica_selection_default",
+        move || async move { get_replica_selection_default_inner(&settings, request).await },
+    )
     .await
 }
 
@@ -10343,6 +10354,1358 @@ mod tests {
         assert_eq!(disk["mainWindowDisplayState"], json!("normal"));
     }
 
+    // ── #2475 synthetic selection-lock bench ─────────────────────────
+    //
+    // Synthetic numbers from a temporary directory: they are NOT the numbers
+    // of the real app. Latency is only reported under AC_SELECTION_BENCH=1
+    // with --test-threads=1; without it the bench asserts fixture,
+    // collection, correlation and occupancy invariants only.
+
+    use crate::config::replica_identity::strict_read_probe;
+    use crate::session::selection::timing_probe::{
+        bench_serialization_lock, BenchContext, Occupancy, OccupancyGuard, SelectionTimingSample,
+        TimingSinkRegistration,
+    };
+
+    const BENCH_COMMANDS: [&str; 3] = [
+        "preview_selection_lock_removal",
+        "preview_coding_agent_profile_selection",
+        "get_replica_selection_default",
+    ];
+    /// One budget per batch: it covers the serialization lock, `between` and
+    /// the wait for the reads, all measured against one `deadline_at`.
+    const BENCH_BATCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+    /// Drain grace after the budget, as an absolute `grace_at = deadline_at +
+    /// grace`, never counted from when the expiry is observed.
+    const BENCH_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+    const BENCH_REPETITIONS: usize = 10;
+
+    /// R rooms per project path, M project paths, one replica per room. The R
+    /// replicas of project 1 share the anchor's Matrix; projects 2..M hold
+    /// `other-<j>` replicas with their own Matrix, excluded by the Kind
+    /// Matrix filter after their strict read.
+    struct BenchFixture {
+        /// Taken (and kept on disk) by the drain-expiry path.
+        temp: std::sync::Mutex<Option<tempfile::TempDir>>,
+        root: PathBuf,
+        settings: AppSettings,
+        anchor: PathBuf,
+        ac_roots: Vec<PathBuf>,
+        configs: Vec<PathBuf>,
+    }
+
+    impl BenchFixture {
+        fn root(&self) -> &Path {
+            &self.root
+        }
+    }
+
+    fn bench_fixture(r: usize, m: usize) -> BenchFixture {
+        let fixture = selection_api_fixture();
+        let mut projects = vec![fixture.project.clone()];
+        let mut ac_roots = vec![fixture.ac_root.clone()];
+        for index in 2..=m {
+            let project = fixture._temp.path().join(format!("project-{index}"));
+            let ac_root = project.join(".ac");
+            std::fs::create_dir_all(&ac_root).expect("create .ac");
+            projects.push(project);
+            ac_roots.push(ac_root);
+        }
+        let mut configs = Vec::new();
+        for (index, ac_root) in ac_roots.iter().enumerate() {
+            let name = if index == 0 {
+                "bench-agent".to_string()
+            } else {
+                format!("other-{}", index + 1)
+            };
+            let matrix = ac_root.join(format!("_agent_{name}"));
+            for room in 1..=r {
+                let replica = ac_root
+                    .join(format!("room-{room}-bench"))
+                    .join(format!("__agent_{name}"));
+                selection_api_replica_at(
+                    &fixture,
+                    &matrix,
+                    &replica,
+                    &name,
+                    locked_tooling("B", "agent-0"),
+                );
+                configs.push(replica.join("config.json"));
+            }
+        }
+        let anchor = ac_roots[0].join("room-1-bench").join("__agent_bench-agent");
+        let mut settings = selection_api_settings(&fixture);
+        settings.project_paths = projects
+            .iter()
+            .map(|project| project.to_string_lossy().to_string())
+            .collect();
+        let SelectionApiFixture { _temp: temp, .. } = fixture;
+        BenchFixture {
+            root: temp.path().to_path_buf(),
+            temp: std::sync::Mutex::new(Some(temp)),
+            settings,
+            anchor,
+            ac_roots,
+            configs,
+        }
+    }
+
+    type BenchRead =
+        std::pin::Pin<Box<dyn std::future::Future<Output = (u64, bool, std::time::Instant)>>>;
+    type BenchWait =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Vec<(u64, bool, std::time::Instant)>>>>;
+
+    struct BenchRun {
+        samples: Vec<SelectionTimingSample>,
+        by_invocation:
+            std::collections::BTreeMap<u64, (&'static str, super::ProfileAssignmentScope)>,
+        completed: std::collections::BTreeMap<u64, std::time::Instant>,
+        batch_wall_ms: f64,
+        occupancy_max: usize,
+        body_threads: std::collections::HashSet<std::thread::ThreadId>,
+    }
+
+    /// What the harness does once the drain grace also expired: it lost
+    /// control of reads it launched. `Abort` is terminal; `Record` hands the
+    /// retained state back to a test that owns the stuck read.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+    enum DrainExpiryAction {
+        #[default]
+        Abort,
+        Record,
+    }
+
+    /// Instants the batch records, so a test can check the budget arithmetic.
+    #[derive(Clone, Copy, Debug, Default)]
+    struct BenchMilestones {
+        deadline_at: Option<std::time::Instant>,
+        grace_at: Option<std::time::Instant>,
+        acquired: Option<std::time::Instant>,
+        expired_observed: Option<std::time::Instant>,
+    }
+
+    #[derive(Default)]
+    struct BenchOptions {
+        /// Measurement mode: an uncorrelated timed sample fails the run.
+        measurement: bool,
+        /// Test-only: record one timed sample WITHOUT a run context.
+        inject_uncorrelated: bool,
+        /// Test-only: a witness entered while the serialization lock is held.
+        witness: Option<Arc<Occupancy>>,
+        /// `None` means `BENCH_BATCH_BUDGET`.
+        budget: Option<std::time::Duration>,
+        /// `None` means `BENCH_DRAIN_GRACE`.
+        grace: Option<std::time::Duration>,
+        drain_expiry: DrainExpiryAction,
+        /// Test-only: notified when the budget expires.
+        on_deadline: Option<Arc<tokio::sync::Notify>>,
+        /// Test-only: where the batch records its instants.
+        milestones: Option<Arc<std::sync::Mutex<BenchMilestones>>>,
+    }
+
+    impl BenchOptions {
+        fn record(&self, update: impl FnOnce(&mut BenchMilestones)) {
+            if let Some(milestones) = &self.milestones {
+                update(&mut milestones.lock().expect("milestones"));
+            }
+        }
+    }
+
+    /// The drain grace expired and the terminal action is `Record`: this
+    /// owns everything the batch still has in flight. Nothing is released
+    /// until the owner drains `wait`.
+    struct DrainExpired {
+        diagnostic: String,
+        pending: Vec<(u64, &'static str)>,
+        retained: PathBuf,
+        wait: BenchWait,
+        sinks: Vec<TimingSinkRegistration>,
+        serial: tokio::sync::MutexGuard<'static, ()>,
+        _app: tauri::App<tauri::test::MockRuntime>,
+    }
+
+    impl DrainExpired {
+        async fn drain(&mut self) {
+            self.wait.as_mut().await;
+        }
+    }
+
+    enum BenchError {
+        Failed(String),
+        DrainExpired(Box<DrainExpired>),
+    }
+
+    impl BenchError {
+        fn message(&self) -> String {
+            match self {
+                Self::Failed(message) => message.clone(),
+                Self::DrainExpired(expired) => expired.diagnostic.clone(),
+            }
+        }
+    }
+
+    impl std::fmt::Debug for BenchError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.message())
+        }
+    }
+
+    fn bench_deadline_at(options: &BenchOptions) -> std::time::Instant {
+        std::time::Instant::now() + options.budget.unwrap_or(BENCH_BATCH_BUDGET)
+    }
+
+    /// The only way to take the bench serialization lock: bounded by the
+    /// batch's `deadline_at`.
+    async fn acquire_bench_serialization(
+        deadline_at: std::time::Instant,
+    ) -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
+        tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline_at),
+            bench_serialization_lock().lock(),
+        )
+        .await
+        .map_err(|_| "bench serialization lock not acquired in time".to_string())
+    }
+
+    fn bench_measurement_mode() -> bool {
+        std::env::var("AC_SELECTION_BENCH").as_deref() == Ok("1")
+    }
+
+    fn ms(duration: std::time::Duration) -> f64 {
+        duration.as_secs_f64() * 1000.0
+    }
+
+    /// Percentile with linear interpolation. Never an average.
+    fn pct(values: &mut [f64], q: f64) -> f64 {
+        assert!(!values.is_empty(), "percentile of nothing");
+        values.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        let rank = q * (values.len() - 1) as f64;
+        let low = rank.floor() as usize;
+        let high = rank.ceil() as usize;
+        values[low] + (values[high] - values[low]) * (rank - low as f64)
+    }
+
+    async fn bench_batch(bench: &BenchFixture) -> BenchRun {
+        bench_batch_with(
+            bench,
+            BenchOptions {
+                measurement: bench_measurement_mode(),
+                ..BenchOptions::default()
+            },
+        )
+        .await
+        .expect("bench batch")
+    }
+
+    async fn bench_batch_with(
+        bench: &BenchFixture,
+        options: BenchOptions,
+    ) -> Result<BenchRun, BenchError> {
+        let deadline_at = bench_deadline_at(&options);
+        let serial = acquire_bench_serialization(deadline_at)
+            .await
+            .map_err(BenchError::Failed)?;
+        options.record(|m| m.acquired = Some(std::time::Instant::now()));
+        bench_batch_locked(serial, bench, &options, deadline_at, async {}).await
+    }
+
+    /// The batch of 13 reads, each through its real command and the timed
+    /// turn wrapper. Every read is SUBMITTED before `between` runs. The batch
+    /// owns `serial` and its sinks until every submitted read has finished.
+    ///
+    /// Cooperative budget: no WAIT of the batch path goes past `deadline_at`
+    /// (the caller used the same instant for the lock) and no drain wait
+    /// goes past `grace_at`. Fixture setup, the submitting polls and any
+    /// future that does not yield are outside the timer.
+    async fn bench_batch_locked(
+        serial: tokio::sync::MutexGuard<'static, ()>,
+        bench: &BenchFixture,
+        options: &BenchOptions,
+        deadline_at: std::time::Instant,
+        between: impl std::future::Future<Output = ()> + 'static,
+    ) -> Result<BenchRun, BenchError> {
+        use std::task::Poll;
+        use tauri::Manager;
+        let grace_at = deadline_at + options.grace.unwrap_or(BENCH_DRAIN_GRACE);
+        options.record(|m| {
+            m.deadline_at = Some(deadline_at);
+            m.grace_at = Some(grace_at);
+        });
+        let anchor = bench.anchor.as_path();
+        let _witness = options.witness.as_ref().map(OccupancyGuard::enter);
+        let app = tauri::test::mock_app();
+        app.manage(empty_session_manager());
+        app.manage(state_for(bench.settings.clone()));
+        let handle = app.handle().clone();
+        let done = Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeSet::<u64>::new(),
+        ));
+
+        let (sample_tx, sample_rx) = std::sync::mpsc::channel::<SelectionTimingSample>();
+        let sample_tx = Arc::new(std::sync::Mutex::new(sample_tx));
+        let _sinks: Vec<TimingSinkRegistration> = BENCH_COMMANDS
+            .iter()
+            .map(|command| {
+                let sample_tx = Arc::clone(&sample_tx);
+                TimingSinkRegistration::new_sample(
+                    command,
+                    Arc::new(move |sample: &SelectionTimingSample, _line: &str| {
+                        let _ = sample_tx.lock().expect("sample tx").send(sample.clone());
+                    }),
+                )
+            })
+            .collect();
+        if options.inject_uncorrelated {
+            crate::session::selection::run_owned_selection_operation_timed(
+                "get_replica_selection_default",
+                || async { Ok::<(), String>(()) },
+            )
+            .await
+            .map_err(BenchError::Failed)?;
+        }
+
+        let occupancy = Arc::new(Occupancy::default());
+        let mut by_invocation = std::collections::BTreeMap::new();
+        let mut reads: Vec<BenchRead> = Vec::new();
+        let scopes = [
+            super::ProfileAssignmentScope::Replica,
+            super::ProfileAssignmentScope::Kind,
+            super::ProfileAssignmentScope::Workgroup,
+        ];
+        for scope in &scopes {
+            for _ in 0..2 {
+                let context = BenchContext::new(&occupancy);
+                let id = context.invocation;
+                by_invocation.insert(id, ("preview_selection_lock_removal", scope.clone()));
+                let request = api_removal_preview_request(anchor, scope.clone());
+                let (handle, done) = (handle.clone(), Arc::clone(&done));
+                reads.push(Box::pin(async move {
+                    let ok = crate::session::selection::BENCH_CONTEXT
+                        .scope(
+                            context,
+                            super::preview_selection_lock_removal(
+                                handle.state(),
+                                handle.state(),
+                                request,
+                            ),
+                        )
+                        .await
+                        .is_ok();
+                    done.lock().expect("done").insert(id);
+                    (id, ok, std::time::Instant::now())
+                }));
+            }
+        }
+        for scope in &scopes {
+            for _ in 0..2 {
+                let context = BenchContext::new(&occupancy);
+                let id = context.invocation;
+                by_invocation.insert(
+                    id,
+                    ("preview_coding_agent_profile_selection", scope.clone()),
+                );
+                let request =
+                    api_preview_request(anchor, scope.clone(), super::AssignmentMode::Ordinary);
+                let (handle, done) = (handle.clone(), Arc::clone(&done));
+                reads.push(Box::pin(async move {
+                    let ok = crate::session::selection::BENCH_CONTEXT
+                        .scope(
+                            context,
+                            super::preview_coding_agent_profile_selection(
+                                handle.state(),
+                                handle.state(),
+                                request,
+                            ),
+                        )
+                        .await
+                        .is_ok();
+                    done.lock().expect("done").insert(id);
+                    (id, ok, std::time::Instant::now())
+                }));
+            }
+        }
+        {
+            let context = BenchContext::new(&occupancy);
+            let id = context.invocation;
+            by_invocation.insert(
+                id,
+                (
+                    "get_replica_selection_default",
+                    super::ProfileAssignmentScope::Replica,
+                ),
+            );
+            let request = api_default_request(anchor);
+            let (handle, done) = (handle.clone(), Arc::clone(&done));
+            reads.push(Box::pin(async move {
+                let ok = crate::session::selection::BENCH_CONTEXT
+                    .scope(
+                        context,
+                        super::get_replica_selection_default(handle.state(), request),
+                    )
+                    .await
+                    .is_ok();
+                done.lock().expect("done").insert(id);
+                (id, ok, std::time::Instant::now())
+            }));
+        }
+
+        // One poll per read runs its submission: `submitted` is stamped and
+        // the owned task is spawned before the next read is built.
+        let mut finished = Vec::new();
+        let mut pending = Vec::new();
+        for mut read in reads {
+            match futures::poll!(read.as_mut()) {
+                Poll::Ready(done) => finished.push(done),
+                Poll::Pending => pending.push(read),
+            }
+        }
+        let submitted_reads = pending.len();
+        let mut wait: BenchWait = Box::pin(async move {
+            between.await;
+            futures::future::join_all(pending).await
+        });
+        let joined = match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline_at),
+            wait.as_mut(),
+        )
+        .await
+        {
+            Ok(joined) => joined,
+            Err(_) => {
+                options.record(|m| m.expired_observed = Some(std::time::Instant::now()));
+                if let Some(notify) = &options.on_deadline {
+                    notify.notify_one();
+                }
+                // The owned reads are detached, not cancelled, when their
+                // waiters drop: keep the sinks and the serialization lock
+                // until every one of them has finished.
+                if tokio::time::timeout_at(tokio::time::Instant::from_std(grace_at), wait.as_mut())
+                    .await
+                    .is_ok()
+                {
+                    drop(serial);
+                    return Err(BenchError::Failed(format!(
+                        "bench batch timed out; {submitted_reads} submitted reads drained before release"
+                    )));
+                }
+                // The harness lost control of reads it launched. In order:
+                // 1. keep the fixture on disk, so no orphan reads a deleted path;
+                let retained = bench
+                    .temp
+                    .lock()
+                    .expect("fixture temp")
+                    .take()
+                    .map(tempfile::TempDir::keep)
+                    .unwrap_or_else(|| bench.root.clone());
+                // 2. keep the sinks registered and 3. keep `serial` held;
+                // 4. name what is still pending and where the fixture is.
+                let finished_ids = done.lock().expect("done").clone();
+                let pending_reads: Vec<(u64, &'static str)> = by_invocation
+                    .iter()
+                    .filter(|(id, _)| !finished_ids.contains(id))
+                    .map(|(id, (command, _))| (*id, *command))
+                    .collect();
+                let diagnostic = format!(
+                    "bench drain expired: pending invocations {pending_reads:?}; retained fixture {}",
+                    retained.display()
+                );
+                eprintln!("{diagnostic}");
+                // 5. the terminal action.
+                match options.drain_expiry {
+                    DrainExpiryAction::Abort => std::process::abort(),
+                    DrainExpiryAction::Record => {
+                        return Err(BenchError::DrainExpired(Box::new(DrainExpired {
+                            diagnostic,
+                            pending: pending_reads,
+                            retained,
+                            wait,
+                            sinks: _sinks,
+                            serial,
+                            _app: app,
+                        })));
+                    }
+                }
+            }
+        };
+        finished.extend(joined);
+
+        let mut completed = std::collections::BTreeMap::new();
+        for (id, ok, at) in finished {
+            if !ok {
+                return Err(BenchError::Failed(format!("bench read {id} failed")));
+            }
+            completed.insert(id, at);
+        }
+
+        // Every sample is recorded inside its owned task before that task
+        // completes, so all of this batch's samples are already queued.
+        let mut samples = Vec::new();
+        let mut uncorrelated = 0usize;
+        for sample in sample_rx.try_iter() {
+            match sample.invocation {
+                Some(id) if by_invocation.contains_key(&id) => samples.push(sample),
+                Some(_) => {}
+                None => uncorrelated += 1,
+            }
+        }
+        if options.measurement && uncorrelated > 0 {
+            return Err(BenchError::Failed(format!(
+                "measurement run received {uncorrelated} uncorrelated timed sample(s)"
+            )));
+        }
+        let received: std::collections::BTreeSet<u64> = samples
+            .iter()
+            .filter_map(|sample| sample.invocation)
+            .collect();
+        if samples.len() != by_invocation.len() || received.len() != by_invocation.len() {
+            let missing: Vec<u64> = by_invocation
+                .keys()
+                .filter(|id| !received.contains(id))
+                .copied()
+                .collect();
+            return Err(BenchError::Failed(format!(
+                "received {} of {} samples; missing ids {missing:?}",
+                samples.len(),
+                by_invocation.len()
+            )));
+        }
+        let first_submit = samples
+            .iter()
+            .map(|sample| sample.submitted)
+            .min()
+            .expect("samples");
+        let last_done = *completed.values().max().expect("completions");
+        Ok(BenchRun {
+            batch_wall_ms: ms(last_done.saturating_duration_since(first_submit)),
+            occupancy_max: occupancy.max(),
+            body_threads: samples.iter().map(|sample| sample.body_thread).collect(),
+            samples,
+            by_invocation,
+            completed,
+        })
+    }
+
+    fn bench_key(run: &BenchRun, sample: &SelectionTimingSample) -> String {
+        let (command, scope) = &run.by_invocation[&sample.invocation.expect("correlated")];
+        format!("{command}/{scope:?}")
+    }
+
+    fn bench_sum_queue_wait_ms(run: &BenchRun) -> f64 {
+        run.samples.iter().map(|sample| ms(sample.queue_wait)).sum()
+    }
+
+    /// One report block for a set of runs (the cold one, or the warm ones).
+    fn bench_report(label: &str, runs: &[&BenchRun]) {
+        let mut walls: Vec<f64> = runs.iter().map(|run| run.batch_wall_ms).collect();
+        let mut sums: Vec<f64> = runs
+            .iter()
+            .map(|run| bench_sum_queue_wait_ms(run))
+            .collect();
+        let mut work_by_key: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
+        let mut work_by_command: std::collections::BTreeMap<&str, Vec<f64>> = Default::default();
+        let mut wait_by_command: std::collections::BTreeMap<&str, Vec<f64>> = Default::default();
+        let mut wait_all = Vec::new();
+        for run in runs {
+            for sample in &run.samples {
+                work_by_key
+                    .entry(bench_key(run, sample))
+                    .or_default()
+                    .push(ms(sample.work));
+                work_by_command
+                    .entry(sample.command)
+                    .or_default()
+                    .push(ms(sample.work));
+                wait_by_command
+                    .entry(sample.command)
+                    .or_default()
+                    .push(ms(sample.queue_wait));
+                wait_all.push(ms(sample.queue_wait));
+            }
+        }
+        let (slowest_key, slowest_p90) = work_by_key
+            .iter_mut()
+            .map(|(key, values)| (key.clone(), pct(values, 0.9)))
+            .fold((String::new(), f64::MIN), |best, next| {
+                if next.1 > best.1 {
+                    next
+                } else {
+                    best
+                }
+            });
+        let occupancy = runs.iter().map(|run| run.occupancy_max).max().unwrap_or(0);
+        let threads = runs
+            .iter()
+            .map(|run| run.body_threads.len())
+            .max()
+            .unwrap_or(0);
+        println!(
+            "[bench] {label} runs={} batch_wall_ms p50={:.1} p90={:.1} sum_queue_wait_ms p50={:.1} \
+             slowest_work_p90_ms={:.1} ({slowest_key}) occupancy_max={occupancy} \
+             diag_body_threads={threads}",
+            runs.len(),
+            pct(&mut walls.clone(), 0.5),
+            pct(&mut walls, 0.9),
+            pct(&mut sums, 0.5),
+            slowest_p90,
+        );
+        println!(
+            "[bench] {label} queue_wait_ms aggregate p50={:.1} p90={:.1}",
+            pct(&mut wait_all.clone(), 0.5),
+            pct(&mut wait_all, 0.9)
+        );
+        for (command, values) in wait_by_command.iter_mut() {
+            let work = work_by_command.get_mut(command).expect("work");
+            println!(
+                "[bench] {label} {command} queue_wait_ms p50={:.1} p90={:.1} work_ms p50={:.1} p90={:.1}",
+                pct(&mut values.clone(), 0.5),
+                pct(values, 0.9),
+                pct(&mut work.clone(), 0.5),
+                pct(work, 0.9)
+            );
+        }
+        for (key, values) in work_by_key.iter_mut() {
+            println!(
+                "[bench] {label} {key} work_ms p50={:.1} p90={:.1}",
+                pct(&mut values.clone(), 0.5),
+                pct(values, 0.9)
+            );
+        }
+    }
+
+    fn assert_bench_correlation(run: &BenchRun) {
+        assert_eq!(run.samples.len(), 13, "13 samples");
+        let ids: std::collections::BTreeSet<u64> = run
+            .samples
+            .iter()
+            .map(|sample| sample.invocation.expect("correlated sample"))
+            .collect();
+        assert_eq!(ids.len(), 13, "distinct invocation ids");
+        for sample in &run.samples {
+            let id = sample.invocation.expect("correlated sample");
+            let (command, _scope) = run.by_invocation.get(&id).expect("known invocation");
+            assert_eq!(*command, sample.command, "sample matches its invocation");
+            assert!(sample.ok, "read {id} succeeded");
+            let done = run.completed[&id];
+            assert!(
+                sample.submitted + sample.queue_wait + sample.work <= done,
+                "invocation {id} submitted before it finished"
+            );
+        }
+        let mut per_scope: std::collections::BTreeMap<String, usize> = Default::default();
+        for (command, scope) in run.by_invocation.values() {
+            *per_scope.entry(format!("{command}/{scope:?}")).or_default() += 1;
+        }
+        assert_eq!(per_scope.len(), 7, "declared mix: {per_scope:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_fixture_invariants() {
+        for (r, m) in [(3usize, 2usize), (8, 1)] {
+            let bench = bench_fixture(r, m);
+            let on_disk = bench.configs.iter().filter(|path| path.is_file()).count();
+            assert_eq!(on_disk, r * m, "config.json on disk for R={r} M={m}");
+            let mut walked = super::CandidateDirs::new();
+            for ac_root in &bench.ac_roots {
+                super::collect_kind_replica_dirs(ac_root, &mut walked);
+            }
+            assert_eq!(walked.dirs.len(), r * m, "replicas walked by kind");
+            let settings = state_for(bench.settings.clone());
+            for (scope, expected) in [
+                (super::ProfileAssignmentScope::Kind, r),
+                (super::ProfileAssignmentScope::Workgroup, 1),
+                (super::ProfileAssignmentScope::Replica, 1),
+            ] {
+                let removal = api_removal_preview(&settings, &bench.anchor, scope.clone()).await;
+                assert_eq!(removal.targets.len(), expected, "{scope:?} R={r} M={m}");
+                assert!(removal.counts_complete, "{scope:?} counts complete");
+                let assignment = api_preview(
+                    &settings,
+                    &bench.anchor,
+                    scope.clone(),
+                    super::AssignmentMode::Ordinary,
+                )
+                .await;
+                assert_eq!(assignment.targets.len(), expected, "{scope:?} R={r} M={m}");
+                assert!(assignment.counts_complete, "{scope:?} counts complete");
+            }
+        }
+    }
+
+    /// Pre-change baseline, the negative control of p4: p4 may update exactly
+    /// these two expected values (to 8 and 120) and nothing else.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_strict_reads_before_the_single_read_change() {
+        for (r, m, expected) in [(8usize, 1usize, 16usize), (40, 3, 160)] {
+            let bench = bench_fixture(r, m);
+            let settings = state_for(bench.settings.clone());
+            strict_read_probe::register(bench.root());
+            let removal = api_removal_preview(
+                &settings,
+                &bench.anchor,
+                super::ProfileAssignmentScope::Kind,
+            )
+            .await;
+            let calls = strict_read_probe::unregister(bench.root());
+            assert_eq!(removal.targets.len(), r);
+            assert_eq!(calls, expected, "strict-reader calls in kind, R={r} M={m}");
+        }
+    }
+
+    #[test]
+    fn issue_2475_bench_counter_ignores_reads_outside_the_fixture() {
+        let bench = bench_fixture(1, 1);
+        let outside = selection_api_fixture();
+        let outside_replica = selection_api_replica(
+            &outside,
+            "room-1-outside",
+            "outside-agent",
+            locked_tooling("B", "agent-0"),
+        );
+        strict_read_probe::register(bench.root());
+        crate::config::replica_identity::read_wg_replica_config_read_only(&outside_replica)
+            .expect("outside strict read");
+        assert_eq!(
+            strict_read_probe::count(bench.root()),
+            0,
+            "a strict read outside the fixture is not counted"
+        );
+        crate::config::replica_identity::read_wg_replica_config_read_only(&bench.anchor)
+            .expect("inside strict read");
+        assert_eq!(strict_read_probe::unregister(bench.root()), 1);
+    }
+
+    /// The batch test. Without AC_SELECTION_BENCH it asserts one batch's
+    /// collection and correlation; with AC_SELECTION_BENCH=1 (run it with
+    /// --test-threads=1) it also runs 10 repetitions of both fixtures and
+    /// prints the baseline. Rep 1 is cold, reps 2..10 are warm.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_samples_carry_invocation_scope_and_submit_instant() {
+        let bench = bench_fixture(8, 1);
+        let run = bench_batch(&bench).await;
+        assert_bench_correlation(&run);
+        assert!(run.occupancy_max >= 1, "bodies entered the occupancy");
+
+        if !bench_measurement_mode() {
+            return;
+        }
+        println!(
+            "[bench] synthetic numbers from a temporary directory, not the real app; \
+             mix 6 preview_selection_lock_removal + 6 preview_coding_agent_profile_selection \
+             (2 per scope) + 1 get_replica_selection_default; available_parallelism={}",
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(0)
+        );
+        for (r, m) in [(8usize, 1usize), (40, 3)] {
+            let bench = bench_fixture(r, m);
+            let mut runs = Vec::new();
+            for _ in 0..BENCH_REPETITIONS {
+                let run = bench_batch(&bench).await;
+                assert_bench_correlation(&run);
+                runs.push(run);
+            }
+            let cold = [&runs[0]];
+            let warm: Vec<&BenchRun> = runs[1..].iter().collect();
+            bench_report(&format!("R={r} M={m} cold"), &cold);
+            bench_report(&format!("R={r} M={m} warm"), &warm);
+        }
+    }
+
+    /// Writer control: every reader's wait covers the part of the writer's
+    /// hold it actually overlapped, `submitted` taken from the sample.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_reader_wait_covers_the_measured_overlap() {
+        const TOLERANCE_MS: f64 = 0.05;
+        let bench = bench_fixture(3, 1);
+        let options = BenchOptions::default();
+        // The test takes the shared lock under its own bound; the small
+        // batch budget starts once it holds it.
+        let serial = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("serialization");
+        let deadline_at = bench_deadline_at(&options);
+        let writer = crate::session::selection::acquire_selection_operation_turn()
+            .await
+            .expect("writer turn");
+        let acquired = std::time::Instant::now();
+        let released = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+        let release_slot = Arc::clone(&released);
+        let run = bench_batch_locked(serial, &bench, &options, deadline_at, async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            *release_slot.lock().expect("release slot") = Some(std::time::Instant::now());
+            drop(writer);
+        })
+        .await
+        .expect("bench batch");
+        let released = released
+            .lock()
+            .expect("release slot")
+            .expect("writer released");
+        assert_bench_correlation(&run);
+        for sample in &run.samples {
+            let start = sample.submitted.max(acquired);
+            assert!(start < released, "reader submitted while the writer held");
+            let overlap = ms(released - start);
+            assert!(
+                ms(sample.queue_wait) + TOLERANCE_MS >= overlap,
+                "queue_wait {:.3} ms must cover the {overlap:.3} ms overlap",
+                ms(sample.queue_wait)
+            );
+        }
+    }
+
+    #[test]
+    fn issue_2475_bench_percentiles_are_not_averages() {
+        let values = vec![1.0, 2.0, 3.0, 4.0, 100.0];
+        assert_eq!(pct(&mut values.clone(), 0.5), 3.0);
+        assert!(pct(&mut values.clone(), 0.9) >= 60.0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_rejects_an_uncorrelated_timed_sample() {
+        let bench = bench_fixture(1, 1);
+        let rejected = bench_batch_with(
+            &bench,
+            BenchOptions {
+                measurement: true,
+                inject_uncorrelated: true,
+                ..BenchOptions::default()
+            },
+        )
+        .await;
+        let error = rejected.err().expect("measurement run must fail").message();
+        assert!(error.contains("uncorrelated"), "{error}");
+        // Outside measurement mode the same batch is accepted.
+        let accepted = bench_batch_with(
+            &bench,
+            BenchOptions {
+                inject_uncorrelated: true,
+                ..BenchOptions::default()
+            },
+        )
+        .await
+        .expect("non-measurement run");
+        assert_bench_correlation(&accepted);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_fixture_leaves_config_bytes_unchanged() {
+        let bench = bench_fixture(3, 2);
+        let before: Vec<Vec<u8>> = bench
+            .configs
+            .iter()
+            .map(|path| std::fs::read(path).expect("read config.json"))
+            .collect();
+        let run = bench_batch(&bench).await;
+        assert_bench_correlation(&run);
+        let after: Vec<Vec<u8>> = bench
+            .configs
+            .iter()
+            .map(|path| std::fs::read(path).expect("read config.json"))
+            .collect();
+        assert_eq!(before.len(), 6);
+        assert!(before == after, "the bench must not write any config.json");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_holds_the_serialization_lock() {
+        let bench = bench_fixture(3, 1);
+        let witness = Arc::new(Occupancy::default());
+        let options = || BenchOptions {
+            witness: Some(Arc::clone(&witness)),
+            ..BenchOptions::default()
+        };
+        let (first, second) = tokio::join!(
+            bench_batch_with(&bench, options()),
+            bench_batch_with(&bench, options()),
+        );
+        assert_bench_correlation(&first.expect("first run"));
+        assert_bench_correlation(&second.expect("second run"));
+        assert_eq!(witness.max(), 1, "two bench runs never overlap");
+        assert_eq!(witness.in_flight(), 0);
+    }
+
+    /// Correlated samples seen for the three bench commands, via sinks the
+    /// test itself owns.
+    fn bench_correlated_counter() -> (
+        Arc<std::sync::atomic::AtomicUsize>,
+        Vec<TimingSinkRegistration>,
+    ) {
+        let correlated = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sinks = BENCH_COMMANDS
+            .iter()
+            .map(|command| {
+                let correlated = Arc::clone(&correlated);
+                TimingSinkRegistration::new_sample(
+                    command,
+                    Arc::new(move |sample: &SelectionTimingSample, _line: &str| {
+                        if sample.invocation.is_some() {
+                            correlated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }),
+                )
+            })
+            .collect();
+        (correlated, sinks)
+    }
+
+    fn bench_registered_sinks() -> usize {
+        BENCH_COMMANDS
+            .iter()
+            .map(|command| crate::session::selection::timing_probe::registered_sinks(command))
+            .sum()
+    }
+
+    /// Step 7.6 test 1: the batch returns only after every submitted read
+    /// finished. Observed at the instant of the return, not after a join.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_deadline_drains_submitted_reads_before_release() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let bench = bench_fixture(3, 1);
+        let expired = Arc::new(tokio::sync::Notify::new());
+        let options = BenchOptions {
+            budget: Some(std::time::Duration::from_millis(50)),
+            grace: Some(std::time::Duration::from_secs(10)),
+            drain_expiry: DrainExpiryAction::Record,
+            on_deadline: Some(Arc::clone(&expired)),
+            ..BenchOptions::default()
+        };
+        // The test takes the shared lock under its own bound; the small
+        // batch budget starts once it holds it.
+        let serial = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("serialization");
+        let deadline_at = bench_deadline_at(&options);
+        let (correlated, _probe_sinks) = bench_correlated_counter();
+        let writer = crate::session::selection::acquire_selection_operation_turn()
+            .await
+            .expect("writer turn");
+        let released = Arc::new(AtomicBool::new(false));
+        let wake_releaser = Arc::clone(&expired);
+        let releaser = tokio::spawn({
+            let released = Arc::clone(&released);
+            let correlated = Arc::clone(&correlated);
+            async move {
+                // Bounded: the writer turn is process-wide and must come back.
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(60), expired.notified())
+                        .await;
+                let before = correlated.load(Ordering::SeqCst);
+                released.store(true, Ordering::SeqCst);
+                drop(writer);
+                before
+            }
+        });
+        let (result, at_return) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            let result = bench_batch_locked(serial, &bench, &options, deadline_at, async {}).await;
+            // Copied in the immediate continuation of the batch's return.
+            let at_return = (
+                released.load(Ordering::SeqCst),
+                correlated.load(Ordering::SeqCst),
+            );
+            (result, at_return)
+        })
+        .await
+        .expect("the test itself is bounded");
+        // If the batch returned without reaching its deadline, the releaser
+        // must still give the process-wide turn back now.
+        wake_releaser.notify_one();
+        let before_release = releaser.await.expect("releaser");
+        let error = match result {
+            Err(BenchError::Failed(error)) => error,
+            Err(BenchError::DrainExpired(mut expired)) => {
+                expired.drain().await;
+                panic!("unexpected drain expiry: {}", expired.diagnostic);
+            }
+            Ok(_) => panic!("the batch must fail on its budget"),
+        };
+        assert!(error.contains("timed out"), "{error}");
+        assert_eq!(
+            before_release, 0,
+            "no read ran while the writer held the turn"
+        );
+        assert!(
+            at_return.0,
+            "the batch returned only after the writer released"
+        );
+        assert_eq!(
+            at_return.1, 13,
+            "every submitted read finished before the batch returned"
+        );
+    }
+
+    /// Step 7.6 test 2: while a batch drains, a bounded acquisition of the
+    /// serialization lock fails with its own error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_draining_batch_does_not_hand_over_serialization() {
+        let bench = bench_fixture(3, 1);
+        let expired = Arc::new(tokio::sync::Notify::new());
+        let options = BenchOptions {
+            budget: Some(std::time::Duration::from_millis(50)),
+            grace: Some(std::time::Duration::from_secs(10)),
+            drain_expiry: DrainExpiryAction::Record,
+            on_deadline: Some(Arc::clone(&expired)),
+            ..BenchOptions::default()
+        };
+        // The test takes the shared lock under its own bound; the small
+        // batch budget starts once it holds it.
+        let serial = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("serialization");
+        let deadline_at = bench_deadline_at(&options);
+        let writer = crate::session::selection::acquire_selection_operation_turn()
+            .await
+            .expect("writer turn");
+        let batch = bench_batch_locked(serial, &bench, &options, deadline_at, async {});
+        tokio::pin!(batch);
+        let reached_drain = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            tokio::select! {
+                _ = &mut batch => false,
+                _ = expired.notified() => true,
+            }
+        })
+        .await
+        .expect("the test itself is bounded");
+        // The batch is now draining and must still own the lock.
+        let second = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_millis(100),
+        )
+        .await;
+        drop(writer);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(60), batch)
+            .await
+            .expect("the test itself is bounded");
+        assert!(reached_drain, "the batch reached its drain");
+        assert_eq!(
+            second.err().as_deref(),
+            Some("bench serialization lock not acquired in time"),
+            "no batch takes the turn from a draining one"
+        );
+        assert!(result
+            .err()
+            .expect("budget failure")
+            .message()
+            .contains("timed out"));
+    }
+
+    /// Step 7.6 test 3: with `Record`, the terminal boundary keeps everything
+    /// (fixture on disk, sinks registered, lock held, diagnostic), and only
+    /// after the stuck read is released and drained does the test recover.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_drain_expiry_retains_then_recovers_the_shared_state() {
+        let bench = bench_fixture(3, 1);
+        let options = BenchOptions {
+            budget: Some(std::time::Duration::from_millis(50)),
+            grace: Some(std::time::Duration::from_millis(50)),
+            drain_expiry: DrainExpiryAction::Record,
+            ..BenchOptions::default()
+        };
+        // The test takes the shared lock under its own bound; the small
+        // batch budget starts once it holds it.
+        let serial = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("serialization");
+        let deadline_at = bench_deadline_at(&options);
+        // The test owns the stuck read: this writer keeps it queued past grace_at.
+        let writer = crate::session::selection::acquire_selection_operation_turn()
+            .await
+            .expect("writer turn");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            bench_batch_locked(serial, &bench, &options, deadline_at, async {}),
+        )
+        .await
+        .expect("the test itself is bounded");
+
+        // Observations first, at the terminal boundary.
+        let mut expired = match result {
+            Err(BenchError::DrainExpired(expired)) => Some(expired),
+            _ => None,
+        };
+        let observed = expired.as_ref().map(|expired| {
+            let pending_named = expired.pending.iter().all(|(id, command)| {
+                expired.diagnostic.contains(&id.to_string()) && expired.diagnostic.contains(command)
+            });
+            (
+                expired.retained.is_dir(),
+                bench.temp.lock().expect("temp").is_none(),
+                bench_registered_sinks(),
+                expired.pending.len(),
+                pending_named,
+                expired
+                    .diagnostic
+                    .contains(&expired.retained.display().to_string()),
+            )
+        });
+        let lock_held = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_millis(100),
+        )
+        .await
+        .is_err();
+
+        // Deterministic recovery, whatever the observations say: release the
+        // read, join ALL submitted work, then sinks, lock, fixture.
+        drop(writer);
+        let mut sinks_after = None;
+        if let Some(mut expired) = expired.take() {
+            tokio::time::timeout(std::time::Duration::from_secs(60), expired.drain())
+                .await
+                .expect("the released read drains");
+            let DrainExpired {
+                sinks,
+                serial,
+                retained,
+                _app,
+                ..
+            } = *expired;
+            drop(sinks);
+            sinks_after = Some(bench_registered_sinks());
+            drop(serial);
+            std::fs::remove_dir_all(&retained).expect("remove the retained fixture");
+        }
+        let later = bench_fixture(3, 1);
+        let later_run =
+            tokio::time::timeout(std::time::Duration::from_secs(60), bench_batch(&later))
+                .await
+                .expect("the test itself is bounded");
+
+        let observed = observed.expect("the drain grace expired with Record");
+        assert!(observed.0, "the fixture stays on disk");
+        assert!(observed.1, "the fixture TempDir was taken and kept");
+        assert_eq!(observed.2, 3, "the batch sinks stay registered");
+        assert_eq!(observed.3, 13, "every read is still pending");
+        assert!(observed.4, "the diagnostic names every pending invocation");
+        assert!(observed.5, "the diagnostic names the retained fixture");
+        assert!(lock_held, "the serialization lock was not released");
+        assert_eq!(sinks_after, Some(0), "recovery unregistered the sinks");
+        assert_bench_correlation(&later_run);
+    }
+
+    /// Step 7.6 test 4: the default value only, not its dispatch.
+    #[test]
+    fn issue_2475_bench_default_drain_expiry_action_is_abort() {
+        assert_eq!(
+            BenchOptions::default().drain_expiry,
+            DrainExpiryAction::Abort
+        );
+    }
+
+    const BENCH_ABORT_CHILD_MARKER: &str = "AC_BENCH_ABORT_CHILD";
+    const BENCH_ABORT_CHILD_TEST: &str =
+        "commands::config::tests::issue_2475_bench_drain_expiry_aborts_in_a_child_process";
+
+    /// Step 7.6 test 6: the default action really aborts. The terminal path
+    /// runs in a child process (this same test, marked), so the suite
+    /// survives it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_drain_expiry_aborts_in_a_child_process() {
+        if std::env::var_os(BENCH_ABORT_CHILD_MARKER).is_some() {
+            let bench = bench_fixture(1, 1);
+            let options = BenchOptions {
+                budget: Some(std::time::Duration::from_millis(50)),
+                grace: Some(std::time::Duration::from_millis(50)),
+                ..BenchOptions::default()
+            };
+            let deadline_at = bench_deadline_at(&options);
+            let serial = acquire_bench_serialization(deadline_at)
+                .await
+                .expect("serialization");
+            let _writer = crate::session::selection::acquire_selection_operation_turn()
+                .await
+                .expect("writer turn");
+            let _ = bench_batch_locked(serial, &bench, &options, deadline_at, async {}).await;
+            panic!("the drain expiry returned instead of aborting");
+        }
+
+        let child = std::process::Command::new(std::env::current_exe().expect("test exe"))
+            .args([
+                "--exact",
+                BENCH_ABORT_CHILD_TEST,
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(BENCH_ABORT_CHILD_MARKER, "1")
+            .env_remove("AC_SELECTION_BENCH")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn the child");
+        // Bounded wait: kill and reap on expiry; pipes are read on their own
+        // threads so a full pipe never blocks the child.
+        let (status, stdout, stderr) = tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+            let mut child = child;
+            let mut out = child.stdout.take().expect("stdout");
+            let mut err = child.stderr.take().expect("stderr");
+            let out = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = out.read_to_end(&mut bytes);
+                bytes
+            });
+            let err = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = err.read_to_end(&mut bytes);
+                bytes
+            });
+            let limit = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let status = loop {
+                if let Some(status) = child.try_wait().expect("poll the child") {
+                    break Some(status);
+                }
+                if std::time::Instant::now() >= limit {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            };
+            let stdout = String::from_utf8_lossy(&out.join().expect("stdout reader")).to_string();
+            let stderr = String::from_utf8_lossy(&err.join().expect("stderr reader")).to_string();
+            (status, stdout, stderr)
+        })
+        .await
+        .expect("join the waiter");
+        let status = status.unwrap_or_else(|| {
+            panic!("the child did not terminate in time\nstdout:\n{stdout}\nstderr:\n{stderr}")
+        });
+
+        // Clean the known retained fixture before asserting.
+        let retained = stderr
+            .lines()
+            .find_map(|line| {
+                line.split_once("retained fixture ")
+                    .map(|(_, path)| path.trim())
+            })
+            .map(PathBuf::from);
+        if let Some(retained) = &retained {
+            let _ = std::fs::remove_dir_all(retained);
+        }
+
+        assert!(
+            stdout.contains("running 1 test") && stdout.contains(BENCH_ABORT_CHILD_TEST),
+            "the child ran exactly the terminal test:\n{stdout}"
+        );
+        assert!(!status.success(), "an abort is never a success: {status:?}");
+        #[cfg(windows)]
+        assert_eq!(
+            status.code(),
+            Some(0xC000_0409_u32 as i32),
+            "abort exit code, not a panic or another crash: {status:?}\n{stderr}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(status.signal(), Some(6), "SIGABRT: {status:?}\n{stderr}");
+        }
+        assert!(
+            stderr.contains("bench drain expired: pending invocations"),
+            "diagnostic with the pending invocations:\n{stderr}"
+        );
+        assert!(
+            retained.is_some(),
+            "diagnostic names the retained fixture:\n{stderr}"
+        );
+    }
+
+    /// Step 7.6 test 5: acquisition and work share ONE deadline. A third
+    /// party holds the serialization for 0.6 x budget; the late batch must
+    /// still expire against the original `deadline_at`. Only an attempt where
+    /// a FOREIGN test got the lock first is retried; the arithmetic is
+    /// asserted on the first clean attempt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_one_budget_is_shared_between_acquisition_and_work() {
+        let budget = std::time::Duration::from_millis(400);
+        let grace = std::time::Duration::from_secs(10);
+        // A reset budget would expire ~0.6 x budget later than allowed; this
+        // tolerance stays well below that.
+        let tolerance = budget / 4;
+        let hold = budget.mul_f64(0.6);
+        let bench = bench_fixture(1, 1);
+        for attempt in 1..=5 {
+            let expired = Arc::new(tokio::sync::Notify::new());
+            let milestones = Arc::new(std::sync::Mutex::new(BenchMilestones::default()));
+            let options = BenchOptions {
+                budget: Some(budget),
+                grace: Some(grace),
+                drain_expiry: DrainExpiryAction::Record,
+                on_deadline: Some(Arc::clone(&expired)),
+                milestones: Some(Arc::clone(&milestones)),
+                ..BenchOptions::default()
+            };
+            let third_party = acquire_bench_serialization(
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+            )
+            .await
+            .expect("third party serialization");
+            let writer = crate::session::selection::acquire_selection_operation_turn()
+                .await
+                .expect("writer turn");
+            let wake_releaser = Arc::clone(&expired);
+            let releaser = tokio::spawn(async move {
+                // Bounded: the writer turn is process-wide and must come back.
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(60), expired.notified())
+                        .await;
+                drop(writer);
+            });
+            let (result, third_released) =
+                tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                    tokio::join!(bench_batch_with(&bench, options), async move {
+                        tokio::time::sleep(hold).await;
+                        let released = std::time::Instant::now();
+                        drop(third_party);
+                        released
+                    })
+                })
+                .await
+                .expect("the test itself is bounded");
+            wake_releaser.notify_one();
+            releaser.await.expect("releaser");
+            let error = match result {
+                Err(BenchError::Failed(error)) => error,
+                Err(BenchError::DrainExpired(mut expired)) => {
+                    expired.drain().await;
+                    panic!("unexpected drain expiry: {}", expired.diagnostic);
+                }
+                Ok(_) => panic!("the batch must fail on its budget"),
+            };
+            if error == "bench serialization lock not acquired in time" {
+                // A foreign test was queued ahead of this batch.
+                println!("[bench] budget test attempt {attempt}: foreign lock holder, retrying");
+                continue;
+            }
+            let m = *milestones.lock().expect("milestones");
+            let deadline_at = m.deadline_at.expect("deadline_at");
+            let acquired = m.acquired.expect("acquired");
+            let observed = m.expired_observed.expect("expiry observed");
+            assert!(error.contains("timed out"), "{error}");
+            assert!(acquired >= third_released, "the batch acquired late");
+            assert!(observed >= deadline_at, "never expires early");
+            assert!(
+                observed - acquired <= budget.mul_f64(0.4) + tolerance,
+                "expired {:?} after a late acquisition; a shared deadline allows {:?}",
+                observed - acquired,
+                budget.mul_f64(0.4) + tolerance
+            );
+            assert_eq!(
+                m.grace_at,
+                Some(deadline_at + grace),
+                "grace_at derives from deadline_at"
+            );
+            return;
+        }
+        panic!("five attempts in a row lost the lock to a foreign test");
+    }
+
     /// #2133 (P4) - every test injects `<tempdir>/settings.json`; none resolves the config dir.
     mod agent_help_2133 {
         use super::super::{agent_help_overlay_payload, AgentHelpOverlayPayload};
@@ -10405,13 +11768,71 @@ mod tests {
             assert!(payload.remote.is_none());
         }
 
+        fn payload_with_layers(
+            local: Option<&str>,
+            remote: Option<&str>,
+        ) -> AgentHelpOverlayPayload {
+            let dir = tempfile::tempdir().unwrap();
+            if let Some(local) = local {
+                std::fs::write(dir.path().join("agent-help.local.json"), local).unwrap();
+            }
+            if let Some(remote) = remote {
+                std::fs::write(dir.path().join("agent-help.remote.json"), remote).unwrap();
+            }
+            agent_help_overlay_payload(Some(dir.path().join("settings.json")))
+        }
+
         #[test]
-        fn agent_help_leaves_remote_null_in_this_phase() {
-            let payload = payload_with_local(Some(
-                r#"{"schemaVersion":1,"byCommand":{"codex":{"label":"X"}}}"#,
-            ));
-            assert!(payload.local.is_some());
+        fn agent_help_serves_the_remote_layer() {
+            // (a) a valid cache is served, whole entry intact.
+            let payload = payload_with_layers(
+                None,
+                Some(
+                    r#"{"schemaVersion":1,"byCommand":{"codex":{"label":"Codex",
+                        "paramsExample":"--full-auto","docsUrl":"https://r.dev/codex",
+                        "tips":[{"title":"T","body":"B","link":{"label":"L","url":"https://r.dev/t"}}]}}}"#,
+                ),
+            );
+            assert!(payload.local.is_none());
+            let remote = serde_json::to_value(payload.remote.expect("remote is served")).unwrap();
+            assert_eq!(
+                remote["byCommand"]["codex"],
+                json!({
+                    "label": "Codex",
+                    "paramsExample": "--full-auto",
+                    "docsUrl": "https://r.dev/codex",
+                    "tips": [{"title": "T", "body": "B", "link": {"label": "L", "url": "https://r.dev/t"}}]
+                })
+            );
+
+            // (b) a `general`-only cache is not empty.
+            let payload =
+                payload_with_layers(None, Some(r#"{"schemaVersion":1,"general":{"label":"G"}}"#));
+            let remote = payload.remote.expect("a general-only cache is served");
+            assert_eq!(remote.general.unwrap().label.as_deref(), Some("G"));
+            assert!(remote.by_command.is_empty());
+
+            // (c) a cache that parses to an empty file is not served.
+            let payload = payload_with_layers(None, Some(r#"{"schemaVersion":1}"#));
             assert!(payload.remote.is_none());
+        }
+
+        #[test]
+        fn local_still_wins_over_remote_on_the_wire() {
+            let payload = payload_with_layers(
+                Some(r#"{"schemaVersion":1,"byCommand":{"claude":{"label":"Mine"}}}"#),
+                Some(
+                    r#"{"schemaVersion":1,"byCommand":{"claude":{"label":"Theirs"},"codex":{"label":"C"}}}"#,
+                ),
+            );
+            let local = payload.local.expect("local is served");
+            let remote = payload.remote.expect("remote is served");
+            assert_eq!(local.by_command.len(), 1);
+            assert_eq!(local.by_command["claude"].label.as_deref(), Some("Mine"));
+            assert_eq!(remote.by_command.len(), 2);
+            assert_eq!(remote.by_command["claude"].label.as_deref(), Some("Theirs"));
+            assert_eq!(remote.by_command["codex"].label.as_deref(), Some("C"));
+            assert_eq!(payload.local_error, None);
         }
 
         fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {

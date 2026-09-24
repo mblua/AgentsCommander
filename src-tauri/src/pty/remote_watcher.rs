@@ -29,7 +29,8 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::config::remote_activity_cache::{
-    PersistedCiState, REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME, REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS,
+    PersistedCiState, PersistedRepoCi, REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME,
+    REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS,
 };
 use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
@@ -128,6 +129,12 @@ pub(crate) struct RemoteActivity {
     ci: CiState,
     staleness: StalenessState,
     behind_by: Option<u32>,
+    /// #2473 snapshot-only detail: in-progress run ids and their PR numbers
+    /// (non-empty only while `ci` is `Running`) and the failure behind an
+    /// `Unknown` chip. Never part of `RemoteActivityPayload`.
+    run_ids: Vec<u64>,
+    pull_requests: Vec<u64>,
+    failure: Option<FailureKind>,
 }
 
 impl RemoteActivity {
@@ -136,6 +143,9 @@ impl RemoteActivity {
             ci: CiState::Unknown,
             staleness: StalenessState::Unknown,
             behind_by: None,
+            run_ids: Vec::new(),
+            pull_requests: Vec::new(),
+            failure: None,
         }
     }
 }
@@ -418,11 +428,14 @@ fn failure_kind(output: &GhCallOutput) -> FailureKind {
 type CompareAnswer = Result<(StalenessState, Option<u32>, Option<u32>, bool), FailureKind>;
 
 /// The CI answer for one branch: the filtered state plus whether that branch
-/// has any run at all, which the identical-to-default rule reads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// has any run at all, which the identical-to-default rule reads. `run_ids`
+/// and `pull_requests` (#2473) come from the kept rows that are not completed.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct CiAnswer {
     state: CiState,
     branch_has_runs: bool,
+    run_ids: Vec<u64>,
+    pull_requests: Vec<u64>,
 }
 
 /// `rows < total_count` means the page cannot answer the question. `total_count`
@@ -453,9 +466,25 @@ fn parse_ci_response(body: &str, branch: &str) -> Result<CiAnswer, FailureKind> 
     // `status != "completed"` is a one-value blacklist on purpose: a future GitHub
     // status counts as running, which is the correct bias, because a whitelist
     // would go silently dark.
-    let running = kept
+    let in_progress: Vec<&serde_json::Value> = kept
         .iter()
-        .any(|row| row.get("status").and_then(serde_json::Value::as_str) != Some("completed"));
+        .copied()
+        .filter(|row| row.get("status").and_then(serde_json::Value::as_str) != Some("completed"))
+        .collect();
+    let running = !in_progress.is_empty();
+    let run_ids = in_progress
+        .iter()
+        .filter_map(|row| row.get("id").and_then(serde_json::Value::as_u64))
+        .collect();
+    let pull_requests = in_progress
+        .iter()
+        .filter_map(|row| {
+            row.get("pull_requests")
+                .and_then(serde_json::Value::as_array)
+        })
+        .flatten()
+        .filter_map(|pr| pr.get("number").and_then(serde_json::Value::as_u64))
+        .collect();
     Ok(CiAnswer {
         state: if running {
             CiState::Running
@@ -463,6 +492,8 @@ fn parse_ci_response(body: &str, branch: &str) -> Result<CiAnswer, FailureKind> 
             CiState::Idle
         },
         branch_has_runs: !kept.is_empty(),
+        run_ids,
+        pull_requests,
     })
 }
 
@@ -615,6 +646,12 @@ struct CiAxis {
     last_confirmed_at: Option<DateTime<Local>>,
     next_due: Option<Instant>,
     failure_interval: Option<Duration>,
+    /// #2473: the published answer's in-progress run ids / PR numbers (kept
+    /// only while `chip` is `Running`) and the failure behind an `Unknown`
+    /// chip. A round that is not due leaves them untouched, like `chip`.
+    run_ids: Vec<u64>,
+    pull_requests: Vec<u64>,
+    failure: Option<FailureKind>,
 }
 
 impl Default for CiAxis {
@@ -625,6 +662,9 @@ impl Default for CiAxis {
             last_confirmed_at: None,
             next_due: None,
             failure_interval: None,
+            run_ids: Vec::new(),
+            pull_requests: Vec::new(),
+            failure: None,
         }
     }
 }
@@ -776,6 +816,9 @@ struct KeyOutcome {
     /// the reservation made for it is refunded when it was never made.
     ci_identity_call: bool,
     staleness: Option<CompareAnswer>,
+    /// #2473: `(run_ids, pull_requests)` of a non-suppressed `Ok` answer; empty
+    /// otherwise.
+    ci_runs: (Vec<u64>, Vec<u64>),
 }
 
 struct RoundCtx<'a> {
@@ -1329,7 +1372,14 @@ impl RemoteSweeper {
         };
         for (key, outcome) in outcomes {
             let indices = groups.get(&key).map(Vec::as_slice).unwrap_or(&[]);
-            self.apply_ci(&key, outcome.ci, outcome.ci_suppressed, indices, &ctx);
+            self.apply_ci(
+                &key,
+                outcome.ci,
+                outcome.ci_suppressed,
+                outcome.ci_runs,
+                indices,
+                &ctx,
+            );
             self.apply_staleness(&key, outcome.staleness, indices, &ctx);
         }
 
@@ -1405,13 +1455,13 @@ impl RemoteSweeper {
         if self.snapshot_persistence == SnapshotPersistence::Enabled {
             if let Some(snapshot_dir) = &self.snapshot_dir {
                 let path = snapshot_dir.join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
-                let entries: Vec<(String, PersistedCiState)> = {
+                let entries: Vec<(String, PersistedRepoCi)> = {
                     let snapshot = remote_activity_snapshot()
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
                     snapshot
                         .iter()
-                        .map(|(path, activity)| (path.clone(), persisted_ci_state(activity.ci)))
+                        .map(|(path, activity)| (path.clone(), persisted_repo_ci(activity)))
                         .collect()
                 };
                 let generated_at = (self.publication_clock)();
@@ -1570,6 +1620,7 @@ impl RemoteSweeper {
         key: &QueryKey,
         result: Option<Result<CiState, FailureKind>>,
         suppressed: bool,
+        runs: (Vec<u64>, Vec<u64>),
         indices: &[usize],
         ctx: &RoundCtx<'_>,
     ) {
@@ -1590,6 +1641,9 @@ impl RemoteSweeper {
                 entry.ci.confirmed = None;
                 entry.ci.last_confirmed_at = Some(ctx.wall);
                 entry.ci.failure_interval = None;
+                entry.ci.run_ids.clear();
+                entry.ci.pull_requests.clear();
+                entry.ci.failure = None;
                 entry.ci.next_due = Some(ctx.now + ci_base_interval(None, ctx.ci_dial));
                 drop(state);
             }
@@ -1600,6 +1654,13 @@ impl RemoteSweeper {
                 entry.ci.confirmed = Some(answer);
                 entry.ci.last_confirmed_at = Some(ctx.wall);
                 entry.ci.failure_interval = None;
+                if answer == CiState::Running {
+                    (entry.ci.run_ids, entry.ci.pull_requests) = runs;
+                } else {
+                    entry.ci.run_ids.clear();
+                    entry.ci.pull_requests.clear();
+                }
+                entry.ci.failure = None;
                 entry.ci.next_due = Some(ctx.now + ci_base_interval(Some(answer), ctx.ci_dial));
                 drop(state);
 
@@ -1633,6 +1694,9 @@ impl RemoteSweeper {
                 entry.ci.chip = CiState::Idle;
                 entry.ci.confirmed = None;
                 entry.ci.failure_interval = Some(next);
+                entry.ci.run_ids.clear();
+                entry.ci.pull_requests.clear();
+                entry.ci.failure = None;
                 entry.ci.next_due = Some(ctx.now + next);
                 drop(state);
                 self.warn_failure(key, Axis::Ci, kind);
@@ -1641,6 +1705,9 @@ impl RemoteSweeper {
                 let next = failure_interval(kind, base, entry.ci.failure_interval);
                 entry.ci.chip = CiState::Unknown;
                 entry.ci.failure_interval = Some(next);
+                entry.ci.run_ids.clear();
+                entry.ci.pull_requests.clear();
+                entry.ci.failure = Some(kind);
                 entry.ci.next_due = Some(ctx.now + next);
                 drop(state);
                 self.warn_failure(key, Axis::Ci, kind);
@@ -1808,6 +1875,33 @@ fn persisted_ci_state(state: CiState) -> PersistedCiState {
     }
 }
 
+/// #2473: the persisted reason code for a CI failure, published only while the
+/// chip is `Unknown`.
+fn persisted_failure_reason(kind: FailureKind) -> &'static str {
+    match kind {
+        FailureKind::Timeout => "ci-query-timeout",
+        FailureKind::RateLimited => "ci-query-rate-limited",
+        FailureKind::SecondaryRateLimited => "ci-query-secondary-rate-limited",
+        FailureKind::NotAuthenticated => "ci-query-not-authenticated",
+        FailureKind::Incomplete => "ci-query-incomplete",
+        FailureKind::Other => "ci-query-failed",
+    }
+}
+
+fn persisted_repo_ci(activity: &RemoteActivity) -> PersistedRepoCi {
+    PersistedRepoCi {
+        state: persisted_ci_state(activity.ci),
+        run_ids: activity.run_ids.clone(),
+        pull_requests: activity.pull_requests.clone(),
+        unknown_reason: match activity.ci {
+            CiState::Unknown => activity
+                .failure
+                .map(|kind| persisted_failure_reason(kind).to_string()),
+            _ => None,
+        },
+    }
+}
+
 fn activity_for(state: &SweeperState, fact: &PathFacts) -> RemoteActivity {
     let (Some(nwo), Some(head_sha), Some(branch)) = (&fact.nwo, &fact.head_sha, &fact.branch)
     else {
@@ -1827,6 +1921,9 @@ fn activity_for(state: &SweeperState, fact: &PathFacts) -> RemoteActivity {
                 StalenessState::Stale => entry.staleness.behind_by,
                 _ => None,
             },
+            run_ids: entry.ci.run_ids.clone(),
+            pull_requests: entry.ci.pull_requests.clone(),
+            failure: entry.ci.failure,
         },
         None => RemoteActivity::unknown(),
     }
@@ -1924,11 +2021,17 @@ async fn query_key(
                         outcome.ci_suppressed = true;
                         Ok(CiState::Idle)
                     }
-                    Ok((_, _, _, false)) => Ok(answer.state),
+                    Ok((_, _, _, false)) => {
+                        outcome.ci_runs = (answer.run_ids, answer.pull_requests);
+                        Ok(answer.state)
+                    }
                     Err(kind) => Err(kind),
                 }
             }
-            Ok(answer) => Ok(answer.state),
+            Ok(answer) => {
+                outcome.ci_runs = (answer.run_ids, answer.pull_requests);
+                Ok(answer.state)
+            }
             Err(kind) => Err(kind),
         };
         outcome.ci = Some(ci_result);
@@ -2476,6 +2579,8 @@ mod tests {
             Ok(CiAnswer {
                 state: CiState::Running,
                 branch_has_runs: true,
+                run_ids: Vec::new(),
+                pull_requests: Vec::new(),
             })
         );
         assert_eq!(
@@ -2483,6 +2588,8 @@ mod tests {
             Ok(CiAnswer {
                 state: CiState::Running,
                 branch_has_runs: true,
+                run_ids: Vec::new(),
+                pull_requests: Vec::new(),
             }),
             "an unknown future status counts as running, never as idle"
         );
@@ -2495,6 +2602,8 @@ mod tests {
             Ok(CiAnswer {
                 state: CiState::Idle,
                 branch_has_runs: false,
+                run_ids: Vec::new(),
+                pull_requests: Vec::new(),
             })
         );
         assert_eq!(
@@ -2502,6 +2611,8 @@ mod tests {
             Ok(CiAnswer {
                 state: CiState::Idle,
                 branch_has_runs: true,
+                run_ids: Vec::new(),
+                pull_requests: Vec::new(),
             })
         );
     }
@@ -2530,6 +2641,8 @@ mod tests {
             Ok(CiAnswer {
                 state: CiState::Idle,
                 branch_has_runs: true,
+                run_ids: Vec::new(),
+                pull_requests: Vec::new(),
             }),
             "a row with no head_branch cannot answer for any branch"
         );
@@ -2558,6 +2671,8 @@ mod tests {
             Ok(CiAnswer {
                 state: CiState::Idle,
                 branch_has_runs: true,
+                run_ids: Vec::new(),
+                pull_requests: Vec::new(),
             })
         );
         assert_eq!(
@@ -2565,6 +2680,8 @@ mod tests {
             Ok(CiAnswer {
                 state: CiState::Running,
                 branch_has_runs: true,
+                run_ids: Vec::new(),
+                pull_requests: Vec::new(),
             })
         );
     }
@@ -5474,11 +5591,21 @@ mod tests {
             vec![
                 (
                     repo_running.clone(),
-                    crate::config::remote_activity_cache::PersistedCiState::Running,
+                    crate::config::remote_activity_cache::PersistedRepoCi {
+                        state: crate::config::remote_activity_cache::PersistedCiState::Running,
+                        run_ids: Vec::new(),
+                        pull_requests: Vec::new(),
+                        unknown_reason: None,
+                    },
                 ),
                 (
                     repo_idle.clone(),
-                    crate::config::remote_activity_cache::PersistedCiState::Idle,
+                    crate::config::remote_activity_cache::PersistedRepoCi {
+                        state: crate::config::remote_activity_cache::PersistedCiState::Idle,
+                        run_ids: Vec::new(),
+                        pull_requests: Vec::new(),
+                        unknown_reason: None,
+                    },
                 ),
             ]
         );
@@ -5673,6 +5800,403 @@ mod tests {
                 .last_admitted
                 .is_none(),
             "a missing directory is not a per-round persistence failure"
+        );
+    }
+
+    // --- #2473: run ids, PR numbers and the failure reason ---
+
+    fn run_row(id: u64, branch: &str, status: &str, prs: &[u64]) -> serde_json::Value {
+        let prs: Vec<serde_json::Value> = prs
+            .iter()
+            .map(|number| serde_json::json!({ "number": number }))
+            .collect();
+        serde_json::json!({
+            "id": id,
+            "head_branch": branch,
+            "status": status,
+            "pull_requests": prs,
+        })
+    }
+
+    fn runs_body(rows: Vec<serde_json::Value>) -> String {
+        serde_json::json!({ "total_count": rows.len(), "workflow_runs": rows }).to_string()
+    }
+
+    #[test]
+    fn p1_parse_ci_response_collects_ids_and_prs_only_from_running_kept_rows() {
+        let body = runs_body(vec![
+            run_row(11, "feature", "in_progress", &[5, 6]),
+            run_row(12, "feature", "queued", &[5]),
+            run_row(13, "feature", "completed", &[99]),
+            run_row(14, "other", "in_progress", &[98]),
+            serde_json::json!({ "head_branch": "feature", "status": "in_progress" }),
+        ]);
+        assert_eq!(
+            parse_ci_response(&body, "feature"),
+            Ok(CiAnswer {
+                state: CiState::Running,
+                branch_has_runs: true,
+                run_ids: vec![11, 12],
+                pull_requests: vec![5, 6, 5],
+            })
+        );
+        let idle = runs_body(vec![
+            run_row(13, "feature", "completed", &[99]),
+            run_row(14, "other", "in_progress", &[98]),
+        ]);
+        assert_eq!(
+            parse_ci_response(&idle, "feature"),
+            Ok(CiAnswer {
+                state: CiState::Idle,
+                branch_has_runs: true,
+                run_ids: Vec::new(),
+                pull_requests: Vec::new(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn p2_apply_ci_clears_runs_on_suppressed_and_err_and_sets_failure_only_on_plain_err() {
+        let _guard = round_test_lock().await;
+        let harness = Harness::new(AppSettings::default());
+        let key = QueryKey {
+            nwo: "mblua/AgentsCommander".to_string(),
+            sha40: sha_of('a'),
+            branch: "feature".to_string(),
+        };
+        let now = Instant::now();
+        let ctx = RoundCtx {
+            facts: &[],
+            now,
+            wall: Local::now(),
+            ci_dial: Duration::from_secs(60),
+            staleness_dial: Duration::from_secs(60),
+        };
+        let runs = || (vec![1, 2], vec![7]);
+        let read = |harness: &Harness| {
+            let state = harness.sweeper.lock_state();
+            let ci = &state.keys[&key].ci;
+            (
+                ci.chip,
+                ci.run_ids.clone(),
+                ci.pull_requests.clone(),
+                ci.failure,
+            )
+        };
+        let s = &harness.sweeper;
+
+        s.apply_ci(&key, Some(Ok(CiState::Running)), false, runs(), &[], &ctx);
+        assert_eq!(
+            read(&harness),
+            (CiState::Running, vec![1, 2], vec![7], None)
+        );
+
+        s.apply_ci(&key, Some(Ok(CiState::Idle)), true, runs(), &[], &ctx);
+        assert_eq!(read(&harness), (CiState::Idle, vec![], vec![], None));
+
+        s.apply_ci(&key, Some(Ok(CiState::Running)), false, runs(), &[], &ctx);
+        s.apply_ci(
+            &key,
+            Some(Err(FailureKind::Timeout)),
+            true,
+            runs(),
+            &[],
+            &ctx,
+        );
+        assert_eq!(read(&harness), (CiState::Idle, vec![], vec![], None));
+
+        s.apply_ci(&key, Some(Ok(CiState::Running)), false, runs(), &[], &ctx);
+        s.apply_ci(
+            &key,
+            Some(Err(FailureKind::Incomplete)),
+            false,
+            runs(),
+            &[],
+            &ctx,
+        );
+        assert_eq!(
+            read(&harness),
+            (
+                CiState::Unknown,
+                vec![],
+                vec![],
+                Some(FailureKind::Incomplete)
+            )
+        );
+
+        s.apply_ci(&key, Some(Ok(CiState::Idle)), false, runs(), &[], &ctx);
+        assert_eq!(read(&harness), (CiState::Idle, vec![], vec![], None));
+
+        s.apply_ci(&key, None, false, runs(), &[], &ctx);
+        assert_eq!(
+            read(&harness),
+            (CiState::Idle, vec![], vec![], None),
+            "a key that is not due keeps its published detail"
+        );
+    }
+
+    #[test]
+    fn persisted_failure_reason_maps_every_kind() {
+        assert_eq!(
+            persisted_failure_reason(FailureKind::Timeout),
+            "ci-query-timeout"
+        );
+        assert_eq!(
+            persisted_failure_reason(FailureKind::RateLimited),
+            "ci-query-rate-limited"
+        );
+        assert_eq!(
+            persisted_failure_reason(FailureKind::SecondaryRateLimited),
+            "ci-query-secondary-rate-limited"
+        );
+        assert_eq!(
+            persisted_failure_reason(FailureKind::NotAuthenticated),
+            "ci-query-not-authenticated"
+        );
+        assert_eq!(
+            persisted_failure_reason(FailureKind::Incomplete),
+            "ci-query-incomplete"
+        );
+        assert_eq!(
+            persisted_failure_reason(FailureKind::Other),
+            "ci-query-failed"
+        );
+    }
+
+    fn persisted_of(
+        dir: &Path,
+        repo: &str,
+    ) -> crate::config::remote_activity_cache::PersistedRepoCi {
+        let snapshot = crate::config::remote_activity_cache::read_snapshot(
+            &dir.join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME),
+        )
+        .expect("read produced snapshot");
+        snapshot
+            .repos
+            .into_iter()
+            .find(|(path, _)| path == repo)
+            .map(|(_, ci)| ci)
+            .expect("repo is in the snapshot")
+    }
+
+    fn expected_ci(
+        state: PersistedCiState,
+        run_ids: &[u64],
+        pull_requests: &[u64],
+        unknown_reason: Option<&str>,
+    ) -> crate::config::remote_activity_cache::PersistedRepoCi {
+        crate::config::remote_activity_cache::PersistedRepoCi {
+            state,
+            run_ids: run_ids.to_vec(),
+            pull_requests: pull_requests.to_vec(),
+            unknown_reason: unknown_reason.map(str::to_string),
+        }
+    }
+
+    /// P3 a, c, d, f: no resolved default branch, so arm `Ok(answer)` answers
+    /// without any identity compare.
+    #[tokio::test]
+    async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
+        let _guard = round_test_lock().await;
+        let dir = tempfile::tempdir().expect("snapshot dir");
+        let settings = AppSettings {
+            branch_staleness_enabled: false,
+            ..AppSettings::default()
+        };
+        let harness = Harness::with_snapshot_dir(settings, Some(dir.path().to_path_buf()));
+        let repo = harness.repo("repo-a");
+        publish_branch(&repo, "feature-a");
+        harness
+            .git
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_head_sha(&repo, 'a');
+        harness.set_work(std::slice::from_ref(&repo));
+        let marker = format!("head_sha={}", sha_of('a'));
+        let script = |result: Result<GhCallOutput, FailureKind>| {
+            harness
+                .gh
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .route(&marker, result);
+        };
+
+        // a. running: exact ids / PRs from real `gh` JSON, no compare issued.
+        script(Ok(ok_output(&runs_body(vec![
+            run_row(502, "feature-a", "in_progress", &[40, 41]),
+            run_row(501, "feature-a", "queued", &[40]),
+            run_row(400, "feature-a", "completed", &[39]),
+            run_row(600, "main", "in_progress", &[1]),
+        ]))));
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        assert_eq!(
+            persisted_of(dir.path(), &repo),
+            expected_ci(PersistedCiState::Running, &[501, 502], &[40, 41], None)
+        );
+        assert_eq!(
+            harness
+                .gh
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .count("/compare/"),
+            0,
+            "no identity compare without a resolved default branch"
+        );
+
+        // f. the CI axis is not due one second later: the same detail again.
+        tick(&mut now, &mut wall, 1);
+        let calls = harness.gh_call_count();
+        harness.round(now, wall).await;
+        assert_eq!(
+            harness
+                .gh
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .count("/actions/runs?"),
+            1,
+            "the CI axis was not due (calls before: {calls})"
+        );
+        assert_eq!(
+            persisted_of(dir.path(), &repo),
+            expected_ci(PersistedCiState::Running, &[501, 502], &[40, 41], None)
+        );
+
+        // c. Running -> Idle clears the detail.
+        script(Ok(ok_output(&runs_body(vec![run_row(
+            502,
+            "feature-a",
+            "completed",
+            &[40],
+        )]))));
+        tick(&mut now, &mut wall, 3600);
+        harness.round(now, wall).await;
+        assert_eq!(
+            persisted_of(dir.path(), &repo),
+            expected_ci(PersistedCiState::Idle, &[], &[], None)
+        );
+
+        // d. Running, then a timeout -> Unknown with the reason, then recovery.
+        script(Ok(ok_output(&runs_body(vec![run_row(
+            700,
+            "feature-a",
+            "in_progress",
+            &[50],
+        )]))));
+        tick(&mut now, &mut wall, 3600);
+        harness.round(now, wall).await;
+        assert_eq!(
+            persisted_of(dir.path(), &repo),
+            expected_ci(PersistedCiState::Running, &[700], &[50], None)
+        );
+        script(Err(FailureKind::Timeout));
+        tick(&mut now, &mut wall, 3600);
+        harness.round(now, wall).await;
+        assert_eq!(
+            persisted_of(dir.path(), &repo),
+            expected_ci(
+                PersistedCiState::Unknown,
+                &[],
+                &[],
+                Some("ci-query-timeout")
+            )
+        );
+        script(Ok(ok_output(&runs_body(vec![run_row(
+            800,
+            "feature-a",
+            "in_progress",
+            &[51],
+        )]))));
+        tick(&mut now, &mut wall, 3600);
+        harness.round(now, wall).await;
+        assert_eq!(
+            persisted_of(dir.path(), &repo),
+            expected_ci(PersistedCiState::Running, &[800], &[51], None)
+        );
+    }
+
+    /// P3 b and e: a resolved default branch. A non-default branch whose
+    /// compare is not identical publishes its runs; the default branch and an
+    /// identical-to-default branch are suppressed to Idle with no detail.
+    #[tokio::test]
+    async fn p3_producer_publishes_runs_after_identity_compare_and_clears_them_when_suppressed() {
+        let _guard = round_test_lock().await;
+        let dir = tempfile::tempdir().expect("snapshot dir");
+        let settings = AppSettings {
+            branch_staleness_enabled: false,
+            ..AppSettings::default()
+        };
+        let harness = Harness::with_snapshot_dir(settings, Some(dir.path().to_path_buf()));
+        let feature = harness.repo("repo-a");
+        let default = harness.repo("repo-b");
+        publish_branch(&feature, "feature-a");
+        {
+            let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+            git.set_head_sha(&feature, 'a');
+            git.set_head_sha(&default, 'b');
+        }
+        harness.set_work(&[feature.clone(), default.clone()]);
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.repo_info
+                .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
+            gh.route(
+                &format!("head_sha={}", sha_of('a')),
+                Ok(ok_output(&runs_body(vec![
+                    run_row(902, "feature-a", "in_progress", &[77]),
+                    run_row(901, "feature-a", "in_progress", &[76, 77]),
+                ]))),
+            );
+            gh.route(
+                &format!("compare/HEAD...{}", sha_of('a')),
+                Ok(ok_output(&compare_body("ahead", 0, 1))),
+            );
+            gh.route(
+                &format!("head_sha={}", sha_of('b')),
+                Ok(ok_output(&runs_body(vec![run_row(
+                    990,
+                    "main",
+                    "in_progress",
+                    &[3],
+                )]))),
+            );
+        }
+        let mut now = Instant::now();
+        let mut wall = Local::now();
+        harness.round(now, wall).await;
+        assert_eq!(
+            persisted_of(dir.path(), &feature),
+            expected_ci(PersistedCiState::Running, &[901, 902], &[76, 77], None)
+        );
+        assert_eq!(
+            persisted_of(dir.path(), &default),
+            expected_ci(PersistedCiState::Idle, &[], &[], None),
+            "the default branch is suppressed"
+        );
+
+        // e. identical to the default branch: suppressed, detail cleared.
+        {
+            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            gh.route(
+                &format!("head_sha={}", sha_of('a')),
+                Ok(ok_output(&runs_body(vec![run_row(
+                    903,
+                    "feature-a",
+                    "in_progress",
+                    &[78],
+                )]))),
+            );
+            gh.route(
+                &format!("compare/HEAD...{}", sha_of('a')),
+                Ok(ok_output(&compare_body("identical", 0, 0))),
+            );
+        }
+        tick(&mut now, &mut wall, 3600);
+        harness.round(now, wall).await;
+        assert_eq!(
+            persisted_of(dir.path(), &feature),
+            expected_ci(PersistedCiState::Idle, &[], &[], None)
         );
     }
 }
