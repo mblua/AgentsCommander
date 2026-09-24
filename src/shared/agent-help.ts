@@ -54,6 +54,10 @@ function fileOrNull(value: unknown): AgentHelpFile | null {
   return isRecord(value) ? (value as unknown as AgentHelpFile) : null;
 }
 
+function layerOf(overlay: unknown, layer: "local" | "remote"): AgentHelpFile | null {
+  return isRecord(overlay) ? fileOrNull(overlay[layer]) : null;
+}
+
 function normalizeOverlay(payload: unknown): AgentHelpOverlay {
   if (!isRecord(payload)) return EMPTY_AGENT_HELP_OVERLAY;
   return {
@@ -73,19 +77,20 @@ export function resolveAgentHelpEntry(
   agentId: string,
   command: string
 ): AgentHelpEntry | null {
-  const byAgent = entryIn(overlay.local?.byAgent, agentId);
+  const local = layerOf(overlay, "local");
+  const byAgent = entryIn(local?.byAgent, agentId);
   if (byAgent) return byAgent;
   const stem = typeof command === "string" && command.trim() ? executableBasename(command) : "";
   if (!stem) return null;
   return (
-    entryIn(overlay.local?.byCommand, stem) ??
-    entryIn(overlay.remote?.byCommand, stem) ??
+    entryIn(local?.byCommand, stem) ??
+    entryIn(layerOf(overlay, "remote")?.byCommand, stem) ??
     entryIn(EMBEDDED_AGENT_HELP.byCommand, stem)
   );
 }
 
 export function resolveAgentHelpGeneral(overlay: AgentHelpOverlay): AgentHelpEntry | null {
-  for (const file of [overlay.local, overlay.remote, EMBEDDED_AGENT_HELP]) {
+  for (const file of [layerOf(overlay, "local"), layerOf(overlay, "remote"), EMBEDDED_AGENT_HELP]) {
     if (file && isRecord(file.general)) return file.general;
   }
   return null;

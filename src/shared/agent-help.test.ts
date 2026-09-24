@@ -8,6 +8,7 @@ import {
   docsUrlFor,
   paramsExampleFor,
   resolveAgentHelpEntry,
+  resolveAgentHelpGeneral,
   type AgentHelpEntry,
   type AgentHelpFile,
   type AgentHelpOverlay,
@@ -224,6 +225,28 @@ describe("resolveAgentHelpEntry", () => {
       byCommand.claude
     );
     expect(resolveAgentHelpEntry(EMPTY_AGENT_HELP_OVERLAY, "x", "claude-code")).toBeNull();
+  });
+});
+
+describe("a null or undefined overlay", () => {
+  it("falls back to the embedded layer without throwing", () => {
+    for (const missing of [null, undefined]) {
+      const absent = missing as unknown as AgentHelpOverlay;
+      expect(resolveAgentHelpEntry(absent, "x", "codex")).toEqual(byCommand.codex);
+      expect(resolveAgentHelpGeneral(absent)).toEqual(EMBEDDED_AGENT_HELP.general);
+      expect(paramsExampleFor(absent, "x", "claude")).toBe("--model opus");
+      expect(paramsExampleFor(absent, "x", "unknown-agent")).toBe(GENERIC_PARAMS_EXAMPLE);
+      expect(docsUrlFor(absent, "x", "grok")).toBe(PLANNED_DOCS_URLS.grok);
+      expect(docsUrlFor(absent, "x", "")).toBeNull();
+    }
+  });
+
+  it("treats null or undefined layers as absent", () => {
+    for (const missing of [null, undefined]) {
+      const absent = { local: missing, remote: missing, localError: null } as unknown as AgentHelpOverlay;
+      expect(resolveAgentHelpEntry(absent, "x", "codex")).toEqual(byCommand.codex);
+      expect(resolveAgentHelpGeneral(absent)).toEqual(EMBEDDED_AGENT_HELP.general);
+    }
   });
 });
 
