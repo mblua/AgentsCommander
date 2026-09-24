@@ -1901,14 +1901,12 @@ pub(crate) fn parse_agent_help_file(contents: &str) -> Result<AgentHelpFile, Str
 }
 
 /// #2133 - the operator-owned overlay lives next to `settings.json`.
-#[allow(dead_code)] // #2133: P4 (the IPC command) is the first production caller.
 pub(crate) fn agent_help_local_path(settings_path: &Path) -> PathBuf {
     settings_path.with_file_name(AGENT_HELP_LOCAL_FILE_NAME)
 }
 
 /// #2133 (D7) - the user layer, no caps. A missing file is silent; any other rejection logs
 /// once and yields an empty layer plus the reason, which P4 hands to the UI.
-#[allow(dead_code)] // #2133: P4 (the IPC command) is the first production caller.
 pub(crate) fn load_local_agent_help_file(settings_path: &Path) -> (AgentHelpFile, Option<String>) {
     let path = agent_help_local_path(settings_path);
     let contents = match std::fs::read_to_string(&path) {
@@ -1978,6 +1976,12 @@ pub fn refresh_shipped_agent_help_from_config_dir() {
 /// #2133 - the git ref the published per-agent help is served from; named in every
 /// cache note. The URL literal that embeds it is P7's, with the SERVED-PATHS row.
 pub(crate) const REMOTE_AGENT_HELP_SOURCE_REF: &str = "main";
+
+/// #2133 - the published file: one pinned literal whose ref segment must equal
+/// `REMOTE_AGENT_HELP_SOURCE_REF` (P6's) and whose `v1` segment must equal
+/// `AGENT_HELP_SCHEMA_VERSION`; T1 pins both.
+pub(crate) const REMOTE_AGENT_HELP_URL: &str =
+    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/agent-help/v1/agent-help.json";
 
 /// #2133 (D4) - hard caps on the downloaded layer. Every cap counts UTF-8 bytes
 /// (`str::len()`), not characters; TypeScript's `.length` counts UTF-16 code units instead.
@@ -2068,7 +2072,6 @@ pub(crate) fn validate_remote_agent_help_file(contents: &str) -> Result<AgentHel
 }
 
 /// #2133 - the response gate: status, body size and UTF-8 before the whole-file validator.
-#[allow(dead_code)] // #2133: P7 (the startup download) is the first production caller.
 pub(crate) fn accept_remote_agent_help_response(
     status: u16,
     body: &[u8],
@@ -2116,7 +2119,6 @@ pub(crate) fn load_remote_agent_help_file(settings_path: &Path) -> AgentHelpFile
 
 /// #2133 - replace the downloaded cache only after validation passed. The note records where
 /// and when the bytes came from; `source_url` is the caller's, so this phase holds no URL.
-#[allow(dead_code)] // #2133: P7 (the startup download) is the first production caller.
 pub(crate) fn write_remote_agent_help_cache(
     settings_path: &Path,
     mut file: AgentHelpFile,
@@ -2135,7 +2137,6 @@ pub(crate) fn write_remote_agent_help_cache(
 }
 
 /// #2133 (D4) - the throttle stamp lives next to `settings.json`.
-#[allow(dead_code)] // #2133: P7 (the startup download) is the first production caller.
 pub(crate) fn agent_help_remote_check_path(settings_path: &Path) -> PathBuf {
     settings_path.with_file_name(AGENT_HELP_REMOTE_CHECK_FILE_NAME)
 }
@@ -2148,7 +2149,6 @@ struct RemoteAgentHelpCheckStamp {
 
 /// #2133 (D4) - missing, unreadable and malformed stamps all mean "no throttle": the caller
 /// treats `None` as due.
-#[allow(dead_code)] // #2133: P7 (the startup download) is the first production caller.
 pub(crate) fn read_remote_agent_help_check_stamp(
     settings_path: &Path,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -2158,7 +2158,6 @@ pub(crate) fn read_remote_agent_help_check_stamp(
 }
 
 /// #2133 (D4) - written after every attempt that passed the due check, accepted or not.
-#[allow(dead_code)] // #2133: P7 (the startup download) is the first production caller.
 pub(crate) fn write_remote_agent_help_check_stamp(
     settings_path: &Path,
     at: chrono::DateTime<chrono::Utc>,
@@ -15881,6 +15880,47 @@ mod tests {
             let validated = validate_remote_agent_help_file(EMBEDDED_AGENT_HELP_JSON)
                 .expect("the published bytes pass the remote gate as they are");
             assert_eq!(&validated, shipped_agent_help());
+        }
+
+        // ---- #2133 (P7) - the published URL and file. ----
+
+        #[test]
+        fn the_remote_agent_help_url_pins_the_schema_version_and_source_ref() {
+            let segments: Vec<&str> = REMOTE_AGENT_HELP_URL.split('/').collect();
+            assert_eq!(segments.len(), 10);
+            assert_eq!(
+                &segments[..5],
+                [
+                    "https:",
+                    "",
+                    "raw.githubusercontent.com",
+                    "mblua",
+                    "AgentsCommander"
+                ]
+            );
+            assert_eq!(segments[5], REMOTE_AGENT_HELP_SOURCE_REF);
+            assert_eq!(segments[8], format!("v{AGENT_HELP_SCHEMA_VERSION}"));
+        }
+
+        #[test]
+        fn the_remote_agent_help_url_matches_the_served_path() {
+            let prefix = format!(
+                "https://raw.githubusercontent.com/mblua/AgentsCommander/{REMOTE_AGENT_HELP_SOURCE_REF}/"
+            );
+            assert_eq!(
+                REMOTE_AGENT_HELP_URL.strip_prefix(&prefix),
+                Some("remote-resources/agent-help/v1/agent-help.json")
+            );
+        }
+
+        #[test]
+        fn the_published_remote_file_passes_the_validator() {
+            let raw = include_str!("../../../remote-resources/agent-help/v1/agent-help.json");
+            let published = validate_remote_agent_help_file(raw)
+                .expect("the published agent-help passes the remote gate");
+            assert!(published.by_agent.is_empty());
+            assert_eq!(published.by_command, shipped_agent_help().by_command);
+            assert_eq!(published.general, shipped_agent_help().general);
         }
     }
 }
