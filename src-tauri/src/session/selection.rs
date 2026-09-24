@@ -33,6 +33,13 @@ tokio::task_local! {
     static IN_SELECTION_WORKER: ();
 }
 
+#[cfg(test)]
+tokio::task_local! {
+    /// #2475 - test-only run context. Read by the wrapper BEFORE the spawn, like
+    /// `IN_SELECTION_WORKER`, because task locals do not propagate into it.
+    pub(crate) static BENCH_CONTEXT: timing_probe::BenchContext;
+}
+
 /// #1940 - the process-wide turn serializing persisted selection operations
 /// (broad profile apply, instance override, self-switch persist) together with
 /// the restart settlement they trigger. Owned so a spawned task can hold it
@@ -80,15 +87,251 @@ where
     Fut: std::future::Future<Output = Result<T, String>> + Send,
     T: Send + 'static,
 {
+    run_owned_selection_operation_inner(None, operation).await
+}
+
+/// #2475 - `run_owned_selection_operation` plus one timing log line that
+/// separates the wait for the turn (`queue_wait`) from the operation itself
+/// (`work`). Instrumentation only: the turn and the result are unchanged.
+pub(crate) async fn run_owned_selection_operation_timed<F, Fut, T>(
+    command: &'static str,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    run_owned_selection_operation_inner(Some(command), operation).await
+}
+
+fn selection_timing_line(
+    command: &str,
+    queue_wait: std::time::Duration,
+    work: std::time::Duration,
+    ok: bool,
+) -> String {
+    format!(
+        "[selection-timing] command={} queue_wait_ms={:.1} work_ms={:.1} ok={}",
+        command,
+        queue_wait.as_secs_f64() * 1000.0,
+        work.as_secs_f64() * 1000.0,
+        ok
+    )
+}
+
+fn record_selection_timing(
+    command: &str,
+    line: String,
+    #[cfg(test)] sample: timing_probe::SelectionTimingSample,
+) {
+    log::info!("{}", line);
+    #[cfg(test)]
+    timing_probe::deliver(command, &sample, &line);
+    #[cfg(not(test))]
+    let _ = command;
+}
+
+/// #2475 - test-only timing instrumentation: recording sinks with their own
+/// registration id, per-invocation correlation and per-run occupancy.
+#[cfg(test)]
+pub(crate) mod timing_probe {
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::thread::ThreadId;
+    use std::time::{Duration, Instant};
+
+    /// One recorded timed operation. `submitted` is the wrapper's own stamp.
+    #[derive(Debug, Clone)]
+    pub(crate) struct SelectionTimingSample {
+        pub(crate) invocation: Option<u64>,
+        pub(crate) command: &'static str,
+        pub(crate) submitted: Instant,
+        pub(crate) queue_wait: Duration,
+        pub(crate) work: Duration,
+        pub(crate) ok: bool,
+        pub(crate) body_thread: ThreadId,
+    }
+
+    pub(crate) type SelectionTimingSink = Arc<dyn Fn(&SelectionTimingSample, &str) + Send + Sync>;
+
+    static SELECTION_TIMING_SINKS: Mutex<Vec<(u64, &'static str, SelectionTimingSink)>> =
+        Mutex::new(Vec::new());
+    static NEXT_SINK_ID: AtomicU64 = AtomicU64::new(1);
+    static NEXT_INVOCATION: AtomicU64 = AtomicU64::new(1);
+
+    /// Deliver to EVERY matching sink. The `Arc`s are cloned under the mutex
+    /// and invoked after it is released, so a blocking sink never holds it.
+    pub(super) fn deliver(command: &str, sample: &SelectionTimingSample, line: &str) {
+        let sinks: Vec<SelectionTimingSink> = SELECTION_TIMING_SINKS
+            .lock()
+            .map(|sinks| {
+                sinks
+                    .iter()
+                    .filter(|(_, name, _)| *name == command)
+                    .map(|(_, _, sink)| Arc::clone(sink))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for sink in sinks {
+            sink(sample, line);
+        }
+    }
+
+    /// Registers a recording sink for one command; only this registration is
+    /// removed on drop.
+    pub(crate) struct TimingSinkRegistration(u64);
+
+    impl TimingSinkRegistration {
+        /// A sink that only sees the production log line.
+        pub(crate) fn new(command: &'static str, sink: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+            Self::new_sample(command, Arc::new(move |_sample, line| sink(line)))
+        }
+
+        pub(crate) fn new_sample(command: &'static str, sink: SelectionTimingSink) -> Self {
+            let id = NEXT_SINK_ID.fetch_add(1, Ordering::Relaxed);
+            SELECTION_TIMING_SINKS
+                .lock()
+                .expect("sinks")
+                .push((id, command, sink));
+            Self(id)
+        }
+    }
+
+    impl Drop for TimingSinkRegistration {
+        fn drop(&mut self) {
+            if let Ok(mut sinks) = SELECTION_TIMING_SINKS.lock() {
+                sinks.retain(|(id, _, _)| *id != self.0);
+            }
+        }
+    }
+
+    /// How many sinks are registered for `command` right now.
+    pub(crate) fn registered_sinks(command: &str) -> usize {
+        SELECTION_TIMING_SINKS
+            .lock()
+            .map(|sinks| sinks.iter().filter(|(_, name, _)| *name == command).count())
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn timing_field_ms(line: &str, name: &str) -> f64 {
+        line.split(' ')
+            .find_map(|part| part.strip_prefix(&format!("{name}=")))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("{name} missing in {line}"))
+    }
+
+    /// Serializes whole bench runs against each other.
+    pub(crate) fn bench_serialization_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    /// Simultaneous occupancy owned by one run: only bodies that inherited
+    /// this `Arc` contribute, and there is no reset.
+    #[derive(Debug, Default)]
+    pub(crate) struct Occupancy {
+        in_flight: AtomicUsize,
+        max: AtomicUsize,
+    }
+
+    impl Occupancy {
+        pub(crate) fn in_flight(&self) -> usize {
+            self.in_flight.load(Ordering::SeqCst)
+        }
+
+        pub(crate) fn max(&self) -> usize {
+            self.max.load(Ordering::SeqCst)
+        }
+    }
+
+    /// Counts one holder until dropped (success, error or unwind).
+    pub(crate) struct OccupancyGuard(Arc<Occupancy>);
+
+    impl OccupancyGuard {
+        pub(crate) fn enter(occupancy: &Arc<Occupancy>) -> Self {
+            let now = occupancy.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            occupancy.max.fetch_max(now, Ordering::SeqCst);
+            Self(Arc::clone(occupancy))
+        }
+    }
+
+    impl Drop for OccupancyGuard {
+        fn drop(&mut self) {
+            self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Clone)]
+    pub(crate) struct BenchContext {
+        pub(crate) invocation: u64,
+        pub(crate) occupancy: Arc<Occupancy>,
+    }
+
+    impl BenchContext {
+        pub(crate) fn new(occupancy: &Arc<Occupancy>) -> Self {
+            Self {
+                invocation: NEXT_INVOCATION.fetch_add(1, Ordering::Relaxed),
+                occupancy: Arc::clone(occupancy),
+            }
+        }
+    }
+}
+
+async fn run_owned_selection_operation_inner<F, Fut, T>(
+    command: Option<&'static str>,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
     if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
         return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
     }
+    let submitted = std::time::Instant::now();
+    #[cfg(test)]
+    let bench = BENCH_CONTEXT.try_with(Clone::clone).ok();
     let handle = tauri::async_runtime::spawn(async move {
-        let _turn = match acquire_selection_operation_turn().await {
+        let turn = match acquire_selection_operation_turn().await {
             Ok(turn) => turn,
             Err(error) => return Err(error.to_string()),
         };
-        operation().await
+        let Some(command) = command else {
+            let _turn = turn;
+            return operation().await;
+        };
+        let queue_wait = submitted.elapsed();
+        #[cfg(test)]
+        let occupancy = bench
+            .as_ref()
+            .map(|bench| timing_probe::OccupancyGuard::enter(&bench.occupancy));
+        let started = std::time::Instant::now();
+        let result = operation().await;
+        let work = started.elapsed();
+        // Leave before the turn is released, so the next body cannot enter
+        // while this one still counts.
+        #[cfg(test)]
+        drop(occupancy);
+        // #2475 - release the turn BEFORE logging: the logger writes (and may
+        // rotate) app.log synchronously, and that must never extend the turn.
+        drop(turn);
+        record_selection_timing(
+            command,
+            selection_timing_line(command, queue_wait, work, result.is_ok()),
+            #[cfg(test)]
+            timing_probe::SelectionTimingSample {
+                invocation: bench.as_ref().map(|bench| bench.invocation),
+                command,
+                submitted,
+                queue_wait,
+                work,
+                ok: result.is_ok(),
+                body_thread: std::thread::current().id(),
+            },
+        );
+        result
     });
     match handle.await {
         Ok(result) => result,
@@ -7206,5 +7449,239 @@ fn commit_selection_transition() {
             SelectionCoordinatorError::RecursiveSubmission.to_string(),
             "selectionCoordinatorRecursiveSubmission"
         );
+    }
+
+    #[test]
+    fn selection_timing_line_separates_queue_wait_and_work() {
+        assert_eq!(
+            super::selection_timing_line(
+                "preview_selection_lock_removal",
+                Duration::from_micros(1_234_500),
+                Duration::from_micros(5_600),
+                true,
+            ),
+            "[selection-timing] command=preview_selection_lock_removal queue_wait_ms=1234.5 work_ms=5.6 ok=true"
+        );
+    }
+
+    use super::timing_probe::{timing_field_ms, TimingSinkRegistration};
+
+    /// #2475 - queue_wait and work are bounded by synchronized events, not by
+    /// sleep lengths: the submission provably happens before the release, and
+    /// the operation's entry and finish are explicit handshakes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timed_selection_operation_records_queue_wait_and_work() {
+        use std::time::Instant;
+        const PROBE: &str = "issue_2475_timing_probe";
+        let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+        let line_tx = Mutex::new(line_tx);
+        let _sink = TimingSinkRegistration::new(
+            PROBE,
+            Arc::new(move |line: &str| {
+                let _ = line_tx.lock().expect("line tx").send(line.to_string());
+            }),
+        );
+        let (entered_tx, mut entered_rx) = tokio::sync::oneshot::channel::<Instant>();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let held = acquire_selection_operation_turn()
+            .await
+            .expect("hold the turn");
+        let before_submit = Instant::now();
+        let mut queued = Box::pin(run_owned_selection_operation_timed(
+            PROBE,
+            move || async move {
+                let _ = entered_tx.send(Instant::now());
+                let _ = finish_rx.await;
+                Err::<(), String>("probe failure".to_string())
+            },
+        ));
+        // One poll runs the submission: `submitted` is stamped and the owned
+        // task is spawned before this returns.
+        assert!(futures::poll!(queued.as_mut()).is_pending());
+        let after_submit = Instant::now();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            entered_rx.try_recv().is_err(),
+            "the operation must not enter while the turn is held"
+        );
+
+        let released = Instant::now();
+        drop(held);
+        let queued = tokio::spawn(queued);
+        let entered = (&mut entered_rx).await.expect("operation entered");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let finish_sent = Instant::now();
+        finish_tx.send(()).expect("operation still waiting");
+        let result = queued.await.expect("join");
+        assert_eq!(result, Err("probe failure".to_string()), "result unchanged");
+
+        let line = line_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("timing line recorded");
+        assert!(line.starts_with(&format!("[selection-timing] command={PROBE} ")));
+        assert!(line.ends_with(" ok=false"), "failure is recorded: {line}");
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        // The line rounds to 0.1 ms.
+        let tolerance = 0.05;
+        let queue_wait = timing_field_ms(&line, "queue_wait_ms");
+        let work = timing_field_ms(&line, "work_ms");
+        assert!(
+            queue_wait + tolerance >= ms(released - after_submit),
+            "queue wait covers the held turn: {line}"
+        );
+        assert!(
+            queue_wait - tolerance <= ms(entered - before_submit),
+            "queue wait ends at admission: {line}"
+        );
+        assert!(
+            work + tolerance >= ms(finish_sent - entered),
+            "work covers the operation: {line}"
+        );
+    }
+
+    /// #2475 - recording happens after the turn is released: a recording sink
+    /// that blocks must not keep the next operation out of the turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn timing_record_runs_after_the_turn_is_released() {
+        const PROBE: &str = "issue_2475_blocked_sink_probe";
+        let (in_sink_tx, in_sink_rx) = std::sync::mpsc::channel::<()>();
+        let (unblock_tx, unblock_rx) = std::sync::mpsc::channel::<()>();
+        let sink_channels = Mutex::new((in_sink_tx, unblock_rx));
+        let _sink = TimingSinkRegistration::new(
+            PROBE,
+            Arc::new(move |_line: &str| {
+                let channels = sink_channels.lock().expect("sink channels");
+                let _ = channels.0.send(());
+                let _ = channels.1.recv_timeout(Duration::from_secs(10));
+            }),
+        );
+
+        let first = tokio::spawn(run_owned_selection_operation_timed(PROBE, || async {
+            Ok::<(), String>(())
+        }));
+        tokio::task::spawn_blocking(move || in_sink_rx.recv_timeout(Duration::from_secs(10)))
+            .await
+            .expect("join")
+            .expect("recording started");
+
+        // The sink is now blocked inside the recording of `first`.
+        let next =
+            tokio::time::timeout(Duration::from_secs(5), acquire_selection_operation_turn()).await;
+        let _ = unblock_tx.send(());
+        let next = next.expect("the turn must be free while the timing line is recorded");
+        drop(next.expect("turn"));
+        assert_eq!(first.await.expect("join"), Ok(()));
+    }
+
+    /// #2475 - every matching registration receives the sample, and dropping
+    /// one registration removes only that one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_two_concurrent_sinks_for_one_command_both_receive_the_sample() {
+        use super::timing_probe::SelectionTimingSample;
+        const PROBE: &str = "issue_2475_two_sinks_probe";
+        let first_seen = Arc::new(Mutex::new(Vec::<Option<u64>>::new()));
+        let second_seen = Arc::new(Mutex::new(Vec::<Option<u64>>::new()));
+        let recorder = |seen: &Arc<Mutex<Vec<Option<u64>>>>| {
+            let seen = Arc::clone(seen);
+            Arc::new(move |sample: &SelectionTimingSample, _line: &str| {
+                seen.lock().expect("seen").push(sample.invocation);
+            })
+        };
+        let first = TimingSinkRegistration::new_sample(PROBE, recorder(&first_seen));
+        let _second = TimingSinkRegistration::new_sample(PROBE, recorder(&second_seen));
+
+        run_owned_selection_operation_timed(PROBE, || async { Ok::<(), String>(()) })
+            .await
+            .expect("first run");
+        assert_eq!(first_seen.lock().expect("seen").len(), 1, "first sink");
+        assert_eq!(second_seen.lock().expect("seen").len(), 1, "second sink");
+
+        drop(first);
+        run_owned_selection_operation_timed(PROBE, || async { Ok::<(), String>(()) })
+            .await
+            .expect("second run");
+        assert_eq!(
+            first_seen.lock().expect("seen").len(),
+            1,
+            "a dropped registration receives nothing"
+        );
+        assert_eq!(
+            second_seen.lock().expect("seen").len(),
+            2,
+            "dropping one registration keeps the other"
+        );
+    }
+
+    /// #2475 - the mechanism itself: two guards held together count 2, two
+    /// taken in sequence count 1 (which a set of thread ids cannot tell apart).
+    #[test]
+    fn issue_2475_occupancy_guard_counts_simultaneous_holders() {
+        use super::timing_probe::{Occupancy, OccupancyGuard};
+        let together = Arc::new(Occupancy::default());
+        let a = OccupancyGuard::enter(&together);
+        let b = OccupancyGuard::enter(&together);
+        assert_eq!(together.in_flight(), 2);
+        drop(a);
+        drop(b);
+        assert_eq!(together.max(), 2);
+        assert_eq!(together.in_flight(), 0);
+
+        let sequence = Arc::new(Occupancy::default());
+        drop(OccupancyGuard::enter(&sequence));
+        drop(OccupancyGuard::enter(&sequence));
+        assert_eq!(sequence.max(), 1);
+        assert_eq!(sequence.in_flight(), 0);
+    }
+
+    /// #2475 - a timed body launched WITHOUT the run context never touches the
+    /// run's occupancy; one launched with it does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_occupancy_ignores_non_participating_bodies() {
+        use super::timing_probe::{BenchContext, Occupancy};
+        const PROBE: &str = "issue_2475_occupancy_isolation_probe";
+        let occupancy = Arc::new(Occupancy::default());
+
+        run_owned_selection_operation_timed(PROBE, || async { Ok::<(), String>(()) })
+            .await
+            .expect("non-participating run");
+        assert_eq!(
+            occupancy.max(),
+            0,
+            "a body without the context is not counted"
+        );
+
+        super::BENCH_CONTEXT
+            .scope(
+                BenchContext::new(&occupancy),
+                run_owned_selection_operation_timed(PROBE, || async { Ok::<(), String>(()) }),
+            )
+            .await
+            .expect("participating run");
+        assert_eq!(occupancy.max(), 1, "a body with the context is counted");
+        assert_eq!(occupancy.in_flight(), 0);
+    }
+
+    /// #2475 - the guard's Drop also covers unwind: a panicking body leaves
+    /// nothing in flight.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_occupancy_guard_releases_on_panic() {
+        use super::timing_probe::{BenchContext, Occupancy};
+        const PROBE: &str = "issue_2475_occupancy_panic_probe";
+        let occupancy = Arc::new(Occupancy::default());
+        let result = super::BENCH_CONTEXT
+            .scope(
+                BenchContext::new(&occupancy),
+                run_owned_selection_operation_timed(PROBE, || async {
+                    if true {
+                        panic!("issue_2475 probe panic");
+                    }
+                    Ok::<(), String>(())
+                }),
+            )
+            .await;
+        assert_eq!(result, Err("selectionOperationTurnJoinFailed".to_string()));
+        assert_eq!(occupancy.max(), 1, "the body entered");
+        assert_eq!(occupancy.in_flight(), 0, "unwind released the guard");
     }
 }
