@@ -6028,6 +6028,14 @@ async fn co_managed_cycle<R: tauri::Runtime>(
         co_managed_project_paths(&guard.project_paths, room_root)
     };
     let route = resolve_co_managed_route(outcome, &catalog, &from_fqn, &project_paths, &text);
+    log::info!(
+        "[co-managed] route [{session_id}]: variant={} kind={:?}",
+        match &route {
+            CoManagedRoute::User { .. } => "User",
+            CoManagedRoute::Wake { .. } => "Wake",
+        },
+        route.kind()
+    );
     let kind = route.kind();
 
     // (4) The bounded commit.
@@ -6294,14 +6302,14 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
     .await;
     match outcome {
         CoManagedOutcome::Contention => {
-            log::info!("[co-managed] cycle end [{id}]: Contention, reason contention; route none, candidate stays pending");
+            log::info!("[co-managed] cycle end [{id}]: Contention, reason contention; candidate stays pending");
             emit_co_managed_state(app, session_id, false, Some("contention"));
             // The flag stays set while the unchanged candidate remains pending.
         }
         CoManagedOutcome::Done(reason) => {
             handle.clear_contended(&id);
             handle.armed.disarm(&id);
-            log::info!("[co-managed] cycle end [{id}]: Done({reason}); route done, flag disarmed");
+            log::info!("[co-managed] cycle end [{id}]: Done({reason}); flag disarmed");
             emit_co_managed_state(app, session_id, false, Some(&reason));
         }
     }
@@ -9666,6 +9674,58 @@ mod tests {
         assert_eq!(
             kinds,
             vec!["IdleEdge".to_string(), "SlotChanged".to_string()]
+        );
+    }
+
+    /// #2455 test 7 (B, round 6): the route line names the resolved variant
+    /// and its effect kind, from inside `co_managed_cycle`.
+    #[tokio::test]
+    async fn p4_route_line_names_the_variant_and_kind() {
+        crate::logging::test_install_logger();
+        let mut routes = Vec::new();
+        for winner in ["to-user", "to-peer"] {
+            let fixture = make_co_managed_fixture();
+            let scores: Vec<(&'static str, f32)> = ["to-user", "to-peer", "to-root", "to-reply"]
+                .into_iter()
+                .map(|id| (id, if id == winner { 0.9 } else { 0.0 }))
+                .collect();
+            let (endpoint, _hits) = spawn_jev_listener(scores).await;
+            let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+            let session_id = add_claude_session(
+                &manager,
+                &fixture.coordinator_cwd,
+                SessionStatus::Running,
+                &fixture.projects_dir,
+            )
+            .await;
+            install_candidate(&registry, session_id, "candidate text");
+            let (handle, _rx) = CoManagedSupervisorHandle::new();
+            let before = p4_tee_len();
+            let trigger = CoManagedTrigger::IdleEdge(session_id);
+            super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+            let lines = p4_lines_since(before, &format!("route [{session_id}]"));
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            let route = lines[0]
+                .split_once("]: ")
+                .map(|(_, rest)| rest.to_string())
+                .expect("route fields");
+            routes.push(route);
+            let outcome: Vec<String> = p4_lines_since(before, &session_id.to_string())
+                .into_iter()
+                .filter(|line| line.contains("cycle end"))
+                .collect();
+            assert_eq!(outcome.len(), 1, "{outcome:?}");
+            assert!(
+                !outcome[0].contains("route none") && !outcome[0].contains("route done"),
+                "the outcome arm must not be called a route: {outcome:?}"
+            );
+        }
+        assert_eq!(
+            routes,
+            vec![
+                "variant=User kind=TextToUser".to_string(),
+                "variant=Wake kind=Automatic".to_string(),
+            ]
         );
     }
 
