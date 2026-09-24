@@ -10346,9 +10346,7 @@ mod tests {
     /// #2133 (P4) - every test injects `<tempdir>/settings.json`; none resolves the config dir.
     mod agent_help_2133 {
         use super::super::{agent_help_overlay_payload, AgentHelpOverlayPayload};
-        use crate::config::settings::{
-            shipped_agent_help, AgentHelpEntry, AgentHelpFile, AgentHelpTip,
-        };
+        use crate::config::settings::shipped_agent_help;
         use serde_json::json;
 
         fn payload_with_local(contents: Option<&str>) -> AgentHelpOverlayPayload {
@@ -10416,28 +10414,7 @@ mod tests {
             assert!(payload.remote.is_none());
         }
 
-        #[test]
-        fn the_payload_serializes_to_camel_case_keys() {
-            let mut local = AgentHelpFile::default();
-            local.by_command.insert(
-                "claude".to_string(),
-                AgentHelpEntry {
-                    label: Some("L".to_string()),
-                    params_example: Some("--p".to_string()),
-                    docs_url: Some("https://d.dev".to_string()),
-                    tips: vec![AgentHelpTip {
-                        title: "t".to_string(),
-                        body: "b".to_string(),
-                        link: None,
-                    }],
-                },
-            );
-            let payload = AgentHelpOverlayPayload {
-                local: Some(local),
-                remote: None,
-                local_error: Some("why".to_string()),
-            };
-            let value = serde_json::to_value(&payload).unwrap();
+        fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
             let mut keys: Vec<&str> = value
                 .as_object()
                 .unwrap()
@@ -10445,13 +10422,39 @@ mod tests {
                 .map(String::as_str)
                 .collect();
             keys.sort_unstable();
-            assert_eq!(keys, ["local", "localError", "remote"]);
-            assert_eq!(value["localError"], json!("why"));
+            keys
+        }
+
+        #[test]
+        fn the_payload_serializes_to_camel_case_keys() {
+            // A valid local file, read through the injected-path helper.
+            let served = payload_with_local(Some(
+                r#"{"schemaVersion":1,"byCommand":{"claude":{"label":"L",
+                    "paramsExample":"--p","docsUrl":"https://d.dev",
+                    "tips":[{"title":"t","body":"b"}]}}}"#,
+            ));
+            let value = serde_json::to_value(&served).unwrap();
+            assert_eq!(sorted_keys(&value), ["local", "localError", "remote"]);
+            assert_eq!(value["localError"], json!(null));
+            assert_eq!(value["remote"], json!(null));
             let entry = &value["local"]["byCommand"]["claude"];
             assert_eq!(entry["paramsExample"], json!("--p"));
             assert_eq!(entry["docsUrl"], json!("https://d.dev"));
             assert!(entry.get("params_example").is_none());
             assert!(entry.get("docs_url").is_none());
+
+            // A broken local file, same path: the reason travels as `localError`.
+            let broken = payload_with_local(Some(
+                r#"{"schemaVersion":1,"byCommand":{"claude":{"docsUrl":"http://d.dev"}}}"#,
+            ));
+            let value = serde_json::to_value(&broken).unwrap();
+            assert_eq!(sorted_keys(&value), ["local", "localError", "remote"]);
+            assert_eq!(value["local"], json!(null));
+            let reason = value["localError"]
+                .as_str()
+                .expect("localError is a string");
+            assert!(reason.contains("docsUrl is not an https URL"), "{reason}");
+            assert!(value.get("local_error").is_none());
         }
     }
 }
