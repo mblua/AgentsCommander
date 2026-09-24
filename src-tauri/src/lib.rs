@@ -11103,3 +11103,236 @@ mod quit_gate_tests {
         );
     }
 }
+
+/// #2456 (epic #2442 p5): the Room reader-demand re-raise tick.
+///
+/// Every test calls `reraise_room_reader_demands` directly, N times: the
+/// supervisor's own timer runs on `tauri::async_runtime`, which defeats a
+/// paused clock. Log evidence comes from snapshots of the process-global tee,
+/// never a drain, filtered by this test's own session ids.
+#[cfg(test)]
+mod reader_reraise_tests {
+    use super::{reraise_room_reader_demands, tick_raise_calls};
+    use crate::commands::session::co_managed_tests::{configure_room, room_fixture};
+    use crate::commands::session::reader_demand_tests::harness;
+    use crate::commands::session::release_room_reader_demand;
+    use crate::commands::telegram::holds_room_reader_demand;
+
+    fn tee_len() -> usize {
+        crate::logging::test_tee_snapshot().len()
+    }
+
+    /// Re-raise lines naming `session_id` added since `before`.
+    fn lines_since(before: usize, session_id: uuid::Uuid) -> Vec<String> {
+        let id = session_id.to_string();
+        crate::logging::test_tee_snapshot()
+            .into_iter()
+            .skip(before)
+            .filter(|line| line.contains("reader demand re-raised") && line.contains(&id))
+            .collect()
+    }
+
+    /// Test 1 (reproduction): a Ready room's orchestrator with no Room demand
+    /// gains one after a single tick.
+    #[tokio::test]
+    async fn p5_ready_session_without_a_demand_gains_one_in_one_tick() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        assert!(!holds_room_reader_demand(h.app.handle(), id).await);
+
+        reraise_room_reader_demands(h.app.handle()).await;
+
+        assert!(holds_room_reader_demand(h.app.handle(), id).await);
+    }
+
+    /// Test 2 (reproduction): readiness acquired after session create. Not
+    /// Ready for several ticks, then Ready: the next tick raises exactly one
+    /// demand and logs exactly one line.
+    #[tokio::test]
+    async fn p5_readiness_acquired_late_is_picked_up_by_the_next_tick() {
+        crate::logging::test_install_logger();
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), false);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+
+        let before = tee_len();
+        for _ in 0..5 {
+            reraise_room_reader_demands(h.app.handle()).await;
+        }
+        assert!(!holds_room_reader_demand(h.app.handle(), id).await);
+        let lines = lines_since(before, id);
+        assert!(lines.is_empty(), "no line while Off: {lines:?}");
+
+        configure_room(fixture.room_path(), true);
+        let before = tee_len();
+        reraise_room_reader_demands(h.app.handle()).await;
+        assert!(holds_room_reader_demand(h.app.handle(), id).await);
+        let lines = lines_since(before, id);
+        assert_eq!(lines.len(), 1, "exactly one line for the raise: {lines:?}");
+        assert!(lines[0].starts_with("INFO "), "{lines:?}");
+    }
+
+    /// Test 3 (guard): a session already holding a Room demand is untouched and
+    /// costs no readiness resolution. Mutation: remove the cheap gate; the set
+    /// assertion stays green while the counter assertion turns red.
+    #[tokio::test]
+    async fn p5_held_demand_is_skipped_without_resolving_readiness() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        reraise_room_reader_demands(h.app.handle()).await;
+        assert!(holds_room_reader_demand(h.app.handle(), id).await);
+        let calls = tick_raise_calls(id);
+
+        for _ in 0..10 {
+            reraise_room_reader_demands(h.app.handle()).await;
+        }
+
+        assert!(
+            holds_room_reader_demand(h.app.handle(), id).await,
+            "the demand set is unchanged"
+        );
+        assert_eq!(
+            tick_raise_calls(id),
+            calls,
+            "a held demand must not reach readiness resolution"
+        );
+    }
+
+    /// Test 4: a non-orchestrator in a Ready room never gains a demand
+    /// (delegation contract) and the tick logs nothing for it (guard; mutation:
+    /// remove the raise-succeeded check).
+    #[tokio::test]
+    async fn p5_non_orchestrator_never_gains_a_demand_and_logs_nothing() {
+        crate::logging::test_install_logger();
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let member = h.session_in(fixture.member_path()).await;
+
+        let before = tee_len();
+        for _ in 0..10 {
+            reraise_room_reader_demands(h.app.handle()).await;
+        }
+
+        assert!(!holds_room_reader_demand(h.app.handle(), member).await);
+        let lines = lines_since(before, member);
+        assert!(lines.is_empty(), "{lines:?}");
+    }
+
+    /// Test 5: a session whose directory is in no room never gains a demand,
+    /// does not panic, and logs nothing (same split as test 4).
+    #[tokio::test]
+    async fn p5_session_outside_any_room_never_gains_a_demand_and_logs_nothing() {
+        crate::logging::test_install_logger();
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let outside = h.session_in(fixture.temp_path()).await;
+
+        let before = tee_len();
+        for _ in 0..10 {
+            reraise_room_reader_demands(h.app.handle()).await;
+        }
+
+        assert!(!holds_room_reader_demand(h.app.handle(), outside).await);
+        let lines = lines_since(before, outside);
+        assert!(lines.is_empty(), "{lines:?}");
+    }
+
+    /// Test 6 (guard): the zero cases. No live session at all, and a list where
+    /// every entry already holds a demand, both complete with no raise and no
+    /// line. Mutation: assume a non-empty list.
+    #[tokio::test]
+    async fn p5_zero_cases_complete_cleanly() {
+        crate::logging::test_install_logger();
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+
+        // No live session: the tick is a no-op, not an error.
+        reraise_room_reader_demands(h.app.handle()).await;
+
+        let id = h.session_in(fixture.coordinator_path()).await;
+        reraise_room_reader_demands(h.app.handle()).await;
+        assert!(holds_room_reader_demand(h.app.handle(), id).await);
+        let calls = tick_raise_calls(id);
+        let before = tee_len();
+
+        reraise_room_reader_demands(h.app.handle()).await;
+
+        assert_eq!(tick_raise_calls(id), calls, "no raise");
+        let lines = lines_since(before, id);
+        assert!(lines.is_empty(), "no line: {lines:?}");
+    }
+
+    /// Test 7 (guard): release is not fought, and the tick MAY raise again
+    /// after it. Decided behavior for a still-Ready room: a released demand is
+    /// re-raised by the next tick. Mutation: suppress the raise after a release.
+    #[tokio::test]
+    async fn p5_tick_raises_again_after_an_explicit_release() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        reraise_room_reader_demands(h.app.handle()).await;
+        assert!(holds_room_reader_demand(h.app.handle(), id).await);
+
+        release_room_reader_demand(h.app.handle(), id).await;
+        assert!(
+            !holds_room_reader_demand(h.app.handle(), id).await,
+            "the release itself is honoured"
+        );
+
+        reraise_room_reader_demands(h.app.handle()).await;
+        assert!(
+            holds_room_reader_demand(h.app.handle(), id).await,
+            "a still-Ready room is re-raised after a release"
+        );
+    }
+
+    /// Test 8 (guard): exactly one line per actual raise, zero lines across ten
+    /// steady-state ticks. The steady state keeps a live session in an `Off`
+    /// room for all ten ticks: it fails the cheap gate every tick and reaches
+    /// the refused raise, so removing the raise-succeeded check logs ten lines.
+    #[tokio::test]
+    async fn p5_steady_state_logs_nothing_across_ten_ticks() {
+        crate::logging::test_install_logger();
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let off_fixture = room_fixture();
+        configure_room(off_fixture.room_path(), false);
+        let h = harness(&fixture);
+        let ready = h.session_in(fixture.coordinator_path()).await;
+        let off = h.session_in(off_fixture.coordinator_path()).await;
+
+        let before = tee_len();
+        reraise_room_reader_demands(h.app.handle()).await;
+        let lines = lines_since(before, ready);
+        assert_eq!(lines.len(), 1, "one line for the one raise: {lines:?}");
+        let lines = lines_since(before, off);
+        assert!(lines.is_empty(), "{lines:?}");
+
+        let off_calls = tick_raise_calls(off);
+        let before = tee_len();
+        for _ in 0..10 {
+            reraise_room_reader_demands(h.app.handle()).await;
+        }
+
+        assert_eq!(
+            tick_raise_calls(off) - off_calls,
+            10,
+            "all ten ticks ran and visited the Off session"
+        );
+        assert!(holds_room_reader_demand(h.app.handle(), ready).await);
+        assert!(!holds_room_reader_demand(h.app.handle(), off).await);
+        let ready_lines = lines_since(before, ready);
+        let off_lines = lines_since(before, off);
+        assert!(ready_lines.is_empty(), "{ready_lines:?}");
+        assert!(off_lines.is_empty(), "{off_lines:?}");
+    }
+}
