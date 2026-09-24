@@ -4531,7 +4531,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             type="password"
             value={settings.data!.jevApiKey ?? ""}
             onInput={(e) => updateField("jevApiKey", e.currentTarget.value)}
-            placeholder="Empty means Co-managed is inert"
+            placeholder="Co-managed is off by default while in development (coManagedEnabled)"
             data-ac-testid="settings.integrations.jevApiKey"
           />
         </label>

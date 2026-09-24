@@ -118,14 +118,15 @@ pub(crate) async fn co_managed_effective_state_for_session<R: Runtime>(
     );
     let capture_supported = matches!(reader, Ok(Some(_)));
 
-    let api_key = {
+    let (api_key, globally_enabled) = {
         let settings = app.state::<SettingsState>();
         let guard = settings.read().await;
-        guard.jev_api_key.clone()
+        (guard.jev_api_key.clone(), guard.co_managed_enabled)
     };
 
     Ok(crate::config::co_managed::effective_state(
         room_root,
+        globally_enabled,
         &api_key,
         is_orchestrator,
         capture_supported,
@@ -15151,6 +15152,7 @@ mod reader_demand_tests {
 
         let mut settings = super::tests::test_settings();
         settings.jev_api_key = "test-key".to_string();
+        settings.co_managed_enabled = true;
         settings.agents[0].envs = vec![claude_env_row(&claude_config_dir)];
         settings.agents[1].envs = vec![codex_env_row(&codex_home)];
         settings.telegram_bots = vec![crate::telegram::types::TelegramBotConfig {
@@ -16409,6 +16411,7 @@ mod co_managed_tests {
     pub(crate) fn settings_with_key() -> AppSettings {
         AppSettings {
             jev_api_key: "test-key".to_string(),
+            co_managed_enabled: true,
             ..AppSettings::default()
         }
     }
@@ -16459,6 +16462,43 @@ mod co_managed_tests {
         co_managed_effective_state_for_session(app.handle(), room, &session_id.to_string())
             .await
             .expect("gathering function answers")
+    }
+
+    /// The collector reads `co_managed_enabled`: a ready room behind a global
+    /// switch in OFF answers `GlobalSwitchOff`.
+    #[tokio::test]
+    async fn global_switch_off_masks_a_ready_room() {
+        let fixture = room_fixture();
+        configure_room(&fixture.room, true);
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let settings = AppSettings {
+            jev_api_key: "test-key".to_string(),
+            co_managed_enabled: false,
+            ..AppSettings::default()
+        };
+        let app = test_app(settings, Arc::clone(&manager));
+        let projects_dir = fixture._temp.path().join("claude-projects");
+        std::fs::create_dir_all(&projects_dir).expect("projects dir");
+
+        let id = add_session(
+            &manager,
+            &fixture.coordinator,
+            SessionBackendKind::LocalProcess,
+            CodingAgentKind::Claude,
+        )
+        .await;
+        manager
+            .read()
+            .await
+            .set_resolved_claude_projects_dir(id, Some(projects_dir.clone()))
+            .await;
+
+        assert_eq!(
+            effective(&app, &fixture.room, id).await,
+            CoManagedState::Off {
+                reason: OffReason::GlobalSwitchOff
+            }
+        );
     }
 
     #[tokio::test]

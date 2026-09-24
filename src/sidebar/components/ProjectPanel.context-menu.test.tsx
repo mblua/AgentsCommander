@@ -556,7 +556,6 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       "Add to Group",
       "Edit TASK title",
       "Clear task title",
-      "Co-managed",
     ]);
 
     click(document.querySelector('[data-ac-testid="replica.coord-session.menu.repo.2"]')!);
@@ -652,7 +651,6 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
         "Add to Group",
         "Edit TASK title",
         "Clear task title",
-        "Co-managed",
       ]);
     });
 
