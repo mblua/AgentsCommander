@@ -2937,4 +2937,126 @@ describe("AgentPickerModal", () => {
       dispose();
     });
   });
+  describe("#2475 picker open runs one preview round (#2484)", () => {
+    function backendTotal(): number {
+      return (
+        mockSettingsApi.previewCodingAgentProfileSelection.mock.calls.length +
+        mockSettingsApi.previewSelectionLockRemoval.mock.calls.length +
+        mockSettingsApi.getReplicaSelectionDefault.mock.calls.length
+      );
+    }
+
+    function renderWgPicker(overrides: Parameters<typeof renderPicker>[0] = {}) {
+      return renderPicker({
+        agentPath: WG_REPLICA_PATH,
+        scopeContext: WG_SCOPE_CONTEXT,
+        currentRequestedProfile: "A",
+        ...overrides,
+      });
+    }
+
+    it("issue_2475_duplicate_triggering_open_collapses_to_one_batch", async () => {
+      // Fixture B: the snapshot selects agent index 1 and the requested profile
+      // differs from the initial "A", so both writes feed the preview effect.
+      mockSettingsApi.resolveCodingAgentProfile.mockImplementation(() =>
+        Promise.resolve(resolution({ requestedProfile: "C", effectiveProfile: "A" })),
+      );
+      const { dispose } = renderWgPicker({ currentAgentId: "claude", currentRequestedProfile: "C" });
+      await settle();
+
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledTimes(3);
+      expect(backendTotal()).toBe(7);
+
+      dispose();
+    });
+
+    it("issue_2475_already_clean_open_keeps_seven_backend_calls", async () => {
+      // Fixture A: requested "A" equals the initial selection, one round before and after.
+      const { dispose } = renderWgPicker({ currentAgentId: "codex", currentRequestedProfile: "A" });
+      await settle();
+
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledTimes(3);
+      expect(backendTotal()).toBe(7);
+
+      dispose();
+    });
+
+    it("issue_2475_loading_message_appears_in_the_same_tick", async () => {
+      mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation(
+        () => new Promise<PreviewCodingAgentProfileSelectionResult>(() => {}),
+      );
+      let resolveSettings: (value: AppSettings) => void = () => {};
+      mockSettingsApi.get.mockImplementation(
+        () => new Promise<AppSettings>((resolve) => { resolveSettings = resolve; }),
+      );
+      const { dispose } = renderWgPicker();
+      await Promise.resolve();
+      expect(maybe("agentPicker.previewBusy")).toBeNull();
+
+      resolveSettings(currentSettings);
+      await settle();
+
+      // No preview promise ever resolved, so the message comes from the open itself.
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledTimes(3);
+      expect(text("agentPicker.previewBusy")).toBe("Loading targets…");
+
+      dispose();
+    });
+
+    it("issue_2475_scope_counts_are_never_absent_longer_than_today", async () => {
+      const seen: Record<string, string[]> = {};
+      const ids = [
+        "agentPicker.removeScopeCount.replica",
+        "agentPicker.removeScopeCount.kind",
+        "agentPicker.removeScopeCount.workgroup",
+        "agentPicker.scope.kind",
+        "agentPicker.scope.workgroup",
+      ];
+      const record = () => {
+        for (const id of ids) {
+          const element = maybe(id);
+          if (!element) continue;
+          const value = element.textContent?.replace(/\s+/g, " ").trim() ?? "";
+          const list = (seen[id] ??= []);
+          if (list[list.length - 1] !== value) list.push(value);
+        }
+      };
+      const observer = new MutationObserver(record);
+      observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+      const { dispose } = renderWgPicker();
+      record();
+      await settle();
+      record();
+      observer.disconnect();
+
+      // The mount task paints "—" then "…" synchronously, before any paint;
+      // after that each count goes straight to its number, never back to "—".
+      expect(seen["agentPicker.removeScopeCount.replica"]).toEqual(["—", "…", "0 protected"]);
+      expect(seen["agentPicker.removeScopeCount.kind"]).toEqual(["—", "…", "2 of 3 protected"]);
+      expect(seen["agentPicker.removeScopeCount.workgroup"]).toEqual(["—", "…", "3 of 4 protected"]);
+      // Assignment counts go straight from the loading zero to their number, once.
+      expect(seen["agentPicker.scope.kind"].filter((value) => value.includes("3 replicas"))).toHaveLength(1);
+      expect(seen["agentPicker.scope.workgroup"].filter((value) => value.includes("4 replicas"))).toHaveLength(1);
+      expect(seen["agentPicker.scope.kind"][seen["agentPicker.scope.kind"].length - 1]).toContain("3 replicas");
+      expect(seen["agentPicker.scope.workgroup"][seen["agentPicker.scope.workgroup"].length - 1]).toContain("4 replicas");
+
+      dispose();
+    });
+
+    it("issue_2475_preview_error_text_is_unchanged", async () => {
+      const message = "preview exploded: backend said no";
+      mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation(
+        (req: { scope: string }) =>
+          req.scope === "replica"
+            ? Promise.reject(new Error(message))
+            : Promise.resolve(previewResult({ scope: req.scope as ProfileAssignmentScope })),
+      );
+      const { dispose } = renderWgPicker();
+      await settle();
+
+      expect(text("agentPicker.previewError")).toBe(message);
+
+      dispose();
+    });
+  });
 });

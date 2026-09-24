@@ -1,4 +1,4 @@
-import { Component, createSignal, createMemo, For, Show, onMount, onCleanup, createEffect } from "solid-js";
+import { Component, batch, createSignal, createMemo, For, Show, onMount, onCleanup, createEffect } from "solid-js";
 import type {
   AgentConfig,
   AppSettings,
@@ -594,15 +594,18 @@ const AgentPickerModal: Component<{
     const loaded = await SettingsAPI.get();
     // #2306 - vector order decides the initial selection: no alphabetical remap.
     const agentIndex = loaded.agents.findIndex((agent) => agent.id === props.currentAgentId);
-    if (agentIndex >= 0) setHighlightIndex(agentIndex);
-    installLoadedSnapshot(loaded, false);
-    const currentRequested = normalizeProfileLetter(props.currentRequestedProfile);
-    const acDefault = isAcAgentPath(targetReplicaPath())
-      ? normalizeProfileLetter(loaded.codingAgentProfiles.defaultProfileByAgent[targetName()])
-      : null;
-    const requested = currentRequested ?? acDefault ?? "A";
-    setSelectedProfile(requested);
-    setInitialProfileShouldLaunch(Boolean(currentRequested) || Boolean(acDefault));
+    // #2484 - one batch so the snapshot and the requested profile trigger one preview round.
+    batch(() => {
+      if (agentIndex >= 0) setHighlightIndex(agentIndex);
+      installLoadedSnapshot(loaded, false);
+      const currentRequested = normalizeProfileLetter(props.currentRequestedProfile);
+      const acDefault = isAcAgentPath(targetReplicaPath())
+        ? normalizeProfileLetter(loaded.codingAgentProfiles.defaultProfileByAgent[targetName()])
+        : null;
+      const requested = currentRequested ?? acDefault ?? "A";
+      setSelectedProfile(requested);
+      setInitialProfileShouldLaunch(Boolean(currentRequested) || Boolean(acDefault));
+    });
     if (isWgReplica()) {
       refreshRemovePreviews();
       void refreshSelectionDefault();
