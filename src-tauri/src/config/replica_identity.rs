@@ -427,6 +427,11 @@ pub(crate) mod strict_read_probe {
     }
 
     pub(super) fn record(replica_dir: &Path) {
+        // Inactive fast path: no registered root, no canonicalization, so an
+        // unrelated measurement run pays only this lock.
+        if STRICT_READS.lock().map_or(true, |roots| roots.is_empty()) {
+            return;
+        }
         let replica_dir = canonical(replica_dir);
         if let Ok(mut roots) = STRICT_READS.lock() {
             for (root, count) in roots.iter_mut() {

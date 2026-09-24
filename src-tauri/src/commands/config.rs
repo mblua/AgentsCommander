@@ -10332,6 +10332,8 @@ mod tests {
         "get_replica_selection_default",
     ];
     const BENCH_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+    /// Bound on draining already-submitted reads after a batch deadline.
+    const BENCH_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
     const BENCH_REPETITIONS: usize = 10;
 
     /// R rooms per project path, M project paths, one replica per room. The R
@@ -10421,6 +10423,10 @@ mod tests {
         inject_uncorrelated: bool,
         /// Test-only: a witness entered while the serialization lock is held.
         witness: Option<Arc<Occupancy>>,
+        /// Batch deadline; `None` means `BENCH_BATCH_TIMEOUT`.
+        deadline: Option<std::time::Duration>,
+        /// Test-only: notified when the batch deadline expires.
+        on_deadline: Option<Arc<tokio::sync::Notify>>,
     }
 
     fn bench_measurement_mode() -> bool {
@@ -10459,14 +10465,20 @@ mod tests {
         anchor: &Path,
         options: BenchOptions,
     ) -> Result<BenchRun, String> {
-        let _serial = bench_serialization_lock().lock().await;
-        bench_batch_locked(settings, anchor, &options, async {}).await
+        let serial = tokio::time::timeout(BENCH_BATCH_TIMEOUT, bench_serialization_lock().lock())
+            .await
+            .map_err(|_| "bench serialization lock not acquired in time".to_string())?;
+        bench_batch_locked(serial, settings, anchor, &options, async {}).await
     }
 
     /// The batch of 13 reads, each through its real command and the timed
-    /// turn wrapper. Every read is SUBMITTED before `between` runs, and the
-    /// caller must hold `bench_serialization_lock`.
+    /// turn wrapper. Every read is SUBMITTED before `between` runs. The batch
+    /// owns `serial` and its sinks until every submitted read has finished,
+    /// also on a deadline failure. The deadline covers `between` and the
+    /// wait for the reads; lock acquisition, setup and the submitting polls
+    /// run before it.
     async fn bench_batch_locked(
+        serial: tokio::sync::MutexGuard<'static, ()>,
         settings: &AppSettings,
         anchor: &Path,
         options: &BenchOptions,
@@ -10585,12 +10597,38 @@ mod tests {
                 Poll::Pending => pending.push(read),
             }
         }
-        let joined = tokio::time::timeout(BENCH_BATCH_TIMEOUT, async {
+        let deadline = options.deadline.unwrap_or(BENCH_BATCH_TIMEOUT);
+        let submitted_reads = pending.len();
+        let mut wait = Box::pin(async {
             between.await;
             futures::future::join_all(pending).await
-        })
-        .await
-        .map_err(|_| "bench batch timed out".to_string())?;
+        });
+        let joined = match tokio::time::timeout(deadline, wait.as_mut()).await {
+            Ok(joined) => joined,
+            Err(_) => {
+                if let Some(notify) = &options.on_deadline {
+                    notify.notify_one();
+                }
+                // The owned reads are detached, not cancelled, when their
+                // waiters drop: keep the sinks and the serialization lock
+                // until every one of them has finished.
+                if tokio::time::timeout(BENCH_DRAIN_TIMEOUT, wait.as_mut())
+                    .await
+                    .is_err()
+                {
+                    // Reads are still owned by nobody: never hand the turn to
+                    // a following batch. Leak the isolation and fail.
+                    std::mem::forget(wait);
+                    std::mem::forget(_sinks);
+                    std::mem::forget(serial);
+                    panic!("bench batch reads did not drain; serialization lock leaked on purpose");
+                }
+                drop(serial);
+                return Err(format!(
+                    "bench batch timed out after {deadline:?}; {submitted_reads} submitted reads drained before release"
+                ));
+            }
+        };
         finished.extend(joined);
 
         let mut completed = std::collections::BTreeMap::new();
@@ -10881,7 +10919,7 @@ mod tests {
     async fn issue_2475_bench_reader_wait_covers_the_measured_overlap() {
         const TOLERANCE_MS: f64 = 0.05;
         let bench = bench_fixture(3, 1);
-        let _serial = bench_serialization_lock().lock().await;
+        let serial = bench_serialization_lock().lock().await;
         let writer = crate::session::selection::acquire_selection_operation_turn()
             .await
             .expect("writer turn");
@@ -10889,6 +10927,7 @@ mod tests {
         let released = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
         let release_slot = Arc::clone(&released);
         let run = bench_batch_locked(
+            serial,
             &bench.settings,
             &bench.anchor,
             &BenchOptions::default(),
@@ -10988,5 +11027,73 @@ mod tests {
         assert_bench_correlation(&second.expect("second run"));
         assert_eq!(witness.max(), 1, "two bench runs never overlap");
         assert_eq!(witness.in_flight(), 0);
+    }
+
+    /// A batch that hits its deadline keeps its sinks and the serialization
+    /// lock until every submitted read has finished: nothing it spawned runs
+    /// after it returns.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_deadline_drains_submitted_reads_before_release() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let bench = bench_fixture(3, 1);
+        let serial = bench_serialization_lock().lock().await;
+        let correlated = Arc::new(AtomicUsize::new(0));
+        let _probe_sinks: Vec<TimingSinkRegistration> = BENCH_COMMANDS
+            .iter()
+            .map(|command| {
+                let correlated = Arc::clone(&correlated);
+                TimingSinkRegistration::new_sample(
+                    command,
+                    Arc::new(move |sample: &SelectionTimingSample, _line: &str| {
+                        if sample.invocation.is_some() {
+                            correlated.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }),
+                )
+            })
+            .collect();
+        let writer = crate::session::selection::acquire_selection_operation_turn()
+            .await
+            .expect("writer turn");
+        let expired = Arc::new(tokio::sync::Notify::new());
+        let released = Arc::new(AtomicBool::new(false));
+        let options = BenchOptions {
+            deadline: Some(std::time::Duration::from_millis(50)),
+            on_deadline: Some(Arc::clone(&expired)),
+            ..BenchOptions::default()
+        };
+        let release_after_deadline = {
+            let released = Arc::clone(&released);
+            let correlated = Arc::clone(&correlated);
+            async move {
+                expired.notified().await;
+                assert_eq!(
+                    correlated.load(Ordering::SeqCst),
+                    0,
+                    "no read ran while the writer held the turn"
+                );
+                released.store(true, Ordering::SeqCst);
+                drop(writer);
+            }
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            tokio::join!(
+                bench_batch_locked(serial, &bench.settings, &bench.anchor, &options, async {}),
+                release_after_deadline,
+            )
+        })
+        .await
+        .expect("the test itself is bounded");
+        let error = result.err().expect("the batch must fail on its deadline");
+        assert!(error.contains("timed out"), "{error}");
+        assert!(
+            released.load(Ordering::SeqCst),
+            "the batch returned only after the writer released"
+        );
+        assert_eq!(
+            correlated.load(Ordering::SeqCst),
+            13,
+            "every submitted read finished before the batch returned"
+        );
     }
 }
