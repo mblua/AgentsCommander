@@ -20,6 +20,7 @@ import type {
   WatcherPatternPreview,
   WatcherReachEntry,
   WatcherReachRow,
+  QuotaSourceConfig,
 } from "../../shared/types";
 import {
   SettingsAPI,
@@ -147,6 +148,17 @@ const MOVE_OVERLAY_REASON =
 export function isPlausibleCompleteExecutablePath(value: string): boolean {
   const trimmed = value.trim();
   return trimmed === "" || trimmed.includes("/") || trimmed.includes("\\");
+}
+
+/** #2482 - the full runtime shape check, exported for its own tests. Accepts
+ *  exactly what p1's `QuotaSourceConfig::ScreenRegex` deserializes, nothing more. */
+export function isScreenRegexSource(v: unknown): v is QuotaSourceConfig {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  const o = v as Record<string, unknown>;
+  if (o.kind !== "screenRegex") return false;
+  if (typeof o.pattern !== "string") return false;
+  if (o.enabled !== undefined && typeof o.enabled !== "boolean") return false;
+  return true;
 }
 
 /** #1951 - the invalid Default Shell warning is platform-specific. Windows
