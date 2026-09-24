@@ -15725,28 +15725,44 @@ mod reader_demand_tests {
             r.text == "old live"
         })
         .await;
-        backdate(&old_path, 120);
+        // Not backdated and never touched again: right after the restart it is
+        // the only, hence the newest, `.jsonl` in the directory.
 
         let restarted = h.restart_fresh(old).await.expect("restart succeeds");
         let new = Uuid::parse_str(&restarted.id).expect("replacement id");
         assert_ne!(new, old);
+        assert!(h.snapshot(old).await.0.is_none());
+        // Step 1: the replacement minted its own transcript id.
         let minted_new =
             minted_transcript_id(&restarted).expect("the fresh restart mints a transcript id");
         assert_ne!(
             minted_new, minted_old,
             "a fresh restart mints a new transcript id"
         );
-        assert!(h.snapshot(old).await.0.is_none());
 
         let new_slot = h
             .captures
             .slot(&new.to_string())
             .expect("new endpoints open");
-        // One completed reply outside the 5 s window: the pinned attach binds
-        // the file and offers nothing. Two polls of settle let it bind before
-        // the append below.
+        // Step 2, the guard: more than two 500 ms polls with ONLY the old file
+        // present. A pinned reader waits; a reader attaching by mtime would
+        // already have offered the old file's tail, both lines of which sit
+        // inside the 5 s window.
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        let step2 = new_slot.snapshot().value;
+        assert!(
+            matches!(step2, SlotValue::Empty),
+            "the replacement attached to the old spawn's transcript: {:?}",
+            match &step2 {
+                SlotValue::Valid(record) => Some(record.text.clone()),
+                _ => None,
+            }
+        );
+
+        // Step 3: the minted file appears, published by rename, holding one
+        // completed reply outside the 5 s window, so the pinned attach binds
+        // it and offers nothing.
         let new_path = dir.join(format!("{minted_new}.jsonl"));
-        // Staged and renamed in, so the pin never sees a half-written file.
         let staging = dir.join(format!("{minted_new}.jsonl.tmp"));
         std::fs::write(
             &staging,
@@ -15762,18 +15778,15 @@ mod reader_demand_tests {
         std::fs::rename(&staging, &new_path).expect("publish the new transcript");
         tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
         assert!(matches!(new_slot.snapshot().value, SlotValue::Empty));
+        let seq_before = new_slot.seq();
         let len_before = std::fs::metadata(&new_path)
             .expect("transcript metadata")
             .len();
 
+        // Step 4: exactly the appended line follows the attach.
         append_claude(&new_path, "new live");
-        let (_, record) =
+        let (seq, record) =
             wait_for_slot_record(&new_slot, std::time::Duration::from_secs(10), |r| {
-                assert!(
-                    r.text != "cold preamble" && r.text != "old live",
-                    "the old spawn's transcript reached the new slot: {:?}",
-                    r.text
-                );
                 r.text == "new live"
             })
             .await;
@@ -15784,6 +15797,7 @@ mod reader_demand_tests {
             len_before,
             "only the appended bytes of the minted file are read"
         );
+        assert_eq!(seq, seq_before + 1, "exactly one offer follows the attach");
         h.release_all(new).await;
         h.close().await;
     }
