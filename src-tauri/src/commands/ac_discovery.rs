@@ -11,6 +11,13 @@ use crate::config::ac_root::{
     ac_root_for_project, canonical_ac_root_label, existing_ac_root, find_ac_root_segment,
     has_ac_root,
 };
+use crate::config::instance_artifacts::{
+    CODING_AGENTS_BASE_TMP_ARTIFACT, CODING_AGENTS_LOCAL_ARTIFACT,
+    CODING_AGENTS_LOCAL_TMP_ARTIFACT, CODING_AGENTS_LOCK_ARTIFACT,
+    CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT, CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
+    CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT, CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
+    SETTINGS_FILE_NAME,
+};
 use crate::config::settings::SettingsState;
 use crate::pty::manager::{PendingSpawn, PtyManager};
 use crate::session::manager::SessionManager;
@@ -1579,6 +1586,20 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
         ["/.seed-manifest.lock", "/.seed-manifest.*.tmp"];
     const SEED_MANIFEST_MANIFEST_PATTERN: &str = "/seed-manifest.toml";
 
+    // #1968 - the machine-local coding-agent catalog children, rooted at `.ac/`.
+    let [catalog_local, catalog_migration_backup, catalog_migration_journal, catalog_lock, catalog_base_tmp, catalog_local_tmp, catalog_migration_backup_tmp, catalog_migration_journal_tmp] =
+        [
+            CODING_AGENTS_LOCAL_ARTIFACT,
+            CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
+            CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
+            CODING_AGENTS_LOCK_ARTIFACT,
+            CODING_AGENTS_BASE_TMP_ARTIFACT,
+            CODING_AGENTS_LOCAL_TMP_ARTIFACT,
+            CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
+            CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
+        ]
+        .map(|artifact| format!("/{artifact}"));
+
     // Each entry: (pattern, comment explaining why)
     let required_entries: &[(&str, &str)] = &[
         (
@@ -1660,38 +1681,40 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
         // #1968 - the machine-local coding-agent catalog children. The tracked
         // `agents.json` and `_seed/` masters stay tracked; these are the
         // sidecars, lock and publication temporaries that must never be
-        // committed. Literals on purpose: importing the leaf registry here
-        // would add a `commands -> config::instance_artifacts` module arc.
+        // committed. Composed from the registry: `config::instance_artifacts`
+        // is a leaf with zero outgoing arcs, so an arc into it carries no path
+        // back into the cyclic SCC, and modules across the tree, among them
+        // `commands::config`, already hold that arc.
         (
-            "/coding-agents/agents.local.json",
+            catalog_local.as_str(),
             "# AgentsCommander: exclude machine-local coding-agent overrides.",
         ),
         (
-            "/coding-agents/agents.migration-v1.backup.json",
+            catalog_migration_backup.as_str(),
             "# AgentsCommander: exclude the coding-agent migration backup (byte-exact pre-migration source copy).",
         ),
         (
-            "/coding-agents/.agents.migration-v1.json",
+            catalog_migration_journal.as_str(),
             "# AgentsCommander: exclude the coding-agent migration journal.",
         ),
         (
-            "/coding-agents/.agents.json.lock",
+            catalog_lock.as_str(),
             "# AgentsCommander: exclude the coding-agent catalog write-lock sidecar.",
         ),
         (
-            "/coding-agents/.agents.json.*.tmp",
+            catalog_base_tmp.as_str(),
             "# AgentsCommander: exclude coding-agent base publication temporaries.",
         ),
         (
-            "/coding-agents/.agents.local.json.*.tmp",
+            catalog_local_tmp.as_str(),
             "# AgentsCommander: exclude coding-agent local override publication temporaries.",
         ),
         (
-            "/coding-agents/.agents.migration-v1.backup.json.*.tmp",
+            catalog_migration_backup_tmp.as_str(),
             "# AgentsCommander: exclude coding-agent migration backup publication temporaries.",
         ),
         (
-            "/coding-agents/..agents.migration-v1.json.*.tmp",
+            catalog_migration_journal_tmp.as_str(),
             "# AgentsCommander: exclude coding-agent migration journal publication temporaries (the journal name starts with a dot).",
         ),
     ];
@@ -2608,7 +2631,7 @@ async fn mutate_project_paths_with_settings_path<T>(
         None => {
             path_buf = crate::config::config_dir()
                 .ok_or("Could not determine settings directory")?
-                .join("settings.json");
+                .join(SETTINGS_FILE_NAME);
             &path_buf
         }
     };
@@ -2853,7 +2876,7 @@ impl NewProjectTransactionHooks {
             None => {
                 path_buf = crate::config::config_dir()
                     .ok_or("Could not determine settings directory")?
-                    .join("settings.json");
+                    .join(SETTINGS_FILE_NAME);
                 &path_buf
             }
         };
@@ -4727,8 +4750,8 @@ mod tests {
     }
 
     /// #1968 - the project `.ac/.gitignore` carries the narrow coding-agent
-    /// sidecar rules. The patterns are literals here (importing the leaf
-    /// registry would add a module arc), so this fixture pins the intended
+    /// sidecar rules. The patterns are literals here (an independent oracle;
+    /// production composes them from the registry), so this fixture pins the intended
     /// policy: every local/migration/temp sidecar is excluded, while the tracked
     /// base `agents.json` and the `_seed/` masters stay visible, and no broad
     /// `coding-agents/` rule exists.
