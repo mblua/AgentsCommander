@@ -209,6 +209,8 @@ impl<L: log::Log> log::Log for PrivacyFilterLogger<L> {
     }
 
     fn log(&self, record: &log::Record) {
+        #[cfg(test)]
+        test_tee_push(record);
         if self.enabled(record.metadata()) {
             self.inner.log(record);
         }
@@ -217,6 +219,37 @@ impl<L: log::Log> log::Log for PrivacyFilterLogger<L> {
     fn flush(&self) {
         self.inner.flush();
     }
+}
+
+/// #2455 test-only tee: every record reaching `PrivacyFilterLogger`, whichever
+/// `init_logger` leg installed it. Snapshot-only on purpose: the lib test
+/// binary runs tests concurrently, so a drain by one test would destroy
+/// another's evidence.
+#[cfg(test)]
+static TEST_TEE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn test_tee_push(record: &log::Record) {
+    let line = format!("{} {} {}", record.level(), record.target(), record.args());
+    TEST_TEE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(line);
+}
+
+/// #2455 clone of every line the tee has seen so far; never drains.
+#[cfg(test)]
+pub(crate) fn test_tee_snapshot() -> Vec<String> {
+    TEST_TEE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// #2455 make sure SOME logger is installed (a second `set_boxed_logger` is a
+/// harmless `Err`), then open the static max level to `Info`: `log::info!`
+/// checks it before it ever reaches the logger.
+#[cfg(test)]
+pub(crate) fn test_install_logger() {
+    init_logger();
+    log::set_max_level(log::LevelFilter::Info);
 }
 
 /// #612 update runtime verbosity for `agentscommander*`. Returns false (no-op)
