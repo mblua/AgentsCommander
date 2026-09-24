@@ -304,9 +304,20 @@ function writeFixtureCrate(dir) {
 }
 
 const CASES = [
+  // CI runs the self-test before the gate, so a real regression stops here first: print the
+  // same guidance the gate would, so the author still gets it.
   ['real detector, real tree, committed baseline: passes', async () => {
-    const result = await checkModuleCycles();
-    if (!result.ok) throw new Error(result.message);
+    let result;
+    try {
+      result = await checkModuleCycles();
+    } catch (err) {
+      if (err instanceof GateError) printFailure(`check-module-cycles: gate error: ${err.message}`);
+      throw err;
+    }
+    if (!result.ok) {
+      printFailure(result.message, { stderr: result.stderr });
+      throw new Error('the real tree has a module cycle that is new against the baseline; see the guidance above');
+    }
   }],
   ['gate argv is fixed and carries --json, never --write-baseline', () => withBaseline(GOOD_BASELINE, async (baselinePath) => {
     const seen = [];
