@@ -157,8 +157,83 @@ function blindSpotLines(report) {
   return lines;
 }
 
+// Every list the event lines print is sorted by UTF-16 code unit, so a re-run prints the same
+// bytes whatever order the detector emitted.
+function compareCodeUnits(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+const sortedList = (items) => Array.from(items).sort(compareCodeUnits);
+
+// True when every cycle in `inner` is a subset of some single cycle in `outer`.
+function eachInsideOne(inner, outer) {
+  return inner.every((cycle) => outer.some((o) => cycle.members.every((m) => o.memberSet.has(m))));
+}
+
+// Compares partitions, never unions or cycle counts: SHRINK is refinement, GROWN is coarsening.
+function labelEvent(rs, ns) {
+  if (rs.length === 0) return 'NEW';
+  if (ns.length === 0) return 'CYCLE REMOVED';
+  if (eachInsideOne(ns, rs)) return 'SCC SHRINK';
+  if (eachInsideOne(rs, ns)) return 'SCC GROWN';
+  return 'SCC SWAP';
+}
+
+// Groups retired (R) and new (N) module cycles into events: the connected components of the
+// "member sets intersect" relation. Returns the events sorted as the contract fixes.
+export function classifyEvents(resolved, added) {
+  const nodes = [
+    ...resolved.map((c) => ({ side: 'r', id: c.id, members: c.members, memberSet: new Set(c.members) })),
+    ...added.map((c) => ({ side: 'n', id: c.id, members: c.members, memberSet: new Set(c.members) })),
+  ];
+  const parent = nodes.map((_, i) => i);
+  const find = (i) => {
+    let root = i;
+    while (parent[root] !== root) root = parent[root];
+    return root;
+  };
+  const owner = new Map();
+  nodes.forEach((node, i) => {
+    for (const m of node.members) {
+      if (owner.has(m)) parent[find(i)] = find(owner.get(m));
+      else owner.set(m, i);
+    }
+  });
+  const groups = new Map();
+  nodes.forEach((node, i) => {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, { rs: [], ns: [] });
+    groups.get(root)[node.side === 'r' ? 'rs' : 'ns'].push(node);
+  });
+  const events = Array.from(groups.values()).map(({ rs, ns }) => {
+    const rUnion = new Set(rs.flatMap((c) => c.members));
+    const nUnion = new Set(ns.flatMap((c) => c.members));
+    return {
+      label: labelEvent(rs, ns),
+      retired: sortedList(rs.map((c) => c.id)),
+      added: sortedList(ns.map((c) => c.id)),
+      left: sortedList([...rUnion].filter((m) => !nUnion.has(m))),
+      joined: sortedList([...nUnion].filter((m) => !rUnion.has(m))),
+      firstMember: sortedList([...rUnion, ...nUnion])[0],
+      firstId: sortedList([...rs, ...ns].map((c) => c.id))[0],
+    };
+  });
+  return events.sort((a, b) => compareCodeUnits(a.firstMember, b.firstMember) || compareCodeUnits(a.firstId, b.firstId));
+}
+
+export function formatEvent(event) {
+  const list = (items) => `[${items.join(', ')}]`;
+  return `${event.label}: retired ${list(event.retired)} new ${list(event.added)} left ${list(event.left)} joined ${list(event.joined)}`;
+}
+
+const REMOVAL_REASON = 'A cycle in the baseline no longer exists. Leaving it there would read that exact cycle as '
+  + '`known` if it ever returns, so the removal must be pruned from the baseline now.';
+
 // Gate mode. `target` and `baselinePath` are the private injection seam: the command line never
-// sets them. Returns { ok, message, newCycles, resolvedCycles }; throws GateError.
+// sets them. Returns { ok, exit, message, events, detectorExit, newCycles, resolvedCycles };
+// throws GateError.
 export async function checkModuleCycles({ runner = realRunner, target = TARGET, baselinePath = BASELINE } = {}) {
   const baseline = readBaseline(baselinePath);
   const result = await runDetector(runner, gateArgv(target, baselinePath));
@@ -168,6 +243,10 @@ export async function checkModuleCycles({ runner = realRunner, target = TARGET, 
   // filters neither.
   const resolvedCycles = report.baseline.resolvedCycles.filter((c) => c?.graph === 'module');
   const newCycles = report.moduleCycles.filter((c) => c.status === 'new');
+  const events = classifyEvents(resolvedCycles, newCycles).map(formatEvent);
+  const removed = events.some((line) => line.startsWith('CYCLE REMOVED:'));
+  // A removal overrides the detector, even when a new cycle already made it exit 1.
+  const exit = removed ? 3 : result.exit;
   const known = report.moduleCycles.filter((c) => c.status === 'known');
   const knownList = known.map((c) => `${c.id} (${c.members.length} members)`).join(', ');
   const summary = [
@@ -177,22 +256,20 @@ export async function checkModuleCycles({ runner = realRunner, target = TARGET, 
     `resolvedCycles: ${JSON.stringify(resolvedCycles.map((c) => c.id))}`,
     ...blindSpotLines(report),
   ];
-  if (result.exit === 0) {
-    return { ok: true, message: `no new module dependency cycle.\n${summary.join('\n')}`, newCycles, resolvedCycles, stderr: result.stderr };
+  const outcome = { exit, events, detectorExit: result.exit, newCycles, resolvedCycles, stderr: result.stderr };
+  if (exit === 0) {
+    return { ...outcome, ok: true, message: `no new module dependency cycle.\n${summary.join('\n')}` };
   }
+  const headline = removed
+    ? `check-module-cycles: gate error: ${REMOVAL_REASON}`
+    : 'a module dependency cycle is new against the baseline.';
   const details = [
     'new module cycles:',
     ...newCycles.map(describeCycle),
     'retired cycles (ids no longer present):',
     ...(resolvedCycles.length > 0 ? resolvedCycles.map(describeCycle) : ['  none']),
   ];
-  return {
-    ok: false,
-    message: `a module dependency cycle is new against the baseline.\n${summary.join('\n')}\n${details.join('\n')}`,
-    newCycles,
-    resolvedCycles,
-    stderr: result.stderr,
-  };
+  return { ...outcome, ok: false, message: `${headline}\n${summary.join('\n')}\n${details.join('\n')}` };
 }
 
 // Write mode. Never reads an existing baseline, so the first write works.
@@ -208,7 +285,8 @@ export async function writeCyclesBaseline({ runner = realRunner, target = TARGET
   return `wrote ${baselinePath}: ${baseline.moduleCycles.length} module cycles, ${baseline.functionCycles.length} function cycles.`;
 }
 
-// The single failure printer. P4 adds a labelled event line through `events`.
+// The single failure printer: the message, one line per cycle event, the detector's stderr,
+// then the update command and questions.
 function printFailure(message, { stderr = '', events = [] } = {}) {
   const parts = [message];
   if (events.length > 0) parts.push(events.join('\n'));
@@ -306,8 +384,8 @@ const CASES = [
       throw err;
     }
     if (!result.ok) {
-      printFailure(result.message, { stderr: result.stderr });
-      throw new Error('the real tree has a module cycle that is new against the baseline; see the guidance above');
+      printFailure(result.message, { stderr: result.stderr, events: result.events });
+      throw new Error('the real tree does not match the committed baseline; see the guidance above');
     }
   }],
   ['gate argv is fixed and carries --json, never --write-baseline', () => withBaseline(GOOD_BASELINE, async (baselinePath) => {
@@ -384,6 +462,118 @@ const CASES = [
   })],
 ];
 
+// ---------------------------------------------------------------------------------------------
+// Classification fixture pairs (#2465). Each row writes its own predecessor baseline from state X
+// with the real detector, mutates the crate to state Y, then runs the gate against that baseline.
+
+const FIXTURE_MODULES = ['a', 'b', 'c', 'd', 'e', 'f', 'p', 'q', 'r', 's'];
+
+// Every module is declared in lib.rs in every state; each loop is a ring of `use` arcs.
+function writeLoops(crate, loops) {
+  const uses = new Map(FIXTURE_MODULES.map((m) => [m, []]));
+  for (const loop of loops) loop.forEach((m, i) => uses.get(m).push(loop[(i + 1) % loop.length]));
+  fs.mkdirSync(path.join(crate, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(crate, 'Cargo.toml'), '[package]\nname = "fixture"\nversion = "0.1.0"\n\n[lib]\npath = "src/lib.rs"\n');
+  fs.writeFileSync(path.join(crate, 'src', 'lib.rs'), FIXTURE_MODULES.map((m) => `pub mod ${m};\n`).join(''));
+  for (const m of FIXTURE_MODULES) {
+    const lines = uses.get(m).map((t) => `use crate::${t}::f as _${t};\n`);
+    fs.writeFileSync(path.join(crate, 'src', `${m}.rs`), `${lines.join('')}pub fn f() {}\n`);
+  }
+}
+
+// Short module name: the last path segment.
+const shortName = (member) => member.slice(member.lastIndexOf(':') + 1);
+
+function reportEvents(report) {
+  const resolved = report.baseline.resolvedCycles.filter((c) => c?.graph === 'module');
+  return classifyEvents(resolved, report.moduleCycles.filter((c) => c.status === 'new'));
+}
+
+async function runPair(before, after, editBaseline) {
+  return withTemp(async (dir) => {
+    const target = path.join(dir, 'crate');
+    const baselinePath = path.join(dir, 'baseline.json');
+    writeLoops(target, before);
+    await writeCyclesBaseline({ target, baselinePath });
+    if (editBaseline) editBaseline(baselinePath);
+    writeLoops(target, after);
+    let stdout = '';
+    const runner = async (argv) => {
+      const r = await realRunner(argv);
+      stdout = r.stdout;
+      return r;
+    };
+    const result = await checkModuleCycles({ target, baselinePath, runner });
+    return { result, report: JSON.parse(stdout) };
+  });
+}
+
+// `want` holds one [label, left, joined, retired id count, new id count] per event, in order.
+async function expectPair({ before, after, want, detector, gate, editBaseline }) {
+  const { result, report } = await runPair(before, after, editBaseline);
+  if (result.detectorExit !== detector) throw new Error(`detector exit ${result.detectorExit}, expected ${detector}`);
+  if (result.exit !== gate) throw new Error(`gate exit ${result.exit}, expected ${gate}`);
+  if (result.events.length !== want.length) throw new Error(`${result.events.length} event lines, expected ${want.length}: ${result.events.join(' | ')}`);
+  const got = reportEvents(report).map((e) => [e.label, e.left.map(shortName).join(','), e.joined.map(shortName).join(','), e.retired.length, e.added.length]);
+  if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`events ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+  return { result, report };
+}
+
+function permutations(items) {
+  if (items.length <= 1) return [items];
+  return items.flatMap((item, i) => permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]));
+}
+
+// Every order of both arrays, every member list reversed: the printed lines must not move.
+function assertPermutationInvariant(report) {
+  const expected = reportEvents(report).map(formatEvent).join('\n');
+  const reversed = (cycles) => cycles.map((c) => ({ ...c, members: [...c.members].reverse() }));
+  for (const moduleCycles of permutations(reversed(report.moduleCycles))) {
+    for (const resolvedCycles of permutations(reversed(report.baseline.resolvedCycles))) {
+      const shuffled = { ...report, moduleCycles, baseline: { ...report.baseline, resolvedCycles } };
+      const got = reportEvents(shuffled).map(formatEvent).join('\n');
+      if (got !== expected) throw new Error(`order moved:\n${got}\nexpected:\n${expected}`);
+    }
+  }
+}
+
+function addStaleFunctionCycle(baselinePath) {
+  const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
+  baseline.functionCycles.push({ id: '0123456789abcdef', members: ['fixture::a::f', 'fixture::b::f'] });
+  fs.writeFileSync(baselinePath, JSON.stringify(baseline));
+}
+
+const PAIRS = [
+  ['1 new loop is NEW', { before: [], after: [['a', 'b', 'c']], want: [['NEW', '', 'a,b,c', 0, 1]], detector: 1, gate: 1 }],
+  ['2 growth is SCC GROWN', { before: [['a', 'b', 'c']], after: [['a', 'b', 'c', 'd']], want: [['SCC GROWN', '', 'd', 1, 1]], detector: 1, gate: 1 }],
+  ['3 shrink is SCC SHRINK', { before: [['a', 'b', 'c', 'd']], after: [['a', 'b', 'c']], want: [['SCC SHRINK', 'd', '', 1, 1]], detector: 1, gate: 1 }],
+  ['4 one out one in is SCC SWAP', { before: [['a', 'b', 'c']], after: [['a', 'b', 'd']], want: [['SCC SWAP', 'c', 'd', 1, 1]], detector: 1, gate: 1 }],
+  ['5 removal is a gate error though the detector exits 0', { before: [['a', 'b', 'd']], after: [], want: [['CYCLE REMOVED', 'a,b,d', '', 1, 0]], detector: 0, gate: 3 }],
+  ['6 split is one SCC SHRINK', { before: [['a', 'b', 'c', 'd']], after: [['a', 'b'], ['c', 'd']], want: [['SCC SHRINK', '', '', 1, 2]], detector: 1, gate: 1 }],
+  ['7 merge is one SCC GROWN', { before: [['a', 'b', 'c'], ['d', 'e']], after: [['a', 'b', 'c', 'd', 'e']], want: [['SCC GROWN', '', '', 2, 1]], detector: 1, gate: 1 }],
+  ['8 known plus new is one NEW line', { before: [['a', 'b', 'c']], after: [['a', 'b', 'c'], ['d', 'e']], want: [['NEW', '', 'd,e', 0, 1]], detector: 1, gate: 1 }],
+  ['9 a stale function cycle makes no event', { before: [['a', 'b', 'c']], after: [['a', 'b', 'c']], want: [], detector: 0, gate: 0, editBaseline: addStaleFunctionCycle }],
+  ['10 re-partition is one SCC SWAP', { before: [['a', 'b'], ['c', 'd']], after: [['a', 'c'], ['b', 'd']], want: [['SCC SWAP', '', '', 2, 2]], detector: 1, gate: 1 }],
+  ['11 removal plus unrelated new: both lines, gate error over exit 1', { before: [['a', 'b', 'c']], after: [['d', 'e']], want: [['CYCLE REMOVED', 'a,b,c', '', 1, 0], ['NEW', '', 'd,e', 0, 1]], detector: 1, gate: 3 }],
+  ['12 shrink plus unrelated new is two events', { before: [['a', 'b', 'c']], after: [['a', 'b'], ['d', 'e']], want: [['SCC SHRINK', 'c', '', 1, 1], ['NEW', '', 'd,e', 0, 1]], detector: 1, gate: 1 }],
+  ['14 cross coupling with equal unions is SCC SWAP', { before: [['a', 'b', 'c'], ['d', 'e', 'f']], after: [['a', 'd'], ['b', 'e'], ['c', 'f']], want: [['SCC SWAP', '', '', 2, 3]], detector: 1, gate: 1 }],
+  ['15 coupling into a smaller union is SCC SWAP', { before: [['a', 'b'], ['c', 'd']], after: [['a', 'c']], want: [['SCC SWAP', 'b,d', '', 2, 1]], detector: 1, gate: 1 }],
+];
+
+CASES.push(
+  ...PAIRS.map(([name, row]) => [`pair ${name}`, () => expectPair(row)]),
+  ['pair 13 two events, output invariant under every permutation', async () => {
+    const { report } = await expectPair({
+      before: [['a', 'b', 'c'], ['d', 'e'], ['p', 'q', 'r', 's']],
+      after: [['a', 'b', 'c', 'd', 'e'], ['p', 'q'], ['r', 's']],
+      want: [['SCC GROWN', '', '', 2, 1], ['SCC SHRINK', '', '', 1, 2]],
+      detector: 1,
+      gate: 1,
+    });
+    assertPermutationInvariant(report);
+  }],
+);
+
 const selfTest = () => runSelfTest(CASES);
 
 async function main(args) {
@@ -410,8 +600,8 @@ async function main(args) {
       console.log(result.message);
       return 0;
     }
-    printFailure(result.message, { stderr: result.stderr });
-    return 1;
+    printFailure(result.message, { stderr: result.stderr, events: result.events });
+    return result.exit;
   } catch (err) {
     if (!(err instanceof GateError)) throw err;
     printFailure(`check-module-cycles: gate error: ${err.message}`);
