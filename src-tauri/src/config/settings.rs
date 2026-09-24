@@ -843,6 +843,12 @@ pub struct AppSettings {
     /// user's file on the next save, so configuring nothing would still leave a trace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watchers_geometry: Option<WindowGeometry>,
+    /// #2482 - where each agent's weekly (7-day) quota reading comes from, keyed by
+    /// agent id. Root-level, not a field on `AgentConfig`, for the reason `watchers`
+    /// is: the 34 literal `AgentConfig` construction sites stay untouched. Absent or
+    /// empty = off for every agent: no reading, no compile, no event.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub quota_sources: BTreeMap<String, QuotaSourceEntry>,
     /// #1646 / #1647 - master kill switch for proactive detection of terminal blocking menus.
     #[serde(default = "default_true")]
     pub menu_guard_enabled: bool,
@@ -941,6 +947,47 @@ pub enum WatcherDedupe {
     Capture,
     /// Every match counts.
     None,
+}
+
+/// #2482 - one entry of the root `quotaSources` map, or whatever the user wrote
+/// there. Same wrapper, same reason, as `WatcherEntry`: settings deserialize in
+/// one shot and any failure is replaced by `AppSettings::default()`, so a
+/// hand-written or newer-AC entry must cost one skipped source and never the whole
+/// file. `untagged` tries `Valid` first, so `Invalid` only catches what
+/// `QuotaSourceConfig` rejected, and its bytes are kept verbatim so a save
+/// round-trips what the user wrote.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum QuotaSourceEntry {
+    Valid(QuotaSourceConfig),
+    Invalid(serde_json::Value),
+}
+
+impl QuotaSourceEntry {
+    pub fn valid(&self) -> Option<&QuotaSourceConfig> {
+        match self {
+            QuotaSourceEntry::Valid(config) => Some(config),
+            QuotaSourceEntry::Invalid(_) => None,
+        }
+    }
+}
+
+/// #2482 - one configured quota source. **The multi-agent extension point.**
+/// `kind` is the discriminant: adding Codex, Gemini or any other agent is one new
+/// variant here plus one match arm in `pty::agent_quota::source`. Nothing else in
+/// the engine changes, and an unrecognized `kind` from a newer AC lands in
+/// `QuotaSourceEntry::Invalid` rather than destroying the file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum QuotaSourceConfig {
+    /// Read the percentage from what the agent draws in its terminal, with the
+    /// screen-row scrape #1032 uses for the context badge. Capture group 1 is the
+    /// USED percentage of the 7-day window.
+    ScreenRegex {
+        pattern: String,
+        #[serde(default = "default_true")]
+        enabled: bool,
+    },
 }
 
 fn default_dedupe_window_ms() -> u64 {
@@ -1287,6 +1334,7 @@ impl Default for AppSettings {
             container_credentials_from_host: true,
             watchers: BTreeMap::new(),
             watchers_geometry: None,
+            quota_sources: BTreeMap::new(),
             menu_guard_enabled: true,
             typing_hold_seconds: default_typing_hold_seconds(),
         }
@@ -10893,6 +10941,53 @@ mod tests {
         expected["nobody"]["dedupe"] = serde_json::json!("row");
         expected["nobody"]["dedupeWindowMs"] = serde_json::json!(2000);
         assert_eq!(written, expected);
+    }
+
+    /// #2482 - absent `quotaSources` stays absent on save; an unknown `kind` costs one
+    /// skipped entry and round-trips verbatim.
+    #[test]
+    fn quota_sources_round_trip_and_an_unknown_kind_is_kept_verbatim() {
+        let bare = serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": []
+        })
+        .to_string();
+        let (settings, _) = super::parse_settings_json(&bare, "test", None).expect("parses");
+        assert!(settings.quota_sources.is_empty());
+        let written = serde_json::to_value(&settings).expect("serializes");
+        assert!(!written.as_object().unwrap().contains_key("quotaSources"));
+
+        let contents = serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": [],
+            "quotaSources": {
+                "claude": { "kind": "screenRegex", "pattern": r"Weekly (\d+)%" },
+                "codex": { "kind": "fromTheFuture", "endpoint": "x" }
+            }
+        })
+        .to_string();
+        let (settings, _) = super::parse_settings_json(&contents, "test", None).expect("parses");
+
+        assert_eq!(
+            settings.quota_sources["claude"].valid(),
+            Some(&super::QuotaSourceConfig::ScreenRegex {
+                pattern: r"Weekly (\d+)%".to_string(),
+                enabled: true,
+            })
+        );
+        assert!(settings.quota_sources["codex"].valid().is_none());
+
+        let written = serde_json::to_value(&settings.quota_sources).expect("serializes");
+        assert_eq!(
+            written["codex"],
+            serde_json::json!({ "kind": "fromTheFuture", "endpoint": "x" })
+        );
+        assert_eq!(
+            written["claude"],
+            serde_json::json!({ "kind": "screenRegex", "pattern": r"Weekly (\d+)%", "enabled": true })
+        );
     }
 
     #[test]

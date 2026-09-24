@@ -833,6 +833,10 @@ agentscommander_lib::phone::terminal_snapshot -> agentscommander_lib::pty::termi
 agentscommander_lib::phone::terminal_snapshot -> agentscommander_lib::session::manager
 agentscommander_lib::phone::terminal_snapshot -> agentscommander_lib::session::purge_guard
 agentscommander_lib::phone::types -> agentscommander_lib::pty::backend
+agentscommander_lib::pty::agent_quota -> agentscommander_lib::pty::context_scrape
+agentscommander_lib::pty::agent_quota -> agentscommander_lib::shutdown
+agentscommander_lib::pty::agent_quota::source -> agentscommander_lib::pty::context_scrape::pattern
+agentscommander_lib::pty::agent_quota::source -> agentscommander_lib::pty::context_scrape::rows
 agentscommander_lib::pty::backend -> agentscommander_lib::errors
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::container_credentials
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::container_repos
