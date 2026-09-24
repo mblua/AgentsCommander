@@ -10,6 +10,7 @@
 // Known gap until P4: a cycle that disappears still passes here (the detector exits 0), so this
 // gate must not be made a required check on its own.
 
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -157,15 +158,14 @@ function blindSpotLines(report) {
   return lines;
 }
 
-// Every list the event lines print is sorted by UTF-16 code unit, so a re-run prints the same
-// bytes whatever order the detector emitted.
-function compareCodeUnits(a, b) {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
+// Every list the event lines print is sorted byte-wise on the UTF-8 encoding, so a re-run
+// prints the same bytes whatever order the detector emitted. UTF-16 code-unit order differs
+// above U+FFFF (a surrogate pair sorts before U+E000..U+FFFF), so `<` is not used.
+function compareBytes(a, b) {
+  return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 }
 
-const sortedList = (items) => Array.from(items).sort(compareCodeUnits);
+const sortedList = (items) => Array.from(items).sort(compareBytes);
 
 // True when every cycle in `inner` is a subset of some single cycle in `outer`.
 function eachInsideOne(inner, outer) {
@@ -220,7 +220,7 @@ export function classifyEvents(resolved, added) {
       firstId: sortedList([...rs, ...ns].map((c) => c.id))[0],
     };
   });
-  return events.sort((a, b) => compareCodeUnits(a.firstMember, b.firstMember) || compareCodeUnits(a.firstId, b.firstId));
+  return events.sort((a, b) => compareBytes(a.firstMember, b.firstMember) || compareBytes(a.firstId, b.firstId));
 }
 
 export function formatEvent(event) {
@@ -481,9 +481,6 @@ function writeLoops(crate, loops) {
   }
 }
 
-// Short module name: the last path segment.
-const shortName = (member) => member.slice(member.lastIndexOf(':') + 1);
-
 function reportEvents(report) {
   const resolved = report.baseline.resolvedCycles.filter((c) => c?.graph === 'module');
   return classifyEvents(resolved, report.moduleCycles.filter((c) => c.status === 'new'));
@@ -508,14 +505,32 @@ async function runPair(before, after, editBaseline) {
   });
 }
 
-// `want` holds one [label, left, joined, retired id count, new id count] per event, in order.
+// Built without the gate's code: the detector's cycle id is sha256 of the sorted member ids
+// joined by newlines, cut to 16 hex characters.
+const fixtureId = (name) => `fixture::${name}`;
+const byAscii = (x, y) => (x < y ? -1 : 1);
+
+function loopId(letters) {
+  const members = [...letters].map(fixtureId).sort(byAscii);
+  return createHash('sha256').update(members.join('\n')).digest('hex').slice(0, 16);
+}
+
+// One event as [label, left, joined, retired loops, new loops]; loops are space-separated
+// letter strings such as 'ab cd', members are comma-separated letters.
+function expectedLine([label, left, joined, retired, added]) {
+  const ids = (loops) => loops.split(' ').filter(Boolean).map(loopId).sort(byAscii).join(', ');
+  const names = (letters) => letters.split(',').filter(Boolean).map(fixtureId).join(', ');
+  return `${label}: retired [${ids(retired)}] new [${ids(added)}] left [${names(left)}] joined [${names(joined)}]`;
+}
+
+// Asserts the exits and the full lines the gate emitted, in order.
 async function expectPair({ before, after, want, detector, gate, editBaseline }) {
   const { result, report } = await runPair(before, after, editBaseline);
   if (result.detectorExit !== detector) throw new Error(`detector exit ${result.detectorExit}, expected ${detector}`);
   if (result.exit !== gate) throw new Error(`gate exit ${result.exit}, expected ${gate}`);
-  if (result.events.length !== want.length) throw new Error(`${result.events.length} event lines, expected ${want.length}: ${result.events.join(' | ')}`);
-  const got = reportEvents(report).map((e) => [e.label, e.left.map(shortName).join(','), e.joined.map(shortName).join(','), e.retired.length, e.added.length]);
-  if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`events ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+  const expected = want.map(expectedLine).join('\n');
+  const got = result.events.join('\n');
+  if (got !== expected) throw new Error(`event lines:\n${got}\nexpected:\n${expected}`);
   return { result, report };
 }
 
@@ -544,29 +559,46 @@ function addStaleFunctionCycle(baselinePath) {
 }
 
 const PAIRS = [
-  ['1 new loop is NEW', { before: [], after: [['a', 'b', 'c']], want: [['NEW', '', 'a,b,c', 0, 1]], detector: 1, gate: 1 }],
-  ['2 growth is SCC GROWN', { before: [['a', 'b', 'c']], after: [['a', 'b', 'c', 'd']], want: [['SCC GROWN', '', 'd', 1, 1]], detector: 1, gate: 1 }],
-  ['3 shrink is SCC SHRINK', { before: [['a', 'b', 'c', 'd']], after: [['a', 'b', 'c']], want: [['SCC SHRINK', 'd', '', 1, 1]], detector: 1, gate: 1 }],
-  ['4 one out one in is SCC SWAP', { before: [['a', 'b', 'c']], after: [['a', 'b', 'd']], want: [['SCC SWAP', 'c', 'd', 1, 1]], detector: 1, gate: 1 }],
-  ['5 removal is a gate error though the detector exits 0', { before: [['a', 'b', 'd']], after: [], want: [['CYCLE REMOVED', 'a,b,d', '', 1, 0]], detector: 0, gate: 3 }],
-  ['6 split is one SCC SHRINK', { before: [['a', 'b', 'c', 'd']], after: [['a', 'b'], ['c', 'd']], want: [['SCC SHRINK', '', '', 1, 2]], detector: 1, gate: 1 }],
-  ['7 merge is one SCC GROWN', { before: [['a', 'b', 'c'], ['d', 'e']], after: [['a', 'b', 'c', 'd', 'e']], want: [['SCC GROWN', '', '', 2, 1]], detector: 1, gate: 1 }],
-  ['8 known plus new is one NEW line', { before: [['a', 'b', 'c']], after: [['a', 'b', 'c'], ['d', 'e']], want: [['NEW', '', 'd,e', 0, 1]], detector: 1, gate: 1 }],
+  ['1 new loop is NEW', { before: [], after: [['a', 'b', 'c']], want: [['NEW', '', 'a,b,c', '', 'abc']], detector: 1, gate: 1 }],
+  ['2 growth is SCC GROWN', { before: [['a', 'b', 'c']], after: [['a', 'b', 'c', 'd']], want: [['SCC GROWN', '', 'd', 'abc', 'abcd']], detector: 1, gate: 1 }],
+  ['3 shrink is SCC SHRINK', { before: [['a', 'b', 'c', 'd']], after: [['a', 'b', 'c']], want: [['SCC SHRINK', 'd', '', 'abcd', 'abc']], detector: 1, gate: 1 }],
+  ['4 one out one in is SCC SWAP', { before: [['a', 'b', 'c']], after: [['a', 'b', 'd']], want: [['SCC SWAP', 'c', 'd', 'abc', 'abd']], detector: 1, gate: 1 }],
+  ['5 removal is a gate error though the detector exits 0', { before: [['a', 'b', 'd']], after: [], want: [['CYCLE REMOVED', 'a,b,d', '', 'abd', '']], detector: 0, gate: 3 }],
+  ['6 split is one SCC SHRINK', { before: [['a', 'b', 'c', 'd']], after: [['a', 'b'], ['c', 'd']], want: [['SCC SHRINK', '', '', 'abcd', 'ab cd']], detector: 1, gate: 1 }],
+  ['7 merge is one SCC GROWN', { before: [['a', 'b', 'c'], ['d', 'e']], after: [['a', 'b', 'c', 'd', 'e']], want: [['SCC GROWN', '', '', 'abc de', 'abcde']], detector: 1, gate: 1 }],
+  ['8 known plus new is one NEW line', { before: [['a', 'b', 'c']], after: [['a', 'b', 'c'], ['d', 'e']], want: [['NEW', '', 'd,e', '', 'de']], detector: 1, gate: 1 }],
   ['9 a stale function cycle makes no event', { before: [['a', 'b', 'c']], after: [['a', 'b', 'c']], want: [], detector: 0, gate: 0, editBaseline: addStaleFunctionCycle }],
-  ['10 re-partition is one SCC SWAP', { before: [['a', 'b'], ['c', 'd']], after: [['a', 'c'], ['b', 'd']], want: [['SCC SWAP', '', '', 2, 2]], detector: 1, gate: 1 }],
-  ['11 removal plus unrelated new: both lines, gate error over exit 1', { before: [['a', 'b', 'c']], after: [['d', 'e']], want: [['CYCLE REMOVED', 'a,b,c', '', 1, 0], ['NEW', '', 'd,e', 0, 1]], detector: 1, gate: 3 }],
-  ['12 shrink plus unrelated new is two events', { before: [['a', 'b', 'c']], after: [['a', 'b'], ['d', 'e']], want: [['SCC SHRINK', 'c', '', 1, 1], ['NEW', '', 'd,e', 0, 1]], detector: 1, gate: 1 }],
-  ['14 cross coupling with equal unions is SCC SWAP', { before: [['a', 'b', 'c'], ['d', 'e', 'f']], after: [['a', 'd'], ['b', 'e'], ['c', 'f']], want: [['SCC SWAP', '', '', 2, 3]], detector: 1, gate: 1 }],
-  ['15 coupling into a smaller union is SCC SWAP', { before: [['a', 'b'], ['c', 'd']], after: [['a', 'c']], want: [['SCC SWAP', 'b,d', '', 2, 1]], detector: 1, gate: 1 }],
+  ['10 re-partition is one SCC SWAP', { before: [['a', 'b'], ['c', 'd']], after: [['a', 'c'], ['b', 'd']], want: [['SCC SWAP', '', '', 'ab cd', 'ac bd']], detector: 1, gate: 1 }],
+  ['11 removal plus unrelated new: both lines, gate error over exit 1', { before: [['a', 'b', 'c']], after: [['d', 'e']], want: [['CYCLE REMOVED', 'a,b,c', '', 'abc', ''], ['NEW', '', 'd,e', '', 'de']], detector: 1, gate: 3 }],
+  ['12 shrink plus unrelated new is two events', { before: [['a', 'b', 'c']], after: [['a', 'b'], ['d', 'e']], want: [['SCC SHRINK', 'c', '', 'abc', 'ab'], ['NEW', '', 'd,e', '', 'de']], detector: 1, gate: 1 }],
+  ['14 cross coupling with equal unions is SCC SWAP', { before: [['a', 'b', 'c'], ['d', 'e', 'f']], after: [['a', 'd'], ['b', 'e'], ['c', 'f']], want: [['SCC SWAP', '', '', 'abc def', 'ad be cf']], detector: 1, gate: 1 }],
+  ['15 coupling into a smaller union is SCC SWAP', { before: [['a', 'b'], ['c', 'd']], after: [['a', 'c']], want: [['SCC SWAP', 'b,d', '', 'ab cd', 'ac']], detector: 1, gate: 1 }],
 ];
 
+// U+FF21 is EF BC A1 in UTF-8 and U+10400 is F0 90 90 80, so byte order puts U+FF21 first;
+// UTF-16 code-unit order would put U+10400 (D801 DC00) first.
+function unicodeOrderCase() {
+  const high = 'm::\u{10400}';
+  const wide = 'm::\uFF21';
+  const lines = classifyEvents([], [
+    { id: '2222222222222222', members: [high] },
+    { id: '1111111111111111', members: [wide, `${high}x`] },
+  ]).map(formatEvent);
+  const expected = [
+    `NEW: retired [] new [1111111111111111] left [] joined [${wide}, ${high}x]`,
+    `NEW: retired [] new [2222222222222222] left [] joined [${high}]`,
+  ];
+  if (lines.join('\n') !== expected.join('\n')) throw new Error(`byte order broken:\n${lines.join('\n')}`);
+}
+
 CASES.push(
+  ['event lists and events sort byte-wise on UTF-8, not by UTF-16 code unit', unicodeOrderCase],
   ...PAIRS.map(([name, row]) => [`pair ${name}`, () => expectPair(row)]),
   ['pair 13 two events, output invariant under every permutation', async () => {
     const { report } = await expectPair({
       before: [['a', 'b', 'c'], ['d', 'e'], ['p', 'q', 'r', 's']],
       after: [['a', 'b', 'c', 'd', 'e'], ['p', 'q'], ['r', 's']],
-      want: [['SCC GROWN', '', '', 2, 1], ['SCC SHRINK', '', '', 1, 2]],
+      want: [['SCC GROWN', '', '', 'abc de', 'abcde'], ['SCC SHRINK', '', '', 'pqrs', 'pq rs']],
       detector: 1,
       gate: 1,
     });
