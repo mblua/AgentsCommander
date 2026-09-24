@@ -16,7 +16,7 @@ use crate::config::ac_root::existing_ac_root;
 use crate::config::daemon_pid::{detect_daemon_state, DaemonState};
 use crate::config::projects::resolve_project_reference;
 use crate::config::remote_activity_cache::{
-    read_snapshot, snapshot_is_fresh, PersistedCiState, RemoteActivitySnapshot,
+    read_snapshot, snapshot_is_fresh, PersistedCiState, PersistedRepoCi, RemoteActivitySnapshot,
     REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME, REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS,
 };
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
@@ -44,6 +44,24 @@ enum WorkgroupCommand {
 struct WorkgroupActivityArgs {
     #[arg(long)]
     project: String,
+    /// Keep only these room numbers (comma-separated, e.g. 5,12,17)
+    #[arg(long, allow_hyphen_values = true)]
+    rooms: Option<String>,
+    /// Keep only rooms of this team (exact name)
+    #[arg(long, allow_hyphen_values = true)]
+    team: Option<String>,
+    /// Keep only rooms whose working state is true or false
+    #[arg(long, allow_hyphen_values = true)]
+    working: Option<String>,
+    /// Keep only rooms whose ciState is running, idle or unknown
+    #[arg(long = "ci-state", allow_hyphen_values = true)]
+    ci_state: Option<String>,
+    /// Keep only rooms whose task title matches this regex (case-sensitive; (?i) for insensitive)
+    #[arg(long = "title-regex", allow_hyphen_values = true)]
+    title_regex: Option<String>,
+    /// Drop rooms whose task title is missing, blank or "clean" (any case)
+    #[arg(long = "hide-clean")]
+    hide_clean: bool,
 }
 
 #[derive(Args)]
@@ -104,6 +122,140 @@ struct WorkgroupActivityItem {
     working: bool,
     ci_state: &'static str,
     task_title: Option<String>,
+    /// #2473: sorted, deduped in-progress run ids; non-empty only when running.
+    ci_run_ids: Vec<u64>,
+    /// #2473: sorted, deduped PR numbers of those runs; non-empty only when running.
+    ci_pull_requests: Vec<u64>,
+    /// #2473: why `ci_state` is `unknown`; `None` otherwise.
+    ci_unknown_reason: Option<&'static str>,
+}
+
+/// The parsed `room activity` filters (#2473). Every present filter must match
+/// (AND); an absent one matches everything.
+#[derive(Debug, Default)]
+struct ActivityFilter {
+    rooms: Option<BTreeSet<u32>>,
+    team: Option<String>,
+    working: Option<bool>,
+    ci_state: Option<&'static str>,
+    title_regex: Option<regex::Regex>,
+    hide_clean: bool,
+}
+
+impl ActivityFilter {
+    fn matches(&self, item: &WorkgroupActivityItem) -> bool {
+        if let Some(rooms) = &self.rooms {
+            if !room_number(&item.name).is_some_and(|number| rooms.contains(&number)) {
+                return false;
+            }
+        }
+        if let Some(team) = &self.team {
+            if item.team != *team {
+                return false;
+            }
+        }
+        if let Some(working) = self.working {
+            if item.working != working {
+                return false;
+            }
+        }
+        if let Some(ci_state) = self.ci_state {
+            if item.ci_state != ci_state {
+                return false;
+            }
+        }
+        if let Some(regex) = &self.title_regex {
+            if !item
+                .task_title
+                .as_deref()
+                .is_some_and(|title| regex.is_match(title))
+            {
+                return false;
+            }
+        }
+        if self.hide_clean && title_is_clean(item.task_title.as_deref()) {
+            return false;
+        }
+        true
+    }
+}
+
+/// `--hide-clean`: a missing title, a blank one, or `clean` in any ASCII case
+/// after trimming.
+fn title_is_clean(title: Option<&str>) -> bool {
+    match title.map(str::trim) {
+        None => true,
+        Some(title) => title.is_empty() || title.eq_ignore_ascii_case("clean"),
+    }
+}
+
+/// The N of `room-N-<team>` / `wg-N-<team>`; `None` for any other shape.
+fn room_number(name: &str) -> Option<u32> {
+    let rest = crate::config::entity_prefix::strip_entity_prefix(name)?;
+    let (number, _) = rest.split_once('-')?;
+    number.parse::<u32>().ok()
+}
+
+/// Validate every filter value in a fixed order (rooms, team, working,
+/// ci-state, title-regex); the first failure is the error.
+fn parse_activity_filter(args: &WorkgroupActivityArgs) -> Result<ActivityFilter, String> {
+    let rooms = match &args.rooms {
+        None => None,
+        Some(raw) => {
+            let mut set = BTreeSet::new();
+            for item in raw.split(',') {
+                match item.trim().parse::<u32>() {
+                    Ok(number) if number > 0 => {
+                        set.insert(number);
+                    }
+                    _ => {
+                        return Err(format!(
+                            "Invalid --rooms '{raw}': expected comma-separated positive room numbers, e.g. 5,12,17"
+                        ))
+                    }
+                }
+            }
+            Some(set)
+        }
+    };
+    let team = match &args.team {
+        None => None,
+        Some(raw) if raw.trim().is_empty() => {
+            return Err(format!("Invalid --team '{raw}': expected a team name"))
+        }
+        Some(raw) => Some(raw.clone()),
+    };
+    let working = match args.working.as_deref() {
+        None => None,
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        Some(raw) => return Err(format!("Invalid --working '{raw}': expected true or false")),
+    };
+    let ci_state = match args.ci_state.as_deref() {
+        None => None,
+        Some("running") => Some("running"),
+        Some("idle") => Some("idle"),
+        Some("unknown") => Some("unknown"),
+        Some(raw) => {
+            return Err(format!(
+                "Invalid --ci-state '{raw}': expected running, idle or unknown"
+            ))
+        }
+    };
+    let title_regex = match &args.title_regex {
+        None => None,
+        Some(raw) => Some(
+            regex::Regex::new(raw).map_err(|e| format!("Invalid --title-regex '{raw}': {e}"))?,
+        ),
+    };
+    Ok(ActivityFilter {
+        rooms,
+        team,
+        working,
+        ci_state,
+        title_regex,
+        hide_clean: args.hide_clean,
+    })
 }
 
 pub fn execute(args: WorkgroupArgs) -> i32 {
@@ -202,6 +354,7 @@ fn list(args: WorkgroupListArgs) -> Result<(), String> {
 /// state and TASK title. Read-only: no TASK, cache, session, daemon or project
 /// write belongs to this verb.
 fn activity(args: WorkgroupActivityArgs) -> Result<(), String> {
+    let filter = parse_activity_filter(&args)?;
     let project_path = resolve_cli_project(&args.project)?;
     let ac_root = resolve_cli_ac_root(&project_path)?;
     // One instant for the whole run, captured before the cache read, so every
@@ -210,35 +363,36 @@ fn activity(args: WorkgroupActivityArgs) -> Result<(), String> {
     let settings = crate::config::settings::load_settings_for_cli();
     let daemon_state = detect_daemon_state();
 
-    let ci_entries: HashMap<String, PersistedCiState> = match ci_gate(
-        settings.ci_activity_enabled,
-        daemon_state_is_live(&daemon_state),
-    ) {
-        CiGate::CiDisabled => {
-            warn_activity(
-                "room activity: CI activity is disabled; ciState is reported as \"unknown\"",
-            );
-            HashMap::new()
-        }
-        CiGate::DaemonNotLive => {
-            warn_activity(&format!(
+    let (ci_entries, ci_gate_reason): (HashMap<String, IndexedRepoCi>, Option<&'static str>) =
+        match ci_gate(
+            settings.ci_activity_enabled,
+            daemon_state_is_live(&daemon_state),
+        ) {
+            CiGate::CiDisabled => {
+                warn_activity(
+                    "room activity: CI activity is disabled; ciState is reported as \"unknown\"",
+                );
+                (HashMap::new(), Some("ci-disabled"))
+            }
+            CiGate::DaemonNotLive => {
+                warn_activity(&format!(
                 "room activity: AgentsCommander daemon is not live ({daemon_state:?}); ciState is reported as \"unknown\""
             ));
-            HashMap::new()
-        }
-        CiGate::Usable => {
-            let cache_dir = crate::config::config_dir();
-            match read_fresh_ci_snapshot(cache_dir.as_deref(), now) {
-                Ok(snapshot) => index_ci_entries(&snapshot),
-                Err(reason) => {
-                    warn_activity(&format!(
-                        "room activity: {reason}; ciState is reported as \"unknown\""
-                    ));
-                    HashMap::new()
+                (HashMap::new(), Some("daemon-not-live"))
+            }
+            CiGate::Usable => {
+                let cache_dir = crate::config::config_dir();
+                match read_fresh_ci_snapshot(cache_dir.as_deref(), now) {
+                    Ok(snapshot) => (index_ci_entries(&snapshot), None),
+                    Err(reason) => {
+                        warn_activity(&format!(
+                            "room activity: {reason}; ciState is reported as \"unknown\""
+                        ));
+                        (HashMap::new(), Some("snapshot-unavailable"))
+                    }
                 }
             }
-        }
-    };
+        };
 
     let sessions = load_sessions_raw();
     let mut items: Vec<WorkgroupActivityItem> = Vec::new();
@@ -259,16 +413,20 @@ fn activity(args: WorkgroupActivityArgs) -> Result<(), String> {
             .iter()
             .map(|repo| canonical_activity_path_key(repo))
             .collect();
-        let ci_state = aggregate_room_ci(&repo_keys, &ci_entries);
+        let ci = aggregate_room_ci(&repo_keys, &ci_entries, ci_gate_reason);
         let task_title = read_task_title(&path);
         items.push(WorkgroupActivityItem {
             name,
             team,
             working,
-            ci_state,
+            ci_state: ci.state,
             task_title,
+            ci_run_ids: ci.run_ids,
+            ci_pull_requests: ci.pull_requests,
+            ci_unknown_reason: ci.unknown_reason,
         });
     }
+    items.retain(|item| filter.matches(item));
     print_json(&items)
 }
 
@@ -328,20 +486,54 @@ fn read_fresh_ci_snapshot(
     Ok(snapshot)
 }
 
-/// Canonical-key index over the snapshot's path/state pairs. A duplicate key
+/// One canonical key's CI view after duplicate folding (#2473).
+#[derive(Debug, Clone, PartialEq)]
+struct IndexedRepoCi {
+    ci: PersistedRepoCi,
+    /// Two entries for this key disagreed on `state`.
+    conflicting: bool,
+}
+
+/// Canonical-key index over the snapshot's path/CI pairs. A duplicate key
 /// with conflicting states collapses to `Unknown`: two observations that
-/// disagree are not authority.
-fn index_ci_entries(snapshot: &RemoteActivitySnapshot) -> HashMap<String, PersistedCiState> {
-    let mut entries = HashMap::new();
-    for (path, state) in &snapshot.repos {
+/// disagree are not authority. Duplicates with the SAME state are not a
+/// conflict: run ids / PRs are unioned and the first reason is kept, so
+/// metadata can never change the state.
+fn index_ci_entries(snapshot: &RemoteActivitySnapshot) -> HashMap<String, IndexedRepoCi> {
+    let mut entries: HashMap<String, IndexedRepoCi> = HashMap::new();
+    for (path, ci) in &snapshot.repos {
         let key = canonical_activity_path_key(Path::new(path));
         match entries.entry(key) {
             std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(*state);
+                slot.insert(IndexedRepoCi {
+                    ci: ci.clone(),
+                    conflicting: false,
+                });
             }
             std::collections::hash_map::Entry::Occupied(mut slot) => {
-                if *slot.get() != *state {
-                    slot.insert(PersistedCiState::Unknown);
+                let existing = slot.get_mut();
+                if existing.conflicting {
+                    continue;
+                }
+                if existing.ci.state != ci.state {
+                    *existing = IndexedRepoCi {
+                        ci: PersistedRepoCi {
+                            state: PersistedCiState::Unknown,
+                            run_ids: Vec::new(),
+                            pull_requests: Vec::new(),
+                            unknown_reason: None,
+                        },
+                        conflicting: true,
+                    };
+                } else {
+                    existing.ci.run_ids.extend_from_slice(&ci.run_ids);
+                    existing
+                        .ci
+                        .pull_requests
+                        .extend_from_slice(&ci.pull_requests);
+                    if existing.ci.unknown_reason.is_none() {
+                        existing.ci.unknown_reason = ci.unknown_reason.clone();
+                    }
                 }
             }
         }
@@ -349,33 +541,113 @@ fn index_ci_entries(snapshot: &RemoteActivitySnapshot) -> HashMap<String, Persis
     entries
 }
 
+/// A room's aggregate CI view (#2473): the legacy tri-state plus its detail.
+#[derive(Debug, Clone, PartialEq)]
+struct RoomCi {
+    state: &'static str,
+    run_ids: Vec<u64>,
+    pull_requests: Vec<u64>,
+    unknown_reason: Option<&'static str>,
+}
+
+/// The producer's persisted `ci-query-*` codes; anything else in the file is
+/// reported as a plain explicit unknown.
+const PERSISTED_CI_REASONS: [&str; 6] = [
+    "ci-query-timeout",
+    "ci-query-rate-limited",
+    "ci-query-secondary-rate-limited",
+    "ci-query-not-authenticated",
+    "ci-query-incomplete",
+    "ci-query-failed",
+];
+
+/// Why one repo is neither idle nor running; `None` when it is.
+fn repo_unknown_reason(entry: Option<&IndexedRepoCi>) -> Option<&'static str> {
+    let Some(entry) = entry else {
+        return Some("repo-not-in-snapshot");
+    };
+    if entry.conflicting {
+        return Some("conflicting-snapshot-entries");
+    }
+    match entry.ci.state {
+        PersistedCiState::Running | PersistedCiState::Idle => None,
+        PersistedCiState::Unknown => Some(
+            entry
+                .ci
+                .unknown_reason
+                .as_deref()
+                .and_then(|reason| {
+                    PERSISTED_CI_REASONS
+                        .iter()
+                        .copied()
+                        .find(|code| *code == reason)
+                })
+                .unwrap_or("repo-ci-unknown"),
+        ),
+    }
+}
+
 /// The room's CI state: `running` if any room repo is running; `idle` only if
 /// the room has at least one immediate `repo-*` and EVERY repo has a matched
 /// idle entry; `unknown` for no repositories, any missing match, or any
 /// explicit unknown unless another repository is running. Pure, so the whole
 /// tri-state is unit-tested without files.
+///
+/// #2473: `gate_reason` is the gate/snapshot reason (`ci-disabled`,
+/// `daemon-not-live`, `snapshot-unavailable`) when no entry could be read. Run
+/// ids / PRs are reported only when running; the reason only when unknown.
 fn aggregate_room_ci(
     repo_keys: &[String],
-    entries: &HashMap<String, PersistedCiState>,
-) -> &'static str {
-    if repo_keys.is_empty() {
-        return "unknown";
-    }
+    entries: &HashMap<String, IndexedRepoCi>,
+    gate_reason: Option<&'static str>,
+) -> RoomCi {
     let mut any_running = false;
-    let mut all_idle = true;
+    let mut all_idle = !repo_keys.is_empty();
+    let mut run_ids = BTreeSet::new();
+    let mut pull_requests = BTreeSet::new();
     for key in repo_keys {
-        match entries.get(key) {
-            Some(PersistedCiState::Running) => any_running = true,
+        match entries.get(key).map(|entry| entry.ci.state) {
+            Some(PersistedCiState::Running) => {
+                any_running = true;
+                let ci = &entries[key].ci;
+                run_ids.extend(ci.run_ids.iter().copied());
+                pull_requests.extend(ci.pull_requests.iter().copied());
+            }
             Some(PersistedCiState::Idle) => {}
             Some(PersistedCiState::Unknown) | None => all_idle = false,
         }
     }
     if any_running {
-        "running"
-    } else if all_idle {
-        "idle"
-    } else {
-        "unknown"
+        return RoomCi {
+            state: "running",
+            run_ids: run_ids.into_iter().collect(),
+            pull_requests: pull_requests.into_iter().collect(),
+            unknown_reason: None,
+        };
+    }
+    if all_idle {
+        return RoomCi {
+            state: "idle",
+            run_ids: Vec::new(),
+            pull_requests: Vec::new(),
+            unknown_reason: None,
+        };
+    }
+    let unknown_reason = gate_reason.or_else(|| {
+        if repo_keys.is_empty() {
+            return Some("no-repos");
+        }
+        let mut sorted: Vec<&String> = repo_keys.iter().collect();
+        sorted.sort();
+        sorted
+            .into_iter()
+            .find_map(|key| repo_unknown_reason(entries.get(key)))
+    });
+    RoomCi {
+        state: "unknown",
+        run_ids: Vec::new(),
+        pull_requests: Vec::new(),
+        unknown_reason,
     }
 }
 
@@ -928,31 +1200,65 @@ mod tests {
         );
     }
 
+    fn indexed(state: PersistedCiState) -> IndexedRepoCi {
+        indexed_with(state, &[], &[], None)
+    }
+
+    fn indexed_with(
+        state: PersistedCiState,
+        run_ids: &[u64],
+        pull_requests: &[u64],
+        unknown_reason: Option<&str>,
+    ) -> IndexedRepoCi {
+        IndexedRepoCi {
+            ci: repo_ci(state, run_ids, pull_requests, unknown_reason),
+            conflicting: false,
+        }
+    }
+
+    fn repo_ci(
+        state: PersistedCiState,
+        run_ids: &[u64],
+        pull_requests: &[u64],
+        unknown_reason: Option<&str>,
+    ) -> PersistedRepoCi {
+        PersistedRepoCi {
+            state,
+            run_ids: run_ids.to_vec(),
+            pull_requests: pull_requests.to_vec(),
+            unknown_reason: unknown_reason.map(str::to_string),
+        }
+    }
+
+    fn state_of(repo_keys: &[String], entries: &HashMap<String, IndexedRepoCi>) -> &'static str {
+        aggregate_room_ci(repo_keys, entries, None).state
+    }
+
     #[test]
     fn activity_ci_aggregation_is_the_documented_tri_state() {
         let entries = HashMap::from([
-            ("a".to_string(), PersistedCiState::Running),
-            ("b".to_string(), PersistedCiState::Idle),
+            ("a".to_string(), indexed(PersistedCiState::Running)),
+            ("b".to_string(), indexed(PersistedCiState::Idle)),
         ]);
-        assert_eq!(aggregate_room_ci(&[], &entries), "unknown");
-        assert_eq!(aggregate_room_ci(&["a".to_string()], &entries), "running");
-        assert_eq!(aggregate_room_ci(&["b".to_string()], &entries), "idle");
+        assert_eq!(state_of(&[], &entries), "unknown");
+        assert_eq!(state_of(&["a".to_string()], &entries), "running");
+        assert_eq!(state_of(&["b".to_string()], &entries), "idle");
         assert_eq!(
-            aggregate_room_ci(&["b".to_string(), "missing".to_string()], &entries),
+            state_of(&["b".to_string(), "missing".to_string()], &entries),
             "unknown"
         );
         assert_eq!(
-            aggregate_room_ci(
+            state_of(
                 &["b".to_string(), "c".to_string()],
                 &HashMap::from([
-                    ("b".to_string(), PersistedCiState::Idle),
-                    ("c".to_string(), PersistedCiState::Unknown),
+                    ("b".to_string(), indexed(PersistedCiState::Idle)),
+                    ("c".to_string(), indexed(PersistedCiState::Unknown)),
                 ])
             ),
             "unknown"
         );
         assert_eq!(
-            aggregate_room_ci(&["a".to_string(), "c".to_string()], &entries),
+            state_of(&["a".to_string(), "c".to_string()], &entries),
             "running",
             "a running repo outranks an unmatched one"
         );
@@ -962,11 +1268,14 @@ mod tests {
     fn activity_ci_index_matches_verbatim_case_separator_and_trailing_variants() {
         let snapshot = RemoteActivitySnapshot {
             generated_at: chrono::Utc::now(),
-            repos: vec![(r"\\?\C:\Repo\Rooms\A\".to_string(), PersistedCiState::Idle)],
+            repos: vec![(
+                r"\\?\C:\Repo\Rooms\A\".to_string(),
+                repo_ci(PersistedCiState::Idle, &[], &[], None),
+            )],
         };
         let entries = index_ci_entries(&snapshot);
         let room_repo_keys = vec![canonical_activity_path_key(Path::new("c:/repo/rooms/a"))];
-        assert_eq!(aggregate_room_ci(&room_repo_keys, &entries), "idle");
+        assert_eq!(state_of(&room_repo_keys, &entries), "idle");
     }
 
     #[test]
@@ -974,15 +1283,429 @@ mod tests {
         let snapshot = RemoteActivitySnapshot {
             generated_at: chrono::Utc::now(),
             repos: vec![
-                ("A:/repo".to_string(), PersistedCiState::Running),
-                ("a:/repo/".to_string(), PersistedCiState::Idle),
+                (
+                    "A:/repo".to_string(),
+                    repo_ci(PersistedCiState::Running, &[], &[], None),
+                ),
+                (
+                    "a:/repo/".to_string(),
+                    repo_ci(PersistedCiState::Idle, &[], &[], None),
+                ),
             ],
         };
         let entries = index_ci_entries(&snapshot);
+        assert_eq!(state_of(&["a:/repo".to_string()], &entries), "unknown");
+    }
+
+    // --- #2473 filters and CI detail ---
+
+    fn filter_args() -> WorkgroupActivityArgs {
+        WorkgroupActivityArgs {
+            project: "p".to_string(),
+            rooms: None,
+            team: None,
+            working: None,
+            ci_state: None,
+            title_regex: None,
+            hide_clean: false,
+        }
+    }
+
+    #[test]
+    fn u1_parse_activity_filter_rejects_each_bad_value_with_the_exact_message() {
+        let rooms = |v: &str| {
+            format!(
+                "Invalid --rooms '{v}': expected comma-separated positive room numbers, e.g. 5,12,17"
+            )
+        };
+        let regex_error = regex::Regex::new(&String::from("("))
+            .expect_err("bad regex")
+            .to_string();
+        let cases: Vec<(WorkgroupActivityArgs, String)> = vec![
+            (
+                WorkgroupActivityArgs {
+                    rooms: Some("5,,7".into()),
+                    ..filter_args()
+                },
+                rooms("5,,7"),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    rooms: Some("0".into()),
+                    ..filter_args()
+                },
+                rooms("0"),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    rooms: Some("-1".into()),
+                    ..filter_args()
+                },
+                rooms("-1"),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    rooms: Some("abc".into()),
+                    ..filter_args()
+                },
+                rooms("abc"),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    rooms: Some("".into()),
+                    ..filter_args()
+                },
+                rooms(""),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    rooms: Some("5,".into()),
+                    ..filter_args()
+                },
+                rooms("5,"),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    rooms: Some("4294967296".into()),
+                    ..filter_args()
+                },
+                rooms("4294967296"),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    team: Some(" ".into()),
+                    ..filter_args()
+                },
+                "Invalid --team ' ': expected a team name".to_string(),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    team: Some("".into()),
+                    ..filter_args()
+                },
+                "Invalid --team '': expected a team name".to_string(),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    working: Some("TRUE".into()),
+                    ..filter_args()
+                },
+                "Invalid --working 'TRUE': expected true or false".to_string(),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    working: Some("1".into()),
+                    ..filter_args()
+                },
+                "Invalid --working '1': expected true or false".to_string(),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    ci_state: Some("Running".into()),
+                    ..filter_args()
+                },
+                "Invalid --ci-state 'Running': expected running, idle or unknown".to_string(),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    ci_state: Some("done".into()),
+                    ..filter_args()
+                },
+                "Invalid --ci-state 'done': expected running, idle or unknown".to_string(),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    title_regex: Some("(".into()),
+                    ..filter_args()
+                },
+                format!("Invalid --title-regex '(': {regex_error}"),
+            ),
+            (
+                // First failing flag in the documented order wins.
+                WorkgroupActivityArgs {
+                    rooms: Some("x".into()),
+                    team: Some(" ".into()),
+                    working: Some("no".into()),
+                    ..filter_args()
+                },
+                rooms("x"),
+            ),
+            (
+                WorkgroupActivityArgs {
+                    working: Some("no".into()),
+                    title_regex: Some("(".into()),
+                    ..filter_args()
+                },
+                "Invalid --working 'no': expected true or false".to_string(),
+            ),
+        ];
+        assert!(cases.len() >= 12);
+        for (args, expected) in cases {
+            assert_eq!(parse_activity_filter(&args).err(), Some(expected));
+        }
+        let ok = parse_activity_filter(&WorkgroupActivityArgs {
+            rooms: Some(" 5, 12,5 ".into()),
+            team: Some("-t".into()),
+            working: Some("false".into()),
+            ci_state: Some("idle".into()),
+            title_regex: Some("-x".into()),
+            hide_clean: true,
+            ..filter_args()
+        })
+        .expect("valid filter");
+        assert_eq!(ok.rooms, Some(BTreeSet::from([5, 12])));
+        assert_eq!(ok.team.as_deref(), Some("-t"));
+        assert_eq!(ok.working, Some(false));
+        assert_eq!(ok.ci_state, Some("idle"));
+        assert!(ok.hide_clean);
+    }
+
+    fn item(
+        name: &str,
+        team: &str,
+        working: bool,
+        ci: &'static str,
+        title: Option<&str>,
+    ) -> WorkgroupActivityItem {
+        WorkgroupActivityItem {
+            name: name.to_string(),
+            team: team.to_string(),
+            working,
+            ci_state: ci,
+            task_title: title.map(str::to_string),
+            ci_run_ids: Vec::new(),
+            ci_pull_requests: Vec::new(),
+            ci_unknown_reason: None,
+        }
+    }
+
+    #[test]
+    fn u2_each_predicate_passes_one_item_and_rejects_another() {
+        let base = item("room-5-dev", "dev", true, "running", Some("Fix #12 parser"));
+        let cases: Vec<(ActivityFilter, WorkgroupActivityItem)> = vec![
+            (
+                ActivityFilter {
+                    rooms: Some(BTreeSet::from([5, 17])),
+                    ..ActivityFilter::default()
+                },
+                item("room-6-dev", "dev", true, "running", Some("Fix #12 parser")),
+            ),
+            (
+                ActivityFilter {
+                    team: Some("dev".into()),
+                    ..ActivityFilter::default()
+                },
+                item("room-5-ops", "ops", true, "running", Some("Fix #12 parser")),
+            ),
+            (
+                ActivityFilter {
+                    working: Some(true),
+                    ..ActivityFilter::default()
+                },
+                item(
+                    "room-5-dev",
+                    "dev",
+                    false,
+                    "running",
+                    Some("Fix #12 parser"),
+                ),
+            ),
+            (
+                ActivityFilter {
+                    ci_state: Some("running"),
+                    ..ActivityFilter::default()
+                },
+                item("room-5-dev", "dev", true, "idle", Some("Fix #12 parser")),
+            ),
+            (
+                ActivityFilter {
+                    title_regex: Some(regex::Regex::new("#1\\d").expect("regex")),
+                    ..ActivityFilter::default()
+                },
+                item("room-5-dev", "dev", true, "running", None),
+            ),
+            (
+                ActivityFilter {
+                    hide_clean: true,
+                    ..ActivityFilter::default()
+                },
+                item("room-5-dev", "dev", true, "running", Some("  CLEAN ")),
+            ),
+        ];
+        for (filter, failing) in &cases {
+            assert!(filter.matches(&base), "{filter:?} passes the base item");
+            assert!(!filter.matches(failing), "{filter:?} rejects {failing:?}");
+        }
+        let regex = ActivityFilter {
+            title_regex: Some(regex::Regex::new("fix").expect("regex")),
+            ..ActivityFilter::default()
+        };
+        assert!(!regex.matches(&base), "the regex is case-sensitive");
+        let hide = ActivityFilter {
+            hide_clean: true,
+            ..ActivityFilter::default()
+        };
+        assert!(!hide.matches(&item("room-5-dev", "dev", true, "running", None)));
+        assert!(!hide.matches(&item("room-5-dev", "dev", true, "running", Some("  "))));
+        assert!(hide.matches(&item(
+            "room-5-dev",
+            "dev",
+            true,
+            "running",
+            Some("Clean up")
+        )));
+        let rooms = ActivityFilter {
+            rooms: Some(BTreeSet::from([5])),
+            ..ActivityFilter::default()
+        };
+        assert!(!rooms.matches(&item("room-x", "dev", true, "running", None)));
+        assert!(ActivityFilter::default().matches(&base));
+    }
+
+    #[test]
+    fn u3_room_number_reads_both_prefixes() {
+        assert_eq!(room_number("room-15-x"), Some(15));
+        assert_eq!(room_number("wg-3-x"), Some(3));
+        assert_eq!(room_number("room-x"), None);
+        assert_eq!(room_number("other-3-x"), None);
+    }
+
+    #[test]
+    fn u4_aggregation_reports_every_reason_and_unions_runs() {
+        let key = |k: &str| k.to_string();
+        let entries = HashMap::from([
+            (
+                key("run1"),
+                indexed_with(PersistedCiState::Running, &[30, 10], &[7], None),
+            ),
+            (
+                key("run2"),
+                indexed_with(PersistedCiState::Running, &[10, 20], &[7, 2], None),
+            ),
+            (key("idle"), indexed(PersistedCiState::Idle)),
+            (key("unk"), indexed(PersistedCiState::Unknown)),
+            (
+                key("timeout"),
+                indexed_with(
+                    PersistedCiState::Unknown,
+                    &[],
+                    &[],
+                    Some("ci-query-timeout"),
+                ),
+            ),
+            (
+                key("weird"),
+                indexed_with(PersistedCiState::Unknown, &[], &[], Some("made-up")),
+            ),
+            (
+                key("conflict"),
+                IndexedRepoCi {
+                    ci: repo_ci(PersistedCiState::Unknown, &[], &[], None),
+                    conflicting: true,
+                },
+            ),
+        ]);
+        let reason = |keys: &[&str], gate: Option<&'static str>| {
+            let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+            aggregate_room_ci(&keys, &entries, gate)
+        };
+        let running = reason(&["run1", "run2", "unk", "idle"], None);
         assert_eq!(
-            aggregate_room_ci(&["a:/repo".to_string()], &entries),
-            "unknown"
+            running,
+            RoomCi {
+                state: "running",
+                run_ids: vec![10, 20, 30],
+                pull_requests: vec![2, 7],
+                unknown_reason: None,
+            }
         );
+        let idle = reason(&["idle"], None);
+        assert_eq!(
+            (
+                idle.state,
+                idle.run_ids,
+                idle.pull_requests,
+                idle.unknown_reason
+            ),
+            ("idle", vec![], vec![], None)
+        );
+        assert_eq!(reason(&[], None).unknown_reason, Some("no-repos"));
+        assert_eq!(
+            reason(&["idle", "missing"], None).unknown_reason,
+            Some("repo-not-in-snapshot")
+        );
+        assert_eq!(
+            reason(&["idle", "conflict"], None).unknown_reason,
+            Some("conflicting-snapshot-entries")
+        );
+        assert_eq!(
+            reason(&["timeout", "idle"], None).unknown_reason,
+            Some("ci-query-timeout")
+        );
+        assert_eq!(
+            reason(&["unk"], None).unknown_reason,
+            Some("repo-ci-unknown")
+        );
+        assert_eq!(
+            reason(&["weird"], None).unknown_reason,
+            Some("repo-ci-unknown")
+        );
+        // First repo in sorted order decides: "timeout" < "unk".
+        assert_eq!(
+            reason(&["unk", "timeout"], None).unknown_reason,
+            Some("ci-query-timeout")
+        );
+        for gate in ["ci-disabled", "daemon-not-live", "snapshot-unavailable"] {
+            let empty = HashMap::new();
+            let gated = aggregate_room_ci(&[], &empty, Some(gate));
+            assert_eq!((gated.state, gated.unknown_reason), ("unknown", Some(gate)));
+            let gated = aggregate_room_ci(&[key("a")], &empty, Some(gate));
+            assert_eq!(
+                gated.unknown_reason,
+                Some(gate),
+                "the gate precedes repo reasons"
+            );
+            assert!(gated.run_ids.is_empty() && gated.pull_requests.is_empty());
+        }
+        let unknown = reason(&["unk"], None);
+        assert!(unknown.run_ids.is_empty() && unknown.pull_requests.is_empty());
+    }
+
+    #[test]
+    fn p4_duplicate_entries_union_metadata_but_conflicting_states_are_unknown() {
+        let snapshot = RemoteActivitySnapshot {
+            generated_at: chrono::Utc::now(),
+            repos: vec![
+                (
+                    "A:/repo".to_string(),
+                    repo_ci(PersistedCiState::Running, &[1, 3], &[9], None),
+                ),
+                (
+                    "a:/repo/".to_string(),
+                    repo_ci(PersistedCiState::Running, &[2, 3], &[8], None),
+                ),
+                (
+                    "b:/repo".to_string(),
+                    repo_ci(PersistedCiState::Running, &[5], &[], None),
+                ),
+                (
+                    "B:/repo/".to_string(),
+                    repo_ci(PersistedCiState::Idle, &[], &[], None),
+                ),
+            ],
+        };
+        let entries = index_ci_entries(&snapshot);
+        let same = aggregate_room_ci(&["a:/repo".to_string()], &entries, None);
+        assert_eq!(same.state, "running");
+        assert_eq!(same.run_ids, vec![1, 2, 3]);
+        assert_eq!(same.pull_requests, vec![8, 9]);
+        let conflict = aggregate_room_ci(&["b:/repo".to_string()], &entries, None);
+        assert_eq!(conflict.state, "unknown");
+        assert_eq!(
+            conflict.unknown_reason,
+            Some("conflicting-snapshot-entries")
+        );
+        assert!(conflict.run_ids.is_empty());
     }
 
     #[test]
@@ -998,7 +1721,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
         let now = activity_instant("2026-09-22T11:41:41Z");
-        let entry = vec![("a:/repo".to_string(), PersistedCiState::Running)];
+        let entry = vec![(
+            "a:/repo".to_string(),
+            repo_ci(PersistedCiState::Running, &[], &[], None),
+        )];
 
         assert!(
             read_fresh_ci_snapshot(Some(tmp.path()), now).is_err(),
