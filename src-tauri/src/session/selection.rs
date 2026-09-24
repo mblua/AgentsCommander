@@ -113,15 +113,30 @@ fn selection_timing_line(
     )
 }
 
+/// Test-only recording sinks, keyed by command, so a test can observe (or
+/// deliberately block) the recording of its own probe command only.
 #[cfg(test)]
-pub(crate) static SELECTION_TIMING_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+type SelectionTimingSink = Arc<dyn Fn(&str) + Send + Sync>;
+#[cfg(test)]
+static SELECTION_TIMING_SINKS: Mutex<Vec<(&'static str, SelectionTimingSink)>> =
+    Mutex::new(Vec::new());
 
-fn record_selection_timing(line: String) {
+fn record_selection_timing(command: &str, line: String) {
     log::info!("{}", line);
     #[cfg(test)]
-    if let Ok(mut lines) = SELECTION_TIMING_LINES.lock() {
-        lines.push(line);
+    {
+        let sink = SELECTION_TIMING_SINKS.lock().ok().and_then(|sinks| {
+            sinks
+                .iter()
+                .find(|(name, _)| *name == command)
+                .map(|(_, sink)| Arc::clone(sink))
+        });
+        if let Some(sink) = sink {
+            sink(&line);
+        }
     }
+    #[cfg(not(test))]
+    let _ = command;
 }
 
 async fn run_owned_selection_operation_inner<F, Fut, T>(
@@ -138,22 +153,25 @@ where
     }
     let submitted = std::time::Instant::now();
     let handle = tauri::async_runtime::spawn(async move {
-        let _turn = match acquire_selection_operation_turn().await {
+        let turn = match acquire_selection_operation_turn().await {
             Ok(turn) => turn,
             Err(error) => return Err(error.to_string()),
         };
         let Some(command) = command else {
+            let _turn = turn;
             return operation().await;
         };
         let queue_wait = submitted.elapsed();
         let started = std::time::Instant::now();
         let result = operation().await;
-        record_selection_timing(selection_timing_line(
+        let work = started.elapsed();
+        // #2475 - release the turn BEFORE logging: the logger writes (and may
+        // rotate) app.log synchronously, and that must never extend the turn.
+        drop(turn);
+        record_selection_timing(
             command,
-            queue_wait,
-            started.elapsed(),
-            result.is_ok(),
-        ));
+            selection_timing_line(command, queue_wait, work, result.is_ok()),
+        );
         result
     });
     match handle.await {
@@ -7287,44 +7305,139 @@ fn commit_selection_transition() {
         );
     }
 
+    /// Registers a recording sink for one probe command; removed on drop.
+    struct TimingSinkRegistration(&'static str);
+
+    impl TimingSinkRegistration {
+        fn new(command: &'static str, sink: super::SelectionTimingSink) -> Self {
+            super::SELECTION_TIMING_SINKS
+                .lock()
+                .expect("sinks")
+                .push((command, sink));
+            Self(command)
+        }
+    }
+
+    impl Drop for TimingSinkRegistration {
+        fn drop(&mut self) {
+            if let Ok(mut sinks) = super::SELECTION_TIMING_SINKS.lock() {
+                sinks.retain(|(name, _)| *name != self.0);
+            }
+        }
+    }
+
+    fn timing_field_ms(line: &str, name: &str) -> f64 {
+        line.split(' ')
+            .find_map(|part| part.strip_prefix(&format!("{name}=")))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("{name} missing in {line}"))
+    }
+
+    /// #2475 - queue_wait and work are bounded by synchronized events, not by
+    /// sleep lengths: the submission provably happens before the release, and
+    /// the operation's entry and finish are explicit handshakes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn timed_selection_operation_records_queue_wait_and_work() {
+        use std::time::Instant;
         const PROBE: &str = "issue_2475_timing_probe";
+        let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+        let line_tx = Mutex::new(line_tx);
+        let _sink = TimingSinkRegistration::new(
+            PROBE,
+            Arc::new(move |line: &str| {
+                let _ = line_tx.lock().expect("line tx").send(line.to_string());
+            }),
+        );
+        let (entered_tx, mut entered_rx) = tokio::sync::oneshot::channel::<Instant>();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel::<()>();
+
         let held = acquire_selection_operation_turn()
             .await
             .expect("hold the turn");
-        let queued = tokio::spawn(run_owned_selection_operation_timed(PROBE, || async {
-            tokio::time::sleep(Duration::from_millis(30)).await;
-            Err::<(), String>("probe failure".to_string())
-        }));
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        let before_submit = Instant::now();
+        let mut queued = Box::pin(run_owned_selection_operation_timed(
+            PROBE,
+            move || async move {
+                let _ = entered_tx.send(Instant::now());
+                let _ = finish_rx.await;
+                Err::<(), String>("probe failure".to_string())
+            },
+        ));
+        // One poll runs the submission: `submitted` is stamped and the owned
+        // task is spawned before this returns.
+        assert!(futures::poll!(queued.as_mut()).is_pending());
+        let after_submit = Instant::now();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            entered_rx.try_recv().is_err(),
+            "the operation must not enter while the turn is held"
+        );
+
+        let released = Instant::now();
         drop(held);
+        let queued = tokio::spawn(queued);
+        let entered = (&mut entered_rx).await.expect("operation entered");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let finish_sent = Instant::now();
+        finish_tx.send(()).expect("operation still waiting");
         let result = queued.await.expect("join");
         assert_eq!(result, Err("probe failure".to_string()), "result unchanged");
 
-        let lines = super::SELECTION_TIMING_LINES.lock().expect("lines").clone();
-        let line = lines
-            .iter()
-            .find(|line| line.contains(&format!("command={PROBE} ")))
-            .unwrap_or_else(|| panic!("no timing line for the probe in {lines:?}"));
-        let field = |name: &str| -> f64 {
-            line.split(' ')
-                .find_map(|part| part.strip_prefix(&format!("{name}=")))
-                .and_then(|value| value.parse().ok())
-                .unwrap_or_else(|| panic!("{name} missing in {line}"))
-        };
+        let line = line_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("timing line recorded");
+        assert!(line.starts_with(&format!("[selection-timing] command={PROBE} ")));
+        assert!(line.ends_with(" ok=false"), "failure is recorded: {line}");
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        // The line rounds to 0.1 ms.
+        let tolerance = 0.05;
+        let queue_wait = timing_field_ms(&line, "queue_wait_ms");
+        let work = timing_field_ms(&line, "work_ms");
         assert!(
-            field("queue_wait_ms") >= 70.0,
+            queue_wait + tolerance >= ms(released - after_submit),
             "queue wait covers the held turn: {line}"
         );
         assert!(
-            field("work_ms") >= 25.0,
-            "work covers the operation: {line}"
+            queue_wait - tolerance <= ms(entered - before_submit),
+            "queue wait ends at admission: {line}"
         );
         assert!(
-            field("work_ms") < field("queue_wait_ms"),
-            "the two spans stay separate: {line}"
+            work + tolerance >= ms(finish_sent - entered),
+            "work covers the operation: {line}"
         );
-        assert!(line.ends_with(" ok=false"), "failure is recorded: {line}");
+    }
+
+    /// #2475 - recording happens after the turn is released: a recording sink
+    /// that blocks must not keep the next operation out of the turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn timing_record_runs_after_the_turn_is_released() {
+        const PROBE: &str = "issue_2475_blocked_sink_probe";
+        let (in_sink_tx, in_sink_rx) = std::sync::mpsc::channel::<()>();
+        let (unblock_tx, unblock_rx) = std::sync::mpsc::channel::<()>();
+        let sink_channels = Mutex::new((in_sink_tx, unblock_rx));
+        let _sink = TimingSinkRegistration::new(
+            PROBE,
+            Arc::new(move |_line: &str| {
+                let channels = sink_channels.lock().expect("sink channels");
+                let _ = channels.0.send(());
+                let _ = channels.1.recv_timeout(Duration::from_secs(10));
+            }),
+        );
+
+        let first = tokio::spawn(run_owned_selection_operation_timed(PROBE, || async {
+            Ok::<(), String>(())
+        }));
+        tokio::task::spawn_blocking(move || in_sink_rx.recv_timeout(Duration::from_secs(10)))
+            .await
+            .expect("join")
+            .expect("recording started");
+
+        // The sink is now blocked inside the recording of `first`.
+        let next =
+            tokio::time::timeout(Duration::from_secs(5), acquire_selection_operation_turn()).await;
+        let _ = unblock_tx.send(());
+        let next = next.expect("the turn must be free while the timing line is recorded");
+        drop(next.expect("turn"));
+        assert_eq!(first.await.expect("join"), Ok(()));
     }
 }
