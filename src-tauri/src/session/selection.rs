@@ -7881,7 +7881,11 @@ fn commit_selection_transition() {
         let (read, mut entered, release) = p3_held_read(PROBE);
         let while_held = tokio::time::timeout(P3_ABSENCE, &mut entered).await;
         drop(writer);
-        let after_release = tokio::time::timeout(P3_PRESENCE, &mut entered).await;
+        // A oneshot must not be polled again once it has completed.
+        let after_release = match while_held {
+            Ok(_) => None,
+            Err(_) => Some(tokio::time::timeout(P3_PRESENCE, &mut entered).await),
+        };
         let _ = release.send(());
         assert_eq!(read.await.expect("join"), Ok(()));
         assert!(
@@ -7889,6 +7893,7 @@ fn commit_selection_transition() {
             "the read entered while the write side was held"
         );
         after_release
+            .expect("checked above")
             .expect("the read enters once the write side is released")
             .expect("entry sent");
     }
@@ -7914,7 +7919,11 @@ fn commit_selection_transition() {
         }));
         let while_read = tokio::time::timeout(P3_ABSENCE, &mut write_entered).await;
         let _ = read_release.send(());
-        let after_release = tokio::time::timeout(P3_PRESENCE, &mut write_entered).await;
+        // A oneshot must not be polled again once it has completed.
+        let after_release = match while_read {
+            Ok(_) => None,
+            Err(_) => Some(tokio::time::timeout(P3_PRESENCE, &mut write_entered).await),
+        };
         assert_eq!(read.await.expect("join"), Ok(()));
         assert_eq!(write.await.expect("join"), Ok(()));
         assert!(
@@ -7922,6 +7931,7 @@ fn commit_selection_transition() {
             "the write entered while a read was inside"
         );
         after_release
+            .expect("checked above")
             .expect("the write enters once the read is released")
             .expect("entry sent");
     }
@@ -7956,8 +7966,13 @@ fn commit_selection_transition() {
         let wakes = Arc::new(P3CountingWaker(AtomicUsize::new(0)));
         let waker = std::task::Waker::from(Arc::clone(&wakes));
         let mut cx = std::task::Context::from_waker(&waker);
-        let polled_pending =
-            std::future::Future::poll(write_acquire.as_mut(), &mut cx).is_pending();
+        let first_poll = std::future::Future::poll(write_acquire.as_mut(), &mut cx);
+        let polled_pending = first_poll.is_pending();
+        // A future must not be polled again once it returned Ready.
+        let ready_guard = match first_poll {
+            std::task::Poll::Ready(guard) => Some(guard.expect("writer turn")),
+            std::task::Poll::Pending => None,
+        };
         // 3. Only now submit the second reader.
         let (second_entered_tx, mut second_entered) = tokio::sync::oneshot::channel::<usize>();
         let second = p3_spawn({
@@ -7974,7 +7989,10 @@ fn commit_selection_transition() {
         let writer = tokio::spawn({
             let order = Arc::clone(&order);
             async move {
-                let guard = write_acquire.await.expect("writer turn");
+                let guard = match ready_guard {
+                    Some(guard) => guard,
+                    None => write_acquire.await.expect("writer turn"),
+                };
                 let at = order.fetch_add(1, Ordering::SeqCst);
                 drop(guard);
                 at
@@ -7984,10 +8002,14 @@ fn commit_selection_transition() {
             .await
             .expect("the writer enters")
             .expect("join");
-        let second_at = tokio::time::timeout(P3_PRESENCE, &mut second_entered)
-            .await
-            .expect("the second read enters after the writer")
-            .expect("entry sent");
+        let second_at = match &while_writer_waits {
+            Ok(Ok(at)) => *at,
+            Ok(Err(_)) => panic!("second entry channel closed"),
+            Err(_) => tokio::time::timeout(P3_PRESENCE, &mut second_entered)
+                .await
+                .expect("the second read enters after the writer")
+                .expect("entry sent"),
+        };
         assert_eq!(first.await.expect("join"), Ok(()));
         assert_eq!(second.await.expect("join"), Ok(()));
         assert!(
