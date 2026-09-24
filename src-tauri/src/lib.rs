@@ -9505,7 +9505,8 @@ mod tests {
         assert!(
             build_lines
                 .iter()
-                .any(|line| line.starts_with("WARN ") && line.contains("request build failed")),
+                .any(|line| line.starts_with("WARN ")
+                    && line.contains("attempt=1 request build failed")),
             "{build_lines:?}"
         );
         assert!(
