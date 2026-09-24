@@ -11408,7 +11408,7 @@ mod quit_gate_tests {
 /// never a drain, filtered by this test's own session ids.
 #[cfg(test)]
 mod reader_reraise_tests {
-    use super::{reraise_room_reader_demands, tick_raise_calls};
+    use super::{reraise_room_reader_demands, tick_raise_calls, tick_recheck_calls};
     use crate::commands::session::co_managed_tests::{configure_room, room_fixture};
     use crate::commands::session::reader_demand_tests::harness;
     use crate::commands::session::release_room_reader_demand;
@@ -11500,8 +11500,9 @@ mod reader_reraise_tests {
     }
 
     /// Test 4: a non-orchestrator in a Ready room never gains a demand
-    /// (delegation contract) and the tick logs nothing for it (guard; mutation:
-    /// remove the raise-succeeded check).
+    /// (delegation contract), the tick logs nothing for it, and the refused raise
+    /// never pays for the post-raise recheck (D5-j cost guard; mutation: drop the
+    /// raise-result check).
     #[tokio::test]
     async fn p5_non_orchestrator_never_gains_a_demand_and_logs_nothing() {
         crate::logging::test_install_logger();
@@ -11518,10 +11519,16 @@ mod reader_reraise_tests {
         assert!(!holds_room_reader_demand(h.app.handle(), member).await);
         let lines = lines_since(before, member);
         assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(
+            tick_recheck_calls(member),
+            0,
+            "a refused raise must not resolve readiness a second time"
+        );
     }
 
     /// Test 5: a session whose directory is in no room never gains a demand,
-    /// does not panic, and logs nothing (same split as test 4).
+    /// does not panic, logs nothing and never reaches the recheck (same split as
+    /// test 4).
     #[tokio::test]
     async fn p5_session_outside_any_room_never_gains_a_demand_and_logs_nothing() {
         crate::logging::test_install_logger();
@@ -11538,6 +11545,11 @@ mod reader_reraise_tests {
         assert!(!holds_room_reader_demand(h.app.handle(), outside).await);
         let lines = lines_since(before, outside);
         assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(
+            tick_recheck_calls(outside),
+            0,
+            "a refused raise must not resolve readiness a second time"
+        );
     }
 
     /// Test 6 (guard): the zero cases. No live session at all, and a list where
@@ -11594,7 +11606,8 @@ mod reader_reraise_tests {
     /// Test 8 (guard): exactly one line per actual raise, zero lines across ten
     /// steady-state ticks. The steady state keeps a live session in an `Off`
     /// room for all ten ticks: it fails the cheap gate every tick and reaches
-    /// the refused raise, so removing the raise-succeeded check logs ten lines.
+    /// the refused raise. Mutation (combined, D5-j): drop the raise-result check
+    /// AND the recheck; either one alone still guards the log.
     #[tokio::test]
     async fn p5_steady_state_logs_nothing_across_ten_ticks() {
         crate::logging::test_install_logger();
