@@ -6312,7 +6312,7 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
             handle.armed.disarm(&id);
             log::info!(
                 "[co-managed] cycle end [{id}]: Done({}); flag disarmed",
-                capture::jev::redact_quoted(&reason)
+                capture::jev::safe_reason(&reason)
             );
             emit_co_managed_state(app, session_id, false, Some(&reason));
         }
@@ -9375,12 +9375,13 @@ mod tests {
             "the API key leaked into the log"
         );
 
-        // E2 leg 1: a catalog whose `categories` key holds a marker string.
-        // Readiness rejects such a catalog before a cycle, so `classify` is
-        // called directly, which is the only site that logs this reason.
-        const CATALOG_MARKER: &str = "CATMARK-p4-51d0";
+        // E2 marker 1: a catalog whose `categories` key holds `A"MARK1"A`,
+        // which serde escapes. Readiness rejects such a catalog before a
+        // cycle, so `classify` is called directly: it is the only site that
+        // logs this reason.
+        const MARK1: &str = "MARK1-p4-51d0";
         let catalog = crate::capture::catalog::Catalog::from_json_str(&format!(
-            "{{\"categories\": \"{CATALOG_MARKER}\"}}"
+            "{{\"categories\": \"A\\\"{MARK1}\\\"A\"}}"
         ));
         let network = crate::network::OutboundNetwork::new().expect("network");
         let settings = crate::capture::jev::JevSettings {
@@ -9398,63 +9399,68 @@ mod tests {
                 .await;
         let catalog_lines = p4_lines_since(before, &catalog_tag);
         assert!(
-            matches!(&returned, crate::capture::jev::ClassifyOutcome::Abstained { reason } if reason.contains(CATALOG_MARKER)),
+            matches!(&returned, crate::capture::jev::ClassifyOutcome::Abstained { reason } if reason.contains(MARK1)),
             "the RETURNED reason is unchanged: {returned:?}"
         );
         assert!(
             catalog_lines
                 .iter()
-                .any(|line| line.contains("catalog invalid") && line.contains("column")),
-            "the diagnosis must survive redaction: {catalog_lines:?}"
+                .any(|line| line
+                    .contains("catalog invalid: catalog is not valid JSON: <redacted len=")),
+            "the class label and length must survive: {catalog_lines:?}"
         );
 
-        // E2 leg 2: a 200 response whose result id is a marker.
-        const ID_MARKER: &str = "IDMARK-p4-e3b8";
-        let id_fixture = make_co_managed_fixture();
-        let (endpoint, _hits) = spawn_jev_listener(vec![
-            ("to-user", 0.9),
-            ("to-peer", 0.1),
-            ("to-root", 0.0),
-            ("to-reply", 0.0),
-            (ID_MARKER, 0.0),
-        ])
-        .await;
-        let (app, manager, registry) = co_managed_app(&id_fixture, endpoint, true);
-        let id_session = add_claude_session(
-            &manager,
-            &id_fixture.coordinator_cwd,
-            SessionStatus::Running,
-            &id_fixture.projects_dir,
-        )
-        .await;
-        install_candidate(&registry, id_session, "candidate text");
-        let (handle, _rx) = CoManagedSupervisorHandle::new();
-        let before = p4_tee_len();
-        let trigger = CoManagedTrigger::IdleEdge(id_session);
-        super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
-        let id_lines = p4_lines_since(before, &p4_short(id_session));
-        assert!(
-            id_lines.iter().any(
-                |line| line.contains("abstained after response") && line.contains("unknown id")
-            ),
-            "the classify diagnosis must survive redaction: {id_lines:?}"
-        );
-        assert!(
-            id_lines
-                .iter()
-                .any(|line| line.contains("cycle end") && line.contains("unknown id")),
-            "the cycle-end diagnosis must survive redaction: {id_lines:?}"
-        );
+        // E2 markers 2 and 3: a raw `"MARK2"` response id (the round-7
+        // bypass) and an id mimicking an allowlisted prefix.
+        const MARK2: &str = "MARK2-p4-e3b8";
+        const MARK3: &str = "MARK3-p4-9a17";
+        let id2 = format!("\"{MARK2}\"");
+        let id3 = format!("catalog invalid: {MARK3}");
+        for hostile_id in [id2.as_str(), id3.as_str()] {
+            let id_fixture = make_co_managed_fixture();
+            let hostile: &'static str = Box::leak(hostile_id.to_string().into_boxed_str());
+            let (endpoint, _hits) = spawn_jev_listener(vec![
+                ("to-user", 0.9),
+                ("to-peer", 0.1),
+                ("to-root", 0.0),
+                ("to-reply", 0.0),
+                (hostile, 0.0),
+            ])
+            .await;
+            let (app, manager, registry) = co_managed_app(&id_fixture, endpoint, true);
+            let id_session = add_claude_session(
+                &manager,
+                &id_fixture.coordinator_cwd,
+                SessionStatus::Running,
+                &id_fixture.projects_dir,
+            )
+            .await;
+            install_candidate(&registry, id_session, "candidate text");
+            let (handle, _rx) = CoManagedSupervisorHandle::new();
+            let before = p4_tee_len();
+            let trigger = CoManagedTrigger::IdleEdge(id_session);
+            super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+            let id_lines = p4_lines_since(before, &p4_short(id_session));
+            assert!(
+                id_lines.iter().any(|line| line.contains(
+                    "abstained after response: malformed response: unknown id <redacted len="
+                )),
+                "the classify class label and length must survive: {id_lines:?}"
+            );
+            assert!(
+                id_lines.iter().any(|line| line
+                    .contains("Done(abstained: malformed response: unknown id <redacted len=")),
+                "the cycle-end class label and length must survive: {id_lines:?}"
+            );
+        }
 
         let all = crate::logging::test_tee_snapshot();
-        assert!(
-            !all.iter().any(|line| line.contains(CATALOG_MARKER)),
-            "catalog content leaked into the log"
-        );
-        assert!(
-            !all.iter().any(|line| line.contains(ID_MARKER)),
-            "a remote response id leaked into the log"
-        );
+        for marker in [MARK1, MARK2, MARK3] {
+            assert!(
+                !all.iter().any(|line| line.contains(marker)),
+                "untrusted bytes {marker} leaked into the log"
+            );
+        }
     }
 
     /// #2455 test 8 (D, round 7): the request-build and malformed-body legs
@@ -9511,7 +9517,7 @@ mod tests {
         );
         assert!(
             body_lines.iter().any(|line| line.starts_with("WARN ")
-                && line.contains("malformed body after status=200")),
+                && line.contains("malformed body after status=200 OK: <unclassified reason len=")),
             "{body_lines:?}"
         );
         assert!(

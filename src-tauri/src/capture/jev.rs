@@ -129,7 +129,7 @@ pub async fn classify(
     if let Some(reason) = catalog.unparseable_reason() {
         log::info!(
             "[co-managed] jev classify [{session_tag}]: abstained, catalog invalid: {}",
-            redact_quoted(reason)
+            safe_reason(reason)
         );
         return ClassifyOutcome::abstained(format!("catalog invalid: {reason}"));
     }
@@ -172,7 +172,7 @@ pub async fn classify(
                     ),
                     ClassifyOutcome::Abstained { reason } => log::info!(
                         "[co-managed] jev classify [{session_tag}]: abstained after response: {}",
-                        redact_quoted(reason)
+                        safe_reason(reason)
                     ),
                 }
                 return outcome;
@@ -181,7 +181,7 @@ pub async fn classify(
                 if attempt >= MAX_ATTEMPTS {
                     log::warn!(
                         "[co-managed] jev classify [{session_tag}]: abstained, transport error after one retry: {}",
-                        redact_quoted(&reason)
+                        safe_reason(&reason)
                     );
                     return ClassifyOutcome::abstained(format!(
                         "transport error after one retry: {reason}"
@@ -191,7 +191,7 @@ pub async fn classify(
             Attempt::Permanent(reason) => {
                 log::warn!(
                     "[co-managed] jev classify [{session_tag}]: abstained, permanent error: {}",
-                    redact_quoted(&reason)
+                    safe_reason(&reason)
                 );
                 return ClassifyOutcome::abstained(reason);
             }
@@ -215,7 +215,7 @@ async fn send_once(
         Err(reason) => {
             log::warn!(
                 "[co-managed] jev send [{session_tag}]: attempt={attempt} request build failed: {}",
-                redact_quoted(&reason)
+                safe_reason(&reason)
             );
             return Attempt::Permanent(reason);
         }
@@ -240,7 +240,7 @@ async fn send_once(
                     Err(error) => {
                         log::warn!(
                             "[co-managed] jev send [{session_tag}]: attempt={attempt} malformed body after status={status}: {}",
-                            redact_quoted(&error.to_string())
+                            safe_reason(&error.to_string())
                         );
                         Attempt::Permanent(format!("malformed response: {error}"))
                     }
@@ -268,24 +268,72 @@ async fn send_once(
     }
 }
 
-/// #2455 E2: the logged projection of a reason this module did not build.
-/// Every double-quoted span (serde's rejected value, a rejected response id)
-/// becomes a fixed placeholder; the diagnosis around it survives. Only ever
-/// applied to what is LOGGED, never to what is returned.
-pub(crate) fn redact_quoted(reason: &str) -> String {
-    let mut out = String::with_capacity(reason.len());
-    let mut quoted = false;
-    for ch in reason.chars() {
-        if ch == '"' {
-            if !quoted {
-                out.push_str("\"<redacted>\"");
-            }
-            quoted = !quoted;
-        } else if !quoted {
-            out.push(ch);
-        }
+/// #2455 E2: every reason prefix this module, `capture::catalog` and the
+/// supervisor in `lib.rs` build. `safe_reason` emits only these literals.
+const SAFE_REASON_PREFIXES: &[&str] = &[
+    // `decide` and `send_once`.
+    "malformed response: unknown id ",
+    "malformed response: duplicate id ",
+    "malformed response: noul ",
+    "malformed response: missing id(s) ",
+    "malformed response: ",
+    "winner ",
+    "category ",
+    "HTTP ",
+    "timeout after ",
+    "Jev request build failed: ",
+    // `classify` and the catalog loader.
+    "NoCatalogFile: ",
+    "NoApiKey: ",
+    "catalog has no askable categories",
+    "catalog invalid: catalog is not valid JSON: ",
+    "catalog invalid: catalog is unreadable: ",
+    "catalog invalid: ",
+    "catalog is not valid JSON: ",
+    "catalog is unreadable: ",
+    "network limiter unavailable: ",
+    "transport error after one retry: ",
+    // The supervisor's cycle-end reasons.
+    "abstained: ",
+    "category '",
+    "secret detected by rule ",
+    "session vanished",
+    "baseline record consumed; never routed",
+    "route failed: ",
+    "BudgetExhausted",
+    "PreconditionsStale",
+    "PreconditionsRejected",
+    "LockBusy",
+    "LockUnavailable(",
+    "SlotChanged",
+    "AlreadyConsumed",
+];
+
+/// #2455 E2: the logged projection of a reason this phase did not build.
+/// It copies NO byte of `reason`: the output is the longest matching literal
+/// from `SAFE_REASON_PREFIXES`, then `<redacted len=N>` for the byte length of
+/// the rest, or `<unclassified reason len=N>`. A blocklist that tries to keep
+/// the safe bytes of attacker-chosen text loses (round 7), so nothing is kept.
+/// `abstained: ` wraps a classify reason, so it is matched once more inside.
+/// Only ever applied to what is LOGGED, never to what is returned.
+pub(crate) fn safe_reason(reason: &str) -> String {
+    safe_reason_at(reason, true)
+}
+
+fn safe_reason_at(reason: &str, nest: bool) -> String {
+    let Some(prefix) = SAFE_REASON_PREFIXES
+        .iter()
+        .copied()
+        .filter(|prefix| reason.starts_with(prefix))
+        .max_by_key(|prefix| prefix.len())
+    else {
+        return format!("<unclassified reason len={}>", reason.len());
+    };
+    let rest = &reason[prefix.len()..];
+    if nest && prefix == "abstained: " {
+        return format!("{prefix}{}", safe_reason_at(rest, false));
     }
-    out
+    format!("{prefix}<redacted len={}>", rest.len())
 }
 
 fn is_transport_status(status: reqwest::StatusCode) -> bool {
