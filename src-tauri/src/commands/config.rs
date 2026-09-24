@@ -46,6 +46,43 @@ const MINT_API_CLIENT_MAX_TTL_DAYS: i64 = 30;
 const MINT_API_CLIENT_NOTE: &str =
     "Store this token now; it is shown only once. The registry keeps only a hash. A manually requested pty-input scope does not grant actuation without an automatically bound live container session.";
 
+/// #2133 - the agent-help overlays the frontend layers over its embedded copy. The embedded
+/// layer never travels over IPC (epic D6). `remote` stays `None` until P6 fills it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHelpOverlayPayload {
+    pub local: Option<crate::config::settings::AgentHelpFile>,
+    pub remote: Option<crate::config::settings::AgentHelpFile>,
+    pub local_error: Option<String>,
+}
+
+/// #2133 - the path-injectable overlay reader. Tests inject `settings_path`;
+/// production resolves it. Mirrors `settings_snapshot_helper`'s seam.
+pub(crate) fn agent_help_overlay_payload(
+    settings_path: Option<PathBuf>,
+) -> AgentHelpOverlayPayload {
+    let Some(path) = settings_path.or_else(crate::config::settings::settings_path) else {
+        return AgentHelpOverlayPayload {
+            local: None,
+            remote: None,
+            local_error: None,
+        };
+    };
+    let (file, local_error) = crate::config::settings::load_local_agent_help_file(&path);
+    let has_content =
+        file.general.is_some() || !file.by_command.is_empty() || !file.by_agent.is_empty();
+    AgentHelpOverlayPayload {
+        local: has_content.then_some(file),
+        remote: None,
+        local_error,
+    }
+}
+
+#[tauri::command]
+pub fn get_agent_help() -> AgentHelpOverlayPayload {
+    agent_help_overlay_payload(None)
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodingAgentProfileResolutionResult {
@@ -10304,5 +10341,117 @@ mod tests {
         let disk: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(disk["mainGeometry"]["x"], json!(11.0));
         assert_eq!(disk["mainWindowDisplayState"], json!("normal"));
+    }
+
+    /// #2133 (P4) - every test injects `<tempdir>/settings.json`; none resolves the config dir.
+    mod agent_help_2133 {
+        use super::super::{agent_help_overlay_payload, AgentHelpOverlayPayload};
+        use crate::config::settings::{
+            shipped_agent_help, AgentHelpEntry, AgentHelpFile, AgentHelpTip,
+        };
+        use serde_json::json;
+
+        fn payload_with_local(contents: Option<&str>) -> AgentHelpOverlayPayload {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = dir.path().join("settings.json");
+            if let Some(contents) = contents {
+                std::fs::write(dir.path().join("agent-help.local.json"), contents).unwrap();
+            }
+            agent_help_overlay_payload(Some(settings_path))
+        }
+
+        #[test]
+        fn agent_help_with_no_local_file_returns_nulls() {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(!dir.path().join("agent-help.local.json").exists());
+            let payload = agent_help_overlay_payload(Some(dir.path().join("settings.json")));
+            assert!(payload.local.is_none());
+            assert!(payload.remote.is_none());
+            assert!(payload.local_error.is_none());
+        }
+
+        #[test]
+        fn agent_help_serves_the_local_layer() {
+            let payload = payload_with_local(Some(
+                r#"{"schemaVersion":1,
+                    "byCommand":{"claude":{"paramsExample":"--mine","docsUrl":"https://mine.dev"}},
+                    "byAgent":{"agent-1":{"label":"Mine"}}}"#,
+            ));
+            assert_eq!(payload.local_error, None);
+            let local = payload.local.expect("the local layer is served");
+            assert_eq!(
+                local.by_command["claude"].params_example.as_deref(),
+                Some("--mine")
+            );
+            assert_eq!(
+                local.by_command["claude"].docs_url.as_deref(),
+                Some("https://mine.dev")
+            );
+            assert_eq!(local.by_agent["agent-1"].label.as_deref(), Some("Mine"));
+        }
+
+        #[test]
+        fn agent_help_reports_a_broken_local_file() {
+            let payload = payload_with_local(Some("{ not json"));
+            assert!(payload.local.is_none());
+            let reason = payload.local_error.expect("a broken file reports why");
+            assert!(!reason.trim().is_empty());
+        }
+
+        #[test]
+        fn agent_help_never_serves_the_embedded_layer() {
+            let shipped = shipped_agent_help();
+            assert!(shipped.general.is_some() || !shipped.by_command.is_empty());
+            let payload = payload_with_local(None);
+            assert!(payload.local.is_none());
+            assert!(payload.remote.is_none());
+        }
+
+        #[test]
+        fn agent_help_leaves_remote_null_in_this_phase() {
+            let payload = payload_with_local(Some(
+                r#"{"schemaVersion":1,"byCommand":{"codex":{"label":"X"}}}"#,
+            ));
+            assert!(payload.local.is_some());
+            assert!(payload.remote.is_none());
+        }
+
+        #[test]
+        fn the_payload_serializes_to_camel_case_keys() {
+            let mut local = AgentHelpFile::default();
+            local.by_command.insert(
+                "claude".to_string(),
+                AgentHelpEntry {
+                    label: Some("L".to_string()),
+                    params_example: Some("--p".to_string()),
+                    docs_url: Some("https://d.dev".to_string()),
+                    tips: vec![AgentHelpTip {
+                        title: "t".to_string(),
+                        body: "b".to_string(),
+                        link: None,
+                    }],
+                },
+            );
+            let payload = AgentHelpOverlayPayload {
+                local: Some(local),
+                remote: None,
+                local_error: Some("why".to_string()),
+            };
+            let value = serde_json::to_value(&payload).unwrap();
+            let mut keys: Vec<&str> = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["local", "localError", "remote"]);
+            assert_eq!(value["localError"], json!("why"));
+            let entry = &value["local"]["byCommand"]["claude"];
+            assert_eq!(entry["paramsExample"], json!("--p"));
+            assert_eq!(entry["docsUrl"], json!("https://d.dev"));
+            assert!(entry.get("params_example").is_none());
+            assert!(entry.get("docs_url").is_none());
+        }
     }
 }
