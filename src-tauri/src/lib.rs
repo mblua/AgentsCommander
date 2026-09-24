@@ -6342,11 +6342,14 @@ fn spawn_co_managed_supervisor<R: tauri::Runtime>(
     tauri::async_runtime::spawn(async move {
         let mut discovery = tokio::time::interval(Duration::from_millis(500));
         discovery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut reader_demand = tokio::time::interval(Duration::from_secs(READER_DEMAND_TICK_SECS));
+        reader_demand.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => break,
                 _ = discovery.tick() => watch_capture_slots(&app, &handle).await,
+                _ = reader_demand.tick() => reraise_room_reader_demands(&app).await,
                 trigger = triggers.recv() => {
                     let Some(trigger) = trigger else { break };
                     handle_co_managed_trigger(&app, &handle, trigger).await;
@@ -6354,6 +6357,64 @@ fn spawn_co_managed_supervisor<R: tauri::Runtime>(
             }
         }
     });
+}
+
+/// #2456 period of the Room reader-demand re-raise tick.
+const READER_DEMAND_TICK_SECS: u64 = 5;
+
+/// #2456 test-only count of the tick's calls into readiness resolution, per
+/// session: a global counter would move under a concurrent test's tick.
+#[cfg(test)]
+static TICK_RAISE_CALLS: std::sync::LazyLock<Mutex<HashMap<uuid::Uuid, usize>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+pub(crate) fn tick_raise_calls(session_id: uuid::Uuid) -> usize {
+    TICK_RAISE_CALLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&session_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// #2456 raise the Room reader demand for every live session that lacks one.
+///
+/// The create, restart and room-toggle raises each check readiness once, so a
+/// room that becomes Ready later (key set, catalog created, `config.json`
+/// edited) would keep no reader. The cheap in-memory gate runs first; only a
+/// session without a Room demand pays for readiness resolution, which
+/// `raise_room_reader_demand` owns. This tick only raises, never releases, and
+/// logs only an actual raise, so a steady state is silent.
+async fn reraise_room_reader_demands<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let session_ids: Vec<uuid::Uuid> = {
+        let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+            return;
+        };
+        let guard = manager.read().await;
+        guard
+            .list_sessions()
+            .await
+            .into_iter()
+            .filter_map(|s| uuid::Uuid::parse_str(&s.id).ok())
+            .collect()
+    };
+    for session_id in session_ids {
+        if commands::telegram::holds_room_reader_demand(app, session_id).await {
+            continue;
+        }
+        #[cfg(test)]
+        {
+            *TICK_RAISE_CALLS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(session_id)
+                .or_insert(0) += 1;
+        }
+        if commands::session::raise_room_reader_demand(app, session_id).await {
+            log::info!("[co-managed] reader demand re-raised [{session_id}]");
+        }
+    }
 }
 
 async fn watch_capture_slots<R: tauri::Runtime>(
