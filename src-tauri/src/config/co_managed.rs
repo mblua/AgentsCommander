@@ -72,6 +72,7 @@ pub enum CoManagedState {
 /// The single reason a room is not effective. Variant names are the wire form.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OffReason {
+    GlobalSwitchOff,
     NotAnOrchestrator,
     UnsupportedProvider { agent: String },
     RoomFlagOff,
@@ -191,18 +192,24 @@ fn read_config_object(path: &Path) -> Map<String, Value> {
 
 /// The single answer phase 2 exists to provide. Check order is fixed so the
 /// reason a user sees is stable:
-/// `NotAnOrchestrator` -> `UnsupportedProvider` -> `RoomFlagOff` -> `NoApiKey`
+/// `GlobalSwitchOff` -> `NotAnOrchestrator` -> `UnsupportedProvider` -> `RoomFlagOff` -> `NoApiKey`
 /// -> `NoCatalogFile` -> `CatalogUnreadable`.
 ///
 /// Every SCC-owned input arrives as a parameter; this function reads only the
 /// room's own files. There is no third value: absence is a typed state.
 pub fn effective_state(
     room_root: &Path,
+    globally_enabled: bool,
     api_key: &str,
     is_orchestrator: bool,
     capture_supported: bool,
     agent_label: &str,
 ) -> CoManagedState {
+    if !globally_enabled {
+        return CoManagedState::Off {
+            reason: OffReason::GlobalSwitchOff,
+        };
+    }
     if !is_orchestrator {
         return CoManagedState::Off {
             reason: OffReason::NotAnOrchestrator,
@@ -358,7 +365,7 @@ mod tests {
     fn absent_directory_is_flag_off_and_creates_nothing() {
         let temp = tempfile::tempdir().unwrap();
         let room = room_dir(&temp);
-        let state = effective_state(&room, "key", true, true, "claude");
+        let state = effective_state(&room, true, "key", true, true, "claude");
         assert_eq!(
             state,
             CoManagedState::Off {
@@ -375,7 +382,7 @@ mod tests {
         let room = room_dir(&temp);
         write_config(&room, r#"{"enabled":true,"catalogPath":null}"#);
         assert_eq!(
-            effective_state(&room, "", true, true, "claude"),
+            effective_state(&room, true, "", true, true, "claude"),
             CoManagedState::Off {
                 reason: OffReason::NoApiKey
             }
@@ -389,7 +396,7 @@ mod tests {
         let room = room_dir(&temp);
         write_config(&room, r#"{"enabled":true,"catalogPath":null}"#);
         assert_eq!(
-            effective_state(&room, "key", true, true, "claude"),
+            effective_state(&room, true, "key", true, true, "claude"),
             CoManagedState::Off {
                 reason: OffReason::NoCatalogFile
             }
@@ -404,7 +411,7 @@ mod tests {
         write_catalog(&room, "catalog.json", "{}");
         write_config(&room, r#"{"enabled":true,"catalogPath":"catalog.json"}"#);
         assert_eq!(
-            effective_state(&room, "key", true, true, "claude"),
+            effective_state(&room, true, "key", true, true, "claude"),
             CoManagedState::Ready
         );
     }
@@ -417,7 +424,7 @@ mod tests {
         write_catalog(&room, "catalog.json", "not json at all");
         write_config(&room, r#"{"enabled":true,"catalogPath":"catalog.json"}"#);
         assert_eq!(
-            effective_state(&room, "key", true, true, "claude"),
+            effective_state(&room, true, "key", true, true, "claude"),
             CoManagedState::Off {
                 reason: OffReason::CatalogUnreadable
             }
@@ -434,7 +441,7 @@ mod tests {
             r#"{"enabled":true,"catalogPath":"missing-catalog.json"}"#,
         );
         assert_eq!(
-            effective_state(&room, "key", true, true, "claude"),
+            effective_state(&room, true, "key", true, true, "claude"),
             CoManagedState::Off {
                 reason: OffReason::NoCatalogFile
             }
@@ -449,7 +456,7 @@ mod tests {
         write_catalog(&room, "catalog.json", "{}");
         write_config(&room, r#"{"enabled":true,"catalogPath":"catalog.json"}"#);
         assert_eq!(
-            effective_state(&room, "key", false, true, "claude"),
+            effective_state(&room, true, "key", false, true, "claude"),
             CoManagedState::Off {
                 reason: OffReason::NotAnOrchestrator
             }
@@ -515,7 +522,7 @@ mod tests {
         write_catalog(&room, "catalog.json", "{}");
         write_config(&room, r#"{"enabled":true,"catalogPath":"catalog.json"}"#);
         assert_eq!(
-            effective_state(&room, "key", true, false, "pi"),
+            effective_state(&room, true, "key", true, false, "pi"),
             CoManagedState::Off {
                 reason: OffReason::UnsupportedProvider {
                     agent: "pi".to_string()
@@ -530,7 +537,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let room = room_dir(&temp);
         assert_eq!(
-            effective_state(&room, "", false, false, "pi"),
+            effective_state(&room, true, "", false, false, "pi"),
             CoManagedState::Off {
                 reason: OffReason::NotAnOrchestrator
             }
@@ -618,5 +625,55 @@ mod tests {
             None,
             "the numeric run is required"
         );
+    }
+
+    fn ready_room(temp: &tempfile::TempDir) -> PathBuf {
+        let room = room_dir(temp);
+        write_catalog(&room, "catalog.json", "{}");
+        write_config(&room, r#"{"enabled":true,"catalogPath":"catalog.json"}"#);
+        room
+    }
+
+    /// The global switch masks a fully ready room; the same room with the
+    /// switch on is `Ready`, so the gate is proven to be the deciding input.
+    #[test]
+    fn global_switch_off_wins_over_every_other_reason() {
+        let temp = tempfile::tempdir().unwrap();
+        let room = ready_room(&temp);
+        assert_eq!(
+            effective_state(&room, false, "key", true, true, "claude"),
+            CoManagedState::Off {
+                reason: OffReason::GlobalSwitchOff
+            }
+        );
+        assert_eq!(
+            effective_state(&room, true, "key", true, true, "claude"),
+            CoManagedState::Ready
+        );
+    }
+
+    /// The global switch is checked before the orchestrator gate.
+    #[test]
+    fn global_switch_off_precedes_not_an_orchestrator() {
+        let temp = tempfile::tempdir().unwrap();
+        let room = ready_room(&temp);
+        assert_eq!(
+            effective_state(&room, false, "key", false, true, "claude"),
+            CoManagedState::Off {
+                reason: OffReason::GlobalSwitchOff
+            }
+        );
+    }
+
+    /// The switch masks; it never rewrites the room's `config.json`.
+    #[test]
+    fn global_switch_off_leaves_config_bytes_untouched() {
+        use sha2::{Digest, Sha256};
+        let temp = tempfile::tempdir().unwrap();
+        let room = ready_room(&temp);
+        let before = Sha256::digest(std::fs::read(config_path(&room)).unwrap());
+        let _ = effective_state(&room, false, "key", true, true, "claude");
+        let after = Sha256::digest(std::fs::read(config_path(&room)).unwrap());
+        assert_eq!(before, after);
     }
 }

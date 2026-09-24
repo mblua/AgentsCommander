@@ -808,6 +808,9 @@ export interface AppSettings {
   jevTimeoutSecs?: number;
   jevThreshold?: number;
   jevMargin?: number;
+  /** Global Co-managed switch. Absent or `false` = off.
+   *  Off by default: the feature is in development. */
+  coManagedEnabled?: boolean;
 }
 
 // ── #2265/#2232 Co-managed: the phase-2 command wire shapes ──────────────────
@@ -822,6 +825,7 @@ export type CoManagedConfig = { enabled: boolean; catalogPath: string | null };
 
 /** The single reason a room is not effective. Variant names are the wire form. */
 export type OffReason =
+  | "GlobalSwitchOff"
   | "NotAnOrchestrator"
   | "RoomFlagOff"
   | "NoApiKey"
