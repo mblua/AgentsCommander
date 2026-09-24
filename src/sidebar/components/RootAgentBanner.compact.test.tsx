@@ -363,6 +363,29 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
     expect(r.toggle.getAttribute("data-ac-state")).toBe("compact");
   });
 
+  it.each([
+    ["right", false, ">>"],
+    ["right", true, "<<"],
+    ["left", false, "<<"],
+    ["left", true, ">>"],
+  ] as const)("6c. #2519: %s rail, compact=%s shows %s", (railSide, isCompact, glyph) => {
+    const rendered = mount(() => <RootAgentBanner compact={isCompact} railSide={railSide} />, bannerFake());
+    const toggle = rendered.root.querySelector(".root-agent-banner-toggle") as HTMLElement;
+    expect(toggle.textContent).toBe(glyph);
+    // The glyph is the only thing that mirrors.
+    expect(toggle.getAttribute("data-ac-state")).toBe(isCompact ? "compact" : "expanded");
+    expect(toggle.getAttribute("aria-expanded")).toBe(String(!isCompact));
+  });
+
+  it("6d. #2519: SidebarApp hands its rail side to the banner", async () => {
+    const fake = new FakeTransport();
+    setupApp(fake);
+    const rendered = mount(() => <SidebarApp embedded railSide="left" />, fake);
+    await appSettled(fake);
+    const toggle = rendered.root.querySelector(".root-agent-banner-toggle") as HTMLElement;
+    expect(toggle.textContent).toBe(sidebarCompact() ? ">>" : "<<");
+  });
+
   it("7. SidebarApp hydrates the configured shortcut on load and every refresh, without a remount", async () => {
     const fake = new FakeTransport();
     setupApp(fake);
