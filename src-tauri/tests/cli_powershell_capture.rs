@@ -594,9 +594,10 @@ fn issue_1867_isolation_source_contract() {
         (
             "cli_workgroup_team.rs",
             include_str!("cli_workgroup_team.rs"),
-            10,
+            11,
             &[
                 ("run_json", 1),
+                ("run_activity_raw", 1),
                 ("run_json_machine", 1),
                 ("run_fail", 1),
                 ("run_fail_output", 1),

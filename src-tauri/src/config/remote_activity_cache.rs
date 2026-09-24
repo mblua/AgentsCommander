@@ -46,12 +46,23 @@ pub(crate) enum PersistedCiState {
     Unknown,
 }
 
+/// One repo's published CI view: the state plus the #2473 detail. `run_ids`
+/// and `pull_requests` are meaningful only while `Running`; `unknown_reason`
+/// only while `Unknown` (one of the `ci-query-*` producer codes).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PersistedRepoCi {
+    pub(crate) state: PersistedCiState,
+    pub(crate) run_ids: Vec<u64>,
+    pub(crate) pull_requests: Vec<u64>,
+    pub(crate) unknown_reason: Option<String>,
+}
+
 /// The validated in-memory form of the snapshot: a parsed publication instant
-/// and path/state pairs, both awaited by the CLI's pure aggregation.
+/// and path/CI pairs, both awaited by the CLI's pure aggregation.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RemoteActivitySnapshot {
     pub(crate) generated_at: DateTime<Utc>,
-    pub(crate) repos: Vec<(String, PersistedCiState)>,
+    pub(crate) repos: Vec<(String, PersistedRepoCi)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -67,6 +78,21 @@ struct SnapshotDto {
 struct RepoDto {
     path: String,
     ci_state: PersistedCiState,
+    /// #2473 additive fields: absent in older bytes, omitted when empty so the
+    /// pre-#2473 shape is byte-identical. Schema stays 1.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    run_ids: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pull_requests: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unknown_reason: Option<String>,
+}
+
+fn sorted_dedup(values: &[u64]) -> Vec<u64> {
+    let mut values = values.to_vec();
+    values.sort_unstable();
+    values.dedup();
+    values
 }
 
 /// Atomically publish the whole-file snapshot to `path` (the caller joins
@@ -78,13 +104,16 @@ struct RepoDto {
 pub(crate) fn write_snapshot(
     path: &Path,
     generated_at: DateTime<Utc>,
-    repos: &[(String, PersistedCiState)],
+    repos: &[(String, PersistedRepoCi)],
 ) -> Result<(), String> {
     let mut entries: Vec<RepoDto> = repos
         .iter()
-        .map(|(path, ci_state)| RepoDto {
+        .map(|(path, ci)| RepoDto {
             path: path.clone(),
-            ci_state: *ci_state,
+            ci_state: ci.state,
+            run_ids: sorted_dedup(&ci.run_ids),
+            pull_requests: sorted_dedup(&ci.pull_requests),
+            unknown_reason: ci.unknown_reason.clone(),
         })
         .collect();
     entries.sort_by(|left, right| left.path.cmp(&right.path));
@@ -121,7 +150,15 @@ pub(crate) fn read_snapshot(path: &Path) -> Result<RemoteActivitySnapshot, Strin
         if repo.path.is_empty() {
             return Err("remote activity snapshot has an empty repo path".to_string());
         }
-        repos.push((repo.path, repo.ci_state));
+        repos.push((
+            repo.path,
+            PersistedRepoCi {
+                state: repo.ci_state,
+                run_ids: repo.run_ids,
+                pull_requests: repo.pull_requests,
+                unknown_reason: repo.unknown_reason,
+            },
+        ));
     }
     Ok(RemoteActivitySnapshot {
         generated_at,
@@ -156,13 +193,103 @@ mod tests {
             .with_timezone(&Utc)
     }
 
+    fn ci(state: PersistedCiState) -> PersistedRepoCi {
+        PersistedRepoCi {
+            state,
+            run_ids: Vec::new(),
+            pull_requests: Vec::new(),
+            unknown_reason: None,
+        }
+    }
+
+    #[test]
+    fn r1_round_trip_carries_run_ids_pull_requests_and_reason_sorted_deduped() {
+        let (_dir, path) = temp_path();
+        let entries = vec![
+            (
+                "a:/repo-a".to_string(),
+                PersistedRepoCi {
+                    state: PersistedCiState::Running,
+                    run_ids: vec![30, 10, 30],
+                    pull_requests: vec![7, 7, 2],
+                    unknown_reason: None,
+                },
+            ),
+            (
+                "b:/repo-b".to_string(),
+                PersistedRepoCi {
+                    state: PersistedCiState::Unknown,
+                    run_ids: Vec::new(),
+                    pull_requests: Vec::new(),
+                    unknown_reason: Some("ci-query-timeout".to_string()),
+                },
+            ),
+        ];
+        write_snapshot(&path, instant("2026-09-22T11:41:41Z"), &entries).expect("write");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("json");
+        assert_eq!(raw["repos"][0]["runIds"], serde_json::json!([10, 30]));
+        assert_eq!(raw["repos"][0]["pullRequests"], serde_json::json!([2, 7]));
+        assert_eq!(raw["repos"][1]["unknownReason"], "ci-query-timeout");
+        let snapshot = read_snapshot(&path).expect("read back");
+        assert_eq!(
+            snapshot.repos,
+            vec![
+                (
+                    "a:/repo-a".to_string(),
+                    PersistedRepoCi {
+                        state: PersistedCiState::Running,
+                        run_ids: vec![10, 30],
+                        pull_requests: vec![2, 7],
+                        unknown_reason: None,
+                    }
+                ),
+                entries[1].clone(),
+            ]
+        );
+    }
+
+    #[test]
+    fn r2_old_v1_bytes_without_new_keys_read_as_empty_and_none() {
+        let (_dir, path) = temp_path();
+        std::fs::write(
+            &path,
+            br#"{"schemaVersion":1,"generatedAt":"2026-09-22T11:41:41Z","repos":[{"path":"a:/repo-a","ciState":"running"}]}"#,
+        )
+        .expect("write");
+        let snapshot = read_snapshot(&path).expect("old bytes read");
+        assert_eq!(
+            snapshot.repos,
+            vec![("a:/repo-a".to_string(), ci(PersistedCiState::Running))]
+        );
+    }
+
+    #[test]
+    fn r3_empty_vectors_and_none_are_not_serialized() {
+        let (_dir, path) = temp_path();
+        write_snapshot(
+            &path,
+            instant("2026-09-22T11:41:41Z"),
+            &[("a:/repo-a".to_string(), ci(PersistedCiState::Idle))],
+        )
+        .expect("write");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("json");
+        let keys: Vec<&String> = raw["repos"][0]
+            .as_object()
+            .expect("object")
+            .keys()
+            .collect();
+        assert_eq!(keys, vec!["ciState", "path"]);
+    }
+
     #[test]
     fn write_then_read_round_trip_sorts_raw_paths_and_pins_schema_one() {
         let (_dir, path) = temp_path();
         let generated_at = instant("2026-09-22T11:41:41Z");
         let entries = vec![
-            ("z:/repo-b".to_string(), PersistedCiState::Idle),
-            ("a:/repo-a".to_string(), PersistedCiState::Running),
+            ("z:/repo-b".to_string(), ci(PersistedCiState::Idle)),
+            ("a:/repo-a".to_string(), ci(PersistedCiState::Running)),
         ];
         write_snapshot(&path, generated_at, &entries).expect("write");
 
@@ -180,8 +307,8 @@ mod tests {
         assert_eq!(
             snapshot.repos,
             vec![
-                ("a:/repo-a".to_string(), PersistedCiState::Running),
-                ("z:/repo-b".to_string(), PersistedCiState::Idle),
+                ("a:/repo-a".to_string(), ci(PersistedCiState::Running)),
+                ("z:/repo-b".to_string(), ci(PersistedCiState::Idle)),
             ]
         );
     }
