@@ -11612,6 +11612,88 @@ mod tests {
         ));
     }
 
+    // ── (#2454) transcript_id_from_args ──
+
+    const TRANSCRIPT_UUID: &str = "7f9e4a10-2b3c-4d5e-8f90-1a2b3c4d5e6f";
+
+    fn transcript_id_of(args: &[&str]) -> Option<String> {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        super::transcript_id_from_args(&args)
+    }
+
+    // Test 1.
+    #[test]
+    fn transcript_id_reads_the_spaced_session_id() {
+        assert_eq!(
+            transcript_id_of(&["--session-id", TRANSCRIPT_UUID]).as_deref(),
+            Some(TRANSCRIPT_UUID)
+        );
+    }
+
+    // Test 2.
+    #[test]
+    fn transcript_id_reads_the_equals_session_id() {
+        let arg = format!("--session-id={TRANSCRIPT_UUID}");
+        assert_eq!(transcript_id_of(&[&arg]).as_deref(), Some(TRANSCRIPT_UUID));
+    }
+
+    // Test 3: the `cmd` spawn shape keeps the flag inside the last element; an
+    // argv scan that does not split on whitespace misses it.
+    #[test]
+    fn transcript_id_reads_the_cmd_shape_inside_one_argument() {
+        let arg = format!("C:/Tools/claude --session-id {TRANSCRIPT_UUID}");
+        assert_eq!(
+            transcript_id_of(&["/C", &arg]).as_deref(),
+            Some(TRANSCRIPT_UUID)
+        );
+    }
+
+    // Test 4.
+    #[test]
+    fn transcript_id_reads_resume_in_both_forms() {
+        let equals = format!("--resume={TRANSCRIPT_UUID}");
+        assert_eq!(
+            transcript_id_of(&["--resume", TRANSCRIPT_UUID]).as_deref(),
+            Some(TRANSCRIPT_UUID)
+        );
+        assert_eq!(
+            transcript_id_of(&[&equals]).as_deref(),
+            Some(TRANSCRIPT_UUID)
+        );
+    }
+
+    // Test 5 (guard): `-r` carries a real UUID on purpose, so treating `-r` as
+    // `--resume` would return it and turn this red.
+    #[test]
+    fn transcript_id_is_none_for_flags_that_name_no_file() {
+        assert_eq!(transcript_id_of(&["--continue"]), None);
+        assert_eq!(transcript_id_of(&["-c"]), None);
+        assert_eq!(transcript_id_of(&["-r", TRANSCRIPT_UUID]), None);
+        assert_eq!(transcript_id_of(&[]), None);
+    }
+
+    // Test 6 (guard).
+    #[test]
+    fn transcript_id_is_none_for_a_non_uuid_value() {
+        assert_eq!(transcript_id_of(&["--session-id", "not-a-uuid"]), None);
+        assert_eq!(transcript_id_of(&["--resume=abc"]), None);
+    }
+
+    // Test 7 (guard).
+    #[test]
+    fn transcript_id_matches_the_flag_case_insensitively() {
+        assert_eq!(
+            transcript_id_of(&["--SESSION-ID", TRANSCRIPT_UUID]).as_deref(),
+            Some(TRANSCRIPT_UUID)
+        );
+    }
+
+    // Test 8 (guard): a trailing flag with no value yields `None`, no panic.
+    #[test]
+    fn transcript_id_is_none_for_a_trailing_flag_without_value() {
+        assert_eq!(transcript_id_of(&["claude", "--session-id"]), None);
+    }
+
     // ── Issue #107 Round 5 §R5.8.6 — build_title_prompt_appendage idempotence ──
     //
     // Tempdir naming starts with `wg-` so `find_workgroup_task_path_for_cwd`'s

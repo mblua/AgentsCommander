@@ -818,6 +818,7 @@ mod tests {
 
         let task = spawn_watch_task(
             dir.path().to_path_buf(),
+            None,
             network.clone(),
             dest_rx,
             "room-only-claude".to_string(),
@@ -1010,6 +1011,7 @@ mod tests {
             &mut reader_seq,
             Some(&tx),
             &ReaderAttachment::default(),
+            RecordOrigin::Preamble,
         );
         assert_eq!(records.len(), fixture.bodies.len());
         for _ in 0..records.len() {
@@ -1105,5 +1107,440 @@ mod tests {
         let records = capture_one(&line);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].text, "sidechain body");
+    }
+
+    // ── #2454: the pinned first attach ──
+
+    const PIN_ID: &str = "16045f91-7d59-4c75-acdb-11ebfcb9aa68";
+
+    fn inputs<'a>(
+        transcript_id: Option<&'a str>,
+        pinned: Option<&'a Path>,
+        newest: Option<&'a Path>,
+        first_poll: bool,
+        deadline_expired: bool,
+    ) -> AttachInputs<'a> {
+        AttachInputs {
+            transcript_id,
+            pinned,
+            newest,
+            first_poll,
+            deadline_expired,
+        }
+    }
+
+    // Test 10.
+    #[test]
+    fn decide_attach_waits_when_the_pinned_file_is_absent_at_the_first_poll() {
+        let old = Path::new("old.jsonl");
+        assert_eq!(
+            decide_attach(inputs(Some(PIN_ID), None, Some(old), true, false)),
+            AttachDecision::Wait
+        );
+        assert_eq!(
+            decide_attach(inputs(Some(PIN_ID), None, Some(old), false, false)),
+            AttachDecision::Wait
+        );
+    }
+
+    // Test 11.
+    #[test]
+    fn decide_attach_pins_when_the_awaited_file_appears() {
+        let pinned = PathBuf::from(format!("{PIN_ID}.jsonl"));
+        for newest in [Some(pinned.as_path()), Some(Path::new("old.jsonl"))] {
+            assert_eq!(
+                decide_attach(inputs(Some(PIN_ID), Some(&pinned), newest, false, false)),
+                AttachDecision::Pinned(pinned.clone())
+            );
+        }
+    }
+
+    // Test 12: late or resumed history, the pinned file already newest.
+    #[test]
+    fn decide_attach_takes_mtime_when_the_pinned_file_already_exists_and_is_newest() {
+        let pinned = PathBuf::from(format!("{PIN_ID}.jsonl"));
+        assert_eq!(
+            decide_attach(inputs(
+                Some(PIN_ID),
+                Some(&pinned),
+                Some(&pinned),
+                true,
+                false
+            )),
+            AttachDecision::Mtime(pinned.clone())
+        );
+    }
+
+    // Test 13: the post-`/clear` late attach, the pinned file not newest.
+    #[test]
+    fn decide_attach_takes_mtime_when_the_pinned_file_already_exists_and_is_not_newest() {
+        let pinned = PathBuf::from(format!("{PIN_ID}.jsonl"));
+        let newer = Path::new("after-clear.jsonl");
+        assert_eq!(
+            decide_attach(inputs(
+                Some(PIN_ID),
+                Some(&pinned),
+                Some(newer),
+                true,
+                false
+            )),
+            AttachDecision::Mtime(newer.to_path_buf())
+        );
+    }
+
+    // Test 14.
+    #[test]
+    fn decide_attach_without_an_id_is_mtime_for_every_input() {
+        let pinned = PathBuf::from(format!("{PIN_ID}.jsonl"));
+        let newest = Path::new("newest.jsonl");
+        for pinned in [None, Some(pinned.as_path())] {
+            for first_poll in [true, false] {
+                for deadline_expired in [true, false] {
+                    assert_eq!(
+                        decide_attach(inputs(
+                            None,
+                            pinned,
+                            Some(newest),
+                            first_poll,
+                            deadline_expired
+                        )),
+                        AttachDecision::Mtime(newest.to_path_buf())
+                    );
+                    assert_eq!(
+                        decide_attach(inputs(None, pinned, None, first_poll, deadline_expired)),
+                        AttachDecision::Nothing
+                    );
+                }
+            }
+        }
+    }
+
+    // Test 15.
+    #[test]
+    fn decide_attach_falls_back_to_mtime_when_the_deadline_expires() {
+        let old = Path::new("old.jsonl");
+        assert_eq!(
+            decide_attach(inputs(Some(PIN_ID), None, Some(old), false, true)),
+            AttachDecision::MtimeFallback(old.to_path_buf())
+        );
+        assert_eq!(
+            decide_attach(inputs(Some(PIN_ID), None, None, false, true)),
+            AttachDecision::Nothing
+        );
+    }
+
+    /// A reader over a fixture projects dir, with a live sink.
+    struct Reader {
+        _app: tauri::App<tauri::test::MockRuntime>,
+        _dest_tx: tokio::sync::watch::Sender<Option<BotTarget>>,
+        cancel: CancellationToken,
+        task: tokio::task::JoinHandle<()>,
+        rx: tokio::sync::mpsc::UnboundedReceiver<Arc<CapturedRecord>>,
+    }
+
+    impl Reader {
+        fn start(project_dir: &Path, transcript_id: Option<String>) -> Self {
+            let app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .expect("build claude watcher test app");
+            let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let cancel = CancellationToken::new();
+            let task = spawn_watch_task(
+                project_dir.to_path_buf(),
+                transcript_id,
+                crate::network::OutboundNetwork::new_for_tests(1),
+                dest_rx,
+                "pin-session".to_string(),
+                cancel.clone(),
+                app.handle().clone(),
+                Some(tx),
+            );
+            Self {
+                _app: app,
+                _dest_tx: dest_tx,
+                cancel,
+                task,
+                rx,
+            }
+        }
+
+        async fn next(&mut self, within: Duration) -> Option<Arc<CapturedRecord>> {
+            tokio::time::timeout(within, self.rx.recv())
+                .await
+                .ok()
+                .flatten()
+        }
+
+        async fn stop(self) {
+            self.cancel.cancel();
+            let _ = tokio::time::timeout(Duration::from_secs(5), self.task).await;
+        }
+    }
+
+    /// Write `content` to `path` whole, through a rename, so the reader never
+    /// sees a half-written first line.
+    fn write_atomically(path: &Path, content: &str) {
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, content).expect("write fixture");
+        std::fs::rename(&tmp, path).expect("publish fixture");
+    }
+
+    fn backdate(path: &Path, secs: u64) {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open fixture");
+        file.set_modified(SystemTime::now() - std::time::Duration::from_secs(secs))
+            .expect("backdate fixture");
+    }
+
+    /// Commit `record` as an `Automatic` effect and return `routable`, the
+    /// routing answer of `capture::state::commit_effect`.
+    fn routable(room: &Path, record: &Arc<CapturedRecord>) -> bool {
+        use crate::capture::key::ConsumptionKey;
+        use crate::capture::state::{commit_effect, EffectKind, EffectPreconditions};
+        let slot = crate::capture::sink::CaptureSlot::new();
+        slot.offer(Arc::clone(record), 0);
+        let key = ConsumptionKey::from_record(record, 0);
+        let pre = EffectPreconditions {
+            session_alive: true,
+            session_id: record.session_id.clone(),
+            anchor: "agent".to_owned(),
+            provider: CaptureProvider::Claude,
+            unique_live_session_for_cwd: true,
+            no_pending_user_input: true,
+            effective_ready: true,
+            observed_at: std::time::Instant::now(),
+            kind: EffectKind::Automatic,
+        };
+        commit_effect(room, &slot, slot.seq(), &key, &pre)
+            .expect("the commit takes the record")
+            .routable
+    }
+
+    fn room(temp: &tempfile::TempDir) -> PathBuf {
+        let room = temp.path().join("room-1-dev-team");
+        std::fs::create_dir_all(&room).expect("room dir");
+        crate::capture::state::forget_room_for_tests(&room);
+        room
+    }
+
+    /// Test 16, the reported defect: `<id>.jsonl` is absent at the first poll,
+    /// so the reader waits; when it appears its first reply is `Live` and is
+    /// actually routed.
+    #[tokio::test]
+    async fn a_fresh_spawn_first_reply_is_live_and_routed() {
+        let temp = tempfile::tempdir().expect("temp");
+        let projects = temp.path().join("projects");
+        std::fs::create_dir_all(&projects).expect("projects dir");
+        let old = projects.join("old-session.jsonl");
+        std::fs::write(&old, format!("{}\n", stamped_line("old reply", Utc::now())))
+            .expect("old transcript");
+
+        let mut reader = Reader::start(&projects, Some(PIN_ID.to_string()));
+        // The reader waits: nothing from the old transcript reaches the sink.
+        assert!(reader.next(Duration::from_millis(1200)).await.is_none());
+
+        let pinned = projects.join(format!("{PIN_ID}.jsonl"));
+        write_atomically(
+            &pinned,
+            &format!("{}\n", stamped_line("first reply", Utc::now())),
+        );
+        let record = reader
+            .next(Duration::from_secs(10))
+            .await
+            .expect("the first reply reaches the sink");
+        reader.stop().await;
+
+        assert_eq!(record.text, "first reply");
+        assert_eq!(record.file, pinned);
+        assert_eq!(record.origin, RecordOrigin::Live);
+        assert!(
+            !crate::capture::state::is_baseline(&record),
+            "supporting evidence only"
+        );
+        assert!(
+            routable(&room(&temp), &record),
+            "the first reply must be routed"
+        );
+    }
+
+    /// Test 16b (guard): `<id>.jsonl` already exists and is the newest, and
+    /// ends with a reply inside the 5 s window that a previous reader already
+    /// consumed. A new reader stamps it `Preamble` and never routes it again.
+    #[tokio::test]
+    async fn an_existing_pinned_file_reply_is_not_routed_twice() {
+        let temp = tempfile::tempdir().expect("temp");
+        let room = room(&temp);
+        let projects = temp.path().join("projects");
+        std::fs::create_dir_all(&projects).expect("projects dir");
+        let old = projects.join("old-session.jsonl");
+        std::fs::write(&old, format!("{}\n", stamped_line("old reply", Utc::now())))
+            .expect("old transcript");
+        backdate(&old, 60);
+        let pinned = projects.join(format!("{PIN_ID}.jsonl"));
+        let line = stamped_line("consumed reply", Utc::now());
+        std::fs::write(&pinned, format!("{line}\n")).expect("pinned transcript");
+
+        // A previous reader consumed the reply through an incremental read.
+        let mut reader_seq = 0u64;
+        let earlier = capture_live_lines(
+            vec![(0, line)],
+            "pin-session",
+            &pinned,
+            &mut reader_seq,
+            None,
+            RecordOrigin::Live,
+            &ReaderAttachment::default(),
+        );
+        assert!(routable(&room, &earlier[0]), "the first delivery is routed");
+
+        let mut reader = Reader::start(&projects, Some(PIN_ID.to_string()));
+        let record = reader
+            .next(Duration::from_secs(10))
+            .await
+            .expect("the preamble reaches the sink");
+        reader.stop().await;
+
+        assert_eq!(record.text, "consumed reply");
+        assert_eq!(record.file, pinned);
+        assert_eq!(record.origin, RecordOrigin::Preamble);
+        assert!(crate::capture::state::is_baseline(&record));
+        assert!(
+            !routable(&room, &record),
+            "a consumed reply must not route twice"
+        );
+    }
+
+    /// Test 17 (guard): an attach by mtime over genuine history still stamps
+    /// `Preamble` and is still suppressed.
+    #[tokio::test]
+    async fn an_mtime_first_attach_over_history_is_still_suppressed() {
+        let temp = tempfile::tempdir().expect("temp");
+        let projects = temp.path().join("projects");
+        std::fs::create_dir_all(&projects).expect("projects dir");
+        let history = projects.join("history.jsonl");
+        std::fs::write(
+            &history,
+            format!("{}\n", stamped_line("history reply", Utc::now())),
+        )
+        .expect("history transcript");
+
+        let mut reader = Reader::start(&projects, None);
+        let record = reader
+            .next(Duration::from_secs(10))
+            .await
+            .expect("the preamble reaches the sink");
+        reader.stop().await;
+
+        assert_eq!(record.file, history);
+        assert_eq!(record.origin, RecordOrigin::Preamble);
+        assert!(
+            !routable(&room(&temp), &record),
+            "history must stay suppressed"
+        );
+    }
+
+    /// Test 18 (guard): an unextractable id changes nothing. Asserted as
+    /// absolute values for each shape: the newest file by mtime, `Preamble`
+    /// stamps, and the offset at that file's length.
+    #[tokio::test]
+    async fn an_unextractable_id_attaches_by_mtime_and_reads_to_the_end() {
+        for shape in [vec!["--continue".to_string()], Vec::new()] {
+            let transcript_id = crate::commands::session::transcript_id_from_args(&shape);
+            let temp = tempfile::tempdir().expect("temp");
+            let projects = temp.path().join("projects");
+            std::fs::create_dir_all(&projects).expect("projects dir");
+            let older = projects.join("older.jsonl");
+            std::fs::write(
+                &older,
+                format!("{}\n", stamped_line("older reply", Utc::now())),
+            )
+            .expect("older transcript");
+            backdate(&older, 60);
+            let newest = projects.join("newest.jsonl");
+            std::fs::write(
+                &newest,
+                format!(
+                    "{}\n{}\n",
+                    stamped_line("newest one", Utc::now()),
+                    stamped_line("newest two", Utc::now())
+                ),
+            )
+            .expect("newest transcript");
+            let newest_len = std::fs::metadata(&newest).expect("newest len").len();
+
+            let mut reader = Reader::start(&projects, transcript_id);
+            let mut records = Vec::new();
+            while records.len() < 2 {
+                match reader.next(Duration::from_secs(10)).await {
+                    Some(record) => records.push(record),
+                    None => break,
+                }
+            }
+            reader.stop().await;
+
+            assert_eq!(records.len(), 2, "shape={shape:?}");
+            for record in records {
+                assert_eq!(record.file, newest, "shape={shape:?}");
+                assert_eq!(record.origin, RecordOrigin::Preamble, "shape={shape:?}");
+                assert_eq!(record.observed_len, newest_len, "shape={shape:?}");
+            }
+        }
+    }
+
+    /// Test 19 (guard): after the pinned first attach, a `/clear` rotation is
+    /// still picked up by newest mtime.
+    #[tokio::test]
+    async fn a_clear_after_the_pinned_attach_is_still_a_rotation() {
+        let temp = tempfile::tempdir().expect("temp");
+        let projects = temp.path().join("projects");
+        std::fs::create_dir_all(&projects).expect("projects dir");
+
+        let mut reader = Reader::start(&projects, Some(PIN_ID.to_string()));
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let pinned = projects.join(format!("{PIN_ID}.jsonl"));
+        write_atomically(
+            &pinned,
+            &format!("{}\n", stamped_line("first reply", Utc::now())),
+        );
+        let first = reader
+            .next(Duration::from_secs(10))
+            .await
+            .expect("the pinned reply reaches the sink");
+        assert_eq!(first.file, pinned);
+
+        // The rotation stale guard reads wall-clock mtimes.
+        backdate(&pinned, 60);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let cleared = projects.join("after-clear.jsonl");
+        write_atomically(
+            &cleared,
+            &format!("{}\n", stamped_line("after clear", Utc::now())),
+        );
+        let rotated = reader
+            .next(Duration::from_secs(10))
+            .await
+            .expect("the rotated transcript is read");
+        reader.stop().await;
+
+        assert_eq!(rotated.file, cleared);
+        assert_eq!(rotated.origin, RecordOrigin::RotationBackfill);
+    }
+
+    // Test 20: the fallback fires only AFTER the deadline. Same inputs, the
+    // deadline live then expired.
+    #[test]
+    fn decide_attach_falls_back_only_after_the_deadline() {
+        let old = Path::new("old.jsonl");
+        assert_eq!(
+            decide_attach(inputs(Some(PIN_ID), None, Some(old), false, false)),
+            AttachDecision::Wait
+        );
+        assert_eq!(
+            decide_attach(inputs(Some(PIN_ID), None, Some(old), false, true)),
+            AttachDecision::MtimeFallback(old.to_path_buf())
+        );
     }
 }
