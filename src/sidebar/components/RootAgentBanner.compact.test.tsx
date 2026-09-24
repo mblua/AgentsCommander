@@ -148,6 +148,22 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
     expect(selections(r.fake)).toBe(1);
   });
 
+  it("4a. #2519: compact keeps the expanded row height (hidden text never wraps, banner clips)", () => {
+    // jsdom has no layout, so the height itself cannot be measured; pin the two rules that hold it.
+    const css = readFileSync(new URL("../styles/sidebar.css", moduleUrl), "utf8");
+    const rules = scanRules(css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " ")));
+    const hidden = ".sidebar-layout.sidebar-compact .root-agent-banner > :not(.root-agent-banner-toggle)";
+    const hiddenRule = rules.find((x) => x.selectors.includes(hidden));
+    expect(hiddenRule, hidden).toBeDefined();
+    expect(declValue(hiddenRule!.body, "white-space")).toBe("nowrap");
+    const banner = ".sidebar-layout.sidebar-compact .root-agent-banner";
+    const bannerRule = rules.find((x) => x.selectors.includes(banner));
+    expect(bannerRule, banner).toBeDefined();
+    expect(declValue(bannerRule!.body, "overflow")).toBe("hidden");
+    // Padding stays untouched (the row would lose 12px otherwise).
+    expect(bannerRule!.body).not.toMatch(/(^|[;\s])padding[\w-]*\s*:/);
+  });
+
   it("4b. accessibility: a group with a real open button and no widget inside a widget", () => {
     sessionsStore.setSessions([rootLive()]);
     const r = renderBanner();
