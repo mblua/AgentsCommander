@@ -14536,7 +14536,7 @@ mod tests {
 /// `raise_room_reader_demand_in`, `release_room_reader_demand` and the
 /// supervisor in `commands::telegram` — over the phase-2 room fixture.
 #[cfg(test)]
-mod reader_demand_tests {
+pub(crate) mod reader_demand_tests {
     use super::co_managed_tests::*;
     use super::*;
     use crate::capture::key::Cut;
@@ -14548,14 +14548,14 @@ mod reader_demand_tests {
     };
     use std::collections::HashMap;
 
-    struct Harness {
-        app: tauri::App<tauri::test::MockRuntime>,
+    pub(crate) struct Harness {
+        pub(crate) app: tauri::App<tauri::test::MockRuntime>,
         manager: Arc<tokio::sync::RwLock<SessionManager>>,
         captures: Arc<CaptureRegistry>,
         projects_dir: PathBuf,
     }
 
-    fn harness(fixture: &RoomFixture) -> Harness {
+    pub(crate) fn harness(fixture: &RoomFixture) -> Harness {
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let captures = Arc::new(CaptureRegistry::new());
         let senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
@@ -14589,7 +14589,7 @@ mod reader_demand_tests {
     }
 
     impl Harness {
-        async fn session_in(&self, cwd: &std::path::Path) -> Uuid {
+        pub(crate) async fn session_in(&self, cwd: &std::path::Path) -> Uuid {
             let id = add_session_for_tests(
                 &self.manager,
                 cwd,
@@ -16429,7 +16429,7 @@ mod reader_demand_tests {
 /// A later refactor that moves the body back into the Co-managed command module breaks
 /// these tests rather than only the module-cycle gate.
 #[cfg(test)]
-mod co_managed_tests {
+pub(crate) mod co_managed_tests {
     use super::*;
     use crate::config::co_managed::{self, CoManagedState, OffReason};
 
