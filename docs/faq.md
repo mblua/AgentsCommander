@@ -26,7 +26,7 @@ Locally, in the application config directory selected by the exact binary versio
 
 No telemetry, no analytics, no crash reports. The one automatic network check is the npm update check: on startup AC queries the npm registry for the latest published version (throttled to at most once per 24 hours, fail-silent) and shows an in-app notice when a newer version exists. No user data leaves the machine in the npm update check; that query is a plain version lookup. You can turn it off with `npmUpdateNotificationsEnabled: false` in `settings.json`.
 
-Three optional features contact external services, and only when you enable them: Telegram, voice-to-text, and **Jev classification**. Jev is the one that sends your content rather than a version string: when a room's [Co-managed](features/co-managed-rooms.md) flag is on **and** a Jev API key is set, AC sends the captured agent text and your category catalog's questions to a third-party endpoint. Off by default, per room. See [`PRIVACY.md`](../PRIVACY.md).
+Three optional features contact external services, and only when you enable them: Telegram, voice-to-text, and **Jev classification**. Jev is the one that sends your content rather than a version string: when a room's [Co-managed](features/co-managed-rooms.md) flag is on **and** a Jev API key is set, AC sends the captured agent text and your category catalog's questions to a third-party endpoint. Off by default, globally and per room: the global `coManagedEnabled` switch stays off while the feature is in development. See [`PRIVACY.md`](../PRIVACY.md).
 
 ## Can I run multiple AC instances side by side?
 

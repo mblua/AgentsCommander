@@ -5593,6 +5593,7 @@ fn co_managed_state_reason(
     match state {
         Ok(CoManagedState::Ready) => "Ready".to_string(),
         Ok(CoManagedState::Off { reason }) => match reason {
+            OffReason::GlobalSwitchOff => "GlobalSwitchOff".to_string(),
             OffReason::NotAnOrchestrator => "NotAnOrchestrator".to_string(),
             OffReason::UnsupportedProvider { agent } => format!("UnsupportedProvider({agent})"),
             OffReason::RoomFlagOff => "RoomFlagOff".to_string(),
@@ -8164,6 +8165,7 @@ mod tests {
             jev_timeout_secs: 5,
             jev_threshold: 0.70,
             jev_margin: 0.15,
+            co_managed_enabled: true,
             ..AppSettings::default()
         };
         let session_manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -9442,6 +9444,12 @@ mod tests {
                 reason: crate::config::co_managed::OffReason::RoomFlagOff
             })),
             "RoomFlagOff"
+        );
+        assert_eq!(
+            co_managed_state_reason(&Ok(CoManagedState::Off {
+                reason: crate::config::co_managed::OffReason::GlobalSwitchOff
+            })),
+            "GlobalSwitchOff"
         );
     }
 

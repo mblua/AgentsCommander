@@ -152,6 +152,8 @@ function coManagedReasonTextOf(reason: OffReason): string | null {
     return `${reason.UnsupportedProvider.agent} has no transcript reader, so nothing can be captured.`;
   }
   switch (reason) {
+    case "GlobalSwitchOff":
+      return 'Co-managed is off for the whole app while the feature is in development. Set "coManagedEnabled": true in settings.json and restart.';
     case "NotAnOrchestrator":
       return "Only this room's orchestrator can be co-managed.";
     case "RoomFlagOff":
@@ -173,6 +175,10 @@ function coManagedReasonFromState(state: CoManagedState | null | undefined): Off
   if (!state || typeof state === "string") return null;
   return (state as { Off?: { reason?: OffReason } }).Off?.reason ?? null;
 }
+
+/** Off by default: the feature is in development. Absent or `false` hides the
+ *  item; only an explicit `true` in settings.json shows it. */
+const coManagedGloballyEnabled = () => settingsStore.current?.coManagedEnabled === true;
 
 function coManagedErrorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -1663,7 +1669,7 @@ const ProjectPanel: Component = () => {
           const testId = () =>
             `replica.coManaged.${kind}.${automationIdPart(menu().wg.name)}.${automationIdPart(menu().replica.name)}`;
           return (
-            <Show when={menu().replica.isCoordinator}>
+            <Show when={coManagedGloballyEnabled() && menu().replica.isCoordinator}>
               <button
                 class="session-context-option"
                 classList={{ "context-option-disabled": coManagedDisabled() }}
