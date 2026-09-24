@@ -10312,4 +10312,681 @@ mod tests {
         assert_eq!(disk["mainGeometry"]["x"], json!(11.0));
         assert_eq!(disk["mainWindowDisplayState"], json!("normal"));
     }
+
+    // ── #2475 synthetic selection-lock bench ─────────────────────────
+    //
+    // Synthetic numbers from a temporary directory: they are NOT the numbers
+    // of the real app. Latency is only reported under AC_SELECTION_BENCH=1
+    // with --test-threads=1; without it the bench asserts fixture,
+    // collection, correlation and occupancy invariants only.
+
+    use crate::config::replica_identity::strict_read_probe;
+    use crate::session::selection::timing_probe::{
+        bench_serialization_lock, BenchContext, Occupancy, OccupancyGuard, SelectionTimingSample,
+        TimingSinkRegistration,
+    };
+
+    const BENCH_COMMANDS: [&str; 3] = [
+        "preview_selection_lock_removal",
+        "preview_coding_agent_profile_selection",
+        "get_replica_selection_default",
+    ];
+    const BENCH_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+    const BENCH_REPETITIONS: usize = 10;
+
+    /// R rooms per project path, M project paths, one replica per room. The R
+    /// replicas of project 1 share the anchor's Matrix; projects 2..M hold
+    /// `other-<j>` replicas with their own Matrix, excluded by the Kind
+    /// Matrix filter after their strict read.
+    struct BenchFixture {
+        fixture: SelectionApiFixture,
+        settings: AppSettings,
+        anchor: PathBuf,
+        ac_roots: Vec<PathBuf>,
+        configs: Vec<PathBuf>,
+    }
+
+    impl BenchFixture {
+        fn root(&self) -> &Path {
+            self.fixture._temp.path()
+        }
+    }
+
+    fn bench_fixture(r: usize, m: usize) -> BenchFixture {
+        let fixture = selection_api_fixture();
+        let mut projects = vec![fixture.project.clone()];
+        let mut ac_roots = vec![fixture.ac_root.clone()];
+        for index in 2..=m {
+            let project = fixture._temp.path().join(format!("project-{index}"));
+            let ac_root = project.join(".ac");
+            std::fs::create_dir_all(&ac_root).expect("create .ac");
+            projects.push(project);
+            ac_roots.push(ac_root);
+        }
+        let mut configs = Vec::new();
+        for (index, ac_root) in ac_roots.iter().enumerate() {
+            let name = if index == 0 {
+                "bench-agent".to_string()
+            } else {
+                format!("other-{}", index + 1)
+            };
+            let matrix = ac_root.join(format!("_agent_{name}"));
+            for room in 1..=r {
+                let replica = ac_root
+                    .join(format!("room-{room}-bench"))
+                    .join(format!("__agent_{name}"));
+                selection_api_replica_at(
+                    &fixture,
+                    &matrix,
+                    &replica,
+                    &name,
+                    locked_tooling("B", "agent-0"),
+                );
+                configs.push(replica.join("config.json"));
+            }
+        }
+        let anchor = ac_roots[0].join("room-1-bench").join("__agent_bench-agent");
+        let mut settings = selection_api_settings(&fixture);
+        settings.project_paths = projects
+            .iter()
+            .map(|project| project.to_string_lossy().to_string())
+            .collect();
+        BenchFixture {
+            fixture,
+            settings,
+            anchor,
+            ac_roots,
+            configs,
+        }
+    }
+
+    type BenchRead<'a> =
+        std::pin::Pin<Box<dyn std::future::Future<Output = (u64, bool, std::time::Instant)> + 'a>>;
+
+    struct BenchRun {
+        samples: Vec<SelectionTimingSample>,
+        by_invocation:
+            std::collections::BTreeMap<u64, (&'static str, super::ProfileAssignmentScope)>,
+        completed: std::collections::BTreeMap<u64, std::time::Instant>,
+        batch_wall_ms: f64,
+        occupancy_max: usize,
+        body_threads: std::collections::HashSet<std::thread::ThreadId>,
+    }
+
+    #[derive(Default)]
+    struct BenchOptions {
+        /// Measurement mode: an uncorrelated timed sample fails the run.
+        measurement: bool,
+        /// Test-only: record one timed sample WITHOUT a run context.
+        inject_uncorrelated: bool,
+        /// Test-only: a witness entered while the serialization lock is held.
+        witness: Option<Arc<Occupancy>>,
+    }
+
+    fn bench_measurement_mode() -> bool {
+        std::env::var("AC_SELECTION_BENCH").as_deref() == Ok("1")
+    }
+
+    fn ms(duration: std::time::Duration) -> f64 {
+        duration.as_secs_f64() * 1000.0
+    }
+
+    /// Percentile with linear interpolation. Never an average.
+    fn pct(values: &mut [f64], q: f64) -> f64 {
+        assert!(!values.is_empty(), "percentile of nothing");
+        values.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        let rank = q * (values.len() - 1) as f64;
+        let low = rank.floor() as usize;
+        let high = rank.ceil() as usize;
+        values[low] + (values[high] - values[low]) * (rank - low as f64)
+    }
+
+    async fn bench_batch(settings: &AppSettings, anchor: &Path) -> BenchRun {
+        bench_batch_with(
+            settings,
+            anchor,
+            BenchOptions {
+                measurement: bench_measurement_mode(),
+                ..BenchOptions::default()
+            },
+        )
+        .await
+        .expect("bench batch")
+    }
+
+    async fn bench_batch_with(
+        settings: &AppSettings,
+        anchor: &Path,
+        options: BenchOptions,
+    ) -> Result<BenchRun, String> {
+        let _serial = bench_serialization_lock().lock().await;
+        bench_batch_locked(settings, anchor, &options, async {}).await
+    }
+
+    /// The batch of 13 reads, each through its real command and the timed
+    /// turn wrapper. Every read is SUBMITTED before `between` runs, and the
+    /// caller must hold `bench_serialization_lock`.
+    async fn bench_batch_locked(
+        settings: &AppSettings,
+        anchor: &Path,
+        options: &BenchOptions,
+        between: impl std::future::Future<Output = ()>,
+    ) -> Result<BenchRun, String> {
+        use std::task::Poll;
+        use tauri::Manager;
+        let _witness = options.witness.as_ref().map(OccupancyGuard::enter);
+        let app = tauri::test::mock_app();
+        app.manage(empty_session_manager());
+        app.manage(state_for(settings.clone()));
+        let session_mgr = app.state::<Arc<RwLock<SessionManager>>>();
+        let settings_state = app.state::<SettingsState>();
+
+        let (sample_tx, sample_rx) = std::sync::mpsc::channel::<SelectionTimingSample>();
+        let sample_tx = Arc::new(std::sync::Mutex::new(sample_tx));
+        let _sinks: Vec<TimingSinkRegistration> = BENCH_COMMANDS
+            .iter()
+            .map(|command| {
+                let sample_tx = Arc::clone(&sample_tx);
+                TimingSinkRegistration::new_sample(
+                    command,
+                    Arc::new(move |sample: &SelectionTimingSample, _line: &str| {
+                        let _ = sample_tx.lock().expect("sample tx").send(sample.clone());
+                    }),
+                )
+            })
+            .collect();
+        if options.inject_uncorrelated {
+            crate::session::selection::run_owned_selection_operation_timed(
+                "get_replica_selection_default",
+                || async { Ok::<(), String>(()) },
+            )
+            .await?;
+        }
+
+        let occupancy = Arc::new(Occupancy::default());
+        let mut by_invocation = std::collections::BTreeMap::new();
+        let mut reads: Vec<BenchRead<'_>> = Vec::new();
+        let scopes = [
+            super::ProfileAssignmentScope::Replica,
+            super::ProfileAssignmentScope::Kind,
+            super::ProfileAssignmentScope::Workgroup,
+        ];
+        for scope in &scopes {
+            for _ in 0..2 {
+                let context = BenchContext::new(&occupancy);
+                let id = context.invocation;
+                by_invocation.insert(id, ("preview_selection_lock_removal", scope.clone()));
+                let read = crate::session::selection::BENCH_CONTEXT.scope(
+                    context,
+                    super::preview_selection_lock_removal(
+                        session_mgr.clone(),
+                        settings_state.clone(),
+                        api_removal_preview_request(anchor, scope.clone()),
+                    ),
+                );
+                reads.push(Box::pin(async move {
+                    let ok = read.await.is_ok();
+                    (id, ok, std::time::Instant::now())
+                }));
+            }
+        }
+        for scope in &scopes {
+            for _ in 0..2 {
+                let context = BenchContext::new(&occupancy);
+                let id = context.invocation;
+                by_invocation.insert(
+                    id,
+                    ("preview_coding_agent_profile_selection", scope.clone()),
+                );
+                let read = crate::session::selection::BENCH_CONTEXT.scope(
+                    context,
+                    super::preview_coding_agent_profile_selection(
+                        session_mgr.clone(),
+                        settings_state.clone(),
+                        api_preview_request(anchor, scope.clone(), super::AssignmentMode::Ordinary),
+                    ),
+                );
+                reads.push(Box::pin(async move {
+                    let ok = read.await.is_ok();
+                    (id, ok, std::time::Instant::now())
+                }));
+            }
+        }
+        {
+            let context = BenchContext::new(&occupancy);
+            let id = context.invocation;
+            by_invocation.insert(
+                id,
+                (
+                    "get_replica_selection_default",
+                    super::ProfileAssignmentScope::Replica,
+                ),
+            );
+            let read = crate::session::selection::BENCH_CONTEXT.scope(
+                context,
+                super::get_replica_selection_default(
+                    settings_state.clone(),
+                    api_default_request(anchor),
+                ),
+            );
+            reads.push(Box::pin(async move {
+                let ok = read.await.is_ok();
+                (id, ok, std::time::Instant::now())
+            }));
+        }
+
+        // One poll per read runs its submission: `submitted` is stamped and
+        // the owned task is spawned before the next read is built.
+        let mut finished = Vec::new();
+        let mut pending = Vec::new();
+        for mut read in reads {
+            match futures::poll!(read.as_mut()) {
+                Poll::Ready(done) => finished.push(done),
+                Poll::Pending => pending.push(read),
+            }
+        }
+        let joined = tokio::time::timeout(BENCH_BATCH_TIMEOUT, async {
+            between.await;
+            futures::future::join_all(pending).await
+        })
+        .await
+        .map_err(|_| "bench batch timed out".to_string())?;
+        finished.extend(joined);
+
+        let mut completed = std::collections::BTreeMap::new();
+        for (id, ok, at) in finished {
+            if !ok {
+                return Err(format!("bench read {id} failed"));
+            }
+            completed.insert(id, at);
+        }
+
+        // Every sample is recorded inside its owned task before that task
+        // completes, so all of this batch's samples are already queued.
+        let mut samples = Vec::new();
+        let mut uncorrelated = 0usize;
+        for sample in sample_rx.try_iter() {
+            match sample.invocation {
+                Some(id) if by_invocation.contains_key(&id) => samples.push(sample),
+                Some(_) => {}
+                None => uncorrelated += 1,
+            }
+        }
+        if options.measurement && uncorrelated > 0 {
+            return Err(format!(
+                "measurement run received {uncorrelated} uncorrelated timed sample(s)"
+            ));
+        }
+        let received: std::collections::BTreeSet<u64> = samples
+            .iter()
+            .filter_map(|sample| sample.invocation)
+            .collect();
+        if samples.len() != by_invocation.len() || received.len() != by_invocation.len() {
+            let missing: Vec<u64> = by_invocation
+                .keys()
+                .filter(|id| !received.contains(id))
+                .copied()
+                .collect();
+            return Err(format!(
+                "received {} of {} samples; missing ids {missing:?}",
+                samples.len(),
+                by_invocation.len()
+            ));
+        }
+        let first_submit = samples
+            .iter()
+            .map(|sample| sample.submitted)
+            .min()
+            .expect("samples");
+        let last_done = *completed.values().max().expect("completions");
+        Ok(BenchRun {
+            batch_wall_ms: ms(last_done.saturating_duration_since(first_submit)),
+            occupancy_max: occupancy.max(),
+            body_threads: samples.iter().map(|sample| sample.body_thread).collect(),
+            samples,
+            by_invocation,
+            completed,
+        })
+    }
+
+    fn bench_key(run: &BenchRun, sample: &SelectionTimingSample) -> String {
+        let (command, scope) = &run.by_invocation[&sample.invocation.expect("correlated")];
+        format!("{command}/{scope:?}")
+    }
+
+    fn bench_sum_queue_wait_ms(run: &BenchRun) -> f64 {
+        run.samples.iter().map(|sample| ms(sample.queue_wait)).sum()
+    }
+
+    /// One report block for a set of runs (the cold one, or the warm ones).
+    fn bench_report(label: &str, runs: &[&BenchRun]) {
+        let mut walls: Vec<f64> = runs.iter().map(|run| run.batch_wall_ms).collect();
+        let mut sums: Vec<f64> = runs
+            .iter()
+            .map(|run| bench_sum_queue_wait_ms(run))
+            .collect();
+        let mut work_by_key: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
+        let mut work_by_command: std::collections::BTreeMap<&str, Vec<f64>> = Default::default();
+        let mut wait_by_command: std::collections::BTreeMap<&str, Vec<f64>> = Default::default();
+        let mut wait_all = Vec::new();
+        for run in runs {
+            for sample in &run.samples {
+                work_by_key
+                    .entry(bench_key(run, sample))
+                    .or_default()
+                    .push(ms(sample.work));
+                work_by_command
+                    .entry(sample.command)
+                    .or_default()
+                    .push(ms(sample.work));
+                wait_by_command
+                    .entry(sample.command)
+                    .or_default()
+                    .push(ms(sample.queue_wait));
+                wait_all.push(ms(sample.queue_wait));
+            }
+        }
+        let (slowest_key, slowest_p90) = work_by_key
+            .iter_mut()
+            .map(|(key, values)| (key.clone(), pct(values, 0.9)))
+            .fold((String::new(), f64::MIN), |best, next| {
+                if next.1 > best.1 {
+                    next
+                } else {
+                    best
+                }
+            });
+        let occupancy = runs.iter().map(|run| run.occupancy_max).max().unwrap_or(0);
+        let threads = runs
+            .iter()
+            .map(|run| run.body_threads.len())
+            .max()
+            .unwrap_or(0);
+        println!(
+            "[bench] {label} runs={} batch_wall_ms p50={:.1} p90={:.1} sum_queue_wait_ms p50={:.1} \
+             slowest_work_p90_ms={:.1} ({slowest_key}) occupancy_max={occupancy} \
+             diag_body_threads={threads}",
+            runs.len(),
+            pct(&mut walls.clone(), 0.5),
+            pct(&mut walls, 0.9),
+            pct(&mut sums, 0.5),
+            slowest_p90,
+        );
+        println!(
+            "[bench] {label} queue_wait_ms aggregate p50={:.1} p90={:.1}",
+            pct(&mut wait_all.clone(), 0.5),
+            pct(&mut wait_all, 0.9)
+        );
+        for (command, values) in wait_by_command.iter_mut() {
+            let work = work_by_command.get_mut(command).expect("work");
+            println!(
+                "[bench] {label} {command} queue_wait_ms p50={:.1} p90={:.1} work_ms p50={:.1} p90={:.1}",
+                pct(&mut values.clone(), 0.5),
+                pct(values, 0.9),
+                pct(&mut work.clone(), 0.5),
+                pct(work, 0.9)
+            );
+        }
+        for (key, values) in work_by_key.iter_mut() {
+            println!(
+                "[bench] {label} {key} work_ms p50={:.1} p90={:.1}",
+                pct(&mut values.clone(), 0.5),
+                pct(values, 0.9)
+            );
+        }
+    }
+
+    fn assert_bench_correlation(run: &BenchRun) {
+        assert_eq!(run.samples.len(), 13, "13 samples");
+        let ids: std::collections::BTreeSet<u64> = run
+            .samples
+            .iter()
+            .map(|sample| sample.invocation.expect("correlated sample"))
+            .collect();
+        assert_eq!(ids.len(), 13, "distinct invocation ids");
+        for sample in &run.samples {
+            let id = sample.invocation.expect("correlated sample");
+            let (command, _scope) = run.by_invocation.get(&id).expect("known invocation");
+            assert_eq!(*command, sample.command, "sample matches its invocation");
+            assert!(sample.ok, "read {id} succeeded");
+            let done = run.completed[&id];
+            assert!(
+                sample.submitted + sample.queue_wait + sample.work <= done,
+                "invocation {id} submitted before it finished"
+            );
+        }
+        let mut per_scope: std::collections::BTreeMap<String, usize> = Default::default();
+        for (command, scope) in run.by_invocation.values() {
+            *per_scope.entry(format!("{command}/{scope:?}")).or_default() += 1;
+        }
+        assert_eq!(per_scope.len(), 7, "declared mix: {per_scope:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_fixture_invariants() {
+        for (r, m) in [(3usize, 2usize), (8, 1)] {
+            let bench = bench_fixture(r, m);
+            let on_disk = bench.configs.iter().filter(|path| path.is_file()).count();
+            assert_eq!(on_disk, r * m, "config.json on disk for R={r} M={m}");
+            let mut walked = super::CandidateDirs::new();
+            for ac_root in &bench.ac_roots {
+                super::collect_kind_replica_dirs(ac_root, &mut walked);
+            }
+            assert_eq!(walked.dirs.len(), r * m, "replicas walked by kind");
+            let settings = state_for(bench.settings.clone());
+            for (scope, expected) in [
+                (super::ProfileAssignmentScope::Kind, r),
+                (super::ProfileAssignmentScope::Workgroup, 1),
+                (super::ProfileAssignmentScope::Replica, 1),
+            ] {
+                let removal = api_removal_preview(&settings, &bench.anchor, scope.clone()).await;
+                assert_eq!(removal.targets.len(), expected, "{scope:?} R={r} M={m}");
+                assert!(removal.counts_complete, "{scope:?} counts complete");
+                let assignment = api_preview(
+                    &settings,
+                    &bench.anchor,
+                    scope.clone(),
+                    super::AssignmentMode::Ordinary,
+                )
+                .await;
+                assert_eq!(assignment.targets.len(), expected, "{scope:?} R={r} M={m}");
+                assert!(assignment.counts_complete, "{scope:?} counts complete");
+            }
+        }
+    }
+
+    /// Pre-change baseline, the negative control of p4: p4 may update exactly
+    /// these two expected values (to 8 and 120) and nothing else.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_strict_reads_before_the_single_read_change() {
+        for (r, m, expected) in [(8usize, 1usize, 16usize), (40, 3, 160)] {
+            let bench = bench_fixture(r, m);
+            let settings = state_for(bench.settings.clone());
+            strict_read_probe::register(bench.root());
+            let removal = api_removal_preview(
+                &settings,
+                &bench.anchor,
+                super::ProfileAssignmentScope::Kind,
+            )
+            .await;
+            let calls = strict_read_probe::unregister(bench.root());
+            assert_eq!(removal.targets.len(), r);
+            assert_eq!(calls, expected, "strict-reader calls in kind, R={r} M={m}");
+        }
+    }
+
+    #[test]
+    fn issue_2475_bench_counter_ignores_reads_outside_the_fixture() {
+        let bench = bench_fixture(1, 1);
+        let outside = selection_api_fixture();
+        let outside_replica = selection_api_replica(
+            &outside,
+            "room-1-outside",
+            "outside-agent",
+            locked_tooling("B", "agent-0"),
+        );
+        strict_read_probe::register(bench.root());
+        crate::config::replica_identity::read_wg_replica_config_read_only(&outside_replica)
+            .expect("outside strict read");
+        assert_eq!(
+            strict_read_probe::count(bench.root()),
+            0,
+            "a strict read outside the fixture is not counted"
+        );
+        crate::config::replica_identity::read_wg_replica_config_read_only(&bench.anchor)
+            .expect("inside strict read");
+        assert_eq!(strict_read_probe::unregister(bench.root()), 1);
+    }
+
+    /// The batch test. Without AC_SELECTION_BENCH it asserts one batch's
+    /// collection and correlation; with AC_SELECTION_BENCH=1 (run it with
+    /// --test-threads=1) it also runs 10 repetitions of both fixtures and
+    /// prints the baseline. Rep 1 is cold, reps 2..10 are warm.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_samples_carry_invocation_scope_and_submit_instant() {
+        let bench = bench_fixture(8, 1);
+        let run = bench_batch(&bench.settings, &bench.anchor).await;
+        assert_bench_correlation(&run);
+        assert!(run.occupancy_max >= 1, "bodies entered the occupancy");
+
+        if !bench_measurement_mode() {
+            return;
+        }
+        println!(
+            "[bench] synthetic numbers from a temporary directory, not the real app; \
+             mix 6 preview_selection_lock_removal + 6 preview_coding_agent_profile_selection \
+             (2 per scope) + 1 get_replica_selection_default; available_parallelism={}",
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(0)
+        );
+        for (r, m) in [(8usize, 1usize), (40, 3)] {
+            let bench = bench_fixture(r, m);
+            let mut runs = Vec::new();
+            for _ in 0..BENCH_REPETITIONS {
+                let run = bench_batch(&bench.settings, &bench.anchor).await;
+                assert_bench_correlation(&run);
+                runs.push(run);
+            }
+            let cold = [&runs[0]];
+            let warm: Vec<&BenchRun> = runs[1..].iter().collect();
+            bench_report(&format!("R={r} M={m} cold"), &cold);
+            bench_report(&format!("R={r} M={m} warm"), &warm);
+        }
+    }
+
+    /// Writer control: every reader's wait covers the part of the writer's
+    /// hold it actually overlapped, `submitted` taken from the sample.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_reader_wait_covers_the_measured_overlap() {
+        const TOLERANCE_MS: f64 = 0.05;
+        let bench = bench_fixture(3, 1);
+        let _serial = bench_serialization_lock().lock().await;
+        let writer = crate::session::selection::acquire_selection_operation_turn()
+            .await
+            .expect("writer turn");
+        let acquired = std::time::Instant::now();
+        let released = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+        let release_slot = Arc::clone(&released);
+        let run = bench_batch_locked(
+            &bench.settings,
+            &bench.anchor,
+            &BenchOptions::default(),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                *release_slot.lock().expect("release slot") = Some(std::time::Instant::now());
+                drop(writer);
+            },
+        )
+        .await
+        .expect("bench batch");
+        let released = released
+            .lock()
+            .expect("release slot")
+            .expect("writer released");
+        assert_bench_correlation(&run);
+        for sample in &run.samples {
+            let start = sample.submitted.max(acquired);
+            assert!(start < released, "reader submitted while the writer held");
+            let overlap = ms(released - start);
+            assert!(
+                ms(sample.queue_wait) + TOLERANCE_MS >= overlap,
+                "queue_wait {:.3} ms must cover the {overlap:.3} ms overlap",
+                ms(sample.queue_wait)
+            );
+        }
+    }
+
+    #[test]
+    fn issue_2475_bench_percentiles_are_not_averages() {
+        let values = vec![1.0, 2.0, 3.0, 4.0, 100.0];
+        assert_eq!(pct(&mut values.clone(), 0.5), 3.0);
+        assert!(pct(&mut values.clone(), 0.9) >= 60.0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_rejects_an_uncorrelated_timed_sample() {
+        let bench = bench_fixture(1, 1);
+        let rejected = bench_batch_with(
+            &bench.settings,
+            &bench.anchor,
+            BenchOptions {
+                measurement: true,
+                inject_uncorrelated: true,
+                ..BenchOptions::default()
+            },
+        )
+        .await;
+        let error = rejected.err().expect("measurement run must fail");
+        assert!(error.contains("uncorrelated"), "{error}");
+        // Outside measurement mode the same batch is accepted.
+        let accepted = bench_batch_with(
+            &bench.settings,
+            &bench.anchor,
+            BenchOptions {
+                inject_uncorrelated: true,
+                ..BenchOptions::default()
+            },
+        )
+        .await
+        .expect("non-measurement run");
+        assert_bench_correlation(&accepted);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_fixture_leaves_config_bytes_unchanged() {
+        let bench = bench_fixture(3, 2);
+        let before: Vec<Vec<u8>> = bench
+            .configs
+            .iter()
+            .map(|path| std::fs::read(path).expect("read config.json"))
+            .collect();
+        let run = bench_batch(&bench.settings, &bench.anchor).await;
+        assert_bench_correlation(&run);
+        let after: Vec<Vec<u8>> = bench
+            .configs
+            .iter()
+            .map(|path| std::fs::read(path).expect("read config.json"))
+            .collect();
+        assert_eq!(before.len(), 6);
+        assert!(before == after, "the bench must not write any config.json");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_holds_the_serialization_lock() {
+        let bench = bench_fixture(3, 1);
+        let witness = Arc::new(Occupancy::default());
+        let options = || BenchOptions {
+            witness: Some(Arc::clone(&witness)),
+            ..BenchOptions::default()
+        };
+        let (first, second) = tokio::join!(
+            bench_batch_with(&bench.settings, &bench.anchor, options()),
+            bench_batch_with(&bench.settings, &bench.anchor, options()),
+        );
+        assert_bench_correlation(&first.expect("first run"));
+        assert_bench_correlation(&second.expect("second run"));
+        assert_eq!(witness.max(), 1, "two bench runs never overlap");
+        assert_eq!(witness.in_flight(), 0);
+    }
 }
