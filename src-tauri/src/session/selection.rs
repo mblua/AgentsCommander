@@ -206,6 +206,14 @@ pub(crate) mod timing_probe {
         }
     }
 
+    /// How many sinks are registered for `command` right now.
+    pub(crate) fn registered_sinks(command: &str) -> usize {
+        SELECTION_TIMING_SINKS
+            .lock()
+            .map(|sinks| sinks.iter().filter(|(_, name, _)| *name == command).count())
+            .unwrap_or(0)
+    }
+
     pub(crate) fn timing_field_ms(line: &str, name: &str) -> f64 {
         line.split(' ')
             .find_map(|part| part.strip_prefix(&format!("{name}=")))

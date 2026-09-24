@@ -10331,9 +10331,12 @@ mod tests {
         "preview_coding_agent_profile_selection",
         "get_replica_selection_default",
     ];
-    const BENCH_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-    /// Bound on draining already-submitted reads after a batch deadline.
-    const BENCH_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+    /// One budget per batch: it covers the serialization lock, `between` and
+    /// the wait for the reads, all measured against one `deadline_at`.
+    const BENCH_BATCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+    /// Drain grace after the budget, as an absolute `grace_at = deadline_at +
+    /// grace`, never counted from when the expiry is observed.
+    const BENCH_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
     const BENCH_REPETITIONS: usize = 10;
 
     /// R rooms per project path, M project paths, one replica per room. The R
@@ -10341,7 +10344,9 @@ mod tests {
     /// `other-<j>` replicas with their own Matrix, excluded by the Kind
     /// Matrix filter after their strict read.
     struct BenchFixture {
-        fixture: SelectionApiFixture,
+        /// Taken (and kept on disk) by the drain-expiry path.
+        temp: std::sync::Mutex<Option<tempfile::TempDir>>,
+        root: PathBuf,
         settings: AppSettings,
         anchor: PathBuf,
         ac_roots: Vec<PathBuf>,
@@ -10350,7 +10355,7 @@ mod tests {
 
     impl BenchFixture {
         fn root(&self) -> &Path {
-            self.fixture._temp.path()
+            &self.root
         }
     }
 
@@ -10393,8 +10398,10 @@ mod tests {
             .iter()
             .map(|project| project.to_string_lossy().to_string())
             .collect();
+        let SelectionApiFixture { _temp: temp, .. } = fixture;
         BenchFixture {
-            fixture,
+            root: temp.path().to_path_buf(),
+            temp: std::sync::Mutex::new(Some(temp)),
             settings,
             anchor,
             ac_roots,
@@ -10402,8 +10409,10 @@ mod tests {
         }
     }
 
-    type BenchRead<'a> =
-        std::pin::Pin<Box<dyn std::future::Future<Output = (u64, bool, std::time::Instant)> + 'a>>;
+    type BenchRead =
+        std::pin::Pin<Box<dyn std::future::Future<Output = (u64, bool, std::time::Instant)>>>;
+    type BenchWait =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Vec<(u64, bool, std::time::Instant)>>>>;
 
     struct BenchRun {
         samples: Vec<SelectionTimingSample>,
@@ -10415,6 +10424,25 @@ mod tests {
         body_threads: std::collections::HashSet<std::thread::ThreadId>,
     }
 
+    /// What the harness does once the drain grace also expired: it lost
+    /// control of reads it launched. `Abort` is terminal; `Record` hands the
+    /// retained state back to a test that owns the stuck read.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+    enum DrainExpiryAction {
+        #[default]
+        Abort,
+        Record,
+    }
+
+    /// Instants the batch records, so a test can check the budget arithmetic.
+    #[derive(Clone, Copy, Debug, Default)]
+    struct BenchMilestones {
+        deadline_at: Option<std::time::Instant>,
+        grace_at: Option<std::time::Instant>,
+        acquired: Option<std::time::Instant>,
+        expired_observed: Option<std::time::Instant>,
+    }
+
     #[derive(Default)]
     struct BenchOptions {
         /// Measurement mode: an uncorrelated timed sample fails the run.
@@ -10423,10 +10451,79 @@ mod tests {
         inject_uncorrelated: bool,
         /// Test-only: a witness entered while the serialization lock is held.
         witness: Option<Arc<Occupancy>>,
-        /// Batch deadline; `None` means `BENCH_BATCH_TIMEOUT`.
-        deadline: Option<std::time::Duration>,
-        /// Test-only: notified when the batch deadline expires.
+        /// `None` means `BENCH_BATCH_BUDGET`.
+        budget: Option<std::time::Duration>,
+        /// `None` means `BENCH_DRAIN_GRACE`.
+        grace: Option<std::time::Duration>,
+        drain_expiry: DrainExpiryAction,
+        /// Test-only: notified when the budget expires.
         on_deadline: Option<Arc<tokio::sync::Notify>>,
+        /// Test-only: where the batch records its instants.
+        milestones: Option<Arc<std::sync::Mutex<BenchMilestones>>>,
+    }
+
+    impl BenchOptions {
+        fn record(&self, update: impl FnOnce(&mut BenchMilestones)) {
+            if let Some(milestones) = &self.milestones {
+                update(&mut milestones.lock().expect("milestones"));
+            }
+        }
+    }
+
+    /// The drain grace expired and the terminal action is `Record`: this
+    /// owns everything the batch still has in flight. Nothing is released
+    /// until the owner drains `wait`.
+    struct DrainExpired {
+        diagnostic: String,
+        pending: Vec<(u64, &'static str)>,
+        retained: PathBuf,
+        wait: BenchWait,
+        sinks: Vec<TimingSinkRegistration>,
+        serial: tokio::sync::MutexGuard<'static, ()>,
+        _app: tauri::App<tauri::test::MockRuntime>,
+    }
+
+    impl DrainExpired {
+        async fn drain(&mut self) {
+            self.wait.as_mut().await;
+        }
+    }
+
+    enum BenchError {
+        Failed(String),
+        DrainExpired(Box<DrainExpired>),
+    }
+
+    impl BenchError {
+        fn message(&self) -> String {
+            match self {
+                Self::Failed(message) => message.clone(),
+                Self::DrainExpired(expired) => expired.diagnostic.clone(),
+            }
+        }
+    }
+
+    impl std::fmt::Debug for BenchError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.message())
+        }
+    }
+
+    fn bench_deadline_at(options: &BenchOptions) -> std::time::Instant {
+        std::time::Instant::now() + options.budget.unwrap_or(BENCH_BATCH_BUDGET)
+    }
+
+    /// The only way to take the bench serialization lock: bounded by the
+    /// batch's `deadline_at`.
+    async fn acquire_bench_serialization(
+        deadline_at: std::time::Instant,
+    ) -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
+        tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline_at),
+            bench_serialization_lock().lock(),
+        )
+        .await
+        .map_err(|_| "bench serialization lock not acquired in time".to_string())
     }
 
     fn bench_measurement_mode() -> bool {
@@ -10447,10 +10544,9 @@ mod tests {
         values[low] + (values[high] - values[low]) * (rank - low as f64)
     }
 
-    async fn bench_batch(settings: &AppSettings, anchor: &Path) -> BenchRun {
+    async fn bench_batch(bench: &BenchFixture) -> BenchRun {
         bench_batch_with(
-            settings,
-            anchor,
+            bench,
             BenchOptions {
                 measurement: bench_measurement_mode(),
                 ..BenchOptions::default()
@@ -10461,37 +10557,48 @@ mod tests {
     }
 
     async fn bench_batch_with(
-        settings: &AppSettings,
-        anchor: &Path,
+        bench: &BenchFixture,
         options: BenchOptions,
-    ) -> Result<BenchRun, String> {
-        let serial = tokio::time::timeout(BENCH_BATCH_TIMEOUT, bench_serialization_lock().lock())
+    ) -> Result<BenchRun, BenchError> {
+        let deadline_at = bench_deadline_at(&options);
+        let serial = acquire_bench_serialization(deadline_at)
             .await
-            .map_err(|_| "bench serialization lock not acquired in time".to_string())?;
-        bench_batch_locked(serial, settings, anchor, &options, async {}).await
+            .map_err(BenchError::Failed)?;
+        options.record(|m| m.acquired = Some(std::time::Instant::now()));
+        bench_batch_locked(serial, bench, &options, deadline_at, async {}).await
     }
 
     /// The batch of 13 reads, each through its real command and the timed
     /// turn wrapper. Every read is SUBMITTED before `between` runs. The batch
-    /// owns `serial` and its sinks until every submitted read has finished,
-    /// also on a deadline failure. The deadline covers `between` and the
-    /// wait for the reads; lock acquisition, setup and the submitting polls
-    /// run before it.
+    /// owns `serial` and its sinks until every submitted read has finished.
+    ///
+    /// Cooperative budget: no WAIT of the batch path goes past `deadline_at`
+    /// (the caller used the same instant for the lock) and no drain wait
+    /// goes past `grace_at`. Fixture setup, the submitting polls and any
+    /// future that does not yield are outside the timer.
     async fn bench_batch_locked(
         serial: tokio::sync::MutexGuard<'static, ()>,
-        settings: &AppSettings,
-        anchor: &Path,
+        bench: &BenchFixture,
         options: &BenchOptions,
-        between: impl std::future::Future<Output = ()>,
-    ) -> Result<BenchRun, String> {
+        deadline_at: std::time::Instant,
+        between: impl std::future::Future<Output = ()> + 'static,
+    ) -> Result<BenchRun, BenchError> {
         use std::task::Poll;
         use tauri::Manager;
+        let grace_at = deadline_at + options.grace.unwrap_or(BENCH_DRAIN_GRACE);
+        options.record(|m| {
+            m.deadline_at = Some(deadline_at);
+            m.grace_at = Some(grace_at);
+        });
+        let anchor = bench.anchor.as_path();
         let _witness = options.witness.as_ref().map(OccupancyGuard::enter);
         let app = tauri::test::mock_app();
         app.manage(empty_session_manager());
-        app.manage(state_for(settings.clone()));
-        let session_mgr = app.state::<Arc<RwLock<SessionManager>>>();
-        let settings_state = app.state::<SettingsState>();
+        app.manage(state_for(bench.settings.clone()));
+        let handle = app.handle().clone();
+        let done = Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeSet::<u64>::new(),
+        ));
 
         let (sample_tx, sample_rx) = std::sync::mpsc::channel::<SelectionTimingSample>();
         let sample_tx = Arc::new(std::sync::Mutex::new(sample_tx));
@@ -10512,12 +10619,13 @@ mod tests {
                 "get_replica_selection_default",
                 || async { Ok::<(), String>(()) },
             )
-            .await?;
+            .await
+            .map_err(BenchError::Failed)?;
         }
 
         let occupancy = Arc::new(Occupancy::default());
         let mut by_invocation = std::collections::BTreeMap::new();
-        let mut reads: Vec<BenchRead<'_>> = Vec::new();
+        let mut reads: Vec<BenchRead> = Vec::new();
         let scopes = [
             super::ProfileAssignmentScope::Replica,
             super::ProfileAssignmentScope::Kind,
@@ -10528,16 +10636,21 @@ mod tests {
                 let context = BenchContext::new(&occupancy);
                 let id = context.invocation;
                 by_invocation.insert(id, ("preview_selection_lock_removal", scope.clone()));
-                let read = crate::session::selection::BENCH_CONTEXT.scope(
-                    context,
-                    super::preview_selection_lock_removal(
-                        session_mgr.clone(),
-                        settings_state.clone(),
-                        api_removal_preview_request(anchor, scope.clone()),
-                    ),
-                );
+                let request = api_removal_preview_request(anchor, scope.clone());
+                let (handle, done) = (handle.clone(), Arc::clone(&done));
                 reads.push(Box::pin(async move {
-                    let ok = read.await.is_ok();
+                    let ok = crate::session::selection::BENCH_CONTEXT
+                        .scope(
+                            context,
+                            super::preview_selection_lock_removal(
+                                handle.state(),
+                                handle.state(),
+                                request,
+                            ),
+                        )
+                        .await
+                        .is_ok();
+                    done.lock().expect("done").insert(id);
                     (id, ok, std::time::Instant::now())
                 }));
             }
@@ -10550,16 +10663,22 @@ mod tests {
                     id,
                     ("preview_coding_agent_profile_selection", scope.clone()),
                 );
-                let read = crate::session::selection::BENCH_CONTEXT.scope(
-                    context,
-                    super::preview_coding_agent_profile_selection(
-                        session_mgr.clone(),
-                        settings_state.clone(),
-                        api_preview_request(anchor, scope.clone(), super::AssignmentMode::Ordinary),
-                    ),
-                );
+                let request =
+                    api_preview_request(anchor, scope.clone(), super::AssignmentMode::Ordinary);
+                let (handle, done) = (handle.clone(), Arc::clone(&done));
                 reads.push(Box::pin(async move {
-                    let ok = read.await.is_ok();
+                    let ok = crate::session::selection::BENCH_CONTEXT
+                        .scope(
+                            context,
+                            super::preview_coding_agent_profile_selection(
+                                handle.state(),
+                                handle.state(),
+                                request,
+                            ),
+                        )
+                        .await
+                        .is_ok();
+                    done.lock().expect("done").insert(id);
                     (id, ok, std::time::Instant::now())
                 }));
             }
@@ -10574,15 +10693,17 @@ mod tests {
                     super::ProfileAssignmentScope::Replica,
                 ),
             );
-            let read = crate::session::selection::BENCH_CONTEXT.scope(
-                context,
-                super::get_replica_selection_default(
-                    settings_state.clone(),
-                    api_default_request(anchor),
-                ),
-            );
+            let request = api_default_request(anchor);
+            let (handle, done) = (handle.clone(), Arc::clone(&done));
             reads.push(Box::pin(async move {
-                let ok = read.await.is_ok();
+                let ok = crate::session::selection::BENCH_CONTEXT
+                    .scope(
+                        context,
+                        super::get_replica_selection_default(handle.state(), request),
+                    )
+                    .await
+                    .is_ok();
+                done.lock().expect("done").insert(id);
                 (id, ok, std::time::Instant::now())
             }));
         }
@@ -10597,36 +10718,72 @@ mod tests {
                 Poll::Pending => pending.push(read),
             }
         }
-        let deadline = options.deadline.unwrap_or(BENCH_BATCH_TIMEOUT);
         let submitted_reads = pending.len();
-        let mut wait = Box::pin(async {
+        let mut wait: BenchWait = Box::pin(async move {
             between.await;
             futures::future::join_all(pending).await
         });
-        let joined = match tokio::time::timeout(deadline, wait.as_mut()).await {
+        let joined = match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline_at),
+            wait.as_mut(),
+        )
+        .await
+        {
             Ok(joined) => joined,
             Err(_) => {
+                options.record(|m| m.expired_observed = Some(std::time::Instant::now()));
                 if let Some(notify) = &options.on_deadline {
                     notify.notify_one();
                 }
                 // The owned reads are detached, not cancelled, when their
                 // waiters drop: keep the sinks and the serialization lock
                 // until every one of them has finished.
-                if tokio::time::timeout(BENCH_DRAIN_TIMEOUT, wait.as_mut())
+                if tokio::time::timeout_at(tokio::time::Instant::from_std(grace_at), wait.as_mut())
                     .await
-                    .is_err()
+                    .is_ok()
                 {
-                    // Reads are still owned by nobody: never hand the turn to
-                    // a following batch. Leak the isolation and fail.
-                    std::mem::forget(wait);
-                    std::mem::forget(_sinks);
-                    std::mem::forget(serial);
-                    panic!("bench batch reads did not drain; serialization lock leaked on purpose");
+                    drop(serial);
+                    return Err(BenchError::Failed(format!(
+                        "bench batch timed out; {submitted_reads} submitted reads drained before release"
+                    )));
                 }
-                drop(serial);
-                return Err(format!(
-                    "bench batch timed out after {deadline:?}; {submitted_reads} submitted reads drained before release"
-                ));
+                // The harness lost control of reads it launched. In order:
+                // 1. keep the fixture on disk, so no orphan reads a deleted path;
+                let retained = bench
+                    .temp
+                    .lock()
+                    .expect("fixture temp")
+                    .take()
+                    .map(tempfile::TempDir::keep)
+                    .unwrap_or_else(|| bench.root.clone());
+                // 2. keep the sinks registered and 3. keep `serial` held;
+                // 4. name what is still pending and where the fixture is.
+                let finished_ids = done.lock().expect("done").clone();
+                let pending_reads: Vec<(u64, &'static str)> = by_invocation
+                    .iter()
+                    .filter(|(id, _)| !finished_ids.contains(id))
+                    .map(|(id, (command, _))| (*id, *command))
+                    .collect();
+                let diagnostic = format!(
+                    "bench drain expired: pending invocations {pending_reads:?}; retained fixture {}",
+                    retained.display()
+                );
+                eprintln!("{diagnostic}");
+                // 5. the terminal action.
+                match options.drain_expiry {
+                    DrainExpiryAction::Abort => std::process::abort(),
+                    DrainExpiryAction::Record => {
+                        return Err(BenchError::DrainExpired(Box::new(DrainExpired {
+                            diagnostic,
+                            pending: pending_reads,
+                            retained,
+                            wait,
+                            sinks: _sinks,
+                            serial,
+                            _app: app,
+                        })));
+                    }
+                }
             }
         };
         finished.extend(joined);
@@ -10634,7 +10791,7 @@ mod tests {
         let mut completed = std::collections::BTreeMap::new();
         for (id, ok, at) in finished {
             if !ok {
-                return Err(format!("bench read {id} failed"));
+                return Err(BenchError::Failed(format!("bench read {id} failed")));
             }
             completed.insert(id, at);
         }
@@ -10651,9 +10808,9 @@ mod tests {
             }
         }
         if options.measurement && uncorrelated > 0 {
-            return Err(format!(
+            return Err(BenchError::Failed(format!(
                 "measurement run received {uncorrelated} uncorrelated timed sample(s)"
-            ));
+            )));
         }
         let received: std::collections::BTreeSet<u64> = samples
             .iter()
@@ -10665,11 +10822,11 @@ mod tests {
                 .filter(|id| !received.contains(id))
                 .copied()
                 .collect();
-            return Err(format!(
+            return Err(BenchError::Failed(format!(
                 "received {} of {} samples; missing ids {missing:?}",
                 samples.len(),
                 by_invocation.len()
-            ));
+            )));
         }
         let first_submit = samples
             .iter()
@@ -10883,7 +11040,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn issue_2475_bench_samples_carry_invocation_scope_and_submit_instant() {
         let bench = bench_fixture(8, 1);
-        let run = bench_batch(&bench.settings, &bench.anchor).await;
+        let run = bench_batch(&bench).await;
         assert_bench_correlation(&run);
         assert!(run.occupancy_max >= 1, "bodies entered the occupancy");
 
@@ -10902,7 +11059,7 @@ mod tests {
             let bench = bench_fixture(r, m);
             let mut runs = Vec::new();
             for _ in 0..BENCH_REPETITIONS {
-                let run = bench_batch(&bench.settings, &bench.anchor).await;
+                let run = bench_batch(&bench).await;
                 assert_bench_correlation(&run);
                 runs.push(run);
             }
@@ -10919,24 +11076,26 @@ mod tests {
     async fn issue_2475_bench_reader_wait_covers_the_measured_overlap() {
         const TOLERANCE_MS: f64 = 0.05;
         let bench = bench_fixture(3, 1);
-        let serial = bench_serialization_lock().lock().await;
+        let options = BenchOptions::default();
+        // The test takes the shared lock under its own bound; the small
+        // batch budget starts once it holds it.
+        let serial = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("serialization");
+        let deadline_at = bench_deadline_at(&options);
         let writer = crate::session::selection::acquire_selection_operation_turn()
             .await
             .expect("writer turn");
         let acquired = std::time::Instant::now();
         let released = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
         let release_slot = Arc::clone(&released);
-        let run = bench_batch_locked(
-            serial,
-            &bench.settings,
-            &bench.anchor,
-            &BenchOptions::default(),
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-                *release_slot.lock().expect("release slot") = Some(std::time::Instant::now());
-                drop(writer);
-            },
-        )
+        let run = bench_batch_locked(serial, &bench, &options, deadline_at, async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            *release_slot.lock().expect("release slot") = Some(std::time::Instant::now());
+            drop(writer);
+        })
         .await
         .expect("bench batch");
         let released = released
@@ -10967,8 +11126,7 @@ mod tests {
     async fn issue_2475_bench_rejects_an_uncorrelated_timed_sample() {
         let bench = bench_fixture(1, 1);
         let rejected = bench_batch_with(
-            &bench.settings,
-            &bench.anchor,
+            &bench,
             BenchOptions {
                 measurement: true,
                 inject_uncorrelated: true,
@@ -10976,12 +11134,11 @@ mod tests {
             },
         )
         .await;
-        let error = rejected.err().expect("measurement run must fail");
+        let error = rejected.err().expect("measurement run must fail").message();
         assert!(error.contains("uncorrelated"), "{error}");
         // Outside measurement mode the same batch is accepted.
         let accepted = bench_batch_with(
-            &bench.settings,
-            &bench.anchor,
+            &bench,
             BenchOptions {
                 inject_uncorrelated: true,
                 ..BenchOptions::default()
@@ -11000,7 +11157,7 @@ mod tests {
             .iter()
             .map(|path| std::fs::read(path).expect("read config.json"))
             .collect();
-        let run = bench_batch(&bench.settings, &bench.anchor).await;
+        let run = bench_batch(&bench).await;
         assert_bench_correlation(&run);
         let after: Vec<Vec<u8>> = bench
             .configs
@@ -11020,8 +11177,8 @@ mod tests {
             ..BenchOptions::default()
         };
         let (first, second) = tokio::join!(
-            bench_batch_with(&bench.settings, &bench.anchor, options()),
-            bench_batch_with(&bench.settings, &bench.anchor, options()),
+            bench_batch_with(&bench, options()),
+            bench_batch_with(&bench, options()),
         );
         assert_bench_correlation(&first.expect("first run"));
         assert_bench_correlation(&second.expect("second run"));
@@ -11029,16 +11186,14 @@ mod tests {
         assert_eq!(witness.in_flight(), 0);
     }
 
-    /// A batch that hits its deadline keeps its sinks and the serialization
-    /// lock until every submitted read has finished: nothing it spawned runs
-    /// after it returns.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn issue_2475_bench_deadline_drains_submitted_reads_before_release() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        let bench = bench_fixture(3, 1);
-        let serial = bench_serialization_lock().lock().await;
-        let correlated = Arc::new(AtomicUsize::new(0));
-        let _probe_sinks: Vec<TimingSinkRegistration> = BENCH_COMMANDS
+    /// Correlated samples seen for the three bench commands, via sinks the
+    /// test itself owns.
+    fn bench_correlated_counter() -> (
+        Arc<std::sync::atomic::AtomicUsize>,
+        Vec<TimingSinkRegistration>,
+    ) {
+        let correlated = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sinks = BENCH_COMMANDS
             .iter()
             .map(|command| {
                 let correlated = Arc::clone(&correlated);
@@ -11046,54 +11201,467 @@ mod tests {
                     command,
                     Arc::new(move |sample: &SelectionTimingSample, _line: &str| {
                         if sample.invocation.is_some() {
-                            correlated.fetch_add(1, Ordering::SeqCst);
+                            correlated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         }
                     }),
                 )
             })
             .collect();
-        let writer = crate::session::selection::acquire_selection_operation_turn()
-            .await
-            .expect("writer turn");
+        (correlated, sinks)
+    }
+
+    fn bench_registered_sinks() -> usize {
+        BENCH_COMMANDS
+            .iter()
+            .map(|command| crate::session::selection::timing_probe::registered_sinks(command))
+            .sum()
+    }
+
+    /// Step 7.6 test 1: the batch returns only after every submitted read
+    /// finished. Observed at the instant of the return, not after a join.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_deadline_drains_submitted_reads_before_release() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let bench = bench_fixture(3, 1);
         let expired = Arc::new(tokio::sync::Notify::new());
-        let released = Arc::new(AtomicBool::new(false));
         let options = BenchOptions {
-            deadline: Some(std::time::Duration::from_millis(50)),
+            budget: Some(std::time::Duration::from_millis(50)),
+            grace: Some(std::time::Duration::from_secs(10)),
+            drain_expiry: DrainExpiryAction::Record,
             on_deadline: Some(Arc::clone(&expired)),
             ..BenchOptions::default()
         };
-        let release_after_deadline = {
+        // The test takes the shared lock under its own bound; the small
+        // batch budget starts once it holds it.
+        let serial = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("serialization");
+        let deadline_at = bench_deadline_at(&options);
+        let (correlated, _probe_sinks) = bench_correlated_counter();
+        let writer = crate::session::selection::acquire_selection_operation_turn()
+            .await
+            .expect("writer turn");
+        let released = Arc::new(AtomicBool::new(false));
+        let wake_releaser = Arc::clone(&expired);
+        let releaser = tokio::spawn({
             let released = Arc::clone(&released);
             let correlated = Arc::clone(&correlated);
             async move {
-                expired.notified().await;
-                assert_eq!(
-                    correlated.load(Ordering::SeqCst),
-                    0,
-                    "no read ran while the writer held the turn"
-                );
+                // Bounded: the writer turn is process-wide and must come back.
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(60), expired.notified())
+                        .await;
+                let before = correlated.load(Ordering::SeqCst);
                 released.store(true, Ordering::SeqCst);
                 drop(writer);
+                before
             }
-        };
-        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
-            tokio::join!(
-                bench_batch_locked(serial, &bench.settings, &bench.anchor, &options, async {}),
-                release_after_deadline,
-            )
+        });
+        let (result, at_return) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            let result = bench_batch_locked(serial, &bench, &options, deadline_at, async {}).await;
+            // Copied in the immediate continuation of the batch's return.
+            let at_return = (
+                released.load(Ordering::SeqCst),
+                correlated.load(Ordering::SeqCst),
+            );
+            (result, at_return)
         })
         .await
         .expect("the test itself is bounded");
-        let error = result.err().expect("the batch must fail on its deadline");
+        // If the batch returned without reaching its deadline, the releaser
+        // must still give the process-wide turn back now.
+        wake_releaser.notify_one();
+        let before_release = releaser.await.expect("releaser");
+        let error = match result {
+            Err(BenchError::Failed(error)) => error,
+            Err(BenchError::DrainExpired(mut expired)) => {
+                expired.drain().await;
+                panic!("unexpected drain expiry: {}", expired.diagnostic);
+            }
+            Ok(_) => panic!("the batch must fail on its budget"),
+        };
         assert!(error.contains("timed out"), "{error}");
+        assert_eq!(
+            before_release, 0,
+            "no read ran while the writer held the turn"
+        );
         assert!(
-            released.load(Ordering::SeqCst),
+            at_return.0,
             "the batch returned only after the writer released"
         );
         assert_eq!(
-            correlated.load(Ordering::SeqCst),
-            13,
+            at_return.1, 13,
             "every submitted read finished before the batch returned"
         );
+    }
+
+    /// Step 7.6 test 2: while a batch drains, a bounded acquisition of the
+    /// serialization lock fails with its own error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_draining_batch_does_not_hand_over_serialization() {
+        let bench = bench_fixture(3, 1);
+        let expired = Arc::new(tokio::sync::Notify::new());
+        let options = BenchOptions {
+            budget: Some(std::time::Duration::from_millis(50)),
+            grace: Some(std::time::Duration::from_secs(10)),
+            drain_expiry: DrainExpiryAction::Record,
+            on_deadline: Some(Arc::clone(&expired)),
+            ..BenchOptions::default()
+        };
+        // The test takes the shared lock under its own bound; the small
+        // batch budget starts once it holds it.
+        let serial = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("serialization");
+        let deadline_at = bench_deadline_at(&options);
+        let writer = crate::session::selection::acquire_selection_operation_turn()
+            .await
+            .expect("writer turn");
+        let batch = bench_batch_locked(serial, &bench, &options, deadline_at, async {});
+        tokio::pin!(batch);
+        let reached_drain = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            tokio::select! {
+                _ = &mut batch => false,
+                _ = expired.notified() => true,
+            }
+        })
+        .await
+        .expect("the test itself is bounded");
+        // The batch is now draining and must still own the lock.
+        let second = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_millis(100),
+        )
+        .await;
+        drop(writer);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(60), batch)
+            .await
+            .expect("the test itself is bounded");
+        assert!(reached_drain, "the batch reached its drain");
+        assert_eq!(
+            second.err().as_deref(),
+            Some("bench serialization lock not acquired in time"),
+            "no batch takes the turn from a draining one"
+        );
+        assert!(result
+            .err()
+            .expect("budget failure")
+            .message()
+            .contains("timed out"));
+    }
+
+    /// Step 7.6 test 3: with `Record`, the terminal boundary keeps everything
+    /// (fixture on disk, sinks registered, lock held, diagnostic), and only
+    /// after the stuck read is released and drained does the test recover.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_drain_expiry_retains_then_recovers_the_shared_state() {
+        let bench = bench_fixture(3, 1);
+        let options = BenchOptions {
+            budget: Some(std::time::Duration::from_millis(50)),
+            grace: Some(std::time::Duration::from_millis(50)),
+            drain_expiry: DrainExpiryAction::Record,
+            ..BenchOptions::default()
+        };
+        // The test takes the shared lock under its own bound; the small
+        // batch budget starts once it holds it.
+        let serial = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("serialization");
+        let deadline_at = bench_deadline_at(&options);
+        // The test owns the stuck read: this writer keeps it queued past grace_at.
+        let writer = crate::session::selection::acquire_selection_operation_turn()
+            .await
+            .expect("writer turn");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            bench_batch_locked(serial, &bench, &options, deadline_at, async {}),
+        )
+        .await
+        .expect("the test itself is bounded");
+
+        // Observations first, at the terminal boundary.
+        let mut expired = match result {
+            Err(BenchError::DrainExpired(expired)) => Some(expired),
+            _ => None,
+        };
+        let observed = expired.as_ref().map(|expired| {
+            let pending_named = expired.pending.iter().all(|(id, command)| {
+                expired.diagnostic.contains(&id.to_string()) && expired.diagnostic.contains(command)
+            });
+            (
+                expired.retained.is_dir(),
+                bench.temp.lock().expect("temp").is_none(),
+                bench_registered_sinks(),
+                expired.pending.len(),
+                pending_named,
+                expired
+                    .diagnostic
+                    .contains(&expired.retained.display().to_string()),
+            )
+        });
+        let lock_held = acquire_bench_serialization(
+            std::time::Instant::now() + std::time::Duration::from_millis(100),
+        )
+        .await
+        .is_err();
+
+        // Deterministic recovery, whatever the observations say: release the
+        // read, join ALL submitted work, then sinks, lock, fixture.
+        drop(writer);
+        let mut sinks_after = None;
+        if let Some(mut expired) = expired.take() {
+            tokio::time::timeout(std::time::Duration::from_secs(60), expired.drain())
+                .await
+                .expect("the released read drains");
+            let DrainExpired {
+                sinks,
+                serial,
+                retained,
+                _app,
+                ..
+            } = *expired;
+            drop(sinks);
+            sinks_after = Some(bench_registered_sinks());
+            drop(serial);
+            std::fs::remove_dir_all(&retained).expect("remove the retained fixture");
+        }
+        let later = bench_fixture(3, 1);
+        let later_run =
+            tokio::time::timeout(std::time::Duration::from_secs(60), bench_batch(&later))
+                .await
+                .expect("the test itself is bounded");
+
+        let observed = observed.expect("the drain grace expired with Record");
+        assert!(observed.0, "the fixture stays on disk");
+        assert!(observed.1, "the fixture TempDir was taken and kept");
+        assert_eq!(observed.2, 3, "the batch sinks stay registered");
+        assert_eq!(observed.3, 13, "every read is still pending");
+        assert!(observed.4, "the diagnostic names every pending invocation");
+        assert!(observed.5, "the diagnostic names the retained fixture");
+        assert!(lock_held, "the serialization lock was not released");
+        assert_eq!(sinks_after, Some(0), "recovery unregistered the sinks");
+        assert_bench_correlation(&later_run);
+    }
+
+    /// Step 7.6 test 4: the default value only, not its dispatch.
+    #[test]
+    fn issue_2475_bench_default_drain_expiry_action_is_abort() {
+        assert_eq!(
+            BenchOptions::default().drain_expiry,
+            DrainExpiryAction::Abort
+        );
+    }
+
+    const BENCH_ABORT_CHILD_MARKER: &str = "AC_BENCH_ABORT_CHILD";
+    const BENCH_ABORT_CHILD_TEST: &str =
+        "commands::config::tests::issue_2475_bench_drain_expiry_aborts_in_a_child_process";
+
+    /// Step 7.6 test 6: the default action really aborts. The terminal path
+    /// runs in a child process (this same test, marked), so the suite
+    /// survives it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_drain_expiry_aborts_in_a_child_process() {
+        if std::env::var_os(BENCH_ABORT_CHILD_MARKER).is_some() {
+            let bench = bench_fixture(1, 1);
+            let options = BenchOptions {
+                budget: Some(std::time::Duration::from_millis(50)),
+                grace: Some(std::time::Duration::from_millis(50)),
+                ..BenchOptions::default()
+            };
+            let deadline_at = bench_deadline_at(&options);
+            let serial = acquire_bench_serialization(deadline_at)
+                .await
+                .expect("serialization");
+            let _writer = crate::session::selection::acquire_selection_operation_turn()
+                .await
+                .expect("writer turn");
+            let _ = bench_batch_locked(serial, &bench, &options, deadline_at, async {}).await;
+            panic!("the drain expiry returned instead of aborting");
+        }
+
+        let child = std::process::Command::new(std::env::current_exe().expect("test exe"))
+            .args([
+                "--exact",
+                BENCH_ABORT_CHILD_TEST,
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(BENCH_ABORT_CHILD_MARKER, "1")
+            .env_remove("AC_SELECTION_BENCH")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn the child");
+        // Bounded wait: kill and reap on expiry; pipes are read on their own
+        // threads so a full pipe never blocks the child.
+        let (status, stdout, stderr) = tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+            let mut child = child;
+            let mut out = child.stdout.take().expect("stdout");
+            let mut err = child.stderr.take().expect("stderr");
+            let out = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = out.read_to_end(&mut bytes);
+                bytes
+            });
+            let err = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = err.read_to_end(&mut bytes);
+                bytes
+            });
+            let limit = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let status = loop {
+                if let Some(status) = child.try_wait().expect("poll the child") {
+                    break Some(status);
+                }
+                if std::time::Instant::now() >= limit {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            };
+            let stdout = String::from_utf8_lossy(&out.join().expect("stdout reader")).to_string();
+            let stderr = String::from_utf8_lossy(&err.join().expect("stderr reader")).to_string();
+            (status, stdout, stderr)
+        })
+        .await
+        .expect("join the waiter");
+        let status = status.unwrap_or_else(|| {
+            panic!("the child did not terminate in time\nstdout:\n{stdout}\nstderr:\n{stderr}")
+        });
+
+        // Clean the known retained fixture before asserting.
+        let retained = stderr
+            .lines()
+            .find_map(|line| {
+                line.split_once("retained fixture ")
+                    .map(|(_, path)| path.trim())
+            })
+            .map(PathBuf::from);
+        if let Some(retained) = &retained {
+            let _ = std::fs::remove_dir_all(retained);
+        }
+
+        assert!(
+            stdout.contains("running 1 test") && stdout.contains(BENCH_ABORT_CHILD_TEST),
+            "the child ran exactly the terminal test:\n{stdout}"
+        );
+        assert!(!status.success(), "an abort is never a success: {status:?}");
+        #[cfg(windows)]
+        assert_eq!(
+            status.code(),
+            Some(0xC000_0409_u32 as i32),
+            "abort exit code, not a panic or another crash: {status:?}\n{stderr}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(status.signal(), Some(6), "SIGABRT: {status:?}\n{stderr}");
+        }
+        assert!(
+            stderr.contains("bench drain expired: pending invocations"),
+            "diagnostic with the pending invocations:\n{stderr}"
+        );
+        assert!(
+            retained.is_some(),
+            "diagnostic names the retained fixture:\n{stderr}"
+        );
+    }
+
+    /// Step 7.6 test 5: acquisition and work share ONE deadline. A third
+    /// party holds the serialization for 0.6 x budget; the late batch must
+    /// still expire against the original `deadline_at`. Only an attempt where
+    /// a FOREIGN test got the lock first is retried; the arithmetic is
+    /// asserted on the first clean attempt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_bench_one_budget_is_shared_between_acquisition_and_work() {
+        let budget = std::time::Duration::from_millis(400);
+        let grace = std::time::Duration::from_secs(10);
+        // A reset budget would expire ~0.6 x budget later than allowed; this
+        // tolerance stays well below that.
+        let tolerance = budget / 4;
+        let hold = budget.mul_f64(0.6);
+        let bench = bench_fixture(1, 1);
+        for attempt in 1..=5 {
+            let expired = Arc::new(tokio::sync::Notify::new());
+            let milestones = Arc::new(std::sync::Mutex::new(BenchMilestones::default()));
+            let options = BenchOptions {
+                budget: Some(budget),
+                grace: Some(grace),
+                drain_expiry: DrainExpiryAction::Record,
+                on_deadline: Some(Arc::clone(&expired)),
+                milestones: Some(Arc::clone(&milestones)),
+                ..BenchOptions::default()
+            };
+            let third_party = acquire_bench_serialization(
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+            )
+            .await
+            .expect("third party serialization");
+            let writer = crate::session::selection::acquire_selection_operation_turn()
+                .await
+                .expect("writer turn");
+            let wake_releaser = Arc::clone(&expired);
+            let releaser = tokio::spawn(async move {
+                // Bounded: the writer turn is process-wide and must come back.
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(60), expired.notified())
+                        .await;
+                drop(writer);
+            });
+            let (result, third_released) =
+                tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                    tokio::join!(bench_batch_with(&bench, options), async move {
+                        tokio::time::sleep(hold).await;
+                        let released = std::time::Instant::now();
+                        drop(third_party);
+                        released
+                    })
+                })
+                .await
+                .expect("the test itself is bounded");
+            wake_releaser.notify_one();
+            releaser.await.expect("releaser");
+            let error = match result {
+                Err(BenchError::Failed(error)) => error,
+                Err(BenchError::DrainExpired(mut expired)) => {
+                    expired.drain().await;
+                    panic!("unexpected drain expiry: {}", expired.diagnostic);
+                }
+                Ok(_) => panic!("the batch must fail on its budget"),
+            };
+            if error == "bench serialization lock not acquired in time" {
+                // A foreign test was queued ahead of this batch.
+                println!("[bench] budget test attempt {attempt}: foreign lock holder, retrying");
+                continue;
+            }
+            let m = *milestones.lock().expect("milestones");
+            let deadline_at = m.deadline_at.expect("deadline_at");
+            let acquired = m.acquired.expect("acquired");
+            let observed = m.expired_observed.expect("expiry observed");
+            assert!(error.contains("timed out"), "{error}");
+            assert!(acquired >= third_released, "the batch acquired late");
+            assert!(observed >= deadline_at, "never expires early");
+            assert!(
+                observed - acquired <= budget.mul_f64(0.4) + tolerance,
+                "expired {:?} after a late acquisition; a shared deadline allows {:?}",
+                observed - acquired,
+                budget.mul_f64(0.4) + tolerance
+            );
+            assert_eq!(
+                m.grace_at,
+                Some(deadline_at + grace),
+                "grace_at derives from deadline_at"
+            );
+            return;
+        }
+        panic!("five attempts in a row lost the lock to a foreign test");
     }
 }
