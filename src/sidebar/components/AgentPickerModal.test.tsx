@@ -2981,22 +2981,33 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    it("issue_2475_loading_message_appears_in_the_same_tick", async () => {
-      mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation(
-        () => new Promise<PreviewCodingAgentProfileSelectionResult>(() => {}),
-      );
+    async function microtasks(count = 8): Promise<void> {
+      // Microtask flushes only: a regression that defers to a timer task stays unobserved.
+      for (let index = 0; index < count; index += 1) await Promise.resolve();
+    }
+
+    function controlledSettings(): () => void {
       let resolveSettings: (value: AppSettings) => void = () => {};
       mockSettingsApi.get.mockImplementation(
         () => new Promise<AppSettings>((resolve) => { resolveSettings = resolve; }),
       );
+      return () => resolveSettings(currentSettings);
+    }
+
+    it("issue_2475_loading_message_appears_in_the_same_tick", async () => {
+      mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation(
+        () => new Promise<PreviewCodingAgentProfileSelectionResult>(() => {}),
+      );
+      const releaseSettings = controlledSettings();
       const { dispose } = renderWgPicker();
-      await Promise.resolve();
+      await microtasks();
       expect(maybe("agentPicker.previewBusy")).toBeNull();
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).not.toHaveBeenCalled();
 
-      resolveSettings(currentSettings);
-      await settle();
+      releaseSettings();
+      await microtasks();
 
-      // No preview promise ever resolved, so the message comes from the open itself.
+      // No timer task ran and no preview promise resolved: the message comes from the open itself.
       expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledTimes(3);
       expect(text("agentPicker.previewBusy")).toBe("Loading targets…");
 
@@ -3004,41 +3015,59 @@ describe("AgentPickerModal", () => {
     });
 
     it("issue_2475_scope_counts_are_never_absent_longer_than_today", async () => {
-      const seen: Record<string, string[]> = {};
-      const ids = [
+      const removeIds = [
         "agentPicker.removeScopeCount.replica",
         "agentPicker.removeScopeCount.kind",
         "agentPicker.removeScopeCount.workgroup",
-        "agentPicker.scope.kind",
-        "agentPicker.scope.workgroup",
       ];
-      const record = () => {
+      const assignIds = ["agentPicker.scope.kind", "agentPicker.scope.workgroup"];
+      const ids = [...removeIds, ...assignIds];
+      const samples: Record<string, string[]> = Object.fromEntries(ids.map((id) => [id, []]));
+      // One sample per microtask boundary; absence is a recorded value, not a skip.
+      const sample = () => {
         for (const id of ids) {
           const element = maybe(id);
-          if (!element) continue;
-          const value = element.textContent?.replace(/\s+/g, " ").trim() ?? "";
-          const list = (seen[id] ??= []);
-          if (list[list.length - 1] !== value) list.push(value);
+          samples[id].push(element ? element.textContent?.replace(/\s+/g, " ").trim() ?? "" : "absent");
         }
       };
-      const observer = new MutationObserver(record);
-      observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+      const releaseSettings = controlledSettings();
       const { dispose } = renderWgPicker();
-      record();
-      await settle();
-      record();
-      observer.disconnect();
+      sample();
+      releaseSettings();
+      for (let index = 0; index < 12; index += 1) {
+        await Promise.resolve();
+        sample();
+      }
 
-      // The mount task paints "—" then "…" synchronously, before any paint;
-      // after that each count goes straight to its number, never back to "—".
-      expect(seen["agentPicker.removeScopeCount.replica"]).toEqual(["—", "…", "0 protected"]);
-      expect(seen["agentPicker.removeScopeCount.kind"]).toEqual(["—", "…", "2 of 3 protected"]);
-      expect(seen["agentPicker.removeScopeCount.workgroup"]).toEqual(["—", "…", "3 of 4 protected"]);
-      // Assignment counts go straight from the loading zero to their number, once.
-      expect(seen["agentPicker.scope.kind"].filter((value) => value.includes("3 replicas"))).toHaveLength(1);
-      expect(seen["agentPicker.scope.workgroup"].filter((value) => value.includes("4 replicas"))).toHaveLength(1);
-      expect(seen["agentPicker.scope.kind"][seen["agentPicker.scope.kind"].length - 1]).toContain("3 replicas");
-      expect(seen["agentPicker.scope.workgroup"][seen["agentPicker.scope.workgroup"].length - 1]).toContain("4 replicas");
+      const finals: Record<string, string> = {
+        "agentPicker.removeScopeCount.replica": "0 protected",
+        "agentPicker.removeScopeCount.kind": "2 of 3 protected",
+        "agentPicker.removeScopeCount.workgroup": "3 of 4 protected",
+      };
+      for (const id of removeIds) {
+        const seen = samples[id];
+        // "—" is the pre-settings placeholder: allowed only in the sample taken before release.
+        const phases = seen.map((value, index) =>
+          value === "absent" || (index === 0 && value === "—") ? 0 : value === "…" ? 1 : value === finals[id] ? 2 : -1,
+        );
+        expect(seen[1], `${id}: first tick after settings`).toBe("…");
+        expect(phases, `${id}: ${seen.join(" | ")}`).not.toContain(-1);
+        expect(phases, `${id}: ${seen.join(" | ")}`).toEqual([...phases].sort((a, b) => a - b));
+        expect(seen[seen.length - 1], id).toBe(finals[id]);
+      }
+      const assignFinals: Record<string, string> = {
+        "agentPicker.scope.kind": "3 replicas",
+        "agentPicker.scope.workgroup": "4 replicas",
+      };
+      for (const id of assignIds) {
+        const seen = samples[id];
+        const phases = seen.map((value) =>
+          value === "absent" ? 0 : value.includes(" 0 replicas") ? 1 : value.includes(assignFinals[id]) ? 2 : -1,
+        );
+        expect(phases, `${id}: ${seen.join(" | ")}`).not.toContain(-1);
+        expect(phases, `${id}: ${seen.join(" | ")}`).toEqual([...phases].sort((a, b) => a - b));
+        expect(seen[seen.length - 1], id).toContain(assignFinals[id]);
+      }
 
       dispose();
     });
