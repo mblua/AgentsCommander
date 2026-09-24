@@ -145,6 +145,23 @@ async fn session_is_live<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid
     mgr.get_session(session_id).await.is_some()
 }
 
+/// True while `session_id` already holds a **Room** demand (#2456).
+///
+/// An in-memory lookup under the bridge lock, the same query as the fast path
+/// in [`raise_reader_demand`], so the re-raise tick can skip a satisfied
+/// session before paying for readiness resolution.
+pub(crate) async fn holds_room_reader_demand<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) -> bool {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return false;
+    };
+    let tg = tg_state.lock().await;
+    tg.reader_demands(session_id)
+        .contains(&ReaderConsumer::Room)
+}
+
 /// Raise `consumer`'s demand on `session_id`'s transcript reader (#2232 phase 4
 /// section 5).
 ///
