@@ -504,6 +504,11 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         }
 
         // --- Settings ---
+        // #2133 - the server owns the config dir; a browser client is a remote view of it.
+        "get_agent_help" => Ok(
+            serde_json::to_value(crate::commands::config::get_agent_help())
+                .map_err(|e| e.to_string())?,
+        ),
         "get_settings" => {
             // #1077: route through the exact shared snapshot helper so browser
             // and native clients receive the identical resolution report and
@@ -692,7 +697,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             // without canceling the mutation) instead of observing half-settled
             // state.
             let state = state.clone();
-            crate::session::selection::run_owned_selection_operation(move || async move {
+            crate::session::selection::run_owned_selection_operation_timed("preview_coding_agent_profile_selection", move || async move {
                 let result = crate::commands::config::preview_coding_agent_profile_selection_inner(
                     &state.session_mgr,
                     &state.settings,
@@ -739,7 +744,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let request: crate::commands::config::PreviewSelectionLockRemovalRequest =
                 require_json(args, "request")?;
             let state = state.clone();
-            crate::session::selection::run_owned_selection_operation(move || async move {
+            crate::session::selection::run_owned_selection_operation_timed("preview_selection_lock_removal", move || async move {
                 let result = crate::commands::config::preview_selection_lock_removal_inner(
                     &state.session_mgr,
                     &state.settings,
@@ -777,7 +782,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let request: crate::commands::config::GetReplicaSelectionDefaultRequest =
                 require_json(args, "request")?;
             let state = state.clone();
-            crate::session::selection::run_owned_selection_operation(move || async move {
+            crate::session::selection::run_owned_selection_operation_timed("get_replica_selection_default", move || async move {
                 let result = crate::commands::config::get_replica_selection_default_inner(
                     &state.settings,
                     request,
@@ -1266,6 +1271,18 @@ mod tests {
         assert_eq!(resolution["archivedRegistrationCount"], 0);
         assert!(resolution["issues"].as_array().unwrap().is_empty());
         assert!(resolution["reconciliationError"].is_null());
+    }
+
+    /// #2133 (P4) - the web arm is a real implementation, not the null no-op group. It goes
+    /// through the process config dir, so it asserts only equality with the native command.
+    #[tokio::test]
+    async fn the_web_arm_serves_the_same_agent_help_payload() {
+        let (state, _rx) = ws_state_for(AppSettings::default());
+        let response = dispatch(&state, 7, "get_agent_help", &json!({})).await;
+        let expected = serde_json::to_value(crate::commands::config::get_agent_help()).unwrap();
+        assert!(response.get("error").is_none(), "{response}");
+        assert_ne!(response["result"], json!(null));
+        assert_eq!(response["result"], expected);
     }
 
     #[tokio::test]

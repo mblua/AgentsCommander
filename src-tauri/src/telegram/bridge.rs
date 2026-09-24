@@ -574,7 +574,14 @@ fn is_thinking_line(s: &str) -> bool {
 #[derive(Debug, Clone)]
 pub enum SessionReaderKind {
     /// Watch Claude Code's append-only JSONL session log at the resolved projects dir.
-    Claude { project_dir: PathBuf },
+    ///
+    /// `transcript_id` is the transcript id AC minted at spawn (#2454), when
+    /// the effective argv names one; the reader pins its first attach to
+    /// `<id>.jsonl`. `None` keeps the attach by newest mtime.
+    Claude {
+        project_dir: PathBuf,
+        transcript_id: Option<String>,
+    },
     /// Watch Codex CLI's append-only `rollout-*.jsonl` under `~/.codex/sessions/`,
     /// filtering candidates by `session_meta.cwd` match.
     Codex {
@@ -748,10 +755,14 @@ pub fn spawn_reader<R: tauri::Runtime>(
     // through the channel (section 4.1). Codex receives its own `BotTarget`
     // flavour of the same value.
     let (task, dest) = match kind {
-        SessionReaderKind::Claude { project_dir } => {
+        SessionReaderKind::Claude {
+            project_dir,
+            transcript_id,
+        } => {
             let (dest_tx, dest_rx) = tokio::sync::watch::channel(dest);
             let task = super::claude_watcher::spawn_watch_task(
                 project_dir,
+                transcript_id,
                 network,
                 dest_rx,
                 session_id_str,

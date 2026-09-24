@@ -172,6 +172,10 @@ pub(crate) const BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME: &str = "blocking-menus-r
 pub(crate) const AGENT_HELP_LOCAL_FILE_NAME: &str = "agent-help.local.json";
 /// #2133 - AC-owned shipped per-agent help; rewritten from embedded content at startup.
 pub(crate) const AGENT_HELP_SHIPPED_FILE_NAME: &str = "agent-help.json";
+/// #2133 - per-agent help downloaded from GitHub; written only by the startup download.
+pub(crate) const AGENT_HELP_REMOTE_FILE_NAME: &str = "agent-help.remote.json";
+/// #2133 - time of the last remote agent-help download attempt; throttles it to once per 24 h.
+pub(crate) const AGENT_HELP_REMOTE_CHECK_FILE_NAME: &str = "agent-help-remote-check.json";
 /// AC's own instance settings file. Every production reader and writer of the
 /// instance file names it through this constant.
 pub(crate) const SETTINGS_FILE_NAME: &str = "settings.json";
@@ -440,6 +444,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: transient agency template cache lock and staging trees (.lock, .next-, .download-, .prev-); the tracked cache directory itself carries no dot and is not matched",
     },
     InstanceArtifact {
+        name: AGENT_HELP_REMOTE_CHECK_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: remote per-agent help download throttle stamp",
+    },
+    InstanceArtifact {
         name: AGENT_HELP_SHIPPED_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
@@ -450,6 +460,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: operator-owned per-agent help overlay; machine-local by design",
+    },
+    InstanceArtifact {
+        name: AGENT_HELP_REMOTE_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: downloaded per-agent help content; replaced by the next accepted download",
     },
     InstanceArtifact {
         name: API_AUDIT_LOG_FILE_NAME,
@@ -921,6 +937,27 @@ mod tests {
         let index_of = |name: &str| names.iter().position(|row| *row == name).unwrap();
         assert!(index_of("agency-agents_templates.*") < hits[0]);
         assert!(hits[0] < index_of("agent-help.local.json"));
+    }
+
+    /// #2133 - the two remote rows are split around P2's and P3's rows by byte order.
+    #[test]
+    fn both_remote_artifact_names_are_ignore_rows_in_sorted_position() {
+        let names: Vec<&str> = ignore_rows().iter().map(|row| row.name).collect();
+        let once = |name: &str| {
+            let hits: Vec<usize> = names
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| **row == name)
+                .map(|(index, _)| index)
+                .collect();
+            assert_eq!(hits.len(), 1, "{name} must appear exactly once: {hits:?}");
+            hits[0]
+        };
+        let check = once("agent-help-remote-check.json");
+        let remote = once("agent-help.remote.json");
+        assert!(check < once("agent-help.json"));
+        assert!(once("agent-help.local.json") < remote);
+        assert!(remote < once("api-audit.log"));
     }
 
     #[test]

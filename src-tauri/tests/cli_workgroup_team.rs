@@ -2629,7 +2629,7 @@ fn room_activity_lists_rooms_in_order_for_both_spellings() {
     );
     for item in &canonical {
         let object = item.as_object().expect("room object");
-        assert_eq!(object.len(), 5, "exactly the documented fields: {item}");
+        assert_eq!(object.len(), 8, "exactly the documented fields: {item}");
         assert_eq!(item["team"], "dev-team");
         assert_eq!(item["working"], false);
         assert_eq!(item["ciState"], "unknown", "no repo-* means unknown");
@@ -3054,6 +3054,28 @@ fn room_activity_writes_nothing() {
 
     let items = activity_json(&bin, "ProjectAlpha");
     assert_eq!(activity_room(&items, "room-1-dev-team")["working"], true);
+    // #2473 B6: the filters add no write either.
+    let filtered = run_json(
+        &bin,
+        &[
+            "room",
+            "activity",
+            "--project",
+            "ProjectAlpha",
+            "--rooms",
+            "1",
+            "--team",
+            "dev-team",
+            "--working",
+            "true",
+            "--ci-state",
+            "idle",
+            "--title-regex",
+            "Build",
+            "--hide-clean",
+        ],
+    );
+    assert_eq!(filtered.as_array().expect("array").len(), 1);
 
     for (path, bytes) in owned_files.iter().zip(&before) {
         assert_eq!(
@@ -3068,4 +3090,348 @@ fn room_activity_writes_nothing() {
         refreshes_before,
         "room activity must not request a project refresh"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #2473 - `room activity` filters and CI detail fields.
+// ---------------------------------------------------------------------------
+
+/// Snapshot entries with the #2473 optional fields.
+fn write_detailed_snapshot(config_dir: &Path, generated_at: &str, entries: &[serde_json::Value]) {
+    let snapshot = serde_json::json!({
+        "schemaVersion": 1,
+        "generatedAt": generated_at,
+        "repos": entries,
+    });
+    std::fs::write(
+        config_dir.join("remote-activity.json"),
+        serde_json::to_string_pretty(&snapshot).expect("snapshot json"),
+    )
+    .expect("write remote-activity.json");
+}
+
+fn write_task_title(room: &Path, title: Option<&str>) {
+    let task = room.join("TASK.md");
+    match title {
+        Some(title) => std::fs::write(&task, format!("---\ntitle: {title}\n---\n")).expect("task"),
+        None => {
+            let _ = std::fs::remove_file(&task);
+        }
+    }
+}
+
+/// Four rooms over two teams:
+/// - room-1-dev-team: `Clean`, idle session, repo-a running (runs 101/102, PR 12)
+/// - room-2-dev-team: `Fix #12 parser`, working, repo-b idle
+/// - room-3-ops-team: `Docs pass`, not working, repo-c not in the snapshot
+/// - room-4-ops-team: no title, working, no repos
+struct ActivityFixture {
+    _tmp: Tmp,
+    bin: PathBuf,
+    config_dir: PathBuf,
+    rooms: Vec<PathBuf>,
+}
+
+fn activity_filter_fixture(label: &str) -> ActivityFixture {
+    let tmp = Tmp::new(label);
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let (project, room1) = create_activity_workgroup(tmp.path(), &bin, &config_dir, &["architect"]);
+    let ac = project.join(".ac");
+    let rooms = vec![
+        room1,
+        ac.join("room-2-dev-team"),
+        ac.join("room-3-ops-team"),
+        ac.join("room-4-ops-team"),
+    ];
+    for room in &rooms[1..] {
+        std::fs::create_dir_all(room.join("__agent_dev")).expect("room");
+    }
+    let repo_a = rooms[0].join("repo-a");
+    let repo_b = rooms[1].join("repo-b");
+    let repo_c = rooms[2].join("repo-c");
+    for repo in [&repo_a, &repo_b, &repo_c] {
+        std::fs::create_dir_all(repo).expect("repo");
+    }
+    write_task_title(&rooms[0], Some("Clean"));
+    write_task_title(&rooms[1], Some("Fix #12 parser"));
+    write_task_title(&rooms[2], Some("Docs pass"));
+    write_task_title(&rooms[3], None);
+    write_activity_sessions(
+        &config_dir,
+        vec![
+            activity_row(
+                "room-1-dev-team/architect",
+                &rooms[0].join("__agent_architect"),
+                SessionStatus::Idle,
+                true,
+            ),
+            activity_row(
+                "room-2-dev-team/dev",
+                &rooms[1].join("__agent_dev"),
+                SessionStatus::Running,
+                false,
+            ),
+            activity_row(
+                "room-4-ops-team/dev",
+                &rooms[3].join("__agent_dev"),
+                SessionStatus::Running,
+                false,
+            ),
+        ],
+    );
+    write_live_daemon_pid(&config_dir);
+    let fixture = ActivityFixture {
+        _tmp: tmp,
+        bin,
+        config_dir,
+        rooms,
+    };
+    write_fixture_snapshot(&fixture, 0);
+    fixture
+}
+
+fn write_fixture_snapshot(fixture: &ActivityFixture, offset_secs: i64) {
+    write_detailed_snapshot(
+        &fixture.config_dir,
+        &activity_rfc3339(offset_secs),
+        &[
+            serde_json::json!({
+                "path": fixture.rooms[0].join("repo-a").to_string_lossy(),
+                "ciState": "running",
+                "runIds": [102, 101],
+                "pullRequests": [12],
+            }),
+            serde_json::json!({
+                "path": fixture.rooms[1].join("repo-b").to_string_lossy(),
+                "ciState": "idle",
+            }),
+        ],
+    );
+}
+
+fn activity_with(fixture: &ActivityFixture, filters: &[&str]) -> Vec<serde_json::Value> {
+    let mut args = vec!["room", "activity", "--project", "ProjectAlpha"];
+    args.extend_from_slice(filters);
+    run_json(&fixture.bin, &args)
+        .as_array()
+        .cloned()
+        .expect("activity array")
+}
+
+fn names_of(items: &[serde_json::Value]) -> Vec<String> {
+    items
+        .iter()
+        .map(|item| item["name"].as_str().expect("name").to_string())
+        .collect()
+}
+
+const R1: &str = "room-1-dev-team";
+const R2: &str = "room-2-dev-team";
+const R3: &str = "room-3-ops-team";
+const R4: &str = "room-4-ops-team";
+
+#[test]
+fn room_activity_each_filter_alone_drops_exactly_the_non_matching_rooms() {
+    let fixture = activity_filter_fixture("cli-room-activity-filters");
+    let unfiltered = activity_with(&fixture, &[]);
+    assert_eq!(names_of(&unfiltered), vec![R1, R2, R3, R4]);
+    let cases: Vec<(Vec<&str>, Vec<&str>)> = vec![
+        (vec!["--rooms", "3,1,3"], vec![R1, R3]),
+        (vec!["--rooms", " 4 "], vec![R4]),
+        (vec!["--team", "ops-team"], vec![R3, R4]),
+        (vec!["--team", "no-such-team"], vec![]),
+        (vec!["--working", "true"], vec![R2, R4]),
+        (vec!["--working", "false"], vec![R1, R3]),
+        (vec!["--ci-state", "running"], vec![R1]),
+        (vec!["--ci-state", "idle"], vec![R2]),
+        (vec!["--ci-state", "unknown"], vec![R3, R4]),
+        (vec!["--title-regex", "#1\\d"], vec![R2]),
+        (vec!["--title-regex", "(?i)^DOCS"], vec![R3]),
+        (vec!["--hide-clean"], vec![R2, R3]),
+    ];
+    for (filters, expected) in cases {
+        let filtered = activity_with(&fixture, &filters);
+        assert_eq!(names_of(&filtered), expected, "filters {filters:?}");
+        // B3 negative control: every filter drops at least one fixture room.
+        assert!(
+            filtered.len() < unfiltered.len(),
+            "filters {filters:?} must drop a room"
+        );
+    }
+}
+
+#[test]
+fn room_activity_filters_combine_with_and() {
+    let fixture = activity_filter_fixture("cli-room-activity-filters-and");
+    let all = activity_with(
+        &fixture,
+        &[
+            "--rooms",
+            "1,2,3,4",
+            "--team",
+            "dev-team",
+            "--working",
+            "true",
+            "--ci-state",
+            "idle",
+            "--title-regex",
+            "Fix",
+            "--hide-clean",
+        ],
+    );
+    assert_eq!(names_of(&all), vec![R2]);
+    let none = activity_with(&fixture, &["--team", "ops-team", "--ci-state", "running"]);
+    assert!(none.is_empty(), "{none:?}");
+}
+
+fn run_activity_raw(bin: &Path, filters: &[&str]) -> (Option<i32>, String, String) {
+    let mut command = command_for_binary(bin);
+    command
+        .args(["room", "activity", "--project", "ProjectAlpha"])
+        .args(filters)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+#[test]
+fn room_activity_invalid_filter_values_exit_one_with_empty_stdout() {
+    let fixture = activity_filter_fixture("cli-room-activity-filter-errors");
+    let rooms = |v: &str| {
+        format!(
+            "Invalid --rooms '{v}': expected comma-separated positive room numbers, e.g. 5,12,17"
+        )
+    };
+    let cases: Vec<(Vec<&str>, String)> = vec![
+        (vec!["--rooms", "-1"], rooms("-1")),
+        (vec!["--rooms=-1"], rooms("-1")),
+        (vec!["--rooms", "5,,7"], rooms("5,,7")),
+        (vec!["--rooms", "0"], rooms("0")),
+        (vec!["--rooms", "abc"], rooms("abc")),
+        (
+            vec!["--team", " "],
+            "Invalid --team ' ': expected a team name".to_string(),
+        ),
+        (
+            vec!["--working", "TRUE"],
+            "Invalid --working 'TRUE': expected true or false".to_string(),
+        ),
+        (
+            vec!["--ci-state", "Running"],
+            "Invalid --ci-state 'Running': expected running, idle or unknown".to_string(),
+        ),
+        (
+            vec!["--title-regex", "("],
+            "Invalid --title-regex '(': ".to_string(),
+        ),
+    ];
+    for (filters, expected) in cases {
+        let (code, stdout, stderr) = run_activity_raw(&fixture.bin, &filters);
+        assert_eq!(code, Some(1), "filters {filters:?}; stderr {stderr}");
+        assert!(stdout.is_empty(), "filters {filters:?}; stdout {stdout}");
+        assert!(
+            stderr.contains(&format!("Error: {expected}")),
+            "filters {filters:?}; stderr was:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn room_activity_keeps_hyphen_leading_valid_values() {
+    let fixture = activity_filter_fixture("cli-room-activity-filter-hyphen");
+    write_task_title(&fixture.rooms[2], Some("a -x b"));
+    assert_eq!(
+        names_of(&activity_with(&fixture, &["--title-regex", "-x"])),
+        vec![R3]
+    );
+    assert!(activity_with(&fixture, &["--team", "-t"]).is_empty());
+}
+
+#[test]
+fn room_activity_no_filter_output_adds_the_three_ci_detail_fields() {
+    let fixture = activity_filter_fixture("cli-room-activity-detail");
+    let items = activity_with(&fixture, &[]);
+    for item in &items {
+        let mut keys: Vec<&str> = item
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "ciPullRequests",
+                "ciRunIds",
+                "ciState",
+                "ciUnknownReason",
+                "name",
+                "taskTitle",
+                "team",
+                "working",
+            ]
+        );
+    }
+    let expect = |name: &str, value: serde_json::Value| {
+        assert_eq!(activity_room(&items, name), &value, "{name}");
+    };
+    expect(
+        R1,
+        serde_json::json!({
+            "name": R1, "team": "dev-team", "working": false, "ciState": "running",
+            "taskTitle": "Clean", "ciRunIds": [101, 102], "ciPullRequests": [12],
+            "ciUnknownReason": null,
+        }),
+    );
+    expect(
+        R2,
+        serde_json::json!({
+            "name": R2, "team": "dev-team", "working": true, "ciState": "idle",
+            "taskTitle": "Fix #12 parser", "ciRunIds": [], "ciPullRequests": [],
+            "ciUnknownReason": null,
+        }),
+    );
+    expect(
+        R3,
+        serde_json::json!({
+            "name": R3, "team": "ops-team", "working": false, "ciState": "unknown",
+            "taskTitle": "Docs pass", "ciRunIds": [], "ciPullRequests": [],
+            "ciUnknownReason": "repo-not-in-snapshot",
+        }),
+    );
+    expect(
+        R4,
+        serde_json::json!({
+            "name": R4, "team": "ops-team", "working": true, "ciState": "unknown",
+            "taskTitle": null, "ciRunIds": [], "ciPullRequests": [],
+            "ciUnknownReason": "no-repos",
+        }),
+    );
+
+    write_fixture_snapshot(&fixture, -120);
+    let stale = activity_with(&fixture, &[]);
+    for item in &stale {
+        assert_eq!(item["ciState"], "unknown");
+        assert_eq!(item["ciUnknownReason"], "snapshot-unavailable");
+    }
+
+    write_fixture_snapshot(&fixture, 0);
+    std::fs::remove_file(fixture.config_dir.join("daemon.pid")).expect("remove pid");
+    let no_daemon = activity_with(&fixture, &[]);
+    for item in &no_daemon {
+        assert_eq!(item["ciUnknownReason"], "daemon-not-live");
+        assert_eq!(item["ciRunIds"], serde_json::json!([]));
+    }
 }
