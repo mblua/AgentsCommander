@@ -6581,8 +6581,10 @@ pub(crate) fn tick_raise_calls(session_id: uuid::Uuid) -> usize {
 /// room that becomes Ready later (key set, catalog created, `config.json`
 /// edited) would keep no reader. The cheap in-memory gate runs first; only a
 /// session without a Room demand pays for readiness resolution, which
-/// `raise_room_reader_demand` owns. This tick only raises, never releases, and
-/// logs only an actual raise, so a steady state is silent.
+/// `raise_room_reader_demand` owns. The tick releases only a demand it
+/// installed in the same iteration and then found no longer Ready (D5-h). It
+/// logs only for a session it raised and kept, so a steady state is silent.
+/// The raise's `true` means "a reader is running afterwards", not "inserted".
 async fn reraise_room_reader_demands<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let session_ids: Vec<uuid::Uuid> = {
         let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
@@ -6608,10 +6610,46 @@ async fn reraise_room_reader_demands<R: tauri::Runtime>(app: &tauri::AppHandle<R
                 .entry(session_id)
                 .or_insert(0) += 1;
         }
-        if commands::session::raise_room_reader_demand(app, session_id).await {
-            log::info!("[co-managed] reader demand re-raised [{session_id}]");
+        if !commands::session::raise_room_reader_demand(app, session_id).await {
+            continue;
         }
+        // D5-h: a disable landing while the raise resolved and installed has
+        // already released, so undo the demand this iteration installed.
+        if !room_still_ready(app, session_id).await {
+            commands::session::release_room_reader_demand(app, session_id).await;
+            continue;
+        }
+        log::info!("[co-managed] reader demand re-raised [{session_id}]");
     }
+}
+
+/// #2456 D5-h re-resolve the session's room and effective state after a raise.
+async fn room_still_ready<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: uuid::Uuid,
+) -> bool {
+    let session = {
+        let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let guard = manager.read().await;
+        guard.get_session(session_id).await
+    };
+    let Some(session) = session else {
+        return false;
+    };
+    let Some(room_root) =
+        crate::config::co_managed::room_root_for_path(Path::new(&session.working_directory))
+    else {
+        return false;
+    };
+    matches!(
+        crate::commands::session::co_managed_effective_state_for_session(
+            app,
+            &room_root,
+            &session_id.to_string()
+        )
+        .await,
+        Ok(crate::config::co_managed::CoManagedState::Ready)
+    )
 }
 
 async fn watch_capture_slots<R: tauri::Runtime>(
