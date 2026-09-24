@@ -130,6 +130,15 @@ fn decide_attach(inputs: AttachInputs<'_>) -> AttachDecision {
     }
 }
 
+/// Whether this poll consults [`decide_attach`] (#2454 p3b requirement 4).
+///
+/// Only until the reader's first attach: after it, a vanished transcript
+/// leaves `current_file` empty again, and re-running the decision would pin a
+/// restored file whose content this reader already consumed.
+fn runs_first_attach_decision(first_attach_done: bool, has_current_file: bool) -> bool {
+    !first_attach_done && !has_current_file
+}
+
 /// Where a reader sends Telegram messages (#2232 phase 4 section 6).
 ///
 /// Deliberately **not** shared with `codex_watcher`, which declares its own:
@@ -502,6 +511,7 @@ async fn watch_loop<R: tauri::Runtime>(
     // #2454: the minted transcript id, consulted until the first attach.
     let pin_id: Option<String> = transcript_id;
     let mut first_poll = true;
+    let mut first_attach_done = false;
     let mut wait_deadline: Option<Instant> = None;
 
     // Emitted once, before the loop, so it cannot flood.
@@ -588,7 +598,7 @@ async fn watch_loop<R: tauri::Runtime>(
                 // #2454: the first attach goes through `decide_attach`; after
                 // it, rotation follows the newest mtime exactly as before.
                 let mut pinned_attach = false;
-                let latest = if current_file.is_some() {
+                let latest = if !runs_first_attach_decision(first_attach_done, current_file.is_some()) {
                     newest
                 } else {
                     let pinned = pin_id
@@ -719,6 +729,7 @@ async fn watch_loop<R: tauri::Runtime>(
                             );
                         }
                         current_file = latest;
+                        first_attach_done |= current_file.is_some();
                         current_file_mtime = current_file.as_ref()
                             .and_then(|p| std::fs::metadata(p).ok())
                             .and_then(|m| m.modified().ok());
@@ -1443,6 +1454,21 @@ mod tests {
     /// Commit `record` as an `Automatic` effect and return `routable`, the
     /// routing answer of `capture::state::commit_effect`.
     fn routable(room: &Path, record: &Arc<CapturedRecord>) -> bool {
+        commit_automatic(room, record)
+            .expect("the commit takes the record")
+            .routable
+    }
+
+    /// [`routable`] for a record that may be refused outright: a refusal such
+    /// as `AlreadyConsumed` routes nothing.
+    fn routes(room: &Path, record: &Arc<CapturedRecord>) -> bool {
+        commit_automatic(room, record).is_ok_and(|effect| effect.routable)
+    }
+
+    fn commit_automatic(
+        room: &Path,
+        record: &Arc<CapturedRecord>,
+    ) -> Result<crate::capture::state::CommittedEffect, crate::capture::state::AbstainReason> {
         use crate::capture::key::ConsumptionKey;
         use crate::capture::state::{commit_effect, EffectKind, EffectPreconditions};
         let slot = crate::capture::sink::CaptureSlot::new();
@@ -1460,8 +1486,6 @@ mod tests {
             kind: EffectKind::Automatic,
         };
         commit_effect(room, &slot, slot.seq(), &key, &pre)
-            .expect("the commit takes the record")
-            .routable
     }
 
     fn room(temp: &tempfile::TempDir) -> PathBuf {
@@ -1672,6 +1696,75 @@ mod tests {
 
         assert_eq!(rotated.file, cleared);
         assert_eq!(rotated.origin, RecordOrigin::RotationBackfill);
+    }
+
+    /// Test 24, pure (#2454 p3b requirement 4): the decision runs only while
+    /// the first-attach latch is clear and no file is attached.
+    #[test]
+    fn runs_first_attach_decision_only_before_the_first_attach() {
+        assert!(runs_first_attach_decision(false, false));
+        assert!(!runs_first_attach_decision(false, true));
+        assert!(!runs_first_attach_decision(true, false));
+        assert!(!runs_first_attach_decision(true, true));
+    }
+
+    /// Test 24 (#2454 p3b requirement 4): the pinned transcript vanishes after
+    /// the first attach and comes back with the same bytes. The reader must
+    /// not re-run the pin decision: nothing restored is offered `Live` and
+    /// nothing restored routes a second time.
+    #[tokio::test]
+    async fn a_vanished_pinned_transcript_is_not_pinned_again() {
+        let temp = tempfile::tempdir().expect("temp");
+        let room = room(&temp);
+        let projects = temp.path().join("projects");
+        std::fs::create_dir_all(&projects).expect("projects dir");
+
+        let mut reader = Reader::start(&projects, Some(PIN_ID.to_string()));
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let pinned = projects.join(format!("{PIN_ID}.jsonl"));
+        let content = format!("{}\n", stamped_line("first reply", Utc::now()));
+        write_atomically(&pinned, &content);
+        let first = reader
+            .next(Duration::from_secs(10))
+            .await
+            .expect("the pinned reply reaches the sink");
+        assert_eq!(first.file, pinned);
+        assert_eq!(first.origin, RecordOrigin::Live);
+        assert!(routable(&room, &first), "the first delivery is routed");
+
+        // One poll picks up the backdated mtime, so the file is stale.
+        backdate(&pinned, 60);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        // One poll with no `.jsonl` at all clears the current file.
+        std::fs::remove_file(&pinned).expect("hide the transcript");
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        write_atomically(&pinned, &content);
+
+        let mut restored = Vec::new();
+        while let Some(record) = reader.next(Duration::from_millis(1500)).await {
+            restored.push(record);
+        }
+        reader.stop().await;
+
+        // Positive control: the reader re-attached and re-offered the tail,
+        // so the checks below cannot pass on a dead reader.
+        assert!(
+            !restored.is_empty(),
+            "the restored transcript is re-attached"
+        );
+        for record in &restored {
+            assert_ne!(
+                record.origin,
+                RecordOrigin::Live,
+                "a restored transcript must not be pinned again: {:?}",
+                record.text
+            );
+            assert!(
+                !routes(&room, record),
+                "a restored reply must not route twice: {:?}",
+                record.text
+            );
+        }
     }
 
     // Test 20: the fallback fires only AFTER the deadline. Same inputs, the
