@@ -398,6 +398,86 @@ Output is JSON. Each item includes `name`, `team`, `path`, `hasMessaging`, `hasT
 
 ---
 
+## `room activity`
+
+Show each room's working state, CI state and task title for a registered project.
+
+```bash
+agentscommander room activity --project MyProject
+agentscommander room activity --project MyProject --team dev-team --ci-state running --hide-clean
+```
+
+Read-only: it writes no TASK, cache, session, daemon or project file.
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project` | Yes | Registered project name. |
+| `--rooms <LIST>` | No | Comma-separated positive room numbers, e.g. `5,12,17`. Keeps rooms whose number (the N in `room-N-...` or `wg-N-...`) is in the list. Duplicates are allowed. |
+| `--team <TEAM>` | No | Keeps rooms whose `team` equals the value exactly. An unknown team returns `[]`, not an error. |
+| `--working <BOOL>` | No | Exactly `true` or `false`. Keeps rooms whose `working` equals the value. |
+| `--ci-state <STATE>` | No | Exactly `running`, `idle` or `unknown`. Keeps rooms whose `ciState` equals the value. |
+| `--title-regex <REGEX>` | No | Rust `regex` syntax, case-sensitive (use `(?i)` for case-insensitive), unanchored. Keeps rooms whose `taskTitle` matches. A null title never matches. |
+| `--hide-clean` | No | Drops rooms whose `taskTitle` is null, blank, or `clean` in any case after trimming. |
+
+All filters are optional and combine with AND. Without filters every room is listed. Filters only drop rooms; order and fields stay the same. Values may start with `-` (for example `--title-regex -fix`).
+
+Invalid values are rejected before the project is resolved. Nothing is printed on stdout, `Error: <message>` goes to stderr, and the exit code is 1. The first invalid flag in this order wins:
+
+| Flag | Error message |
+|---|---|
+| `--rooms` | `Invalid --rooms '<v>': expected comma-separated positive room numbers, e.g. 5,12,17` (an empty item, a non-number or `0`) |
+| `--team` | `Invalid --team '<v>': expected a team name` (empty or whitespace) |
+| `--working` | `Invalid --working '<v>': expected true or false` |
+| `--ci-state` | `Invalid --ci-state '<v>': expected running, idle or unknown` |
+| `--title-regex` | `Invalid --title-regex '<v>': <regex error>` |
+
+Output is a JSON array, in `room list` order:
+
+```json
+[
+  {
+    "name": "room-5-dev-team",
+    "team": "dev-team",
+    "working": true,
+    "ciState": "running",
+    "taskTitle": "Fix #12 parser",
+    "ciRunIds": [101, 102],
+    "ciPullRequests": [12],
+    "ciUnknownReason": null
+  }
+]
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | string | Room directory name. |
+| `team` | string | Team name taken from the room name. |
+| `working` | boolean | `true` when a session of the room is working. |
+| `ciState` | string | `running` if any room repo runs CI; `idle` if the room has at least one `repo-*` and all are idle; else `unknown`. |
+| `taskTitle` | string or null | Title from the room's `TASK.md`. |
+| `ciRunIds` | number[] | When `ciState` is `running`: sorted GitHub run ids of in-progress runs across the room's repos. Else `[]`. |
+| `ciPullRequests` | number[] | When `ciState` is `running`: sorted PR numbers of those runs. Else `[]`. |
+| `ciUnknownReason` | string or null | When `ciState` is `unknown`: one reason code below. Else `null`. |
+
+`ciUnknownReason` codes, the first that applies:
+
+| Code | Meaning |
+|---|---|
+| `ci-disabled` | CI activity is turned off in settings. |
+| `daemon-not-live` | The AgentsCommander daemon is not running. |
+| `snapshot-unavailable` | The CI snapshot is missing, malformed, of another schema, or not current. |
+| `no-repos` | The room has no `repo-*` directory. |
+| `repo-not-in-snapshot` | A room repo has no snapshot entry. |
+| `conflicting-snapshot-entries` | Two snapshot entries for a room repo disagree on the state. |
+| `ci-query-timeout`, `ci-query-rate-limited`, `ci-query-secondary-rate-limited`, `ci-query-not-authenticated`, `ci-query-incomplete`, `ci-query-failed` | The last GitHub CI query for a room repo failed for this reason. |
+| `repo-ci-unknown` | A room repo is unknown with no recorded reason. |
+
+For repo-level codes, the first repo in sorted order that is neither idle nor running decides.
+
+Exit codes: `0` on success (including an empty result), `1` on an invalid filter value or any other error.
+
+---
+
 ## `team create`
 
 Create a team configuration in a registered project from existing agent matrices. Create the orchestrator and member agents first, then create the team, then activate it with `room add`.
