@@ -37,6 +37,9 @@ const MAX_ATTEMPTS: u32 = 2;
 
 /// Everything the call needs, copied field by field from phase 2's
 /// `AppSettings` by the caller.
+///
+/// Holds the Jev API key: never log this struct with `{:?}`, and never log
+/// `api_key` in any form (#2455).
 #[derive(Clone, Debug, PartialEq)]
 pub struct JevSettings {
     pub api_key: String,
@@ -115,28 +118,39 @@ pub async fn classify(
     settings: &JevSettings,
     catalog: &Catalog,
     text: &str,
+    session_tag: &str,
 ) -> ClassifyOutcome {
     if catalog.is_missing() {
+        log::info!("[co-managed] jev classify [{session_tag}]: abstained, no catalog file");
         return ClassifyOutcome::abstained(
             "NoCatalogFile: the room has no catalog, so Co-managed is inert",
         );
     }
     if let Some(reason) = catalog.unparseable_reason() {
+        log::info!(
+            "[co-managed] jev classify [{session_tag}]: abstained, catalog invalid: {}",
+            safe_reason(reason)
+        );
         return ClassifyOutcome::abstained(format!("catalog invalid: {reason}"));
     }
     if settings.api_key.trim().is_empty() {
+        log::info!("[co-managed] jev classify [{session_tag}]: abstained, no API key configured");
         return ClassifyOutcome::abstained(
             "NoApiKey: no Jev API key is configured, so Co-managed is inert",
         );
     }
     let questions = catalog.questions_in_order();
     if questions.is_empty() {
+        log::info!("[co-managed] jev classify [{session_tag}]: abstained, no askable category");
         return ClassifyOutcome::abstained("catalog has no askable categories");
     }
 
     let _permit = match network.acquire(NETWORK_LABEL).await {
         Ok(permit) => permit,
         Err(reason) => {
+            log::info!(
+                "[co-managed] jev classify [{session_tag}]: abstained, no network permit: {reason}"
+            );
             return ClassifyOutcome::abstained(format!("network limiter unavailable: {reason}"));
         }
     };
@@ -144,18 +158,43 @@ pub async fn classify(
     let mut attempt = 0_u32;
     loop {
         attempt += 1;
-        match send_once(network, settings, catalog, text).await {
+        match send_once(network, settings, catalog, text, session_tag, attempt).await {
             Attempt::Response(results) => {
-                return decide(settings, catalog, &questions, results);
+                let outcome = decide(settings, catalog, &questions, results);
+                match &outcome {
+                    ClassifyOutcome::Classified {
+                        category,
+                        score,
+                        runner_up,
+                        ..
+                    } => log::info!(
+                        "[co-managed] jev classify [{session_tag}]: category={category} score={score} runner_up={runner_up}"
+                    ),
+                    ClassifyOutcome::Abstained { reason } => log::info!(
+                        "[co-managed] jev classify [{session_tag}]: abstained after response: {}",
+                        safe_reason(reason)
+                    ),
+                }
+                return outcome;
             }
             Attempt::Transport(reason) => {
                 if attempt >= MAX_ATTEMPTS {
+                    log::warn!(
+                        "[co-managed] jev classify [{session_tag}]: abstained, transport error after one retry: {}",
+                        safe_reason(&reason)
+                    );
                     return ClassifyOutcome::abstained(format!(
                         "transport error after one retry: {reason}"
                     ));
                 }
             }
-            Attempt::Permanent(reason) => return ClassifyOutcome::abstained(reason),
+            Attempt::Permanent(reason) => {
+                log::warn!(
+                    "[co-managed] jev classify [{session_tag}]: abstained, permanent error: {}",
+                    safe_reason(&reason)
+                );
+                return ClassifyOutcome::abstained(reason);
+            }
         }
     }
 }
@@ -167,19 +206,44 @@ async fn send_once(
     settings: &JevSettings,
     catalog: &Catalog,
     text: &str,
+    session_tag: &str,
+    attempt: u32,
 ) -> Attempt {
     let client = network.general();
     let request = match build_request(client, settings, catalog, text) {
         Ok(request) => request,
-        Err(reason) => return Attempt::Permanent(reason),
+        Err(reason) => {
+            log::warn!(
+                "[co-managed] jev send [{session_tag}]: attempt={attempt} request build failed: {}",
+                safe_reason(&reason)
+            );
+            return Attempt::Permanent(reason);
+        }
     };
+    let started = std::time::Instant::now();
     match client.execute(request).await {
         Ok(response) => {
+            let latency_ms = started.elapsed().as_millis();
             let status = response.status();
+            if status.is_success() {
+                log::info!(
+                    "[co-managed] jev send [{session_tag}]: attempt={attempt} status={status} latency_ms={latency_ms}"
+                );
+            } else {
+                log::warn!(
+                    "[co-managed] jev send [{session_tag}]: attempt={attempt} status={status} latency_ms={latency_ms}"
+                );
+            }
             if status.is_success() {
                 match response.json::<JevResponse>().await {
                     Ok(parsed) => Attempt::Response(parsed.results),
-                    Err(error) => Attempt::Permanent(format!("malformed response: {error}")),
+                    Err(error) => {
+                        log::warn!(
+                            "[co-managed] jev send [{session_tag}]: attempt={attempt} malformed body after status={status}: {}",
+                            safe_reason(&error.to_string())
+                        );
+                        Attempt::Permanent(format!("malformed response: {error}"))
+                    }
                 }
             } else if is_transport_status(status) {
                 Attempt::Transport(format!("HTTP {status}"))
@@ -188,6 +252,10 @@ async fn send_once(
             }
         }
         Err(error) => {
+            let latency_ms = started.elapsed().as_millis();
+            log::warn!(
+                "[co-managed] jev send [{session_tag}]: attempt={attempt} error={error} latency_ms={latency_ms}"
+            );
             if error.is_timeout() {
                 let seconds = settings.timeout_secs;
                 Attempt::Permanent(format!("timeout after {seconds}s, not retried"))
@@ -198,6 +266,74 @@ async fn send_once(
             }
         }
     }
+}
+
+/// #2455 E2: every reason prefix this module, `capture::catalog` and the
+/// supervisor in `lib.rs` build. `safe_reason` emits only these literals.
+const SAFE_REASON_PREFIXES: &[&str] = &[
+    // `decide` and `send_once`.
+    "malformed response: unknown id ",
+    "malformed response: duplicate id ",
+    "malformed response: noul ",
+    "malformed response: missing id(s) ",
+    "malformed response: ",
+    "winner ",
+    "category ",
+    "HTTP ",
+    "timeout after ",
+    "Jev request build failed: ",
+    // `classify` and the catalog loader.
+    "NoCatalogFile: ",
+    "NoApiKey: ",
+    "catalog has no askable categories",
+    "catalog invalid: catalog is not valid JSON: ",
+    "catalog invalid: catalog is unreadable: ",
+    "catalog invalid: ",
+    "catalog is not valid JSON: ",
+    "catalog is unreadable: ",
+    "network limiter unavailable: ",
+    "transport error after one retry: ",
+    // The supervisor's cycle-end reasons.
+    "abstained: ",
+    "category '",
+    "secret detected by rule ",
+    "session vanished",
+    "baseline record consumed; never routed",
+    "route failed: ",
+    "BudgetExhausted",
+    "PreconditionsStale",
+    "PreconditionsRejected",
+    "LockBusy",
+    "LockUnavailable(",
+    "SlotChanged",
+    "AlreadyConsumed",
+];
+
+/// #2455 E2: the logged projection of a reason this phase did not build.
+/// It copies NO byte of `reason`: the output is the longest matching literal
+/// from `SAFE_REASON_PREFIXES`, then `<redacted len=N>` for the byte length of
+/// the rest, or `<unclassified reason len=N>`. A blocklist that tries to keep
+/// the safe bytes of attacker-chosen text loses (round 7), so nothing is kept.
+/// `abstained: ` wraps a classify reason, so it is matched once more inside.
+/// Only ever applied to what is LOGGED, never to what is returned.
+pub(crate) fn safe_reason(reason: &str) -> String {
+    safe_reason_at(reason, true)
+}
+
+fn safe_reason_at(reason: &str, nest: bool) -> String {
+    let Some(prefix) = SAFE_REASON_PREFIXES
+        .iter()
+        .copied()
+        .filter(|prefix| reason.starts_with(prefix))
+        .max_by_key(|prefix| prefix.len())
+    else {
+        return format!("<unclassified reason len={}>", reason.len());
+    };
+    let rest = &reason[prefix.len()..];
+    if nest && prefix == "abstained: " {
+        return format!("{prefix}{}", safe_reason_at(rest, false));
+    }
+    format!("{prefix}<redacted len={}>", rest.len())
 }
 
 fn is_transport_status(status: reqwest::StatusCode) -> bool {
@@ -509,7 +645,7 @@ mod tests {
         let network = OutboundNetwork::new_for_tests(4);
         let settings = settings_for(&url);
         let catalog = catalog(&[("a", "user"), ("b", "root")]);
-        let outcome = classify(&network, &settings, &catalog, "candidate").await;
+        let outcome = classify(&network, &settings, &catalog, "candidate", "test").await;
         match outcome {
             ClassifyOutcome::Classified {
                 category,
@@ -533,7 +669,7 @@ mod tests {
         let network = OutboundNetwork::new_for_tests(4);
         let settings = settings_for(&url);
         let catalog = catalog(&[("a", "user"), ("b", "user")]);
-        let outcome = classify(&network, &settings, &catalog, "candidate").await;
+        let outcome = classify(&network, &settings, &catalog, "candidate", "test").await;
         match outcome {
             ClassifyOutcome::Abstained { reason } => {
                 assert!(reason.contains("margin"), "{reason}");
@@ -551,7 +687,14 @@ mod tests {
         let network = OutboundNetwork::new_for_tests(4);
 
         let (low_url, _) = serve(vec![(200, body_with(&[("only", 0.65)]))], None).await;
-        let low = classify(&network, &settings_for(&low_url), &catalog, "candidate").await;
+        let low = classify(
+            &network,
+            &settings_for(&low_url),
+            &catalog,
+            "candidate",
+            "test",
+        )
+        .await;
         match low {
             ClassifyOutcome::Abstained { reason } => {
                 assert!(reason.contains("threshold"), "{reason}")
@@ -560,7 +703,14 @@ mod tests {
         }
 
         let (high_url, _) = serve(vec![(200, body_with(&[("only", 0.85)]))], None).await;
-        let high = classify(&network, &settings_for(&high_url), &catalog, "candidate").await;
+        let high = classify(
+            &network,
+            &settings_for(&high_url),
+            &catalog,
+            "candidate",
+            "test",
+        )
+        .await;
         assert!(
             matches!(high, ClassifyOutcome::Classified { .. }),
             "0.85 alone must pass, got {high:?}"
@@ -576,7 +726,7 @@ mod tests {
             let network = OutboundNetwork::new_for_tests(4);
             let settings = settings_for(&url);
             let catalog = catalog(&[("a", "user")]);
-            let outcome = classify(&network, &settings, &catalog, "candidate").await;
+            let outcome = classify(&network, &settings, &catalog, "candidate", "test").await;
             assert!(
                 matches!(outcome, ClassifyOutcome::Abstained { .. }),
                 "HTTP {status} must abstain after the retry, got {outcome:?}"
@@ -596,7 +746,7 @@ mod tests {
         let network = OutboundNetwork::new_for_tests(4);
         let settings = settings_for(&url);
         let catalog = catalog(&[("a", "user")]);
-        let outcome = classify(&network, &settings, &catalog, "candidate").await;
+        let outcome = classify(&network, &settings, &catalog, "candidate", "test").await;
         match outcome {
             ClassifyOutcome::Abstained { reason } => {
                 assert!(reason.contains("403"), "{reason}")
@@ -628,7 +778,7 @@ mod tests {
             let network = OutboundNetwork::new_for_tests(4);
             let settings = settings_for(&url);
             let catalog = catalog(&[("a", "user"), ("b", "user")]);
-            let outcome = classify(&network, &settings, &catalog, "candidate").await;
+            let outcome = classify(&network, &settings, &catalog, "candidate", "test").await;
             match outcome {
                 ClassifyOutcome::Abstained { reason } => assert!(
                     reason.contains(expected),
@@ -657,7 +807,7 @@ mod tests {
         settings.timeout_secs = 1;
         let catalog = catalog(&[("a", "user")]);
         let started = std::time::Instant::now();
-        let outcome = classify(&network, &settings, &catalog, "candidate").await;
+        let outcome = classify(&network, &settings, &catalog, "candidate", "test").await;
         assert!(
             matches!(outcome, ClassifyOutcome::Abstained { .. }),
             "a timeout must abstain, got {outcome:?}"
@@ -679,7 +829,14 @@ mod tests {
         let (url, hits) = serve(vec![(200, body_with(&[("a", 0.9)]))], None).await;
         let network = OutboundNetwork::new_for_tests(4);
         let settings = settings_for(&url);
-        let outcome = classify(&network, &settings, &Catalog::missing(), "candidate").await;
+        let outcome = classify(
+            &network,
+            &settings,
+            &Catalog::missing(),
+            "candidate",
+            "test",
+        )
+        .await;
         match outcome {
             ClassifyOutcome::Abstained { reason } => {
                 assert!(reason.contains("NoCatalogFile"), "{reason}")
@@ -700,7 +857,7 @@ mod tests {
         let mut settings = settings_for(&url);
         settings.api_key = "  ".to_string();
         let catalog = catalog(&[("a", "user")]);
-        let outcome = classify(&network, &settings, &catalog, "candidate").await;
+        let outcome = classify(&network, &settings, &catalog, "candidate", "test").await;
         match outcome {
             ClassifyOutcome::Abstained { reason } => {
                 assert!(reason.contains("NoApiKey"), "{reason}")
@@ -722,7 +879,7 @@ mod tests {
 
         let (url, _) = serve(vec![(200, body_with(&[("a", 0.10), ("b", 0.90)]))], None).await;
         let network = OutboundNetwork::new_for_tests(4);
-        let outcome = classify(&network, &settings_for(&url), &catalog, "candidate").await;
+        let outcome = classify(&network, &settings_for(&url), &catalog, "candidate", "test").await;
         match outcome {
             ClassifyOutcome::Abstained { reason } => {
                 assert!(reason.contains("\"b\""), "{reason}");
@@ -732,7 +889,7 @@ mod tests {
         }
 
         let (url, _) = serve(vec![(200, body_with(&[("a", 0.90), ("b", 0.10)]))], None).await;
-        let outcome = classify(&network, &settings_for(&url), &catalog, "candidate").await;
+        let outcome = classify(&network, &settings_for(&url), &catalog, "candidate", "test").await;
         assert!(
             matches!(outcome, ClassifyOutcome::Classified { ref category, .. } if category == "a"),
             "the valid sibling must still classify, got {outcome:?}"
@@ -750,7 +907,8 @@ mod tests {
             let (url, _) = serve(vec![(200, body_with(&[(name, 0.90)]))], None).await;
             let network = OutboundNetwork::new_for_tests(4);
             let catalog = catalog(&[(name, destination)]);
-            let outcome = classify(&network, &settings_for(&url), &catalog, "candidate").await;
+            let outcome =
+                classify(&network, &settings_for(&url), &catalog, "candidate", "test").await;
             match outcome {
                 ClassifyOutcome::Abstained { reason } => {
                     assert!(reason.contains(name), "{reason}")
@@ -768,7 +926,7 @@ mod tests {
         let (url, _) = serve(vec![(200, body_with(&[("a", 0.9)]))], None).await;
         let network = OutboundNetwork::new_for_tests(4);
         let catalog = catalog(&[("a", "user")]);
-        let outcome = classify(&network, &settings_for(&url), &catalog, "candidate").await;
+        let outcome = classify(&network, &settings_for(&url), &catalog, "candidate", "test").await;
         assert!(
             matches!(outcome, ClassifyOutcome::Classified { .. }),
             "got {outcome:?}"
@@ -795,7 +953,7 @@ mod tests {
         let network = OutboundNetwork::new_for_tests(4);
         let mut settings = settings_for(&url);
         settings.model = "jev-9.9.9".to_string();
-        let classified = classify(&network, &settings, &catalog, "candidate").await;
+        let classified = classify(&network, &settings, &catalog, "candidate", "test").await;
         assert!(
             matches!(classified, ClassifyOutcome::Classified { .. }),
             "got {classified:?}"
@@ -814,7 +972,7 @@ mod tests {
         let (url, _) = serve(vec![(200, body_with(&[("a", 0.10)]))], None).await;
         let mut settings = settings_for(&url);
         settings.model = "jev-9.9.9".to_string();
-        let abstained = classify(&network, &settings, &catalog, "candidate").await;
+        let abstained = classify(&network, &settings, &catalog, "candidate", "test").await;
         match abstained {
             ClassifyOutcome::Abstained { reason } => {
                 assert!(reason.contains("jev-9.9.9"), "{reason}")

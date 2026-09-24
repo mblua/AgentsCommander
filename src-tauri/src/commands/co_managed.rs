@@ -110,13 +110,20 @@ pub async fn co_managed_set_enabled<R: tauri::Runtime>(
             .await
             .map_err(|e| format!("coManagedSetEnabledTaskFailed: {e}"))??;
 
+    let mut toggled = 0_usize;
     for session_id in live_sessions_in_room(&app, &root).await {
+        toggled += 1;
         if enabled {
             crate::commands::session::raise_room_reader_demand_in(&app, &root, session_id).await;
         } else {
             crate::commands::session::release_room_reader_demand(&app, session_id).await;
         }
     }
+    log::info!(
+        "[co-managed] toggle: room {} enabled={enabled}; reader demand {} for {toggled} live session(s)",
+        root.display(),
+        if enabled { "raised" } else { "released" },
+    );
 
     Ok(config)
 }
@@ -192,7 +199,7 @@ pub(crate) async fn classify_dry_run(
     }
     let network = OutboundNetwork::new()
         .map_err(|error| format!("classifyDryRunNetworkInitFailed: {error}"))?;
-    Ok(crate::capture::jev::classify(&network, settings, catalog, text).await)
+    Ok(crate::capture::jev::classify(&network, settings, catalog, text, "dry-run").await)
 }
 
 #[cfg(test)]
