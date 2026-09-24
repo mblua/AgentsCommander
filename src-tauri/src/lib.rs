@@ -6575,6 +6575,21 @@ pub(crate) fn tick_raise_calls(session_id: uuid::Uuid) -> usize {
         .unwrap_or(0)
 }
 
+/// #2456 D5-j test-only count of the tick's post-raise rechecks, per session.
+#[cfg(test)]
+static RECHECK_CALLS: std::sync::LazyLock<Mutex<HashMap<uuid::Uuid, usize>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+pub(crate) fn tick_recheck_calls(session_id: uuid::Uuid) -> usize {
+    RECHECK_CALLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&session_id)
+        .copied()
+        .unwrap_or(0)
+}
+
 /// #2456 raise the Room reader demand for every live session that lacks one.
 ///
 /// The create, restart and room-toggle raises each check readiness once, so a
@@ -6612,6 +6627,14 @@ async fn reraise_room_reader_demands<R: tauri::Runtime>(app: &tauri::AppHandle<R
         }
         if !commands::session::raise_room_reader_demand(app, session_id).await {
             continue;
+        }
+        #[cfg(test)]
+        {
+            *RECHECK_CALLS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(session_id)
+                .or_insert(0) += 1;
         }
         // D5-h: a disable landing while the raise resolved and installed has
         // already released, so undo the demand this iteration installed.
