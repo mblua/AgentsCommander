@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 use crate::config::instance_artifacts::{
-    AGENT_HELP_LOCAL_FILE_NAME, BLOCKING_MENUS_LOCAL_FILE_NAME,
+    AGENT_HELP_LOCAL_FILE_NAME, AGENT_HELP_SHIPPED_FILE_NAME, BLOCKING_MENUS_LOCAL_FILE_NAME,
     BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME, BLOCKING_MENUS_REMOTE_FILE_NAME,
     BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_SUFFIX,
     SETTINGS_LOCK_FILE_NAME,
@@ -1879,6 +1879,45 @@ pub(crate) fn load_local_agent_help_file(settings_path: &Path) -> (AgentHelpFile
                 Some(format!("{} {e}", path.display())),
             )
         }
+    }
+}
+
+/// #2133 - the AC-owned shipped copy lives next to `settings.json`. Only the refresh writes it;
+/// nothing reads it back (the #1905 rule): the runtime uses `shipped_agent_help()`.
+pub(crate) fn agent_help_shipped_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(AGENT_HELP_SHIPPED_FILE_NAME)
+}
+
+/// #2133 - make the on-disk shipped file equal to the canonical form of the embedded content.
+/// True when written. A hand edit is overwritten at the next start: the file is AC-owned.
+/// Never fails: a write error is logged and startup continues on the embedded constant.
+pub(crate) fn refresh_shipped_agent_help_file(settings_path: &Path) -> bool {
+    let path = agent_help_shipped_path(settings_path);
+    let Ok(canonical) = pretty_json_bytes(shipped_agent_help()) else {
+        return false;
+    };
+    if matches!(std::fs::read(&path), Ok(existing) if existing == canonical) {
+        return false;
+    }
+    match crate::config::local_config_io::write_file_atomic(&path, &canonical) {
+        Ok(()) => {
+            log::info!("[agent-help] wrote the shipped help to {}", path.display());
+            true
+        }
+        Err(e) => {
+            log::error!("[agent-help] could not write {}: {e}", path.display());
+            false
+        }
+    }
+}
+
+/// #2133 - the startup entry point; the only agent-help function that resolves the config dir.
+pub fn refresh_shipped_agent_help_from_config_dir() {
+    match settings_path() {
+        Some(path) => {
+            refresh_shipped_agent_help_file(&path);
+        }
+        None => log::debug!("[agent-help] no config dir; the shipped help is not written"),
     }
 }
 
@@ -15233,6 +15272,57 @@ mod tests {
             assert_eq!(reason, None);
             assert_eq!(file.by_command.len(), 200);
             assert_eq!(file, written);
+        }
+
+        fn canonical_shipped_bytes() -> Vec<u8> {
+            pretty_json_bytes(shipped_agent_help()).unwrap()
+        }
+
+        #[test]
+        fn the_shipped_file_is_materialized_canonically() {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = settings_path_in(&dir);
+            let shipped = agent_help_shipped_path(&settings_path);
+            assert_eq!(shipped, dir.path().join("agent-help.json"));
+
+            assert!(refresh_shipped_agent_help_file(&settings_path));
+            let written = std::fs::read(&shipped).unwrap();
+            assert_eq!(written, canonical_shipped_bytes());
+            assert_ne!(written, EMBEDDED_AGENT_HELP_JSON.as_bytes());
+
+            let modified = std::fs::metadata(&shipped).unwrap().modified().unwrap();
+            assert!(!refresh_shipped_agent_help_file(&settings_path));
+            assert_eq!(std::fs::read(&shipped).unwrap(), written);
+            assert_eq!(
+                std::fs::metadata(&shipped).unwrap().modified().unwrap(),
+                modified
+            );
+        }
+
+        #[test]
+        fn a_hand_edited_shipped_file_is_rewritten() {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = settings_path_in(&dir);
+            let shipped = agent_help_shipped_path(&settings_path);
+            std::fs::write(&shipped, r#"{"schemaVersion":1,"note":"mine"}"#).unwrap();
+
+            assert!(refresh_shipped_agent_help_file(&settings_path));
+            assert_eq!(std::fs::read(&shipped).unwrap(), canonical_shipped_bytes());
+        }
+
+        #[test]
+        fn a_write_failure_is_swallowed() {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = settings_path_in(&dir);
+            // The atomic writer's temp name; a directory there makes the write fail.
+            std::fs::create_dir(
+                dir.path()
+                    .join(format!(".agent-help.json.{}.tmp", std::process::id())),
+            )
+            .unwrap();
+
+            assert!(!refresh_shipped_agent_help_file(&settings_path));
+            assert!(!agent_help_shipped_path(&settings_path).exists());
         }
     }
 }
