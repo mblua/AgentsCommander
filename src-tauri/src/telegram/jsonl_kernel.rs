@@ -53,6 +53,27 @@ pub(crate) fn find_latest_jsonl(project_dir: &Path) -> Option<PathBuf> {
     best.map(|(p, _)| p)
 }
 
+/// How long the Claude reader waits for the transcript AC minted to appear
+/// before it falls back to the newest file by mtime (#2454).
+pub(crate) const PINNED_ATTACH_WAIT_SECS: u64 = 30;
+
+/// Find `<transcript_id>.jsonl` in a directory (non-recursive, #2454).
+///
+/// The stem is compared case-insensitively and whole paths are never compared:
+/// a path may be in Windows verbatim form. `find_latest_jsonl` is left as it
+/// is because the Codex watcher shares it.
+pub(crate) fn find_pinned_jsonl(project_dir: &Path, transcript_id: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(project_dir).ok()?;
+    entries.flatten().map(|entry| entry.path()).find(|path| {
+        path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+            && path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|stem| stem.eq_ignore_ascii_case(transcript_id))
+            && path.is_file()
+    })
+}
+
 /// Read new lines from a file starting at the given byte offset, keeping each
 /// line's absolute start offset.
 ///

@@ -33,9 +33,12 @@ use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
 /// #260: agent selection is `Option<CodingAgentKind>`. Mutual exclusion is now
 /// structural (an enum is one variant or none), so the pre-#260
 /// `debug_assert!(kinds_set <= 1, …)` guard was removed.
+// Eight parameters since #2454 split the identity slice from `shell_args` (D3-g).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn derive_reader(
     shell: &str,
     shell_args: &[String],
+    identity_args: &[String],
     cwd: &str,
     backend_kind: SessionBackendKind,
     agent_kind: Option<CodingAgentKind>,
@@ -43,17 +46,26 @@ pub(crate) fn derive_reader(
     effective_codex_home: Option<&str>,
 ) -> Result<Option<SessionReaderKind>, String> {
     let attach_time = chrono::Utc::now();
+    // #2454: the EFFECTIVE argv names the transcript id AC minted; the
+    // CONFIGURED `shell_args` alone still decide the projects directory.
+    let transcript_id = crate::commands::session::transcript_id_from_args(identity_args);
 
     match agent_kind {
         Some(CodingAgentKind::Claude) => match backend_kind {
             SessionBackendKind::LocalProcess => match resolved_claude_projects_dir.or_else(|| {
                 crate::commands::session::resolve_claude_projects_dir(shell, shell_args, cwd)
             }) {
-                Some(p) => Ok(Some(SessionReaderKind::Claude { project_dir: p })),
+                Some(p) => Ok(Some(SessionReaderKind::Claude {
+                    project_dir: p,
+                    transcript_id,
+                })),
                 None => Err("Cannot resolve Claude projects dir".to_string()),
             },
             SessionBackendKind::ContainerTransport => match resolved_claude_projects_dir {
-                Some(p) => Ok(Some(SessionReaderKind::Claude { project_dir: p })),
+                Some(p) => Ok(Some(SessionReaderKind::Claude {
+                    project_dir: p,
+                    transcript_id,
+                })),
                 None => Err("Cannot resolve Claude projects dir for container session; CLAUDE_CONFIG_DIR is not mapped into the replica mount".to_string()),
             },
         },
@@ -106,6 +118,10 @@ async fn reader_kind_for_session<R: tauri::Runtime>(
     derive_reader(
         &session.shell,
         &session.shell_args,
+        session
+            .effective_shell_args
+            .as_deref()
+            .unwrap_or(&session.shell_args),
         &session.working_directory,
         session.backend_kind,
         session.agent_kind,
@@ -357,6 +373,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
         agent_kind,
         shell,
         shell_args,
+        effective_shell_args,
         working_directory,
         backend_kind,
         resolved_claude_projects_dir,
@@ -371,6 +388,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
             session.agent_kind,
             session.shell.clone(),
             session.shell_args.clone(),
+            session.effective_shell_args.clone(),
             session.working_directory.clone(),
             session.backend_kind,
             session.resolved_claude_projects_dir.clone(),
@@ -381,6 +399,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
     let reader = match derive_reader(
         &shell,
         &shell_args,
+        effective_shell_args.as_deref().unwrap_or(&shell_args),
         &working_directory,
         backend_kind,
         agent_kind,
@@ -878,6 +897,7 @@ mod tests {
         let result = derive_reader(
             "claude",
             &[],
+            &[],
             r"C:\Users\Test\repo",
             SessionBackendKind::ContainerTransport,
             Some(CodingAgentKind::Claude),
@@ -896,6 +916,7 @@ mod tests {
         let result = derive_reader(
             "claude",
             &[],
+            &[],
             r"C:\repo\.ac\wg-1\__agent",
             SessionBackendKind::ContainerTransport,
             Some(CodingAgentKind::Claude),
@@ -905,7 +926,9 @@ mod tests {
         .unwrap();
 
         match result {
-            Some(SessionReaderKind::Claude { project_dir: got }) => assert_eq!(got, project_dir),
+            Some(SessionReaderKind::Claude {
+                project_dir: got, ..
+            }) => assert_eq!(got, project_dir),
             other => panic!("unexpected reader: {other:?}"),
         }
     }
@@ -914,6 +937,7 @@ mod tests {
     fn derive_reader_container_codex_requires_effective_home_memo() {
         let result = derive_reader(
             "codex",
+            &[],
             &[],
             r"C:\Users\Test\repo",
             SessionBackendKind::ContainerTransport,
@@ -932,6 +956,7 @@ mod tests {
         let home = r"C:\repo\.ac\wg-1\__agent\.codex";
         let result = derive_reader(
             "codex",
+            &[],
             &[],
             r"C:\repo\.ac\wg-1\__agent",
             SessionBackendKind::ContainerTransport,
@@ -957,6 +982,7 @@ mod tests {
         ] {
             let result = derive_reader(
                 "pi",
+                &["--provider".to_string(), "claude".to_string()],
                 &["--provider".to_string(), "claude".to_string()],
                 r"C:\Users\Test\repo",
                 backend,
@@ -986,6 +1012,7 @@ mod tests {
                 let result = derive_reader(
                     shell,
                     &args,
+                    &args,
                     "/srv/work/repo",
                     backend,
                     Some(CodingAgentKind::Muse),
@@ -1002,6 +1029,111 @@ mod tests {
         }
     }
 
+    const MINTED_UUID: &str = "16045f91-7d59-4c75-acdb-11ebfcb9aa68";
+
+    fn claude_transcript_id(kind: Option<SessionReaderKind>) -> Option<String> {
+        match kind {
+            Some(SessionReaderKind::Claude { transcript_id, .. }) => transcript_id,
+            other => panic!("expected a Claude reader, got {other:?}"),
+        }
+    }
+
+    /// #2454 test 9: the id AC injects lives only in `effective_shell_args`.
+    /// The real caller must hand it to the reader; a session whose effective
+    /// args are `None` (after an app restart) derives no id.
+    #[tokio::test]
+    async fn derive_reader_carries_the_injected_id_through_the_real_caller() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app");
+        let mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        app.manage(Arc::clone(&mgr));
+        let projects = tempfile::tempdir().expect("projects dir");
+        let configured = vec!["--dangerously-skip-permissions".to_string()];
+
+        let mut ids = Vec::new();
+        for inject in [true, false] {
+            let session = {
+                let guard = mgr.read().await;
+                let session = guard
+                    .create_session(
+                        "claude".to_string(),
+                        configured.clone(),
+                        r"C:\Users\Test\repo".to_string(),
+                        None,
+                        None,
+                        Vec::new(),
+                        false,
+                        SessionBackendKind::LocalProcess,
+                    )
+                    .await
+                    .expect("create session");
+                guard
+                    .set_agent_kind(session.id, Some(CodingAgentKind::Claude))
+                    .await;
+                guard
+                    .set_resolved_claude_projects_dir(
+                        session.id,
+                        Some(projects.path().to_path_buf()),
+                    )
+                    .await;
+                if inject {
+                    // Exactly as `create_session_inner` leaves it: the
+                    // configured recipe plus the #756 rider.
+                    let mut effective = configured.clone();
+                    effective.push("--session-id".to_string());
+                    effective.push(MINTED_UUID.to_string());
+                    guard.set_effective_shell_args(session.id, effective).await;
+                }
+                session
+            };
+            let kind = reader_kind_for_session(app.handle(), session.id).await;
+            ids.push(claude_transcript_id(kind));
+        }
+
+        assert_eq!(ids[0].as_deref(), Some(MINTED_UUID));
+        assert_eq!(ids[1], None, "no effective args, no id");
+    }
+
+    /// #2454 test 9b: the CONFIGURED `shell_args` alone decide the projects
+    /// directory. The identity slice carries no Claude token, so feeding it to
+    /// the resolver instead would find none and fail.
+    #[test]
+    fn derive_reader_resolves_the_projects_dir_from_shell_args_only() {
+        let cwd = r"C:\Users\Test\repo";
+        let shell_args = vec!["claude".to_string()];
+        let identity_args = vec!["--session-id".to_string(), MINTED_UUID.to_string()];
+        let expected =
+            crate::commands::session::resolve_claude_projects_dir("bash", &shell_args, cwd);
+        assert!(
+            expected.is_some(),
+            "the home base must resolve here or this guard is inconclusive"
+        );
+
+        let result = derive_reader(
+            "bash",
+            &shell_args,
+            &identity_args,
+            cwd,
+            SessionBackendKind::LocalProcess,
+            Some(CodingAgentKind::Claude),
+            None,
+            None,
+        )
+        .expect("the configured recipe resolves");
+
+        match result {
+            Some(SessionReaderKind::Claude {
+                project_dir,
+                transcript_id,
+            }) => {
+                assert_eq!(Some(project_dir), expected);
+                assert_eq!(transcript_id.as_deref(), Some(MINTED_UUID));
+            }
+            other => panic!("unexpected reader: {other:?}"),
+        }
+    }
+
     #[test]
     fn derive_reader_antigravity_uses_pty_fallback_for_all_backends() {
         for backend in [
@@ -1010,6 +1142,7 @@ mod tests {
         ] {
             let result = derive_reader(
                 "agy",
+                &["-m".to_string(), "gpt-5".to_string()],
                 &["-m".to_string(), "gpt-5".to_string()],
                 r"C:\Users\Test\repo",
                 backend,
