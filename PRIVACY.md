@@ -34,7 +34,7 @@ Agents Commander transmits data to external services in two ways: when you enabl
 - **Data received**: A per-category judgment, used to route the message to one of four destinations
 - **When**: Only at the idle edge of an orchestrator in a room whose Co-managed flag is on and whose Jev key is set, while the global switch is on. The global switch off, a room without the flag, or an empty key makes zero requests
 - **Before it is sent**: A pre-egress secret detector runs before any file is written and before any network call. A flagged candidate produces no file, no request and no excerpt
-- **How to turn it off**: Set `coManagedEnabled` to `false` in `settings.json` (the factory state: the feature is off by default while it is in development), clear the room's Co-managed flag, or clear `jevApiKey` in Settings > Integrations > Co-managed (Jev). Any one of the three is sufficient
+- **How to turn it off**: Set `coManagedEnabled` to `false` in `settings.json` and restart AgentsCommander (the factory state: the feature is off by default while it is in development; the switch is read only at startup), clear the room's Co-managed flag, or clear `jevApiKey` in Settings > Integrations > Co-managed (Jev). Any one of the three is sufficient
 - **Credentials**: The Jev API key is configured by the user and stored locally in `~/.agentscommander/settings.json`
 
 ### Inter-Agent Messaging
