@@ -11374,7 +11374,7 @@ mod reader_reraise_tests {
     use crate::commands::session::co_managed_tests::{configure_room, room_fixture};
     use crate::commands::session::reader_demand_tests::harness;
     use crate::commands::session::release_room_reader_demand;
-    use crate::commands::telegram::holds_room_reader_demand;
+    use crate::commands::telegram::{holds_room_reader_demand, reader_demand_seam};
 
     fn tee_len() -> usize {
         crate::logging::test_tee_snapshot().len()
@@ -11592,5 +11592,59 @@ mod reader_reraise_tests {
         let off_lines = lines_since(before, off);
         assert!(ready_lines.is_empty(), "{ready_lines:?}");
         assert!(off_lines.is_empty(), "{off_lines:?}");
+    }
+
+    /// Test 9 (reproduction, D5-h): readiness is lost DURING the tick's own
+    /// raise. The room is disabled while the raise is paused before install;
+    /// when the tick returns the session holds no Room demand and nothing was
+    /// logged. Mutation: delete the post-raise recheck.
+    #[tokio::test]
+    async fn p5_readiness_lost_during_the_raise_leaves_no_demand() {
+        crate::logging::test_install_logger();
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        let barrier = reader_demand_seam::install_before_install(&id.to_string());
+
+        let before = tee_len();
+        let app = h.app.handle().clone();
+        let tick = tokio::spawn(async move { reraise_room_reader_demands(&app).await });
+        barrier.reached.notified().await;
+        // The same file `co_managed_set_enabled` writes.
+        configure_room(fixture.room_path(), false);
+        barrier.release.notify_one();
+        tick.await.expect("tick task");
+
+        assert!(
+            !holds_room_reader_demand(h.app.handle(), id).await,
+            "a raise that lost the readiness race must be undone"
+        );
+        let lines = lines_since(before, id);
+        assert!(lines.is_empty(), "{lines:?}");
+    }
+
+    /// Test 10 (guard, D5-h): the recheck is not a blanket release. A demand
+    /// already held when the room is disabled survives many ticks, because the
+    /// cheap gate skips it before the recheck. Mutation: release on a non-Ready
+    /// recheck outside the "this tick raised it" branch.
+    #[tokio::test]
+    async fn p5_recheck_never_releases_a_demand_it_did_not_raise() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        reraise_room_reader_demands(h.app.handle()).await;
+        assert!(holds_room_reader_demand(h.app.handle(), id).await);
+
+        configure_room(fixture.room_path(), false);
+        for _ in 0..10 {
+            reraise_room_reader_demands(h.app.handle()).await;
+        }
+
+        assert!(
+            holds_room_reader_demand(h.app.handle(), id).await,
+            "the tick only releases what it installed in the same iteration"
+        );
     }
 }
