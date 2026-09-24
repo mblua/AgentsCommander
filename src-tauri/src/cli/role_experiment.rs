@@ -2211,11 +2211,10 @@ fn create_run_workgroup_dirs(
         )]
     })?;
     let next = next_workgroup_number(ac_root)?;
-    let name = format!(
-        "{}{}-role-exp-{}",
-        crate::config::entity_prefix::ROOM_DIR_PREFIX,
+    let name = role_exp_room_dir_name(
         next,
-        sanitized_experiment
+        &sanitized_experiment,
+        crate::commands::entity_creation::room_number_pad_width(),
     );
     let path = ac_root.join(&name);
     reject_link_or_reparse(&path, "run_artifact_link_or_reparse", None)?;
@@ -2286,6 +2285,15 @@ fn create_run_workgroup_dirs(
         run_id: run_id.to_string(),
         experiment: experiment.to_string(),
     })
+}
+
+/// #2507 Room directory name for the CLI role-experiment path.
+fn role_exp_room_dir_name(next: u32, sanitized_experiment: &str, width: usize) -> String {
+    crate::commands::entity_creation::room_dir_name(
+        next,
+        &format!("role-exp-{sanitized_experiment}"),
+        width,
+    )
 }
 
 fn next_workgroup_number(ac_root: &Path) -> Result<u32, Vec<CliError>> {
@@ -4582,5 +4590,18 @@ mod tests {
 
         assert_eq!(run_id, "20260601-181500-03");
         assert!(run_dir.is_dir());
+    }
+
+    #[test]
+    fn role_exp_room_dir_name_is_padded() {
+        assert_eq!(
+            role_exp_room_dir_name(1, "team", 3),
+            "room-001-role-exp-team"
+        );
+        assert_eq!(role_exp_room_dir_name(1, "team", 1), "room-1-role-exp-team");
+        assert_eq!(
+            role_exp_room_dir_name(100, "team", 2),
+            "room-100-role-exp-team"
+        );
     }
 }
