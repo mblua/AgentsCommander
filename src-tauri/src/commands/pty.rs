@@ -866,6 +866,29 @@ pub fn get_session_context(app: AppHandle, session_id: String) -> Result<Option<
     Ok(scraper.last_reading(uuid))
 }
 
+/// #2482 - the last weekly-quota reading for a session, for a frontend that just
+/// mounted and missed the `session_agent_quota` event.
+///
+/// `None` covers every unavailable case there is - no configured source, a
+/// disabled one, no match, a session that is over, an engine that is not managed
+/// - and NEVER means 0 and NEVER means 100.
+///
+/// Generic over `R` so it is callable from a `tauri::test` mock app, the way
+/// `get_watcher_activity` already is. `get_session_context` takes a concrete
+/// `AppHandle` (Wry) and consequently has no tests at all; this command does not
+/// repeat that.
+#[tauri::command]
+pub fn get_session_agent_quota<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    session_id: String,
+) -> Result<Option<u8>, String> {
+    let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    let Some(engine) = app.try_state::<Arc<crate::pty::agent_quota::AgentQuotaEngine>>() else {
+        return Ok(None);
+    };
+    Ok(engine.last_reading(uuid))
+}
+
 /// #1171 - one session's watcher activity, for the window on mount and on every poll.
 ///
 /// SYNCHRONOUS, and it takes exactly one per-session mutex. That is possible only because the
@@ -1391,6 +1414,63 @@ mod watcher_preview_tests {
         let app = settings_app(AppSettings::default());
 
         assert!(get_watcher_activity(app.handle().clone(), "nope".into(), None).is_err());
+    }
+
+    /// #2482 - no engine managed is the feature being off: `Ok(None)`, never a panic.
+    #[test]
+    fn get_session_agent_quota_answers_none_when_the_engine_is_unmanaged() {
+        let app = settings_app(AppSettings::default());
+
+        assert_eq!(
+            get_session_agent_quota(app.handle().clone(), Uuid::new_v4().to_string()),
+            Ok(None)
+        );
+    }
+
+    /// #2482 - mirrors `a_session_id_that_is_not_a_uuid_is_rejected`.
+    #[test]
+    fn get_session_agent_quota_rejects_a_malformed_session_id() {
+        let app = settings_app(AppSettings::default());
+
+        assert!(get_session_agent_quota(app.handle().clone(), "nope".into()).is_err());
+    }
+
+    /// #2482 - the command reads back what the engine last emitted, and a real 0 stays a
+    /// real 0: it is never folded into `None`.
+    #[test]
+    fn get_session_agent_quota_returns_the_last_reading() {
+        use crate::pty::agent_quota::source::SourceSpec;
+        use crate::pty::agent_quota::test_support::QuotaHarness;
+        use crate::pty::context_scrape::ScreenRowsRead;
+
+        let harness = QuotaHarness::new();
+        harness.sources.configure(
+            "claude",
+            SourceSpec::ScreenRegex {
+                pattern: r"Weekly (\d{1,3})% used".to_string(),
+            },
+        );
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "claude".to_string());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&harness.engine))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build a mock app");
+        let read = |percent: u8| ScreenRowsRead::Rows(vec![format!("Weekly {percent}% used")]);
+
+        harness.rows.push(id, read(42));
+        futures::executor::block_on(harness.engine.tick());
+        assert_eq!(
+            get_session_agent_quota(app.handle().clone(), id.to_string()),
+            Ok(Some(42))
+        );
+
+        harness.rows.push(id, read(0));
+        futures::executor::block_on(harness.engine.tick());
+        assert_eq!(
+            get_session_agent_quota(app.handle().clone(), id.to_string()),
+            Ok(Some(0))
+        );
     }
 
     /// 9.5.64 - with no history managed at all - a test app, a build without the engine - the

@@ -39,6 +39,10 @@ use commands::ac_discovery::DiscoveryBranchWatcher;
 use config::sessions_persistence;
 use config::settings::SettingsState;
 use futures_util::FutureExt;
+use pty::agent_quota::source::SourceSpec;
+use pty::agent_quota::{
+    AgentQuotaEngine, AgentQuotaPayload, QuotaEventSink, QuotaRowsSource, QuotaSourceProvider,
+};
 use pty::context_scrape::{
     ContextEventSink, ContextPatternSource, ContextPersistSink, ContextSample, ContextSampleSink,
     ContextScraper, ContextSessionLiveness, ContextUsagePayload, ScreenRowsRead, ScreenRowsSource,
@@ -1221,6 +1225,181 @@ struct ScraperSink {
 impl ContextEventSink for ScraperSink {
     fn emit(&self, payload: ContextUsagePayload) {
         let _ = self.app_handle.emit("session_context", payload);
+    }
+}
+
+// ---- #2482: the three quota adapters ----------------------------------------------
+//
+// Each is its `context_scrape` twin above, narrowed. They live here, and only here, because
+// this is the file allowed to touch both the engine and the settings / session / Tauri world;
+// `pty::agent_quota` names none of those, which keeps it out of the cyclic SCC.
+
+/// Rows and liveness, via the routed backend. `ScraperRows` in shape.
+struct QuotaRows {
+    pty_mgr: Arc<Mutex<PtyManager>>,
+    /// A poisoned `PtyManager` is app-wide and permanent: one line, not one per tick.
+    poison_logged: AtomicBool,
+}
+
+impl QuotaRowsSource for QuotaRows {
+    fn get_screen_rows(&self, id: uuid::Uuid) -> ScreenRowsRead {
+        match self.pty_mgr.lock() {
+            Ok(mgr) => mgr.get_screen_rows(id),
+            Err(_) => {
+                if !self
+                    .poison_logged
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    log::warn!(
+                        "[quota] PtyManager lock is poisoned; quota readings are unavailable"
+                    );
+                }
+                ScreenRowsRead::Unavailable
+            }
+        }
+    }
+
+    /// `Unavailable` and never `SessionOver` on a poisoned lock: that lock is app-wide, and
+    /// `SessionOver` would deregister every session for life.
+    fn get_session_liveness(&self, id: uuid::Uuid) -> ContextSessionLiveness {
+        match self.pty_mgr.lock() {
+            Ok(mgr) => mgr.context_session_liveness(id),
+            Err(_) => {
+                if !self
+                    .poison_logged
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    log::warn!(
+                        "[quota] PtyManager lock is poisoned; quota liveness is unavailable"
+                    );
+                }
+                ContextSessionLiveness::Unavailable
+            }
+        }
+    }
+}
+
+/// Every agent's ENABLED quota source, read fresh from settings each tick. One `RwLock` read
+/// per tick for all sessions. Maps the settings type onto the engine's settings-free
+/// `SourceSpec`.
+///
+/// **The `match` in `specs` is the multi-agent extension point's second and last site.** A new
+/// source kind adds one arm in `pty::agent_quota::source` and one arm here. There is no
+/// registry to go looking for.
+struct QuotaSources {
+    settings: SettingsState,
+}
+
+impl QuotaSources {
+    fn specs(settings: &config::settings::AppSettings) -> HashMap<String, SourceSpec> {
+        use config::settings::QuotaSourceConfig;
+        settings
+            .quota_sources
+            .iter()
+            .filter_map(|(agent_id, entry)| match entry.valid()? {
+                QuotaSourceConfig::ScreenRegex { pattern, enabled } => {
+                    if !*enabled {
+                        return None;
+                    }
+                    // Emptiness is tested on a TRIMMED view; the value handed over is the
+                    // user's string byte for byte. `ScraperPatterns` documents why: leading
+                    // spaces ARE the column anchor, and trimming makes the reading fail OPEN.
+                    (!pattern.trim().is_empty()).then(|| {
+                        (
+                            agent_id.clone(),
+                            SourceSpec::ScreenRegex {
+                                pattern: pattern.clone(),
+                            },
+                        )
+                    })
+                }
+            })
+            .collect()
+    }
+}
+
+impl QuotaSourceProvider for QuotaSources {
+    fn sources(&self) -> futures::future::BoxFuture<'_, HashMap<String, SourceSpec>> {
+        Box::pin(async move {
+            let settings = self.settings.read().await;
+            Self::specs(&settings)
+        })
+    }
+}
+
+/// The sink. Emitted UNSCOPED, exactly like `session_context`, so a detached terminal window
+/// receives it too.
+struct QuotaSink {
+    app_handle: tauri::AppHandle,
+}
+
+impl QuotaEventSink for QuotaSink {
+    fn emit(&self, payload: AgentQuotaPayload) {
+        let _ = self.app_handle.emit("session_agent_quota", payload);
+    }
+}
+
+#[cfg(test)]
+mod quota_sources_tests {
+    use super::*;
+    use crate::config::settings::{AppSettings, QuotaSourceConfig, QuotaSourceEntry};
+
+    const PATTERN: &str = r"Weekly (\d{1,3})% used";
+
+    fn screen(pattern: &str, enabled: bool) -> QuotaSourceEntry {
+        QuotaSourceEntry::Valid(QuotaSourceConfig::ScreenRegex {
+            pattern: pattern.to_string(),
+            enabled,
+        })
+    }
+
+    fn specs(entries: Vec<(&str, QuotaSourceEntry)>) -> HashMap<String, SourceSpec> {
+        let mut settings = AppSettings::default();
+        for (agent_id, entry) in entries {
+            settings.quota_sources.insert(agent_id.to_string(), entry);
+        }
+        QuotaSources::specs(&settings)
+    }
+
+    #[test]
+    fn quota_sources_adapter_skips_a_disabled_entry() {
+        let specs = specs(vec![
+            ("off", screen(PATTERN, false)),
+            ("on", screen(PATTERN, true)),
+        ]);
+        assert!(!specs.contains_key("off"));
+        assert!(specs.contains_key("on"));
+    }
+
+    #[test]
+    fn quota_sources_adapter_skips_an_invalid_entry() {
+        let specs = specs(vec![(
+            "codex",
+            QuotaSourceEntry::Invalid(serde_json::json!({ "kind": "fromTheFuture" })),
+        )]);
+        assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn quota_sources_adapter_skips_a_blank_pattern_but_hands_over_untrimmed_bytes() {
+        let anchored = "  Weekly (\\d{1,3})% used ";
+        let specs = specs(vec![
+            ("blank", screen("   ", true)),
+            ("anchored", screen(anchored, true)),
+        ]);
+        assert!(!specs.contains_key("blank"));
+        assert_eq!(
+            specs.get("anchored"),
+            Some(&SourceSpec::ScreenRegex {
+                pattern: anchored.to_string()
+            }),
+            "the leading spaces are the column anchor and must survive"
+        );
+    }
+
+    #[test]
+    fn quota_sources_adapter_returns_an_empty_map_for_empty_settings() {
+        assert!(QuotaSources::specs(&AppSettings::default()).is_empty());
     }
 }
 
@@ -3952,6 +4131,23 @@ pub fn run(
             context_scraper.start(shutdown_for_setup.clone());
             app.manage(Arc::clone(&context_scraper));
 
+            // #2482 agent quota engine. A sibling of the scraper, same construction shape, and
+            // like it must come after `.manage(settings)`.
+            let agent_quota_engine = AgentQuotaEngine::new(
+                Arc::new(QuotaRows {
+                    pty_mgr: pty_mgr.clone(),
+                    poison_logged: AtomicBool::new(false),
+                }),
+                Arc::new(QuotaSources {
+                    settings: app.state::<SettingsState>().inner().clone(),
+                }),
+                Arc::new(QuotaSink {
+                    app_handle: app.handle().clone(),
+                }),
+            );
+            agent_quota_engine.start(shutdown_for_setup.clone());
+            app.manage(Arc::clone(&agent_quota_engine));
+
             // #1171 watcher engine. A SIBLING of the scraper above, not an extension of it:
             // different interval, different modes, its own history. Same construction shape,
             // and for the same reason it must come after `.manage(settings)`.
@@ -4645,6 +4841,7 @@ pub fn run(
                 commands::pty::activate_terminal_output,
                 commands::pty::detach_terminal_output,
                 commands::pty::get_session_context,
+                commands::pty::get_session_agent_quota,
                 commands::pty::get_watcher_activity,
                 commands::pty::preview_watcher_pattern,
                 commands::pty::preview_watcher_reach,
