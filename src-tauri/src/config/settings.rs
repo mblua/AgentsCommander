@@ -8,9 +8,10 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 use crate::config::instance_artifacts::{
-    BLOCKING_MENUS_LOCAL_FILE_NAME, BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME,
-    BLOCKING_MENUS_REMOTE_FILE_NAME, BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_BACKUP_PREFIX,
-    SETTINGS_BACKUP_SUFFIX, SETTINGS_LOCK_FILE_NAME,
+    AGENT_HELP_LOCAL_FILE_NAME, AGENT_HELP_SHIPPED_FILE_NAME, BLOCKING_MENUS_LOCAL_FILE_NAME,
+    BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME, BLOCKING_MENUS_REMOTE_FILE_NAME,
+    BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_SUFFIX,
+    SETTINGS_LOCK_FILE_NAME,
 };
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
@@ -1726,6 +1727,210 @@ impl BlockingMenusStore {
             None => self.resolve(&agent.id, &agent.command),
         }
     }
+}
+
+/// #2133 - the embedded per-agent help, the shipped layer. P1 owns the file.
+const EMBEDDED_AGENT_HELP_JSON: &str = include_str!("../../resources/agent-help/agent-help.json");
+
+pub const AGENT_HELP_SCHEMA_VERSION: u32 = 1;
+
+/// #2133 - a link at the end of a tip.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHelpLink {
+    pub label: String,
+    pub url: String,
+}
+
+/// #2133 - one tip: a title, a body and an optional link.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHelpTip {
+    pub title: String,
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<AgentHelpLink>,
+}
+
+/// #2133 - the help for one command stem, one agent, or the general block.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHelpEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params_example: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docs_url: Option<String>,
+    #[serde(default)]
+    pub tips: Vec<AgentHelpTip>,
+}
+
+/// #2133 - one agent-help file; the embedded, local and remote layers share this shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHelpFile {
+    pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub general: Option<AgentHelpEntry>,
+    #[serde(default)]
+    pub by_command: BTreeMap<String, AgentHelpEntry>,
+    #[serde(default)]
+    pub by_agent: BTreeMap<String, AgentHelpEntry>,
+}
+
+impl Default for AgentHelpFile {
+    fn default() -> Self {
+        Self {
+            schema_version: AGENT_HELP_SCHEMA_VERSION,
+            note: None,
+            general: None,
+            by_command: BTreeMap::new(),
+            by_agent: BTreeMap::new(),
+        }
+    }
+}
+
+/// #2133 - an absolute `https` URL with a non-empty host. No URL crate: the prefix and the
+/// host segment are all the help links need.
+fn is_https_url(value: &str) -> bool {
+    value
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+        .is_some_and(|host| !host.is_empty())
+}
+
+fn check_agent_help_entry_urls(key: &str, entry: &AgentHelpEntry) -> Result<(), String> {
+    if let Some(docs_url) = &entry.docs_url {
+        if !is_https_url(docs_url) {
+            return Err(format!("entry {key}: docsUrl is not an https URL"));
+        }
+    }
+    for (index, tip) in entry.tips.iter().enumerate() {
+        if let Some(link) = &tip.link {
+            if !is_https_url(&link.url) {
+                return Err(format!(
+                    "entry {key} tip {index}: link url is not an https URL"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// #2133 (D10) - the one parser all three layers go through, shaped like
+/// `parse_blocking_menus_file`. The `Value` step rejects a JSON array, which serde would
+/// otherwise decode as an empty file.
+pub(crate) fn parse_agent_help_file(contents: &str) -> Result<AgentHelpFile, String> {
+    let value =
+        serde_json::from_str::<Value>(contents).map_err(|e| format!("does not parse: {e}"))?;
+    if !value.is_object() {
+        return Err("is not a JSON object".to_string());
+    }
+    let file = serde_json::from_value::<AgentHelpFile>(value)
+        .map_err(|e| format!("does not parse: {e}"))?;
+    if file.schema_version != AGENT_HELP_SCHEMA_VERSION {
+        return Err(format!(
+            "has schemaVersion {}; only {} is supported",
+            file.schema_version, AGENT_HELP_SCHEMA_VERSION
+        ));
+    }
+    if let Some(general) = &file.general {
+        check_agent_help_entry_urls("general", general)?;
+    }
+    for (key, entry) in file.by_command.iter().chain(file.by_agent.iter()) {
+        check_agent_help_entry_urls(key, entry)?;
+    }
+    Ok(file)
+}
+
+/// #2133 - the operator-owned overlay lives next to `settings.json`.
+#[allow(dead_code)] // #2133: P4 (the IPC command) is the first production caller.
+pub(crate) fn agent_help_local_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(AGENT_HELP_LOCAL_FILE_NAME)
+}
+
+/// #2133 (D7) - the user layer, no caps. A missing file is silent; any other rejection logs
+/// once and yields an empty layer plus the reason, which P4 hands to the UI.
+#[allow(dead_code)] // #2133: P4 (the IPC command) is the first production caller.
+pub(crate) fn load_local_agent_help_file(settings_path: &Path) -> (AgentHelpFile, Option<String>) {
+    let path = agent_help_local_path(settings_path);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return (AgentHelpFile::default(), None)
+        }
+        Err(e) => {
+            log::error!("[agent-help] could not read {}: {e}", path.display());
+            return (
+                AgentHelpFile::default(),
+                Some(format!("could not read {}: {e}", path.display())),
+            );
+        }
+    };
+    match parse_agent_help_file(&contents) {
+        Ok(file) => (file, None),
+        Err(e) => {
+            log::error!("[agent-help] {} {e}; ignoring the file", path.display());
+            (
+                AgentHelpFile::default(),
+                Some(format!("{} {e}", path.display())),
+            )
+        }
+    }
+}
+
+/// #2133 - the AC-owned shipped copy lives next to `settings.json`. Only the refresh writes it;
+/// nothing reads it back (the #1905 rule): the runtime uses `shipped_agent_help()`.
+pub(crate) fn agent_help_shipped_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(AGENT_HELP_SHIPPED_FILE_NAME)
+}
+
+/// #2133 - make the on-disk shipped file equal to the canonical form of the embedded content.
+/// True when written. A hand edit is overwritten at the next start: the file is AC-owned.
+/// Never fails: a write error is logged and startup continues on the embedded constant.
+pub(crate) fn refresh_shipped_agent_help_file(settings_path: &Path) -> bool {
+    let path = agent_help_shipped_path(settings_path);
+    let Ok(canonical) = pretty_json_bytes(shipped_agent_help()) else {
+        return false;
+    };
+    if matches!(std::fs::read(&path), Ok(existing) if existing == canonical) {
+        return false;
+    }
+    match crate::config::local_config_io::write_file_atomic(&path, &canonical) {
+        Ok(()) => {
+            log::info!("[agent-help] wrote the shipped help to {}", path.display());
+            true
+        }
+        Err(e) => {
+            log::error!("[agent-help] could not write {}: {e}", path.display());
+            false
+        }
+    }
+}
+
+/// #2133 - the startup entry point; the only agent-help function that resolves the config dir.
+pub fn refresh_shipped_agent_help_from_config_dir() {
+    match settings_path() {
+        Some(path) => {
+            refresh_shipped_agent_help_file(&path);
+        }
+        None => log::debug!("[agent-help] no config dir; the shipped help is not written"),
+    }
+}
+
+/// #2133 - a parse failure is a build defect T1 catches; production logs once and serves an
+/// empty file. The runtime reads this, never a disk copy.
+pub fn shipped_agent_help() -> &'static AgentHelpFile {
+    static SHIPPED: OnceLock<AgentHelpFile> = OnceLock::new();
+    SHIPPED.get_or_init(|| {
+        parse_agent_help_file(EMBEDDED_AGENT_HELP_JSON).unwrap_or_else(|e| {
+            log::error!("[agent-help] embedded agent-help.json {e}");
+            AgentHelpFile::default()
+        })
+    })
 }
 
 /// #1757 - one-shot migration for installs whose Codex `blockingMenus` array was already
@@ -14885,6 +15090,239 @@ mod tests {
             );
             let effective = written.main_geometry.as_ref().unwrap();
             assert_eq!((effective.x, effective.y), (9.0, 8.0));
+        }
+    }
+
+    /// #2133 (P2) - the agent-help data model, parser and local overlay. Every test drives a
+    /// `tempfile::tempdir()`; none reads the test config dir.
+    mod agent_help_2133 {
+        use super::super::*;
+        use std::collections::BTreeSet;
+
+        fn settings_path_in(dir: &tempfile::TempDir) -> PathBuf {
+            dir.path().join("settings.json")
+        }
+
+        fn tip_json(link_url: &str) -> String {
+            format!(r#"{{"title":"t","body":"b","link":{{"label":"l","url":"{link_url}"}}}}"#)
+        }
+
+        #[test]
+        fn the_embedded_agent_help_passes_the_parser() {
+            let shipped = parse_agent_help_file(EMBEDDED_AGENT_HELP_JSON).unwrap();
+            assert_eq!(&shipped, shipped_agent_help());
+            assert_eq!(shipped.schema_version, AGENT_HELP_SCHEMA_VERSION);
+
+            let catalog: Value = serde_json::from_str(include_str!(
+                "../../resources/coding-agents/agents.default.json"
+            ))
+            .unwrap();
+            let agents = catalog["agents"].as_array().unwrap();
+            let expected: BTreeSet<String> =
+                crate::config::coding_agents_catalog::BUILTIN_AGENT_SUPPORT
+                    .iter()
+                    .filter(|(_, enabled)| *enabled)
+                    .map(|(key, _)| {
+                        let agent = agents
+                            .iter()
+                            .find(|agent| agent["key"] == *key)
+                            .unwrap_or_else(|| panic!("built-in {key} is not in the catalog"));
+                        let command = agent["command"].as_str().unwrap();
+                        crate::config::coding_agents_catalog::command_executable_basename(command)
+                            .unwrap()
+                    })
+                    .collect();
+            assert_eq!(expected.len(), 8);
+            let actual: BTreeSet<String> = shipped.by_command.keys().cloned().collect();
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn the_embedded_agent_help_has_no_by_agent_rows_and_no_guide_order() {
+            assert!(shipped_agent_help().by_agent.is_empty());
+            let serialized = serde_json::to_string(&AgentHelpFile::default()).unwrap();
+            assert!(!serialized.contains("\"guideOrder\""), "{serialized}");
+            let serialized = serde_json::to_string(shipped_agent_help()).unwrap();
+            assert!(!serialized.contains("\"guideOrder\""), "{serialized}");
+            // D-A: a present key, empty or not, must not round-trip. An `Option` field with
+            // `skip_serializing_if` would keep `Some([])` and `Some([..])` and fail here.
+            for input in [
+                r#"{"schemaVersion":1,"guideOrder":[]}"#,
+                r#"{"schemaVersion":1,"guideOrder":["claude"]}"#,
+            ] {
+                let parsed = parse_agent_help_file(input).unwrap();
+                let serialized = serde_json::to_string(&parsed).unwrap();
+                assert!(!serialized.contains("\"guideOrder\""), "{serialized}");
+            }
+        }
+
+        #[test]
+        fn a_json_array_is_rejected() {
+            let err = parse_agent_help_file("[]").unwrap_err();
+            assert!(err.contains("is not a JSON object"), "{err}");
+        }
+
+        #[test]
+        fn a_wrong_schema_version_is_rejected() {
+            let err = parse_agent_help_file(r#"{"schemaVersion":2}"#).unwrap_err();
+            assert!(err.contains('2') && err.contains('1'), "{err}");
+            assert!(err.contains("schemaVersion"), "{err}");
+        }
+
+        #[test]
+        fn a_non_https_docs_url_is_rejected() {
+            for url in [
+                "http://x/y",
+                "javascript:alert(1)",
+                "https://",
+                "https:///path",
+            ] {
+                let contents = format!(
+                    r#"{{"schemaVersion":1,"byCommand":{{"claude":{{"docsUrl":"{url}"}}}}}}"#
+                );
+                let err = parse_agent_help_file(&contents).unwrap_err();
+                assert_eq!(err, "entry claude: docsUrl is not an https URL", "{url}");
+            }
+            let ok = r#"{"schemaVersion":1,"byCommand":{"claude":{"docsUrl":"https://x.dev/y"}}}"#;
+            assert!(parse_agent_help_file(ok).is_ok());
+        }
+
+        #[test]
+        fn a_non_https_tip_link_is_rejected() {
+            let contents = format!(
+                r#"{{"schemaVersion":1,"byAgent":{{"a1":{{"tips":[{},{}]}}}}}}"#,
+                tip_json("https://ok.dev"),
+                tip_json("http://bad.dev")
+            );
+            let err = parse_agent_help_file(&contents).unwrap_err();
+            assert_eq!(err, "entry a1 tip 1: link url is not an https URL");
+            let contents = format!(
+                r#"{{"schemaVersion":1,"general":{{"tips":[{}]}}}}"#,
+                tip_json("ftp://x")
+            );
+            let err = parse_agent_help_file(&contents).unwrap_err();
+            assert_eq!(err, "entry general tip 0: link url is not an https URL");
+        }
+
+        #[test]
+        fn unknown_fields_are_ignored() {
+            let contents = r#"{"schemaVersion":1,"guideOrder":["x"],"extra":true,
+                "byCommand":{"claude":{"label":"C","future":1,"tips":[]}}}"#;
+            let file = parse_agent_help_file(contents).unwrap();
+            assert_eq!(file.by_command["claude"].label.as_deref(), Some("C"));
+        }
+
+        #[test]
+        fn a_missing_local_file_is_silent() {
+            let dir = tempfile::tempdir().unwrap();
+            let (file, reason) = load_local_agent_help_file(&settings_path_in(&dir));
+            assert_eq!(file, AgentHelpFile::default());
+            assert_eq!(reason, None);
+        }
+
+        #[test]
+        fn a_broken_local_file_is_ignored_whole_and_reports_a_reason() {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = settings_path_in(&dir);
+            std::fs::write(
+                agent_help_local_path(&settings_path),
+                r#"{"schemaVersion":1,"byCommand":{
+                    "claude":{"docsUrl":"https://good.dev"},
+                    "codex":{"docsUrl":"http://bad.dev"}}}"#,
+            )
+            .unwrap();
+            let (file, reason) = load_local_agent_help_file(&settings_path);
+            assert!(file.by_command.is_empty());
+            let reason = reason.expect("a broken file must report why");
+            assert!(
+                reason.contains("entry codex: docsUrl is not an https URL"),
+                "{reason}"
+            );
+        }
+
+        #[test]
+        fn a_local_file_has_no_caps() {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = settings_path_in(&dir);
+            let body = "x".repeat(5000);
+            let mut by_command = BTreeMap::new();
+            for index in 0..200 {
+                by_command.insert(
+                    format!("cmd{index}"),
+                    AgentHelpEntry {
+                        tips: vec![AgentHelpTip {
+                            title: "t".to_string(),
+                            body: body.clone(),
+                            link: None,
+                        }],
+                        ..AgentHelpEntry::default()
+                    },
+                );
+            }
+            let written = AgentHelpFile {
+                by_command,
+                ..AgentHelpFile::default()
+            };
+            std::fs::write(
+                agent_help_local_path(&settings_path),
+                serde_json::to_string(&written).unwrap(),
+            )
+            .unwrap();
+            let (file, reason) = load_local_agent_help_file(&settings_path);
+            assert_eq!(reason, None);
+            assert_eq!(file.by_command.len(), 200);
+            assert_eq!(file, written);
+        }
+
+        fn canonical_shipped_bytes() -> Vec<u8> {
+            pretty_json_bytes(shipped_agent_help()).unwrap()
+        }
+
+        #[test]
+        fn the_shipped_file_is_materialized_canonically() {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = settings_path_in(&dir);
+            let shipped = agent_help_shipped_path(&settings_path);
+            assert_eq!(shipped, dir.path().join("agent-help.json"));
+
+            assert!(refresh_shipped_agent_help_file(&settings_path));
+            let written = std::fs::read(&shipped).unwrap();
+            assert_eq!(written, canonical_shipped_bytes());
+            assert_ne!(written, EMBEDDED_AGENT_HELP_JSON.as_bytes());
+
+            let modified = std::fs::metadata(&shipped).unwrap().modified().unwrap();
+            assert!(!refresh_shipped_agent_help_file(&settings_path));
+            assert_eq!(std::fs::read(&shipped).unwrap(), written);
+            assert_eq!(
+                std::fs::metadata(&shipped).unwrap().modified().unwrap(),
+                modified
+            );
+        }
+
+        #[test]
+        fn a_hand_edited_shipped_file_is_rewritten() {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = settings_path_in(&dir);
+            let shipped = agent_help_shipped_path(&settings_path);
+            std::fs::write(&shipped, r#"{"schemaVersion":1,"note":"mine"}"#).unwrap();
+
+            assert!(refresh_shipped_agent_help_file(&settings_path));
+            assert_eq!(std::fs::read(&shipped).unwrap(), canonical_shipped_bytes());
+        }
+
+        #[test]
+        fn a_write_failure_is_swallowed() {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = settings_path_in(&dir);
+            // The atomic writer's temp name; a directory there makes the write fail.
+            std::fs::create_dir(
+                dir.path()
+                    .join(format!(".agent-help.json.{}.tmp", std::process::id())),
+            )
+            .unwrap();
+
+            assert!(!refresh_shipped_agent_help_file(&settings_path));
+            assert!(!agent_help_shipped_path(&settings_path).exists());
         }
     }
 }

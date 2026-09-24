@@ -1084,6 +1084,10 @@ mod tests {
             "settings-blocking-menus.json",
             "settings-blocking-menus.local.json",
             "settings-blocking-menus.remote.json",
+            // #2133: the operator-owned per-agent help overlay.
+            "agent-help.local.json",
+            // #2133: the shipped per-agent help, rewritten by AC at every start.
+            "agent-help.json",
             // #1737: the operator-owned overlay and the two managed context
             // template overrides. The `settings.json` row is an exact-name rule and
             // does not reach `settings.local.json`, which is why the row exists.
