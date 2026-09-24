@@ -168,6 +168,8 @@ pub(crate) const BLOCKING_MENUS_LOCAL_FILE_NAME: &str = "settings-blocking-menus
 pub(crate) const BLOCKING_MENUS_REMOTE_FILE_NAME: &str = "settings-blocking-menus.remote.json";
 /// #1925 - time of the last remote blocking-menu download attempt; throttles it to once per 24 h.
 pub(crate) const BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME: &str = "blocking-menus-remote-check.json";
+/// #2133 - the operator-owned per-agent help overlay, read at load and never written by AC.
+pub(crate) const AGENT_HELP_LOCAL_FILE_NAME: &str = "agent-help.local.json";
 pub(crate) const SETTINGS_LOCK_FILE_NAME: &str = "settings.json.lock";
 /// Covers every settings migration backup instance. The concrete names are
 /// composed by their own migrations, so this glob is registry-owned and no
@@ -325,6 +327,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: transient agency template cache lock and staging trees (.lock, .next-, .download-, .prev-); the tracked cache directory itself carries no dot and is not matched",
+    },
+    InstanceArtifact {
+        name: AGENT_HELP_LOCAL_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: operator-owned per-agent help overlay; machine-local by design",
     },
     InstanceArtifact {
         name: API_AUDIT_LOG_FILE_NAME,
@@ -756,6 +764,26 @@ mod tests {
                 window[1]
             );
         }
+    }
+
+    /// #2133 - pins the overlay row between its two neighbours, so a later re-sort cannot
+    /// quietly relocate it.
+    #[test]
+    fn the_local_artifact_name_is_an_ignore_row_in_sorted_position() {
+        let names: Vec<&str> = ignore_rows().iter().map(|row| row.name).collect();
+        let position = |name: &str| {
+            let hits: Vec<usize> = names
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| **row == name)
+                .map(|(index, _)| index)
+                .collect();
+            assert_eq!(hits.len(), 1, "{name} must appear exactly once: {hits:?}");
+            hits[0]
+        };
+        let local = position("agent-help.local.json");
+        assert!(position("agency-agents_templates.*") < local);
+        assert!(local < position("api-audit.log"));
     }
 
     #[test]
