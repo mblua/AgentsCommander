@@ -44,6 +44,16 @@ import { codingAgentsStore } from "../stores/coding-agents";
 import TrashIcon from "./TrashIcon";
 import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
+import AgentHelpTipsModal from "./AgentHelpTipsModal";
+import {
+  EMPTY_AGENT_HELP_OVERLAY,
+  docsUrlFor,
+  loadAgentHelpOverlay,
+  paramsExampleFor,
+  resolveAgentHelpEntry,
+  resolveAgentHelpGeneral,
+  type AgentHelpOverlay,
+} from "../../shared/agent-help";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import { applySelectedRowRail, isValidRailColor, isValidRailWidth } from "../selected-row-rail";
 import {
@@ -1003,6 +1013,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [activeAgentId, setActiveAgentId] = createSignal<string | null>(null);
 
   const [reseedTarget, setReseedTarget] = createSignal<CodingAgentDefinition | null>(null);
+
+  // #2143: one overlay feeds the params placeholder, the docs links and both tips windows.
+  const [agentHelpOverlay, setAgentHelpOverlay] =
+    createSignal<AgentHelpOverlay>(EMPTY_AGENT_HELP_OVERLAY);
+  onMount(() => {
+    void loadAgentHelpOverlay().then(setAgentHelpOverlay);
+  });
+  // Keyed by profile card: one agent renders a card per profile letter.
+  const [tipsFor, setTipsFor] = createSignal<string | null>(null);
+  const [generalOpen, setGeneralOpen] = createSignal(false);
+  const generalLabel = () =>
+    resolveAgentHelpGeneral(agentHelpOverlay())?.label || "Best Practices";
   const [reseeding, setReseeding] = createSignal(false);
 
   const agentList = () => settings.data?.agents ?? [];
@@ -3618,6 +3640,22 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const renderAgentPresets = () => (
     <div class="settings-agent-actions">
+      <button
+        type="button"
+        class="settings-row-btn"
+        data-ac-testid="settings.agentHelp.bestPractices"
+        onClick={() => setGeneralOpen(true)}
+      >
+        {generalLabel()}
+      </button>
+      <Show when={generalOpen()}>
+        <AgentHelpTipsModal
+          title={generalLabel()}
+          entry={resolveAgentHelpGeneral(agentHelpOverlay())}
+          localError={agentHelpOverlay().localError}
+          onClose={() => setGeneralOpen(false)}
+        />
+      </Show>
       {/* #1965 — catalog status. Failures and warnings render path/reason as
           text and are never replaced by selectable embedded defaults. */}
       <Show when={codingAgentsStore.loading()}>
@@ -3970,6 +4008,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const command = () => displayedProfileCellCommand(agent.id, letter);
     const cellError = () => profileCellErrors[profileCellKey(agent.id, letter)];
     const cardId = `settings.profileCard.${railIndex}.${letter}`;
+    const docsUrl = () => docsUrlFor(agentHelpOverlay(), agent.id, agent.command);
     const expanded = () => isCellExpanded(agent.id, letter);
     const preview = () =>
       resolveProfilePreview(settings.data!.codingAgentProfiles, agent.id, letter);
@@ -4051,6 +4090,30 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             >
               ?
             </button>
+            <Show when={docsUrl()}>
+              {(url) => (
+                <a
+                  class="settings-field-help settings-field-help-link"
+                  href={url()}
+                  title="Official documentation"
+                  aria-label={`Official documentation for ${agent.label || agent.command}`}
+                  data-ac-testid={`${cardId}.docsLink`}
+                >
+                  ↗
+                </a>
+              )}
+            </Show>
+            <button
+              type="button"
+              class="settings-field-help"
+              title="Tips"
+              aria-label={`Tips for ${agent.label || agent.command}`}
+              onClick={() => setTipsFor(cardId)}
+              data-ac-testid={`${cardId}.tipsButton`}
+              data-ac-role="button"
+            >
+              i
+            </button>
           </div>
           <div class="settings-profile-command-base" data-ac-testid={`${cardId}.commandBase`}>
             Runs <code>{agent.command || "(set the Coding Agent command first)"}</code> then your params:
@@ -4060,7 +4123,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             classList={{ invalid: Boolean(cellError()) }}
             value={command()}
             onInput={(e) => updateProfileCellCommand(agent.id, letter, e.currentTarget.value)}
-            placeholder="--sandbox workspace-write --model gpt-5-codex"
+            placeholder={paramsExampleFor(agentHelpOverlay(), agent.id, agent.command)}
             data-ac-testid={`${cardId}.command`}
             data-ac-role="textbox"
             data-ac-state={cellError() ? "invalid" : "valid"}
@@ -4217,6 +4280,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               </Show>
             </div>
           </Show>
+        </Show>
+        <Show when={tipsFor() === cardId}>
+          <AgentHelpTipsModal
+            title={agent.label}
+            entry={resolveAgentHelpEntry(agentHelpOverlay(), agent.id, agent.command)}
+            localError={agentHelpOverlay().localError}
+            onClose={() => setTipsFor(null)}
+          />
         </Show>
       </article>
     );

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "note": "Embedded agent help, schema v1. Entries are keyed by command stem under byCommand; local and remote overlays take precedence entry by entry.",
   "general": {
-    "label": "Crucial Practices",
+    "label": "Best Practices",
     "tips": [
       {
         "title": "Isolation and sandboxes",

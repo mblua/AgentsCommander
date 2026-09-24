@@ -2246,6 +2246,64 @@ html.light-theme .settings-api-client-warning {
   color: var(--sidebar-bg, #0b0f14);
 }
 
+/* #2143: the docs link reuses the help circle but is a link, not a tooltip. */
+.settings-field-help-link {
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.agent-help-tips-modal {
+  width: min(560px, 92vw);
+}
+
+.agent-help-tips-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+  padding: var(--spacing-md);
+  user-select: text;
+}
+
+.agent-help-tips-error {
+  color: var(--status-exited, #ff5d5d);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.agent-help-tips-tip {
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-help-tips-tip-title {
+  margin-bottom: 4px;
+  color: var(--sidebar-fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agent-help-tips-tip-body {
+  color: var(--sidebar-fg);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-help-tips-tip-link {
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--sidebar-accent, #00d4ff);
+  font-size: 12px;
+}
+
+.agent-help-tips-empty {
+  color: var(--sidebar-fg-dim);
+  font-size: 12px;
+}
+
 .settings-profile-command {
   width: 100%;
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
