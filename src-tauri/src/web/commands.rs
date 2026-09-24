@@ -697,7 +697,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             // without canceling the mutation) instead of observing half-settled
             // state.
             let state = state.clone();
-            crate::session::selection::run_owned_selection_operation_timed("preview_coding_agent_profile_selection", move || async move {
+            crate::session::selection::run_owned_selection_read_timed("preview_coding_agent_profile_selection", move || async move {
                 let result = crate::commands::config::preview_coding_agent_profile_selection_inner(
                     &state.session_mgr,
                     &state.settings,
@@ -744,7 +744,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let request: crate::commands::config::PreviewSelectionLockRemovalRequest =
                 require_json(args, "request")?;
             let state = state.clone();
-            crate::session::selection::run_owned_selection_operation_timed("preview_selection_lock_removal", move || async move {
+            crate::session::selection::run_owned_selection_read_timed("preview_selection_lock_removal", move || async move {
                 let result = crate::commands::config::preview_selection_lock_removal_inner(
                     &state.session_mgr,
                     &state.settings,
@@ -782,7 +782,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let request: crate::commands::config::GetReplicaSelectionDefaultRequest =
                 require_json(args, "request")?;
             let state = state.clone();
-            crate::session::selection::run_owned_selection_operation_timed("get_replica_selection_default", move || async move {
+            crate::session::selection::run_owned_selection_read_timed("get_replica_selection_default", move || async move {
                 let result = crate::commands::config::get_replica_selection_default_inner(
                     &state.settings,
                     request,

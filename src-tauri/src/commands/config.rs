@@ -1430,7 +1430,7 @@ pub async fn preview_coding_agent_profile_selection(
     // (the transport discards the late response) without cancelling the read.
     let session_mgr = Arc::clone(session_mgr.inner());
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation_timed(
+    crate::session::selection::run_owned_selection_read_timed(
         "preview_coding_agent_profile_selection",
         move || async move {
             preview_coding_agent_profile_selection_inner(&session_mgr, &settings, request).await
@@ -2822,7 +2822,7 @@ pub async fn preview_selection_lock_removal(
 ) -> Result<PreviewSelectionLockRemovalResult, String> {
     let session_mgr = Arc::clone(session_mgr.inner());
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation_timed(
+    crate::session::selection::run_owned_selection_read_timed(
         "preview_selection_lock_removal",
         move || async move {
             preview_selection_lock_removal_inner(&session_mgr, &settings, request).await
@@ -3013,7 +3013,7 @@ pub async fn get_replica_selection_default(
     request: GetReplicaSelectionDefaultRequest,
 ) -> Result<ReplicaSelectionDefaultResult, String> {
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation_timed(
+    crate::session::selection::run_owned_selection_read_timed(
         "get_replica_selection_default",
         move || async move { get_replica_selection_default_inner(&settings, request).await },
     )
@@ -11877,5 +11877,41 @@ mod tests {
             assert!(reason.contains("docsUrl is not an https URL"), "{reason}");
             assert!(value.get("local_error").is_none());
         }
+    }
+
+    /// p3 test 8: the p1 batch of 13 on both fixtures, through the read side.
+    /// Without AC_SELECTION_BENCH it asserts collection and correlation; the
+    /// latency gates are computed over 5 interleaved serial runs per side
+    /// (p3 measurement protocol), from the lines printed under the variable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_batch_of_thirteen_reads_drops_queue_wait() {
+        for (r, m) in [(8usize, 1usize), (40, 3)] {
+            let bench = bench_fixture(r, m);
+            let run = bench_batch(&bench).await;
+            assert_bench_correlation(&run);
+            if bench_measurement_mode() {
+                println!(
+                    "[bench-p3] R={r} M={m} batch_wall_ms={:.1} sum_queue_wait_ms={:.1} occupancy_max={}",
+                    run.batch_wall_ms,
+                    bench_sum_queue_wait_ms(&run),
+                    run.occupancy_max
+                );
+            }
+        }
+    }
+
+    /// p3 test 9: in the batch of 13, read bodies are inside the turn at the
+    /// same time. The occupancy object belongs to this run only, and is read
+    /// after all of its work has been awaited. With the old Mutex it is 1.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_concurrent_read_bodies_occupy_the_turn_simultaneously() {
+        let bench = bench_fixture(8, 1);
+        let run = bench_batch(&bench).await;
+        assert_bench_correlation(&run);
+        assert!(
+            run.occupancy_max >= 2,
+            "read bodies must overlap: occupancy.max() = {}",
+            run.occupancy_max
+        );
     }
 }

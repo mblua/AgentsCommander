@@ -44,10 +44,34 @@ tokio::task_local! {
 /// (broad profile apply, instance override, self-switch persist) together with
 /// the restart settlement they trigger. Owned so a spawned task can hold it
 /// across await points without borrowing its acquirer.
-static SELECTION_OPERATION_TURN: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+///
+/// #2475 - a read-write lock: persisted operations take the write side and
+/// stay mutually exclusive; the three read-only previews take the read side,
+/// so they overlap each other but never a persisted operation. tokio's
+/// `RwLock` is fair: a waiting writer blocks later readers, so an apply is
+/// never starved by a stream of previews.
+static SELECTION_OPERATION_TURN: OnceLock<Arc<tokio::sync::RwLock<()>>> = OnceLock::new();
 
-fn selection_operation_turn() -> &'static Arc<tokio::sync::Mutex<()>> {
-    SELECTION_OPERATION_TURN.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+fn selection_operation_turn() -> &'static Arc<tokio::sync::RwLock<()>> {
+    SELECTION_OPERATION_TURN.get_or_init(|| Arc::new(tokio::sync::RwLock::new(())))
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    /// #2475 - test-only: a private turn for this task, so a test that holds
+    /// one reader while waiting for a second is not deadlocked by a writer
+    /// from an unrelated test queueing on the process-wide turn. Read before
+    /// any spawn, like `IN_SELECTION_WORKER`.
+    pub(crate) static TEST_SELECTION_TURN: Arc<tokio::sync::RwLock<()>>;
+}
+
+/// The turn this task uses: always the process-wide one in production.
+fn current_selection_turn() -> Arc<tokio::sync::RwLock<()>> {
+    #[cfg(test)]
+    if let Ok(turn) = TEST_SELECTION_TURN.try_with(Arc::clone) {
+        return turn;
+    }
+    Arc::clone(selection_operation_turn())
 }
 
 /// #1940 - crate-only owned guard over the selection operation turn. Holding it
@@ -55,7 +79,13 @@ fn selection_operation_turn() -> &'static Arc<tokio::sync::Mutex<()>> {
 /// settlement, classification and event publication - serialized against every
 /// other guarded operation.
 pub(crate) struct SelectionOperationGuard {
-    _turn: tokio::sync::OwnedMutexGuard<()>,
+    _turn: tokio::sync::OwnedRwLockWriteGuard<()>,
+}
+
+/// #2475 - owned guard over the READ side of the selection operation turn:
+/// excludes every persisted operation, admits other readers.
+pub(crate) struct SelectionReadGuard {
+    _turn: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 
 /// #1940 - acquire the selection operation turn.
@@ -68,8 +98,58 @@ pub(crate) async fn acquire_selection_operation_turn(
     if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
         return Err(SelectionCoordinatorError::RecursiveSubmission);
     }
-    let turn = Arc::clone(selection_operation_turn()).lock_owned().await;
+    let turn = current_selection_turn().write_owned().await;
     Ok(SelectionOperationGuard { _turn: turn })
+}
+
+/// #2475 - acquire the READ side of the selection operation turn, with the same
+/// `RecursiveSubmission` rejection BEFORE waiting as the write side.
+pub(crate) async fn acquire_selection_read_turn(
+) -> Result<SelectionReadGuard, SelectionCoordinatorError> {
+    if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+        return Err(SelectionCoordinatorError::RecursiveSubmission);
+    }
+    let turn = current_selection_turn().read_owned().await;
+    Ok(SelectionReadGuard { _turn: turn })
+}
+
+/// Which side of the selection operation turn an owned operation holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionTurnMode {
+    Read,
+    Write,
+}
+
+/// Either side of the turn, released on drop.
+enum SelectionTurnGuard {
+    Read(#[allow(dead_code)] SelectionReadGuard),
+    Write(#[allow(dead_code)] SelectionOperationGuard),
+}
+
+async fn acquire_selection_turn(
+    mode: SelectionTurnMode,
+) -> Result<SelectionTurnGuard, SelectionCoordinatorError> {
+    match mode {
+        SelectionTurnMode::Read => acquire_selection_read_turn()
+            .await
+            .map(SelectionTurnGuard::Read),
+        SelectionTurnMode::Write => acquire_selection_operation_turn()
+            .await
+            .map(SelectionTurnGuard::Write),
+    }
+}
+
+/// Test-only: carry the submitter's private turn into the owned task, since
+/// task locals do not propagate into a spawn.
+#[cfg(test)]
+fn with_test_selection_turn<T: Send + 'static>(
+    turn: Option<Arc<tokio::sync::RwLock<()>>>,
+    task: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send>> {
+    match turn {
+        Some(turn) => Box::pin(TEST_SELECTION_TURN.scope(turn, task)),
+        None => Box::pin(task),
+    }
 }
 
 /// #1940 - run a persisted selection operation on its own owned task.
@@ -87,12 +167,15 @@ where
     Fut: std::future::Future<Output = Result<T, String>> + Send,
     T: Send + 'static,
 {
-    run_owned_selection_operation_inner(None, operation).await
+    run_owned_selection_operation_inner(SelectionTurnMode::Write, None, operation).await
 }
 
 /// #2475 - `run_owned_selection_operation` plus one timing log line that
 /// separates the wait for the turn (`queue_wait`) from the operation itself
 /// (`work`). Instrumentation only: the turn and the result are unchanged.
+/// #2475 - test-only since the three timed reads moved to
+/// `run_owned_selection_read_timed`; persisted operations are untimed.
+#[cfg(test)]
 pub(crate) async fn run_owned_selection_operation_timed<F, Fut, T>(
     command: &'static str,
     operation: F,
@@ -102,7 +185,23 @@ where
     Fut: std::future::Future<Output = Result<T, String>> + Send,
     T: Send + 'static,
 {
-    run_owned_selection_operation_inner(Some(command), operation).await
+    run_owned_selection_operation_inner(SelectionTurnMode::Write, Some(command), operation).await
+}
+
+/// #2475 - a READ-ONLY operation on its own owned task, holding the read side
+/// of the turn, plus the same timing line as `run_owned_selection_operation_timed`.
+/// Only for operations proven not to write (see the #2485 read-only audit).
+/// Same rejection, owned task and join-failure error as the write path.
+pub(crate) async fn run_owned_selection_read_timed<F, Fut, T>(
+    command: &'static str,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    run_owned_selection_operation_inner(SelectionTurnMode::Read, Some(command), operation).await
 }
 
 fn selection_timing_line(
@@ -279,6 +378,7 @@ pub(crate) mod timing_probe {
 }
 
 async fn run_owned_selection_operation_inner<F, Fut, T>(
+    mode: SelectionTurnMode,
     command: Option<&'static str>,
     operation: F,
 ) -> Result<T, String>
@@ -293,8 +393,10 @@ where
     let submitted = std::time::Instant::now();
     #[cfg(test)]
     let bench = BENCH_CONTEXT.try_with(Clone::clone).ok();
-    let handle = tauri::async_runtime::spawn(async move {
-        let turn = match acquire_selection_operation_turn().await {
+    #[cfg(test)]
+    let test_turn = TEST_SELECTION_TURN.try_with(Arc::clone).ok();
+    let task = async move {
+        let turn = match acquire_selection_turn(mode).await {
             Ok(turn) => turn,
             Err(error) => return Err(error.to_string()),
         };
@@ -332,7 +434,10 @@ where
             },
         );
         result
-    });
+    };
+    #[cfg(test)]
+    let task = with_test_selection_turn(test_turn, task);
+    let handle = tauri::async_runtime::spawn(task);
     match handle.await {
         Ok(result) => result,
         Err(_) => Err("selectionOperationTurnJoinFailed".to_string()),
@@ -6861,13 +6966,13 @@ fn commit_selection_transition() {
             async move {
                 events.lock().unwrap().push("a:publish");
                 assert!(
-                    selection_operation_turn().try_lock().is_err(),
+                    selection_operation_turn().try_write().is_err(),
                     "the publication phase must run under the owned turn"
                 );
                 a_entered_tx.send(()).expect("signal first enter");
                 release_a_rx.await.expect("release first operation");
                 assert!(
-                    selection_operation_turn().try_lock().is_err(),
+                    selection_operation_turn().try_write().is_err(),
                     "the restart settlement span must stay under the owned turn"
                 );
                 events.lock().unwrap().push("a:settle");
@@ -7049,7 +7154,7 @@ fn commit_selection_transition() {
                     .map(|_| ())
                     .unwrap_err();
                 assert!(
-                    selection_operation_turn().try_lock().is_err(),
+                    selection_operation_turn().try_write().is_err(),
                     "the failure classification must stay under the owned turn"
                 );
                 persisted.lock().unwrap().push("a:classified");
@@ -7683,5 +7788,352 @@ fn commit_selection_transition() {
         assert_eq!(result, Err("selectionOperationTurnJoinFailed".to_string()));
         assert_eq!(occupancy.max(), 1, "the body entered");
         assert_eq!(occupancy.in_flight(), 0, "unwind released the guard");
+    }
+
+    // ── #2475 p3: read side of the selection operation turn ─────────────
+    //
+    // Every body announces its ENTRY as its first statement. Assertions are on
+    // the presence, absence and order of those announcements, never on task
+    // completion. Absence is a bounded timeout on the channel, and each test
+    // then shows the same channel does receive once the blocker is released,
+    // so the timeout is not vacuous.
+
+    const P3_ABSENCE: Duration = Duration::from_millis(250);
+    const P3_PRESENCE: Duration = Duration::from_secs(10);
+
+    /// Runs a p3 test on its own turn (same `RwLock` type and code path as the
+    /// process-wide one), isolated from writers of unrelated tests.
+    async fn p3_private_turn(test: impl std::future::Future<Output = ()>) {
+        TEST_SELECTION_TURN
+            .scope(Arc::new(tokio::sync::RwLock::new(())), test)
+            .await;
+    }
+
+    /// `tokio::spawn` that keeps this task's private turn in the new task.
+    fn p3_spawn<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let turn = TEST_SELECTION_TURN.with(Arc::clone);
+        tokio::spawn(TEST_SELECTION_TURN.scope(turn, future))
+    }
+
+    /// A read operation that announces entry, then waits for `release`.
+    fn p3_held_read(
+        command: &'static str,
+    ) -> (
+        tokio::task::JoinHandle<Result<(), String>>,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let task = p3_spawn(run_owned_selection_read_timed(
+            command,
+            move || async move {
+                let _ = entered_tx.send(());
+                let _ = release_rx.await;
+                Ok::<(), String>(())
+            },
+        ));
+        (task, entered_rx, release_tx)
+    }
+
+    /// p3 test 1: two reads are inside their bodies at the same time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_two_reads_enter_the_body_concurrently() {
+        p3_private_turn(issue_2475_two_reads_enter_the_body_concurrently_body()).await;
+    }
+
+    async fn issue_2475_two_reads_enter_the_body_concurrently_body() {
+        const PROBE: &str = "issue_2475_p3_concurrent_reads_probe";
+        let (first, first_entered, first_release) = p3_held_read(PROBE);
+        tokio::time::timeout(P3_PRESENCE, first_entered)
+            .await
+            .expect("the first read enters")
+            .expect("entry sent");
+        let (second, second_entered, second_release) = p3_held_read(PROBE);
+        // The first read is still inside: the second must enter anyway.
+        let second_entered = tokio::time::timeout(P3_PRESENCE, second_entered).await;
+        let _ = first_release.send(());
+        let _ = second_release.send(());
+        assert_eq!(first.await.expect("join"), Ok(()));
+        assert_eq!(second.await.expect("join"), Ok(()));
+        second_entered
+            .expect("the second read entered while the first was still inside")
+            .expect("entry sent");
+    }
+
+    /// p3 test 2: a read body is not entered while a persisted operation
+    /// holds the write side, and is entered right after its release.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_read_body_is_not_entered_while_a_write_holds_the_turn() {
+        p3_private_turn(issue_2475_read_body_is_not_entered_while_a_write_holds_the_turn_body())
+            .await;
+    }
+
+    async fn issue_2475_read_body_is_not_entered_while_a_write_holds_the_turn_body() {
+        const PROBE: &str = "issue_2475_p3_read_behind_write_probe";
+        let writer = acquire_selection_operation_turn()
+            .await
+            .expect("hold the write side");
+        let (read, mut entered, release) = p3_held_read(PROBE);
+        let while_held = tokio::time::timeout(P3_ABSENCE, &mut entered).await;
+        drop(writer);
+        let after_release = tokio::time::timeout(P3_PRESENCE, &mut entered).await;
+        let _ = release.send(());
+        assert_eq!(read.await.expect("join"), Ok(()));
+        assert!(
+            while_held.is_err(),
+            "the read entered while the write side was held"
+        );
+        after_release
+            .expect("the read enters once the write side is released")
+            .expect("entry sent");
+    }
+
+    /// p3 test 3: a persisted operation does not enter while a read is inside.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_write_body_is_not_entered_while_a_read_holds_the_turn() {
+        p3_private_turn(issue_2475_write_body_is_not_entered_while_a_read_holds_the_turn_body())
+            .await;
+    }
+
+    async fn issue_2475_write_body_is_not_entered_while_a_read_holds_the_turn_body() {
+        const PROBE: &str = "issue_2475_p3_write_behind_read_probe";
+        let (read, read_entered, read_release) = p3_held_read(PROBE);
+        tokio::time::timeout(P3_PRESENCE, read_entered)
+            .await
+            .expect("the read enters")
+            .expect("entry sent");
+        let (write_entered_tx, mut write_entered) = tokio::sync::oneshot::channel::<()>();
+        let write = p3_spawn(run_owned_selection_operation(move || async move {
+            let _ = write_entered_tx.send(());
+            Ok::<(), String>(())
+        }));
+        let while_read = tokio::time::timeout(P3_ABSENCE, &mut write_entered).await;
+        let _ = read_release.send(());
+        let after_release = tokio::time::timeout(P3_PRESENCE, &mut write_entered).await;
+        assert_eq!(read.await.expect("join"), Ok(()));
+        assert_eq!(write.await.expect("join"), Ok(()));
+        assert!(
+            while_read.is_err(),
+            "the write entered while a read was inside"
+        );
+        after_release
+            .expect("the write enters once the read is released")
+            .expect("entry sent");
+    }
+
+    /// Counts wakes; a registered waiter is observed by polling, not by time.
+    struct P3CountingWaker(AtomicUsize);
+
+    impl std::task::Wake for P3CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// p3 test 4: a writer that is already QUEUED (observed by a manual poll
+    /// that returned Pending) enters before a reader submitted after it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_waiting_writer_blocks_a_later_reader() {
+        p3_private_turn(issue_2475_waiting_writer_blocks_a_later_reader_body()).await;
+    }
+
+    async fn issue_2475_waiting_writer_blocks_a_later_reader_body() {
+        const PROBE: &str = "issue_2475_p3_writer_priority_probe";
+        let order = Arc::new(AtomicUsize::new(0));
+        // 1. A first reader is inside.
+        let (first, first_entered, first_release) = p3_held_read(PROBE);
+        tokio::time::timeout(P3_PRESENCE, first_entered)
+            .await
+            .expect("the first read enters")
+            .expect("entry sent");
+        // 2. Register the writer in the lock's queue with an observed poll.
+        let mut write_acquire = Box::pin(acquire_selection_operation_turn());
+        let wakes = Arc::new(P3CountingWaker(AtomicUsize::new(0)));
+        let waker = std::task::Waker::from(Arc::clone(&wakes));
+        let mut cx = std::task::Context::from_waker(&waker);
+        let polled_pending =
+            std::future::Future::poll(write_acquire.as_mut(), &mut cx).is_pending();
+        // 3. Only now submit the second reader.
+        let (second_entered_tx, mut second_entered) = tokio::sync::oneshot::channel::<usize>();
+        let second = p3_spawn({
+            let order = Arc::clone(&order);
+            run_owned_selection_read_timed(PROBE, move || async move {
+                let _ = second_entered_tx.send(order.fetch_add(1, Ordering::SeqCst));
+                Ok::<(), String>(())
+            })
+        });
+        // 4. The second reader stays out while the writer waits (a failure bound).
+        let while_writer_waits = tokio::time::timeout(P3_ABSENCE, &mut second_entered).await;
+        // 5. Release the first reader, finish the pinned writer in its own task.
+        let _ = first_release.send(());
+        let writer = tokio::spawn({
+            let order = Arc::clone(&order);
+            async move {
+                let guard = write_acquire.await.expect("writer turn");
+                let at = order.fetch_add(1, Ordering::SeqCst);
+                drop(guard);
+                at
+            }
+        });
+        let writer_at = tokio::time::timeout(P3_PRESENCE, writer)
+            .await
+            .expect("the writer enters")
+            .expect("join");
+        let second_at = tokio::time::timeout(P3_PRESENCE, &mut second_entered)
+            .await
+            .expect("the second read enters after the writer")
+            .expect("entry sent");
+        assert_eq!(first.await.expect("join"), Ok(()));
+        assert_eq!(second.await.expect("join"), Ok(()));
+        assert!(
+            polled_pending,
+            "the writer must be queued behind the first reader"
+        );
+        assert!(
+            while_writer_waits.is_err(),
+            "a later reader entered past a queued writer"
+        );
+        assert!(
+            writer_at < second_at,
+            "writer entry ({writer_at}) must precede the later reader ({second_at})"
+        );
+    }
+
+    /// p3 test 5: from inside the selection worker, the read side is rejected
+    /// BEFORE waiting (a held write side would otherwise block forever).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_read_from_the_selection_worker_is_rejected_before_waiting() {
+        p3_private_turn(
+            issue_2475_read_from_the_selection_worker_is_rejected_before_waiting_body(),
+        )
+        .await;
+    }
+
+    async fn issue_2475_read_from_the_selection_worker_is_rejected_before_waiting_body() {
+        let writer = acquire_selection_operation_turn()
+            .await
+            .expect("hold the write side");
+        let (direct, wrapped) = IN_SELECTION_WORKER
+            .scope((), async {
+                let direct = tokio::time::timeout(P3_PRESENCE, acquire_selection_read_turn()).await;
+                let wrapped = tokio::time::timeout(
+                    P3_PRESENCE,
+                    run_owned_selection_read_timed("issue_2475_p3_recursive_probe", || async {
+                        Ok::<(), String>(())
+                    }),
+                )
+                .await;
+                (direct, wrapped)
+            })
+            .await;
+        drop(writer);
+        assert!(
+            matches!(
+                direct.expect("rejected without waiting"),
+                Err(SelectionCoordinatorError::RecursiveSubmission)
+            ),
+            "the read side rejects a recursive submission"
+        );
+        assert_eq!(
+            wrapped.expect("rejected without waiting"),
+            Err(SelectionCoordinatorError::RecursiveSubmission.to_string())
+        );
+    }
+
+    /// p3 test 6: dropping the caller detaches the owned read task; its body
+    /// still reaches its end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_read_turn_survives_a_dropped_caller() {
+        p3_private_turn(issue_2475_read_turn_survives_a_dropped_caller_body()).await;
+    }
+
+    async fn issue_2475_read_turn_survives_a_dropped_caller_body() {
+        const PROBE: &str = "issue_2475_p3_dropped_caller_probe";
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel::<()>();
+        let caller = p3_spawn(run_owned_selection_read_timed(PROBE, move || async move {
+            let _ = entered_tx.send(());
+            let _ = release_rx.await;
+            let _ = finished_tx.send(());
+            Ok::<(), String>(())
+        }));
+        tokio::time::timeout(P3_PRESENCE, entered_rx)
+            .await
+            .expect("the read enters")
+            .expect("entry sent");
+        caller.abort();
+        assert!(caller.await.expect_err("caller aborted").is_cancelled());
+        let _ = release_tx.send(());
+        tokio::time::timeout(P3_PRESENCE, finished_rx)
+            .await
+            .expect("the owned read reaches its end after the caller is gone")
+            .expect("finish sent");
+    }
+
+    /// p3 test 7: the read mode still records one timing line with both
+    /// segments and the real command name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_read_turn_records_queue_wait_and_work() {
+        p3_private_turn(issue_2475_read_turn_records_queue_wait_and_work_body()).await;
+    }
+
+    async fn issue_2475_read_turn_records_queue_wait_and_work_body() {
+        const PROBE: &str = "issue_2475_p3_read_timing_probe";
+        let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+        let line_tx = Mutex::new(line_tx);
+        let _sink = TimingSinkRegistration::new(
+            PROBE,
+            Arc::new(move |line: &str| {
+                let _ = line_tx.lock().expect("line tx").send(line.to_string());
+            }),
+        );
+        let writer = acquire_selection_operation_turn()
+            .await
+            .expect("hold the write side");
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut queued = Box::pin(run_owned_selection_read_timed(PROBE, move || async move {
+            let _ = entered_tx.send(());
+            let _ = release_rx.await;
+            Ok::<(), String>(())
+        }));
+        // One poll runs the submission: `submitted` is stamped before this returns.
+        assert!(futures::poll!(queued.as_mut()).is_pending());
+        let after_submit = Instant::now();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let released = Instant::now();
+        drop(writer);
+        let queued = tokio::spawn(queued);
+        tokio::time::timeout(P3_PRESENCE, entered_rx)
+            .await
+            .expect("the read enters")
+            .expect("entry sent");
+        let entered_seen = Instant::now();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let finish_sent = Instant::now();
+        let _ = release_tx.send(());
+        assert_eq!(queued.await.expect("join"), Ok(()));
+        let line = line_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("timing line recorded");
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        // The line rounds to 0.1 ms.
+        let tolerance = 0.05;
+        assert!(line.starts_with(&format!("[selection-timing] command={PROBE} ")));
+        assert!(line.ends_with(" ok=true"), "{line}");
+        assert!(
+            timing_field_ms(&line, "queue_wait_ms") + tolerance >= ms(released - after_submit),
+            "queue wait covers the held write side: {line}"
+        );
+        assert!(
+            timing_field_ms(&line, "work_ms") + tolerance >= ms(finish_sent - entered_seen),
+            "work covers the body: {line}"
+        );
     }
 }
