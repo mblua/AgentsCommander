@@ -452,6 +452,488 @@ fn apply_destination_change(
     }
 }
 
+/// The mutable state of one Claude reader, and the poll-tick blocks of
+/// [`watch_loop`] as methods over it.
+struct ClaudeReader<R: tauri::Runtime> {
+    project_dir: PathBuf,
+    network: OutboundNetwork,
+    session_id: String,
+    app: tauri::AppHandle<R>,
+    current_dest: Option<BotTarget>,
+    logger: Option<BridgeLogger>,
+    diag: Option<DiagLogger>,
+    buffer: String,
+    last_buffer_add: Instant,
+    flush_delay: Duration,
+    capture_tx: Option<UnboundedSender<Arc<CapturedRecord>>>,
+    reader_seq: u64,
+    observer: ReaderObservations,
+    rotation_backfill_pending: bool,
+    attach_time: DateTime<Utc>,
+    current_file: Option<PathBuf>,
+    current_file_mtime: Option<SystemTime>,
+    file_offset: u64,
+    line_remainder: String,
+    dir_warned: bool,
+    pin_id: Option<String>,
+    first_poll: bool,
+    first_attach_done: bool,
+    wait_deadline: Option<Instant>,
+}
+
+impl<R: tauri::Runtime> ClaudeReader<R> {
+    fn new(
+        project_dir: PathBuf,
+        transcript_id: Option<String>,
+        network: OutboundNetwork,
+        current_dest: Option<BotTarget>,
+        session_id: String,
+        app: tauri::AppHandle<R>,
+        sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
+    ) -> Self {
+        // #2232 phase 4 section 8: with no bot demand no diagnostic is built, so
+        // `BridgeLogger::new` — which truncates the **global** diagnostic files
+        // (`telegram/output.rs:140`) — is never called for a room-only reader. On a
+        // hot attach the loggers are born at that moment, which is when they are
+        // truncated on attach today.
+        let logger = current_dest
+            .as_ref()
+            .map(|_| BridgeLogger::new(&session_id));
+        let diag = current_dest.as_ref().map(|_| DiagLogger::new());
+        Self {
+            project_dir,
+            network,
+            session_id,
+            app,
+            current_dest,
+            logger,
+            diag,
+            buffer: String::new(),
+            last_buffer_add: Instant::now(),
+            flush_delay: Duration::from_millis(FLUSH_DELAY_MS),
+            // #2232 phase 4 section 4.2: the supervisor passes the live sender in, so
+            // the records of a room-only reader reach `CaptureRegistry` with no bot
+            // anywhere. With `None` the emit is a no-op.
+            capture_tx: sink,
+            reader_seq: 0,
+            // #2232 phase 3: the reader's own epoch and file observation. Both are
+            // computed only when a sink is attached, so a room without the flag keeps
+            // the pre-#2232 syscall count.
+            observer: ReaderObservations::default(),
+            // The first sweep of a rotated transcript is a backfill, not a live turn
+            // (section 8.3). Declared divergence: Telegram does send that content
+            // today, so a legitimate first turn can be suppressed downstream.
+            rotation_backfill_pending: false,
+            attach_time: Utc::now(),
+            current_file: None,
+            current_file_mtime: None,
+            file_offset: 0,
+            line_remainder: String::new(),
+            dir_warned: false,
+            // #2454: the minted transcript id, consulted until the first attach.
+            pin_id: transcript_id,
+            first_poll: true,
+            first_attach_done: false,
+            wait_deadline: None,
+        }
+    }
+
+    /// Log through the bridge logger only when one exists, so `JSONL_EXTRACT`
+    /// is not written for a room-only reader (section 8).
+    fn bridge_log(&mut self, tag: &str, msg: &str) {
+        if let Some(bridge_logger) = self.logger.as_mut() {
+            bridge_logger.log(tag, &self.session_id, msg);
+        }
+    }
+
+    /// Queue a record's text for Telegram when a destination is set.
+    fn buffer_record(&mut self, text: &str) {
+        if self.current_dest.is_some() {
+            self.buffer.push_str(text);
+            self.buffer.push('\n');
+            self.last_buffer_add = Instant::now();
+        }
+    }
+
+    // §6: the destination is consulted only when it changes, and the
+    // three transitions run **inside the reader task**. There is no
+    // `await` between them: yielding would flush the pending buffer to
+    // the NEW destination, which is exactly what this contract
+    // prevents, and the preamble could use a different offset than the
+    // reader had when it started.
+    fn on_dest_change(&mut self, new_dest: Option<BotTarget>) {
+        let attaching = new_dest.is_some();
+        // The loggers are born at the moment of a hot attach, which is
+        // when they are truncated on attach today, so what is
+        // observable does not change (§8).
+        if attaching {
+            if self.logger.is_none() {
+                self.logger = Some(BridgeLogger::new(&self.session_id));
+            }
+            if self.diag.is_none() {
+                self.diag = Some(DiagLogger::new());
+            }
+        } else {
+            self.logger = None;
+            self.diag = None;
+        }
+        // The moment of the destination switch serves as `attach_time`.
+        let preamble = apply_destination_change(
+            &mut self.buffer,
+            &mut self.current_dest,
+            new_dest,
+            self.current_file.as_deref(),
+            self.file_offset,
+            Utc::now(),
+        );
+        for body in preamble {
+            self.bridge_log("JSONL_PREAMBLE", &body);
+            self.buffer.push_str(&body);
+            self.buffer.push('\n');
+            self.last_buffer_add = Instant::now();
+        }
+    }
+
+    /// One poll tick.
+    async fn poll(&mut self) {
+        if !self.project_dir_ready() {
+            return;
+        }
+        let newest = find_latest_jsonl(&self.project_dir);
+        let (latest, pinned_attach) = self.attach_target(newest);
+        self.switch_file(latest, pinned_attach);
+        self.read_new_lines();
+        self.flush_if_due().await;
+    }
+
+    /// Check if project directory exists yet
+    fn project_dir_ready(&mut self) -> bool {
+        if !self.project_dir.is_dir() {
+            if !self.dir_warned {
+                self.bridge_log("JSONL_WAIT", "project directory does not exist yet");
+                self.dir_warned = true;
+            }
+            return false;
+        }
+        if self.dir_warned {
+            self.bridge_log("JSONL_INIT", "project directory appeared");
+            self.dir_warned = false;
+        }
+        true
+    }
+
+    /// The file this poll should read, and whether it is a pinned attach.
+    fn attach_target(&mut self, newest: Option<PathBuf>) -> (Option<PathBuf>, bool) {
+        // #2454: the first attach goes through `decide_attach`; after
+        // it, rotation follows the newest mtime exactly as before.
+        let mut pinned_attach = false;
+        let latest = if !runs_first_attach_decision(
+            self.first_attach_done,
+            self.current_file.is_some(),
+        ) {
+            newest
+        } else {
+            let pinned = self
+                .pin_id
+                .as_deref()
+                .and_then(|id| find_pinned_jsonl(&self.project_dir, id));
+            let decision = decide_attach(AttachInputs {
+                transcript_id: self.pin_id.as_deref(),
+                pinned: pinned.as_deref(),
+                newest: newest.as_deref(),
+                first_poll: self.first_poll,
+                deadline_expired: self.wait_deadline.is_some_and(|d| Instant::now() >= d),
+            });
+            self.first_poll = false;
+            let waiting = matches!(decision, AttachDecision::Wait);
+            if waiting && self.wait_deadline.is_none() {
+                self.wait_deadline =
+                    Some(Instant::now() + Duration::from_secs(PINNED_ATTACH_WAIT_SECS));
+                log::info!(
+                    "[JSONL_ATTACH] session {} waiting up to {}s for {}",
+                    self.session_id,
+                    PINNED_ATTACH_WAIT_SECS,
+                    self.project_dir
+                        .join(format!(
+                            "{}.jsonl",
+                            self.pin_id.as_deref().unwrap_or_default()
+                        ))
+                        .display()
+                );
+            }
+            match decision {
+                AttachDecision::Pinned(path) => {
+                    pinned_attach = true;
+                    Some(path)
+                }
+                AttachDecision::Mtime(path) => Some(path),
+                // Runs once: this attach ends the decision loop.
+                AttachDecision::MtimeFallback(path) => {
+                    log::warn!(
+                        "[JSONL_ATTACH] session {} pinned transcript absent after {}s; falling back to newest by mtime",
+                        self.session_id,
+                        PINNED_ATTACH_WAIT_SECS
+                    );
+                    Some(path)
+                }
+                AttachDecision::Wait | AttachDecision::Nothing => None,
+            }
+        };
+        (latest, pinned_attach)
+    }
+
+    /// Handle file rotation with flicker guard
+    fn switch_file(&mut self, latest: Option<PathBuf>, pinned_attach: bool) {
+        if latest == self.current_file || !self.should_switch() {
+            return;
+        }
+        if self.current_file.is_none() {
+            // First attach (§J preamble scan): emit recent
+            // lines from the file's tail, then set offset = file_len.
+            if let Some(ref p) = latest {
+                self.first_attach_scan(p, pinned_attach);
+            } else {
+                self.file_offset = 0;
+            }
+        } else {
+            // File rotation (new Claude session): read from start
+            self.file_offset = 0;
+            self.rotation_backfill_pending = true;
+            self.bridge_log("JSONL_ROTATE", &format!("new file: {:?}", latest));
+            log::info!(
+                "[JSONL_ROTATE] session {} old={} new={} offset={}",
+                self.session_id,
+                self.current_file
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                latest
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                self.file_offset
+            );
+        }
+        self.current_file = latest;
+        self.first_attach_done |= self.current_file.is_some();
+        self.current_file_mtime = self
+            .current_file
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok());
+        self.line_remainder.clear();
+    }
+
+    fn should_switch(&self) -> bool {
+        match (&self.current_file, &self.current_file_mtime) {
+            (Some(_), Some(mtime)) => {
+                // Only switch if current file is stale
+                mtime
+                    .elapsed()
+                    .map(|d| d.as_secs() >= ROTATION_STALE_SECS)
+                    .unwrap_or(true)
+            }
+            _ => true, // No current file — always accept
+        }
+    }
+
+    /// The first attach's §J preamble scan over `p`.
+    fn first_attach_scan(&mut self, p: &Path, pinned_attach: bool) {
+        // #2454 requirement 5: a pinned attach is this
+        // spawn's own output, so it is `Live`.
+        let origin = if pinned_attach {
+            RecordOrigin::Live
+        } else {
+            RecordOrigin::Preamble
+        };
+        log::info!(
+            "[JSONL_ATTACH] session {} first attach {} path={}",
+            self.session_id,
+            if pinned_attach { "pinned" } else { "by mtime" },
+            p.display()
+        );
+        match read_preamble_for_race(p, self.attach_time, claude_preamble_extractor) {
+            Ok((bodies, _ids, file_len)) => {
+                // The §J scan reads the tail, so it
+                // carries no head evidence: length
+                // alone decides the epoch here.
+                let attach = if self.capture_tx.is_some() {
+                    self.observer.observe(p, file_len, Vec::new())
+                } else {
+                    ReaderAttachment::default()
+                };
+                for record in capture_preamble_bodies(
+                    bodies,
+                    &self.session_id,
+                    p,
+                    &mut self.reader_seq,
+                    self.capture_tx.as_ref(),
+                    &attach,
+                    origin,
+                ) {
+                    self.bridge_log("JSONL_PREAMBLE", &record.text);
+                    self.buffer_record(&record.text);
+                }
+                self.file_offset = file_len;
+                self.bridge_log(
+                    "JSONL_FILE",
+                    &format!(
+                        "initial file, preamble scan done, offset={}",
+                        self.file_offset
+                    ),
+                );
+            }
+            Err(e) => {
+                self.bridge_log("JSONL_ERR", &format!("preamble scan failed: {}", e));
+                self.file_offset = std::fs::metadata(p).ok().map(|m| m.len()).unwrap_or(0);
+            }
+        }
+    }
+
+    /// Read the lines appended to the current file since the last poll.
+    fn read_new_lines(&mut self) {
+        let Some(path) = self.current_file.clone() else {
+            return;
+        };
+        let read_start = self.file_offset;
+        match read_new_lines_with_starts(&path, &mut self.file_offset, &mut self.line_remainder) {
+            Ok(new_lines) => {
+                let attach = if self.capture_tx.is_some() {
+                    let head = head_from_lines(&new_lines, read_start);
+                    self.observer.observe(&path, self.file_offset, head)
+                } else {
+                    ReaderAttachment::default()
+                };
+                let origin = if self.rotation_backfill_pending && !new_lines.is_empty() {
+                    self.rotation_backfill_pending = false;
+                    RecordOrigin::RotationBackfill
+                } else {
+                    RecordOrigin::Live
+                };
+                for record in capture_live_lines(
+                    new_lines,
+                    &self.session_id,
+                    &path,
+                    &mut self.reader_seq,
+                    self.capture_tx.as_ref(),
+                    origin,
+                    &attach,
+                ) {
+                    self.bridge_log("JSONL_EXTRACT", &record.text);
+                    self.buffer_record(&record.text);
+                }
+
+                // Update mtime for rotation flicker guard
+                self.current_file_mtime = std::fs::metadata(&path)
+                    .ok()
+                    .and_then(|m| m.modified().ok());
+            }
+            Err(e) => {
+                // G5: Emit bridge error event for file I/O failures
+                self.bridge_log("JSONL_ERR", &e.to_string());
+                log::error!(
+                    "[JSONL_ERR] Read error for session {}: {}",
+                    self.session_id,
+                    e
+                );
+                let _ = self.app.emit(
+                    "telegram_bridge_error",
+                    serde_json::json!({
+                        "sessionId": self.session_id,
+                        "error": format!("JSONL read error: {}", e),
+                    }),
+                );
+            }
+        }
+    }
+
+    /// Flush buffer if enough time has passed since last addition
+    async fn flush_if_due(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
+        let elapsed = self.last_buffer_add.elapsed();
+        if elapsed >= self.flush_delay || self.buffer.len() > 2000 {
+            if let (Some(target), Some(bridge_logger), Some(diag_logger)) = (
+                self.current_dest.as_ref(),
+                self.logger.as_mut(),
+                self.diag.as_mut(),
+            ) {
+                flush_buffer(
+                    &mut self.buffer,
+                    &self.network,
+                    &target.token,
+                    target.chat_id,
+                    &self.session_id,
+                    &self.app,
+                    bridge_logger,
+                    diag_logger,
+                    true, // skip_dedup: JSONL text is clean, repeated lines are legitimate
+                )
+                .await;
+            } else {
+                self.buffer.clear();
+            }
+        }
+    }
+
+    /// G1: Final poll + flush after cancel (don't lose buffered content)
+    async fn drain(&mut self) {
+        if let Some(path) = self.current_file.clone() {
+            let read_start = self.file_offset;
+            if let Ok(new_lines) =
+                read_new_lines_with_starts(&path, &mut self.file_offset, &mut self.line_remainder)
+            {
+                let attach = if self.capture_tx.is_some() {
+                    let head = head_from_lines(&new_lines, read_start);
+                    self.observer.observe(&path, self.file_offset, head)
+                } else {
+                    ReaderAttachment::default()
+                };
+                let origin = if self.rotation_backfill_pending && !new_lines.is_empty() {
+                    RecordOrigin::RotationBackfill
+                } else {
+                    RecordOrigin::Live
+                };
+                for record in capture_live_lines(
+                    new_lines,
+                    &self.session_id,
+                    &path,
+                    &mut self.reader_seq,
+                    self.capture_tx.as_ref(),
+                    origin,
+                    &attach,
+                ) {
+                    if self.current_dest.is_some() {
+                        self.buffer.push_str(&record.text);
+                        self.buffer.push('\n');
+                    }
+                }
+            }
+        }
+        if !self.buffer.is_empty() {
+            if let (Some(target), Some(bridge_logger), Some(diag_logger)) = (
+                self.current_dest.as_ref(),
+                self.logger.as_mut(),
+                self.diag.as_mut(),
+            ) {
+                flush_buffer(
+                    &mut self.buffer,
+                    &self.network,
+                    &target.token,
+                    target.chat_id,
+                    &self.session_id,
+                    &self.app,
+                    bridge_logger,
+                    diag_logger,
+                    true,
+                )
+                .await;
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn watch_loop<R: tauri::Runtime>(
     project_dir: PathBuf,
@@ -464,67 +946,26 @@ async fn watch_loop<R: tauri::Runtime>(
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) {
     let mut dest_rx = dest;
-    let mut current_dest: Option<BotTarget> = dest_rx.borrow_and_update().clone();
-
-    // #2232 phase 4 section 8: with no bot demand no diagnostic is built, so
-    // `BridgeLogger::new` — which truncates the **global** diagnostic files
-    // (`telegram/output.rs:140`) — is never called for a room-only reader. On a
-    // hot attach the loggers are born at that moment, which is when they are
-    // truncated on attach today.
-    let mut logger = current_dest
-        .as_ref()
-        .map(|_| BridgeLogger::new(&session_id));
-    let mut diag = current_dest.as_ref().map(|_| DiagLogger::new());
-    // Log through the bridge logger only when one exists, so `JSONL_EXTRACT`
-    // is not written for a room-only reader (section 8).
-    macro_rules! bridge_log {
-        ($tag:expr, $msg:expr) => {
-            if let Some(bridge_logger) = logger.as_mut() {
-                bridge_logger.log($tag, &session_id, $msg);
-            }
-        };
-    }
-    let mut buffer = String::new();
-    let mut last_buffer_add = Instant::now();
-    let flush_delay = Duration::from_millis(FLUSH_DELAY_MS);
-
-    // #2232 phase 4 section 4.2: the supervisor passes the live sender in, so
-    // the records of a room-only reader reach `CaptureRegistry` with no bot
-    // anywhere. With `None` the emit is a no-op.
-    let capture_tx: Option<UnboundedSender<Arc<CapturedRecord>>> = sink;
-    let mut reader_seq: u64 = 0;
-    // #2232 phase 3: the reader's own epoch and file observation. Both are
-    // computed only when a sink is attached, so a room without the flag keeps
-    // the pre-#2232 syscall count.
-    let mut observer = ReaderObservations::default();
-    // The first sweep of a rotated transcript is a backfill, not a live turn
-    // (section 8.3). Declared divergence: Telegram does send that content
-    // today, so a legitimate first turn can be suppressed downstream.
-    let mut rotation_backfill_pending = false;
-
-    let attach_time: DateTime<Utc> = Utc::now();
-    let mut current_file: Option<PathBuf> = None;
-    let mut current_file_mtime: Option<SystemTime> = None;
-    let mut file_offset: u64 = 0;
-    let mut line_remainder = String::new();
-    let mut dir_warned = false;
-    // #2454: the minted transcript id, consulted until the first attach.
-    let pin_id: Option<String> = transcript_id;
-    let mut first_poll = true;
-    let mut first_attach_done = false;
-    let mut wait_deadline: Option<Instant> = None;
+    let current_dest: Option<BotTarget> = dest_rx.borrow_and_update().clone();
+    let mut reader = ClaudeReader::new(
+        project_dir,
+        transcript_id,
+        network,
+        current_dest,
+        session_id,
+        app,
+        sink,
+    );
 
     // Emitted once, before the loop, so it cannot flood.
     log::info!(
         "[JSONL_ATTACH] session {} transcript_id={}",
-        session_id,
-        pin_id.as_deref().unwrap_or("none")
+        reader.session_id,
+        reader.pin_id.as_deref().unwrap_or("none")
     );
 
-    bridge_log!(
-        "JSONL_INIT",
-        &format!("project_dir={}", project_dir.display())
-    );
+    let init = format!("project_dir={}", reader.project_dir.display());
+    reader.bridge_log("JSONL_INIT", &init);
 
     let mut poll_interval = tokio::time::interval(Duration::from_millis(POLL_INTERVAL_MS));
     poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -536,331 +977,20 @@ async fn watch_loop<R: tauri::Runtime>(
             biased;
             _ = cancel.cancelled() => break,
 
-            // §6: the destination is consulted only when it changes, and the
-            // three transitions run **inside the reader task**. There is no
-            // `await` between them: yielding would flush the pending buffer to
-            // the NEW destination, which is exactly what this contract
-            // prevents, and the preamble could use a different offset than the
-            // reader had when it started.
             changed = dest_rx.changed() => {
                 if changed.is_err() {
                     // The supervisor dropped the sender: the reader is going away.
                     break;
                 }
                 let new_dest = dest_rx.borrow_and_update().clone();
-                let attaching = new_dest.is_some();
-                // The loggers are born at the moment of a hot attach, which is
-                // when they are truncated on attach today, so what is
-                // observable does not change (§8).
-                if attaching {
-                    if logger.is_none() {
-                        logger = Some(BridgeLogger::new(&session_id));
-                    }
-                    if diag.is_none() {
-                        diag = Some(DiagLogger::new());
-                    }
-                } else {
-                    logger = None;
-                    diag = None;
-                }
-                // The moment of the destination switch serves as `attach_time`.
-                let preamble = apply_destination_change(
-                    &mut buffer,
-                    &mut current_dest,
-                    new_dest,
-                    current_file.as_deref(),
-                    file_offset,
-                    Utc::now(),
-                );
-                for body in preamble {
-                    bridge_log!("JSONL_PREAMBLE", &body);
-                    buffer.push_str(&body);
-                    buffer.push('\n');
-                    last_buffer_add = Instant::now();
-                }
+                reader.on_dest_change(new_dest);
             }
 
-            _ = poll_interval.tick() => {
-                // Check if project directory exists yet
-                if !project_dir.is_dir() {
-                    if !dir_warned {
-                        bridge_log!("JSONL_WAIT", "project directory does not exist yet");
-                        dir_warned = true;
-                    }
-                    continue;
-                }
-                if dir_warned {
-                    bridge_log!("JSONL_INIT", "project directory appeared");
-                    dir_warned = false;
-                }
-
-                let newest = find_latest_jsonl(&project_dir);
-                // #2454: the first attach goes through `decide_attach`; after
-                // it, rotation follows the newest mtime exactly as before.
-                let mut pinned_attach = false;
-                let latest = if !runs_first_attach_decision(first_attach_done, current_file.is_some()) {
-                    newest
-                } else {
-                    let pinned = pin_id
-                        .as_deref()
-                        .and_then(|id| find_pinned_jsonl(&project_dir, id));
-                    let decision = decide_attach(AttachInputs {
-                        transcript_id: pin_id.as_deref(),
-                        pinned: pinned.as_deref(),
-                        newest: newest.as_deref(),
-                        first_poll,
-                        deadline_expired: wait_deadline.is_some_and(|d| Instant::now() >= d),
-                    });
-                    first_poll = false;
-                    let waiting = matches!(decision, AttachDecision::Wait);
-                    if waiting && wait_deadline.is_none() {
-                        wait_deadline =
-                            Some(Instant::now() + Duration::from_secs(PINNED_ATTACH_WAIT_SECS));
-                        log::info!(
-                            "[JSONL_ATTACH] session {} waiting up to {}s for {}",
-                            session_id,
-                            PINNED_ATTACH_WAIT_SECS,
-                            project_dir
-                                .join(format!("{}.jsonl", pin_id.as_deref().unwrap_or_default()))
-                                .display()
-                        );
-                    }
-                    match decision {
-                        AttachDecision::Pinned(path) => {
-                            pinned_attach = true;
-                            Some(path)
-                        }
-                        AttachDecision::Mtime(path) => Some(path),
-                        // Runs once: this attach ends the decision loop.
-                        AttachDecision::MtimeFallback(path) => {
-                            log::warn!(
-                                "[JSONL_ATTACH] session {} pinned transcript absent after {}s; falling back to newest by mtime",
-                                session_id,
-                                PINNED_ATTACH_WAIT_SECS
-                            );
-                            Some(path)
-                        }
-                        AttachDecision::Wait | AttachDecision::Nothing => None,
-                    }
-                };
-
-                // Handle file rotation with flicker guard
-                if latest != current_file {
-                    let should_switch = match (&current_file, &current_file_mtime) {
-                        (Some(_), Some(mtime)) => {
-                            // Only switch if current file is stale
-                            mtime.elapsed()
-                                .map(|d| d.as_secs() >= ROTATION_STALE_SECS)
-                                .unwrap_or(true)
-                        }
-                        _ => true, // No current file — always accept
-                    };
-
-                    if should_switch {
-                        if current_file.is_none() {
-                            // First attach (§J preamble scan): emit recent
-                            // lines from the file's tail, then set offset = file_len.
-                            if let Some(ref p) = latest {
-                                // #2454 requirement 5: a pinned attach is this
-                                // spawn's own output, so it is `Live`.
-                                let origin = if pinned_attach {
-                                    RecordOrigin::Live
-                                } else {
-                                    RecordOrigin::Preamble
-                                };
-                                log::info!(
-                                    "[JSONL_ATTACH] session {} first attach {} path={}",
-                                    session_id,
-                                    if pinned_attach { "pinned" } else { "by mtime" },
-                                    p.display()
-                                );
-                                match read_preamble_for_race(p, attach_time, claude_preamble_extractor) {
-                                    Ok((bodies, _ids, file_len)) => {
-                                        // The §J scan reads the tail, so it
-                                        // carries no head evidence: length
-                                        // alone decides the epoch here.
-                                        let attach = if capture_tx.is_some() {
-                                            observer.observe(p, file_len, Vec::new())
-                                        } else {
-                                            ReaderAttachment::default()
-                                        };
-                                        for record in capture_preamble_bodies(
-                                            bodies,
-                                            &session_id,
-                                            p,
-                                            &mut reader_seq,
-                                            capture_tx.as_ref(),
-                                            &attach,
-                                            origin,
-                                        ) {
-                                            bridge_log!("JSONL_PREAMBLE", &record.text);
-                                            if current_dest.is_some() {
-                                                buffer.push_str(&record.text);
-                                                buffer.push('\n');
-                                                last_buffer_add = Instant::now();
-                                            }
-                                        }
-                                        file_offset = file_len;
-                                        bridge_log!("JSONL_FILE",
-                                            &format!("initial file, preamble scan done, offset={}", file_offset));
-                                    }
-                                    Err(e) => {
-                                        bridge_log!("JSONL_ERR",
-                                            &format!("preamble scan failed: {}", e));
-                                        file_offset = std::fs::metadata(p).ok()
-                                            .map(|m| m.len())
-                                            .unwrap_or(0);
-                                    }
-                                }
-                            } else {
-                                file_offset = 0;
-                            }
-                        } else {
-                            // File rotation (new Claude session): read from start
-                            file_offset = 0;
-                            rotation_backfill_pending = true;
-                            bridge_log!("JSONL_ROTATE", &format!("new file: {:?}", latest));
-                            log::info!(
-                                "[JSONL_ROTATE] session {} old={} new={} offset={}",
-                                session_id,
-                                current_file.as_deref().map(|p| p.display().to_string()).unwrap_or_default(),
-                                latest.as_deref().map(|p| p.display().to_string()).unwrap_or_default(),
-                                file_offset
-                            );
-                        }
-                        current_file = latest;
-                        first_attach_done |= current_file.is_some();
-                        current_file_mtime = current_file.as_ref()
-                            .and_then(|p| std::fs::metadata(p).ok())
-                            .and_then(|m| m.modified().ok());
-                        line_remainder.clear();
-                    }
-                }
-
-                if let Some(ref path) = current_file {
-                    let read_start = file_offset;
-                    match read_new_lines_with_starts(path, &mut file_offset, &mut line_remainder) {
-                        Ok(new_lines) => {
-                            let attach = if capture_tx.is_some() {
-                                let head = head_from_lines(&new_lines, read_start);
-                                observer.observe(path, file_offset, head)
-                            } else {
-                                ReaderAttachment::default()
-                            };
-                            let origin = if rotation_backfill_pending && !new_lines.is_empty() {
-                                rotation_backfill_pending = false;
-                                RecordOrigin::RotationBackfill
-                            } else {
-                                RecordOrigin::Live
-                            };
-                            for record in capture_live_lines(
-                                new_lines,
-                                &session_id,
-                                path,
-                                &mut reader_seq,
-                                capture_tx.as_ref(),
-                                origin,
-                                &attach,
-                            ) {
-                                bridge_log!("JSONL_EXTRACT", &record.text);
-                                if current_dest.is_some() {
-                                    buffer.push_str(&record.text);
-                                    buffer.push('\n');
-                                    last_buffer_add = Instant::now();
-                                }
-                            }
-
-                            // Update mtime for rotation flicker guard
-                            current_file_mtime = std::fs::metadata(path).ok()
-                                .and_then(|m| m.modified().ok());
-                        }
-                        Err(e) => {
-                            // G5: Emit bridge error event for file I/O failures
-                            bridge_log!("JSONL_ERR", &e.to_string());
-                            log::error!("[JSONL_ERR] Read error for session {}: {}", session_id, e);
-                            let _ = app.emit(
-                                "telegram_bridge_error",
-                                serde_json::json!({
-                                    "sessionId": session_id,
-                                    "error": format!("JSONL read error: {}", e),
-                                }),
-                            );
-                        }
-                    }
-                }
-
-                // Flush buffer if enough time has passed since last addition
-                if !buffer.is_empty() {
-                    let elapsed = last_buffer_add.elapsed();
-                    if elapsed >= flush_delay || buffer.len() > 2000 {
-                        if let (Some(target), Some(bridge_logger), Some(diag_logger)) =
-                            (current_dest.as_ref(), logger.as_mut(), diag.as_mut())
-                        {
-                            flush_buffer(
-                                &mut buffer, &network, &target.token, target.chat_id,
-                                &session_id, &app, bridge_logger, diag_logger,
-                                true, // skip_dedup: JSONL text is clean, repeated lines are legitimate
-                            ).await;
-                        } else {
-                            buffer.clear();
-                        }
-                    }
-                }
-            }
+            _ = poll_interval.tick() => reader.poll().await,
         }
     }
 
-    // G1: Final poll + flush after cancel (don't lose buffered content)
-    if let Some(ref path) = current_file {
-        let read_start = file_offset;
-        if let Ok(new_lines) =
-            read_new_lines_with_starts(path, &mut file_offset, &mut line_remainder)
-        {
-            let attach = if capture_tx.is_some() {
-                let head = head_from_lines(&new_lines, read_start);
-                observer.observe(path, file_offset, head)
-            } else {
-                ReaderAttachment::default()
-            };
-            let origin = if rotation_backfill_pending && !new_lines.is_empty() {
-                RecordOrigin::RotationBackfill
-            } else {
-                RecordOrigin::Live
-            };
-            for record in capture_live_lines(
-                new_lines,
-                &session_id,
-                path,
-                &mut reader_seq,
-                capture_tx.as_ref(),
-                origin,
-                &attach,
-            ) {
-                if current_dest.is_some() {
-                    buffer.push_str(&record.text);
-                    buffer.push('\n');
-                }
-            }
-        }
-    }
-    if !buffer.is_empty() {
-        if let (Some(target), Some(bridge_logger), Some(diag_logger)) =
-            (current_dest.as_ref(), logger.as_mut(), diag.as_mut())
-        {
-            flush_buffer(
-                &mut buffer,
-                &network,
-                &target.token,
-                target.chat_id,
-                &session_id,
-                &app,
-                bridge_logger,
-                diag_logger,
-                true,
-            )
-            .await;
-        }
-    }
+    reader.drain().await;
 }
 
 #[cfg(test)]

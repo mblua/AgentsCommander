@@ -598,20 +598,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/telegram/claude_watcher.rs::watch_loop",
-      "sites": {
-        "windows": [
-          "705e1e465aae"
-        ],
-        "linux": [
-          "705e1e465aae"
-        ],
-        "macos": [
-          "705e1e465aae"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/telegram/codex_watcher.rs::watch_loop",
       "sites": {
         "windows": [
