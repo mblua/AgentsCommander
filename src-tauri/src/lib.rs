@@ -3979,6 +3979,7 @@ pub fn run(
             let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::with_store(
                 config::settings::BlockingMenusStore::load_from_config_dir(),
             ));
+            crate::config::settings::refresh_shipped_agent_help_from_config_dir();
             menu_guard.start(app.handle().clone(), shutdown_for_setup.clone());
             // (#1652) Started at the top of setup and NOT in the post-restore
             // tail: a freeze detector that waits for the restore is blind for
