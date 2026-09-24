@@ -356,6 +356,7 @@ agentscommander_lib::cli::workgroup -> agentscommander_lib::config
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::ac_root
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::coordinator_clocks
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::daemon_pid
+agentscommander_lib::cli::workgroup -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::projects
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::remote_activity_cache
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::seed_manifest
