@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use uuid::Uuid;
 
+use self::source::{ResolvedSource, SourceSpec};
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
-use source::{ResolvedSource, SourceSpec};
 
 /// 120 s. The requirement is "at least every 5 minutes"; 120 s keeps 2.5x
 /// margin and is 1/24 of the work `context_scrape` already does at 5 s.
@@ -132,8 +132,36 @@ impl AgentQuotaEngine {
         })
     }
 
-    /// Own thread, own runtime, shutdown token first: `ContextScraper::start`'s shape.
-    pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
+    /// Own thread, own runtime, shutdown token first: `ContextScraper::start`'s shape,
+    /// except that the tick is raced against the token too (see `start_at_interval`).
+    /// Returns the worker's handle so a test can prove it exited.
+    pub fn start(
+        self: &Arc<Self>,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> std::thread::JoinHandle<()> {
+        self.start_at_interval(shutdown, SAMPLE_INTERVAL)
+    }
+
+    /// `start` with a short interval, for tests.
+    #[cfg(test)]
+    pub(crate) fn start_with_interval(
+        self: &Arc<Self>,
+        shutdown: crate::shutdown::ShutdownSignal,
+        interval: Duration,
+    ) -> std::thread::JoinHandle<()> {
+        self.start_at_interval(shutdown, interval)
+    }
+
+    /// Two sequential selects per iteration, each `biased;` and token-first. Awaiting
+    /// the tick inside the sleep branch (as `ContextScraper::start` does) stops polling
+    /// the token, so a provider future that never resolves would keep the thread alive
+    /// past shutdown and could still emit. Here an in-flight tick is DROPPED: no `std`
+    /// guard is held across an `.await`, so at most one sample is lost.
+    fn start_at_interval(
+        self: &Arc<Self>,
+        shutdown: crate::shutdown::ShutdownSignal,
+        interval: Duration,
+    ) -> std::thread::JoinHandle<()> {
         let engine = Arc::clone(self);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new()
@@ -142,17 +170,18 @@ impl AgentQuotaEngine {
                 loop {
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => {
-                            log::info!("[agent_quota] Shutdown signal received, stopping");
-                            break;
-                        }
-                        _ = tokio::time::sleep(SAMPLE_INTERVAL) => {
-                            engine.tick().await;
-                        }
+                        _ = shutdown.token().cancelled() => break,
+                        _ = tokio::time::sleep(interval) => {}
+                    }
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.token().cancelled() => break,
+                        _ = engine.tick() => {}
                     }
                 }
+                log::info!("[agent_quota] Shutdown signal received, stopping");
             });
-        });
+        })
     }
 
     /// Start sampling a session. A fresh entry always starts at `last_emitted: None`.
@@ -238,19 +267,16 @@ impl AgentQuotaEngine {
         resolved
     }
 
-    pub(crate) async fn tick(&self) {
-        // Before `sources()`, so an app with no agent session reads nothing at all.
-        if self
-            .registered
+    /// Drop every cached source whose agent is not in `live`, so the cache is bounded
+    /// by the live agent set rather than by every agent ever seen.
+    fn prune_resolved(&self, live: &[(Uuid, String)]) {
+        self.resolved
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
-        {
-            return;
-        }
+            .retain(|agent_id, _| live.iter().any(|(_, live_id)| live_id == agent_id));
+    }
 
-        let sources = self.sources.sources().await;
-
+    pub(crate) async fn tick(&self) {
         let mut ids: Vec<(Uuid, String)> = {
             let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
             registered
@@ -258,11 +284,19 @@ impl AgentQuotaEngine {
                 .map(|(id, entry)| (*id, entry.agent_id.clone()))
                 .collect()
         };
-        ids.sort_unstable_by_key(|(id, _)| *id);
-        if !ids.is_empty() {
-            let start = self.sample_cursor.fetch_add(1, Ordering::Relaxed) % ids.len();
-            ids.rotate_left(start);
+        // Also on the empty path, so retiring the last session clears the cache.
+        self.prune_resolved(&ids);
+
+        // Before `sources()`, so an app with no agent session reads nothing at all.
+        if ids.is_empty() {
+            return;
         }
+
+        let sources = self.sources.sources().await;
+
+        ids.sort_unstable_by_key(|(id, _)| *id);
+        let start = self.sample_cursor.fetch_add(1, Ordering::Relaxed) % ids.len();
+        ids.rotate_left(start);
 
         for (id, agent_id) in ids {
             let usable = sources
@@ -393,6 +427,7 @@ pub(crate) mod test_support {
     pub(crate) struct SourcesFake {
         specs: Mutex<HashMap<String, SourceSpec>>,
         calls: AtomicUsize,
+        hang: std::sync::atomic::AtomicBool,
     }
 
     impl SourcesFake {
@@ -411,12 +446,21 @@ pub(crate) mod test_support {
         pub(crate) fn calls(&self) -> usize {
             self.calls.load(Ordering::SeqCst)
         }
+
+        /// From now on `sources()` counts the call and never resolves: a tick stuck
+        /// in flight.
+        pub(crate) fn hang(&self) {
+            self.hang.store(true, Ordering::SeqCst);
+        }
     }
 
     impl QuotaSourceProvider for SourcesFake {
         fn sources(&self) -> BoxFuture<'_, HashMap<String, SourceSpec>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, Ordering::SeqCst);
+                if self.hang.load(Ordering::SeqCst) {
+                    std::future::pending::<()>().await;
+                }
                 self.specs.lock().unwrap().clone()
             })
         }
@@ -746,5 +790,75 @@ mod tests {
 
         assert_eq!(h.sink.emitted(), vec![payload(id, Some(73))]);
         assert_eq!(h.engine.last_reading(id), Some(73));
+    }
+
+    #[test]
+    fn a_pending_provider_does_not_outlive_shutdown() {
+        let h = QuotaHarness::new();
+        h.sources.configure(AGENT, spec(PATTERN));
+        h.sources.hang();
+        h.engine.register_session(Uuid::new_v4(), AGENT.to_string());
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+
+        let handle = h
+            .engine
+            .start_with_interval(shutdown.clone(), Duration::from_millis(5));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while h.sources.calls() < 1 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no tick reached sources()"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        shutdown.trigger();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !handle.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(
+            handle.is_finished(),
+            "the worker outlived shutdown with a tick in flight"
+        );
+        assert!(h.sink.emitted().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_resolution_cache_evicts_agents_that_are_no_longer_registered() {
+        let h = QuotaHarness::new();
+        h.sources.configure("a", spec(PATTERN));
+        h.sources.configure("b", spec(r"Week (\d{1,3})%"));
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        h.engine.register_session(a, "a".to_string());
+        h.engine.register_session(b, "b".to_string());
+
+        h.engine.tick().await;
+        assert_eq!(h.engine.resolve_count(), 2);
+
+        h.engine.retire_session(b);
+        h.engine.tick().await;
+        assert_eq!(h.engine.resolve_count(), 2, "A stayed cached");
+
+        h.engine.register_session(b, "b".to_string());
+        h.engine.tick().await;
+        assert_eq!(h.engine.resolve_count(), 3, "B was evicted, not reused");
+
+        h.engine.retire_session(a);
+        h.engine.retire_session(b);
+        let calls = h.sources.calls();
+        h.engine.tick().await;
+        assert_eq!(h.sources.calls(), calls, "the empty path skips sources()");
+
+        h.engine.register_session(a, "a".to_string());
+        h.engine.tick().await;
+        assert_eq!(
+            h.engine.resolve_count(),
+            4,
+            "the empty tick cleared the map"
+        );
     }
 }
