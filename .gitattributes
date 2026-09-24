@@ -6,5 +6,6 @@
 crates/terminal-snapshot-renderer/assets/LICENSE-DejaVu.txt binary
 crates/terminal-snapshot-renderer/tests/fixtures/*.png binary
 src-tauri/module-arcs.txt text eol=lf
+src-tauri/.rust-cycles-baseline.json text eol=lf
 docs/integrations/rtk_claude/hooks/*.js text eol=lf
 docs/releases/** text eol=lf
