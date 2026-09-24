@@ -354,6 +354,15 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
     expect(r.toggle.getAttribute("aria-label")).not.toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
   });
 
+  it("6b. #2519: the toggle is addressable by the UI bridge and reports compact/expanded", () => {
+    const r = renderBanner();
+    expect(r.root.querySelector('[data-ac-testid="rootAgent.compactToggle"]')).toBe(r.toggle);
+    expect(r.toggle.getAttribute("data-ac-role")).toBe("button");
+    expect(r.toggle.getAttribute("data-ac-state")).toBe("expanded");
+    setSidebarCompactMode(true);
+    expect(r.toggle.getAttribute("data-ac-state")).toBe("compact");
+  });
+
   it("7. SidebarApp hydrates the configured shortcut on load and every refresh, without a remount", async () => {
     const fake = new FakeTransport();
     setupApp(fake);

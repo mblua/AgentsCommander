@@ -534,6 +534,9 @@ const RootAgentBanner: Component<{ compact?: boolean }> = (props) => {
           aria-expanded={!compact()}
           aria-label={toggleLabel()}
           title={toggleLabel()}
+          data-ac-testid="rootAgent.compactToggle"
+          data-ac-role="button"
+          data-ac-state={compact() ? "compact" : "expanded"}
           onClick={() => toggleSidebarCompact()}
         >
           {compact() ? "<<" : ">>"}
