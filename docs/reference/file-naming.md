@@ -122,6 +122,8 @@ Blocking menus already resolve layers the way this convention generalizes (`src-
 - Never invent a new suffix meaning.
 - Generate `<NN>` and `<owner>` from one constant per layer in `src-tauri/src/config/instance_artifacts.rs`; never type them by hand.
 
+The constants are `LAYER_DEFAULT`, `LAYER_REMOTE`, `LAYER_INSTANCE`, `LAYER_PROJECT` and `LAYER_PERSONAL` (each one `NN.owner` token), `NO_GIT_MARKER` and `STATE_MARKER`; the `layered_name!` macro composes a name from them. Every target name in the tables above already exists there as a constant, and none is in use until the rename ships.
+
 ## Cross-references
 
 - [Directory layout](directory-layout.md): where the instance dir and `.ac/` live
