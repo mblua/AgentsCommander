@@ -15105,6 +15105,16 @@ mod tests {
             assert!(!serialized.contains("\"guideOrder\""), "{serialized}");
             let serialized = serde_json::to_string(shipped_agent_help()).unwrap();
             assert!(!serialized.contains("\"guideOrder\""), "{serialized}");
+            // D-A: a present key, empty or not, must not round-trip. An `Option` field with
+            // `skip_serializing_if` would keep `Some([])` and `Some([..])` and fail here.
+            for input in [
+                r#"{"schemaVersion":1,"guideOrder":[]}"#,
+                r#"{"schemaVersion":1,"guideOrder":["claude"]}"#,
+            ] {
+                let parsed = parse_agent_help_file(input).unwrap();
+                let serialized = serde_json::to_string(&parsed).unwrap();
+                assert!(!serialized.contains("\"guideOrder\""), "{serialized}");
+            }
         }
 
         #[test]
