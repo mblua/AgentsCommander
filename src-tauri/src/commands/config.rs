@@ -71,9 +71,13 @@ pub(crate) fn agent_help_overlay_payload(
     let (file, local_error) = crate::config::settings::load_local_agent_help_file(&path);
     let has_content =
         file.general.is_some() || !file.by_command.is_empty() || !file.by_agent.is_empty();
+    // #2133 (P6) - the downloaded layer, served under the same non-empty rule as `local`.
+    let remote = crate::config::settings::load_remote_agent_help_file(&path);
+    let remote_has_content =
+        remote.general.is_some() || !remote.by_command.is_empty() || !remote.by_agent.is_empty();
     AgentHelpOverlayPayload {
         local: has_content.then_some(file),
-        remote: None,
+        remote: remote_has_content.then_some(remote),
         local_error,
     }
 }
@@ -10405,13 +10409,71 @@ mod tests {
             assert!(payload.remote.is_none());
         }
 
+        fn payload_with_layers(
+            local: Option<&str>,
+            remote: Option<&str>,
+        ) -> AgentHelpOverlayPayload {
+            let dir = tempfile::tempdir().unwrap();
+            if let Some(local) = local {
+                std::fs::write(dir.path().join("agent-help.local.json"), local).unwrap();
+            }
+            if let Some(remote) = remote {
+                std::fs::write(dir.path().join("agent-help.remote.json"), remote).unwrap();
+            }
+            agent_help_overlay_payload(Some(dir.path().join("settings.json")))
+        }
+
         #[test]
-        fn agent_help_leaves_remote_null_in_this_phase() {
-            let payload = payload_with_local(Some(
-                r#"{"schemaVersion":1,"byCommand":{"codex":{"label":"X"}}}"#,
-            ));
-            assert!(payload.local.is_some());
+        fn agent_help_serves_the_remote_layer() {
+            // (a) a valid cache is served, whole entry intact.
+            let payload = payload_with_layers(
+                None,
+                Some(
+                    r#"{"schemaVersion":1,"byCommand":{"codex":{"label":"Codex",
+                        "paramsExample":"--full-auto","docsUrl":"https://r.dev/codex",
+                        "tips":[{"title":"T","body":"B","link":{"label":"L","url":"https://r.dev/t"}}]}}}"#,
+                ),
+            );
+            assert!(payload.local.is_none());
+            let remote = serde_json::to_value(payload.remote.expect("remote is served")).unwrap();
+            assert_eq!(
+                remote["byCommand"]["codex"],
+                json!({
+                    "label": "Codex",
+                    "paramsExample": "--full-auto",
+                    "docsUrl": "https://r.dev/codex",
+                    "tips": [{"title": "T", "body": "B", "link": {"label": "L", "url": "https://r.dev/t"}}]
+                })
+            );
+
+            // (b) a `general`-only cache is not empty.
+            let payload =
+                payload_with_layers(None, Some(r#"{"schemaVersion":1,"general":{"label":"G"}}"#));
+            let remote = payload.remote.expect("a general-only cache is served");
+            assert_eq!(remote.general.unwrap().label.as_deref(), Some("G"));
+            assert!(remote.by_command.is_empty());
+
+            // (c) a cache that parses to an empty file is not served.
+            let payload = payload_with_layers(None, Some(r#"{"schemaVersion":1}"#));
             assert!(payload.remote.is_none());
+        }
+
+        #[test]
+        fn local_still_wins_over_remote_on_the_wire() {
+            let payload = payload_with_layers(
+                Some(r#"{"schemaVersion":1,"byCommand":{"claude":{"label":"Mine"}}}"#),
+                Some(
+                    r#"{"schemaVersion":1,"byCommand":{"claude":{"label":"Theirs"},"codex":{"label":"C"}}}"#,
+                ),
+            );
+            let local = payload.local.expect("local is served");
+            let remote = payload.remote.expect("remote is served");
+            assert_eq!(local.by_command.len(), 1);
+            assert_eq!(local.by_command["claude"].label.as_deref(), Some("Mine"));
+            assert_eq!(remote.by_command.len(), 2);
+            assert_eq!(remote.by_command["claude"].label.as_deref(), Some("Theirs"));
+            assert_eq!(remote.by_command["codex"].label.as_deref(), Some("C"));
+            assert_eq!(payload.local_error, None);
         }
 
         fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
