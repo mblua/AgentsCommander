@@ -307,6 +307,15 @@ function stopColour(stop: string): string {
   return stop.startsWith("rgba(") ? stop.slice(0, stop.indexOf(")") + 1) : stop.split(" ")[0];
 }
 
+// Everything after the colour: the stop's position(s).
+function stopPosition(stop: string): string {
+  return stop.slice(stopColour(stop).length).trim();
+}
+
+// The one custom property both stops share, as the plan's rule spells it. p4 sets it
+// inline, so a misspelling here would silently paint nothing.
+const QUOTA_BOUNDARY = "var(--ac-quota-remaining)";
+
 function ruleBody(compound: string): string {
   const body = declarationsOf(CSS_SOURCES["./sidebar.css"], compound);
   expect(body).not.toBeNull();
@@ -320,6 +329,10 @@ function quotaStops(): { remaining: Rgba; used: Rgba } {
   const [direction, first, second, ...rest] = topLevelArgs(inner);
   expect(direction).toBe("to right");
   expect(rest).toEqual([]);
+  // The positions are what make it a fill: remaining side from 0 to the boundary,
+  // used side from the same boundary to 100%. Colours alone do not pin that.
+  expect(stopPosition(first)).toBe(`0 ${QUOTA_BOUNDARY}`);
+  expect(stopPosition(second)).toBe(`${QUOTA_BOUNDARY} 100%`);
   return { remaining: parseColour(stopColour(first)), used: parseColour(stopColour(second)) };
 }
 
@@ -344,6 +357,10 @@ describe("weekly-quota fill on the agent chip (#2482)", () => {
 
   it("the_base_agent_rule_still_sets_the_green_tint_through_the_background_shorthand", () => {
     expect(declValue(ruleBody(".ac-discovery-badge.agent"), "background")).toBe("rgba(16, 185, 129, 0.14)");
+  });
+
+  it("the_gradient_stops_meet_at_the_shared_quota_boundary", () => {
+    quotaStops(); // asserts both stop positions and the shared custom property
   });
 
   it("the_remaining_half_composites_to_exactly_the_unfilled_chip", () => {
