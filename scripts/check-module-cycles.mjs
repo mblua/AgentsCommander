@@ -10,11 +10,12 @@
 // Known gap until P4: a cycle that disappears still passes here (the detector exits 0), so this
 // gate must not be made a required check on its own.
 
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { realRunner, runSelfTest } from './gate-support.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DETECTOR = path.join(ROOT, 'scripts', '01-rust_module-dependency-cycles.mjs');
@@ -53,18 +54,6 @@ class GateError extends Error {
   }
 }
 
-export function realRunner(argv) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, argv, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d; });
-    child.stderr.on('data', (d) => { stderr += d; });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ exit: code, stdout, stderr }));
-  });
-}
-
 // The two argv lists are built separately: --baseline and --write-baseline are mutually
 // exclusive in the detector. Both share the settings the wrapper owns: the target,
 // --fail-on module, --function-scope cross-module, no tests and no excludes.
@@ -92,10 +81,10 @@ function readBaseline(baselinePath) {
   } catch (err) {
     throw new GateError(`baseline ${baselinePath} is not valid JSON: ${err.message}`, 2);
   }
-  const from = (baseline && baseline.generatedFrom) || {};
+  const from = baseline?.generatedFrom || {};
   const checks = [
-    ['kind', baseline && baseline.kind, 'rust-cycles-baseline'],
-    ['schemaVersion', baseline && baseline.schemaVersion, 1],
+    ['kind', baseline?.kind, 'rust-cycles-baseline'],
+    ['schemaVersion', baseline?.schemaVersion, 1],
     ['generatedFrom.toolVersion', from.toolVersion, EXPECTED_TOOL_VERSION],
     ['generatedFrom.functionScope', from.functionScope, FUNCTION_SCOPE],
     ['generatedFrom.includeTests', from.includeTests, false],
@@ -124,13 +113,13 @@ function parseReport(stdout, stderr) {
   } catch (err) {
     throw unusable(`stdout is not JSON: ${err.message}`, stderr);
   }
-  const version = report && report.tool && report.tool.version;
-  if (!report || report.schemaVersion !== 1) throw unusable(`schemaVersion is ${JSON.stringify(report && report.schemaVersion)}`, stderr);
+  const version = report?.tool?.version;
+  if (!report || report.schemaVersion !== 1) throw unusable(`schemaVersion is ${JSON.stringify(report?.schemaVersion)}`, stderr);
   if (version !== EXPECTED_TOOL_VERSION) {
     throw unusable(`detector TOOL_VERSION is ${JSON.stringify(version)}, expected '${EXPECTED_TOOL_VERSION}'`, stderr);
   }
   if (!Array.isArray(report.moduleCycles)) throw unusable('moduleCycles is not an array', stderr);
-  if (!report.baseline || report.baseline.used !== true) throw unusable('baseline.used is not true', stderr);
+  if (report.baseline?.used !== true) throw unusable('baseline.used is not true', stderr);
   if (!Array.isArray(report.baseline.resolvedCycles)) throw unusable('baseline.resolvedCycles is not an array', stderr);
   return report;
 }
@@ -153,7 +142,8 @@ async function runDetector(runner, argv) {
 
 function describeCycle(cycle) {
   const members = Array.isArray(cycle.members) ? cycle.members : [];
-  return `  ${cycle.id} (${members.length} members)\n${members.map((m) => `    ${m}`).join('\n')}`;
+  const memberLines = members.map((m) => `    ${m}`).join('\n');
+  return `  ${cycle.id} (${members.length} members)\n${memberLines}`;
 }
 
 function blindSpotLines(report) {
@@ -176,12 +166,13 @@ export async function checkModuleCycles({ runner = realRunner, target = TARGET, 
 
   // Module graph only: resolvedCycles carries function-graph entries too, and --fail-on
   // filters neither.
-  const resolvedCycles = report.baseline.resolvedCycles.filter((c) => c && c.graph === 'module');
+  const resolvedCycles = report.baseline.resolvedCycles.filter((c) => c?.graph === 'module');
   const newCycles = report.moduleCycles.filter((c) => c.status === 'new');
   const known = report.moduleCycles.filter((c) => c.status === 'known');
+  const knownList = known.map((c) => `${c.id} (${c.members.length} members)`).join(', ');
   const summary = [
     `baseline: ${baselinePath} (${baseline.moduleCycles.length} module cycles)`,
-    `known: ${known.map((c) => `${c.id} (${c.members.length} members)`).join(', ') || 'none'}`,
+    `known: ${knownList || 'none'}`,
     `new: ${newCycles.length}`,
     `resolvedCycles: ${JSON.stringify(resolvedCycles.map((c) => c.id))}`,
     ...blindSpotLines(report),
@@ -393,20 +384,7 @@ const CASES = [
   })],
 ];
 
-async function selfTest() {
-  let failed = 0;
-  for (const [name, run] of CASES) {
-    try {
-      await run();
-      console.log(`ok   ${name}`);
-    } catch (err) {
-      failed += 1;
-      console.log(`FAIL ${name}: ${err.message}`);
-    }
-  }
-  console.log(`${CASES.length - failed}/${CASES.length} self-test cases passed`);
-  return failed === 0 ? 0 : 4;
-}
+const selfTest = () => runSelfTest(CASES);
 
 async function main(args) {
   if (args.includes('--help')) {
