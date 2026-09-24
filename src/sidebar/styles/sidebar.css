@@ -9770,6 +9770,7 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
   padding: 0;
   border: 0;
   background: transparent;
+  color: #fff;
   cursor: pointer;
 }
 
