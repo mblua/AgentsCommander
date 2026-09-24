@@ -153,4 +153,80 @@ describe("AgentHelpTipsModal (#2143)", () => {
       document.body.replaceChildren();
     }
   });
+
+  it("Tab wraps from the last control to the first tip link", async () => {
+    mount({ entry: ENTRY });
+    await Promise.resolve();
+    const link = document.querySelector<HTMLAnchorElement>(".agent-help-tips-tip-link")!;
+    const copy = byTestId<HTMLButtonElement>("agentHelpTips.copy")!;
+    const close = byTestId<HTMLButtonElement>("agentHelpTips.close")!;
+    expect(document.activeElement).toBe(close);
+
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    document.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(link);
+
+    // Inside the list the browser moves focus itself; the trap stays out of the way.
+    copy.focus();
+    const inner = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    document.dispatchEvent(inner);
+    expect(inner.defaultPrevented).toBe(false);
+  });
+
+  it("Shift-Tab wraps from the first tip link to the last control", async () => {
+    mount({ entry: ENTRY });
+    await Promise.resolve();
+    const link = document.querySelector<HTMLAnchorElement>(".agent-help-tips-tip-link")!;
+    const copy = byTestId<HTMLButtonElement>("agentHelpTips.copy")!;
+    const close = byTestId<HTMLButtonElement>("agentHelpTips.close")!;
+
+    link.focus();
+    const back = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(back);
+    expect(back.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(close);
+
+    // Shift-Tab from Copy goes back to the link by default, not to Close.
+    copy.focus();
+    const inner = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(inner);
+    expect(inner.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(copy);
+  });
+
+  it("a copy that resolves after close arms no timer", async () => {
+    let resolveWrite: () => void = () => {};
+    const writeText = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveWrite = resolve;
+        }),
+    );
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    mount({ entry: ENTRY });
+    const copy = byTestId<HTMLButtonElement>("agentHelpTips.copy")!;
+    copy.click();
+    expect(writeText).toHaveBeenCalledTimes(1);
+
+    dispose?.();
+    dispose = null;
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    resolveWrite();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(setTimeoutSpy.mock.calls.some((call) => call[1] === 1500)).toBe(false);
+    expect(copy.textContent).toBe("Copy");
+  });
 });

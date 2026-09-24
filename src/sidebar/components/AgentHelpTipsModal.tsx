@@ -24,9 +24,10 @@ function tipLink(tip: AgentHelpTip): { label: string; url: string } | null {
 }
 
 const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
-  let copyRef: HTMLButtonElement | undefined;
+  let dialogRef: HTMLDivElement | undefined;
   let closeRef: HTMLButtonElement | undefined;
   let copyResetTimer: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
   const previouslyFocused = document.activeElement as HTMLElement | null;
   const [copied, setCopied] = createSignal(false);
 
@@ -47,6 +48,8 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
   const copyTips = async () => {
     try {
       await navigator.clipboard.writeText(tipsAsText());
+      // The window may have closed while the clipboard promise was pending.
+      if (disposed) return;
       setCopied(true);
       if (copyResetTimer) clearTimeout(copyResetTimer);
       copyResetTimer = setTimeout(() => setCopied(false), 1500);
@@ -65,7 +68,10 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
       }
       if (event.key === "Tab") {
         event.stopImmediatePropagation();
-        const focusables = [copyRef, closeRef].filter(Boolean) as HTMLElement[];
+        // Every focusable control in DOM order, tip links included.
+        const focusables = Array.from(
+          dialogRef?.querySelectorAll<HTMLElement>("a[href], button:not([disabled])") ?? [],
+        );
         const index = focusables.indexOf(document.activeElement as HTMLElement);
         if (index === -1) {
           event.preventDefault();
@@ -87,6 +93,7 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
     document.addEventListener("keydown", onKeyDown, true);
     queueMicrotask(() => closeRef?.focus());
     onCleanup(() => {
+      disposed = true;
       document.removeEventListener("keydown", onKeyDown, true);
       if (copyResetTimer) clearTimeout(copyResetTimer);
       try {
@@ -101,6 +108,7 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
     <Portal>
       <div class="modal-overlay" data-ac-testid="agentHelpTips.modal">
         <div
+          ref={dialogRef}
           class="agent-modal agent-help-tips-modal"
           role="dialog"
           aria-modal="true"
@@ -151,7 +159,6 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
 
           <div class="agent-modal-footer">
             <button
-              ref={copyRef}
               type="button"
               class="modal-btn"
               onClick={() => void copyTips()}
