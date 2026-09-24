@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::api::auth;
 use crate::config::coding_agent_mutations::{move_registered_agent, AgentMoveDirection};
-use crate::config::instance_artifacts::DEBUG_LOGS_FILE_NAME;
+use crate::config::instance_artifacts::{DEBUG_LOGS_FILE_NAME, SETTINGS_FILE_NAME};
 use crate::config::projects::{
     display_canonical, IssueKind, ProjectPathPersistenceState, ProjectSource, RawJsonField,
     RawStringField, ResolvedPair, SideStatus, StructuralIssue,
@@ -425,7 +425,7 @@ pub(crate) fn settings_snapshot_from(
         // a test-only reconciliation write target and not a client-facing
         // location. Same expression already used at the reconciliation site.
         settings_file_path: crate::config::config_dir()
-            .map(|d| d.join("settings.json").to_string_lossy().into_owned()),
+            .map(|d| d.join(SETTINGS_FILE_NAME).to_string_lossy().into_owned()),
         overlay_owns_agents: settings
             .local_overlay_state
             .owns_top_level(OVERLAY_KEY_AGENTS),
@@ -451,7 +451,7 @@ pub(crate) async fn settings_snapshot_helper(
         if pending {
             if let Some(path) = settings_path
                 .clone()
-                .or_else(|| crate::config::config_dir().map(|d| d.join("settings.json")))
+                .or_else(|| crate::config::config_dir().map(|d| d.join(SETTINGS_FILE_NAME)))
             {
                 // §4.3 step 2: re-decode all six project fields from disk and
                 // re-resolve BEFORE reconciling, so a CLI registration that

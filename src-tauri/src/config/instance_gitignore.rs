@@ -467,6 +467,24 @@ mod tests {
     use std::process::{Command, Output};
     use std::time::{Duration, Instant};
 
+    use super::super::instance_artifacts::{
+        AGENTS_INSTANCE_TARGET_NAME, BLOCKING_MENUS_LOCAL_FILE_NAME,
+        BLOCKING_MENUS_LOCAL_TARGET_NAME, BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME,
+        BLOCKING_MENUS_REMOTE_CHECK_TARGET_NAME, BLOCKING_MENUS_REMOTE_FILE_NAME,
+        BLOCKING_MENUS_REMOTE_TARGET_NAME, BLOCKING_MENUS_SHIPPED_FILE_NAME,
+        BLOCKING_MENUS_SHIPPED_TARGET_NAME, CODING_AGENTS_BASE_FILENAME,
+        CODING_AGENTS_BASE_TARGET_NAME, CODING_AGENTS_LOCAL_FILENAME,
+        CODING_AGENTS_LOCAL_TARGET_NAME, CODING_AGENTS_LOCK_FILENAME,
+        CODING_AGENTS_LOCK_TARGET_NAME, CODING_AGENTS_MIGRATION_BACKUP_FILENAME,
+        CODING_AGENTS_MIGRATION_JOURNAL_FILENAME, CODING_AGENTS_PROJECT_TARGET_NAME,
+        LAYERED_NAME_PROBES, LAYER_DEFAULT, LAYER_INSTANCE, LAYER_PERSONAL, LAYER_PROJECT,
+        LAYER_REMOTE, NO_GIT_MARKER, SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_ROTATION_GLOB,
+        SETTINGS_BACKUP_SUFFIX, SETTINGS_BACKUP_TARGET_PREFIX, SETTINGS_FILE_NAME,
+        SETTINGS_LOCAL_OVERRIDE_FILE_NAME, SETTINGS_LOCAL_TARGET_NAME, SETTINGS_LOCK_FILE_NAME,
+        SETTINGS_LOCK_TARGET_NAME, SETTINGS_MIGRATION_BACKUP_GLOB,
+        SETTINGS_MIGRATION_BACKUP_TARGET_GLOB, SETTINGS_TARGET_NAME, STATE_MARKER,
+    };
+
     const TEST_AGENT_LOCAL_DIR: &str = ".agentscommander_amp-office";
 
     fn git(repo: &Path, args: &[&str]) -> Output {
@@ -1515,5 +1533,165 @@ mod tests {
             std::fs::write(path, b"fixture").expect("write fixture");
             assert_git_ignore_status(repo, &format!("instance/{relative}"), expected_code);
         }
+    }
+
+    /// #2470 E5 - every layered target constant equals its own row of the
+    /// target tables in `docs/reference/file-naming.md`, row by row. The row
+    /// count is pinned, so a deleted row cannot pass by shrinking both sides.
+    #[test]
+    fn target_names_match_the_documented_tables() {
+        const DOC: &str = include_str!("../../../docs/reference/file-naming.md");
+        let mut documented = Vec::new();
+        for heading in [
+            "### `settings.*`",
+            "### `blocking-menus.*`",
+            "### `agents.*`",
+        ] {
+            let start = DOC
+                .find(heading)
+                .unwrap_or_else(|| panic!("the document lost the heading {heading}"));
+            let rows = DOC[start + heading.len()..]
+                .lines()
+                .skip_while(|line| !line.starts_with('|'))
+                .take_while(|line| line.starts_with('|'))
+                .skip(2); // header and separator
+            for row in rows {
+                let target = row
+                    .split('|')
+                    .nth(2)
+                    .unwrap_or_else(|| panic!("row without a target cell: {row}"));
+                let value = target
+                    .split('`')
+                    .nth(1)
+                    .unwrap_or_else(|| panic!("target cell without a backticked span: {row}"));
+                documented.push(value);
+            }
+        }
+        // The backup row is a whole glob; the constant is only its prefix.
+        let backup = format!("{SETTINGS_BACKUP_TARGET_PREFIX}*{SETTINGS_BACKUP_SUFFIX}");
+        let expected: [(&str, &str); 14] = [
+            ("SETTINGS_TARGET_NAME", SETTINGS_TARGET_NAME),
+            ("SETTINGS_LOCAL_TARGET_NAME", SETTINGS_LOCAL_TARGET_NAME),
+            ("SETTINGS_LOCK_TARGET_NAME", SETTINGS_LOCK_TARGET_NAME),
+            ("SETTINGS_BACKUP_TARGET_PREFIX", &backup),
+            (
+                "SETTINGS_MIGRATION_BACKUP_TARGET_GLOB",
+                SETTINGS_MIGRATION_BACKUP_TARGET_GLOB,
+            ),
+            (
+                "BLOCKING_MENUS_SHIPPED_TARGET_NAME",
+                BLOCKING_MENUS_SHIPPED_TARGET_NAME,
+            ),
+            (
+                "BLOCKING_MENUS_REMOTE_TARGET_NAME",
+                BLOCKING_MENUS_REMOTE_TARGET_NAME,
+            ),
+            (
+                "BLOCKING_MENUS_LOCAL_TARGET_NAME",
+                BLOCKING_MENUS_LOCAL_TARGET_NAME,
+            ),
+            (
+                "BLOCKING_MENUS_REMOTE_CHECK_TARGET_NAME",
+                BLOCKING_MENUS_REMOTE_CHECK_TARGET_NAME,
+            ),
+            (
+                "CODING_AGENTS_BASE_TARGET_NAME",
+                CODING_AGENTS_BASE_TARGET_NAME,
+            ),
+            (
+                "CODING_AGENTS_LOCAL_TARGET_NAME",
+                CODING_AGENTS_LOCAL_TARGET_NAME,
+            ),
+            (
+                "CODING_AGENTS_PROJECT_TARGET_NAME",
+                CODING_AGENTS_PROJECT_TARGET_NAME,
+            ),
+            ("AGENTS_INSTANCE_TARGET_NAME", AGENTS_INSTANCE_TARGET_NAME),
+            (
+                "CODING_AGENTS_LOCK_TARGET_NAME",
+                CODING_AGENTS_LOCK_TARGET_NAME,
+            ),
+        ];
+        assert_eq!(
+            documented.len(),
+            expected.len(),
+            "the three target tables must hold exactly 14 rows: {documented:?}"
+        );
+        for ((name, value), row) in expected.iter().zip(&documented) {
+            assert_eq!(value, row, "{name} disagrees with its documented row");
+        }
+    }
+
+    /// #2470 E6 - each `layered_name!` arm types its layer token once; this ties
+    /// every arm to the constant that names the same token.
+    #[test]
+    fn layer_tokens_match_the_macro() {
+        let expected = [
+            format!("x.{LAYER_DEFAULT}.e"),
+            format!("x.{LAYER_REMOTE}.e"),
+            format!("x.{LAYER_INSTANCE}.e"),
+            format!("x.{LAYER_PROJECT}.e"),
+            format!("x.{LAYER_PERSONAL}.e"),
+            format!("x.{STATE_MARKER}.e"),
+            format!("x.{LAYER_INSTANCE}.{NO_GIT_MARKER}.e"),
+        ];
+        assert_eq!(LAYERED_NAME_PROBES.len(), expected.len());
+        for ((composed, token), expected) in LAYERED_NAME_PROBES.iter().zip(&expected) {
+            assert_eq!(composed, expected, "the macro arm for {token} drifted");
+        }
+    }
+
+    /// #2470 E7 - Phase A declares target names but moves no live name.
+    #[test]
+    fn live_names_are_unchanged_by_phase_a() {
+        let live = [
+            (SETTINGS_FILE_NAME, "settings.json"),
+            (SETTINGS_LOCAL_OVERRIDE_FILE_NAME, "settings.local.json"),
+            (SETTINGS_LOCK_FILE_NAME, "settings.json.lock"),
+            (SETTINGS_BACKUP_PREFIX, "settings.backup."),
+            (SETTINGS_BACKUP_SUFFIX, ".json"),
+            (SETTINGS_BACKUP_ROTATION_GLOB, "settings.backup.*.json"),
+            (SETTINGS_MIGRATION_BACKUP_GLOB, "settings.pre-*.json"),
+            (
+                BLOCKING_MENUS_SHIPPED_FILE_NAME,
+                "settings-blocking-menus.json",
+            ),
+            (
+                BLOCKING_MENUS_REMOTE_FILE_NAME,
+                "settings-blocking-menus.remote.json",
+            ),
+            (
+                BLOCKING_MENUS_LOCAL_FILE_NAME,
+                "settings-blocking-menus.local.json",
+            ),
+            (
+                BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME,
+                "blocking-menus-remote-check.json",
+            ),
+            (CODING_AGENTS_BASE_FILENAME, "agents.json"),
+            (CODING_AGENTS_LOCAL_FILENAME, "agents.local.json"),
+            (CODING_AGENTS_LOCK_FILENAME, ".agents.json.lock"),
+            (
+                CODING_AGENTS_MIGRATION_BACKUP_FILENAME,
+                "agents.migration-v1.backup.json",
+            ),
+            (
+                CODING_AGENTS_MIGRATION_JOURNAL_FILENAME,
+                ".agents.migration-v1.json",
+            ),
+        ];
+        for (constant, literal) in live {
+            assert_eq!(constant, literal);
+        }
+    }
+
+    /// #2470 - the lock is named after the live settings file, and until now
+    /// nothing said so.
+    #[test]
+    fn settings_lock_name_derives_from_the_settings_name() {
+        assert_eq!(
+            SETTINGS_LOCK_FILE_NAME,
+            format!("{SETTINGS_FILE_NAME}.lock")
+        );
     }
 }

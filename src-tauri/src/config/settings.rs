@@ -11,7 +11,7 @@ use crate::config::instance_artifacts::{
     AGENT_HELP_LOCAL_FILE_NAME, AGENT_HELP_SHIPPED_FILE_NAME, BLOCKING_MENUS_LOCAL_FILE_NAME,
     BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME, BLOCKING_MENUS_REMOTE_FILE_NAME,
     BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_SUFFIX,
-    SETTINGS_LOCK_FILE_NAME,
+    SETTINGS_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
 };
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
@@ -3002,7 +3002,7 @@ pub fn validate_resource_settings(settings: &AppSettings) -> Result<(), String> 
 }
 
 pub(crate) fn settings_path() -> Option<PathBuf> {
-    super::config_dir().map(|d| d.join("settings.json"))
+    super::config_dir().map(|d| d.join(SETTINGS_FILE_NAME))
 }
 
 /// Load settings from the app config directory (see config_dir()), falling back to defaults.
@@ -5973,7 +5973,7 @@ pub(crate) fn project_state_has_structural(settings: &AppSettings) -> bool {
 /// file lock (tracked separately), deliberately not added here.
 pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let path = dir.join("settings.json");
+    let path = dir.join(SETTINGS_FILE_NAME);
     save_settings_to_path_preserving_project_paths(settings, &path)
 }
 
@@ -6066,7 +6066,7 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSav
 
     let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
-    let tmp_path = dir.join(format!("settings.json.{}.{}.tmp", pid, op_id));
+    let tmp_path = dir.join(format!("{SETTINGS_FILE_NAME}.{}.{}.tmp", pid, op_id));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -6273,7 +6273,7 @@ fn replace_settings_file_atomic(source: &Path, destination: &Path) -> std::io::R
 /// root_token/migration save (whose `project_paths` was just loaded from disk).
 pub fn save_settings_with_project_paths(settings: &AppSettings) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let path = dir.join("settings.json");
+    let path = dir.join(SETTINGS_FILE_NAME);
     save_settings_with_project_paths_to_path(settings, &path)
 }
 

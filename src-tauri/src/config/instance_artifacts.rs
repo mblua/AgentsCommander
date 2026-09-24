@@ -172,6 +172,9 @@ pub(crate) const BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME: &str = "blocking-menus-r
 pub(crate) const AGENT_HELP_LOCAL_FILE_NAME: &str = "agent-help.local.json";
 /// #2133 - AC-owned shipped per-agent help; rewritten from embedded content at startup.
 pub(crate) const AGENT_HELP_SHIPPED_FILE_NAME: &str = "agent-help.json";
+/// AC's own instance settings file. Every production reader and writer of the
+/// instance file names it through this constant.
+pub(crate) const SETTINGS_FILE_NAME: &str = "settings.json";
 pub(crate) const SETTINGS_LOCK_FILE_NAME: &str = "settings.json.lock";
 /// Covers every settings migration backup instance. The concrete names are
 /// composed by their own migrations, so this glob is registry-owned and no
@@ -198,6 +201,8 @@ pub(crate) const GLOBAL_CONTEXT_RETIRED_BACKUP_GLOB: &str =
 pub(crate) const AGENCY_TEMPLATES_DIR: &str = "agency-agents_templates";
 pub(crate) const AGENT_TEMPLATES_DIR_NAME: &str = "agent-templates";
 pub(crate) const CODING_AGENTS_CATALOG_DIR_NAME: &str = "coding-agents";
+/// The catalog manifest inside `coding-agents/`. The catalog module aliases it.
+pub(crate) const CODING_AGENTS_BASE_FILENAME: &str = "agents.json";
 
 /// #1968 - declares one machine-local coding-agent catalog child: the FILE name
 /// constant the catalog module aliases for its path composition, plus the
@@ -218,11 +223,14 @@ coding_agents_child!(
     CODING_AGENTS_LOCAL_ARTIFACT,
     "agents.local.json"
 );
+// Immutable by contract: an interrupted #1968 catalog migration resumes by this
+// exact name, so it has no layered target name and is never renamed.
 coding_agents_child!(
     CODING_AGENTS_MIGRATION_BACKUP_FILENAME,
     CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
     "agents.migration-v1.backup.json"
 );
+// Immutable by contract, for the same reason as the migration backup above.
 coding_agents_child!(
     CODING_AGENTS_MIGRATION_JOURNAL_FILENAME,
     CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
@@ -255,6 +263,107 @@ pub(crate) const CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT: &str =
     "coding-agents/.agents.migration-v1.backup.json.*.tmp";
 pub(crate) const CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT: &str =
     "coding-agents/..agents.migration-v1.json.*.tmp";
+
+// #2470 - layered file names: `<name>.<NN>.<owner>[.no-git].<ext>`, as
+// `docs/reference/file-naming.md` defines them.
+
+/// NN and owner are ONE token, never two: they are 1:1, and two spellings of one
+/// fact drift apart.
+#[allow(dead_code)] // read by the layer-token test until Phase B
+pub(crate) const LAYER_DEFAULT: &str = "10.default";
+#[allow(dead_code)] // read by the layer-token test until Phase B
+pub(crate) const LAYER_REMOTE: &str = "20.remote";
+#[allow(dead_code)] // read by the layer-token test until Phase B
+pub(crate) const LAYER_INSTANCE: &str = "30.instance";
+#[allow(dead_code)] // read by the layer-token test until Phase B
+pub(crate) const LAYER_PROJECT: &str = "40.project";
+#[allow(dead_code)] // read by the layer-token test until Phase B
+pub(crate) const LAYER_PERSONAL: &str = "50.personal";
+/// Marks a file that must never be committed.
+#[allow(dead_code)] // read by the layer-token test until Phase B
+pub(crate) const NO_GIT_MARKER: &str = "no-git";
+/// AC working memory; no competing layer, so no number.
+#[allow(dead_code)] // read by the layer-token test until Phase B
+pub(crate) const STATE_MARKER: &str = "state";
+
+/// Composes a layered name at compile time, one arm per layer: a `const` cannot
+/// be spliced into `concat!`, so each arm types its token once and
+/// `layer_tokens_match_the_macro` pins it to its constant through
+/// `LAYERED_NAME_PROBES`.
+macro_rules! layered_name {
+    ($stem:literal, default, $($rest:tt)+) => { layered_name!(@token $stem, "10.default", $($rest)+) };
+    ($stem:literal, remote, $($rest:tt)+) => { layered_name!(@token $stem, "20.remote", $($rest)+) };
+    ($stem:literal, instance, $($rest:tt)+) => { layered_name!(@token $stem, "30.instance", $($rest)+) };
+    ($stem:literal, project, $($rest:tt)+) => { layered_name!(@token $stem, "40.project", $($rest)+) };
+    ($stem:literal, personal, $($rest:tt)+) => { layered_name!(@token $stem, "50.personal", $($rest)+) };
+    ($stem:literal, state, $($rest:tt)+) => { layered_name!(@token $stem, "state", $($rest)+) };
+    (@token $stem:literal, $token:literal, no_git, $ext:literal) => {
+        concat!($stem, ".", $token, ".no-git.", $ext)
+    };
+    (@token $stem:literal, $token:literal, $ext:literal) => {
+        concat!($stem, ".", $token, ".", $ext)
+    };
+}
+
+/// One composition per macro arm, each paired with the constant it must use.
+/// The macro is not visible outside this file, so the tie is checked through
+/// this table.
+#[cfg(test)]
+pub(crate) const LAYERED_NAME_PROBES: [(&str, &str); 7] = [
+    (layered_name!("x", default, "e"), LAYER_DEFAULT),
+    (layered_name!("x", remote, "e"), LAYER_REMOTE),
+    (layered_name!("x", instance, "e"), LAYER_INSTANCE),
+    (layered_name!("x", project, "e"), LAYER_PROJECT),
+    (layered_name!("x", personal, "e"), LAYER_PERSONAL),
+    (layered_name!("x", state, "e"), STATE_MARKER),
+    (layered_name!("x", instance, no_git, "e"), NO_GIT_MARKER),
+];
+
+// Target names, declared but not used until Phase B switches each live name.
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const SETTINGS_TARGET_NAME: &str = layered_name!("settings", instance, no_git, "json");
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const SETTINGS_LOCAL_TARGET_NAME: &str =
+    layered_name!("settings", personal, no_git, "json");
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const SETTINGS_LOCK_TARGET_NAME: &str =
+    concat!(layered_name!("settings", instance, no_git, "json"), ".lock");
+/// A prefix, not a name: the writer composes the slot index at runtime and
+/// appends `SETTINGS_BACKUP_SUFFIX`.
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const SETTINGS_BACKUP_TARGET_PREFIX: &str =
+    layered_name!("settings", instance, no_git, "backup.");
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const SETTINGS_MIGRATION_BACKUP_TARGET_GLOB: &str =
+    layered_name!("settings", instance, no_git, "pre-*.json");
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const BLOCKING_MENUS_SHIPPED_TARGET_NAME: &str =
+    layered_name!("blocking-menus", default, no_git, "json");
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const BLOCKING_MENUS_REMOTE_TARGET_NAME: &str =
+    layered_name!("blocking-menus", remote, no_git, "json");
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const BLOCKING_MENUS_LOCAL_TARGET_NAME: &str =
+    layered_name!("blocking-menus", personal, no_git, "json");
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const BLOCKING_MENUS_REMOTE_CHECK_TARGET_NAME: &str =
+    layered_name!("blocking-menus", state, no_git, "json");
+/// Tracked, so no `.no-git`.
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const CODING_AGENTS_BASE_TARGET_NAME: &str = layered_name!("agents", default, "json");
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const CODING_AGENTS_LOCAL_TARGET_NAME: &str =
+    layered_name!("agents", personal, no_git, "json");
+/// Tracked; the file does not exist yet, the location work creates it.
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const CODING_AGENTS_PROJECT_TARGET_NAME: &str = layered_name!("agents", project, "json");
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const CODING_AGENTS_LOCK_TARGET_NAME: &str =
+    concat!(".", layered_name!("agents", default, "json"), ".lock");
+/// The file does not exist yet; Phase B creates it.
+#[allow(dead_code)] // switched on in Phase B
+pub(crate) const AGENTS_INSTANCE_TARGET_NAME: &str =
+    layered_name!("agents", instance, no_git, "json");
 
 /// #1968 - the single publication temporary-name formula,
 /// `.{destination}.{pid}.{counter}.tmp`. The catalog writer aliases it and the
@@ -611,7 +720,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: rotated previous generations of the application settings; the same runtime artifact under a numeric slot",
     },
     InstanceArtifact {
-        name: "settings.json",
+        name: SETTINGS_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: application settings",
