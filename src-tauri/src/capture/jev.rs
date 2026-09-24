@@ -129,7 +129,7 @@ pub async fn classify(
     if let Some(reason) = catalog.unparseable_reason() {
         log::info!(
             "[co-managed] jev classify [{session_tag}]: abstained, catalog invalid: {}",
-            redact_quoted(&reason)
+            redact_quoted(reason)
         );
         return ClassifyOutcome::abstained(format!("catalog invalid: {reason}"));
     }
