@@ -33,9 +33,12 @@ use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
 /// #260: agent selection is `Option<CodingAgentKind>`. Mutual exclusion is now
 /// structural (an enum is one variant or none), so the pre-#260
 /// `debug_assert!(kinds_set <= 1, …)` guard was removed.
+// Eight parameters since #2454 split the identity slice from `shell_args` (D3-g).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn derive_reader(
     shell: &str,
     shell_args: &[String],
+    identity_args: &[String],
     cwd: &str,
     backend_kind: SessionBackendKind,
     agent_kind: Option<CodingAgentKind>,
@@ -43,17 +46,26 @@ pub(crate) fn derive_reader(
     effective_codex_home: Option<&str>,
 ) -> Result<Option<SessionReaderKind>, String> {
     let attach_time = chrono::Utc::now();
+    // #2454: the EFFECTIVE argv names the transcript id AC minted; the
+    // CONFIGURED `shell_args` alone still decide the projects directory.
+    let transcript_id = crate::commands::session::transcript_id_from_args(identity_args);
 
     match agent_kind {
         Some(CodingAgentKind::Claude) => match backend_kind {
             SessionBackendKind::LocalProcess => match resolved_claude_projects_dir.or_else(|| {
                 crate::commands::session::resolve_claude_projects_dir(shell, shell_args, cwd)
             }) {
-                Some(p) => Ok(Some(SessionReaderKind::Claude { project_dir: p })),
+                Some(p) => Ok(Some(SessionReaderKind::Claude {
+                    project_dir: p,
+                    transcript_id,
+                })),
                 None => Err("Cannot resolve Claude projects dir".to_string()),
             },
             SessionBackendKind::ContainerTransport => match resolved_claude_projects_dir {
-                Some(p) => Ok(Some(SessionReaderKind::Claude { project_dir: p })),
+                Some(p) => Ok(Some(SessionReaderKind::Claude {
+                    project_dir: p,
+                    transcript_id,
+                })),
                 None => Err("Cannot resolve Claude projects dir for container session; CLAUDE_CONFIG_DIR is not mapped into the replica mount".to_string()),
             },
         },
@@ -106,6 +118,10 @@ async fn reader_kind_for_session<R: tauri::Runtime>(
     derive_reader(
         &session.shell,
         &session.shell_args,
+        session
+            .effective_shell_args
+            .as_deref()
+            .unwrap_or(&session.shell_args),
         &session.working_directory,
         session.backend_kind,
         session.agent_kind,
@@ -357,6 +373,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
         agent_kind,
         shell,
         shell_args,
+        effective_shell_args,
         working_directory,
         backend_kind,
         resolved_claude_projects_dir,
@@ -371,6 +388,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
             session.agent_kind,
             session.shell.clone(),
             session.shell_args.clone(),
+            session.effective_shell_args.clone(),
             session.working_directory.clone(),
             session.backend_kind,
             session.resolved_claude_projects_dir.clone(),
@@ -381,6 +399,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
     let reader = match derive_reader(
         &shell,
         &shell_args,
+        effective_shell_args.as_deref().unwrap_or(&shell_args),
         &working_directory,
         backend_kind,
         agent_kind,

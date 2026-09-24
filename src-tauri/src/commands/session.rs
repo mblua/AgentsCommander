@@ -106,6 +106,10 @@ pub(crate) async fn co_managed_effective_state_for_session<R: Runtime>(
     let reader = crate::commands::telegram::derive_reader(
         &session.shell,
         &session.shell_args,
+        session
+            .effective_shell_args
+            .as_deref()
+            .unwrap_or(&session.shell_args),
         &session.working_directory,
         session.backend_kind,
         session.agent_kind,
@@ -1313,6 +1317,40 @@ fn should_inject_fresh_session_id(is_claude: bool, skip_auto_resume: bool, full_
             || lower == "--fork-session"
     });
     !has_identity_flag
+}
+
+/// #2454: the transcript id an argv names, so the Claude reader can pin its
+/// first attach to `<id>.jsonl` instead of the newest file by mtime.
+///
+/// Rules, in order: the value of `--session-id` (or `--session-id=<v>`), then
+/// the value of `--resume` (or `--resume=<v>`). Flags match case-insensitively
+/// and every argument is split on whitespace first, so the `cmd` spawn shape
+/// (`"<...>claude --session-id <uuid>"` in one element) is covered. A value
+/// that is not a UUID yields `None`; `--continue`, `-c` and `-r` name no file
+/// and yield `None`.
+pub(crate) fn transcript_id_from_args(args: &[String]) -> Option<String> {
+    let tokens: Vec<&str> = args.iter().flat_map(|a| a.split_whitespace()).collect();
+    identity_flag_value(&tokens, "--session-id")
+        .or_else(|| identity_flag_value(&tokens, "--resume"))
+}
+
+/// The UUID value of the first `flag` in `tokens`, in either the spaced or the
+/// `=` form. A missing or non-UUID value yields `None`.
+fn identity_flag_value(tokens: &[&str], flag: &str) -> Option<String> {
+    for (i, token) in tokens.iter().enumerate() {
+        let lower = token.to_ascii_lowercase();
+        let value = if lower == flag {
+            tokens.get(i + 1).copied()
+        } else if lower.starts_with(flag) && lower.as_bytes().get(flag.len()) == Some(&b'=') {
+            token.get(flag.len() + 1..)
+        } else {
+            continue;
+        };
+        return value
+            .and_then(|v| Uuid::parse_str(v).ok())
+            .map(|id| id.to_string());
+    }
+    None
 }
 
 /// Issue #107 round 5 — build the optional title prompt, or `Ok(None)` if the

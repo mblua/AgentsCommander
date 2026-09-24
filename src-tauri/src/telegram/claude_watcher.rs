@@ -22,8 +22,9 @@ use crate::capture::record::{CaptureProvider, CapturedRecord, RecordOrigin};
 use crate::capture::state::head_from_lines;
 use crate::network::OutboundNetwork;
 use crate::telegram::jsonl_kernel::{
-    find_latest_jsonl, read_new_lines_with_starts, read_preamble_for_race, POLL_INTERVAL_MS,
-    PREAMBLE_MAX_BYTES, RACE_GRACE_SECS, ROTATION_STALE_SECS,
+    find_latest_jsonl, find_pinned_jsonl, read_new_lines_with_starts, read_preamble_for_race,
+    PINNED_ATTACH_WAIT_SECS, POLL_INTERVAL_MS, PREAMBLE_MAX_BYTES, RACE_GRACE_SECS,
+    ROTATION_STALE_SECS,
 };
 use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
 
@@ -36,6 +37,10 @@ const FLUSH_DELAY_MS: u64 = 500;
 /// directory (callers resolve via `commands::session::resolve_claude_projects_dir`
 /// so wrapper-driven `CLAUDE_CONFIG_DIR` overrides like `claude-mb` are honored).
 ///
+/// `transcript_id` is the transcript id AC minted at spawn (#2454). When it is
+/// known and `<id>.jsonl` is absent at the first poll, the first attach waits
+/// for that file instead of taking the newest one by mtime.
+///
 /// `dest` carries the Telegram destination, consulted **only** when it changes
 /// — at attach and at detach (#2232 phase 4 section 6). `None` is a room-only
 /// reader: no logger is built, nothing is sent, and the records still reach
@@ -43,6 +48,7 @@ const FLUSH_DELAY_MS: u64 = 500;
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_watch_task<R: tauri::Runtime>(
     project_dir: PathBuf,
+    transcript_id: Option<String>,
     network: OutboundNetwork,
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
@@ -53,6 +59,7 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
     tokio::spawn(async move {
         watch_loop(
             project_dir,
+            transcript_id,
             network,
             dest,
             session_id.clone(),
@@ -63,6 +70,64 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
         .await;
         log::info!("[JSONL_EXIT] Watcher task ended for session {}", session_id);
     })
+}
+
+/// The first-attach decision of the Claude reader (#2454).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AttachDecision {
+    /// The minted transcript was absent at the first poll and still is, and
+    /// the deadline is live: attach to nothing.
+    Wait,
+    /// The reader was waiting and the minted transcript has appeared. The
+    /// fresh-spawn case, and only it.
+    Pinned(PathBuf),
+    /// The newest `.jsonl` by mtime, exactly as before #2454.
+    Mtime(PathBuf),
+    /// The reader was waiting, the deadline expired and the minted transcript
+    /// is still absent: attach exactly like `Mtime`. Its own variant so the
+    /// fallback `warn!` has one call site.
+    MtimeFallback(PathBuf),
+    /// No `.jsonl` at all.
+    Nothing,
+}
+
+/// What [`decide_attach`] reads. Whether the pinned file is the newest is
+/// `pinned == newest`; requirement 4 of #2454 makes the answer irrelevant.
+#[derive(Clone, Copy, Debug)]
+struct AttachInputs<'a> {
+    transcript_id: Option<&'a str>,
+    /// `<id>.jsonl` when it exists.
+    pinned: Option<&'a Path>,
+    newest: Option<&'a Path>,
+    first_poll: bool,
+    deadline_expired: bool,
+}
+
+/// Decide the reader's first attach. Pure, so tests observe the decision
+/// directly.
+///
+/// `Pinned` is taken only when the reader was waiting: the minted file did not
+/// exist at the first poll, so no reader can have consumed any of it. A file
+/// that already existed at the first poll is late or resumed history and takes
+/// `Mtime`, whether or not it is the newest.
+fn decide_attach(inputs: AttachInputs<'_>) -> AttachDecision {
+    let by_mtime = || match inputs.newest {
+        Some(path) => AttachDecision::Mtime(path.to_path_buf()),
+        None => AttachDecision::Nothing,
+    };
+    if inputs.transcript_id.is_none() {
+        return by_mtime();
+    }
+    match (inputs.first_poll, inputs.pinned) {
+        (true, Some(_)) => by_mtime(),
+        (true, None) => AttachDecision::Wait,
+        (false, Some(path)) => AttachDecision::Pinned(path.to_path_buf()),
+        (false, None) if inputs.deadline_expired => match inputs.newest {
+            Some(path) => AttachDecision::MtimeFallback(path.to_path_buf()),
+            None => AttachDecision::Nothing,
+        },
+        (false, None) => AttachDecision::Wait,
+    }
 }
 
 /// Where a reader sends Telegram messages (#2232 phase 4 section 6).
@@ -294,8 +359,13 @@ fn capture_live_lines(
 }
 
 /// Capture and deliver the bodies of a §J first-attach preamble scan. Those
-/// lines are not tracked by the kernel, so `record_start` is `None` and the
-/// origin is [`RecordOrigin::Preamble`].
+/// lines are not tracked by the kernel, so `record_start` is `None`.
+///
+/// `origin` is [`RecordOrigin::Preamble`] for an attach by mtime and
+/// [`RecordOrigin::Live`] for a pinned attach (#2454): a pinned file did not
+/// exist when the reader started, so its content is this spawn's own output.
+/// The `None` start is kept on purpose; the scan reads a capped tail window, so
+/// any offset it produced would be a guess.
 fn capture_preamble_bodies(
     bodies: Vec<String>,
     session_id: &str,
@@ -303,18 +373,12 @@ fn capture_preamble_bodies(
     reader_seq: &mut u64,
     sender: Option<&UnboundedSender<Arc<CapturedRecord>>>,
     attach: &ReaderAttachment,
+    origin: RecordOrigin,
 ) -> Vec<Arc<CapturedRecord>> {
     let mut records = Vec::new();
     for text in bodies {
         let record = capture_record(
-            text,
-            None,
-            None,
-            RecordOrigin::Preamble,
-            session_id,
-            file,
-            reader_seq,
-            attach,
+            text, None, None, origin, session_id, file, reader_seq, attach,
         );
         deliver_capture_record(sender, &record);
         records.push(record);
@@ -382,6 +446,7 @@ fn apply_destination_change(
 #[allow(clippy::too_many_arguments)]
 async fn watch_loop<R: tauri::Runtime>(
     project_dir: PathBuf,
+    transcript_id: Option<String>,
     network: OutboundNetwork,
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
@@ -434,6 +499,17 @@ async fn watch_loop<R: tauri::Runtime>(
     let mut file_offset: u64 = 0;
     let mut line_remainder = String::new();
     let mut dir_warned = false;
+    // #2454: the minted transcript id, consulted until the first attach.
+    let pin_id: Option<String> = transcript_id;
+    let mut first_poll = true;
+    let mut wait_deadline: Option<Instant> = None;
+
+    // Emitted once, before the loop, so it cannot flood.
+    log::info!(
+        "[JSONL_ATTACH] session {} transcript_id={}",
+        session_id,
+        pin_id.as_deref().unwrap_or("none")
+    );
 
     bridge_log!(
         "JSONL_INIT",
@@ -508,7 +584,55 @@ async fn watch_loop<R: tauri::Runtime>(
                     dir_warned = false;
                 }
 
-                let latest = find_latest_jsonl(&project_dir);
+                let newest = find_latest_jsonl(&project_dir);
+                // #2454: the first attach goes through `decide_attach`; after
+                // it, rotation follows the newest mtime exactly as before.
+                let mut pinned_attach = false;
+                let latest = if current_file.is_some() {
+                    newest
+                } else {
+                    let pinned = pin_id
+                        .as_deref()
+                        .and_then(|id| find_pinned_jsonl(&project_dir, id));
+                    let decision = decide_attach(AttachInputs {
+                        transcript_id: pin_id.as_deref(),
+                        pinned: pinned.as_deref(),
+                        newest: newest.as_deref(),
+                        first_poll,
+                        deadline_expired: wait_deadline.is_some_and(|d| Instant::now() >= d),
+                    });
+                    first_poll = false;
+                    let waiting = matches!(decision, AttachDecision::Wait);
+                    if waiting && wait_deadline.is_none() {
+                        wait_deadline =
+                            Some(Instant::now() + Duration::from_secs(PINNED_ATTACH_WAIT_SECS));
+                        log::info!(
+                            "[JSONL_ATTACH] session {} waiting up to {}s for {}",
+                            session_id,
+                            PINNED_ATTACH_WAIT_SECS,
+                            project_dir
+                                .join(format!("{}.jsonl", pin_id.as_deref().unwrap_or_default()))
+                                .display()
+                        );
+                    }
+                    match decision {
+                        AttachDecision::Pinned(path) => {
+                            pinned_attach = true;
+                            Some(path)
+                        }
+                        AttachDecision::Mtime(path) => Some(path),
+                        // Runs once: this attach ends the decision loop.
+                        AttachDecision::MtimeFallback(path) => {
+                            log::warn!(
+                                "[JSONL_ATTACH] session {} pinned transcript absent after {}s; falling back to newest by mtime",
+                                session_id,
+                                PINNED_ATTACH_WAIT_SECS
+                            );
+                            Some(path)
+                        }
+                        AttachDecision::Wait | AttachDecision::Nothing => None,
+                    }
+                };
 
                 // Handle file rotation with flicker guard
                 if latest != current_file {
@@ -527,6 +651,19 @@ async fn watch_loop<R: tauri::Runtime>(
                             // First attach (§J preamble scan): emit recent
                             // lines from the file's tail, then set offset = file_len.
                             if let Some(ref p) = latest {
+                                // #2454 requirement 5: a pinned attach is this
+                                // spawn's own output, so it is `Live`.
+                                let origin = if pinned_attach {
+                                    RecordOrigin::Live
+                                } else {
+                                    RecordOrigin::Preamble
+                                };
+                                log::info!(
+                                    "[JSONL_ATTACH] session {} first attach {} path={}",
+                                    session_id,
+                                    if pinned_attach { "pinned" } else { "by mtime" },
+                                    p.display()
+                                );
                                 match read_preamble_for_race(p, attach_time, claude_preamble_extractor) {
                                     Ok((bodies, _ids, file_len)) => {
                                         // The §J scan reads the tail, so it
@@ -544,6 +681,7 @@ async fn watch_loop<R: tauri::Runtime>(
                                             &mut reader_seq,
                                             capture_tx.as_ref(),
                                             &attach,
+                                            origin,
                                         ) {
                                             bridge_log!("JSONL_PREAMBLE", &record.text);
                                             if current_dest.is_some() {
@@ -572,6 +710,13 @@ async fn watch_loop<R: tauri::Runtime>(
                             file_offset = 0;
                             rotation_backfill_pending = true;
                             bridge_log!("JSONL_ROTATE", &format!("new file: {:?}", latest));
+                            log::info!(
+                                "[JSONL_ROTATE] session {} old={} new={} offset={}",
+                                session_id,
+                                current_file.as_deref().map(|p| p.display().to_string()).unwrap_or_default(),
+                                latest.as_deref().map(|p| p.display().to_string()).unwrap_or_default(),
+                                file_offset
+                            );
                         }
                         current_file = latest;
                         current_file_mtime = current_file.as_ref()
