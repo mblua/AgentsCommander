@@ -12,7 +12,7 @@ use crate::config::instance_artifacts::{
     AGENT_HELP_SHIPPED_FILE_NAME, BLOCKING_MENUS_LOCAL_FILE_NAME,
     BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME, BLOCKING_MENUS_REMOTE_FILE_NAME,
     BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_SUFFIX,
-    SETTINGS_LOCK_FILE_NAME,
+    SETTINGS_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
 };
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
@@ -514,6 +514,12 @@ pub struct AppSettings {
     /// #2265 Co-managed: minimum margin between the top two judgments.
     #[serde(default = "default_jev_margin")]
     pub jev_margin: f32,
+    /// Global Co-managed switch. **`false` by default: the feature is in
+    /// development.** While `false` the feature is off app-wide: it masks every
+    /// room `config.json` and hides the menu item. Only turned on by editing
+    /// `settings.json` by hand; there is no UI control. Takes effect on restart.
+    #[serde(default)]
+    pub co_managed_enabled: bool,
     /// Auto-execute (send Enter) after voice transcription
     #[serde(default = "default_true")]
     pub voice_auto_execute: bool,
@@ -1261,6 +1267,7 @@ impl Default for AppSettings {
             jev_timeout_secs: default_jev_timeout_secs(),
             jev_threshold: default_jev_threshold(),
             jev_margin: default_jev_margin(),
+            co_managed_enabled: false,
             voice_auto_execute: true,
             voice_auto_execute_delay: default_voice_delay(),
             sidebar_zoom: default_zoom(),
@@ -3253,7 +3260,7 @@ pub fn validate_resource_settings(settings: &AppSettings) -> Result<(), String> 
 }
 
 pub(crate) fn settings_path() -> Option<PathBuf> {
-    super::config_dir().map(|d| d.join("settings.json"))
+    super::config_dir().map(|d| d.join(SETTINGS_FILE_NAME))
 }
 
 /// Load settings from the app config directory (see config_dir()), falling back to defaults.
@@ -6224,7 +6231,7 @@ pub(crate) fn project_state_has_structural(settings: &AppSettings) -> bool {
 /// file lock (tracked separately), deliberately not added here.
 pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let path = dir.join("settings.json");
+    let path = dir.join(SETTINGS_FILE_NAME);
     save_settings_to_path_preserving_project_paths(settings, &path)
 }
 
@@ -6317,7 +6324,7 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSav
 
     let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
-    let tmp_path = dir.join(format!("settings.json.{}.{}.tmp", pid, op_id));
+    let tmp_path = dir.join(format!("{SETTINGS_FILE_NAME}.{}.{}.tmp", pid, op_id));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -6524,7 +6531,7 @@ fn replace_settings_file_atomic(source: &Path, destination: &Path) -> std::io::R
 /// root_token/migration save (whose `project_paths` was just loaded from disk).
 pub fn save_settings_with_project_paths(settings: &AppSettings) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let path = dir.join("settings.json");
+    let path = dir.join(SETTINGS_FILE_NAME);
     save_settings_with_project_paths_to_path(settings, &path)
 }
 
@@ -11403,6 +11410,39 @@ mod tests {
         assert!(!s.spec_board_enabled);
     }
 
+    #[test]
+    fn co_managed_enabled_defaults_false_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert!(!s.co_managed_enabled);
+    }
+
+    #[test]
+    fn co_managed_enabled_default_impl_is_false() {
+        assert!(!AppSettings::default().co_managed_enabled);
+    }
+
+    #[test]
+    fn co_managed_enabled_round_trips_under_its_camel_case_key() {
+        let settings = AppSettings {
+            co_managed_enabled: true,
+            ..AppSettings::default()
+        };
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["coManagedEnabled"], serde_json::Value::Bool(true));
+        let back: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            serde_json::to_value(&back).unwrap()["coManagedEnabled"],
+            serde_json::Value::Bool(true)
+        );
+    }
+
     // ---- #548: per-(agent, letter) profile label overrides ----
 
     #[test]
@@ -12297,6 +12337,7 @@ mod tests {
   "ciActivityEnabled": true,
   "ciActivityNotifyOrchestrator": true,
   "ciSweepMinIntervalSecs": 30,
+  "coManagedEnabled": false,
   "codingAgentProfiles": {
     "defaultProfileByAgent": {},
     "profileLabelsByAgent": {},
