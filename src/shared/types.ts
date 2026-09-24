@@ -143,6 +143,15 @@ export interface SessionContextPayload {
   percent: number | null;
 }
 
+/** #2482 - the session's weekly (7-day) coding-agent quota reading.
+ *  `weeklyUsedPercent` is the USED percentage, 0..100, or null when unavailable.
+ *  Mirrors `AgentQuotaPayload` (`pty/agent_quota/mod.rs`) field for field.
+ *  null is the ONLY unknown: never 0, never 100, never an absent key. */
+export interface SessionAgentQuotaPayload {
+  sessionId: string;
+  weeklyUsedPercent: number | null;
+}
+
 /** #1682 - the instant of the most recent busy->idle edge on `sessionId` that the
  *  backend judged an agent turn, RFC3339/UTC as it stored it. It is the backend's
  *  proxy for the agent having finished responding, not a proof of it: an armed
@@ -1403,6 +1412,7 @@ export interface SessionsState {
   coordSortByActivity: boolean;
   lastActivityBySessionId: Record<string, number>;
   contextPercentBySessionId: Record<string, number | null>;
+  weeklyQuotaUsedBySessionId: Record<string, number | null>;
   hydrated: boolean;
 }
 
