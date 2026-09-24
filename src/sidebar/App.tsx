@@ -1066,7 +1066,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
           <Titlebar />
         </Show>
         <ActionBar />
-        <RootAgentBanner compact={sidebarCompact()} />
+        <RootAgentBanner compact={sidebarCompact()} railSide={railSide()} />
         <div class="sidebar-body" data-rail-side={railSide()}>
           <Show when={railSide() === "left"}>
             <WorkgroupGroupRail projects={projectStore.projects} />
