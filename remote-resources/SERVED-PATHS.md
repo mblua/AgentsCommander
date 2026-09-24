@@ -12,3 +12,4 @@ Rules:
 |---|---|---|
 | `docs/home-en.md` | `main` | 0.8.43 |
 | `remote-resources/blocking-menus/v1/settings-blocking-menus.json` | `main` | first release that ships the #1925 startup download |
+| `remote-resources/agent-help/v1/agent-help.json` | `main` | first release that ships the #2133 startup download |
