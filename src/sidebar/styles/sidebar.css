@@ -1438,6 +1438,11 @@ html.light-theme .root-agent-banner:hover {
   background: rgba(0, 102, 204, 0.08);
 }
 
+/* The toggle is white on the dark card (#2519); white would vanish on the light card. */
+html.light-theme .root-agent-banner-toggle {
+  color: var(--sidebar-fg);
+}
+
 html.light-theme .root-agent-avatar {
   background: rgba(0, 102, 204, 0.08);
   border-color: rgba(0, 102, 204, 0.15);
