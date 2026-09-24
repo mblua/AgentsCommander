@@ -80,15 +80,81 @@ where
     Fut: std::future::Future<Output = Result<T, String>> + Send,
     T: Send + 'static,
 {
+    run_owned_selection_operation_inner(None, operation).await
+}
+
+/// #2475 - `run_owned_selection_operation` plus one timing log line that
+/// separates the wait for the turn (`queue_wait`) from the operation itself
+/// (`work`). Instrumentation only: the turn and the result are unchanged.
+pub(crate) async fn run_owned_selection_operation_timed<F, Fut, T>(
+    command: &'static str,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    run_owned_selection_operation_inner(Some(command), operation).await
+}
+
+fn selection_timing_line(
+    command: &str,
+    queue_wait: std::time::Duration,
+    work: std::time::Duration,
+    ok: bool,
+) -> String {
+    format!(
+        "[selection-timing] command={} queue_wait_ms={:.1} work_ms={:.1} ok={}",
+        command,
+        queue_wait.as_secs_f64() * 1000.0,
+        work.as_secs_f64() * 1000.0,
+        ok
+    )
+}
+
+#[cfg(test)]
+pub(crate) static SELECTION_TIMING_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn record_selection_timing(line: String) {
+    log::info!("{}", line);
+    #[cfg(test)]
+    if let Ok(mut lines) = SELECTION_TIMING_LINES.lock() {
+        lines.push(line);
+    }
+}
+
+async fn run_owned_selection_operation_inner<F, Fut, T>(
+    command: Option<&'static str>,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
     if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
         return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
     }
+    let submitted = std::time::Instant::now();
     let handle = tauri::async_runtime::spawn(async move {
         let _turn = match acquire_selection_operation_turn().await {
             Ok(turn) => turn,
             Err(error) => return Err(error.to_string()),
         };
-        operation().await
+        let Some(command) = command else {
+            return operation().await;
+        };
+        let queue_wait = submitted.elapsed();
+        let started = std::time::Instant::now();
+        let result = operation().await;
+        record_selection_timing(selection_timing_line(
+            command,
+            queue_wait,
+            started.elapsed(),
+            result.is_ok(),
+        ));
+        result
     });
     match handle.await {
         Ok(result) => result,
@@ -7206,5 +7272,59 @@ fn commit_selection_transition() {
             SelectionCoordinatorError::RecursiveSubmission.to_string(),
             "selectionCoordinatorRecursiveSubmission"
         );
+    }
+
+    #[test]
+    fn selection_timing_line_separates_queue_wait_and_work() {
+        assert_eq!(
+            super::selection_timing_line(
+                "preview_selection_lock_removal",
+                Duration::from_micros(1_234_500),
+                Duration::from_micros(5_600),
+                true,
+            ),
+            "[selection-timing] command=preview_selection_lock_removal queue_wait_ms=1234.5 work_ms=5.6 ok=true"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timed_selection_operation_records_queue_wait_and_work() {
+        const PROBE: &str = "issue_2475_timing_probe";
+        let held = acquire_selection_operation_turn()
+            .await
+            .expect("hold the turn");
+        let queued = tokio::spawn(run_owned_selection_operation_timed(PROBE, || async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            Err::<(), String>("probe failure".to_string())
+        }));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        drop(held);
+        let result = queued.await.expect("join");
+        assert_eq!(result, Err("probe failure".to_string()), "result unchanged");
+
+        let lines = super::SELECTION_TIMING_LINES.lock().expect("lines").clone();
+        let line = lines
+            .iter()
+            .find(|line| line.contains(&format!("command={PROBE} ")))
+            .unwrap_or_else(|| panic!("no timing line for the probe in {lines:?}"));
+        let field = |name: &str| -> f64 {
+            line.split(' ')
+                .find_map(|part| part.strip_prefix(&format!("{name}=")))
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| panic!("{name} missing in {line}"))
+        };
+        assert!(
+            field("queue_wait_ms") >= 70.0,
+            "queue wait covers the held turn: {line}"
+        );
+        assert!(
+            field("work_ms") >= 25.0,
+            "work covers the operation: {line}"
+        );
+        assert!(
+            field("work_ms") < field("queue_wait_ms"),
+            "the two spans stay separate: {line}"
+        );
+        assert!(line.ends_with(" ok=false"), "failure is recorded: {line}");
     }
 }

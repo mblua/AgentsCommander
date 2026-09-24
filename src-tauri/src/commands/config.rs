@@ -1389,9 +1389,12 @@ pub async fn preview_coding_agent_profile_selection(
     // (the transport discards the late response) without cancelling the read.
     let session_mgr = Arc::clone(session_mgr.inner());
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation(move || async move {
-        preview_coding_agent_profile_selection_inner(&session_mgr, &settings, request).await
-    })
+    crate::session::selection::run_owned_selection_operation_timed(
+        "preview_coding_agent_profile_selection",
+        move || async move {
+            preview_coding_agent_profile_selection_inner(&session_mgr, &settings, request).await
+        },
+    )
     .await
 }
 
@@ -2778,9 +2781,12 @@ pub async fn preview_selection_lock_removal(
 ) -> Result<PreviewSelectionLockRemovalResult, String> {
     let session_mgr = Arc::clone(session_mgr.inner());
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation(move || async move {
-        preview_selection_lock_removal_inner(&session_mgr, &settings, request).await
-    })
+    crate::session::selection::run_owned_selection_operation_timed(
+        "preview_selection_lock_removal",
+        move || async move {
+            preview_selection_lock_removal_inner(&session_mgr, &settings, request).await
+        },
+    )
     .await
 }
 
@@ -2966,9 +2972,10 @@ pub async fn get_replica_selection_default(
     request: GetReplicaSelectionDefaultRequest,
 ) -> Result<ReplicaSelectionDefaultResult, String> {
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation(move || async move {
-        get_replica_selection_default_inner(&settings, request).await
-    })
+    crate::session::selection::run_owned_selection_operation_timed(
+        "get_replica_selection_default",
+        move || async move { get_replica_selection_default_inner(&settings, request).await },
+    )
     .await
 }
 
