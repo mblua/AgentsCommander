@@ -15601,7 +15601,12 @@ mod reader_demand_tests {
             "the replacement mints its own transcript id"
         );
         let new_path = new_projects.join(format!("{minted_new}.jsonl"));
-        let new_len = large_claude_transcript(&new_path, "above the tail window");
+        // Written under a non-`.jsonl` name and renamed in: a waiting reader
+        // pins the file the moment it appears, and a half-written file would
+        // still hold the first line inside the tail window.
+        let staging = new_projects.join(format!("{minted_new}.jsonl.tmp"));
+        let new_len = large_claude_transcript(&staging, "above the tail window");
+        std::fs::rename(&staging, &new_path).expect("publish the new transcript");
 
         // Old id: reader, demands, pump and slot are gone.
         let (gone_reader, gone_demands) = h.snapshot(old).await;
@@ -15741,8 +15746,10 @@ mod reader_demand_tests {
         // the file and offers nothing. Two polls of settle let it bind before
         // the append below.
         let new_path = dir.join(format!("{minted_new}.jsonl"));
+        // Staged and renamed in, so the pin never sees a half-written file.
+        let staging = dir.join(format!("{minted_new}.jsonl.tmp"));
         std::fs::write(
-            &new_path,
+            &staging,
             format!(
                 "{}\n",
                 claude_line(
@@ -15752,6 +15759,7 @@ mod reader_demand_tests {
             ),
         )
         .expect("new transcript");
+        std::fs::rename(&staging, &new_path).expect("publish the new transcript");
         tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
         assert!(matches!(new_slot.snapshot().value, SlotValue::Empty));
         let len_before = std::fs::metadata(&new_path)
