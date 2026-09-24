@@ -1438,6 +1438,11 @@ html.light-theme .root-agent-banner:hover {
   background: rgba(0, 102, 204, 0.08);
 }
 
+/* The toggle is white on the dark card (#2519); white would vanish on the light card. */
+html.light-theme .root-agent-banner-toggle {
+  color: var(--sidebar-fg);
+}
+
 html.light-theme .root-agent-avatar {
   background: rgba(0, 102, 204, 0.08);
   border-color: rgba(0, 102, 204, 0.15);
@@ -9770,6 +9775,7 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
   padding: 0;
   border: 0;
   background: transparent;
+  color: #fff;
   cursor: pointer;
 }
 
@@ -9843,12 +9849,17 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
   border-inline: 0;
   --ac-banner-inset-left: 0px;
   --ac-banner-inset-right: 0px;
+  overflow: hidden;
 }
 
 /* In compact the row is the toggle. visibility: hidden also removes the hidden
-   children from hit-testing, so the activation button cannot swallow a click. */
+   children from hit-testing, so the activation button cannot swallow a click.
+   Hidden children keep their layout box, so in the narrow rail their text would wrap
+   and grow the row (#2519). nowrap keeps the same line count as the expanded row, so the
+   height matches it; the banner's overflow: hidden clips the unwrapped text. */
 .sidebar-layout.sidebar-compact .root-agent-banner > :not(.root-agent-banner-toggle) {
   visibility: hidden;
+  white-space: nowrap;
 }
 
 /* Fill the padding box by construction: both insets, inline-size: auto. The second selector
