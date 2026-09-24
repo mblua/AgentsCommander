@@ -106,6 +106,10 @@ pub(crate) async fn co_managed_effective_state_for_session<R: Runtime>(
     let reader = crate::commands::telegram::derive_reader(
         &session.shell,
         &session.shell_args,
+        session
+            .effective_shell_args
+            .as_deref()
+            .unwrap_or(&session.shell_args),
         &session.working_directory,
         session.backend_kind,
         session.agent_kind,
@@ -1313,6 +1317,40 @@ fn should_inject_fresh_session_id(is_claude: bool, skip_auto_resume: bool, full_
             || lower == "--fork-session"
     });
     !has_identity_flag
+}
+
+/// #2454: the transcript id an argv names, so the Claude reader can pin its
+/// first attach to `<id>.jsonl` instead of the newest file by mtime.
+///
+/// Rules, in order: the value of `--session-id` (or `--session-id=<v>`), then
+/// the value of `--resume` (or `--resume=<v>`). Flags match case-insensitively
+/// and every argument is split on whitespace first, so the `cmd` spawn shape
+/// (`"<...>claude --session-id <uuid>"` in one element) is covered. A value
+/// that is not a UUID yields `None`; `--continue`, `-c` and `-r` name no file
+/// and yield `None`.
+pub(crate) fn transcript_id_from_args(args: &[String]) -> Option<String> {
+    let tokens: Vec<&str> = args.iter().flat_map(|a| a.split_whitespace()).collect();
+    identity_flag_value(&tokens, "--session-id")
+        .or_else(|| identity_flag_value(&tokens, "--resume"))
+}
+
+/// The UUID value of the first `flag` in `tokens`, in either the spaced or the
+/// `=` form. A missing or non-UUID value yields `None`.
+fn identity_flag_value(tokens: &[&str], flag: &str) -> Option<String> {
+    for (i, token) in tokens.iter().enumerate() {
+        let lower = token.to_ascii_lowercase();
+        let value = if lower == flag {
+            tokens.get(i + 1).copied()
+        } else if lower.starts_with(flag) && lower.as_bytes().get(flag.len()) == Some(&b'=') {
+            token.get(flag.len() + 1..)
+        } else {
+            continue;
+        };
+        return value
+            .and_then(|v| Uuid::parse_str(v).ok())
+            .map(|id| id.to_string());
+    }
+    None
 }
 
 /// Issue #107 round 5 — build the optional title prompt, or `Ok(None)` if the
@@ -11612,6 +11650,88 @@ mod tests {
         ));
     }
 
+    // ── (#2454) transcript_id_from_args ──
+
+    const TRANSCRIPT_UUID: &str = "7f9e4a10-2b3c-4d5e-8f90-1a2b3c4d5e6f";
+
+    fn transcript_id_of(args: &[&str]) -> Option<String> {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        super::transcript_id_from_args(&args)
+    }
+
+    // Test 1.
+    #[test]
+    fn transcript_id_reads_the_spaced_session_id() {
+        assert_eq!(
+            transcript_id_of(&["--session-id", TRANSCRIPT_UUID]).as_deref(),
+            Some(TRANSCRIPT_UUID)
+        );
+    }
+
+    // Test 2.
+    #[test]
+    fn transcript_id_reads_the_equals_session_id() {
+        let arg = format!("--session-id={TRANSCRIPT_UUID}");
+        assert_eq!(transcript_id_of(&[&arg]).as_deref(), Some(TRANSCRIPT_UUID));
+    }
+
+    // Test 3: the `cmd` spawn shape keeps the flag inside the last element; an
+    // argv scan that does not split on whitespace misses it.
+    #[test]
+    fn transcript_id_reads_the_cmd_shape_inside_one_argument() {
+        let arg = format!("C:/Tools/claude --session-id {TRANSCRIPT_UUID}");
+        assert_eq!(
+            transcript_id_of(&["/C", &arg]).as_deref(),
+            Some(TRANSCRIPT_UUID)
+        );
+    }
+
+    // Test 4.
+    #[test]
+    fn transcript_id_reads_resume_in_both_forms() {
+        let equals = format!("--resume={TRANSCRIPT_UUID}");
+        assert_eq!(
+            transcript_id_of(&["--resume", TRANSCRIPT_UUID]).as_deref(),
+            Some(TRANSCRIPT_UUID)
+        );
+        assert_eq!(
+            transcript_id_of(&[&equals]).as_deref(),
+            Some(TRANSCRIPT_UUID)
+        );
+    }
+
+    // Test 5 (guard): `-r` carries a real UUID on purpose, so treating `-r` as
+    // `--resume` would return it and turn this red.
+    #[test]
+    fn transcript_id_is_none_for_flags_that_name_no_file() {
+        assert_eq!(transcript_id_of(&["--continue"]), None);
+        assert_eq!(transcript_id_of(&["-c"]), None);
+        assert_eq!(transcript_id_of(&["-r", TRANSCRIPT_UUID]), None);
+        assert_eq!(transcript_id_of(&[]), None);
+    }
+
+    // Test 6 (guard).
+    #[test]
+    fn transcript_id_is_none_for_a_non_uuid_value() {
+        assert_eq!(transcript_id_of(&["--session-id", "not-a-uuid"]), None);
+        assert_eq!(transcript_id_of(&["--resume=abc"]), None);
+    }
+
+    // Test 7 (guard).
+    #[test]
+    fn transcript_id_matches_the_flag_case_insensitively() {
+        assert_eq!(
+            transcript_id_of(&["--SESSION-ID", TRANSCRIPT_UUID]).as_deref(),
+            Some(TRANSCRIPT_UUID)
+        );
+    }
+
+    // Test 8 (guard): a trailing flag with no value yields `None`, no panic.
+    #[test]
+    fn transcript_id_is_none_for_a_trailing_flag_without_value() {
+        assert_eq!(transcript_id_of(&["claude", "--session-id"]), None);
+    }
+
     // ── Issue #107 Round 5 §R5.8.6 — build_title_prompt_appendage idempotence ──
     //
     // Tempdir naming starts with `wg-` so `find_workgroup_task_path_for_cwd`'s
@@ -14574,8 +14694,10 @@ mod reader_demand_tests {
         configure_room(fixture.room_path(), true);
         let h = restart_harness(&fixture);
         let cwd = fixture.coordinator_path();
-        let id = h.live_session(cwd, CodingAgentKind::Claude).await;
+        let info = h.live_session_info(cwd, CodingAgentKind::Claude).await;
+        let id = Uuid::parse_str(&info.id).expect("session id");
         let key = id.to_string();
+        let minted = minted_transcript_id(&info).expect("the spawn mints a transcript id");
 
         assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), id).await);
         h.attach_bot(id).await;
@@ -14623,10 +14745,12 @@ mod reader_demand_tests {
         let slot = h.captures.slot(&key).expect("slot open");
 
         // Capture continues with no send: the appended line reaches the slot
-        // and acquires no `telegram.send_message` permit.
+        // and acquires no `telegram.send_message` permit. The reader pins its
+        // first attach to the minted transcript (#2454), so "before detach"
+        // lands `Live`; `sends_before` is read after it, so the count holds.
         let dir = h.claude_projects_dir(&h.claude_config_dir, cwd);
         std::fs::create_dir_all(&dir).expect("transcript dir");
-        let path = dir.join("session.jsonl");
+        let path = dir.join(format!("{minted}.jsonl"));
         std::fs::write(
             &path,
             format!(
@@ -15075,6 +15199,18 @@ mod reader_demand_tests {
         /// A live scripted session for `kind` whose transcript memo comes from
         /// the configured agent environment, exactly as production resolves it.
         async fn live_session(&self, cwd: &std::path::Path, kind: CodingAgentKind) -> Uuid {
+            let info = self.live_session_info(cwd, kind).await;
+            Uuid::parse_str(&info.id).expect("session id")
+        }
+
+        /// [`Self::live_session`], keeping the created `SessionInfo`: its
+        /// `effective_shell_args` carry the transcript id the spawn minted
+        /// (#2454), which is NOT the session UUID.
+        async fn live_session_info(
+            &self,
+            cwd: &std::path::Path,
+            kind: CodingAgentKind,
+        ) -> SessionInfo {
             let (agent_id, label) = match kind {
                 CodingAgentKind::Claude => ("claude", "Claude Code"),
                 CodingAgentKind::Codex => ("codex", "Codex"),
@@ -15089,7 +15225,7 @@ mod reader_demand_tests {
             )
             .expect("build configured agent spawn")
             .expect("configured agent exists in test settings");
-            let info = crate::commands::session::create_session_inner(
+            crate::commands::session::create_session_inner(
                 self.app.handle(),
                 &self.manager,
                 &self.pty,
@@ -15108,8 +15244,7 @@ mod reader_demand_tests {
                 CreateSelectionIntent::User,
             )
             .await
-            .expect("create phase 4 scripted session");
-            Uuid::parse_str(&info.id).expect("session id")
+            .expect("create phase 4 scripted session")
         }
 
         async fn bridge(&self) -> tauri::State<'_, TelegramBridgeState> {
@@ -15119,6 +15254,20 @@ mod reader_demand_tests {
         /// Drive the production restart entry point (the innermost of the
         /// three, so all three inherit it) and return its error, if any.
         async fn restart(&self, id: Uuid) -> Result<SessionInfo, String> {
+            self.restart_with(id, Some(false)).await
+        }
+
+        /// The restart button's default: `skip_auto_resume` unset resolves to
+        /// FRESH, so the replacement mints a new transcript id (#2454).
+        async fn restart_fresh(&self, id: Uuid) -> Result<SessionInfo, String> {
+            self.restart_with(id, None).await
+        }
+
+        async fn restart_with(
+            &self,
+            id: Uuid,
+            skip_auto_resume: Option<bool>,
+        ) -> Result<SessionInfo, String> {
             let settings = self.app.state::<crate::config::settings::SettingsState>();
             crate::commands::session::restart_session_inner_with_intent(
                 self.app.handle(),
@@ -15128,7 +15277,7 @@ mod reader_demand_tests {
                 id,
                 None,
                 None,
-                Some(false),
+                skip_auto_resume,
                 true,
                 TrustedRestartIntent::User,
                 None,
@@ -15163,6 +15312,15 @@ mod reader_demand_tests {
         async fn set_claude_config_dir(&self, dir: &std::path::Path) {
             let settings = self.app.state::<crate::config::settings::SettingsState>();
             settings.write().await.agents[0].envs = vec![claude_env_row(dir)];
+        }
+
+        /// Configure the Claude agent's command line, in the harness copy that
+        /// creates sessions AND in the live settings a restart re-resolves
+        /// argv from.
+        async fn set_claude_command(&mut self, command: &str) {
+            self.settings.agents[0].command = command.to_string();
+            let settings = self.app.state::<crate::config::settings::SettingsState>();
+            settings.write().await.agents[0].command = command.to_string();
         }
 
         async fn set_codex_home(&self, dir: &std::path::Path) {
@@ -15204,6 +15362,24 @@ mod reader_demand_tests {
         async fn close(self) {
             crate::commands::session::tests::close_test_coordinator(&self.app).await;
         }
+    }
+
+    /// The transcript id a spawn minted (#2454), read back from its effective
+    /// argv; `None` when no `--session-id` was injected.
+    fn minted_transcript_id(info: &SessionInfo) -> Option<String> {
+        crate::commands::session::transcript_id_from_args(
+            info.effective_shell_args.as_deref().unwrap_or(&[]),
+        )
+    }
+
+    /// Move a file's mtime `secs` into the past, so it is never the newest.
+    fn backdate(path: &std::path::Path, secs: u64) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open for backdate")
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs))
+            .expect("backdate mtime");
     }
 
     /// One Claude assistant line with an explicit timestamp.
@@ -15354,14 +15530,17 @@ mod reader_demand_tests {
         configure_room(fixture.room_path(), true);
         let h = restart_harness(&fixture);
         let cwd = fixture.coordinator_path();
-        let old = h.live_session(cwd, CodingAgentKind::Claude).await;
+        let old_info = h.live_session_info(cwd, CodingAgentKind::Claude).await;
+        let old = Uuid::parse_str(&old_info.id).expect("session id");
         let old_key = old.to_string();
+        let minted_old =
+            minted_transcript_id(&old_info).expect("the old spawn mints a transcript id");
 
         // Room demand first, then a hot Bot attach over the live reader.
         assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
         let old_dir = h.claude_projects_dir(&h.claude_config_dir, cwd);
         std::fs::create_dir_all(&old_dir).expect("old transcript dir");
-        let old_path = old_dir.join("session.jsonl");
+        let old_path = old_dir.join(format!("{minted_old}.jsonl"));
         std::fs::write(
             &old_path,
             format!(
@@ -15399,18 +15578,35 @@ mod reader_demand_tests {
 
         // The replacement resolves a different transcript directory: a >64 KiB
         // Claude file whose only final answer sits above the 64 KiB tail
-        // window, so cold-start rules never replay it.
+        // window, so cold-start rules never replay it. It is written AFTER
+        // the restart, named from the replacement's minted id (#2454); the
+        // pre-restart `session.jsonl` is a backdated decoy that is never the
+        // newest, so only the pin can choose the minted file.
         let new_dir = fixture.temp_path().join("claude-home-b");
         std::fs::create_dir_all(&new_dir).expect("new config dir");
         h.set_claude_config_dir(&new_dir).await;
         let new_projects = h.claude_projects_dir(&new_dir, cwd);
         std::fs::create_dir_all(&new_projects).expect("new transcript dir");
-        let new_path = new_projects.join("session.jsonl");
-        let new_len = large_claude_transcript(&new_path, "above the tail window");
+        let decoy = new_projects.join("session.jsonl");
+        large_claude_transcript(&decoy, "decoy above the tail window");
+        backdate(&decoy, 120);
 
-        let restarted = h.restart(old).await.expect("restart succeeds");
+        let restarted = h.restart_fresh(old).await.expect("restart succeeds");
         let new = Uuid::parse_str(&restarted.id).expect("replacement id");
         assert_ne!(new, old, "the restart mints a new session UUID");
+        let minted_new =
+            minted_transcript_id(&restarted).expect("the replacement mints a transcript id");
+        assert_ne!(
+            minted_new, minted_old,
+            "the replacement mints its own transcript id"
+        );
+        let new_path = new_projects.join(format!("{minted_new}.jsonl"));
+        // Written under a non-`.jsonl` name and renamed in: a waiting reader
+        // pins the file the moment it appears, and a half-written file would
+        // still hold the first line inside the tail window.
+        let staging = new_projects.join(format!("{minted_new}.jsonl.tmp"));
+        let new_len = large_claude_transcript(&staging, "above the tail window");
+        std::fs::rename(&staging, &new_path).expect("publish the new transcript");
 
         // Old id: reader, demands, pump and slot are gone.
         let (gone_reader, gone_demands) = h.snapshot(old).await;
@@ -15482,18 +15678,148 @@ mod reader_demand_tests {
         h.close().await;
     }
 
-    /// Test 9 (Claude, same path): the replacement cold-binds the same
-    /// transcript file. Normal cold-start rules apply: the recent tail is
-    /// re-offered as `Preamble` (that is what a cold attach does today), the
-    /// offset starts at the file length, and only the appended line arrives
-    /// `Live` above the pre-restart length.
+    /// Test 9 (Claude, same directory, fresh restart; #2454 p3b test 23a): a
+    /// fresh restart mints a NEW transcript id, so the replacement never
+    /// appends to the previous spawn's file. It pins its own minted file and
+    /// reads only that file's appended bytes; nothing the old spawn wrote ever
+    /// reaches the new slot.
     #[tokio::test]
-    async fn a_restart_into_the_same_claude_path_reads_only_appended_bytes() {
+    async fn a_fresh_restart_reads_only_its_own_minted_transcript() {
         use crate::capture::record::RecordOrigin;
+        use crate::capture::sink::SlotValue;
 
         let fixture = room_fixture();
         configure_room(fixture.room_path(), true);
         let h = restart_harness(&fixture);
+        let cwd = fixture.coordinator_path();
+        let old_info = h.live_session_info(cwd, CodingAgentKind::Claude).await;
+        let old = Uuid::parse_str(&old_info.id).expect("session id");
+        let minted_old =
+            minted_transcript_id(&old_info).expect("the old spawn mints a transcript id");
+
+        assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
+        let dir = h.claude_projects_dir(&h.claude_config_dir, cwd);
+        std::fs::create_dir_all(&dir).expect("transcript dir");
+        let old_path = dir.join(format!("{minted_old}.jsonl"));
+        std::fs::write(
+            &old_path,
+            format!(
+                "{}\n",
+                claude_line(
+                    "cold preamble",
+                    chrono::Utc::now() - chrono::Duration::seconds(1)
+                )
+            ),
+        )
+        .expect("old transcript");
+        let old_slot = h
+            .captures
+            .slot(&old.to_string())
+            .expect("old endpoints open");
+        wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "cold preamble"
+        })
+        .await;
+        append_claude(&old_path, "old live");
+        wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
+            r.text == "old live"
+        })
+        .await;
+        // Not backdated and never touched again: right after the restart it is
+        // the only, hence the newest, `.jsonl` in the directory.
+
+        let restarted = h.restart_fresh(old).await.expect("restart succeeds");
+        let new = Uuid::parse_str(&restarted.id).expect("replacement id");
+        assert_ne!(new, old);
+        assert!(h.snapshot(old).await.0.is_none());
+        // Step 1: the replacement minted its own transcript id.
+        let minted_new =
+            minted_transcript_id(&restarted).expect("the fresh restart mints a transcript id");
+        assert_ne!(
+            minted_new, minted_old,
+            "a fresh restart mints a new transcript id"
+        );
+
+        let new_slot = h
+            .captures
+            .slot(&new.to_string())
+            .expect("new endpoints open");
+        // Step 2, the guard: more than two 500 ms polls with ONLY the old file
+        // present. A pinned reader waits; a reader attaching by mtime would
+        // already have offered the old file's tail, both lines of which sit
+        // inside the 5 s window.
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        let step2 = new_slot.snapshot().value;
+        assert!(
+            matches!(step2, SlotValue::Empty),
+            "the replacement attached to the old spawn's transcript: {:?}",
+            match &step2 {
+                SlotValue::Valid(record) => Some(record.text.clone()),
+                _ => None,
+            }
+        );
+
+        // Step 3: the minted file appears, published by rename, holding one
+        // completed reply outside the 5 s window, so the pinned attach binds
+        // it and offers nothing.
+        let new_path = dir.join(format!("{minted_new}.jsonl"));
+        let staging = dir.join(format!("{minted_new}.jsonl.tmp"));
+        std::fs::write(
+            &staging,
+            format!(
+                "{}\n",
+                claude_line(
+                    "new history",
+                    chrono::Utc::now() - chrono::Duration::seconds(60)
+                )
+            ),
+        )
+        .expect("new transcript");
+        std::fs::rename(&staging, &new_path).expect("publish the new transcript");
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert!(matches!(new_slot.snapshot().value, SlotValue::Empty));
+        let seq_before = new_slot.seq();
+        let len_before = std::fs::metadata(&new_path)
+            .expect("transcript metadata")
+            .len();
+
+        // Step 4: exactly the appended line follows the attach.
+        append_claude(&new_path, "new live");
+        let (seq, record) =
+            wait_for_slot_record(&new_slot, std::time::Duration::from_secs(10), |r| {
+                r.text == "new live"
+            })
+            .await;
+        assert_eq!(record.origin, RecordOrigin::Live);
+        assert_eq!(record.observed_path, new_path);
+        assert_eq!(
+            record.record_start.expect("live record"),
+            len_before,
+            "only the appended bytes of the minted file are read"
+        );
+        assert_eq!(seq, seq_before + 1, "exactly one offer follows the attach");
+        h.release_all(new).await;
+        h.close().await;
+    }
+
+    /// Test 9 (Claude, same path, resumed restart; #2454 p3b test 23b): the
+    /// replacement cold-binds the same transcript file. That is reachable
+    /// only when no transcript id is minted, forced here by a configured
+    /// `--continue`. Normal cold-start rules apply: the recent tail is
+    /// re-offered as `Preamble` (that is what a cold attach does today), the
+    /// offset starts at the file length, and only the appended line arrives
+    /// `Live` above the pre-restart length.
+    #[tokio::test]
+    async fn a_resumed_restart_reads_only_appended_bytes_of_the_same_transcript() {
+        use crate::capture::record::RecordOrigin;
+
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let mut h = restart_harness(&fixture);
+        // A configured identity flag vetoes the `--session-id` injection; it
+        // must live in the configured agent because a restart re-resolves argv
+        // from settings.
+        h.set_claude_command("claude --continue").await;
         let cwd = fixture.coordinator_path();
         let old = h.live_session(cwd, CodingAgentKind::Claude).await;
 
@@ -15530,6 +15856,14 @@ mod reader_demand_tests {
         let restarted = h.restart(old).await.expect("restart succeeds");
         let new = Uuid::parse_str(&restarted.id).expect("replacement id");
         assert_ne!(new, old);
+        // Non-vacuity: an id minted here would pin a different file, and this
+        // test must fail rather than pass on a shape it does not describe.
+        assert_eq!(
+            minted_transcript_id(&restarted),
+            None,
+            "a resumed restart mints no transcript id: {:?}",
+            restarted.effective_shell_args
+        );
         assert!(h.snapshot(old).await.0.is_none());
         assert!(!h.captures.is_open(&old.to_string()));
 

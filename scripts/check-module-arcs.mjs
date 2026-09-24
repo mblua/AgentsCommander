@@ -7,11 +7,12 @@
 // The committed record was produced on Windows under Node v24.13.0 (#2462). If a later Node or
 // OS change moves the output, that is where to start looking.
 
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { realRunner, runSelfTest } from './gate-support.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DETECTOR = path.join(ROOT, 'scripts', '01-rust_module-dependency-cycles.mjs');
@@ -37,18 +38,6 @@ fails when it differs from src-tauri/module-arcs.txt byte for byte.
   --help       Print this usage and exit 0.`;
 
 class GateError extends Error {}
-
-export function realRunner(argv) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, argv, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d; });
-    child.stderr.on('data', (d) => { stderr += d; });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ exit: code, stdout, stderr }));
-  });
-}
 
 function readRecord(recordPath) {
   let bytes;
@@ -333,20 +322,7 @@ const CASES = [
   ['the diff is a valid unified diff that turns the committed record into the candidate', diffFormatCase],
 ];
 
-async function selfTest() {
-  let failed = 0;
-  for (const [name, run] of CASES) {
-    try {
-      await run();
-      console.log(`ok   ${name}`);
-    } catch (err) {
-      failed += 1;
-      console.log(`FAIL ${name}: ${err.message}`);
-    }
-  }
-  console.log(`${CASES.length - failed}/${CASES.length} self-test cases passed`);
-  return failed === 0 ? 0 : 4;
-}
+const selfTest = () => runSelfTest(CASES);
 
 async function main(args) {
   if (args.includes('--help')) {

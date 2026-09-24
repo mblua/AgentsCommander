@@ -120,6 +120,7 @@ import type {
   CoManagedState,
 } from "./types";
 import { decodeSessionSelection } from "./session-selection";
+import type { AgentHelpFile } from "./agent-help";
 
 export type { UiTerminalOperation };
 
@@ -745,6 +746,17 @@ export function onErrorLogEvent(
 ): Promise<UnlistenFn> {
   return transport.listen<unknown>("error_log_event", () => callback());
 }
+
+/** Wire shape of `get_agent_help`: the local and remote agent-help overlays. */
+export interface AgentHelpOverlayPayload {
+  local: AgentHelpFile | null;
+  remote: AgentHelpFile | null;
+  localError: string | null;
+}
+
+export const AgentHelpAPI = {
+  get: () => transport.invoke<AgentHelpOverlayPayload>("get_agent_help"),
+};
 
 export const WindowAPI = {
   detach: (sessionId: string) =>
