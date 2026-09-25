@@ -1110,6 +1110,37 @@ jobs:
             exit 1
           }
 
+      # IS #2430: the stem rule must split `\` on every OS. The sentinel fails
+      # on Linux if `command_token_basename` goes back to std::path::Path, and
+      # the full suite runs only on the Windows leg, where it passes either way.
+      - name: "cargo test (IS #2430 cross-platform stem rule, focused)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          FILTER=command_token_basename
+          # The three #2430 tests, none platform-gated. Update in the same
+          # commit that adds or removes a command_token_basename test.
+          EXPECTED=3
+          cargo test --locked --lib "$FILTER" -- --nocapture 2>&1 | tee test-2430.log
+
+          # Three guards, matching the #1842 step, none redundant:
+          #   1. pipefail (LOAD-BEARING through the tee) catches a test that
+          #      ran and FAILED.
+          #   2. The sentinel grep is the POSITIVE CONTROL: a filter matching
+          #      nothing exits 0 and prints "0 passed".
+          #   3. The anchored count is the MUTATION PROBE: gating a test out
+          #      moves the number.
+          grep -qF 'command_token_basename_strips_windows_separators_on_every_os' test-2430.log || {
+            echo "::error::the sentinel test never ran; the filter matched nothing or it was renamed."
+            exit 1
+          }
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2430.log || {
+            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER}; the count changed or the filter matched something else."
+            exit 1
+          }
+
       # IS #2162: the full suite runs only on the Windows leg, so without this
       # the config-seed tests would compile on Linux and never execute -- and
       # the `linux` branch of host_os_token(), the branch the feature exists

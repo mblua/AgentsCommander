@@ -2395,12 +2395,20 @@ pub(crate) fn export_blocking_menus_to_local_file(
     true
 }
 
+/// The tree's only executable-stem rule, and the byte-for-byte twin of
+/// `executableTokenBasename` in `src/shared/profile-utils.ts`. It deliberately does
+/// not use `std::path::Path`, which ignores `\` off Windows (#2430).
 pub(crate) fn command_token_basename(token: &str) -> String {
-    std::path::Path::new(token)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(token)
-        .to_lowercase()
+    let normalized = token.replace('\\', "/");
+    let leaf = match normalized.rsplit('/').next() {
+        Some(segment) if !segment.is_empty() => segment,
+        _ => normalized.as_str(),
+    };
+    let stem = match leaf.rsplit_once('.') {
+        Some((stem, ext)) if !ext.is_empty() => stem,
+        _ => leaf,
+    };
+    stem.to_lowercase()
 }
 
 fn token_has_unclosed_quote(token: &str, quote: char) -> bool {
@@ -15962,6 +15970,52 @@ mod tests {
             assert!(published.by_agent.is_empty());
             assert_eq!(published.by_command, shipped_agent_help().by_command);
             assert_eq!(published.general, shipped_agent_help().general);
+        }
+    }
+
+    /// #2430: the worked table from the phase plan. Every row is what
+    /// `executableTokenBasename` (`src/shared/profile-utils.ts`) returns.
+    const STEM_TWIN_TABLE: &[(&str, &str)] = &[
+        (r"C:\tools\claude.exe", "claude"),
+        ("/usr/bin/claude", "claude"),
+        ("claude", "claude"),
+        ("C:/tools/CLAUDE.CMD", "claude"),
+        ("claude-3.5", "claude-3"),
+        ("./bin/agy", "agy"),
+        ("", ""),
+        (".bashrc", ""),
+        ("claude.", "claude."),
+        (r"C:\tools\", "c:/tools/"),
+    ];
+
+    #[test]
+    fn command_token_basename_strips_windows_separators_on_every_os() {
+        assert_eq!(
+            super::command_token_basename(r"C:\tools\claude.exe"),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn command_token_basename_matches_the_typescript_twin() {
+        for (input, expected) in STEM_TWIN_TABLE {
+            assert_eq!(
+                super::command_token_basename(input),
+                *expected,
+                "input {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_token_basename_is_idempotent() {
+        for (input, _) in STEM_TWIN_TABLE {
+            let once = super::command_token_basename(input);
+            assert_eq!(
+                super::command_token_basename(&once),
+                once,
+                "input {input:?}"
+            );
         }
     }
 }
