@@ -86,6 +86,7 @@ import {
   shouldMaskEnvValue,
   sortedProfileLetters,
   suggestedContextRegex,
+  suggestedQuotaRegex,
   validateEnvRows,
 } from "../../shared/profile-utils";
 
@@ -1533,6 +1534,30 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     if (!settings.data) return;
     setDraftDirty(true);
     setSettings("data", "agents", index, field as any, value as any);
+  };
+
+  /** #2482 - what the field shows. Reads the root map, never `AgentConfig`. */
+  const quotaPattern = (agentId: string): string => {
+    const entry = settings.data?.quotaSources?.[agentId];
+    // Narrows the FULL shape, not just `kind`: p1's fallback arm is any JSON value.
+    return isScreenRegexSource(entry) ? entry.pattern : "";
+  };
+
+  /** #2482 - write, or remove the key when the field is cleared. */
+  const setQuotaPattern = (agentId: string, pattern: string): void => {
+    if (!settings.data) return;
+    const blank = pattern.trim() === "";
+    // Early return: on an absent map a write CREATES the key (present, undefined).
+    if (blank && !settings.data.quotaSources) return;
+    setDraftDirty(true);
+    setSettings("data", "quotaSources", (map) =>
+      // Blank REMOVES the key; `[agentId]: undefined`, never `delete` (the store
+      // diffs the returned object, so an omitted key survives). The non-blank arm
+      // REPLACES the whole entry and spreads siblings untouched.
+      blank
+        ? { ...map, [agentId]: undefined }
+        : { ...(map ?? {}), [agentId]: { kind: "screenRegex", pattern } },
+    );
   };
 
   const setAgentConfigSeedEnabled = (index: number, enabled: boolean) => {
@@ -3547,6 +3572,35 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               a CTX badge on its sessions. Capture group 1 is the percentage. The reading can
               be unavailable, stale or absent, and a high one does not mean the session needs
               restarting. <strong>Leave blank for no badge.</strong>
+            </div>
+            <label class="settings-field">
+              <span class="settings-label">Weekly quota pattern</span>
+              <input
+                class="settings-input"
+                value={quotaPattern(agent.id)}
+                onInput={(e) => setQuotaPattern(agent.id, e.currentTarget.value)}
+                placeholder={suggestedQuotaRegex(agent.command) ?? ""}
+                data-ac-testid={`settings.agentRow.${i()}.quotaPattern`}
+                data-ac-role="textbox"
+                spellcheck={false}
+              />
+            </label>
+            <Show when={suggestedQuotaRegex(agent.command)}>
+              {(suggested) => (
+                <button
+                  class="settings-add-btn"
+                  onClick={() => setQuotaPattern(agent.id, suggested())}
+                  data-ac-testid={`settings.agentRow.${i()}.quotaPattern.suggest`}
+                  data-ac-role="button"
+                >
+                  Use suggested pattern
+                </button>
+              )}
+            </Show>
+            <div class="settings-hint">
+              Best-effort pattern AC runs over what this agent draws in its terminal, to fill its
+              chip with the remaining 7-day quota. Capture group 1 is the USED percentage. The
+              reading can be unavailable or stale; then the chip looks as it does with this field blank.
             </div>
             <label class="settings-checkbox-field">
               <input
