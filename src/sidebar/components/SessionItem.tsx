@@ -544,6 +544,8 @@ const SessionItem: Component<{
             <button
               class="session-context-option"
               onClick={handleCodingAgentRestart}
+              data-ac-testid={`session.${props.session.id}.coding-agent`}
+              data-ac-role="menuitem"
             >
               Coding Agent
             </button>
