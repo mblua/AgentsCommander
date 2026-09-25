@@ -3731,7 +3731,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               class="settings-agent-chevron"
               onClick={(e) => {
                 e.stopPropagation();
+                // #2545 - the press that expands also does what "See profiles"
+                // does. Read before toggling: afterwards it is inverted.
+                const willExpand = !expanded();
                 toggleAgentEditor(agent.id);
+                if (willExpand && railAction() !== "none") selectAgentRail(agent.id, i());
               }}
               aria-expanded={expanded()}
               aria-label={expanded() ? "Collapse agent settings" : "Expand agent settings"}
