@@ -11,7 +11,9 @@ use uuid::Uuid;
 use sha2::{Digest, Sha256};
 
 use crate::api::auth;
-use crate::config::coding_agent_mutations::{move_registered_agent, AgentMoveDirection};
+use crate::config::coding_agent_mutations::{
+    move_registered_agent, reorder_registered_agent, AgentMoveDirection,
+};
 use crate::config::instance_artifacts::{DEBUG_LOGS_FILE_NAME, SETTINGS_FILE_NAME};
 use crate::config::projects::{
     display_canonical, IssueKind, ProjectPathPersistenceState, ProjectSource, RawJsonField,
@@ -4070,6 +4072,71 @@ pub(crate) async fn move_coding_agent_inner_with_saver(
         .collect())
 }
 
+/// #2542 - narrow owner of the one-step reorder: moves `id` to `target_index`
+/// when `expected_ids` still matches the effective order. Mutates only the
+/// `agents` vector under the settings write guard and persists through the
+/// preserving `save_settings`.
+#[tauri::command]
+pub async fn reorder_coding_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    settings: State<'_, SettingsState>,
+    id: String,
+    expected_ids: Vec<String>,
+    target_index: usize,
+) -> Result<Vec<String>, String> {
+    reorder_coding_agent_command_with_saver(
+        &app,
+        settings.inner(),
+        id,
+        expected_ids,
+        target_index,
+        save_settings,
+    )
+    .await
+}
+
+/// Shared Tauri-command body for the reorder; emits the move's event payload
+/// after the inner has released the settings write guard.
+pub(crate) async fn reorder_coding_agent_command_with_saver<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    settings: &SettingsState,
+    id: String,
+    expected_ids: Vec<String>,
+    target_index: usize,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<Vec<String>, String> {
+    let ids =
+        reorder_coding_agent_inner_with_saver(settings, &id, &expected_ids, target_index, save)
+            .await?;
+    let _ = app.emit(
+        "coding_agent_settings_updated",
+        move_coding_agent_event_payload(&id),
+    );
+    Ok(ids)
+}
+
+/// The shared inner owner of the reorder, used by the Tauri command and the
+/// browser WebSocket route.
+pub(crate) async fn reorder_coding_agent_inner_with_saver(
+    settings: &SettingsState,
+    id: &str,
+    expected_ids: &[String],
+    target_index: usize,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<Vec<String>, String> {
+    let written = persist_narrow_settings_update_fallible_with_saver(
+        settings,
+        |candidate| reorder_registered_agent(candidate, id, expected_ids, target_index).map(|_| ()),
+        save,
+    )
+    .await?;
+    Ok(written
+        .agents
+        .iter()
+        .map(|agent| agent.id.clone())
+        .collect())
+}
+
 /// One payload shape for the move's `coding_agent_settings_updated` event on
 /// both transports (native `app.emit` and browser `broadcast_all`).
 pub(crate) fn move_coding_agent_event_payload(id: &str) -> serde_json::Value {
@@ -4299,7 +4366,8 @@ mod tests {
         move_coding_agent_inner_with_saver, persist_coding_agent_env_settings_update,
         persist_coding_agent_profiles_update, persist_narrow_settings_update_with_saver,
         persist_protected_settings_update_with_saver, persist_settings_draft_update_with_saver,
-        purge_sessions_after_settings_update_in_dir, resolve_web_server_owned_status,
+        purge_sessions_after_settings_update_in_dir, reorder_coding_agent_command_with_saver,
+        reorder_coding_agent_inner_with_saver, resolve_web_server_owned_status,
         select_current_bind_failure, set_rail_collapse_inner_with_saver, settings_snapshot_from,
         start_api_server, stop_web_server_handle, web_remote_url, web_server_probe_addr,
         WebServerOwnershipState, AGENT_ORDER_OVERLAY_PINNED, MINT_API_CLIENT_DEFAULT_TTL_HOURS,
@@ -6922,6 +6990,138 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(200)).is_err(),
             "a rejected move must not emit an event"
         );
+    }
+
+    fn abc_ids_2542() -> Vec<String> {
+        ["a", "b", "c"].iter().map(|id| id.to_string()).collect()
+    }
+
+    fn mock_app_with_settings_listener_2542() -> (
+        tauri::App<tauri::test::MockRuntime>,
+        std::sync::mpsc::Receiver<String>,
+    ) {
+        use tauri::Listener;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build reorder rejection app");
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen_any("coding_agent_settings_updated", move |event| {
+            let _ = tx.send(event.payload().to_string());
+        });
+        (app, rx)
+    }
+
+    #[tokio::test]
+    async fn reorder_coding_agent_with_saver_persists_and_returns_written_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let state = state_for(settings_with_agents(&["a", "b", "c"]));
+
+        let ids = reorder_coding_agent_inner_with_saver(&state, "a", &abc_ids_2542(), 2, |c| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(c, &path)
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(ids, ["b", "c", "a"]);
+        let (disk_ids, disk_orders) = disk_ids_and_orders(&path);
+        assert_eq!(disk_ids, ["b", "c", "a"]);
+        assert_eq!(disk_orders, [0, 1, 2]);
+        let live = state.read().await;
+        assert_eq!(order_ids(&live.agents), ["b", "c", "a"]);
+    }
+
+    #[tokio::test]
+    async fn reorder_coding_agent_with_saver_write_failure_leaves_live_state_unchanged() {
+        let state = state_for(settings_with_agents(&["a", "b", "c"]));
+
+        let err = reorder_coding_agent_inner_with_saver(&state, "a", &abc_ids_2542(), 2, |_| {
+            Err("simulated reorder save failure".to_string())
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, "simulated reorder save failure");
+        let live = state.read().await;
+        assert_eq!(order_ids(&live.agents), ["a", "b", "c"]);
+        assert_eq!(order_positions(&live.agents), [Some(0), Some(1), Some(2)]);
+    }
+
+    #[tokio::test]
+    async fn reorder_coding_agent_overlay_owned_agents_rejects_before_saver_without_event() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = seed_overlay_agents_fixture(
+            temp.path(),
+            &json!([
+                { "id": "ov-a", "label": "A", "command": "claude", "color": "#111111", "order": 1 },
+                { "id": "ov-b", "label": "B", "command": "claude", "color": "#222222" }
+            ]),
+        );
+        let settings = crate::config::settings::load_settings_from_path(&path);
+        let overlay_order = order_ids(&settings.agents);
+        let state = state_for(settings);
+        let (app, rx) = mock_app_with_settings_listener_2542();
+
+        let err = reorder_coding_agent_command_with_saver(
+            app.handle(),
+            &state,
+            "ov-a".to_string(),
+            overlay_order.clone(),
+            0,
+            |_| -> Result<AppSettings, String> {
+                panic!("saver must not run while the overlay owns `agents`")
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, AGENT_ORDER_OVERLAY_PINNED);
+        assert_eq!(order_ids(&state.read().await.agents), overlay_order);
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "a rejected reorder must not emit an event"
+        );
+    }
+
+    #[tokio::test]
+    async fn reorder_coding_agent_stale_expected_ids_rejects_before_saver_without_event() {
+        let state = state_for(settings_with_agents(&["a", "b", "c"]));
+        let (app, rx) = mock_app_with_settings_listener_2542();
+
+        let err = reorder_coding_agent_command_with_saver(
+            app.handle(),
+            &state,
+            "a".to_string(),
+            vec!["b".to_string(), "a".to_string(), "c".to_string()],
+            2,
+            |_| -> Result<AppSettings, String> { panic!("saver must not run on a stale reorder") },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("changed since"), "{err}");
+        let live = state.read().await;
+        assert_eq!(order_ids(&live.agents), ["a", "b", "c"]);
+        assert_eq!(order_positions(&live.agents), [Some(0), Some(1), Some(2)]);
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "a rejected reorder must not emit an event"
+        );
+    }
+
+    #[test]
+    fn reorder_coding_agent_is_registered_in_invoke_handler() {
+        let lines: Vec<&str> = include_str!("../lib.rs").lines().map(str::trim).collect();
+        let hits: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| **line == "commands::config::reorder_coding_agent,")
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(hits.len(), 1, "registration must occur exactly once");
+        assert!(hits[0] > 0);
+        assert_eq!(lines[hits[0] - 1], "commands::config::move_coding_agent,");
     }
 
     #[test]

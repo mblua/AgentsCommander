@@ -1141,6 +1141,31 @@ jobs:
             exit 1
           }
 
+      # IS #2431: the portable profile digest folds env keys and reduces the
+      # executable on every OS. The POSIX behaviour cannot be proven on the
+      # Windows leg, where the full suite runs; the sentinel fails on Linux
+      # before this change.
+      - name: "cargo test (IS #2431 portable profile digest, focused)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          FILTER=config::agent_command::tests
+          # LINUX count: the Windows leg also compiles two cfg(windows) tests
+          # and reports 75. Update in the same commit that adds or removes a
+          # test in that module.
+          EXPECTED=73
+          cargo test --locked --lib "$FILTER" -- --nocapture 2>&1 | tee test-2431.log
+          grep -qF 'env_precedence_is_platform_independent' test-2431.log || {
+            echo "::error::the POSIX precedence sentinel never ran; the filter matched nothing or it was renamed."
+            exit 1
+          }
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2431.log || {
+            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER}; the count changed or the filter matched something else."
+            exit 1
+          }
+
       # IS #2162: the full suite runs only on the Windows leg, so without this
       # the config-seed tests would compile on Linux and never execute -- and
       # the `linux` branch of host_os_token(), the branch the feature exists
