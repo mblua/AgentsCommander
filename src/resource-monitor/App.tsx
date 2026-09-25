@@ -23,6 +23,7 @@ import { resourceMonitorStore } from "../shared/stores/resourceMonitor";
 import type {
   ResourceAgentGroupSnapshot,
   ResourceGroupState,
+  ResourceGroupWarning,
   ResourceOverallState,
   ResourceProcessSnapshot,
 } from "../shared/types";
@@ -54,6 +55,26 @@ const formatBytes = (value?: number | null): string => {
   }
   const digits = index === 0 || next >= 100 ? 0 : 1;
   return `${next.toFixed(digits)} ${units[index]}`;
+};
+
+/** #2581 - "<agent> · <workgroup> (<name>)" plus size and limit. Missing
+ *  parts are dropped; with no agent the CLI name stands alone. */
+export const groupWarningText = (
+  warning: ResourceGroupWarning,
+  group: ResourceAgentGroupSnapshot | undefined
+): { label: string; rest: string } => {
+  const name = group?.name ?? "Unknown agent";
+  let label = name;
+  let rest = "";
+  if (group?.agent) {
+    label = group.agent;
+    if (group.workgroup) rest += ` · ${group.workgroup}`;
+    rest += ` (${name})`;
+  } else if (group?.workgroup) {
+    rest += ` · ${group.workgroup}`;
+  }
+  rest += ` is over the ${warning.level} limit: ${formatBytes(warning.privateBytes)}, limit ${formatBytes(warning.limitBytes)}`;
+  return { label, rest };
 };
 
 const formatCpu = (value?: number | null): string =>
@@ -546,6 +567,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
 
   const snapshot = () => resourceMonitorStore.snapshot;
   const groups = createMemo(() => snapshot()?.groups ?? []);
+  const groupWarnings = () => snapshot()?.groupWarnings ?? [];
 
   const [statusFilter, setStatusFilter] = createSignal<RmStatusFilter>("all");
   const [projectFilter, setProjectFilter] = createSignal<Set<string>>(new Set());
@@ -718,6 +740,25 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     pidDebounce.flush("");
     setSearchText("");
     searchDebounce.flush("");
+  };
+
+  // #2581 - a per-agent warning jumps to its row. A filter may hide the row,
+  // so clear the filters first and focus once the list has re-rendered.
+  const focusGroupRow = (sessionId: string) => {
+    if (!groups().some((g) => g.sessionId === sessionId)) return;
+    const focusRow = () => {
+      const toggle = document.querySelector<HTMLElement>(
+        `[data-ac-testid="resourceMonitor.group.${sessionId}.toggle"]`
+      );
+      toggle?.scrollIntoView?.({ block: "nearest" });
+      toggle?.focus();
+    };
+    if (filteredGroups().some((g) => g.sessionId === sessionId)) {
+      focusRow();
+      return;
+    }
+    clearFilters();
+    requestAnimationFrame(focusRow);
   };
 
   const clearPidFilter = () => {
@@ -1107,6 +1148,51 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
           <div class="rm-banner rm-banner-muted" role="status" aria-live="polite">
             Showing last snapshot from {formatTimestamp(snapshot()?.capturedAt)}.
           </div>
+        </Show>
+
+        {/* #2581 - above the Agents list, so it is seen first and never
+            shares space with the rows. */}
+        <Show when={groupWarnings().length > 0 || (snapshot()?.warnings ?? []).length > 0}>
+          <section class="rm-warnings">
+            <div class="rm-section-header">
+              <h2>Warnings</h2>
+            </div>
+            <For each={groupWarnings()}>
+              {(warning) => {
+                const text = () =>
+                  groupWarningText(
+                    warning,
+                    groups().find((g) => g.sessionId === warning.sessionId)
+                  );
+                return (
+                  <button
+                    type="button"
+                    class="rm-warning-line rm-warning-link"
+                    classList={{ "is-kill": warning.level === "kill" }}
+                    title="Show this agent"
+                    onClick={() => focusGroupRow(warning.sessionId)}
+                    data-ac-testid={`resourceMonitor.groupWarning.${warning.sessionId}`}
+                    data-ac-role="button"
+                    data-ac-state={warning.level}
+                  >
+                    <strong>{text().label}</strong>
+                    {text().rest}
+                  </button>
+                );
+              }}
+            </For>
+            <For each={snapshot()?.warnings ?? []}>
+              {(warning, index) => (
+                <div
+                  class="rm-warning-line"
+                  data-ac-testid={`resourceMonitor.warning.${index()}`}
+                  data-ac-role="status"
+                >
+                  {warning}
+                </div>
+              )}
+            </For>
+          </section>
         </Show>
 
         <section class="rm-groups">
@@ -1746,24 +1832,6 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
           </Show>
         </section>
 
-        <Show when={(snapshot()?.warnings ?? []).length > 0}>
-          <section class="rm-warnings">
-            <div class="rm-section-header">
-              <h2>Warnings</h2>
-            </div>
-            <For each={snapshot()?.warnings ?? []}>
-              {(warning, index) => (
-                <div
-                  class="rm-warning-line"
-                  data-ac-testid={`resourceMonitor.warning.${index()}`}
-                  data-ac-role="status"
-                >
-                  {warning}
-                </div>
-              )}
-            </For>
-          </section>
-        </Show>
       </main>
 
       <Show when={killTarget()} keyed>

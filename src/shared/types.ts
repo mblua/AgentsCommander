@@ -1186,6 +1186,17 @@ export interface ResourceSnapshot {
   networkSummary: string;
   groups: ResourceAgentGroupSnapshot[];
   warnings: string[];
+  /** #2581 - per-agent memory warnings. Optional for older producers. */
+  groupWarnings?: ResourceGroupWarning[];
+}
+
+export type ResourceGroupWarningLevel = "warn" | "kill";
+
+export interface ResourceGroupWarning {
+  sessionId: string;
+  level: ResourceGroupWarningLevel;
+  privateBytes: number;
+  limitBytes: number;
 }
 
 export interface ResourceKillRequest {

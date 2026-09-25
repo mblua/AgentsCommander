@@ -573,3 +573,15 @@ describe("#2245 resource-monitor.css byte contract", () => {
     }
   });
 });
+
+// #2581 - a flex item that may shrink below its content lets the Agents rows
+// spill under the next section. Both sections keep their content height.
+describe("#2581 sections never shrink under their content", () => {
+  it("declares flex-shrink: 0 and no min-height: 0 on .rm-groups, .rm-warnings", () => {
+    for (const selector of [".rm-groups", ".rm-warnings"]) {
+      const rule = baseRule(selector);
+      expect(declares(rule.body, "flex-shrink", "0"), selector).toBe(true);
+      expect(declares(rule.body, "min-height", "0"), selector).toBe(false);
+    }
+  });
+});
