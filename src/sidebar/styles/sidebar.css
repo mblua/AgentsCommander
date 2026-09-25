@@ -4814,21 +4814,29 @@ html.light-theme .settings-hint-error {
   border-left-color: var(--agent-color, var(--sidebar-border));
 }
 
-/* #2577 - grip beside each provider card; the list anchors the drop line. */
-.agent-profile-provider-list {
+/* #2577 - picker-scoped: rows keep their own height (no stretch), and the
+   grip sits INSIDE the card border as in Settings. The grip stays a sibling
+   button painted over the card's left padding (no nested buttons). */
+.agent-picker-modal .agent-profile-provider-list {
   position: relative;
+  align-content: start;
 }
 
-.agent-profile-provider-card-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.agent-profile-provider-list > .agent-profile-provider-card-wrap {
+  position: relative;
   min-width: 0;
+}
+
+.agent-profile-provider-card-wrap > .agent-profile-provider-drag-handle {
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  z-index: 1;
+  transform: translateY(-50%);
 }
 
 .agent-profile-provider-card-wrap > .agent-profile-provider-card {
-  flex: 1 1 auto;
-  min-width: 0;
+  padding-left: 22px;
 }
 
 .agent-profile-provider-card-wrap.is-drag-source {

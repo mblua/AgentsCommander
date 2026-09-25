@@ -1562,7 +1562,7 @@ const AgentPickerModal: Component<{
                           classList={{ "is-drag-source": dragSourceId() === agent.id }}
                           data-ac-testid={`agentPicker.providerWrap.${agent.id}`}
                         >
-                          {/* #2577 - the grip is a SEPARATE button beside the card (no nested buttons); the filter disables it. */}
+                          {/* #2577 - the grip is a SEPARATE button drawn inside the card border (no nested buttons); the filter disables it. */}
                           <button
                             type="button"
                             class="agent-profile-provider-drag-handle"

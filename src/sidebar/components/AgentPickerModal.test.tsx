@@ -2953,6 +2953,36 @@ describe("AgentPickerModal", () => {
       expectNoMoveCommand();
     });
 
+    it("each card wrap holds the grip then the card button as siblings", async () => {
+      currentSettings = orderedSnapshot(FIVE);
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      const { dispose } = renderPicker({ currentAgentId: "c" });
+      await settle();
+
+      const wraps = [
+        ...target("agentPicker.providers").querySelectorAll<HTMLElement>(".agent-profile-provider-card-wrap"),
+      ];
+      expect(wraps).toHaveLength(5);
+      for (const wrap of wraps) {
+        expect(wrap.children.length).toBe(2);
+        const id = wrap.children[1].getAttribute("data-ac-testid")?.replace(/^agentPicker\.provider\./, "");
+        expect(id).toBeTruthy();
+        expect(wrap.children[0]).toBe(grip(id as string));
+        expect(wrap.children[1]).toBe(target(`agentPicker.provider.${id}`));
+        expect(wrap.children[1].contains(wrap.children[0])).toBe(false);
+      }
+
+      await setFilter("Agent B");
+      const list = document.getElementById("agentPickerAgentList") as HTMLElement;
+      const filtered = list.querySelectorAll(".agent-profile-provider-card-wrap");
+      expect(filtered).toHaveLength(1);
+      expect(list.firstElementChild).toBe(filtered[0]);
+      expect(filtered[0].children[1]).toBe(target("agentPicker.provider.b"));
+      expectNoMoveCommand();
+
+      dispose();
+    });
+
     it("refetches on coding_agent_settings_updated and keeps a surviving ID at its new position", async () => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValue(currentSettings);
