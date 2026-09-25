@@ -1152,10 +1152,10 @@ jobs:
         run: |
           set -euo pipefail
           FILTER=config::agent_command::tests
-          # LINUX count: the Windows leg also compiles two cfg(windows) tests
-          # and reports 75. Update in the same commit that adds or removes a
+          # LINUX count: the Windows leg also compiles four cfg(windows) tests
+          # and reports 76. Update in the same commit that adds or removes a
           # test in that module.
-          EXPECTED=73
+          EXPECTED=72
           cargo test --locked --lib "$FILTER" -- --nocapture 2>&1 | tee test-2431.log
           grep -qF 'env_precedence_is_platform_independent' test-2431.log || {
             echo "::error::the POSIX precedence sentinel never ran; the filter matched nothing or it was renamed."
