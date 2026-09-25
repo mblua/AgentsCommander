@@ -866,27 +866,20 @@ pub fn get_session_context(app: AppHandle, session_id: String) -> Result<Option<
     Ok(scraper.last_reading(uuid))
 }
 
-/// #2482 - the last weekly-quota reading for a session, for a frontend that just
-/// mounted and missed the `session_agent_quota` event.
-///
-/// `None` covers every unavailable case there is - no configured source, a
-/// disabled one, no match, a session that is over, an engine that is not managed
-/// - and NEVER means 0 and NEVER means 100.
-///
-/// Generic over `R` so it is callable from a `tauri::test` mock app, the way
-/// `get_watcher_activity` already is. `get_session_context` takes a concrete
-/// `AppHandle` (Wry) and consequently has no tests at all; this command does not
-/// repeat that.
+/// #2566 - every published weekly-quota reading, keyed by AGENT id, for a frontend that just mounted and
+/// missed the `agent_quota` events. Agents sharing one command share one value. A `None` value and an ABSENT
+/// key both mean unavailable, NEVER 0 and NEVER 100, and are interchangeable to the caller: an agent
+/// published as null and still configured keeps a `Some(None)` row, one never published has no row, and p2
+/// renders the plain chip for both. An unmanaged engine answers an EMPTY map, not an error. Generic over `R`
+/// so a `tauri::test` mock app can call it, as `get_watcher_activity` does.
 #[tauri::command]
-pub fn get_session_agent_quota<R: tauri::Runtime>(
+pub fn get_agent_quota_readings<R: tauri::Runtime>(
     app: AppHandle<R>,
-    session_id: String,
-) -> Result<Option<u8>, String> {
-    let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+) -> Result<std::collections::HashMap<String, Option<u8>>, String> {
     let Some(engine) = app.try_state::<Arc<crate::pty::agent_quota::AgentQuotaEngine>>() else {
-        return Ok(None);
+        return Ok(std::collections::HashMap::new());
     };
-    Ok(engine.last_reading(uuid))
+    Ok(engine.published())
 }
 
 /// #1171 - one session's watcher activity, for the window on mount and on every poll.
@@ -1416,61 +1409,46 @@ mod watcher_preview_tests {
         assert!(get_watcher_activity(app.handle().clone(), "nope".into(), None).is_err());
     }
 
-    /// #2482 - no engine managed is the feature being off: `Ok(None)`, never a panic.
+    /// #2566 - no engine managed is the feature being off: an empty map, never a panic.
     #[test]
-    fn get_session_agent_quota_answers_none_when_the_engine_is_unmanaged() {
+    fn get_agent_quota_readings_answers_an_empty_map_when_the_engine_is_unmanaged() {
         let app = settings_app(AppSettings::default());
 
         assert_eq!(
-            get_session_agent_quota(app.handle().clone(), Uuid::new_v4().to_string()),
-            Ok(None)
+            get_agent_quota_readings(app.handle().clone()),
+            Ok(std::collections::HashMap::new())
         );
     }
 
-    /// #2482 - mirrors `a_session_id_that_is_not_a_uuid_is_rejected`.
+    /// #2566 - one session on `a1` fills every agent on its command, `a2` included.
     #[test]
-    fn get_session_agent_quota_rejects_a_malformed_session_id() {
-        let app = settings_app(AppSettings::default());
-
-        assert!(get_session_agent_quota(app.handle().clone(), "nope".into()).is_err());
-    }
-
-    /// #2482 - the command reads back what the engine last emitted, and a real 0 stays a
-    /// real 0: it is never folded into `None`.
-    #[test]
-    fn get_session_agent_quota_returns_the_last_reading() {
+    fn get_agent_quota_readings_returns_every_agent_on_the_command() {
         use crate::pty::agent_quota::source::SourceSpec;
         use crate::pty::agent_quota::test_support::QuotaHarness;
         use crate::pty::context_scrape::ScreenRowsRead;
 
+        let spec = || SourceSpec::ScreenRegex {
+            pattern: r"Weekly (\d{1,3})% used".to_string(),
+        };
         let harness = QuotaHarness::new();
-        harness.sources.configure(
-            "claude",
-            SourceSpec::ScreenRegex {
-                pattern: r"Weekly (\d{1,3})% used".to_string(),
-            },
-        );
+        harness.sources.configure_on("a1", "claude", spec());
+        harness.sources.configure_on("a2", "claude", spec());
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "claude".to_string());
+        harness.engine.register_session(id, "a1".to_string());
         let app = tauri::test::mock_builder()
             .manage(Arc::clone(&harness.engine))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build a mock app");
-        let read = |percent: u8| ScreenRowsRead::Rows(vec![format!("Weekly {percent}% used")]);
 
-        harness.rows.push(id, read(42));
-        futures::executor::block_on(harness.engine.tick());
-        assert_eq!(
-            get_session_agent_quota(app.handle().clone(), id.to_string()),
-            Ok(Some(42))
+        harness.rows.push(
+            id,
+            ScreenRowsRead::Rows(vec!["Weekly 42% used".to_string()]),
         );
+        futures::executor::block_on(harness.engine.tick());
 
-        harness.rows.push(id, read(0));
-        futures::executor::block_on(harness.engine.tick());
-        assert_eq!(
-            get_session_agent_quota(app.handle().clone(), id.to_string()),
-            Ok(Some(0))
-        );
+        let readings = get_agent_quota_readings(app.handle().clone()).expect("readings");
+        assert_eq!(readings.get("a1"), Some(&Some(42)));
+        assert_eq!(readings.get("a2"), Some(&Some(42)));
     }
 
     /// 9.5.64 - with no history managed at all - a test app, a build without the engine - the

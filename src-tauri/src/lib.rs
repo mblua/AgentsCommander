@@ -41,7 +41,8 @@ use config::settings::SettingsState;
 use futures_util::FutureExt;
 use pty::agent_quota::source::SourceSpec;
 use pty::agent_quota::{
-    AgentQuotaEngine, AgentQuotaPayload, QuotaEventSink, QuotaRowsSource, QuotaSourceProvider,
+    AgentQuotaEngine, AgentQuotaPayload, AgentQuotaSource, QuotaEventSink, QuotaRowsSource,
+    QuotaSourceProvider,
 };
 use pty::context_scrape::{
     ContextEventSink, ContextPatternSource, ContextPersistSink, ContextSample, ContextSampleSink,
@@ -1279,11 +1280,11 @@ impl QuotaRowsSource for QuotaRows {
     }
 }
 
-/// Every agent's ENABLED quota source, read fresh from settings each tick. One `RwLock` read
-/// per tick for all sessions. Maps the settings type onto the engine's settings-free
-/// `SourceSpec`.
+/// Every agent's quota source and ACCOUNT key, read fresh from settings each tick. One
+/// `RwLock` read per tick for all sessions. Maps the settings type onto the engine's
+/// settings-free `AgentQuotaSource`.
 ///
-/// **The `match` in `specs` is the multi-agent extension point's second and last site.** A new
+/// **The `match` in `sources_map` is the multi-agent extension point's second and last site.** A new
 /// source kind adds one arm in `pty::agent_quota::source` and one arm here. There is no
 /// registry to go looking for.
 struct QuotaSources {
@@ -1291,9 +1292,16 @@ struct QuotaSources {
 }
 
 impl QuotaSources {
-    fn specs(settings: &config::settings::AppSettings) -> HashMap<String, SourceSpec> {
+    /// #2566 D3 - membership is by COMMAND, and this is the only place it is decided. Every
+    /// agent whose command yields an account key with at least one enabled, valid source
+    /// behind it gets an entry: its OWN pattern when its own entry is enabled, otherwise the
+    /// key winner's, the first enabled entry in `quota_sources` order (a `BTreeMap`, so the
+    /// LOWEST agent id). `enabled: false` withdraws a pattern, never an agent.
+    fn sources_map(settings: &config::settings::AppSettings) -> HashMap<String, AgentQuotaSource> {
         use config::settings::QuotaSourceConfig;
-        settings
+
+        // Pass 1 - own specs.
+        let own: HashMap<String, SourceSpec> = settings
             .quota_sources
             .iter()
             .filter_map(|(agent_id, entry)| match entry.valid()? {
@@ -1314,15 +1322,53 @@ impl QuotaSources {
                     })
                 }
             })
+            .collect();
+
+        // Pass 2 - keys. No key, no entry, ever.
+        let keys: Vec<(&String, String)> = settings
+            .agents
+            .iter()
+            .filter_map(|agent| {
+                config::coding_agents_catalog::command_account_key(&agent.command)
+                    .map(|key| (&agent.id, key))
+            })
+            .collect();
+
+        // Pass 3 - key winner: first in `quota_sources` order wins.
+        let mut by_key: std::collections::BTreeMap<&str, &SourceSpec> =
+            std::collections::BTreeMap::new();
+        for agent_id in settings.quota_sources.keys() {
+            let Some(spec) = own.get(agent_id) else {
+                continue;
+            };
+            if let Some((_, key)) = keys.iter().find(|(id, _)| *id == agent_id) {
+                by_key.entry(key.as_str()).or_insert(spec);
+            }
+        }
+
+        // Pass 4 - emit; an agent with no spec anywhere behind its command is skipped.
+        keys.iter()
+            .filter_map(|(agent_id, key)| {
+                let spec = own
+                    .get(*agent_id)
+                    .or_else(|| by_key.get(key.as_str()).copied())?;
+                Some((
+                    (*agent_id).clone(),
+                    AgentQuotaSource {
+                        account_key: key.clone(),
+                        spec: spec.clone(),
+                    },
+                ))
+            })
             .collect()
     }
 }
 
 impl QuotaSourceProvider for QuotaSources {
-    fn sources(&self) -> futures::future::BoxFuture<'_, HashMap<String, SourceSpec>> {
+    fn sources(&self) -> futures::future::BoxFuture<'_, HashMap<String, AgentQuotaSource>> {
         Box::pin(async move {
             let settings = self.settings.read().await;
-            Self::specs(&settings)
+            Self::sources_map(&settings)
         })
     }
 }
@@ -1335,16 +1381,17 @@ struct QuotaSink {
 
 impl QuotaEventSink for QuotaSink {
     fn emit(&self, payload: AgentQuotaPayload) {
-        let _ = self.app_handle.emit("session_agent_quota", payload);
+        let _ = self.app_handle.emit("agent_quota", payload);
     }
 }
 
 #[cfg(test)]
 mod quota_sources_tests {
     use super::*;
-    use crate::config::settings::{AppSettings, QuotaSourceConfig, QuotaSourceEntry};
+    use crate::config::settings::{AgentConfig, AppSettings, QuotaSourceConfig, QuotaSourceEntry};
 
     const PATTERN: &str = r"Weekly (\d{1,3})% used";
+    const OTHER: &str = r"Week (\d{1,3})%";
 
     fn screen(pattern: &str, enabled: bool) -> QuotaSourceEntry {
         QuotaSourceEntry::Valid(QuotaSourceConfig::ScreenRegex {
@@ -1353,20 +1400,55 @@ mod quota_sources_tests {
         })
     }
 
-    fn specs(entries: Vec<(&str, QuotaSourceEntry)>) -> HashMap<String, SourceSpec> {
-        let mut settings = AppSettings::default();
+    fn spec(pattern: &str) -> SourceSpec {
+        SourceSpec::ScreenRegex {
+            pattern: pattern.to_string(),
+        }
+    }
+
+    fn agent(id: &str, command: &str) -> AgentConfig {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "label": id,
+            "command": command,
+            "color": "#000000",
+        }))
+        .expect("a minimal agent config")
+    }
+
+    fn map(
+        agents: Vec<(&str, &str)>,
+        entries: Vec<(&str, QuotaSourceEntry)>,
+    ) -> HashMap<String, AgentQuotaSource> {
+        let mut settings = AppSettings {
+            agents: agents
+                .into_iter()
+                .map(|(id, command)| agent(id, command))
+                .collect(),
+            ..AppSettings::default()
+        };
         for (agent_id, entry) in entries {
             settings.quota_sources.insert(agent_id.to_string(), entry);
         }
-        QuotaSources::specs(&settings)
+        QuotaSources::sources_map(&settings)
+    }
+
+    /// Every entry's agent exists and runs `claude`: the pre-#2566 adapter cases.
+    fn specs(entries: Vec<(&str, QuotaSourceEntry)>) -> HashMap<String, AgentQuotaSource> {
+        let agents = entries.iter().map(|(id, _)| (*id, "claude")).collect();
+        map(agents, entries)
     }
 
     #[test]
     fn quota_sources_adapter_skips_a_disabled_entry() {
-        let specs = specs(vec![
-            ("off", screen(PATTERN, false)),
-            ("on", screen(PATTERN, true)),
-        ]);
+        // Separate commands, so the enabled entry cannot fill the disabled one.
+        let specs = map(
+            vec![("off", "off-cli"), ("on", "on-cli")],
+            vec![
+                ("off", screen(PATTERN, false)),
+                ("on", screen(PATTERN, true)),
+            ],
+        );
         assert!(!specs.contains_key("off"));
         assert!(specs.contains_key("on"));
     }
@@ -1383,23 +1465,116 @@ mod quota_sources_tests {
     #[test]
     fn quota_sources_adapter_skips_a_blank_pattern_but_hands_over_untrimmed_bytes() {
         let anchored = "  Weekly (\\d{1,3})% used ";
-        let specs = specs(vec![
-            ("blank", screen("   ", true)),
-            ("anchored", screen(anchored, true)),
-        ]);
+        let specs = map(
+            vec![("blank", "blank-cli"), ("anchored", "claude")],
+            vec![
+                ("blank", screen("   ", true)),
+                ("anchored", screen(anchored, true)),
+            ],
+        );
         assert!(!specs.contains_key("blank"));
         assert_eq!(
-            specs.get("anchored"),
-            Some(&SourceSpec::ScreenRegex {
-                pattern: anchored.to_string()
-            }),
+            specs.get("anchored").map(|src| &src.spec),
+            Some(&spec(anchored)),
             "the leading spaces are the column anchor and must survive"
         );
     }
 
     #[test]
     fn quota_sources_adapter_returns_an_empty_map_for_empty_settings() {
-        assert!(QuotaSources::specs(&AppSettings::default()).is_empty());
+        assert!(QuotaSources::sources_map(&AppSettings::default()).is_empty());
+    }
+
+    #[test]
+    fn sources_map_is_empty_when_quota_sources_is_empty() {
+        let sources = map(vec![("a1", "claude"), ("a2", "codex")], vec![]);
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn sources_map_skips_an_agent_whose_id_has_no_agent_config() {
+        let sources = map(vec![], vec![("deleted", screen(PATTERN, true))]);
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn sources_map_skips_an_agent_whose_command_has_no_account_key() {
+        let sources = map(vec![("a1", "")], vec![("a1", screen(PATTERN, true))]);
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn sources_map_gives_two_agents_on_one_command_the_same_account_key() {
+        let sources = map(
+            vec![
+                ("a1", "claude"),
+                ("a2", "claude --dangerously-skip-permissions"),
+            ],
+            vec![("a1", screen(PATTERN, true)), ("a2", screen(PATTERN, true))],
+        );
+        assert_eq!(sources["a1"].account_key, "claude");
+        assert_eq!(sources["a2"].account_key, "claude");
+    }
+
+    #[test]
+    fn sources_map_includes_an_agent_that_configured_nothing_when_a_sibling_on_its_command_is_enabled(
+    ) {
+        let sources = map(
+            vec![("a1", "claude"), ("a2", "claude")],
+            vec![("a1", screen(PATTERN, true))],
+        );
+        let expected = AgentQuotaSource {
+            account_key: "claude".to_string(),
+            spec: spec(PATTERN),
+        };
+        assert_eq!(sources.get("a1"), Some(&expected));
+        assert_eq!(sources.get("a2"), Some(&expected));
+    }
+
+    #[test]
+    fn sources_map_prefers_an_agents_own_enabled_pattern_over_the_key_winner() {
+        let sources = map(
+            vec![("a1", "claude"), ("a2", "claude")],
+            vec![("a1", screen(PATTERN, true)), ("a2", screen(OTHER, true))],
+        );
+        assert_eq!(sources["a1"].spec, spec(PATTERN));
+        assert_eq!(sources["a2"].spec, spec(OTHER));
+    }
+
+    #[test]
+    fn sources_map_tie_breaks_the_key_winner_by_lowest_agent_id() {
+        let sources = map(
+            vec![("z", "claude"), ("a2", "claude"), ("a1", "claude")],
+            vec![("a2", screen(OTHER, true)), ("a1", screen(PATTERN, true))],
+        );
+        assert_eq!(sources["z"].spec, spec(PATTERN));
+    }
+
+    #[test]
+    fn sources_map_drops_a_key_whose_only_source_is_disabled() {
+        let sources = map(
+            vec![("a1", "claude"), ("a2", "claude")],
+            vec![("a1", screen(PATTERN, false))],
+        );
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn sources_map_fills_a_disabled_agent_from_an_enabled_sibling_on_the_same_command() {
+        let sources = map(
+            vec![("a1", "claude"), ("a2", "claude")],
+            vec![("a1", screen(PATTERN, false)), ("a2", screen(OTHER, true))],
+        );
+        let expected = AgentQuotaSource {
+            account_key: "claude".to_string(),
+            spec: spec(OTHER),
+        };
+        assert_eq!(sources.get("a1"), Some(&expected));
+        assert_eq!(sources.get("a2"), Some(&expected));
+        assert!(
+            sources.values().all(|src| src.spec != spec(PATTERN)),
+            "a1's own disabled pattern appears nowhere"
+        );
     }
 }
 
@@ -4873,7 +5048,7 @@ pub fn run(
                 commands::pty::activate_terminal_output,
                 commands::pty::detach_terminal_output,
                 commands::pty::get_session_context,
-                commands::pty::get_session_agent_quota,
+                commands::pty::get_agent_quota_readings,
                 commands::pty::get_watcher_activity,
                 commands::pty::preview_watcher_pattern,
                 commands::pty::preview_watcher_reach,
