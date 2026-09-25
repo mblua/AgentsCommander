@@ -448,6 +448,13 @@ export interface MoveCodingAgentRequest {
   direction: MoveCodingAgentDirection;
 }
 
+/** #2543 - reorder one coding agent to an absolute index (remove, then insert). */
+export interface ReorderCodingAgentRequest {
+  id: string;
+  expectedIds: string[];
+  targetIndex: number;
+}
+
 export type CodingAgentEnvSource = "user" | "system";
 
 export interface CodingAgentEnv {

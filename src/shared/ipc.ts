@@ -32,6 +32,7 @@ import type {
   SettingsSnapshot,
   MoveCodingAgentDirection,
   MoveCodingAgentRequest,
+  ReorderCodingAgentRequest,
   LogLevel,
   UpdateInfo,
   AgentUpdateResult,
@@ -430,6 +431,14 @@ export const SettingsAPI = {
       id: request.id,
       neighborId: request.neighborId,
       direction: request.direction,
+    }),
+  /** #2543 - reorder to an absolute index; resolves the backend's ordered ids
+   *  unchecked, the caller asserts them. */
+  reorderCodingAgent: (request: ReorderCodingAgentRequest) =>
+    transport.invoke<string[]>("reorder_coding_agent", {
+      id: request.id,
+      expectedIds: request.expectedIds,
+      targetIndex: request.targetIndex,
     }),
   update: (settings: AppSettings) =>
     transport.invoke<void>("update_settings", { newSettings: settings }),
