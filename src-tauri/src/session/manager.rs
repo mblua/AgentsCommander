@@ -352,6 +352,8 @@ impl SessionManager {
             effective_profile: None,
             profile_fallback_chain: Vec::new(),
             profile_fallback_applied: false,
+            match_tier: None,
+            original_profile_letter: None,
             effective_codex_home: None,
             resolved_claude_projects_dir: None,
             profile_content_hash: None,
@@ -1292,6 +1294,8 @@ impl SessionManager {
         effective_profile: Option<String>,
         profile_fallback_chain: Vec<String>,
         profile_fallback_applied: bool,
+        match_tier: Option<String>,
+        original_profile_letter: Option<String>,
         effective_codex_home: Option<String>,
         profile_content_hash: Option<String>,
     ) {
@@ -1304,6 +1308,8 @@ impl SessionManager {
             s.effective_profile = effective_profile;
             s.profile_fallback_chain = profile_fallback_chain;
             s.profile_fallback_applied = profile_fallback_applied;
+            s.match_tier = match_tier;
+            s.original_profile_letter = original_profile_letter;
             s.effective_codex_home = effective_codex_home;
             s.profile_content_hash = profile_content_hash;
         }
@@ -1317,6 +1323,8 @@ impl SessionManager {
         effective_profile: Option<String>,
         profile_fallback_chain: Vec<String>,
         profile_fallback_applied: bool,
+        match_tier: Option<String>,
+        original_profile_letter: Option<String>,
         effective_codex_home: Option<String>,
         profile_content_hash: Option<String>,
     ) -> Result<(), AppError> {
@@ -1325,6 +1333,8 @@ impl SessionManager {
             session.effective_profile = effective_profile;
             session.profile_fallback_chain = profile_fallback_chain;
             session.profile_fallback_applied = profile_fallback_applied;
+            session.match_tier = match_tier;
+            session.original_profile_letter = original_profile_letter;
             session.effective_codex_home = effective_codex_home;
             session.profile_content_hash = profile_content_hash;
         })
@@ -2359,6 +2369,8 @@ impl SessionManager {
             effective_profile: None,
             profile_fallback_chain: Vec::new(),
             profile_fallback_applied: false,
+            match_tier: None,
+            original_profile_letter: None,
             effective_codex_home: None,
             resolved_claude_projects_dir: None,
             profile_content_hash: None,
@@ -2549,6 +2561,46 @@ mod tests {
         ] {
             assert!(diagnostic.contains(structural));
         }
+    }
+
+    #[tokio::test]
+    async fn set_profile_metadata_carries_the_match_fields() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude-mb".to_string(),
+                Vec::new(),
+                "C:\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+        assert!(session.match_tier.is_none());
+        assert!(session.original_profile_letter.is_none());
+
+        mgr.set_profile_metadata(
+            session.id,
+            Some("B".to_string()),
+            Some("A".to_string()),
+            Vec::new(),
+            false,
+            Some("hash".to_string()),
+            Some("B".to_string()),
+            None,
+            None,
+        )
+        .await;
+
+        let stored = mgr
+            .get_session(session.id)
+            .await
+            .expect("session should still exist");
+        assert_eq!(stored.match_tier.as_deref(), Some("hash"));
+        assert_eq!(stored.original_profile_letter.as_deref(), Some("B"));
     }
 
     #[tokio::test]
