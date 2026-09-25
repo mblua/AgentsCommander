@@ -2312,6 +2312,18 @@ html.light-theme .settings-api-client-warning {
 .settings-profile-command {
   width: 100%;
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  display: block;
+  resize: none;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.settings-profile-command:focus {
+  overflow-y: auto;
+  max-height: 40vh;
 }
 
 .settings-profile-command.invalid {
