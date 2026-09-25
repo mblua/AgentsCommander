@@ -2937,4 +2937,155 @@ describe("AgentPickerModal", () => {
       dispose();
     });
   });
+  describe("#2475 picker open runs one preview round (#2484)", () => {
+    function backendTotal(): number {
+      return (
+        mockSettingsApi.previewCodingAgentProfileSelection.mock.calls.length +
+        mockSettingsApi.previewSelectionLockRemoval.mock.calls.length +
+        mockSettingsApi.getReplicaSelectionDefault.mock.calls.length
+      );
+    }
+
+    function renderWgPicker(overrides: Parameters<typeof renderPicker>[0] = {}) {
+      return renderPicker({
+        agentPath: WG_REPLICA_PATH,
+        scopeContext: WG_SCOPE_CONTEXT,
+        currentRequestedProfile: "A",
+        ...overrides,
+      });
+    }
+
+    it("issue_2475_duplicate_triggering_open_collapses_to_one_batch", async () => {
+      // Fixture B: the snapshot selects agent index 1 and the requested profile
+      // differs from the initial "A", so both writes feed the preview effect.
+      mockSettingsApi.resolveCodingAgentProfile.mockImplementation(() =>
+        Promise.resolve(resolution({ requestedProfile: "C", effectiveProfile: "A" })),
+      );
+      const { dispose } = renderWgPicker({ currentAgentId: "claude", currentRequestedProfile: "C" });
+      await settle();
+
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledTimes(3);
+      expect(backendTotal()).toBe(7);
+
+      dispose();
+    });
+
+    it("issue_2475_already_clean_open_keeps_seven_backend_calls", async () => {
+      // Fixture A: requested "A" equals the initial selection, one round before and after.
+      const { dispose } = renderWgPicker({ currentAgentId: "codex", currentRequestedProfile: "A" });
+      await settle();
+
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledTimes(3);
+      expect(backendTotal()).toBe(7);
+
+      dispose();
+    });
+
+    async function microtasks(count = 8): Promise<void> {
+      // Microtask flushes only: a regression that defers to a timer task stays unobserved.
+      for (let index = 0; index < count; index += 1) await Promise.resolve();
+    }
+
+    function controlledSettings(): () => void {
+      let resolveSettings: (value: AppSettings) => void = () => {};
+      mockSettingsApi.get.mockImplementation(
+        () => new Promise<AppSettings>((resolve) => { resolveSettings = resolve; }),
+      );
+      return () => resolveSettings(currentSettings);
+    }
+
+    it("issue_2475_loading_message_appears_in_the_same_tick", async () => {
+      mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation(
+        () => new Promise<PreviewCodingAgentProfileSelectionResult>(() => {}),
+      );
+      const releaseSettings = controlledSettings();
+      const { dispose } = renderWgPicker();
+      await microtasks();
+      expect(maybe("agentPicker.previewBusy")).toBeNull();
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).not.toHaveBeenCalled();
+
+      releaseSettings();
+      await microtasks();
+
+      // No timer task ran and no preview promise resolved: the message comes from the open itself.
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledTimes(3);
+      expect(text("agentPicker.previewBusy")).toBe("Loading targets…");
+
+      dispose();
+    });
+
+    it("issue_2475_scope_counts_are_never_absent_longer_than_today", async () => {
+      const removeIds = [
+        "agentPicker.removeScopeCount.replica",
+        "agentPicker.removeScopeCount.kind",
+        "agentPicker.removeScopeCount.workgroup",
+      ];
+      const assignIds = ["agentPicker.scope.kind", "agentPicker.scope.workgroup"];
+      const ids = [...removeIds, ...assignIds];
+      const samples: Record<string, string[]> = Object.fromEntries(ids.map((id) => [id, []]));
+      // One sample per microtask boundary; absence is a recorded value, not a skip.
+      const sample = () => {
+        for (const id of ids) {
+          const element = maybe(id);
+          samples[id].push(element ? element.textContent?.replace(/\s+/g, " ").trim() ?? "" : "absent");
+        }
+      };
+      const releaseSettings = controlledSettings();
+      const { dispose } = renderWgPicker();
+      sample();
+      releaseSettings();
+      for (let index = 0; index < 12; index += 1) {
+        await Promise.resolve();
+        sample();
+      }
+
+      const finals: Record<string, string> = {
+        "agentPicker.removeScopeCount.replica": "0 protected",
+        "agentPicker.removeScopeCount.kind": "2 of 3 protected",
+        "agentPicker.removeScopeCount.workgroup": "3 of 4 protected",
+      };
+      for (const id of removeIds) {
+        const seen = samples[id];
+        // "—" is the pre-settings placeholder: allowed only in the sample taken before release.
+        const phases = seen.map((value, index) =>
+          value === "absent" || (index === 0 && value === "—") ? 0 : value === "…" ? 1 : value === finals[id] ? 2 : -1,
+        );
+        expect(seen[1], `${id}: first tick after settings`).toBe("…");
+        expect(phases, `${id}: ${seen.join(" | ")}`).not.toContain(-1);
+        expect(phases, `${id}: ${seen.join(" | ")}`).toEqual([...phases].sort((a, b) => a - b));
+        expect(seen[seen.length - 1], id).toBe(finals[id]);
+      }
+      const assignFinals: Record<string, string> = {
+        "agentPicker.scope.kind": "3 replicas",
+        "agentPicker.scope.workgroup": "4 replicas",
+      };
+      for (const id of assignIds) {
+        const seen = samples[id];
+        const phases = seen.map((value) =>
+          value === "absent" ? 0 : value.includes(" 0 replicas") ? 1 : value.includes(assignFinals[id]) ? 2 : -1,
+        );
+        expect(phases, `${id}: ${seen.join(" | ")}`).not.toContain(-1);
+        expect(phases, `${id}: ${seen.join(" | ")}`).toEqual([...phases].sort((a, b) => a - b));
+        expect(seen[seen.length - 1], id).toContain(assignFinals[id]);
+      }
+
+      dispose();
+    });
+
+    it("issue_2475_preview_error_text_is_unchanged", async () => {
+      const message = "preview exploded: backend said no";
+      mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation(
+        (req: { scope: string }) =>
+          req.scope === "replica"
+            ? Promise.reject(new Error(message))
+            : Promise.resolve(previewResult({ scope: req.scope as ProfileAssignmentScope })),
+      );
+      const { dispose } = renderWgPicker();
+      await settle();
+
+      expect(text("agentPicker.previewError")).toBe(message);
+
+      dispose();
+    });
+  });
 });
