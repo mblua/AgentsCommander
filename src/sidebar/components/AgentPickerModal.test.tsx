@@ -18,6 +18,7 @@ import type {
   ProfileAssignmentTarget,
   ReplicaSelectionDefaultResult,
   SavedPair,
+  ScopeFault,
   SelectionState,
 } from "../../shared/types";
 import { resolveProfilePreview } from "../../shared/profile-utils";
@@ -3396,6 +3397,150 @@ describe("AgentPickerModal", () => {
       expect(text("agentPicker.removeNote")).toBe("Keeps Coding Agent + Profile. No restart.");
 
       dispose();
+    });
+
+    function faultPreview(overrides: Partial<PreviewSelectionLockRemovalResult>): void {
+      mockSettingsApi.previewSelectionLockRemoval.mockImplementation(
+        (req: { scope: ProfileAssignmentScope }) =>
+          Promise.resolve(removePreview(req.scope, overrides)),
+      );
+    }
+
+    function fault(code: string, replicaName: string): ScopeFault {
+      return {
+        code: code as ScopeFault["code"],
+        replicaName,
+        replicaPath: `C:/ws/__agent_${replicaName}`,
+      };
+    }
+
+    function faultLines(): string[] {
+      return Array.from(target("agentPicker.scopeFaults").children).map(
+        (child) => child.textContent ?? "",
+      );
+    }
+
+    it("issue_2572_each_fault_code_has_its_own_line", async () => {
+      const rows: Array<[string, string, string]> = [
+        ["configUnreadable", "r1", "r1 has no readable config.json. It is not counted."],
+        ["configNotJson", "r2", "r2 has an invalid config.json (not valid JSON). It is not counted."],
+        ["configNotObject", "r3", "r3 has a config.json that is not a JSON object. It is not counted."],
+        ["identityMissing", "r4", "r4 has no identity in its config.json. It is not counted."],
+        ["identityMismatch", "r5", "r5 points at another agent (identity mismatch). It is not counted."],
+        ["locationInvalid", "r6", "r6 is not in a valid replica location. It is not counted."],
+        ["pathUnreadable", "r7", "r7 could not be read from disk. It is not counted."],
+        [
+          "folderUnreadable",
+          "room-9",
+          "The folder room-9 could not be read. Replicas inside it are not counted.",
+        ],
+      ];
+      for (const [code, name, expected] of rows) {
+        faultPreview({ countsComplete: false, scopeFaults: [fault(code, name)] });
+        const { dispose } = renderWgPicker();
+        await settle();
+        expect(maybe("agentPicker.scopeFaults"), code).not.toBeNull();
+        expect(faultLines(), code).toEqual([expected]);
+        dispose();
+      }
+    });
+
+    it("issue_2572_over_three_faults_collapse_into_a_counter", async () => {
+      faultPreview({
+        countsComplete: false,
+        scopeFaults: [
+          fault("configUnreadable", "a"),
+          fault("identityMissing", "b"),
+          fault("pathUnreadable", "c"),
+          fault("configNotJson", "d"),
+          fault("locationInvalid", "e"),
+        ],
+      });
+      let view = renderWgPicker();
+      await settle();
+      expect(faultLines()).toEqual([
+        "a has no readable config.json. It is not counted.",
+        "b has no identity in its config.json. It is not counted.",
+        "c could not be read from disk. It is not counted.",
+        "+2 more not counted.",
+      ]);
+      view.dispose();
+
+      faultPreview({
+        countsComplete: false,
+        scopeFaults: [
+          fault("configUnreadable", "a"),
+          fault("identityMissing", "b"),
+          fault("pathUnreadable", "c"),
+        ],
+      });
+      view = renderWgPicker();
+      await settle();
+      const lines = faultLines();
+      expect(lines).toHaveLength(3);
+      expect(lines.filter((line) => line.startsWith("+"))).toEqual([]);
+      view.dispose();
+    });
+
+    it("issue_2572_the_note_and_the_lines_coexist", async () => {
+      faultPreview({ countsComplete: false, scopeFaults: [fault("identityMismatch", "x")] });
+      const { dispose } = renderWgPicker();
+      await settle();
+
+      expect(text("agentPicker.removeNote")).toBe(
+        "Scope totals could not be established here; nothing is offered for removal.",
+      );
+      expect(text("agentPicker.scopeFaults")).toBe(
+        "x points at another agent (identity mismatch). It is not counted.",
+      );
+
+      dispose();
+    });
+
+    it("issue_2572_a_complete_scope_shows_no_fault_block", async () => {
+      faultPreview({ countsComplete: true, scopeFaults: [] });
+      let view = renderWgPicker();
+      await settle();
+      expect(maybe("agentPicker.scopeFaults")).toBeNull();
+      view.dispose();
+
+      // Positive control: the same construction plus one fault shows the block.
+      faultPreview({ countsComplete: true, scopeFaults: [fault("configUnreadable", "p")] });
+      view = renderWgPicker();
+      await settle();
+      expect(maybe("agentPicker.scopeFaults")).not.toBeNull();
+      view.dispose();
+    });
+
+    it("issue_2572_an_unknown_code_is_still_named", async () => {
+      faultPreview({ countsComplete: false, scopeFaults: [fault("somethingNew", "future")] });
+      const { dispose } = renderWgPicker();
+      await settle();
+
+      expect(text("agentPicker.scopeFaults")).toBe(
+        "future could not be checked. It is not counted.",
+      );
+
+      dispose();
+    });
+
+    it("issue_2572_a_missing_field_is_an_empty_list", async () => {
+      faultPreview({ countsComplete: false });
+      let view = renderWgPicker();
+      await settle();
+      expect(maybe("agentPicker.scopeFaults")).toBeNull();
+      expect(text("agentPicker.removeScopeCount.workgroup")).toBe("count unknown");
+      expect(text("agentPicker.removeNote")).toBe(
+        "Scope totals could not be established here; nothing is offered for removal.",
+      );
+      view.dispose();
+
+      // Positive control: the same construction plus one fault shows the block.
+      faultPreview({ countsComplete: false, scopeFaults: [fault("configUnreadable", "p")] });
+      view = renderWgPicker();
+      await settle();
+      expect(maybe("agentPicker.scopeFaults")).not.toBeNull();
+      view.dispose();
     });
   });
 });
