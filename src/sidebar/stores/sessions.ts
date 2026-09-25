@@ -102,8 +102,10 @@ const [state, setState] = createStore<SessionsStateWithComanaged>({
   // touch it, so a list refresh never wipes an event-only Co-managed flag.
   comanagedBySessionId: {},
   // #2482 - keyed sidecar for the same reason: a list refresh never wipes an
-  // event-only weekly quota reading.
-  weeklyQuotaUsedBySessionId: {},
+  // event-only weekly quota reading. Keyed by AGENT id since #2566, which also
+  // BOUNDS the map by the configured agent count instead of letting it grow
+  // with every session id ever seen.
+  weeklyQuotaUsedByAgentId: {},
   hydrated: false,
 });
 
@@ -613,8 +615,8 @@ export const sessionsStore = {
   get comanagedBySessionId() {
     return state.comanagedBySessionId;
   },
-  get weeklyQuotaUsedBySessionId() {
-    return state.weeklyQuotaUsedBySessionId;
+  get weeklyQuotaUsedByAgentId() {
+    return state.weeklyQuotaUsedByAgentId;
   },
   get hydrated() {
     return state.hydrated;
@@ -705,20 +707,24 @@ export const sessionsStore = {
     );
   },
 
-  setSessionAgentQuota(sessionId: string, weeklyUsedPercent: number | null) {
-    setState("weeklyQuotaUsedBySessionId", (prev) => ({ ...prev, [sessionId]: weeklyUsedPercent }));
+  setAgentQuota(agentId: string, weeklyUsedPercent: number | null) {
+    setState("weeklyQuotaUsedByAgentId", (prev) => ({ ...prev, [agentId]: weeklyUsedPercent }));
   },
 
-  hydrateSessionAgentQuota(sessionId: string, weeklyUsedPercent: number | null) {
-    setState("weeklyQuotaUsedBySessionId", (prev) =>
-      sessionId in prev ? prev : { ...prev, [sessionId]: weeklyUsedPercent },
-    );
+  hydrateAgentQuotaReadings(readings: Record<string, number | null>) {
+    setState("weeklyQuotaUsedByAgentId", (prev) => {
+      const next = { ...prev };
+      for (const [agentId, weeklyUsedPercent] of Object.entries(readings)) {
+        if (!(agentId in next)) next[agentId] = weeklyUsedPercent;
+      }
+      return next;
+    });
   },
 
   resetQuotaReadingsForTests() {
     const emptyReadings: Record<string, number | null> = {};
     setState(
-      "weeklyQuotaUsedBySessionId",
+      "weeklyQuotaUsedByAgentId",
       reconcile(emptyReadings),
     );
   },
