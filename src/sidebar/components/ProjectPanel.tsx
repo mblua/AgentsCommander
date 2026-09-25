@@ -1171,6 +1171,13 @@ const ProjectPanel: Component = () => {
           if (!agentId) return null;
           return settingsStore.current?.agents?.find((a) => a.id === agentId)?.label ?? null;
         };
+        const resolveReplicaAgentId = (
+          session: Session | undefined,
+          replica: AcAgentReplica
+        ): string | null => {
+          if (session) return session.agentId ?? null;
+          return replica.currentCodingAgentId ?? replica.preferredAgentId ?? null;
+        };
         const resolveReplicaProfileBadge = (
           session: Session | undefined,
           replica: AcAgentReplica
@@ -2757,11 +2764,11 @@ const ProjectPanel: Component = () => {
             const s = session();
             return s ? sessionsStore.contextPercentBySessionId[s.id] : undefined;
           };
-          // #2482 - same sidecar, same builder as the origin chip (SessionItem, p6). The
-          // reading is keyed by session id, so a replica with no live session has none.
+          // #2566 - keyed by AGENT id, so a replica with no live session shows the value
+          // of its configured agent's command, and two rooms of one agent agree.
           const quotaUsed = () => {
-            const s = session();
-            return s ? sessionsStore.weeklyQuotaUsedBySessionId[s.id] : undefined;
+            const agentId = resolveReplicaAgentId(session(), replica);
+            return agentId ? sessionsStore.weeklyQuotaUsedByAgentId[agentId] : undefined;
           };
           const profileBadgeTitle = () => {
             const s = session();

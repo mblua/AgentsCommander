@@ -149,7 +149,10 @@ const SessionItem: Component<{
   const ctxVisible = () =>
     contextBadgeConfigured(settingsStore.current?.agents, props.session.agentId);
   const ctxPercent = () => sessionsStore.contextPercentBySessionId[props.session.id];
-  const quotaUsed = () => sessionsStore.weeklyQuotaUsedBySessionId[props.session.id];
+  const quotaUsed = () => {
+    const agentId = props.session.agentId;
+    return agentId ? sessionsStore.weeklyQuotaUsedByAgentId[agentId] : undefined;
+  };
   const profileBadgeTitle = () => {
     const badge = profileBadge();
     if (!badge) return undefined;

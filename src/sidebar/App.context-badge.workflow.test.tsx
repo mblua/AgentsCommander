@@ -122,7 +122,7 @@ function setupTransport(
   fake.resolve("telegram_list_bridges", []);
   // Default: the engine has no reading for anyone.
   fake.resolve("get_session_context", null);
-  fake.resolve("get_session_agent_quota", null);
+  fake.resolve("get_agent_quota_readings", {});
 }
 
 async function mounted(fake: FakeTransport) {
@@ -413,7 +413,7 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
   it("a_reloaded_sidebar_hydrates_an_origin_agent_already_sitting_at_a_reading", async () => {
     const fake = new FakeTransport();
     setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
-    fake.onInvoke("get_session_agent_quota", (args) => (args.sessionId === originSessionId ? 28 : null));
+    fake.resolve("get_agent_quota_readings", { claude: 28 });
 
     const rendered = await mountedWithOrigin(fake);
     try {
@@ -422,7 +422,7 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
         expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
         expect(el.className).toContain("quota-fill");
       });
-      expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0);
+      expect(fake.callsFor("get_agent_quota_readings").length).toBeGreaterThan(0);
     } finally {
       rendered.cleanup();
     }
@@ -434,15 +434,15 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
 
     const rendered = await mountedWithOrigin(fake);
     try {
-      await waitFor(() => expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0));
-      fake.emitFromBackend("session_agent_quota", { sessionId: originSessionId, weeklyUsedPercent: 28 });
+      await waitFor(() => expect(fake.callsFor("get_agent_quota_readings").length).toBeGreaterThan(0));
+      fake.emitFromBackend("agent_quota", { agentId: "claude", weeklyUsedPercent: 28 });
       await waitFor(() => {
         const el = oneChip(rendered.root);
         expect(el.className).toContain("quota-fill");
         expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
       });
 
-      fake.emitFromBackend("session_agent_quota", { sessionId: originSessionId, weeklyUsedPercent: null });
+      fake.emitFromBackend("agent_quota", { agentId: "claude", weeklyUsedPercent: null });
       await waitFor(() => {
         const el = oneChip(rendered.root);
         expect(el.className).not.toContain("quota-fill");
@@ -456,22 +456,22 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
   it("an_event_that_arrives_before_the_snapshot_is_not_overwritten_by_it", async () => {
     const fake = new FakeTransport();
     setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
-    let release: ((value: number) => void) | null = null;
-    fake.onInvoke("get_session_agent_quota", (args) =>
-      args.sessionId === originSessionId
-        ? new Promise<number>((resolve) => {
-            release = resolve;
-          })
-        : null,
+    let release: ((value: Record<string, number | null>) => void) | null = null;
+    fake.onInvoke(
+      "get_agent_quota_readings",
+      () =>
+        new Promise<Record<string, number | null>>((resolve) => {
+          release = resolve;
+        }),
     );
 
     const rendered = await mountedWithOrigin(fake);
     try {
       await waitFor(() => expect(release).not.toBeNull());
-      fake.emitFromBackend("session_agent_quota", { sessionId: originSessionId, weeklyUsedPercent: 12 });
+      fake.emitFromBackend("agent_quota", { agentId: "claude", weeklyUsedPercent: 12 });
       await waitFor(() => expect(oneChip(rendered.root).style.getPropertyValue("--ac-quota-remaining")).toBe("88%"));
 
-      release!(90);
+      release!({ claude: 90 });
       await new Promise((resolve) => setTimeout(resolve, 0));
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(oneChip(rendered.root).style.getPropertyValue("--ac-quota-remaining")).toBe("88%");
@@ -483,7 +483,7 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
   it("the_filled_origin_chip_keeps_the_agent_name_in_its_accessible_name", async () => {
     const fake = new FakeTransport();
     setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
-    fake.onInvoke("get_session_agent_quota", (args) => (args.sessionId === originSessionId ? 28 : null));
+    fake.resolve("get_agent_quota_readings", { claude: 28 });
 
     const rendered = await mountedWithOrigin(fake);
     try {
@@ -499,11 +499,11 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
   it("a_rejected_snapshot_leaves_the_chip_plain_and_a_LATER_subscription_still_works", async () => {
     const fake = new FakeTransport();
     setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
-    fake.reject("get_session_agent_quota", "not served");
+    fake.reject("get_agent_quota_readings", "not served");
 
     const rendered = await mountedWithOrigin(fake);
     try {
-      await waitFor(() => expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0));
+      await waitFor(() => expect(fake.callsFor("get_agent_quota_readings").length).toBeGreaterThan(0));
       const el = oneChip(rendered.root);
       expect(el.className).not.toContain("quota-fill");
       expect(el.getAttribute("style")).toBeNull();
@@ -534,30 +534,29 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
   }
 
   // Mounts the real SidebarApp with the replica and the origin session, runs the
-  // case, and always cleans up. `snapshot` answers get_session_agent_quota.
+  // case, and always cleans up. `snapshot` answers get_agent_quota_readings.
   async function withReplicaAndOrigin(
-    snapshot: ((args: Record<string, unknown>) => number | null) | null,
+    snapshot: Record<string, number | null> | null,
     body: (fake: FakeTransport, root: Element) => Promise<void>,
   ): Promise<void> {
     const fake = new FakeTransport();
     setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
-    if (snapshot) fake.onInvoke("get_session_agent_quota", snapshot);
+    if (snapshot) fake.resolve("get_agent_quota_readings", snapshot);
     const rendered = await mountedWithOrigin(fake);
     try {
-      await waitFor(() => expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0));
+      await waitFor(() => expect(fake.callsFor("get_agent_quota_readings").length).toBeGreaterThan(0));
       await body(fake, rendered.root);
     } finally {
       rendered.cleanup();
     }
   }
 
-  const replicaReading = (fake: FakeTransport, id: string, weeklyUsedPercent: number | null) =>
-    fake.emitFromBackend("session_agent_quota", { sessionId: id, weeklyUsedPercent });
+  const replicaReading = (fake: FakeTransport, agentId: string, weeklyUsedPercent: number | null) =>
+    fake.emitFromBackend("agent_quota", { agentId, weeklyUsedPercent });
 
   it("one_backend_event_per_session_fills_BOTH_the_replica_chip_and_the_origin_chip", () =>
     withReplicaAndOrigin(null, async (fake, root) => {
-      replicaReading(fake, sessionId, 28);
-      replicaReading(fake, originSessionId, 28);
+      replicaReading(fake, "claude", 28);
       await waitFor(() => {
         expectFilled(oneReplicaChip(root));
         expectFilled(oneChip(root));
@@ -566,7 +565,7 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
 
   it("a_reloaded_sidebar_hydrates_a_replica_already_sitting_at_a_reading", () =>
     withReplicaAndOrigin(
-      (args) => (args.sessionId === sessionId ? 28 : null),
+      { claude: 28 },
       async (_fake, root) => {
         // No event is emitted in this case: only the snapshot can paint the chip.
         await waitFor(() => expectFilled(oneReplicaChip(root)));
@@ -575,9 +574,9 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
 
   it("a_null_event_clears_the_replica_chip", () =>
     withReplicaAndOrigin(null, async (fake, root) => {
-      replicaReading(fake, sessionId, 28);
+      replicaReading(fake, "claude", 28);
       await waitFor(() => expectFilled(oneReplicaChip(root)));
-      replicaReading(fake, sessionId, null);
+      replicaReading(fake, "claude", null);
       await waitFor(() => {
         const el = oneReplicaChip(root);
         expect(el.className).not.toContain("quota-fill");
