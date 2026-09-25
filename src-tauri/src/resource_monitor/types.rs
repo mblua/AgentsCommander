@@ -168,6 +168,26 @@ pub struct ResourceSnapshot {
     pub network_summary: String,
     pub groups: Vec<ResourceAgentGroupSnapshot>,
     pub warnings: Vec<String>,
+    /// #2581 - per-agent memory warnings, keyed by session so the UI can name
+    /// the agent and link to its row. Not duplicated into `warnings`.
+    #[serde(default)]
+    pub group_warnings: Vec<ResourceGroupWarning>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResourceGroupWarningLevel {
+    Warn,
+    Kill,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceGroupWarning {
+    pub session_id: String,
+    pub level: ResourceGroupWarningLevel,
+    pub private_bytes: u64,
+    pub limit_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1186,6 +1186,17 @@ export interface ResourceSnapshot {
   networkSummary: string;
   groups: ResourceAgentGroupSnapshot[];
   warnings: string[];
+  /** #2581 - per-agent memory warnings. Optional for older producers. */
+  groupWarnings?: ResourceGroupWarning[];
+}
+
+export type ResourceGroupWarningLevel = "warn" | "kill";
+
+export interface ResourceGroupWarning {
+  sessionId: string;
+  level: ResourceGroupWarningLevel;
+  privateBytes: number;
+  limitBytes: number;
 }
 
 export interface ResourceKillRequest {
@@ -1817,6 +1828,18 @@ export interface PreviewSelectionLockRemovalRequest {
   scope: ProfileAssignmentScope;
 }
 
+/** #2557 - why the scope walk could not count a replica or folder. */
+export type ScopeFaultCode =
+  | "configUnreadable" | "configNotJson" | "configNotObject"
+  | "identityMissing" | "identityMismatch" | "locationInvalid"
+  | "pathUnreadable" | "folderUnreadable";
+
+export interface ScopeFault {
+  code: ScopeFaultCode;
+  replicaName: string;
+  replicaPath: string;
+}
+
 export interface PreviewSelectionLockRemovalResult {
   scope: ProfileAssignmentScope;
   targetFingerprint: string;
@@ -1827,6 +1850,7 @@ export interface PreviewSelectionLockRemovalResult {
   invalidCount: number;
   targets: ProfileAssignmentTarget[];
   warnings: string[];
+  scopeFaults?: ScopeFault[];
 }
 
 export interface ApplySelectionLockRemovalRequest {
