@@ -27,6 +27,7 @@ import {
   onSessionBusy,
   onSessionComanagedState,
   onSessionContext,
+  onSessionAgentQuota,
   onSessionGitRepos,
   onSessionCoordinatorChanged,
   onTelegramBridgeAttached,
@@ -977,6 +978,25 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
             if (!disposed) {
               sessionsStore.hydrateSessionContext(session.id, percent);
             }
+          }),
+      );
+    } catch {}
+    if (disposed) return;
+
+    await register(
+      onSessionAgentQuota(({ sessionId, weeklyUsedPercent }) => {
+        sessionsStore.setSessionAgentQuota(sessionId, weeklyUsedPercent);
+      }),
+    );
+    if (disposed) return;
+
+    try {
+      await Promise.all(
+        sessionsStore.sessions
+          .filter((session) => session.agentId)
+          .map(async (session) => {
+            const used = await PtyAPI.getSessionAgentQuota(session.id);
+            if (!disposed) sessionsStore.hydrateSessionAgentQuota(session.id, used);
           }),
       );
     } catch {}
