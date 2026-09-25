@@ -920,6 +920,16 @@ mod tests {
             2,
             "B is still configured: closing its terminal keeps it cached"
         );
+        // Only a NEW resolve of B can prove the cache kept it across a tick with no B session.
+        let b2 = Uuid::new_v4();
+        h.engine.register_session(b2, "b".to_string());
+        h.engine.tick().await;
+        assert_eq!(
+            h.engine.resolve_count(),
+            2,
+            "a new B session reuses the cached pattern: no terminal close evicts it"
+        );
+        h.engine.retire_session(b2);
 
         h.sources.disable("b");
         h.engine.tick().await;
