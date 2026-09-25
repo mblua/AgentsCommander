@@ -2625,6 +2625,33 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
+    it("pointer drag downward sends the post-removal target index", async () => {
+      currentSettings = orderedSnapshot(FIVE);
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      installReorder();
+      const { dispose } = renderPicker({ currentAgentId: "c" });
+      await settle();
+
+      // A (row 0) dropped below C: y=110 is past C's midpoint (100) and above D's (140).
+      const { handle } = pressGrip("a");
+      dispatchPointer(handle, "pointermove", 5, 60);
+      dispatchPointer(handle, "pointermove", 5, 110);
+      dispatchPointer(handle, "pointerup", 5, 110);
+      await settle();
+
+      expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledTimes(1);
+      expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledWith({
+        id: "a",
+        expectedIds: ["a", "b", "c", "d", "e"],
+        targetIndex: 2,
+      });
+      expect(cardIds()).toEqual(["b", "c", "a", "d", "e"]);
+      expect(text("agentPicker.moveStatus")).toBe("Moved Agent A to position 3 of 5.");
+      expectNoMoveCommand();
+
+      dispose();
+    });
+
     it("Alt+Arrow on a grip moves one step and announces first and last", async () => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValue(currentSettings);
