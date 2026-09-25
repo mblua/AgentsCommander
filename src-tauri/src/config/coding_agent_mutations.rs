@@ -363,6 +363,62 @@ pub fn move_registered_agent(
         .collect())
 }
 
+/// #2542 - pure "move one tool to `target_index`" transition over the
+/// effective order, in one step.
+///
+/// Like `move_registered_agent`, all validation runs on a finalized candidate,
+/// so a rejected request can never reorder or renumber the live settings. The
+/// candidate's ordered ids must equal `expected_ids` element-wise (a stale view
+/// is rejected), `id` must occur exactly once, `target_index` must be in range
+/// and must differ from the current index (a no-op is rejected so nothing is
+/// written or emitted). The move is remove-then-insert-at-index; on success the
+/// live vector is replaced by the renumbered candidate and the authoritative
+/// ordered id list is returned.
+pub fn reorder_registered_agent(
+    settings: &mut AppSettings,
+    id: &str,
+    expected_ids: &[String],
+    target_index: usize,
+) -> Result<Vec<String>, String> {
+    let mut candidate = settings.agents.clone();
+    finalize_agent_order(&mut candidate);
+
+    let current: Vec<&str> = candidate.iter().map(|agent| agent.id.as_str()).collect();
+    if current.len() != expected_ids.len()
+        || current
+            .iter()
+            .zip(expected_ids)
+            .any(|(actual, expected)| *actual != expected.as_str())
+    {
+        return Err(
+            "the agent order changed since it was read; refresh and retry the reorder".to_string(),
+        );
+    }
+
+    let from = unique_agent_index(&candidate, id)?;
+    if target_index >= candidate.len() {
+        return Err(format!(
+            "target index {target_index} is out of range for {} agents",
+            candidate.len()
+        ));
+    }
+    if target_index == from {
+        return Err(format!(
+            "agent '{id}' is already at index {target_index}; nothing to reorder"
+        ));
+    }
+
+    let agent = candidate.remove(from);
+    candidate.insert(target_index, agent);
+    normalize_agent_order(&mut candidate);
+    settings.agents = candidate;
+    Ok(settings
+        .agents
+        .iter()
+        .map(|agent| agent.id.clone())
+        .collect())
+}
+
 /// #2306 P1 - the single index of `id` in `agents`, rejecting an unknown or
 /// duplicated id. Comparison is exact: ids differing only by case are distinct
 /// records here, matching the move contract.
@@ -1491,5 +1547,108 @@ mod tests {
         };
         let ids = move_registered_agent(&mut cased, "a", "A", AgentMoveDirection::Up).unwrap();
         assert_eq!(ids, ["a", "A"]);
+    }
+
+    fn reorder_fixture_2542() -> AppSettings {
+        let mut settings = AppSettings::default();
+        for id in ["a", "b", "c", "d", "e"] {
+            apply_coding_agent_op(&mut settings, &add(agent(id, &id.to_uppercase(), "claude")))
+                .unwrap();
+        }
+        settings
+    }
+
+    fn owned_ids_2542(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    #[test]
+    fn reorder_moves_multiple_rows_down_and_up_in_one_step() {
+        let mut settings = reorder_fixture_2542();
+        let expected = owned_ids_2542(&["a", "b", "c", "d", "e"]);
+        let ids = reorder_registered_agent(&mut settings, "b", &expected, 3).unwrap();
+        assert_eq!(ids, ["a", "c", "d", "b", "e"]);
+        assert_eq!(ids_2306(&settings), ["a", "c", "d", "b", "e"]);
+
+        let ids = reorder_registered_agent(&mut settings, "e", &ids, 1).unwrap();
+        assert_eq!(ids, ["a", "e", "c", "d", "b"]);
+        assert_eq!(
+            positions_2306(&settings),
+            [Some(0), Some(1), Some(2), Some(3), Some(4)]
+        );
+    }
+
+    #[test]
+    fn reorder_reaches_both_ends_with_contiguous_positions() {
+        let mut settings = reorder_fixture_2542();
+        let expected = owned_ids_2542(&["a", "b", "c", "d", "e"]);
+        let ids = reorder_registered_agent(&mut settings, "d", &expected, 0).unwrap();
+        assert_eq!(ids, ["d", "a", "b", "c", "e"]);
+        assert_eq!(
+            positions_2306(&settings),
+            [Some(0), Some(1), Some(2), Some(3), Some(4)]
+        );
+
+        let ids = reorder_registered_agent(&mut settings, "a", &ids, 4).unwrap();
+        assert_eq!(ids, ["d", "b", "c", "e", "a"]);
+        assert_eq!(
+            positions_2306(&settings),
+            [Some(0), Some(1), Some(2), Some(3), Some(4)]
+        );
+    }
+
+    #[test]
+    fn reorder_rejections_leave_the_live_settings_byte_identical() {
+        let fresh = ["a", "b", "c", "d", "e"];
+        let cases: [(&str, &[&str], usize, &str); 5] = [
+            ("b", &["a", "x", "c", "d", "e"], 3, "changed since"),
+            ("b", &["b", "a", "c", "d", "e"], 3, "changed since"),
+            ("missing", &fresh, 1, "not found"),
+            ("b", &fresh, 5, "out of range"),
+            ("b", &fresh, 1, "nothing to reorder"),
+        ];
+        for (id, expected_ids, target, needle) in cases {
+            let mut settings = reorder_fixture_2542();
+            let before = serde_json::to_string(&settings.agents).unwrap();
+            let error =
+                reorder_registered_agent(&mut settings, id, &owned_ids_2542(expected_ids), target)
+                    .unwrap_err();
+            assert!(
+                error.contains(needle),
+                "case ({id},{target}): error {error:?} must mention {needle:?}"
+            );
+            assert_eq!(
+                serde_json::to_string(&settings.agents).unwrap(),
+                before,
+                "case ({id},{target})"
+            );
+        }
+
+        let mut duplicated = AppSettings {
+            agents: vec![agent("dup", "D1", "claude"), agent("dup", "D2", "claude")],
+            ..AppSettings::default()
+        };
+        let before = serde_json::to_string(&duplicated.agents).unwrap();
+        let error =
+            reorder_registered_agent(&mut duplicated, "dup", &owned_ids_2542(&["dup", "dup"]), 1)
+                .unwrap_err();
+        assert!(error.contains("more than once"), "{error}");
+        assert_eq!(serde_json::to_string(&duplicated.agents).unwrap(), before);
+    }
+
+    #[test]
+    fn reorder_derives_the_effective_order_from_unnormalized_input() {
+        // Vector slots are [a, b, c] but the stored ordinals say [c, a, b]; the
+        // caller's view and the move act on that effective order.
+        let mut settings = ordered_2306();
+        settings.agents[0].order = Some(1);
+        settings.agents[1].order = Some(2);
+        settings.agents[2].order = Some(0);
+
+        let ids =
+            reorder_registered_agent(&mut settings, "c", &owned_ids_2542(&["c", "a", "b"]), 2)
+                .unwrap();
+        assert_eq!(ids, ["a", "b", "c"]);
+        assert_eq!(positions_2306(&settings), [Some(0), Some(1), Some(2)]);
     }
 }

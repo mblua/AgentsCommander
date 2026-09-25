@@ -4872,6 +4872,7 @@ pub fn run(
                 commands::config::set_main_resource_monitor_attached,
                 commands::config::set_rail_collapse,
                 commands::config::move_coding_agent,
+                commands::config::reorder_coding_agent,
                 commands::config::set_log_level,
                 commands::config::get_update_status,
                 commands::config::get_agent_update_status,
