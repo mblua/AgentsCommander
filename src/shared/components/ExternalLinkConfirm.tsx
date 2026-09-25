@@ -144,7 +144,7 @@ const ExternalLinkConfirm: Component = () => {
             aria-labelledby="external-link-title"
             aria-describedby="external-link-body"
           >
-            <div class="external-link-modal">
+            <div class="external-link-modal"><span class="zz-2615-unstyled-probe" />
               <div class="external-link-header">
                 <h2 id="external-link-title" class="external-link-title">Open external link?</h2>
                 <button
