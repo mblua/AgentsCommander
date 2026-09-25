@@ -3581,6 +3581,25 @@ mod tests {
     }
 
     #[test]
+    fn label_tier_outranks_command_tier() {
+        // agents[0] matches only by command, agents[1] only by label: the label
+        // tier runs first, so the later agent wins.
+        let settings = match_settings(
+            vec![
+                labelled("other", "Other", "codex"),
+                labelled("mine", "Codex", "x"),
+            ],
+            &[],
+        );
+        let mut r = reference("foreign", Some("A"));
+        r.app_label = Some("Codex".to_string());
+        r.command = Some(super::canonical_command_text("codex"));
+        let found = resolve(&settings, &r);
+        assert_eq!(found.agent_id, "mine");
+        assert_eq!(found.tier, Some(super::MatchTier::LabelAndLetter));
+    }
+
+    #[test]
     fn command_match_is_used_when_label_differs() {
         let settings = match_settings(vec![labelled("local", "Mine", "Codex --Yolo")], &[]);
         let mut r = reference("foreign", Some("A"));
