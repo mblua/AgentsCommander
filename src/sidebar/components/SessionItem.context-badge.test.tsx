@@ -169,3 +169,105 @@ describe("SessionItem CTX badge (#1033)", () => {
     }
   });
 });
+
+// #2482 p6 - the weekly-quota fill on the origin agent chip. quotaChipAttrs (p4)
+// decides fill vs plain; this pins that SessionItem spreads it onto the chip.
+describe("SessionItem agent chip weekly-quota fill (#2482)", () => {
+  let cleanupDom: (() => void) | null = null;
+  const otherSessionId = "s2";
+
+  function chip(root: ParentNode, id = sessionId): HTMLElement {
+    const all = root.querySelectorAll<HTMLElement>(`[data-ac-testid="session.${id}"] .ac-discovery-badge.agent`);
+    expect(all.length).toBe(1);
+    return all[0];
+  }
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+    sessionsStore.resetQuotaReadingsForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    sessionsStore.resetQuotaReadingsForTests();
+    document.body.replaceChildren();
+  });
+
+  it("the_agent_chip_carries_no_quota_class_and_no_inline_style_without_a_reading", async () => {
+    const rendered = await renderRow(baseSettings({ agents: [agentConfig()] }));
+    try {
+      await waitFor(() => expect(chip(rendered.root).textContent).toBe("Claude Code"));
+      const el = chip(rendered.root);
+      expect(el.className).not.toContain("quota-fill");
+      expect(el.getAttribute("style")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("the_agent_chip_sets_the_remaining_custom_property_from_the_reading", async () => {
+    sessionsStore.setSessionAgentQuota(sessionId, 28);
+    const rendered = await renderRow(baseSettings({ agents: [agentConfig()] }));
+    try {
+      await waitFor(() => expect(chip(rendered.root).className).toContain("quota-fill"));
+      expect(chip(rendered.root).style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("a_null_reading_clears_a_previously_set_fill", async () => {
+    sessionsStore.setSessionAgentQuota(sessionId, 40);
+    const rendered = await renderRow(baseSettings({ agents: [agentConfig()] }));
+    try {
+      await waitFor(() => expect(chip(rendered.root).style.getPropertyValue("--ac-quota-remaining")).toBe("60%"));
+      sessionsStore.setSessionAgentQuota(sessionId, null);
+      await waitFor(() => {
+        const el = chip(rendered.root);
+        expect(el.className).not.toContain("quota-fill");
+        expect(el.getAttribute("style")).toBeNull();
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("a_reading_on_one_session_does_not_fill_another_session_chip", async () => {
+    sessionsStore.setSessionAgentQuota(otherSessionId, 50);
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings({ agents: [agentConfig()] }));
+    const rendered = renderWithFakeTransport(
+      () => (
+        <>
+          <SessionItem session={session({ id: sessionId, agentId: "claude", agentLabel: "Claude Code" })} isActive={false} />
+          <SessionItem session={session({ id: otherSessionId, agentId: "claude", agentLabel: "Claude Code" })} isActive={false} />
+        </>
+      ),
+      fake,
+    );
+    await settingsStore.load();
+    try {
+      await waitFor(() => expect(chip(rendered.root, otherSessionId).className).toContain("quota-fill"));
+      const el = chip(rendered.root);
+      expect(el.className).not.toContain("quota-fill");
+      expect(el.getAttribute("style")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("the_chip_text_and_the_unfilled_chip_markup_are_unchanged", async () => {
+    const rendered = await renderRow(baseSettings({ agents: [agentConfig()] }));
+    try {
+      await waitFor(() => expect(chip(rendered.root).textContent).toBe("Claude Code"));
+      const el = chip(rendered.root);
+      expect(el.getAttribute("class")!.split(/\s+/).sort()).toEqual(["ac-discovery-badge", "agent"]);
+      expect(el.getAttributeNames().sort()).toEqual(["class"]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});

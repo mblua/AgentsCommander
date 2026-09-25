@@ -32,6 +32,10 @@ const otherReplicaPath = `${workgroupPath}\\__agent_${otherReplicaName}`;
 const sessionId = "coord-session";
 const otherSessionId = "member-session";
 
+const originAgentName = "ac-architect-v4"; // MUST equal originSession().name: findSessionByName matches on it
+const originSessionId = "origin-session";
+const originAgentPath = `${projectPath}\.ac\_agent_${originAgentName}`;
+
 const CLAUDE_PATTERN = String.raw`^ {2}Context [░█]+ (\d{1,3})%`;
 
 /**
@@ -68,6 +72,17 @@ function agentSession(overrides: Partial<Session> = {}): Session {
   });
 }
 
+function originSession(): Session {
+  return session({
+    id: originSessionId,
+    name: originAgentName,
+    workingDirectory: originAgentPath,
+    status: "running",
+    agentId: "claude",
+    agentLabel: "Claude Code",
+  });
+}
+
 function setupTransport(
   fake: FakeTransport,
   opts: { agents: AgentConfig[]; sessions: Session[]; replicas?: string[] },
@@ -82,6 +97,7 @@ function setupTransport(
   fake.resolve(
     "discover_project",
     discovery({
+      agents: [{ name: originAgentName, path: originAgentPath, roleExists: true }],
       workgroups: [
         {
           name: wgName,
@@ -106,6 +122,7 @@ function setupTransport(
   fake.resolve("telegram_list_bridges", []);
   // Default: the engine has no reading for anyone.
   fake.resolve("get_session_context", null);
+  fake.resolve("get_session_agent_quota", null);
 }
 
 async function mounted(fake: FakeTransport) {
@@ -351,6 +368,150 @@ describe("SidebarApp CTX badge workflow (#1033)", () => {
       fake.emitFromBackend("session_context", { sessionId, percent: 42 });
       await waitFor(() => {
         expect(rendered.root.querySelector(badgeSelector(replicaName))?.textContent).toBe("CTX 42%");
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});
+
+// #2482 p6 - the weekly-quota fill on the ORIGIN agent chip, through the REAL
+// App listener and the REAL mount-time snapshot. Every case asserts the NodeList
+// length first: a missing chip must fail, never pass a "no quota-fill" check.
+describe("SidebarApp weekly-quota workflow (#2482)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  const originChip = (root: Element) =>
+    root.querySelectorAll<HTMLElement>(`[data-ac-testid="session.${originSessionId}"] .ac-discovery-badge.agent`);
+
+  function oneChip(root: Element): HTMLElement {
+    const all = originChip(root);
+    expect(all.length).toBe(1);
+    return all[0];
+  }
+
+  async function mountedWithOrigin(fake: FakeTransport) {
+    const rendered = await mounted(fake);
+    await waitFor(() => expect(originChip(rendered.root).length).toBe(1));
+    return rendered;
+  }
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+    sessionsStore.resetQuotaReadingsForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    sessionsStore.resetQuotaReadingsForTests();
+    document.body.replaceChildren();
+  });
+
+  it("a_reloaded_sidebar_hydrates_an_origin_agent_already_sitting_at_a_reading", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
+    fake.onInvoke("get_session_agent_quota", (args) => (args.sessionId === originSessionId ? 28 : null));
+
+    const rendered = await mountedWithOrigin(fake);
+    try {
+      await waitFor(() => {
+        const el = oneChip(rendered.root);
+        expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
+        expect(el.className).toContain("quota-fill");
+      });
+      expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("a_live_event_fills_the_origin_chip_and_a_later_null_clears_it", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
+
+    const rendered = await mountedWithOrigin(fake);
+    try {
+      await waitFor(() => expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0));
+      fake.emitFromBackend("session_agent_quota", { sessionId: originSessionId, weeklyUsedPercent: 28 });
+      await waitFor(() => {
+        const el = oneChip(rendered.root);
+        expect(el.className).toContain("quota-fill");
+        expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
+      });
+
+      fake.emitFromBackend("session_agent_quota", { sessionId: originSessionId, weeklyUsedPercent: null });
+      await waitFor(() => {
+        const el = oneChip(rendered.root);
+        expect(el.className).not.toContain("quota-fill");
+        expect(el.getAttribute("style")).toBeNull();
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("an_event_that_arrives_before_the_snapshot_is_not_overwritten_by_it", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
+    let release: ((value: number) => void) | null = null;
+    fake.onInvoke("get_session_agent_quota", (args) =>
+      args.sessionId === originSessionId
+        ? new Promise<number>((resolve) => {
+            release = resolve;
+          })
+        : null,
+    );
+
+    const rendered = await mountedWithOrigin(fake);
+    try {
+      await waitFor(() => expect(release).not.toBeNull());
+      fake.emitFromBackend("session_agent_quota", { sessionId: originSessionId, weeklyUsedPercent: 12 });
+      await waitFor(() => expect(oneChip(rendered.root).style.getPropertyValue("--ac-quota-remaining")).toBe("88%"));
+
+      release!(90);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(oneChip(rendered.root).style.getPropertyValue("--ac-quota-remaining")).toBe("88%");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("the_filled_origin_chip_keeps_the_agent_name_in_its_accessible_name", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
+    fake.onInvoke("get_session_agent_quota", (args) => (args.sessionId === originSessionId ? 28 : null));
+
+    const rendered = await mountedWithOrigin(fake);
+    try {
+      await waitFor(() => expect(oneChip(rendered.root).getAttribute("role")).toBe("meter"));
+      const el = oneChip(rendered.root);
+      expect(el.getAttribute("aria-label")).toContain("Claude Code");
+      expect(el.textContent).toBe("Claude Code");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("a_rejected_snapshot_leaves_the_chip_plain_and_a_LATER_subscription_still_works", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
+    fake.reject("get_session_agent_quota", "not served");
+
+    const rendered = await mountedWithOrigin(fake);
+    try {
+      await waitFor(() => expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0));
+      const el = oneChip(rendered.root);
+      expect(el.className).not.toContain("quota-fill");
+      expect(el.getAttribute("style")).toBeNull();
+
+      const repos = [{ label: "repo-x", sourcePath: "C:\repo-x", branch: "main", dirty: false }];
+      await waitFor(() => {
+        fake.emitFromBackend("session_git_repos", { sessionId: originSessionId, repos });
+        expect(sessionsStore.sessions.find((s) => s.id === originSessionId)?.gitRepos).toEqual(repos);
       });
     } finally {
       rendered.cleanup();
