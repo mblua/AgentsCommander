@@ -3183,31 +3183,13 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 // Resolve label: use provided agent_label, or look up from settings by agent_id.
                 // Without this fallback, callers that pass agent_id but no label (session-requests,
                 // web remote) would write app: "Unknown" into the per-instance config.json.
-                let (resolved_label, (descriptor_command, descriptor_identity)) = {
+                // #2433 - computed under the settings read lock, written after it drops.
+                let write = {
                     let settings = app.state::<SettingsState>();
                     let cfg = settings.read().await;
-                    let label = match agent_label.as_deref() {
-                        Some(l) => l.to_string(),
-                        None => resolve_agent_label(aid, &cfg).unwrap_or_else(|| {
-                            log::warn!(
-                            "Could not resolve label for agent_id='{}' — defaulting to 'Unknown'",
-                            aid
-                        );
-                            "Unknown".to_string()
-                        }),
-                    };
-                    // #2433 - the portable descriptor for the launched agent only.
-                    (label, coding_agent_descriptor(aid, &cfg))
+                    prepare_last_coding_agent_write(aid, agent_label.as_deref(), &cfg)
                 };
-                let session_id_str = id.to_string();
-                if let Err(e) = agent_config::set_last_coding_agent(
-                    &cwd,
-                    aid,
-                    &resolved_label,
-                    Some(&session_id_str),
-                    &descriptor_command,
-                    &descriptor_identity,
-                ) {
+                if let Err(e) = save_last_coding_agent(&cwd, &id.to_string(), &write) {
                     log::warn!("Failed to save lastCodingAgent: {}", e);
                 }
                 // #592 - persist the loaded profile content-hash so drift survives an
@@ -5295,15 +5277,14 @@ fn enabled_profile_cells<'a>(
 }
 
 /// #2433 - `(canonical command, enabled letter -> cell identity)` for `agent_id`,
-/// written beside its `codingAgents` entry. An agent absent from settings yields
-/// an empty command and an empty identity.
+/// written beside its `codingAgents` entry. `None` when the agent is absent from
+/// settings: nothing is known, so no descriptor is written (an empty identity
+/// would read as a real agent with zero enabled cells).
 fn coding_agent_descriptor(
     agent_id: &str,
     settings: &AppSettings,
-) -> (String, std::collections::BTreeMap<String, String>) {
-    let Some(agent) = settings.agents.iter().find(|a| a.id == agent_id) else {
-        return (String::new(), std::collections::BTreeMap::new());
-    };
+) -> Option<(String, std::collections::BTreeMap<String, String>)> {
+    let agent = settings.agents.iter().find(|a| a.id == agent_id)?;
     let identity = enabled_profile_cells(settings, agent_id)
         .map(|(letter, cell)| {
             (
@@ -5312,9 +5293,61 @@ fn coding_agent_descriptor(
             )
         })
         .collect();
-    (
+    Some((
         crate::config::agent_command::canonical_command_text(&agent.command),
         identity,
+    ))
+}
+
+/// #2433 - everything the spawn-time `codingAgents` write needs, resolved from
+/// settings for the launched agent only.
+struct LastCodingAgentWrite {
+    agent_id: String,
+    label: String,
+    descriptor: Option<(String, std::collections::BTreeMap<String, String>)>,
+}
+
+/// Resolve the label (the provided one, else settings, else "Unknown") and the
+/// descriptor for `agent_id`. Without the label fallback, callers that pass an
+/// agent id but no label (session-requests, web remote) would write
+/// app: "Unknown" into the per-instance config.json.
+fn prepare_last_coding_agent_write(
+    agent_id: &str,
+    agent_label: Option<&str>,
+    settings: &AppSettings,
+) -> LastCodingAgentWrite {
+    let label = match agent_label {
+        Some(l) => l.to_string(),
+        None => resolve_agent_label(agent_id, settings).unwrap_or_else(|| {
+            log::warn!(
+                "Could not resolve label for agent_id='{}' — defaulting to 'Unknown'",
+                agent_id
+            );
+            "Unknown".to_string()
+        }),
+    };
+    LastCodingAgentWrite {
+        agent_id: agent_id.to_string(),
+        label,
+        descriptor: coding_agent_descriptor(agent_id, settings),
+    }
+}
+
+/// The spawn-time write of `lastCodingAgent` + `codingAgents[<id>]`.
+fn save_last_coding_agent(
+    cwd: &str,
+    session_id: &str,
+    write: &LastCodingAgentWrite,
+) -> Result<(), String> {
+    agent_config::set_last_coding_agent(
+        cwd,
+        &write.agent_id,
+        &write.label,
+        Some(session_id),
+        write
+            .descriptor
+            .as_ref()
+            .map(|(command, identity)| (command.as_str(), identity)),
     )
 }
 
@@ -6019,12 +6052,13 @@ mod tests {
         execute_manual_coordinator_destroy, inject_codex_resume, inject_pi_resume,
         injected_claude_config_dir_for_copy, maybe_inject_pi_resume,
         partition_restart_resume_ready, pi_has_explicit_session_control,
-        pi_is_non_conversation_invocation, resolve_actual_agent, resolve_agent_command,
-        resolve_agent_from_shell, resolve_claude_projects_dir, resolve_launch_auto_self_clear,
-        resolve_launch_idle_tuning, resolve_restart_selected_agent_id, resolve_root_agent_command,
-        restart_resume_prompt_for, restart_resume_session_is_ready,
-        resume_probe_target_for_config_dir, should_inject_continue, CreateSelectionIntent,
-        ExistingRootAction, RestartResumeTarget,
+        pi_is_non_conversation_invocation, prepare_last_coding_agent_write, resolve_actual_agent,
+        resolve_agent_command, resolve_agent_from_shell, resolve_claude_projects_dir,
+        resolve_launch_auto_self_clear, resolve_launch_idle_tuning,
+        resolve_restart_selected_agent_id, resolve_root_agent_command, restart_resume_prompt_for,
+        restart_resume_session_is_ready, resume_probe_target_for_config_dir,
+        save_last_coding_agent, should_inject_continue, CreateSelectionIntent, ExistingRootAction,
+        RestartResumeTarget,
     };
     use crate::config::coding_agents_catalog::CodingAgentDefinition;
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
@@ -14688,7 +14722,7 @@ mod tests {
         let settings = descriptor_settings();
         let agent = &settings.agents[0];
         let cells = &settings.coding_agent_profiles.profiles_by_agent["claude"];
-        let (command, identity) = coding_agent_descriptor("claude", &settings);
+        let (command, identity) = coding_agent_descriptor("claude", &settings).unwrap();
         assert_eq!(
             command,
             crate::config::agent_command::canonical_command_text("Claude --Foo")
@@ -14704,42 +14738,88 @@ mod tests {
             .collect();
         assert_eq!(identity, expected);
 
-        let (_, none) = coding_agent_descriptor("codex", &settings);
+        let (_, none) = coding_agent_descriptor("codex", &settings).unwrap();
         assert!(none.is_empty());
+        assert!(coding_agent_descriptor("gone", &settings).is_none());
+    }
+
+    fn read_json(path: &std::path::Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// Seeds both config files the spawn-time write opens; returns their paths.
+    fn seed_both_configs(repo: &std::path::Path, seed: &serde_json::Value) -> [PathBuf; 2] {
+        let instance = repo.join(crate::config::agent_local_dir_name());
+        std::fs::create_dir_all(&instance).unwrap();
+        let paths = [instance.join("config.json"), repo.join("config.json")];
+        for path in &paths {
+            std::fs::write(path, serde_json::to_string(seed).unwrap()).unwrap();
+        }
+        paths
     }
 
     #[test]
     fn spawn_writes_the_descriptor_for_the_launched_agent_only() {
         let settings = descriptor_settings();
         let temp = tempfile::tempdir().unwrap();
-        let repo = temp.path();
         let other = serde_json::json!({"app": "codex", "lastUsed": "2026-01-01T00:00:00+00:00"});
-        let seed = serde_json::json!({"tooling": {"codingAgents": {"codex": other}}});
-        let instance = repo.join(crate::config::agent_local_dir_name());
-        std::fs::create_dir_all(&instance).unwrap();
-        for path in [instance.join("config.json"), repo.join("config.json")] {
-            std::fs::write(&path, serde_json::to_string(&seed).unwrap()).unwrap();
-        }
+        let paths = seed_both_configs(
+            temp.path(),
+            &serde_json::json!({"tooling": {"codingAgents": {"codex": other}}}),
+        );
 
-        let (command, identity) = coding_agent_descriptor("claude", &settings);
-        assert_eq!(identity.len(), 2);
-        crate::config::agent_config::set_last_coding_agent(
-            &repo.to_string_lossy(),
-            "claude",
-            "claude",
-            Some("sid"),
-            &command,
-            &identity,
-        )
-        .unwrap();
+        // Expected values derived here, not through the code under test.
+        let agent = &settings.agents[0];
+        let cells = &settings.coding_agent_profiles.profiles_by_agent["claude"];
+        let digest = |l: &str| crate::config::agent_command::cell_identity(agent, &cells[l]);
+        let expected_identity = serde_json::json!({"A": digest("A"), "C": digest("C")});
+        let expected_command = crate::config::agent_command::canonical_command_text("Claude --Foo");
 
-        for path in [instance.join("config.json"), repo.join("config.json")] {
-            let value: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let write = prepare_last_coding_agent_write("claude", None, &settings);
+        save_last_coding_agent(&temp.path().to_string_lossy(), "sid", &write).unwrap();
+
+        for path in &paths {
+            let value = read_json(path);
             let agents = &value["tooling"]["codingAgents"];
-            assert_eq!(agents["claude"]["command"], serde_json::json!(command));
-            assert_eq!(agents["claude"]["identity"], serde_json::json!(identity));
+            assert_eq!(value["tooling"]["lastCodingAgent"], "claude", "{path:?}");
+            assert_eq!(agents["claude"]["app"], "claude", "{path:?}");
+            assert_eq!(agents["claude"]["acSessionId"], "sid", "{path:?}");
+            assert_eq!(
+                agents["claude"]["command"],
+                serde_json::json!(expected_command)
+            );
+            assert_eq!(agents["claude"]["identity"], expected_identity, "{path:?}");
             assert_eq!(agents["codex"], other, "{path:?}");
+        }
+    }
+
+    #[test]
+    fn spawn_with_an_unknown_agent_keeps_the_existing_descriptor() {
+        let settings = descriptor_settings();
+        let temp = tempfile::tempdir().unwrap();
+        let good = serde_json::json!({
+            "app": "Gone", "lastUsed": "2026-01-01T00:00:00+00:00",
+            "command": "gone --x", "identity": {"A": "aa"}
+        });
+        let paths = seed_both_configs(
+            temp.path(),
+            &serde_json::json!({"tooling": {"codingAgents": {"gone": good}}}),
+        );
+
+        let write = prepare_last_coding_agent_write("gone", None, &settings);
+        save_last_coding_agent(&temp.path().to_string_lossy(), "sid", &write).unwrap();
+
+        for path in &paths {
+            let value = read_json(path);
+            let entry = &value["tooling"]["codingAgents"]["gone"];
+            assert_eq!(entry["command"], "gone --x", "{path:?}");
+            assert_eq!(
+                entry["identity"],
+                serde_json::json!({"A": "aa"}),
+                "{path:?}"
+            );
+            assert_eq!(entry["app"], "Unknown", "{path:?}");
+            assert_eq!(entry["acSessionId"], "sid", "{path:?}");
         }
     }
 }

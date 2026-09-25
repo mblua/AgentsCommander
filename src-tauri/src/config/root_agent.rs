@@ -3445,8 +3445,7 @@ mod tests {
             "codex",
             "Codex",
             Some("session-1"),
-            "codex",
-            &std::collections::BTreeMap::new(),
+            None,
         )
         .expect("set last coding agent");
 

@@ -59,8 +59,11 @@ pub struct CodingAgentEntry {
 /// Keys of a `codingAgents` entry this build owns. `upsert_config` removes
 /// them before merging so an optional one this write omits does not linger;
 /// any other key (written by a newer build) survives.
-const CODING_AGENT_ENTRY_KEYS: [&str; 5] =
-    ["app", "acSessionId", "lastUsed", "command", "identity"];
+const CODING_AGENT_ENTRY_KEYS: [&str; 3] = ["app", "acSessionId", "lastUsed"];
+
+/// #2433 - the descriptor keys. Written (and replaced) only when the caller
+/// supplies a descriptor; otherwise an existing descriptor is left untouched.
+const CODING_AGENT_DESCRIPTOR_KEYS: [&str; 2] = ["command", "identity"];
 
 /// Which coding apps have been used to run this agent, plus runtime config.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -158,27 +161,41 @@ pub fn set_last_coding_agent(
     agent_id: &str,
     app_label: &str,
     ac_session_id: Option<&str>,
-    canonical_command: &str,
-    identity: &BTreeMap<String, String>,
+    descriptor: Option<(&str, &BTreeMap<String, String>)>,
 ) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     let entry = CodingAgentEntry {
         app: app_label.to_string(),
         ac_session_id: ac_session_id.map(|s| s.to_string()),
         last_used: now,
-        command: canonical_command.to_string(),
-        identity: identity.clone(),
+        command: descriptor
+            .map(|(command, _)| command.to_string())
+            .unwrap_or_default(),
+        identity: descriptor
+            .map(|(_, identity)| identity.clone())
+            .unwrap_or_default(),
     };
+    let write_descriptor = descriptor.is_some();
 
     // Write to per-instance config dir
     let local_dir_name = crate::config::agent_local_dir_name();
     let instance_dir = Path::new(repo_path).join(local_dir_name.as_str());
     std::fs::create_dir_all(&instance_dir)
         .map_err(|e| format!("Failed to create {} dir: {}", local_dir_name, e))?;
-    upsert_config(&instance_dir.join("config.json"), agent_id, &entry)?;
+    upsert_config(
+        &instance_dir.join("config.json"),
+        agent_id,
+        &entry,
+        write_descriptor,
+    )?;
 
     // Also write to root config.json so discovery can find it regardless of instance
-    upsert_config(&Path::new(repo_path).join("config.json"), agent_id, &entry)?;
+    upsert_config(
+        &Path::new(repo_path).join("config.json"),
+        agent_id,
+        &entry,
+        write_descriptor,
+    )?;
 
     log::info!(
         "Updated lastCodingAgent to '{}' ({}) in {} + root config.json",
@@ -269,6 +286,7 @@ fn upsert_config(
     config_path: &Path,
     agent_id: &str,
     entry: &CodingAgentEntry,
+    write_descriptor: bool,
 ) -> Result<(), String> {
     crate::config::local_config_io::update_config_json_object(config_path, true, |obj| {
         // #1939 - the discriminator is the JSON shape, not the path: for both
@@ -290,7 +308,7 @@ fn upsert_config(
         tooling.insert("lastCodingAgent".to_string(), serde_json::json!(agent_id));
 
         let coding_agents = ensure_object(tooling, "codingAgents", config_path);
-        let serde_json::Value::Object(new_fields) =
+        let serde_json::Value::Object(mut new_fields) =
             serde_json::to_value(entry).map_err(|e| format!("Failed to serialize entry: {}", e))?
         else {
             return Err("CodingAgentEntry did not serialize to an object".to_string());
@@ -306,6 +324,13 @@ fn upsert_config(
         let existing = slot.as_object_mut().expect("just set to object");
         for key in CODING_AGENT_ENTRY_KEYS {
             existing.remove(key);
+        }
+        for key in CODING_AGENT_DESCRIPTOR_KEYS {
+            if write_descriptor {
+                existing.remove(key);
+            } else {
+                new_fields.remove(key);
+            }
         }
         existing.extend(new_fields);
         Ok(())
@@ -443,15 +468,8 @@ mod tests {
         let repo = dir.to_str().expect("utf-8 temp path");
 
         assert_eq!(set(dir, T2), Ok(true));
-        set_last_coding_agent(
-            repo,
-            "claude",
-            "Claude Code",
-            Some("sid"),
-            "claude",
-            &BTreeMap::new(),
-        )
-        .expect("restart rewrite");
+        set_last_coding_agent(repo, "claude", "Claude Code", Some("sid"), None)
+            .expect("restart rewrite");
 
         assert_eq!(read(dir), Some(T2.to_string()));
         assert_eq!(
@@ -530,13 +548,15 @@ mod tests {
             std::fs::create_dir_all(path.parent().expect("parent")).expect("parent dir");
 
             // Missing file: the write creates the tooling object.
-            upsert_config(&path, "codex", &codex_entry()).expect("missing config must succeed");
+            upsert_config(&path, "codex", &codex_entry(), true)
+                .expect("missing config must succeed");
             let saved: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
             assert_eq!(saved["tooling"]["lastCodingAgent"], "codex");
 
             // Present object: preserved and updated.
-            upsert_config(&path, "claude", &codex_entry()).expect("object tooling must succeed");
+            upsert_config(&path, "claude", &codex_entry(), true)
+                .expect("object tooling must succeed");
             let saved: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
             assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
@@ -553,7 +573,7 @@ mod tests {
             for literal in ["null", "5", "\"tooling\"", "[]", "false"] {
                 let original = format!(r#"{{"tooling":{literal},"repos":["repo-a"]}}"#);
                 std::fs::write(&path, &original).expect("seed");
-                let error = upsert_config(&path, "codex", &codex_entry())
+                let error = upsert_config(&path, "codex", &codex_entry(), true)
                     .expect_err("non-object tooling must fail");
                 assert!(
                     error.contains("'tooling' must be a JSON object"),
@@ -579,7 +599,8 @@ mod tests {
                 r#"{"tooling":{"lastCodingAgent":"claude","codingAgents":7},"repos":["repo-a"]}"#,
             )
             .expect("seed");
-            upsert_config(&path, "codex", &codex_entry()).expect("nested repair must succeed");
+            upsert_config(&path, "codex", &codex_entry(), true)
+                .expect("nested repair must succeed");
             let saved: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
             assert_eq!(saved["tooling"]["codingAgents"]["codex"]["app"], "Codex");
@@ -599,7 +620,8 @@ mod tests {
                 r#"{"tooling":{"selectionLocked":"yes","lastCodingAgent":"claude"},"repos":["repo-a"]}"#,
             )
             .expect("seed");
-            upsert_config(&path, "codex", &codex_entry()).expect("metadata write must succeed");
+            upsert_config(&path, "codex", &codex_entry(), true)
+                .expect("metadata write must succeed");
             let saved: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
             assert_eq!(saved["tooling"]["selectionLocked"], "yes");
@@ -619,7 +641,7 @@ mod tests {
                 r#"{"identity":"../../_agent_dev-rust","repos":["repo-a"],"tooling":{"lastCodingAgent":"claude"}}"#,
             )
             .expect("seed");
-            upsert_config(&path, "codex", &codex_entry())
+            upsert_config(&path, "codex", &codex_entry(), true)
                 .expect("valid plain-repo metadata must stay compatible");
             let saved: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
@@ -677,7 +699,7 @@ mod tests {
         );
         let mut entry = fixed_entry("claude", &[("A", "aa")]);
         entry.ac_session_id = None;
-        upsert_config(&instance_config(dir), "claude", &entry).expect("upsert");
+        upsert_config(&instance_config(dir), "claude", &entry, true).expect("upsert");
 
         let written = &stored(dir)["tooling"]["codingAgents"]["claude"];
         assert_eq!(written["futureKey"], serde_json::json!({"x": 1}));
@@ -698,8 +720,7 @@ mod tests {
             "claude",
             "Claude Code",
             None,
-            "claude",
-            &BTreeMap::new(),
+            Some(("claude", &BTreeMap::new())),
         )
         .expect("write");
         for value in [stored(dir), stored_root(dir)] {
@@ -720,9 +741,38 @@ mod tests {
         let path = instance_config(dir);
         std::fs::create_dir_all(path.parent().expect("instance dir")).expect("mkdir");
         let entry = fixed_entry("claude --x", &[("A", "aa"), ("C", "cc")]);
-        upsert_config(&path, "claude", &entry).expect("first");
+        upsert_config(&path, "claude", &entry, true).expect("first");
         let first = std::fs::read(&path).expect("read first");
-        upsert_config(&path, "claude", &entry).expect("second");
+        upsert_config(&path, "claude", &entry, true).expect("second");
         assert_eq!(std::fs::read(&path).expect("read second"), first);
+    }
+
+    #[test]
+    fn write_without_descriptor_leaves_the_existing_descriptor_untouched() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let repo = dir.to_str().expect("utf-8 temp path");
+        let identity = BTreeMap::from([("A".to_string(), "aa".to_string())]);
+        set_last_coding_agent(repo, "gone", "Gone", None, Some(("gone --x", &identity)))
+            .expect("first write");
+        set_last_coding_agent(repo, "gone", "Gone", Some("sid2"), None).expect("second write");
+        for value in [stored(dir), stored_root(dir)] {
+            let entry = &value["tooling"]["codingAgents"]["gone"];
+            assert_eq!(entry["command"], serde_json::json!("gone --x"), "{entry}");
+            assert_eq!(entry["identity"], serde_json::json!({"A": "aa"}), "{entry}");
+            assert_eq!(entry["acSessionId"], serde_json::json!("sid2"));
+        }
+    }
+
+    #[test]
+    fn write_without_descriptor_on_a_fresh_entry_writes_no_descriptor_keys() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let repo = dir.to_str().expect("utf-8 temp path");
+        set_last_coding_agent(repo, "gone", "Gone", None, None).expect("write");
+        let value = stored(dir);
+        let entry = &value["tooling"]["codingAgents"]["gone"];
+        assert!(entry.get("command").is_none(), "{entry}");
+        assert!(entry.get("identity").is_none(), "{entry}");
     }
 }
