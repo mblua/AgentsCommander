@@ -149,17 +149,89 @@ pub(crate) async fn raise_room_reader_demand_in<R: Runtime>(
     room_root: &std::path::Path,
     session_id: Uuid,
 ) -> bool {
+    // #2516: sampled before readiness, so a release anywhere in the window up
+    // to the install aborts the raise under the bridge lock.
+    let expected = crate::commands::telegram::room_demand_epoch(app, session_id).await;
+    #[cfg(test)]
+    let key = session_id.to_string();
+    #[cfg(test)]
+    room_raise_seam::hit_before_readiness(&key).await;
     match co_managed_effective_state_for_session(app, room_root, &session_id.to_string()).await {
         Ok(crate::config::co_managed::CoManagedState::Ready) => {
-            crate::commands::telegram::raise_reader_demand(
+            #[cfg(test)]
+            room_raise_seam::hit_before_add(&key).await;
+            crate::commands::telegram::raise_reader_demand_guarded(
                 app,
                 session_id,
                 crate::telegram::manager::ReaderConsumer::Room,
                 None,
+                Some(expected),
             )
             .await
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod room_raise_seam {
+    //! Test-only rendezvous inside [`super::raise_room_reader_demand_in`]
+    //! (#2516), modelled on `commands::telegram::reader_demand_seam`.
+    //!
+    //! Two independent hit points, each armed for one session id and consumed
+    //! on first hit: `before_readiness` sits after the demand-epoch sample and
+    //! before the readiness read, `before_add` sits in the `Ready` arm before
+    //! the guarded raise. Both are upstream of the raise's fast/slow split.
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    pub(crate) struct RoomRaiseBarrier {
+        pub(crate) reached: Notify,
+        pub(crate) release: Notify,
+    }
+
+    type BarrierMap = Mutex<Option<HashMap<String, Arc<RoomRaiseBarrier>>>>;
+
+    static BEFORE_READINESS: BarrierMap = Mutex::new(None);
+    static BEFORE_ADD: BarrierMap = Mutex::new(None);
+
+    fn install(map: &BarrierMap, key: &str) -> Arc<RoomRaiseBarrier> {
+        let barrier = Arc::new(RoomRaiseBarrier::default());
+        map.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashMap::new)
+            .insert(key.to_string(), Arc::clone(&barrier));
+        barrier
+    }
+
+    async fn hit(map: &BarrierMap, key: &str) {
+        let barrier = map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .and_then(|map| map.remove(key));
+        if let Some(barrier) = barrier {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    pub(crate) fn install_before_readiness(key: &str) -> Arc<RoomRaiseBarrier> {
+        install(&BEFORE_READINESS, key)
+    }
+
+    pub(crate) async fn hit_before_readiness(key: &str) {
+        hit(&BEFORE_READINESS, key).await;
+    }
+
+    pub(crate) fn install_before_add(key: &str) -> Arc<RoomRaiseBarrier> {
+        install(&BEFORE_ADD, key)
+    }
+
+    pub(crate) async fn hit_before_add(key: &str) {
+        hit(&BEFORE_ADD, key).await;
     }
 }
 
@@ -16421,6 +16493,226 @@ pub(crate) mod reader_demand_tests {
         }
         assert!(!h.captures.is_open(&key), "the capture slot is closed");
         assert!(h.captures.slot(&key).is_none());
+    }
+
+    // ── #2516: the raise/disable race on the Room demand ─────────────────
+
+    /// Spawn the Room raise for `id`, wait until it parks at the armed seam
+    /// (`reached`), run `interfere`, resume it (`release`) and return what the
+    /// raise answered.
+    async fn race_room_raise<Fut>(
+        h: &Harness,
+        room: &std::path::Path,
+        id: Uuid,
+        reached: &tokio::sync::Notify,
+        release: &tokio::sync::Notify,
+        interfere: Fut,
+    ) -> bool
+    where
+        Fut: std::future::Future<Output = ()>,
+    {
+        let app = h.app.handle().clone();
+        let room = room.to_path_buf();
+        let raise = tokio::spawn(async move { raise_room_reader_demand_in(&app, &room, id).await });
+        tokio::time::timeout(std::time::Duration::from_secs(10), reached.notified())
+            .await
+            .expect("the Room raise reaches the armed seam");
+        interfere.await;
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(10), raise)
+            .await
+            .expect("the Room raise resumes")
+            .expect("the Room raise task joins")
+    }
+
+    /// The production disable toggle for the fixture's room.
+    async fn disable_room(h: &Harness, fixture: &RoomFixture) {
+        let config = crate::commands::co_managed::co_managed_set_enabled(
+            h.app.handle().clone(),
+            fixture.room_path().to_string_lossy().into_owned(),
+            false,
+        )
+        .await
+        .expect("disabling the flag succeeds");
+        assert!(!config.enabled);
+    }
+
+    /// T1's assertions: the aborted raise left no demand, no reader, no slot.
+    async fn assert_no_room_reader_state(h: &Harness, raised: bool, id: Uuid) {
+        assert!(!raised, "a raise overtaken by a release must answer false");
+        {
+            let tg = h.bridge().await;
+            let tg = tg.lock().await;
+            assert!(
+                tg.reader_demands(id).is_empty(),
+                "no Room demand may be installed after the release"
+            );
+            assert!(!tg.reader_is_running(id), "no reader may be spawned");
+        }
+        assert!(
+            !h.captures.is_open(&id.to_string()),
+            "no capture slot may be opened"
+        );
+    }
+
+    /// #2516 T1, the positive control: a disable landing between readiness
+    /// and install (slow path, no reader anywhere) installs no Room demand.
+    #[tokio::test]
+    async fn disabling_between_readiness_and_install_installs_no_room_demand() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+
+        let barrier = room_raise_seam::install_before_add(&id.to_string());
+        let raised = race_room_raise(
+            &h,
+            fixture.room_path(),
+            id,
+            &barrier.reached,
+            &barrier.release,
+            disable_room(&h, &fixture),
+        )
+        .await;
+        assert_no_room_reader_state(&h, raised, id).await;
+    }
+
+    /// #2516 T2 (fast path): the session already runs a reader for its Bot
+    /// demand, so the disable removes **nothing**. The raise must still see it
+    /// and leave the reader Room-free.
+    #[tokio::test]
+    async fn disabling_between_readiness_and_add_leaves_a_bot_reader_room_free() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        assert!(
+            crate::commands::telegram::raise_reader_demand(
+                h.app.handle(),
+                id,
+                ReaderConsumer::Bot,
+                None,
+            )
+            .await,
+            "the Bot demand starts a reader"
+        );
+
+        let barrier = room_raise_seam::install_before_add(&id.to_string());
+        race_room_raise(
+            &h,
+            fixture.room_path(),
+            id,
+            &barrier.reached,
+            &barrier.release,
+            disable_room(&h, &fixture),
+        )
+        .await;
+
+        let tg = h.bridge().await;
+        let tg = tg.lock().await;
+        assert_eq!(
+            tg.reader_demands(id).into_iter().collect::<Vec<_>>(),
+            vec![ReaderConsumer::Bot],
+            "the disable must keep the Room demand off a Bot reader"
+        );
+        assert!(tg.reader_is_running(id), "the Bot reader keeps running");
+    }
+
+    /// #2516 T3, the negative control: the same pause with **no**
+    /// interference still installs the Room demand.
+    #[tokio::test]
+    async fn a_raise_with_no_interference_still_installs_the_room_demand() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+
+        let barrier = room_raise_seam::install_before_add(&id.to_string());
+        let raised = race_room_raise(
+            &h,
+            fixture.room_path(),
+            id,
+            &barrier.reached,
+            &barrier.release,
+            async {},
+        )
+        .await;
+        assert!(raised, "an undisturbed raise answers true");
+        let tg = h.bridge().await;
+        let tg = tg.lock().await;
+        assert!(
+            tg.reader_demands(id).contains(&ReaderConsumer::Room),
+            "an undisturbed raise installs the Room demand"
+        );
+    }
+
+    /// #2516 T4: a destroy-style `release_all` landing between readiness and
+    /// install installs no Room demand.
+    #[tokio::test]
+    async fn destroying_between_readiness_and_install_installs_no_room_demand() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+
+        let barrier = room_raise_seam::install_before_add(&id.to_string());
+        let raised = race_room_raise(
+            &h,
+            fixture.room_path(),
+            id,
+            &barrier.reached,
+            &barrier.release,
+            crate::commands::telegram::release_all_reader_demands(h.app.handle(), id),
+        )
+        .await;
+        assert_no_room_reader_state(&h, raised, id).await;
+    }
+
+    /// #2516 T6: the raise clears the first bridge lock with an unmoved epoch
+    /// and parks at the existing `reader_demand_seam`, between the two locks;
+    /// a disable there must be caught by the second guard.
+    #[tokio::test]
+    async fn disabling_between_the_two_bridge_locks_installs_no_room_demand() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+
+        let barrier =
+            crate::commands::telegram::reader_demand_seam::install_before_install(&id.to_string());
+        let raised = race_room_raise(
+            &h,
+            fixture.room_path(),
+            id,
+            &barrier.reached,
+            &barrier.release,
+            disable_room(&h, &fixture),
+        )
+        .await;
+        assert_no_room_reader_state(&h, raised, id).await;
+    }
+
+    /// #2516 T7: a release landing after the epoch sample and before the
+    /// readiness read. `release_all` leaves the room config alone, so
+    /// readiness still resolves `Ready` and the raise really reaches a guard.
+    #[tokio::test]
+    async fn destroying_before_the_readiness_read_installs_no_room_demand() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+
+        let barrier = room_raise_seam::install_before_readiness(&id.to_string());
+        let raised = race_room_raise(
+            &h,
+            fixture.room_path(),
+            id,
+            &barrier.reached,
+            &barrier.release,
+            crate::commands::telegram::release_all_reader_demands(h.app.handle(), id),
+        )
+        .await;
+        assert_no_room_reader_state(&h, raised, id).await;
     }
 }
 
