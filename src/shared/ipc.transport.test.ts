@@ -117,6 +117,29 @@ describe("shared ipc transport seam", () => {
     }
   });
 
+  it("#2543: reorderCodingAgent invokes reorder_coding_agent with the exact payload", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    fake.resolve("reorder_coding_agent", ["codex", "claude", "gemini"]);
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      await expect(
+        ipc.SettingsAPI.reorderCodingAgent({
+          id: "codex",
+          expectedIds: ["claude", "gemini", "codex"],
+          targetIndex: 0,
+        }),
+      ).resolves.toEqual(["codex", "claude", "gemini"]);
+      expect(fake.lastCall("reorder_coding_agent")?.args).toEqual({
+        id: "codex",
+        expectedIds: ["claude", "gemini", "codex"],
+        targetIndex: 0,
+      });
+    } finally {
+      restore();
+    }
+  });
+
   it("#2306: derives and enforces the exact requested adjacent move order", async () => {
     const ipc = await import("./ipc");
     expect(ipc.expectedCodingAgentMoveOrder(["a", "b", "c", "d", "e"], "c", "up")).toEqual([
