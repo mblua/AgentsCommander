@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::config::coding_agent_profiles::{
@@ -28,9 +29,16 @@ pub fn is_bare_program_token(token: &str) -> bool {
 /// #1551 - resolve a program token to a file. Lifted byte-equivalently from the
 /// `resolve_token_to_file` helper that `commands::session` used for the claude token:
 /// explicit path (separator or absolute) -> Some iff it is a file, never consulting
-/// PATH; bare name -> `which::which` (PATH, plus PATHEXT on Windows, so npm `.cmd`
-/// shims resolve). The GUI process PATH is what is consulted (documented caveat).
+/// PATH; bare name -> `which::which_in` (plus PATHEXT on Windows, so npm `.cmd`
+/// shims resolve). #2589 - bare names are searched in
+/// `agent_path::effective_search_path`: the inherited PATH first, then the user
+/// bin dirs a GUI launch leaves out.
 pub fn resolve_program(token: &str) -> Option<PathBuf> {
+    resolve_program_in(token, &crate::config::agent_path::effective_search_path())
+}
+
+/// #2589 - `resolve_program` against an explicit search path.
+pub fn resolve_program_in(token: &str, search_path: &OsStr) -> Option<PathBuf> {
     let p = Path::new(token);
     if !is_bare_program_token(token) {
         return if p.is_file() {
@@ -39,7 +47,12 @@ pub fn resolve_program(token: &str) -> Option<PathBuf> {
             None
         };
     }
-    which::which(token).ok()
+    which::which_in(
+        token,
+        Some(search_path),
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    )
+    .ok()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1142,8 +1155,8 @@ mod tests {
         find_opencode_config_dir, is_bare_program_token, is_safe_instructions_filename,
         managed_instructions_filenames, normalize_legacy_agent_command,
         prepare_agent_spawn_command, profile_content_hash, resolve_agent_spawn_command,
-        resolve_instructions_filename, resolve_program, resolve_target_filename, AgentSpawnCommand,
-        OpencodeConfigDirOutcome,
+        resolve_instructions_filename, resolve_program, resolve_program_in,
+        resolve_target_filename, AgentSpawnCommand, OpencodeConfigDirOutcome,
     };
     use crate::config::coding_agent_profiles::ProfileResolution;
     use crate::config::settings::{
@@ -3063,6 +3076,49 @@ mod tests {
             .expect("file stem")
             .to_ascii_lowercase();
         assert_eq!(stem, token);
+    }
+
+    #[test]
+    fn agent_path_2589_resolve_prefers_the_inherited_winner() {
+        use crate::config::agent_path::{compose, SearchPathInputs};
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let inherited_dir = root.path().join("inherited");
+        let added_dir = root.path().join("added");
+        let name = "ac-2589-tool.exe";
+        for dir in [&inherited_dir, &added_dir] {
+            std::fs::create_dir_all(dir).expect("mkdir");
+            let file = dir.join(name);
+            std::fs::write(
+                &file,
+                b"#!/bin/sh
+exit 0
+",
+            )
+            .expect("write");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod");
+            }
+        }
+        let search_path = compose(&SearchPathInputs {
+            inherited: Some(std::env::join_paths([&inherited_dir]).expect("join")),
+            home: None,
+            login_shell_path: Some(std::env::join_paths([&added_dir]).expect("join")),
+        });
+        assert_eq!(
+            resolve_program_in(name, &search_path),
+            Some(inherited_dir.join(name)),
+            "the inherited PATH winner keeps winning"
+        );
+        let added_only = std::env::join_paths([&added_dir]).expect("join");
+        assert_eq!(
+            resolve_program_in(name, &added_only),
+            Some(added_dir.join(name)),
+            "positive control: the added dir alone resolves the token"
+        );
     }
 
     #[test]
