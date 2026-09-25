@@ -102,7 +102,7 @@ vi.mock("./SettingsModal", () => ({
   default: () => null,
 }));
 
-import ActionBar from "./ActionBar";
+import ActionBar, { activeClass, computeResourceBadgeState, triState } from "./ActionBar";
 import { projectStore } from "../stores/project";
 import {
   centralViewStore,
@@ -284,5 +284,121 @@ describe("ActionBar selected workgroup visibility toggle", () => {
     ).toBeNull();
 
     dispose();
+  });
+  // #2611 — byte-equal class / data-ac-state strings for the toolbar buttons
+  // whose ternaries moved into triState/activeClass.
+  function buttonAttrs(testId: string): [string | null, string | null] {
+    const el = document.body.querySelector<HTMLElement>(`[data-ac-testid="${testId}"]`);
+    if (!el) throw new Error(`missing ${testId}`);
+    return [el.getAttribute("class"), el.getAttribute("data-ac-state")];
+  }
+
+  it("renders the default toolbar class and state strings", () => {
+    const { dispose } = renderActionBar();
+    expect(buttonAttrs("actionBar.newOpen")).toEqual(["action-bar-dropdown-btn", "closed"]);
+    expect(buttonAttrs("actionBar.home")).toEqual(["toolbar-gear-btn home-toggle-btn ", "hidden"]);
+    expect(buttonAttrs("actionBar.sortCoordinators")).toEqual([
+      "toolbar-gear-btn coord-sort-activity-btn ",
+      "default",
+    ]);
+    expect(buttonAttrs("actionBar.sounds")).toEqual(["toolbar-gear-btn sounds-mute-btn ", "audible"]);
+    expect(buttonAttrs("actionBar.categories")).toEqual([
+      "toolbar-gear-btn show-categories-btn active",
+      "visible",
+    ]);
+    expect(buttonAttrs("actionBar.pinSelectedWorkgroup")).toEqual([
+      "toolbar-gear-btn show-categories-btn active",
+      "pinned",
+    ]);
+    expect(buttonAttrs("actionBar.theme")).toEqual(["toolbar-gear-btn", "light"]);
+    expect(buttonAttrs("actionBar.resourceMonitor")[0]).toBe(
+      "toolbar-gear-btn resource-monitor-btn state-unknown ",
+    );
+    dispose();
+  });
+
+  it("renders the toggled toolbar class and state strings", () => {
+    mockState.sessions.coordSortByActivity = true;
+    mockState.sessions.showCategories = false;
+    mockState.sessions.alwaysShowSelectedWorkgroup = false;
+    mockState.settings = { soundsEnabled: false, themeLight: false, specBoardEnabled: false };
+    const { dispose } = renderActionBar();
+    document.body.querySelector<HTMLButtonElement>('[data-ac-testid="actionBar.newOpen"]')!.click();
+    expect(buttonAttrs("actionBar.newOpen")[1]).toBe("open");
+    expect(buttonAttrs("actionBar.menu.newProject")[1]).toBe("ready");
+    expect(buttonAttrs("actionBar.sortCoordinators")).toEqual([
+      "toolbar-gear-btn coord-sort-activity-btn active",
+      "recent",
+    ]);
+    expect(buttonAttrs("actionBar.sounds")).toEqual([
+      "toolbar-gear-btn sounds-mute-btn active",
+      "muted",
+    ]);
+    expect(buttonAttrs("actionBar.categories")).toEqual([
+      "toolbar-gear-btn show-categories-btn ",
+      "hidden",
+    ]);
+    expect(buttonAttrs("actionBar.pinSelectedWorkgroup")).toEqual([
+      "toolbar-gear-btn show-categories-btn ",
+      "default",
+    ]);
+    expect(buttonAttrs("actionBar.theme")[1]).toBe("dark");
+    dispose();
+  });
+
+  it("renders disabled states when settings and sessions are not ready", () => {
+    mockState.sessions.hydrated = false;
+    mockState.settings = null;
+    const { dispose } = renderActionBar();
+    expect(buttonAttrs("actionBar.sortCoordinators")[1]).toBe("disabled");
+    expect(buttonAttrs("actionBar.sounds")[1]).toBe("disabled");
+    expect(buttonAttrs("actionBar.theme")[1]).toBe("disabled");
+    dispose();
+  });
+});
+
+describe("ActionBar helpers (#2611)", () => {
+  type Monitor = Parameters<typeof computeResourceBadgeState>[1];
+  function snap(overrides: Record<string, unknown> = {}): Monitor {
+    return {
+      snapshot: {
+        overallState: "ok",
+        networkState: "ok",
+        activeAgentGroups: 1,
+        maxConcurrentAgentGroups: 4,
+        ...overrides,
+      },
+      error: null,
+    } as unknown as Monitor;
+  }
+
+  it.each([
+    ["disabled", false, snap({ overallState: "critical" })],
+    ["unknown", true, { snapshot: null, error: null } as unknown as Monitor],
+    ["unknown", undefined, { ...snap(), error: "boom" } as unknown as Monitor],
+    ["critical", true, snap({ overallState: "critical" })],
+    ["enforcing", true, snap({ overallState: "enforcing" })],
+    ["warn", true, snap({ overallState: "warn", activeAgentGroups: 9 })],
+    ["limit", true, snap({ activeAgentGroups: 4, networkState: "unknown" })],
+    ["ok", true, snap({ activeAgentGroups: 9, maxConcurrentAgentGroups: 0 })],
+    ["unknown", true, snap({ overallState: "unknown" })],
+    ["unknown", true, snap({ networkState: "unknown" })],
+    ["ok", undefined, snap()],
+  ])("computeResourceBadgeState -> %s", (expected, enabled, monitor) => {
+    expect(computeResourceBadgeState(enabled as boolean | undefined, monitor)).toBe(expected);
+  });
+
+  it("triState reads `on` only when not disabled", () => {
+    const on = vi.fn(() => true);
+    expect(triState(true, on, ["d", "on", "off"])).toBe("d");
+    expect(on).not.toHaveBeenCalled();
+    expect(triState(false, on, ["d", "on", "off"])).toBe("on");
+    expect(triState(false, () => false, ["d", "on", "off"])).toBe("off");
+    expect(on).toHaveBeenCalledTimes(1);
+  });
+
+  it("activeClass returns the old class suffix strings", () => {
+    expect(activeClass(true)).toBe("active");
+    expect(activeClass(false)).toBe("");
   });
 });

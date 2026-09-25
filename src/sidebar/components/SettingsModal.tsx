@@ -2230,40 +2230,55 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return null;
   };
 
+  const validateAgentRow = (agent: AgentConfig): string | null => {
+    const envError = validateEnvRows(agent.envs ?? []);
+    if (envError) {
+      return `Agent "${agent.label || "Unnamed"}": ${envError}`;
+    }
+    const parsedCommand = parseArgvText(agent.command);
+    if (parsedCommand.error) {
+      return `Agent "${agent.label || "Unnamed"}": ${parsedCommand.error}`;
+    }
+    return commandFlagError(`Agent "${agent.label || "Unnamed"}"`, parsedCommand.argv);
+  };
+
+  const validateProfileCell = (agentId: string, letter: string): string | null => {
+    const cellLabel = `Profile ${agentId}:${letter}`;
+    const command = displayedProfileCellCommand(agentId, letter);
+    if (command.trim()) {
+      const parsed = parseArgvText(command);
+      if (parsed.error) return `${cellLabel}: ${parsed.error}`;
+      const flagError = commandFlagError(cellLabel, parsed.argv);
+      if (flagError) return flagError;
+    }
+    const envError = cellEnvError(agentId, letter);
+    if (envError) return `${cellLabel}: ${envError}`;
+    return null;
+  };
+
+  const validateProfileCells = (
+    byAgent: Record<string, Record<string, ProfileCellConfig>>,
+  ): string | null => {
+    for (const [agentId, cells] of Object.entries(byAgent)) {
+      for (const [letter, cell] of Object.entries(cells)) {
+        if (!cell.enabled) continue;
+        const cellError = validateProfileCell(agentId, letter);
+        if (cellError) return cellError;
+      }
+    }
+    return null;
+  };
+
   const validateAgents = (): string | null => {
     if (!settings.data) return null;
     for (const agent of settings.data.agents) {
-      const envError = validateEnvRows(agent.envs ?? []);
-      if (envError) {
-        return `Agent "${agent.label || "Unnamed"}": ${envError}`;
-      }
-      const parsedCommand = parseArgvText(agent.command);
-      if (parsedCommand.error) {
-        return `Agent "${agent.label || "Unnamed"}": ${parsedCommand.error}`;
-      }
-      const flagError = commandFlagError(`Agent "${agent.label || "Unnamed"}"`, parsedCommand.argv);
-      if (flagError) return flagError;
+      const agentError = validateAgentRow(agent);
+      if (agentError) return agentError;
     }
     for (const [key, error] of Object.entries(profileCellErrors)) {
       if (error) return `Profile cell ${key}: ${error}`;
     }
-    const byAgent = settings.data.codingAgentProfiles.profilesByAgent;
-    for (const [agentId, cells] of Object.entries(byAgent)) {
-      for (const [letter, cell] of Object.entries(cells)) {
-        if (!cell.enabled) continue;
-        const cellLabel = `Profile ${agentId}:${letter}`;
-        const command = displayedProfileCellCommand(agentId, letter);
-        if (command.trim()) {
-          const parsed = parseArgvText(command);
-          if (parsed.error) return `${cellLabel}: ${parsed.error}`;
-          const flagError = commandFlagError(cellLabel, parsed.argv);
-          if (flagError) return flagError;
-        }
-        const envError = cellEnvError(agentId, letter);
-        if (envError) return `${cellLabel}: ${envError}`;
-      }
-    }
-    return null;
+    return validateProfileCells(settings.data.codingAgentProfiles.profilesByAgent);
   };
 
   const validateResources = (): string | null => {

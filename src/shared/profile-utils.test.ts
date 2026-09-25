@@ -263,6 +263,36 @@ describe("profile utils", () => {
     expect(parseArgvText(stringifyArgv(argv))).toEqual({ argv, error: null });
   });
 
+  it.each([
+    ["", []],
+    ["plain", ["plain"]],
+    ["  a   b  ", ["a", "b"]],
+    ["'a b'", ["a b"]],
+    ['"a b"', ["a b"]],
+    ["'it''s'", ["its"]],
+    ['"a\\"b"', ['a"b']],
+    ['"a\\\\" c', ["a\\", "c"]],
+    ['"a\\\\\\"b"', ['a\\"b']],
+    ['"a\\b\\\\c"', ["a\\b\\\\c"]],
+    ["x\\y", ["x\\y"]],
+  ])("parseArgvText(%j)", (input, argv) => {
+    expect(parseArgvText(input)).toEqual({ argv, error: null });
+  });
+
+  it.each([
+    ["'abc", "Unclosed ' quote"],
+    ['a "b c', 'Unclosed " quote'],
+    ['"a\\"', 'Unclosed " quote'],
+    ["'a\\'", "Unclosed ' quote"],
+  ])("parseArgvText(%j) reports unclosed quote", (input, error) => {
+    expect(parseArgvText(input)).toEqual({ argv: [], error });
+  });
+
+  it("roundtrips stringifyArgv for quotes, spaces and backslashes", () => {
+    const argv = ["a b", 'say "hi"', "it's", "tail\\", "x\\\"y", "C:\\dir with space\\"];
+    expect(parseArgvText(stringifyArgv(argv))).toEqual({ argv, error: null });
+  });
+
   it("detects Codex from quoted Windows executable paths", () => {
     const command = '"C:\\Program Files\\Codex\\codex.exe" --yolo';
     expect(executableBasename(command)).toBe("codex");

@@ -297,6 +297,19 @@ function isAbsolutePath(path: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(path) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(path) || /^[\\/]/.test(path);
 }
 
+function pushPathSegment(segments: string[], segment: string, hasRoot: boolean): void {
+  if (!segment || segment === ".") return;
+  if (segment === "..") {
+    if (segments.length > 0 && segments[segments.length - 1] !== "..") {
+      segments.pop();
+    } else if (!hasRoot) {
+      segments.push(segment);
+    }
+    return;
+  }
+  segments.push(segment);
+}
+
 function normalizePath(path: string, separator: "\\" | "/"): string {
   const trimmed = path.trim();
   const driveMatch = trimmed.match(/^([A-Za-z]:)[\\/]+(.*)$/);
@@ -317,16 +330,7 @@ function normalizePath(path: string, separator: "\\" | "/"): string {
 
   const segments: string[] = [];
   for (const segment of rest.split(/[\\/]+/)) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      if (segments.length > 0 && segments[segments.length - 1] !== "..") {
-        segments.pop();
-      } else if (!root) {
-        segments.push(segment);
-      }
-      continue;
-    }
-    segments.push(segment);
+    pushPathSegment(segments, segment, root !== "");
   }
 
   const suffix = segments.join(separator);
