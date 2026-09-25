@@ -3046,11 +3046,11 @@ describe("AgentPickerModal", () => {
       };
       for (const id of removeIds) {
         const seen = samples[id];
-        // "—" is the pre-settings placeholder: allowed only in the sample taken before release.
+        // "not counted yet" is the pre-settings placeholder: allowed only in the sample taken before release.
         const phases = seen.map((value, index) =>
-          value === "absent" || (index === 0 && value === "—") ? 0 : value === "…" ? 1 : value === finals[id] ? 2 : -1,
+          (index === 0 && value === "not counted yet") ? 0 : value === "counting…" ? 1 : value === finals[id] ? 2 : -1,
         );
-        expect(seen[1], `${id}: first tick after settings`).toBe("…");
+        expect(seen[1], `${id}: first tick after settings`).toBe("counting…");
         expect(phases, `${id}: ${seen.join(" | ")}`).not.toContain(-1);
         expect(phases, `${id}: ${seen.join(" | ")}`).toEqual([...phases].sort((a, b) => a - b));
         expect(seen[seen.length - 1], id).toBe(finals[id]);
@@ -3084,6 +3084,121 @@ describe("AgentPickerModal", () => {
       await settle();
 
       expect(text("agentPicker.previewError")).toBe(message);
+
+      dispose();
+    });
+
+    const removeCountIds = [
+      "agentPicker.removeScopeCount.replica",
+      "agentPicker.removeScopeCount.kind",
+      "agentPicker.removeScopeCount.workgroup",
+    ];
+
+    it("issue_2556_first_load_says_counting", async () => {
+      mockSettingsApi.previewSelectionLockRemoval.mockImplementation(
+        () => new Promise<PreviewSelectionLockRemovalResult>(() => {}),
+      );
+      const { dispose } = renderWgPicker();
+      await microtasks();
+
+      for (const id of removeCountIds) expect(text(id), id).toBe("counting\u2026");
+      expect(text("agentPicker.removeNote")).toBe("Counting replicas in this scope\u2026");
+
+      dispose();
+    });
+
+    it("issue_2556_before_settings_says_not_counted_yet", async () => {
+      controlledSettings();
+      const { dispose } = renderWgPicker();
+
+      // Same tick as the render: settings never released, so nothing was counted.
+      for (const id of removeCountIds) {
+        expect(maybe(id), id).not.toBeNull();
+        expect(text(id), id).toBe("not counted yet");
+      }
+      expect(maybe("agentPicker.removeNote")).not.toBeNull();
+      expect(text("agentPicker.removeNote")).toBe("Not counted yet.");
+
+      dispose();
+    });
+
+    it("issue_2556_counts_complete_false_text_is_unchanged", async () => {
+      mockSettingsApi.previewSelectionLockRemoval.mockImplementation(
+        (req: { scope: ProfileAssignmentScope }) =>
+          Promise.resolve(removePreview(req.scope, { countsComplete: false })),
+      );
+      const { dispose } = renderWgPicker();
+      await settle();
+
+      for (const id of removeCountIds) expect(text(id), id).toBe("count unknown");
+      expect(text("agentPicker.removeNote")).toBe(
+        "Scope totals could not be established here; nothing is offered for removal.",
+      );
+
+      dispose();
+    });
+
+    it("issue_2556_established_counts_are_unchanged", async () => {
+      const { dispose } = renderWgPicker();
+      await settle();
+
+      expect(text("agentPicker.removeScopeCount.replica")).toBe("0 protected");
+      expect(text("agentPicker.removeScopeCount.kind")).toBe("2 of 3 protected");
+      expect(text("agentPicker.removeScopeCount.workgroup")).toBe("3 of 4 protected");
+      expect(text("agentPicker.removeNote")).toBe(
+        "No protected replicas in this scope \u2014 nothing to remove.",
+      );
+      clickRadio("agentPicker.removeScope.workgroup");
+      await settle();
+      expect(text("agentPicker.removeNote")).toBe("Keeps Coding Agent + Profile. No restart.");
+
+      dispose();
+    });
+
+    it("issue_2556_failed_preview_says_count_failed", async () => {
+      const message = "removal preview exploded";
+      mockSettingsApi.previewSelectionLockRemoval.mockImplementation(
+        (req: { scope: ProfileAssignmentScope }) =>
+          req.scope === "replica"
+            ? Promise.reject(new Error(message))
+            : Promise.resolve(removePreview(req.scope)),
+      );
+      const { dispose } = renderWgPicker();
+      await settle();
+
+      expect(text("agentPicker.removeScopeCount.replica")).toBe("count failed");
+      expect(text("agentPicker.removeNote")).toBe(message);
+
+      dispose();
+    });
+
+    it("issue_2556_refresh_keeps_the_established_count", async () => {
+      let externalUpdate: (() => void) | null = null;
+      mockSettingsApi.onCodingAgentProfileSelectionUpdated.mockImplementation(
+        (callback: () => void) => {
+          externalUpdate = callback;
+          return Promise.resolve(() => {});
+        },
+      );
+      const { dispose } = renderWgPicker();
+      await settle();
+      clickRadio("agentPicker.removeScope.workgroup");
+      await settle();
+      expect(text("agentPicker.removeScopeCount.workgroup")).toBe("3 of 4 protected");
+      expect(text("agentPicker.removeNote")).toBe("Keeps Coding Agent + Profile. No restart.");
+
+      mockSettingsApi.previewSelectionLockRemoval.mockClear();
+      mockSettingsApi.previewSelectionLockRemoval.mockImplementation(
+        () => new Promise<PreviewSelectionLockRemovalResult>(() => {}),
+      );
+      expect(externalUpdate).toBeTruthy();
+      externalUpdate!();
+      await settle();
+
+      // Busy again, yet the established count and note stay.
+      expect(mockSettingsApi.previewSelectionLockRemoval).toHaveBeenCalled();
+      expect(text("agentPicker.removeScopeCount.workgroup")).toBe("3 of 4 protected");
+      expect(text("agentPicker.removeNote")).toBe("Keeps Coding Agent + Profile. No restart.");
 
       dispose();
     });
