@@ -517,4 +517,73 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
       rendered.cleanup();
     }
   });
+
+  // #2482 p7 - the ROOM-REPLICA chip, the one in the user's screenshot.
+  const replicaChip = (root: Element) =>
+    root.querySelectorAll<HTMLElement>(`[data-ac-testid="replica.row.quick.${wgName}.${replicaName}"] .ac-discovery-badge.agent`);
+
+  function oneReplicaChip(root: Element): HTMLElement {
+    const all = replicaChip(root);
+    expect(all.length).toBe(1);
+    return all[0];
+  }
+
+  it("one_backend_event_per_session_fills_BOTH_the_replica_chip_and_the_origin_chip", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
+
+    const rendered = await mountedWithOrigin(fake);
+    try {
+      await waitFor(() => expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0));
+      fake.emitFromBackend("session_agent_quota", { sessionId, weeklyUsedPercent: 28 });
+      fake.emitFromBackend("session_agent_quota", { sessionId: originSessionId, weeklyUsedPercent: 28 });
+      await waitFor(() => {
+        for (const el of [oneReplicaChip(rendered.root), oneChip(rendered.root)]) {
+          expect(el.className).toContain("quota-fill");
+          expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
+        }
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("a_reloaded_sidebar_hydrates_a_replica_already_sitting_at_a_reading", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
+    fake.onInvoke("get_session_agent_quota", (args) => (args.sessionId === sessionId ? 28 : null));
+
+    const rendered = await mountedWithOrigin(fake);
+    try {
+      await waitFor(() => {
+        const el = oneReplicaChip(rendered.root);
+        expect(el.className).toContain("quota-fill");
+        expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
+      });
+      expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("a_null_event_clears_the_replica_chip", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
+
+    const rendered = await mountedWithOrigin(fake);
+    try {
+      await waitFor(() => expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0));
+      fake.emitFromBackend("session_agent_quota", { sessionId, weeklyUsedPercent: 28 });
+      await waitFor(() => expect(oneReplicaChip(rendered.root).className).toContain("quota-fill"));
+
+      fake.emitFromBackend("session_agent_quota", { sessionId, weeklyUsedPercent: null });
+      await waitFor(() => {
+        const el = oneReplicaChip(rendered.root);
+        expect(el.className).not.toContain("quota-fill");
+        expect(el.getAttribute("style")).toBeNull();
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });
