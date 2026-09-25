@@ -5,10 +5,22 @@
 When installing through npm, use `-g` so the `agentscommander` command is available from any directory:
 
 ```bash
-npm install -g @mblua/agentscommander@latest
+npm install -g @mblua/agentscommander
 ```
 
 This installs the current `latest` release. Before installing, follow [Resolve versions and preserve configuration](#resolve-versions-and-preserve-configuration), then [Install and validate](#install-and-validate). Check the supported platforms and requirements below before installing.
+
+## Test pre-release builds
+
+New builds are published first under the `next` tag. To try one before it becomes the default release:
+
+```bash
+npm install -g @mblua/agentscommander@next
+```
+
+`next` builds are not fully tested and can break. Share feedback in the [#testers Discord channel](https://discord.gg/T4R8RvEFX4).
+
+## npm website install command
 
 The npm website's **Install** sidebar shows the generic local-install command. For the recommended global npm installation, include `-g` as shown above.
 
@@ -46,7 +58,7 @@ Before an install, update, or uninstall, resolve and report the exact existing p
 ```bash
 npm list -g @mblua/agentscommander --depth=0
 npm root -g
-npm view @mblua/agentscommander@latest version
+npm view @mblua/agentscommander version
 ```
 
 `npm list` reports the installed package version and can exit nonzero when the package is absent. `npm root -g` exits 0 and prints the global `node_modules` directory. Use that root to inspect the installed `@mblua/agentscommander/package.json`, `install.js`, `run.js`, and native file under `bin/`. Correlate the package-manager record and `package.json` version with the install script's version and release URL, the launcher's exact native path, and the corresponding GitHub tag, asset, and checksum. `npm view` reports the selected registry version without installing it. If the local records, independent release evidence, native file, or selected version disagree or cannot be identified exactly, stop before mutation. `agentscommander --version` prints the native CLI version from `v0.31.0` onward; `v0.30.5` and older builds reject that flag, so probe a binary for a self-reported version only after its exact tag proves support.
@@ -72,7 +84,7 @@ Copy the complete persistent configuration directory to a user-controlled backup
 ## Install and validate
 
 ```bash
-npm install -g @mblua/agentscommander@latest
+npm install -g @mblua/agentscommander
 ```
 
 The command installs the current `latest` release and exits 0 on success. The package's install script downloads that package version's raw asset and `SHASUMS256.txt` from `mblua/AgentsCommander`, computes SHA-256, and fails the install on a missing record or mismatch. This does not protect against compromise of the publisher or repository account because the asset and checksum share that trust boundary.
@@ -84,7 +96,7 @@ npm list -g @mblua/agentscommander --depth=0
 agentscommander --help
 ```
 
-Both commands must exit 0. Confirm that `npm list` and the installed `package.json` report the `latest` version that `npm view @mblua/agentscommander@latest version` returned; re-check the installed scripts, native path, and checksum correlation described above. `--help` must print the AgentsCommander command help, and on `0.31.0` or newer `agentscommander --version` must print the same version `npm list` reports. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
+Both commands must exit 0. Confirm that `npm list` and the installed `package.json` report the `latest` version that `npm view @mblua/agentscommander version` returned; re-check the installed scripts, native path, and checksum correlation described above. `--help` must print the AgentsCommander command help, and on `0.31.0` or newer `agentscommander --version` must print the same version `npm list` reports. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
 
 ### Windows Start Menu shortcut
 
