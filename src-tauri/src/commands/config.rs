@@ -2000,12 +2000,13 @@ fn enumerate_profile_assignment_targets(
     let mut candidates = Vec::new();
 
     // The anchor always belongs to its own scope; the walk dedupes against it.
-    let anchor_state =
-        crate::config::coding_agent_profiles::read_replica_selection_state(&anchor_dir);
     let (anchor_config, anchor_identity) =
         crate::config::replica_identity::read_wg_replica_config_read_only(&anchor_dir)
             .map_err(|e| format!("Target replica '{}': {}", anchor_dir.display(), e))?;
-    let _ = anchor_config;
+    let anchor_state = crate::config::coding_agent_profiles::selection_state_from_value(
+        &anchor_config,
+        &anchor_identity.identity,
+    );
     seen.insert(canonical_compare_key(&anchor_dir));
     candidates.push(ProfileCandidate {
         target: build_profile_assignment_target(
@@ -2030,7 +2031,7 @@ fn enumerate_profile_assignment_targets(
         if !seen.insert(key) {
             continue;
         }
-        let Ok((_config, identity)) =
+        let Ok((config, identity)) =
             crate::config::replica_identity::read_wg_replica_config_read_only(&replica_dir)
         else {
             // #1941 - an unprovable identity inside the scope means membership
@@ -2050,8 +2051,10 @@ fn enumerate_profile_assignment_targets(
             // the canonical origin Matrix, not the directory name.
             continue;
         }
-        let state =
-            crate::config::coding_agent_profiles::read_replica_selection_state(&replica_dir);
+        let state = crate::config::coding_agent_profiles::selection_state_from_value(
+            &config,
+            &identity.identity,
+        );
         let target = build_profile_assignment_target(&replica_dir, &identity, &state, &live_by_cwd);
         candidates.push(ProfileCandidate {
             target,
@@ -11231,11 +11234,11 @@ mod tests {
         }
     }
 
-    /// Pre-change baseline, the negative control of p4: p4 may update exactly
-    /// these two expected values (to 8 and 120) and nothing else.
+    /// Strict-reader calls in kind after p4's single read. p4 updated exactly
+    /// these two expected values: 16 -> 8 and 160 -> 120.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn issue_2475_strict_reads_before_the_single_read_change() {
-        for (r, m, expected) in [(8usize, 1usize, 16usize), (40, 3, 160)] {
+        for (r, m, expected) in [(8usize, 1usize, 8usize), (40, 3, 120)] {
             let bench = bench_fixture(r, m);
             let settings = state_for(bench.settings.clone());
             strict_read_probe::register(bench.root());
@@ -11272,6 +11275,195 @@ mod tests {
         crate::config::replica_identity::read_wg_replica_config_read_only(&bench.anchor)
             .expect("inside strict read");
         assert_eq!(strict_read_probe::unregister(bench.root()), 1);
+    }
+
+    /// Strict-reader calls of one kind enumeration over `bench_fixture(r, m)`.
+    async fn kind_strict_reader_calls(r: usize, m: usize) -> usize {
+        let bench = bench_fixture(r, m);
+        let settings = state_for(bench.settings.clone());
+        strict_read_probe::register(bench.root());
+        let removal = api_removal_preview(
+            &settings,
+            &bench.anchor,
+            super::ProfileAssignmentScope::Kind,
+        )
+        .await;
+        let calls = strict_read_probe::unregister(bench.root());
+        assert_eq!(removal.targets.len(), r, "kind targets, R={r} M={m}");
+        calls
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_enumeration_reads_each_included_config_once() {
+        assert_eq!(
+            kind_strict_reader_calls(8, 1).await,
+            8,
+            "strict-reader calls in kind, R=8 M=1"
+        );
+    }
+
+    /// The 8 Matrix-excluded replicas already cost one strict-reader call:
+    /// the Kind filter continues before the selection-state read. 16 -> 12,
+    /// never 24 -> 12.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue_2475_excluded_replicas_already_cost_one_read() {
+        assert_eq!(
+            kind_strict_reader_calls(4, 3).await,
+            12,
+            "strict-reader calls in kind, R=4 M=3"
+        );
+    }
+
+    #[test]
+    fn issue_2475_enumeration_result_is_byte_identical_after_the_single_read() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            locked_tooling("B", "agent-0"),
+        );
+        selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "qa",
+            unlocked_tooling("A", "agent-1"),
+        );
+        selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "bad-tooling",
+            json!({ "selectionLocked": "yes" }),
+        );
+        let broken = selection_api_replica(&fixture, "room-1-team", "broken", json!({}));
+        std::fs::write(broken.join("config.json"), b"{not json").expect("break config");
+        let unreadable = selection_api_replica(&fixture, "room-1-team", "unreadable", json!({}));
+        std::fs::remove_file(unreadable.join("config.json")).expect("remove config");
+        std::fs::create_dir(unreadable.join("config.json")).expect("config.json as a dir");
+
+        let settings = selection_api_settings(&fixture);
+        let enumeration = super::enumerate_profile_assignment_targets(
+            &settings,
+            &anchor,
+            &super::ProfileAssignmentScope::Workgroup,
+            &[],
+        )
+        .expect("enumerate");
+
+        let canonical = |path: &Path| super::canonical_real_dir(path, "test").expect("canonical");
+        let room = canonical(&fixture.ac_root.join("room-1-team"));
+        let wire =
+            |path: &Path| crate::path_utils::path_to_string_without_windows_verbatim_prefix(path);
+        let target = |name: &str, pair: Value, state: &str, error: Value| {
+            json!({
+                "workgroupName": "room-1-team",
+                "workgroupPath": wire(&room),
+                "replicaName": name,
+                "replicaPath": wire(&room.join(format!("__agent_{name}"))),
+                "identityPath": format!("../../_agent_{name}"),
+                "originProject": "project",
+                "liveSessionIds": [],
+                "savedPair": pair,
+                "selectionState": state,
+                "selectionError": error,
+            })
+        };
+        // read_dir order is platform-defined, so the warnings compare sorted;
+        // the candidates are sorted by the enumeration itself.
+        let mut warnings = enumeration.warnings.clone();
+        warnings.sort();
+        let actual = json!({
+            "candidates": enumeration
+                .candidates
+                .iter()
+                .map(|candidate| serde_json::to_value(&candidate.target).expect("serialize"))
+                .collect::<Vec<_>>(),
+            "warnings": warnings,
+            "countsComplete": enumeration.counts_complete,
+        });
+        let expected = json!({
+            "candidates": [
+                target(
+                    "bad-tooling",
+                    Value::Null,
+                    "invalid",
+                    json!("tooling.selectionLocked must be a boolean"),
+                ),
+                target(
+                    "dev-rust",
+                    json!({ "codingAgentId": "agent-0", "requestedProfile": "B" }),
+                    "locked",
+                    Value::Null,
+                ),
+                target(
+                    "qa",
+                    json!({ "codingAgentId": "agent-1", "requestedProfile": "A" }),
+                    "unlocked",
+                    Value::Null,
+                ),
+            ],
+            "warnings": [
+                format!("Skipping invalid replica '{}'", room.join("__agent_broken").display()),
+                format!("Skipping invalid replica '{}'", room.join("__agent_unreadable").display()),
+            ],
+            "countsComplete": false,
+        });
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn issue_2475_anchor_read_failure_keeps_its_error_text() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            locked_tooling("B", "agent-0"),
+        );
+        // The lenient anchor validation accepts a duplicate key; the strict
+        // reader rejects it, so the failure is the strict read's own.
+        std::fs::write(
+            anchor.join("config.json"),
+            br#"{"identity":"../../_agent_dev-rust","tooling":{},"tooling":{}}"#,
+        )
+        .expect("break anchor");
+        let settings = selection_api_settings(&fixture);
+        let error = match super::enumerate_profile_assignment_targets(
+            &settings,
+            &anchor,
+            &super::ProfileAssignmentScope::Replica,
+            &[],
+        ) {
+            Ok(_) => panic!("a strictly unparseable anchor must fail the enumeration"),
+            Err(error) => error,
+        };
+        assert!(error.contains("Target replica '"), "{error}");
+    }
+
+    #[test]
+    fn issue_2475_invalid_candidate_still_clears_counts_complete() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            locked_tooling("B", "agent-0"),
+        );
+        let broken = selection_api_replica(&fixture, "room-1-team", "broken", json!({}));
+        std::fs::write(broken.join("config.json"), b"{not json").expect("break config");
+        let settings = selection_api_settings(&fixture);
+        let enumeration = super::enumerate_profile_assignment_targets(
+            &settings,
+            &anchor,
+            &super::ProfileAssignmentScope::Workgroup,
+            &[],
+        )
+        .expect("enumerate");
+        assert_eq!(enumeration.candidates.len(), 1);
+        assert!(
+            !enumeration.counts_complete,
+            "an invalid replica clears counts_complete"
+        );
     }
 
     /// The batch test. Without AC_SELECTION_BENCH it asserts one batch's

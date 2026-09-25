@@ -620,7 +620,7 @@ enum SelectionGuardMarker {
 /// string-matched.
 const NO_PUBLISH_SENTINEL: &str = "#1939 guarded selection no-publish exit";
 
-fn selection_state_from_value(config: &Value, identity: &str) -> ReplicaSelectionState {
+pub(crate) fn selection_state_from_value(config: &Value, identity: &str) -> ReplicaSelectionState {
     let tooling = match config.get("tooling") {
         None => {
             return ReplicaSelectionState::Unlocked {

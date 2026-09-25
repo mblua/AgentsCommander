@@ -236,8 +236,8 @@ describe("coding-agent badge CSS (#1167)", () => {
   it("keeps the emerald rule every sidebar row now resolves through", () => {
     const declarations = declarationsOf(CSS_SOURCES["./sidebar.css"], ".ac-discovery-badge.agent");
     expect(declarations).not.toBeNull();
-    expect(declarations).toContain("background: rgba(16, 185, 129, 0.14);");
-    expect(declarations).toContain("color: #34d399;");
+    expect(declarations).toContain("background: rgba(16, 185, 129, 0.45);");
+    expect(declarations).toContain("color: #d1fae5;");
     expect(declarations).toContain("text-transform: none;");
   });
 });
@@ -280,9 +280,11 @@ function contrastRatio(a: Rgb, b: Rgb): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-// Paints `layers` bottom-up over an opaque row.
-function stack(row: string, layers: Rgba[]): Rgb {
-  return layers.reduce((bg, layer) => composite(layer.rgb, layer.alpha, bg), parseColour(row).rgb);
+// Paints `layers` bottom-up over an opaque row, given as a hex string or an already
+// composited Rgb (a banner row is itself a tint over the sidebar background).
+function stack(row: string | Rgb, layers: Rgba[]): Rgb {
+  const base = typeof row === "string" ? parseColour(row).rgb : row;
+  return layers.reduce((bg, layer) => composite(layer.rgb, layer.alpha, bg), base);
 }
 
 // Top-level comma split, so the commas inside rgba() and var() stay with their stop.
@@ -302,9 +304,28 @@ function topLevelArgs(text: string): string[] {
   return args;
 }
 
-// The colour of a stop such as `transparent 0 var(--x)` or `rgba(...) var(--x) 100%`.
+// The index of the `)` that closes the `(` at `open`.
+function closingParen(text: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")" && --depth === 0) return i;
+  }
+  throw new Error(`unbalanced: ${text}`);
+}
+
+// The colour of a stop such as `transparent 0 var(--x)`, `rgba(...) var(--x) 100%`
+// or `var(--y, rgba(...)) var(--x) 100%` (the whole var() is the colour).
 function stopColour(stop: string): string {
+  if (stop.startsWith("var(")) return stop.slice(0, closingParen(stop, 3) + 1);
   return stop.startsWith("rgba(") ? stop.slice(0, stop.indexOf(")") + 1) : stop.split(" ")[0];
+}
+
+// `var(--name, fallback)` resolves to its fallback, the value dark theme paints;
+// anything else is already a colour.
+function resolveColour(text: string): string {
+  const inner = text.match(/^var\((.*)\)$/)?.[1];
+  return inner === undefined ? text : topLevelArgs(inner)[1].trim();
 }
 
 // Everything after the colour: the stop's position(s).
@@ -333,7 +354,12 @@ function quotaStops(): { remaining: Rgba; used: Rgba } {
   // used side from the same boundary to 100%. Colours alone do not pin that.
   expect(stopPosition(first)).toBe(`0 ${QUOTA_BOUNDARY}`);
   expect(stopPosition(second)).toBe(`${QUOTA_BOUNDARY} 100%`);
-  return { remaining: parseColour(stopColour(first)), used: parseColour(stopColour(second)) };
+  // The used stop reads the tint light theme overrides; dark paints the fallback.
+  expect(stopColour(second)).toMatch(/^var\(--ac-quota-used-tint,/);
+  return {
+    remaining: parseColour(resolveColour(stopColour(first))),
+    used: parseColour(resolveColour(stopColour(second))),
+  };
 }
 
 function baseChip(): { tint: Rgba; text: Rgb } {
@@ -356,7 +382,7 @@ describe("weekly-quota fill on the agent chip (#2482)", () => {
   });
 
   it("the_base_agent_rule_still_sets_the_green_tint_through_the_background_shorthand", () => {
-    expect(declValue(ruleBody(".ac-discovery-badge.agent"), "background")).toBe("rgba(16, 185, 129, 0.14)");
+    expect(declValue(ruleBody(".ac-discovery-badge.agent"), "background")).toBe("rgba(16, 185, 129, 0.45)");
   });
 
   it("the_gradient_stops_meet_at_the_shared_quota_boundary", () => {
@@ -372,9 +398,9 @@ describe("weekly-quota fill on the agent chip (#2482)", () => {
   });
 
   // Negative control for the pin above. A green remaining stop composites green on
-  // green (effective alpha 1 - (1 - 0.14)^2 = 0.2604), so it differs from the unfilled
-  // chip - yet it still clears 4.5:1 on every dark row. Contrast therefore cannot
-  // detect the bug; only the exact composite comparison does.
+  // green (effective alpha 1 - (1 - 0.45)^2 = 0.6975), so it differs from the unfilled
+  // chip. At tint 0.45 it also falls below 4.5:1 on every dark row, so contrast does
+  // detect it now; the exact composite comparison stays the primary pin.
   it("a_green_remaining_stop_would_not_composite_to_the_unfilled_chip", () => {
     const { tint, text } = baseChip();
     const wrong = DARK_ROWS.map((row) => {
@@ -382,8 +408,8 @@ describe("weekly-quota fill on the agent chip (#2482)", () => {
       expect(wrongStack).not.toEqual(stack(row, [tint]));
       return contrastRatio(text, wrongStack);
     });
-    expect(wrong.map(round2)).toEqual([6.79, 6.21, 5.24]);
-    for (const ratio of wrong) expect(ratio).toBeGreaterThanOrEqual(CONTRAST_FLOOR);
+    expect(wrong.map(round2)).toEqual([4.13, 3.99, 3.75]);
+    for (const ratio of wrong) expect(ratio).toBeLessThan(CONTRAST_FLOOR);
   });
 
   it("the_used_half_clears_the_contrast_floor_on_every_row", () => {
@@ -391,8 +417,57 @@ describe("weekly-quota fill on the agent chip (#2482)", () => {
     const { used } = quotaStops();
     const usedRatios = DARK_ROWS.map((row) => contrastRatio(text, stack(row, [tint, used])));
     const controls = DARK_ROWS.map((row) => contrastRatio(text, stack(row, [tint])));
-    expect(usedRatios.map(round2)).toEqual([7.53, 6.92, 5.86]);
-    expect(controls.map(round2)).toEqual([8.61, 7.89, 6.59]);
+    expect(usedRatios.map(round2)).toEqual([6.91, 6.58, 6.01]);
+    expect(controls.map(round2)).toEqual([7.36, 6.87, 6.06]);
     for (const ratio of usedRatios) expect(ratio).toBeGreaterThanOrEqual(CONTRAST_FLOOR);
+  });
+});
+
+// #2512 - the light-theme chip. Colours are parsed from sidebar.css; only the light
+// rows (variables.css --sidebar-bg / -hover / -active, and the RootAgentBanner tints
+// over --sidebar-bg) and the rounded ratios are literals.
+const LIGHT_BG = "#f5f5f7";
+const LIGHT_ROWS: Rgb[] = [
+  stack(LIGHT_BG, []),
+  stack("#e8e8ec", []),
+  stack("#dcdce4", []),
+  stack(LIGHT_BG, [{ rgb: [0, 102, 204], alpha: 0.04 }]),
+  stack(LIGHT_BG, [{ rgb: [0, 102, 204], alpha: 0.08 }]),
+];
+const LIGHT_RULE = "html.light-theme .ac-discovery-badge.agent";
+
+function lightChip(): { tint: Rgba; text: Rgb; used: Rgba } {
+  const body = ruleBody(LIGHT_RULE);
+  return {
+    tint: parseColour(declValue(body, "background-color")),
+    text: parseColour(declValue(body, "color")).rgb,
+    used: parseColour(declValue(body, "--ac-quota-used-tint")),
+  };
+}
+
+describe("light-theme agent chip (#2512)", () => {
+  it("the_light_rule_sets_only_the_colour_longhands_and_the_used_tint", () => {
+    expect(declProps(ruleBody(LIGHT_RULE))).toEqual(["background-color", "color", "--ac-quota-used-tint"]);
+    expect(lightChip().used.alpha).toBe(0.16);
+  });
+
+  it("the_light_chip_clears_the_contrast_floor_unfilled_and_used", () => {
+    const { tint, text, used } = lightChip();
+    const unfilled = LIGHT_ROWS.map((row) => contrastRatio(text, stack(row, [tint])));
+    const usedRatios = LIGHT_ROWS.map((row) => contrastRatio(text, stack(row, [tint, used])));
+    expect(unfilled.map(round2)).toEqual([7.24, 6.54, 5.94, 6.9, 6.56]);
+    expect(usedRatios.map(round2)).toEqual([6.0, 5.47, 5.02, 5.73, 5.48]);
+    for (const ratio of [...unfilled, ...usedRatios]) expect(ratio).toBeGreaterThanOrEqual(CONTRAST_FLOOR);
+  });
+
+  // Negative control: the dark fallback red (0.32) on the light active row drops
+  // below the floor, which is why light theme sets its own tint.
+  it("the_dark_red_would_fail_the_light_active_row", () => {
+    const { tint, text } = lightChip();
+    const { used: darkRed } = quotaStops();
+    expect(darkRed.alpha).toBe(0.32);
+    const ratio = contrastRatio(text, stack("#dcdce4", [tint, darkRed]));
+    expect(round2(ratio)).toBe(4.25);
+    expect(ratio).toBeLessThan(CONTRAST_FLOOR);
   });
 });
