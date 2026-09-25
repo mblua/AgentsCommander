@@ -41,13 +41,8 @@ import { projectStore } from "../stores/project";
 import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 import TrashIcon from "./TrashIcon";
-import {
-  DRAG_THRESHOLD,
-  autoScrollDelta,
-  insertionSlot,
-  reorderIndex,
-  reorderedIds,
-} from "./settings/agentReorderDnd";
+import { reorderedIds } from "./settings/agentReorderDnd";
+import { createAgentDragReorder } from "./settings/agentDragReorder";
 import { GripIcon } from "./settings/GripIcon";
 import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
@@ -170,24 +165,6 @@ const JUST_DROPPED_MS = 420;
 /** #2544 - ordered comparison: same length and the same id at every index. */
 const sameIdSequence = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((id, index) => id === b[index]);
-
-/** #2544 - one in-flight pointer drag. Not render state: only `dragSourceId`
- *  and `dropIndicatorTop` are signals the view reads. */
-type PointerDrag = {
-  agentId: string;
-  handle: HTMLElement;
-  row: HTMLElement;
-  pointerId: number;
-  startX: number;
-  startY: number;
-  lastY: number;
-  rowTop: number;
-  slot: number;
-  started: boolean;
-  ghost: HTMLElement | null;
-  raf: number | null;
-  onEscape: (e: KeyboardEvent) => void;
-};
 
 /** #1313 - shape-only check: a plausible complete executable path must contain
  *  a directory separator (`\` or `/`). Bare names like `powershell.exe` or
@@ -848,8 +825,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   );
   const [pendingOrder, setPendingOrder] = createSignal<string[] | null>(null);
   const [kbdGrabbedId, setKbdGrabbedId] = createSignal<string | null>(null);
-  const [dragSourceId, setDragSourceId] = createSignal<string | null>(null);
-  const [dropIndicatorTop, setDropIndicatorTop] = createSignal<number | null>(null);
   const [justDroppedId, setJustDroppedId] = createSignal<string | null>(null);
 
   const cancelPickUp = (announcement: string) => {
@@ -1316,6 +1291,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   });
 
   let agentsPanelBody: HTMLDivElement | undefined;
+  const drag = createAgentDragReorder({
+    container: () => agentsPanelBody,
+    rowSelector: ".settings-agent-row",
+    handleSelector: ".settings-agent-drag-handle",
+    canDrag: () => !settingsReorderDisabled() && !pendingOrder(),
+    commit: (agentId, targetIndex) => void reorderSettingsAgent(agentId, targetIndex),
+    announce: setMoveAnnouncement,
+  });
   /** `<For>` moves row nodes, which drops focus; re-query the handle at the
    *  agent's current index once Solid has applied the DOM update. */
   const focusReorderHandle = (agentId: string, scrollTop?: number) => {
@@ -1402,7 +1385,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
 
   const pickUpAgent = (agentId: string) => {
-    if (settingsReorderDisabled() || pointerDrag) return;
+    if (settingsReorderDisabled() || drag.isDragging()) return;
     const ids = draftAgentIds();
     const index = ids.indexOf(agentId);
     if (index < 0) return;
@@ -1479,143 +1462,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     });
   });
 
-  let pointerDrag: PointerDrag | null = null;
-  const panelRows = (): HTMLElement[] =>
-    agentsPanelBody
-      ? [...agentsPanelBody.querySelectorAll<HTMLElement>(".settings-agent-row")]
-      : [];
-
-  /** Ghost position, insertion slot and drop line, in the panel body's offset space. */
-  const updatePointerDrag = (drag: PointerDrag) => {
-    if (drag.ghost) drag.ghost.style.top = `${drag.lastY - (drag.startY - drag.rowTop)}px`;
-    const rows = panelRows();
-    const from = rows.indexOf(drag.row);
-    const others = rows.filter((row) => row !== drag.row);
-    drag.slot = insertionSlot(drag.lastY, others.map((row) => row.getBoundingClientRect()));
-    const atSlot = others[drag.slot];
-    const last = others[others.length - 1];
-    if (from < 0 || drag.slot === from || !last) {
-      setDropIndicatorTop(null);
-    } else {
-      setDropIndicatorTop(atSlot ? atSlot.offsetTop - 3 : last.offsetTop + last.offsetHeight + 1);
-    }
-  };
-
-  /** Runs on every exit path, including onCleanup: the ghost lives on
-   *  document.body and a dead webview never runs a framework unmount. */
-  const teardownPointerDrag = () => {
-    const drag = pointerDrag;
-    if (!drag) return;
-    pointerDrag = null;
-    if (drag.raf !== null) cancelAnimationFrame(drag.raf);
-    drag.ghost?.remove();
-    setDropIndicatorTop(null);
-    setDragSourceId(null);
-    document.body.classList.remove("is-dragging");
-    window.removeEventListener("keydown", drag.onEscape, true);
-    if (drag.handle.hasPointerCapture(drag.pointerId)) {
-      drag.handle.releasePointerCapture(drag.pointerId);
-    }
-  };
-
-  const cancelPointerDrag = () => {
-    const started = pointerDrag?.started ?? false;
-    teardownPointerDrag();
-    if (started) setMoveAnnouncement("Move cancelled.");
-  };
-
-  const startPointerDrag = (drag: PointerDrag) => {
-    const rect = drag.row.getBoundingClientRect();
-    drag.rowTop = rect.top;
-    const ghost = drag.row.cloneNode(true) as HTMLElement;
-    // The clone must not double any test id, id or focusable control.
-    for (const node of [ghost, ...ghost.querySelectorAll("*")]) {
-      node.removeAttribute("data-ac-testid");
-      node.removeAttribute("data-ac-role");
-      node.removeAttribute("id");
-    }
-    ghost.setAttribute("aria-hidden", "true");
-    ghost.setAttribute("tabindex", "-1");
-    ghost.setAttribute("inert", "");
-    ghost.classList.add("drag-ghost");
-    ghost.style.width = `${rect.width}px`;
-    ghost.style.left = `${rect.left}px`;
-    document.body.append(ghost);
-    drag.ghost = ghost;
-    drag.started = true;
-    setDragSourceId(drag.agentId);
-    document.body.classList.add("is-dragging");
-    window.addEventListener("keydown", drag.onEscape, true);
-    const tick = () => {
-      if (pointerDrag !== drag) return;
-      if (agentsPanelBody) {
-        const list = agentsPanelBody.getBoundingClientRect();
-        const delta = autoScrollDelta(drag.lastY, list.top, list.bottom);
-        if (delta !== 0) {
-          agentsPanelBody.scrollTop += delta;
-          updatePointerDrag(drag);
-        }
-      }
-      drag.raf = requestAnimationFrame(tick);
-    };
-    drag.raf = requestAnimationFrame(tick);
-  };
-
-  const onHandlePointerDown = (e: PointerEvent, agentId: string) => {
-    if (e.button !== 0 || settingsReorderDisabled() || pendingOrder() || pointerDrag) return;
-    const handle = (e.target as Element).closest<HTMLElement>(".settings-agent-drag-handle");
-    const row = handle?.closest<HTMLElement>(".settings-agent-row");
-    if (!handle || !row) return;
-    e.preventDefault();
-    handle.setPointerCapture(e.pointerId);
-    pointerDrag = {
-      agentId,
-      handle,
-      row,
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      lastY: e.clientY,
-      rowTop: 0,
-      slot: -1,
-      started: false,
-      ghost: null,
-      raf: null,
-      onEscape: (key: KeyboardEvent) => {
-        if (key.key !== "Escape") return;
-        key.preventDefault();
-        key.stopPropagation();
-        cancelPointerDrag();
-      },
-    };
-  };
-
-  const onHandlePointerMove = (e: PointerEvent) => {
-    const drag = pointerDrag;
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    drag.lastY = e.clientY;
-    if (!drag.started) {
-      if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < DRAG_THRESHOLD) return;
-      startPointerDrag(drag);
-    }
-    updatePointerDrag(drag);
-  };
-
-  const onHandlePointerUp = (e: PointerEvent) => {
-    const drag = pointerDrag;
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    const from = panelRows().indexOf(drag.row);
-    teardownPointerDrag();
-    if (!drag.started || from < 0 || drag.slot === from) return;
-    void reorderSettingsAgent(drag.agentId, reorderIndex(from, drag.slot));
-  };
-
-  const onHandlePointerCancel = (e: PointerEvent) => {
-    if (pointerDrag && e.pointerId === pointerDrag.pointerId) cancelPointerDrag();
-  };
-
   onCleanup(() => {
-    teardownPointerDrag();
     if (justDroppedTimer !== undefined) clearTimeout(justDroppedTimer);
   });
 
@@ -3616,7 +3463,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         class="settings-agent-row"
         classList={{
           expanded: expanded(),
-          "is-drag-source": dragSourceId() === agent.id,
+          "is-drag-source": drag.dragSourceId() === agent.id,
           "is-kbd-grabbed": kbdGrabbedId() === agent.id,
           "just-dropped": justDroppedId() === agent.id,
         }}
@@ -3655,11 +3502,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             title="Drag to reorder (Alt+Up / Alt+Down)"
             data-ac-testid={`settings.agentRow.${i()}.dragHandle`}
             data-ac-role="button"
-            onPointerDown={(e) => onHandlePointerDown(e, agent.id)}
-            onPointerMove={onHandlePointerMove}
-            onPointerUp={onHandlePointerUp}
-            onPointerCancel={onHandlePointerCancel}
-            onLostPointerCapture={onHandlePointerCancel}
+            onPointerDown={(e) => drag.onPointerDown(e, agent.id)}
+            onPointerMove={drag.onPointerMove}
+            onPointerUp={drag.onPointerUp}
+            onPointerCancel={drag.onPointerCancel}
+            onLostPointerCapture={drag.onPointerCancel}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => onReorderHandleKeyDown(e, agent.id)}
           >
@@ -4834,10 +4681,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 {(agent, i) => renderAgentRow(agent, i)}
               </For>
             </Show>
-            <Show when={dropIndicatorTop() != null}>
+            <Show when={drag.dropIndicatorTop() != null}>
               <div
                 class="drop-indicator"
-                style={{ top: `${dropIndicatorTop()}px` }}
+                style={{ top: `${drag.dropIndicatorTop()}px` }}
                 data-ac-testid="settings.agents.dropIndicator"
                 aria-hidden="true"
               />
