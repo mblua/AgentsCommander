@@ -25,7 +25,8 @@ import {
 } from "../../shared/ipc";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { GripIcon } from "./settings/GripIcon";
-import { DRAG_THRESHOLD, autoScrollDelta, insertionSlot, reorderIndex, reorderedIds } from "./settings/agentReorderDnd";
+import { reorderedIds } from "./settings/agentReorderDnd";
+import { createAgentDragReorder } from "./settings/agentDragReorder";
 import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
@@ -110,24 +111,6 @@ const MOVE_OVERLAY_REASON =
 /** #2577 - why every grip is disabled while the agent filter hides cards. */
 const REORDER_FILTER_REASON = "Clear the filter to reorder.";
 
-/** #2577 - one in-flight pointer drag (same shape as Settings). Not render state:
- *  only `dragSourceId` and `dropIndicatorTop` are signals the view reads. */
-type PointerDrag = {
-  agentId: string;
-  handle: HTMLElement;
-  row: HTMLElement;
-  pointerId: number;
-  startX: number;
-  startY: number;
-  lastY: number;
-  rowTop: number;
-  slot: number;
-  started: boolean;
-  ghost: HTMLElement | null;
-  raf: number | null;
-  onEscape: (e: KeyboardEvent) => void;
-};
-
 /** #1943 - the three scopes, in the order the lock radios and the independent
  *  "Remove lock from" group both render them. */
 const LOCK_SCOPES: ProfileAssignmentScope[] = ["replica", "kind", "workgroup"];
@@ -180,10 +163,15 @@ const AgentPickerModal: Component<{
   const [moveBusy, setMoveBusy] = createSignal(false);
   const [moveError, setMoveError] = createSignal("");
   const [moveAnnouncement, setMoveAnnouncement] = createSignal("");
-  const [dragSourceId, setDragSourceId] = createSignal<string | null>(null);
-  const [dropIndicatorTop, setDropIndicatorTop] = createSignal<number | null>(null);
-  let pointerDrag: PointerDrag | null = null;
   let listRef: HTMLDivElement | undefined;
+  const drag = createAgentDragReorder({
+    container: () => listRef,
+    rowSelector: ".agent-profile-provider-card-wrap",
+    handleSelector: ".agent-profile-provider-drag-handle",
+    canDrag: () => !reorderDisabled(),
+    commit: (agentId, targetIndex) => void reorderAgent(agentId, targetIndex, false),
+    announce: setMoveAnnouncement,
+  });
 
   const [selectedScope, setSelectedScope] = createSignal<ProfileAssignmentScope>("replica");
   const [restartSessions, setRestartSessions] = createSignal(false);
@@ -592,143 +580,6 @@ const AgentPickerModal: Component<{
       void reorderAgent(agentId, target, true);
     }
   };
-
-  // Drags only start with no filter, so every wrap is rendered and the row
-  // index equals the orderedAgents() index.
-  const pickerRows = (): HTMLElement[] =>
-    listRef ? [...listRef.querySelectorAll<HTMLElement>(".agent-profile-provider-card-wrap")] : [];
-
-  /** Ghost position, insertion slot and drop line, in the list's offset space. */
-  const updatePointerDrag = (drag: PointerDrag) => {
-    if (drag.ghost) drag.ghost.style.top = `${drag.lastY - (drag.startY - drag.rowTop)}px`;
-    const rows = pickerRows();
-    const from = rows.indexOf(drag.row);
-    const others = rows.filter((row) => row !== drag.row);
-    drag.slot = insertionSlot(drag.lastY, others.map((row) => row.getBoundingClientRect()));
-    const atSlot = others[drag.slot];
-    const last = others[others.length - 1];
-    if (from < 0 || drag.slot === from || !last) {
-      setDropIndicatorTop(null);
-    } else {
-      setDropIndicatorTop(atSlot ? atSlot.offsetTop - 3 : last.offsetTop + last.offsetHeight + 1);
-    }
-  };
-
-  /** Runs on every exit path, including onCleanup: the ghost lives on document.body. */
-  const teardownPointerDrag = () => {
-    const drag = pointerDrag;
-    if (!drag) return;
-    pointerDrag = null;
-    if (drag.raf !== null) cancelAnimationFrame(drag.raf);
-    drag.ghost?.remove();
-    setDropIndicatorTop(null);
-    setDragSourceId(null);
-    document.body.classList.remove("is-dragging");
-    window.removeEventListener("keydown", drag.onEscape, true);
-    if (drag.handle.hasPointerCapture(drag.pointerId)) {
-      drag.handle.releasePointerCapture(drag.pointerId);
-    }
-  };
-
-  const cancelPointerDrag = () => {
-    const started = pointerDrag?.started ?? false;
-    teardownPointerDrag();
-    if (started) setMoveAnnouncement("Move cancelled.");
-  };
-
-  const startPointerDrag = (drag: PointerDrag) => {
-    const rect = drag.row.getBoundingClientRect();
-    drag.rowTop = rect.top;
-    const ghost = drag.row.cloneNode(true) as HTMLElement;
-    // The clone must not double any test id, id or focusable control.
-    for (const node of [ghost, ...ghost.querySelectorAll("*")]) {
-      node.removeAttribute("data-ac-testid");
-      node.removeAttribute("data-ac-role");
-      node.removeAttribute("id");
-    }
-    ghost.setAttribute("aria-hidden", "true");
-    ghost.setAttribute("tabindex", "-1");
-    ghost.setAttribute("inert", "");
-    ghost.classList.add("drag-ghost");
-    ghost.style.width = `${rect.width}px`;
-    ghost.style.left = `${rect.left}px`;
-    document.body.append(ghost);
-    drag.ghost = ghost;
-    drag.started = true;
-    setDragSourceId(drag.agentId);
-    document.body.classList.add("is-dragging");
-    // Capture phase: Escape cancels the drag and never reaches the modal close.
-    window.addEventListener("keydown", drag.onEscape, true);
-    const tick = () => {
-      if (pointerDrag !== drag) return;
-      if (listRef) {
-        const list = listRef.getBoundingClientRect();
-        const delta = autoScrollDelta(drag.lastY, list.top, list.bottom);
-        if (delta !== 0) {
-          listRef.scrollTop += delta;
-          updatePointerDrag(drag);
-        }
-      }
-      drag.raf = requestAnimationFrame(tick);
-    };
-    drag.raf = requestAnimationFrame(tick);
-  };
-
-  const onHandlePointerDown = (e: PointerEvent, agentId: string) => {
-    if (e.button !== 0 || reorderDisabled() || pointerDrag) return;
-    const handle = (e.target as Element).closest<HTMLElement>(".agent-profile-provider-drag-handle");
-    const row = handle?.closest<HTMLElement>(".agent-profile-provider-card-wrap");
-    if (!handle || !row) return;
-    e.preventDefault();
-    handle.setPointerCapture(e.pointerId);
-    pointerDrag = {
-      agentId,
-      handle,
-      row,
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      lastY: e.clientY,
-      rowTop: 0,
-      slot: -1,
-      started: false,
-      ghost: null,
-      raf: null,
-      onEscape: (key: KeyboardEvent) => {
-        if (key.key !== "Escape") return;
-        key.preventDefault();
-        key.stopPropagation();
-        cancelPointerDrag();
-      },
-    };
-  };
-
-  const onHandlePointerMove = (e: PointerEvent) => {
-    const drag = pointerDrag;
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    drag.lastY = e.clientY;
-    if (!drag.started) {
-      if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < DRAG_THRESHOLD) return;
-      startPointerDrag(drag);
-    }
-    updatePointerDrag(drag);
-  };
-
-  const onHandlePointerUp = (e: PointerEvent) => {
-    const drag = pointerDrag;
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    // A refetch that re-rendered mid-drag detaches drag.row: from < 0, no-op.
-    const from = pickerRows().indexOf(drag.row);
-    teardownPointerDrag();
-    if (!drag.started || from < 0 || drag.slot === from) return;
-    void reorderAgent(drag.agentId, reorderIndex(from, drag.slot), false);
-  };
-
-  const onHandlePointerCancel = (e: PointerEvent) => {
-    if (pointerDrag && e.pointerId === pointerDrag.pointerId) cancelPointerDrag();
-  };
-
-  onCleanup(teardownPointerDrag);
 
   onMount(async () => {
     overlayRef?.focus();
@@ -1559,7 +1410,7 @@ const AgentPickerModal: Component<{
                       <Show when={matchesFilter(agent)}>
                         <div
                           class="agent-profile-provider-card-wrap"
-                          classList={{ "is-drag-source": dragSourceId() === agent.id }}
+                          classList={{ "is-drag-source": drag.dragSourceId() === agent.id }}
                           data-ac-testid={`agentPicker.providerWrap.${agent.id}`}
                         >
                           {/* #2577 - the grip is a SEPARATE button drawn inside the card border (no nested buttons); the filter disables it. */}
@@ -1572,11 +1423,11 @@ const AgentPickerModal: Component<{
                             title={reorderHandleTitle(agent)}
                             data-ac-testid={reorderHandleTestId(agent.id)}
                             data-ac-role="button"
-                            onPointerDown={(e) => onHandlePointerDown(e, agent.id)}
-                            onPointerMove={onHandlePointerMove}
-                            onPointerUp={onHandlePointerUp}
-                            onPointerCancel={onHandlePointerCancel}
-                            onLostPointerCapture={onHandlePointerCancel}
+                            onPointerDown={(e) => drag.onPointerDown(e, agent.id)}
+                            onPointerMove={drag.onPointerMove}
+                            onPointerUp={drag.onPointerUp}
+                            onPointerCancel={drag.onPointerCancel}
+                            onLostPointerCapture={drag.onPointerCancel}
                             onKeyDown={(e) => onReorderHandleKeyDown(e, agent.id)}
                           >
                             <GripIcon />
@@ -1611,10 +1462,10 @@ const AgentPickerModal: Component<{
                   }}
                 </For>
               </Show>
-              <Show when={dropIndicatorTop() != null}>
+              <Show when={drag.dropIndicatorTop() != null}>
                 <div
                   class="drop-indicator"
-                  style={{ top: `${dropIndicatorTop()}px` }}
+                  style={{ top: `${drag.dropIndicatorTop()}px` }}
                   data-ac-testid="agentPicker.providers.dropIndicator"
                   aria-hidden="true"
                 />

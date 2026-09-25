@@ -3871,6 +3871,38 @@ describe("SettingsModal automation hooks", () => {
       dispose();
     });
 
+    it("refuses a keyboard pick-up while a pointer drag is armed, before and after the threshold", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+      const grip = prepareDrag(1);
+      pointer(grip, "pointerdown", 5, 60);
+
+      // Armed, below the 4px threshold.
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      expect(byTestId("settings.agents.moveStatus").textContent).not.toMatch(/^Picked up /);
+      expect(document.querySelector(".settings-agent-row.is-kbd-grabbed")).toBeNull();
+
+      // Above the threshold, ghost present.
+      pointer(grip, "pointermove", 5, 140);
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      expect(byTestId("settings.agents.moveStatus").textContent).not.toMatch(/^Picked up /);
+      expect(document.querySelector(".settings-agent-row.is-kbd-grabbed")).toBeNull();
+
+      // Positive control: back to the source slot, drop, then pick-up works.
+      pointer(grip, "pointermove", 5, 60);
+      pointer(grip, "pointerup", 5, 60);
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(
+        "Picked up Codex, position 1. Arrows move, Space drops, Escape cancels.",
+      );
+      expect(document.querySelector(".settings-agent-row.is-kbd-grabbed")).not.toBeNull();
+
+      expect(reorderCalls()).toHaveLength(0);
+      dispose();
+    });
+
     it("clears the draft gate after an Add whose save hits the terminal-snapshot conflict", async () => {
       const current = orderSnapshot(ORDER_AGENTS);
       const dispose = await mountAgents(() => current);
