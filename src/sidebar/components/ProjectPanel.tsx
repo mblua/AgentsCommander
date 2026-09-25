@@ -51,7 +51,7 @@ import { isWgReplicaPath, profileDisplayLabel, sessionProfileBadge, shouldOfferR
 import { clockStore } from "../stores/clock";
 import { coordinatorIdleBadge } from "../../shared/coordinator-badge";
 import { COORD_IDLE_CLASS } from "./coordinator-badge-class";
-import SessionItem from "./SessionItem";
+import SessionItem, { type SessionContextExtraAction } from "./SessionItem";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
 import ContextBadge from "./ContextBadge";
 import { contextBadgeConfigured } from "./session-context";
@@ -943,6 +943,13 @@ const ProjectPanel: Component = () => {
           setAgentDeleteInProgress(false);
           setDeletingAgent(null);
         };
+        const agentDeleteAction = (agent: { name: string; path: string }): SessionContextExtraAction => ({
+          label: "Delete",
+          class: "context-option-danger",
+          icon: <TrashIcon />,
+          testId: `agent.action.delete.${automationIdPart(agent.path)}`,
+          onSelect: () => setDeletingAgent({ name: agent.name, path: agent.path }),
+        });
         const closeWgDeleteModal = () => {
           setWgDeleteError("");
           setWgDirtyRepos(false);
@@ -1538,6 +1545,9 @@ const ProjectPanel: Component = () => {
             console.error("Failed to open repo in browser:", e);
           }
         };
+        const openRepoBrowseItem = (url: string) => {
+          void openRepoBrowse(url);
+        };
 
         createEffect(() => {
           if (replicaCtxMenu()) return;
@@ -2122,7 +2132,7 @@ const ProjectPanel: Component = () => {
                         <button
                           class="session-context-option"
                           title={item.url}
-                          onClick={() => void openRepoBrowse(item.url)}
+                          onClick={[openRepoBrowseItem, item.url]}
                           data-ac-testid={`${testIdPrefix()}.${repoFlyout()?.index ?? 0}.browse.${item.id}`}
                           data-ac-role="menuitem"
                         >
@@ -3602,13 +3612,7 @@ const ProjectPanel: Component = () => {
                                     <SessionItem
                                       session={s()}
                                       isActive={s().id === sessionsStore.activeId}
-                                      extraContextAction={{
-                                        label: "Delete",
-                                        class: "context-option-danger",
-                                        icon: <TrashIcon />,
-                                        testId: `agent.action.delete.${automationIdPart(agent.path)}`,
-                                        onSelect: () => setDeletingAgent({ name: agent.name, path: agent.path }),
-                                      }}
+                                      extraContextAction={agentDeleteAction(agent)}
                                     />
                                   )}
                                 </Show>
