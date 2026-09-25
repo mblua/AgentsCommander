@@ -297,6 +297,19 @@ function isAbsolutePath(path: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(path) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(path) || /^[\\/]/.test(path);
 }
 
+function pushPathSegment(segments: string[], segment: string, hasRoot: boolean): void {
+  if (!segment || segment === ".") return;
+  if (segment === "..") {
+    if (segments.length > 0 && segments[segments.length - 1] !== "..") {
+      segments.pop();
+    } else if (!hasRoot) {
+      segments.push(segment);
+    }
+    return;
+  }
+  segments.push(segment);
+}
+
 function normalizePath(path: string, separator: "\\" | "/"): string {
   const trimmed = path.trim();
   const driveMatch = trimmed.match(/^([A-Za-z]:)[\\/]+(.*)$/);
@@ -317,16 +330,7 @@ function normalizePath(path: string, separator: "\\" | "/"): string {
 
   const segments: string[] = [];
   for (const segment of rest.split(/[\\/]+/)) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      if (segments.length > 0 && segments[segments.length - 1] !== "..") {
-        segments.pop();
-      } else if (!root) {
-        segments.push(segment);
-      }
-      continue;
-    }
-    segments.push(segment);
+    pushPathSegment(segments, segment, root !== "");
   }
 
   const suffix = segments.join(separator);
@@ -1166,6 +1170,13 @@ const ProjectPanel: Component = () => {
           const agentId = replica.currentCodingAgentId ?? replica.preferredAgentId;
           if (!agentId) return null;
           return settingsStore.current?.agents?.find((a) => a.id === agentId)?.label ?? null;
+        };
+        const resolveReplicaAgentId = (
+          session: Session | undefined,
+          replica: AcAgentReplica
+        ): string | null => {
+          if (session) return session.agentId ?? null;
+          return replica.currentCodingAgentId ?? replica.preferredAgentId ?? null;
         };
         const resolveReplicaProfileBadge = (
           session: Session | undefined,
@@ -2753,11 +2764,11 @@ const ProjectPanel: Component = () => {
             const s = session();
             return s ? sessionsStore.contextPercentBySessionId[s.id] : undefined;
           };
-          // #2482 - same sidecar, same builder as the origin chip (SessionItem, p6). The
-          // reading is keyed by session id, so a replica with no live session has none.
+          // #2566 - keyed by AGENT id, so a replica with no live session shows the value
+          // of its configured agent's command, and two rooms of one agent agree.
           const quotaUsed = () => {
-            const s = session();
-            return s ? sessionsStore.weeklyQuotaUsedBySessionId[s.id] : undefined;
+            const agentId = resolveReplicaAgentId(session(), replica);
+            return agentId ? sessionsStore.weeklyQuotaUsedByAgentId[agentId] : undefined;
           };
           const profileBadgeTitle = () => {
             const s = session();

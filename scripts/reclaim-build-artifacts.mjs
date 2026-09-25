@@ -158,6 +158,15 @@ function humanBytes(n) {
   return `${i === 0 ? v : v.toFixed(1)} ${units[i]}`;
 }
 
+// Size of one file, or 0 when it vanished mid-walk.
+function fileSizeOrZero(p) {
+  try {
+    return statSync(p).size;
+  } catch {
+    return 0;
+  }
+}
+
 // Sum the on-disk size of a directory tree, tolerating races and permission errors.
 // Does not follow symlinked directories, matching how deletion treats them.
 function dirSize(root) {
@@ -177,11 +186,7 @@ function dirSize(root) {
       if (e.isDirectory()) {
         stack.push(p);
       } else {
-        try {
-          total += statSync(p).size;
-        } catch {
-          /* vanished mid-walk; ignore */
-        }
+        total += fileSizeOrZero(p);
       }
     }
   }
@@ -220,105 +225,131 @@ function inspectCandidate(repoRootReal, rel) {
   return { path, rel, ok: true, reason: 'artifact', real };
 }
 
+// Resolve + validate one scan root. Returns its real path, or null when unusable.
+function resolveScanRoot(r) {
+  const abs = resolve(r);
+  if (!isDir(abs)) {
+    console.error(`${TAG} scan root not found or not a directory: ${abs}`);
+    return null;
+  }
+  let real;
+  try {
+    real = realpathSync(abs);
+  } catch (e) {
+    console.error(`${TAG} cannot resolve scan root ${abs}: ${e.message}`);
+    return null;
+  }
+  // Never operate at a filesystem root; require some depth.
+  if (parse(real).root === real) {
+    console.error(`${TAG} refusing filesystem-root scan root: ${real}`);
+    return null;
+  }
+  return real;
+}
+
+// Discover the repo roots beneath every valid scan root.
+function collectRepoRoots(roots) {
+  const repoRoots = new Set();
+  for (const r of roots) {
+    const real = resolveScanRoot(r);
+    if (real === null) continue;
+    for (const rr of discoverRepoRoots(real)) repoRoots.add(rr);
+  }
+  return repoRoots;
+}
+
+// Build the result entry for one inspected candidate, deleting it when applying.
+function buildEntry(repoRootReal, rel, info, apply) {
+  const entry = {
+    repo: repoRootReal,
+    rel,
+    path: info.path,
+    ok: info.ok,
+    reason: info.reason,
+    bytes: info.ok ? dirSize(info.path) : 0,
+    removed: false,
+    error: null,
+  };
+  if (info.ok && apply) {
+    try {
+      rmSync(info.path, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+      entry.removed = true;
+    } catch (e) {
+      entry.error = e.message;
+    }
+  }
+  return entry;
+}
+
+// Inspect every artifact candidate of one repo root.
+function inspectRepo(rr, apply) {
+  let repoRootReal;
+  try {
+    repoRootReal = realpathSync(rr);
+  } catch {
+    return [];
+  }
+  const entries = [];
+  for (const rel of ARTIFACT_RELS) {
+    const info = inspectCandidate(repoRootReal, rel);
+    if (info.reason === 'absent') continue; // nothing there, stay quiet
+    entries.push(buildEntry(repoRootReal, rel, info, apply));
+  }
+  return entries;
+}
+
+function printJsonReport(apply, repoRoots, totalBytes, results) {
+  console.log(JSON.stringify(
+    {
+      mode: apply ? 'apply' : 'dry-run',
+      repoRoots: [...repoRoots].sort(byCodeUnit),
+      totalBytes,
+      totalHuman: humanBytes(totalBytes),
+      results,
+    },
+    null,
+    2,
+  ));
+}
+
+function printTextReport(apply, repoRoots, reclaimable, skipped, totalBytes) {
+  console.log(`${TAG} mode: ${apply ? 'APPLY (deleting)' : 'dry-run (no changes)'}`);
+  console.log(`${TAG} repo roots scanned: ${repoRoots.size}`);
+  if (reclaimable.length === 0) {
+    console.log(`${TAG} no target/src-tauri/target artifacts found. Nothing to reclaim.`);
+  }
+  for (const r of reclaimable) {
+    const verb = apply ? (r.removed ? 'removed' : `FAILED (${r.error})`) : 'would remove';
+    console.log(`${TAG}   ${verb}: ${r.path}  (${humanBytes(r.bytes)})`);
+  }
+  for (const s of skipped) {
+    // Only surface skips that are not the boring "absent" case.
+    console.log(`${TAG}   skipped: ${s.path}  (${s.reason})`);
+  }
+  console.log(`${TAG} reclaimable total: ${humanBytes(totalBytes)} across ${reclaimable.length} dir(s)`);
+  if (!apply && reclaimable.length > 0) {
+    console.log(`${TAG} re-run with --apply to delete.`);
+  }
+}
+
 function main() {
   const { roots, apply, json } = parseArgs(process.argv.slice(2));
 
-  // Resolve + validate every scan root, then discover repo roots beneath each.
-  const repoRoots = new Set();
-  for (const r of roots) {
-    const abs = resolve(r);
-    if (!isDir(abs)) {
-      console.error(`${TAG} scan root not found or not a directory: ${abs}`);
-      continue;
-    }
-    let real;
-    try {
-      real = realpathSync(abs);
-    } catch (e) {
-      console.error(`${TAG} cannot resolve scan root ${abs}: ${e.message}`);
-      continue;
-    }
-    // Never operate at a filesystem root; require some depth.
-    if (parse(real).root === real) {
-      console.error(`${TAG} refusing filesystem-root scan root: ${real}`);
-      continue;
-    }
-    for (const rr of discoverRepoRoots(real)) repoRoots.add(rr);
-  }
-
+  const repoRoots = collectRepoRoots(roots);
   if (repoRoots.size === 0) {
     die('no valid repo roots discovered from the given scan root(s)');
   }
 
   const results = [];
-  for (const rr of [...repoRoots].sort(byCodeUnit)) {
-    let repoRootReal;
-    try {
-      repoRootReal = realpathSync(rr);
-    } catch {
-      continue;
-    }
-    for (const rel of ARTIFACT_RELS) {
-      const info = inspectCandidate(repoRootReal, rel);
-      if (info.reason === 'absent') continue; // nothing there, stay quiet
-      const entry = {
-        repo: repoRootReal,
-        rel,
-        path: info.path,
-        ok: info.ok,
-        reason: info.reason,
-        bytes: info.ok ? dirSize(info.path) : 0,
-        removed: false,
-        error: null,
-      };
-      if (info.ok && apply) {
-        try {
-          rmSync(info.path, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
-          entry.removed = true;
-        } catch (e) {
-          entry.error = e.message;
-        }
-      }
-      results.push(entry);
-    }
-  }
+  for (const rr of [...repoRoots].sort(byCodeUnit)) results.push(...inspectRepo(rr, apply));
 
   const reclaimable = results.filter(r => r.ok);
   const skipped     = results.filter(r => !r.ok);
   const failed      = results.filter(r => r.error);
   const totalBytes  = reclaimable.reduce((a, r) => a + r.bytes, 0);
 
-  if (json) {
-    console.log(JSON.stringify(
-      {
-        mode: apply ? 'apply' : 'dry-run',
-        repoRoots: [...repoRoots].sort(byCodeUnit),
-        totalBytes,
-        totalHuman: humanBytes(totalBytes),
-        results,
-      },
-      null,
-      2,
-    ));
-  } else {
-    console.log(`${TAG} mode: ${apply ? 'APPLY (deleting)' : 'dry-run (no changes)'}`);
-    console.log(`${TAG} repo roots scanned: ${repoRoots.size}`);
-    if (reclaimable.length === 0) {
-      console.log(`${TAG} no target/src-tauri/target artifacts found. Nothing to reclaim.`);
-    }
-    for (const r of reclaimable) {
-      const verb = apply ? (r.removed ? 'removed' : `FAILED (${r.error})`) : 'would remove';
-      console.log(`${TAG}   ${verb}: ${r.path}  (${humanBytes(r.bytes)})`);
-    }
-    for (const s of skipped) {
-      // Only surface skips that are not the boring "absent" case.
-      console.log(`${TAG}   skipped: ${s.path}  (${s.reason})`);
-    }
-    console.log(`${TAG} reclaimable total: ${humanBytes(totalBytes)} across ${reclaimable.length} dir(s)`);
-    if (!apply && reclaimable.length > 0) {
-      console.log(`${TAG} re-run with --apply to delete.`);
-    }
-  }
+  if (json) printJsonReport(apply, repoRoots, totalBytes, results);
+  else printTextReport(apply, repoRoots, reclaimable, skipped, totalBytes);
 
   process.exit(failed.length > 0 ? 1 : 0);
 }

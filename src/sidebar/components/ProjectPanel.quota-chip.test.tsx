@@ -39,7 +39,7 @@ function replicaPath(name: string): string {
   return `${workgroupPath}\\__agent_${name}`;
 }
 
-function agentConfig(): AgentConfig {
+function agentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
     id: "claude",
     label: "Claude Code",
@@ -47,6 +47,7 @@ function agentConfig(): AgentConfig {
     color: "#d97757",
     envs: [],
     isolatedHome: false,
+    ...overrides,
   };
 }
 
@@ -62,11 +63,9 @@ function replicaSessionFor(id: string, name: string, isCoordinator: boolean): Se
   });
 }
 
-function setupTransport(fake: FakeTransport): void {
-  fake.resolve(
-    "get_settings",
-    baseSettings({ projectPaths: [projectPath], projectPath, agents: [agentConfig()] })
-  );
+function setupTransport(fake: FakeTransport, idleAgentId: string): void {
+  const agents = [agentConfig(), agentConfig({ id: "codex", label: "Codex", command: "codex" })];
+  fake.resolve("get_settings", baseSettings({ projectPaths: [projectPath], projectPath, agents }));
   fake.resolve("get_update_status", null);
   fake.resolve("open_project", { path: projectPath, registered: true, created: false });
   fake.resolve(
@@ -88,7 +87,7 @@ function setupTransport(fake: FakeTransport): void {
               path: replicaPath(idleName),
               repoPaths: [],
               isCoordinator: false,
-              preferredAgentId: "claude",
+              preferredAgentId: idleAgentId,
             },
           ],
         },
@@ -105,7 +104,7 @@ function setupTransport(fake: FakeTransport): void {
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
   fake.resolve("get_session_context", null);
-  fake.resolve("get_session_agent_quota", null);
+  fake.resolve("get_agent_quota_readings", {});
 }
 
 describe("ProjectPanel replica weekly-quota chip (#2482)", () => {
@@ -128,21 +127,21 @@ describe("ProjectPanel replica weekly-quota chip (#2482)", () => {
     document.body.replaceChildren();
   });
 
-  async function mount(): Promise<FakeTransport> {
+  async function mount(idleAgentId = "claude"): Promise<FakeTransport> {
     const fake = new FakeTransport();
-    setupTransport(fake);
+    setupTransport(fake, idleAgentId);
     rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
     await waitFor(() => {
       expect(replicaChip(document.body, "quick", wgName, coordName)).toHaveLength(1);
       expect(replicaChip(document.body, "workgroups", wgName, workerName)).toHaveLength(1);
       expect(replicaChip(document.body, "workgroups", wgName, idleName)).toHaveLength(1);
     });
-    await waitFor(() => expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0));
+    await waitFor(() => expect(fake.callsFor("get_agent_quota_readings").length).toBeGreaterThan(0));
     return fake;
   }
 
-  function reading(fake: FakeTransport, sessionId: string, weeklyUsedPercent: number | null): void {
-    fake.emitFromBackend("session_agent_quota", { sessionId, weeklyUsedPercent });
+  function reading(fake: FakeTransport, agentId: string, weeklyUsedPercent: number | null): void {
+    fake.emitFromBackend("agent_quota", { agentId, weeklyUsedPercent });
   }
 
   // A real-timer flush, so an absence assertion is not satisfied before the
@@ -153,7 +152,7 @@ describe("ProjectPanel replica weekly-quota chip (#2482)", () => {
 
   it("a_replica_chip_fills_from_a_reading_on_its_session", async () => {
     const fake = await mount();
-    reading(fake, workerSessionId, 28);
+    reading(fake, "claude", 28);
     await waitFor(() => {
       const el = oneChip("workgroups", workerName);
       expect(el.className).toContain("quota-fill");
@@ -169,30 +168,53 @@ describe("ProjectPanel replica weekly-quota chip (#2482)", () => {
     expect(el.getAttribute("style")).toBeNull();
   });
 
-  it("a_replica_with_no_live_session_renders_the_plain_chip", async () => {
+  it("a_replica_with_no_live_session_is_filled_from_its_configured_agent", async () => {
     const fake = await mount();
-    reading(fake, workerSessionId, 28);
-    await waitFor(() => expect(oneChip("workgroups", workerName).className).toContain("quota-fill"));
+    reading(fake, "claude", 28);
+    await waitFor(() => expect(oneChip("workgroups", idleName).className).toContain("quota-fill"));
     const el = oneChip("workgroups", idleName);
     expect(el.textContent).toBe("Claude Code");
+    expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
+  });
+
+  it("a_reading_on_one_session_fills_every_replica_of_the_same_agent", async () => {
+    const fake = await mount();
+    reading(fake, "claude", 28);
+    await waitFor(() => {
+      for (const ctx of ["quick", "workgroups"] as const) {
+        const el = oneChip(ctx, coordName);
+        expect(el.className).toContain("quota-fill");
+        expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
+      }
+    });
+  });
+
+  it("a_reading_on_one_agent_does_not_fill_a_replica_of_a_DIFFERENT_agent", async () => {
+    const fake = await mount("codex");
+    reading(fake, "claude", 28);
+    await waitFor(() => expect(oneChip("workgroups", workerName).className).toContain("quota-fill"));
+    await settle();
+    const el = oneChip("workgroups", idleName);
+    expect(el.textContent).toBe("Codex");
     expect(el.className).not.toContain("quota-fill");
     expect(el.getAttribute("style")).toBeNull();
   });
 
-  it("a_reading_on_one_session_does_not_fill_another_replicas_chip", async () => {
-    const fake = await mount();
-    reading(fake, workerSessionId, 28);
+  it("a_replica_whose_agent_has_no_reading_renders_the_plain_chip", async () => {
+    const fake = await mount("codex");
+    reading(fake, "claude", 28);
     await waitFor(() => expect(oneChip("workgroups", workerName).className).toContain("quota-fill"));
-    for (const ctx of ["quick", "workgroups"] as const) {
-      const el = oneChip(ctx, coordName);
-      expect(el.className).not.toContain("quota-fill");
-      expect(el.getAttribute("style")).toBeNull();
-    }
+    await settle();
+    const el = oneChip("workgroups", idleName);
+    expect(el.getAttribute("class")).toBe("ac-discovery-badge agent");
+    expect(el.getAttribute("style")).toBeNull();
+    expect(el.getAttribute("role")).toBeNull();
+    expect(el.getAttribute("aria-valuenow")).toBeNull();
   });
 
   it("the_same_reading_fills_the_row_in_both_row_contexts", async () => {
     const fake = await mount();
-    reading(fake, coordSessionId, 28);
+    reading(fake, "claude", 28);
     await waitFor(() => {
       for (const ctx of ["quick", "workgroups"] as const) {
         const el = oneChip(ctx, coordName);
@@ -204,7 +226,7 @@ describe("ProjectPanel replica weekly-quota chip (#2482)", () => {
 
   it("the_filled_replica_chip_keeps_the_agent_name_in_its_accessible_name", async () => {
     const fake = await mount();
-    reading(fake, workerSessionId, 28);
+    reading(fake, "claude", 28);
     await waitFor(() => expect(oneChip("workgroups", workerName).getAttribute("role")).toBe("meter"));
     const el = oneChip("workgroups", workerName);
     expect(el.getAttribute("aria-label")).toContain("Claude Code");
