@@ -485,6 +485,12 @@ pub struct AppSettings {
     /// byte-identical to what the user typed; an invalid value blocks the save.
     #[serde(default = "default_sidebar_compact_hotkey")]
     pub sidebar_compact_hotkey: String,
+    /// #2507 One `#` per zero-padded digit of a NEWLY created room's number. Default
+    /// `"#"` reproduces today's names (`room-1-<team>`); `"##"` gives `room-01-<team>`.
+    /// A wider number is never truncated (`"##"` + 100 -> `room-100-<team>`). Existing
+    /// rooms are never renamed. An invalid value blocks the save; it is not repaired.
+    #[serde(default = "default_room_number_mask")]
+    pub room_number_mask: String,
     /// Enable voice-to-text microphone button on session items
     #[serde(default)]
     pub voice_to_text_enabled: bool,
@@ -1012,6 +1018,10 @@ fn default_sidebar_compact_hotkey() -> String {
     "Ctrl+Shift+E".to_string()
 }
 
+pub(crate) fn default_room_number_mask() -> String {
+    "#".to_string()
+}
+
 /// #640 Resolve the effective auto-self-clear flag for an agent.
 /// Precedence: the global master `auto_self_clear_enabled` is an absolute kill
 /// switch (off => off for all); else an explicit per-agent override
@@ -1258,6 +1268,7 @@ impl Default for AppSettings {
             raise_terminal_on_click: true,
             screenshot_capture_hotkey: default_screenshot_capture_hotkey(),
             sidebar_compact_hotkey: default_sidebar_compact_hotkey(),
+            room_number_mask: default_room_number_mask(),
             voice_to_text_enabled: false,
             gemini_api_key: String::new(),
             gemini_model: default_gemini_model(),
@@ -2929,9 +2940,29 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
     validate_agent_commands(settings)?;
     validate_screenshot_hotkey(&settings.screenshot_capture_hotkey)?;
     validate_sidebar_compact_hotkey(&settings.sidebar_compact_hotkey)?;
+    validate_room_number_mask(&settings.room_number_mask)?;
     validate_api_server_settings(settings)?;
     validate_typing_hold_settings(settings)?;
     validate_resource_settings(settings)
+}
+
+pub const ROOM_NUMBER_MASK_MAX_WIDTH: usize = 9;
+
+/// #2507 Returns the pad width. `Err` blocks the settings save.
+pub fn validate_room_number_mask(value: &str) -> Result<usize, String> {
+    let reject = |reason: &str| Err(format!("Room number mask: {reason}"));
+    if value.is_empty() {
+        return reject("must be at least one '#'");
+    }
+    if !value.chars().all(|c| c == '#') {
+        return reject("must contain only '#' characters, e.g. ## or ###");
+    }
+    if value.len() > ROOM_NUMBER_MASK_MAX_WIDTH {
+        return reject(&format!(
+            "must be at most {ROOM_NUMBER_MASK_MAX_WIDTH} '#' characters"
+        ));
+    }
+    Ok(value.len())
 }
 
 /// #2336 - reject a settings update whose typing-hold window is outside the
@@ -8764,6 +8795,60 @@ mod tests {
     }
 
     #[test]
+    fn room_number_mask_defaults_when_absent() {
+        // #2507 an old settings file without the key deserializes to "#".
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        assert!(value
+            .as_object_mut()
+            .unwrap()
+            .remove("roomNumberMask")
+            .is_some());
+        let parsed: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.room_number_mask, "#");
+    }
+
+    #[test]
+    fn room_number_mask_round_trips_camel_case() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["roomNumberMask"] = serde_json::json!("####");
+        let parsed: AppSettings = serde_json::from_value(value).unwrap();
+        let back = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(back["roomNumberMask"], serde_json::json!("####"));
+    }
+
+    #[test]
+    fn room_number_mask_accepts_and_rejects_the_parity_table() {
+        for (value, width) in [("#", 1), ("##", 2), ("#########", 9)] {
+            assert_eq!(super::validate_room_number_mask(value), Ok(width));
+        }
+        for value in ["", " ##", "##1", "2", "#-#", "##########"] {
+            let err = super::validate_room_number_mask(value)
+                .expect_err(&format!("expected Err for {value:?}"));
+            assert!(
+                err.starts_with("Room number mask: "),
+                "unexpected error for {value:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn room_number_mask_call_site_blocks_an_invalid_save() {
+        let mut bad = AppSettings {
+            room_number_mask: "2".to_string(),
+            ..AppSettings::default()
+        };
+        let err = super::validate_and_repair_settings(&mut bad).unwrap_err();
+        assert!(err.starts_with("Room number mask: "), "{err}");
+        // Anti-vacuous control: the same value with a valid mask passes.
+        let mut good = AppSettings {
+            room_number_mask: "###".to_string(),
+            ..AppSettings::default()
+        };
+        assert!(super::validate_and_repair_settings(&mut good).is_ok());
+        assert_eq!(good.room_number_mask, "###");
+    }
+
+    #[test]
     fn screenshot_and_sidebar_compact_hotkeys_are_independent() {
         let mut s = AppSettings {
             sidebar_compact_hotkey: "Ctrl+Shift+B".to_string(),
@@ -12429,6 +12514,7 @@ mod tests {
   "restartResumeOrchestratorPrompt": "AgentsCommander was restarted. Continue with the work that was in flight.",
   "restartResumeWakeWorkingAgents": false,
   "restoreCoordinatorWakeState": false,
+  "roomNumberMask": "#",
   "screenshotCaptureHotkey": "Ctrl+Q",
   "selectedRowRailColor": "#FFFFFF",
   "selectedRowRailWidth": "9px",
