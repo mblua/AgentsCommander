@@ -31,6 +31,100 @@ export interface SessionContextExtraAction {
   onSelect: () => void;
 }
 
+export function sessionRowState(isActive: boolean, inactive: () => boolean): string {
+  if (isActive) return "active";
+  return inactive() ? "inactive" : "idle";
+}
+
+export function micButtonClass(
+  recording: boolean,
+  processing: boolean,
+  micError: string | null,
+  voiceEnabled: boolean,
+): string {
+  return `session-item-mic ${recording ? "recording" : ""} ${processing ? "processing" : ""} ${micError ? "error" : ""} ${!voiceEnabled ? "disabled" : ""}`;
+}
+
+/** Thunks keep the old ternary chain's lazy reads (and tracked deps). */
+export function micButtonTitle(
+  voiceEnabled: boolean,
+  recording: () => boolean,
+  processing: () => boolean,
+  micError: () => string | null,
+): string {
+  if (!voiceEnabled) return "Enable voice-to-text in Settings and set a Gemini API key to use this.";
+  if (recording()) return "Stop recording";
+  if (processing()) return "Transcribing...";
+  return micError() || "Voice to text";
+}
+
+export function repoBranchLabel(repo: { label: string; branch?: string | null }): string {
+  return `${repo.label}${repo.branch ? `/${repo.branch}` : ""}`;
+}
+
+export function detachUi(detached: boolean): { title: string; state: string; menuLabel: string } {
+  return detached
+    ? { title: "Re-attach session", state: "detached", menuLabel: "Re-attach session" }
+    : { title: "Detach session", state: "attached", menuLabel: "Detach session" };
+}
+
+export function telegramUi(bridge: { botLabel: string; color: string } | null | undefined): {
+  title: string;
+  style: JSX.CSSProperties;
+} {
+  return bridge
+    ? { title: `Detach Telegram: ${bridge.botLabel}`, style: { color: bridge.color } }
+    : { title: "Attach Telegram", style: {} };
+}
+
+export function sessionDisplayName(
+  session: { workingDirectory: string; name: string },
+  originProject: () => string | undefined,
+): string {
+  const wd = session.workingDirectory;
+  if (wd) {
+    const pathProject = extractProjectName(wd);
+    if (pathProject) {
+      const projectFolder = originProject() || pathProject;
+      const normalized = wd.replace(/\\/g, "/").replace(/\/+$/, "");
+      const parts = normalized.split("/");
+      const agentDir = parts[parts.length - 1].replace(/^__?agent_/, "");
+      return `${agentDir}@${projectFolder}`;
+    }
+    const normalized = wd.replace(/\\/g, "/").replace(/\/+$/, "");
+    const parts = normalized.split("/");
+    if (parts.length >= 2) {
+      return parts.slice(-2).join("/");
+    }
+    return parts[parts.length - 1] || session.name;
+  }
+  return session.name;
+}
+
+// #1730 - the bare identity for agent-name-chip: exactly the non-dim text the
+// deleted .session-item-name div rendered, minus the "@project" suffix that
+// sessionDisplayName() appends in its extractProjectName branch (the only branch
+// that appends one). Split on "/" first: the fallback branch returns
+// "parent/folder", whose last segment may itself contain "@". Strip the suffix by
+// LENGTH, not by re-splitting on "@" and not by removing an unanchored "@project"
+// substring, so an "@" inside either half cannot mis-split. This pair of
+// expressions mirrors the pair inside sessionDisplayName(), and must move with it.
+export function sessionChipName(
+  full: string,
+  wd: string,
+  originProject: () => string | undefined,
+): string {
+  if (wd) {
+    const pathProject = extractProjectName(wd);
+    if (pathProject) {
+      const projectFolder = originProject() || pathProject;
+      return full.slice(0, full.length - projectFolder.length - 1);
+    }
+  }
+  const slash = full.lastIndexOf("/");
+  return slash >= 0 ? full.slice(slash + 1) : full;
+}
+
 const SessionItem: Component<{
   session: Session;
   isActive: boolean;
@@ -101,14 +195,18 @@ const SessionItem: Component<{
     if (b) {
       await TelegramAPI.detach(props.session.id);
     } else {
-      const settings = await SettingsAPI.get();
-      const bots = settings.telegramBots || [];
-      if (bots.length === 1) {
-        await TelegramAPI.attach(props.session.id, bots[0].id);
-      } else if (bots.length > 1) {
-        setAvailableBots(bots);
-        setShowBotMenu(true);
-      }
+      await openBotChooser();
+    }
+  };
+
+  const openBotChooser = async () => {
+    const settings = await SettingsAPI.get();
+    const bots = settings.telegramBots || [];
+    if (bots.length === 1) {
+      await TelegramAPI.attach(props.session.id, bots[0].id);
+    } else if (bots.length > 1) {
+      setAvailableBots(bots);
+      setShowBotMenu(true);
     }
   };
 
@@ -169,9 +267,7 @@ const SessionItem: Component<{
 
   const isDetached = () => sessionsStore.isDetached(props.session.id);
 
-  const handleDetachToggle = async (e: MouseEvent) => {
-    e.stopPropagation();
-    if (!sessionHasLivePty()) return;
+  const toggleDetach = async (logLabel: string) => {
     try {
       if (isDetached()) {
         await WindowAPI.attach(props.session.id);
@@ -179,23 +275,21 @@ const SessionItem: Component<{
         await WindowAPI.detach(props.session.id);
       }
     } catch (err) {
-      console.error("detach/attach toggle failed:", err);
+      console.error(logLabel, err);
     }
+  };
+
+  const handleDetachToggle = async (e: MouseEvent) => {
+    e.stopPropagation();
+    if (!sessionHasLivePty()) return;
+    await toggleDetach("detach/attach toggle failed:");
   };
 
   const handleContextDetachToggle = async () => {
     setShowContextMenu(false);
     cleanupContextMenu();
     if (!sessionHasLivePty()) return;
-    try {
-      if (isDetached()) {
-        await WindowAPI.attach(props.session.id);
-      } else {
-        await WindowAPI.detach(props.session.id);
-      }
-    } catch (err) {
-      console.error("context detach/attach toggle failed:", err);
-    }
+    await toggleDetach("context detach/attach toggle failed:");
   };
 
   const handleClose = (e: MouseEvent) => {
@@ -285,48 +379,10 @@ const SessionItem: Component<{
   const isComanaged = () =>
     sessionsStore.comanagedBySessionId[props.session.id] ?? false;
 
-  const displayName = () => {
-    const wd = props.session.workingDirectory;
-    if (wd) {
-      const pathProject = extractProjectName(wd);
-      if (pathProject) {
-        const projectFolder = props.originProject || pathProject;
-        const normalized = wd.replace(/\\/g, "/").replace(/\/+$/, "");
-        const parts = normalized.split("/");
-        const agentDir = parts[parts.length - 1].replace(/^__?agent_/, "");
-        return `${agentDir}@${projectFolder}`;
-      }
-      const normalized = wd.replace(/\\/g, "/").replace(/\/+$/, "");
-      const parts = normalized.split("/");
-      if (parts.length >= 2) {
-        return parts.slice(-2).join("/");
-      }
-      return parts[parts.length - 1] || props.session.name;
-    }
-    return props.session.name;
-  };
-
-  // #1730 - the bare identity for agent-name-chip: exactly the non-dim text the
-  // deleted .session-item-name div rendered, minus the "@project" suffix that
-  // displayName() appends in its extractProjectName branch (the only branch that
-  // appends one). Split on "/" first: the fallback branch returns "parent/folder",
-  // whose last segment may itself contain "@". Strip the suffix by LENGTH, not by
-  // re-splitting on "@" and not by removing an unanchored "@project" substring, so
-  // an "@" inside either half cannot mis-split. This pair of expressions mirrors
-  // the pair inside displayName(), and must move with it.
-  const chipName = () => {
-    const full = displayName();
-    const wd = props.session.workingDirectory;
-    if (wd) {
-      const pathProject = extractProjectName(wd);
-      if (pathProject) {
-        const projectFolder = props.originProject || pathProject;
-        return full.slice(0, full.length - projectFolder.length - 1);
-      }
-    }
-    const slash = full.lastIndexOf("/");
-    return slash >= 0 ? full.slice(slash + 1) : full;
-  };
+  const displayName = () => sessionDisplayName(props.session, () => props.originProject);
+  // #1730 - sessionChipName mirrors sessionDisplayName; keep the pair together.
+  const chipName = () =>
+    sessionChipName(displayName(), props.session.workingDirectory, () => props.originProject);
   const chipTitle = () => `${displayName()}\n${props.session.workingDirectory}`;
 
   return (
@@ -336,7 +392,7 @@ const SessionItem: Component<{
       onContextMenu={isInactive() ? undefined : handleContextMenu}
       data-ac-testid={`session.${props.session.id}`}
       data-ac-role="button"
-      data-ac-state={props.isActive ? "active" : isInactive() ? "inactive" : "idle"}
+      data-ac-state={sessionRowState(props.isActive, isInactive)}
     >
       <div
         class={`session-item-status ${sessionDotClass(props.session, { inactive: isInactive() })}${isComanaged() ? " comanaged" : ""}`}
@@ -411,8 +467,8 @@ const SessionItem: Component<{
             <Show when={props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0}>
               <div class="session-item-branches">
                 <For each={props.session.gitRepos}>{(repo) => (
-                  <div class="session-item-branch" title={`${repo.label}${repo.branch ? `/${repo.branch}` : ""}`}>
-                    {repo.label}{repo.branch ? `/${repo.branch}` : ""}
+                  <div class="session-item-branch" title={repoBranchLabel(repo)}>
+                    {repoBranchLabel(repo)}
                   </div>
                 )}</For>
               </div>
@@ -432,19 +488,19 @@ const SessionItem: Component<{
             </button>
           </Show>
           <button
-            class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
+            class={micButtonClass(
+              isRecording(),
+              isProcessing(),
+              voiceRecorder.micError(),
+              settingsStore.voiceEnabled,
+            )}
             onClick={handleMicClick}
-            title={
-              !settingsStore.voiceEnabled
-                ? "Enable voice-to-text in Settings and set a Gemini API key to use this."
-                : isRecording()
-                  ? "Stop recording"
-                  : isProcessing()
-                    ? "Transcribing..."
-                    : voiceRecorder.micError()
-                      ? voiceRecorder.micError()!
-                      : "Voice to text"
-            }
+            title={micButtonTitle(
+              settingsStore.voiceEnabled,
+              isRecording,
+              isProcessing,
+              voiceRecorder.micError,
+            )}
           >
             &#x1F399;
           </button>
@@ -461,18 +517,18 @@ const SessionItem: Component<{
             class="session-item-detach"
             classList={{ attached: isDetached() }}
             onClick={handleDetachToggle}
-            title={isDetached() ? "Re-attach session" : "Detach session"}
+            title={detachUi(isDetached()).title}
             data-ac-testid={`session.${props.session.id}.detachToggle`}
             data-ac-role="button"
-            data-ac-state={isDetached() ? "detached" : "attached"}
+            data-ac-state={detachUi(isDetached()).state}
           >
             {isDetached() ? <ReattachIcon /> : <DetachIcon />}
           </button>
           <button
             class={`session-item-telegram ${bridge() ? "active" : ""}`}
             onClick={handleTelegramClick}
-            title={bridge() ? `Detach Telegram: ${bridge()!.botLabel}` : "Attach Telegram"}
-            style={bridge() ? { color: bridge()!.color } : {}}
+            title={telegramUi(bridge()).title}
+            style={telegramUi(bridge()).style}
           ><TelegramIcon /></button>
           <Show when={showBotMenu()}>
             <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
@@ -602,9 +658,9 @@ const SessionItem: Component<{
                 onClick={handleContextDetachToggle}
                 data-ac-testid={`session.${props.session.id}.menu.detachToggle`}
                 data-ac-role="menuitem"
-                data-ac-state={isDetached() ? "detached" : "attached"}
+                data-ac-state={detachUi(isDetached()).state}
               >
-                {isDetached() ? "Re-attach session" : "Detach session"}
+                {detachUi(isDetached()).menuLabel}
               </button>
             </Show>
           </div>
