@@ -12,9 +12,9 @@ use crate::config::placeholders::{
 };
 use crate::config::session_context::ManagedContextTarget;
 use crate::config::settings::{
-    is_codex_home_key, is_opencode_config_dir_key, normalize_env_key_for_platform,
-    validate_expanded_codex_home_value, validate_user_env_key, AgentBackendConfig, AgentConfig,
-    AppSettings,
+    command_token_basename, is_codex_home_key, is_opencode_config_dir_key,
+    normalize_env_key_for_platform, validate_expanded_codex_home_value, validate_user_env_key,
+    AgentBackendConfig, AgentConfig, AppSettings, ProfileCellConfig,
 };
 use crate::session::profile::CodingAgentKind;
 use sha2::{Digest, Sha256};
@@ -730,8 +730,9 @@ pub fn compose_effective_command(agent_command: &str, cell_command: &str) -> Str
 }
 
 /// #597 - RAW (pre-expansion) merged env used for the content hash: the agent's
-/// ENABLED env rows overlaid by the cell env (profile-wins), keys normalized for
-/// the platform so a case-only difference does not double-count. Values verbatim.
+/// ENABLED env rows overlaid by the cell env (profile-wins), keys folded to
+/// uppercase on every OS (#2431) so a case-only difference does not double-count.
+/// Values verbatim.
 /// Mirrors `merge_env_layers`' agent-then-profile precedence but stays raw and
 /// excludes the generated layer (CODEX_HOME isolation etc.), which is derived
 /// state, not user config (decision §0.2; see Notes for the accepted limitation).
@@ -740,13 +741,121 @@ pub fn raw_merged_profile_env(
     cell_env: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut merged: BTreeMap<String, String> = BTreeMap::new();
+    // #2431 - keys fold to uppercase on EVERY OS before the overlay, so the
+    // profile-wins precedence below is platform-independent. Hash input only; the
+    // real spawn env is built by `merge_env_layers` with the platform rule.
     for row in agent.envs.iter().filter(|row| row.enabled) {
-        merged.insert(normalize_env_key_for_platform(&row.key), row.value.clone());
+        merged.insert(row.key.to_ascii_uppercase(), row.value.clone());
     }
     for (key, value) in cell_env {
-        merged.insert(normalize_env_key_for_platform(key), value.clone());
+        merged.insert(key.to_ascii_uppercase(), value.clone());
     }
     merged
+}
+
+/// #2431 - the identity of one profile cell: the single definition of what a
+/// cell's digest is over. The spawn path and later producers/matchers call this.
+pub fn cell_identity(agent: &AgentConfig, cell: &ProfileCellConfig) -> String {
+    profile_content_hash(
+        &compose_effective_command(&agent.command, &cell.command),
+        &raw_merged_profile_env(agent, &cell.env),
+    )
+}
+
+/// #2431 - the canonical command TEXT: executable reduced by
+/// `command_token_basename`, arguments lowercased (never path-normalized), each
+/// token rendered so `normalize_legacy_agent_command` reads back the same vector.
+/// An untokenizable command falls back to its trimmed, whitespace-collapsed text.
+pub fn canonical_command_text(command: &str) -> String {
+    match canonical_command_tokens(command) {
+        Ok(tokens) => tokens
+            .iter()
+            .map(|token| render_command_token(token))
+            .collect::<Vec<_>>()
+            .join(" "),
+        Err(raw) => raw,
+    }
+}
+
+/// `Ok(exe + lowercased args)`, or `Err(collapsed raw text)` when tokenizing fails.
+fn canonical_command_tokens(command: &str) -> Result<Vec<String>, String> {
+    match normalize_legacy_agent_command(command) {
+        Ok(normalized) => {
+            let mut tokens = Vec::with_capacity(normalized.shell_args.len() + 1);
+            tokens.push(command_token_basename(&normalized.shell));
+            tokens.extend(normalized.shell_args.iter().map(|arg| arg.to_lowercase()));
+            Ok(tokens)
+        }
+        Err(_) => Err(command
+            .split_ascii_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")),
+    }
+}
+
+/// Inverse of `normalize_legacy_agent_command` for one token (#2431 rule 4b).
+fn render_command_token(token: &str) -> String {
+    let bare = !token.is_empty()
+        && !token
+            .chars()
+            .any(|c| c.is_ascii_whitespace() || c == '\'' || c == '"');
+    if bare {
+        return token.to_string();
+    }
+    let mut out = String::with_capacity(token.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for ch in token.chars() {
+        match ch {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.extend(std::iter::repeat_n('\\', 2 * backslashes + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            c => {
+                out.extend(std::iter::repeat_n('\\', backslashes));
+                out.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    out.extend(std::iter::repeat_n('\\', 2 * backslashes));
+    out.push('"');
+    out
+}
+
+/// #2431 - the exact bytes `profile_content_hash` digests. Canonicalizes the RAW
+/// inputs itself (callers never pre-canonicalize): env keys fold to uppercase,
+/// the command becomes an argv vector (`exe`, `argc`, `a` per argument) so argv
+/// boundaries survive, or `rawcmd` when it cannot be tokenized.
+pub(crate) fn profile_hash_preimage(command: &str, env: &BTreeMap<String, String>) -> String {
+    use std::fmt::Write as _;
+    // Fold keys for dedup/compare; value stays verbatim (raw).
+    let mut normalized: BTreeMap<String, &str> = BTreeMap::new();
+    for (key, value) in env {
+        normalized.insert(key.to_ascii_uppercase(), value.as_str());
+    }
+    // Versioned, NUL-tagged serialization. NUL cannot appear in commands/env we
+    // accept, and the field tags stop a value from forging a record boundary.
+    let mut buf = String::from("v2\u{0}");
+    match canonical_command_tokens(command) {
+        Ok(tokens) => {
+            let (exe, args) = tokens.split_first().expect("tokenizer yields an exe");
+            let _ = write!(buf, "exe\u{0}{}\u{0}argc\u{0}{}\u{0}", exe, args.len());
+            for arg in args {
+                let _ = write!(buf, "a\u{0}{}\u{0}", arg);
+            }
+        }
+        Err(raw) => {
+            let _ = write!(buf, "rawcmd\u{0}{}\u{0}", raw);
+        }
+    }
+    let _ = write!(buf, "envc\u{0}{}\u{0}", normalized.len());
+    for (key, value) in &normalized {
+        let _ = write!(buf, "k\u{0}{}\u{0}v\u{0}{}\u{0}", key, value);
+    }
+    buf
 }
 
 /// #592 - stable 16-hex content fingerprint for profile drift detection
@@ -756,31 +865,15 @@ pub fn raw_merged_profile_env(
 /// params) via `compose_effective_command` and the merged env (agent enabled rows
 /// overlaid by the cell, profile-wins) via `raw_merged_profile_env`, so an edit to
 /// the base command, cell command, base env, or cell env all flip the hash
-/// (SUPERSEDES the original #592 cell-only input). Env keys are normalized with
-/// the same platform rule `merge_env_layers` uses (Windows case-fold), then
-/// ordered via `BTreeMap`, so a case-only key edit on Windows does not false-flag
-/// and iteration order is irrelevant. SHA-256 (stable across Rust versions, unlike
+/// (SUPERSEDES the original #592 cell-only input). Env keys fold to uppercase on
+/// every OS (#2431), then are ordered via `BTreeMap`, so a case-only key edit does
+/// not false-flag and iteration order is irrelevant. SHA-256 (stable across Rust versions, unlike
 /// DefaultHasher), truncated to the first 16 hex chars (matches the existing
 /// `profile_assignment_fingerprint` 16-hex shape).
+/// #2431 - canonicalized inside `profile_hash_preimage` (portable across OSes and
+/// path shapes); tag `v2`.
 pub fn profile_content_hash(command: &str, env: &BTreeMap<String, String>) -> String {
-    use std::fmt::Write as _;
-    // Normalize keys for dedup/compare; value stays verbatim (raw).
-    let mut normalized: BTreeMap<String, &str> = BTreeMap::new();
-    for (key, value) in env {
-        normalized.insert(normalize_env_key_for_platform(key), value.as_str());
-    }
-    // Versioned, NUL-tagged serialization. NUL cannot appear in commands/env we
-    // accept, and the field tags stop a value from forging a record boundary.
-    let mut buf = String::new();
-    let _ = write!(
-        buf,
-        "v1\u{0}cmd\u{0}{}\u{0}envc\u{0}{}\u{0}",
-        command,
-        normalized.len()
-    );
-    for (key, value) in &normalized {
-        let _ = write!(buf, "k\u{0}{}\u{0}v\u{0}{}\u{0}", key, value);
-    }
+    let buf = profile_hash_preimage(command, env);
     let digest = format!("{:x}", Sha256::digest(buf.as_bytes()));
     // Hex is ASCII single-byte; slicing the first 16 chars is char-boundary safe.
     digest[..16].to_string()
@@ -834,19 +927,21 @@ pub(crate) fn resolve_agent_spawn_command(
     // the RAW merged env (agent enabled rows + cell, profile-wins) so an edit to
     // the base command, cell command, base env, or cell env is detectable as
     // drift. SUPERSEDES the #592 cell-only hash input.
+    // #2431 - via `cell_identity`, the single composition site in this module.
+    let profile_hash = cell_identity(agent, &profile_resolution.cell);
     let merged_profile_env = raw_merged_profile_env(agent, &profile_resolution.cell.env);
-    let profile_hash = profile_content_hash(&effective_command, &merged_profile_env);
     // #592/#597 - surface exactly what gets hashed at spawn so a later drift
     // mismatch can be traced. Kept at debug for support; off the hot path (fires
     // once per spawn). Env VALUES are intentionally omitted (they may hold
     // secrets); the hash already fingerprints them, and the key set + count
     // reveal whether an env row participated.
     log::debug!(
-        "[profile-hash] spawn-stamp: agent={} profile={} hash={} effective_command={:?} env_keys=[{}] ({} entries)",
+        "[profile-hash] spawn-stamp: agent={} profile={} hash={} effective_command={:?} canonical_command={:?} env_keys=[{}] ({} entries)",
         agent.id,
         profile_resolution.effective_profile,
         profile_hash,
         effective_command,
+        canonical_command_text(&effective_command),
         merged_profile_env
             .keys()
             .cloned()
@@ -2560,13 +2655,18 @@ mod tests {
     }
 
     #[test]
-    fn profile_content_hash_is_raw_not_expanded() {
+    fn profile_content_hash_placeholder_and_expansion_agree() {
+        // #2431 (D10) - the executable reduces to its basename, so the raw
+        // placeholder form and its expansion are the same identity. Supersedes
+        // the old "raw hashes differently from expanded" property.
         let env = BTreeMap::new();
-        let raw = profile_content_hash("%AC_REPLICA_ROOT%\\bin\\claude", &env);
-        let expanded = profile_content_hash("C:\\replica\\bin\\claude", &env);
+        let raw = profile_content_hash("%AC_REPLICA_ROOT%\\bin\\claude --x", &env);
+        let expanded = profile_content_hash("C:\\replica\\bin\\claude --x", &env);
+        assert_eq!(raw, expanded);
         assert_ne!(
-            raw, expanded,
-            "the function must hash the raw placeholder text, never an expansion"
+            raw,
+            profile_content_hash("C:\\replica\\bin\\codex --x", &env),
+            "a different executable must still hash differently"
         );
     }
 
@@ -2745,9 +2845,8 @@ mod tests {
             ("kc".to_string(), "cell".to_string()),
         ]);
         let merged = super::raw_merged_profile_env(&ag, &cell_env);
-        // Keys come back platform-normalized (uppercased on Windows), so look them
-        // up through the same normalizer to stay cross-platform.
-        let key = |k: &str| crate::config::settings::normalize_env_key_for_platform(k);
+        // #2431 - keys fold to uppercase on every OS.
+        let key = |k: &str| k.to_ascii_uppercase();
         assert_eq!(merged.get(&key("ka")).map(String::as_str), Some("agent"));
         assert_eq!(merged.get(&key("kb")).map(String::as_str), Some("cell")); // profile wins
         assert_eq!(merged.get(&key("kc")).map(String::as_str), Some("cell"));
@@ -2757,9 +2856,8 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
     #[test]
-    fn profile_content_hash_normalizes_env_keys_case_insensitively_on_windows() {
+    fn profile_content_hash_normalizes_env_keys_case_insensitively() {
         let mut lower = BTreeMap::new();
         lower.insert("Path".to_string(), "x".to_string());
         let mut upper = BTreeMap::new();
@@ -2767,7 +2865,156 @@ mod tests {
         assert_eq!(
             profile_content_hash("claude", &lower),
             profile_content_hash("claude", &upper),
-            "a case-only env-key edit must not false-flag drift on Windows"
+            "a case-only env-key edit must not false-flag drift on any OS"
+        );
+    }
+
+    // #2431 - portable profile digest.
+
+    fn env_row(key: &str, value: &str, enabled: bool) -> CodingAgentEnv {
+        CodingAgentEnv {
+            key: key.to_string(),
+            value: value.to_string(),
+            source: CodingAgentEnvSource::User,
+            enabled,
+        }
+    }
+
+    #[test]
+    fn profile_content_hash_is_portable_across_path_shapes() {
+        let env = BTreeMap::new();
+        assert_eq!(
+            profile_content_hash("C:\\tools\\claude.exe --Foo", &env),
+            profile_content_hash("/usr/bin/claude --foo", &env)
+        );
+    }
+
+    #[test]
+    fn profile_content_hash_keeps_argv_boundaries() {
+        let env = BTreeMap::new();
+        let h = |c: &str| profile_content_hash(c, &env);
+        assert_ne!(h("claude \"a b\""), h("claude a b"));
+        assert_ne!(h("claude \"\""), h("claude"));
+        assert_ne!(h("claude a \"\" b"), h("claude a b"));
+    }
+
+    #[test]
+    fn profile_content_hash_env_values_stay_case_sensitive() {
+        let lower = BTreeMap::from([("K".to_string(), "value".to_string())]);
+        let upper = BTreeMap::from([("K".to_string(), "VALUE".to_string())]);
+        assert_ne!(
+            profile_content_hash("claude", &lower),
+            profile_content_hash("claude", &upper)
+        );
+    }
+
+    #[test]
+    fn profile_content_hash_ignores_disabled_env_rows() {
+        let mut with_disabled = agent("codex", "claude");
+        with_disabled.envs = vec![env_row("OFF", "x", false)];
+        let plain = agent("codex", "claude");
+        let c = cell("", BTreeMap::new());
+        assert_eq!(
+            super::cell_identity(&with_disabled, &c),
+            super::cell_identity(&plain, &c)
+        );
+    }
+
+    #[test]
+    fn env_precedence_is_platform_independent() {
+        let mut ag = agent("codex", "claude");
+        ag.envs = vec![env_row("path", "base", true)];
+        let cell_env = BTreeMap::from([("PATH".to_string(), "cell".to_string())]);
+        let merged = super::raw_merged_profile_env(&ag, &cell_env);
+        assert_eq!(
+            merged,
+            BTreeMap::from([("PATH".to_string(), "cell".to_string())])
+        );
+    }
+
+    #[test]
+    fn spawn_hash_equals_drift_recompute_for_a_windows_path_command() {
+        let settings = settings_with_cell(
+            "C:\\tools\\claude.exe --Foo",
+            "A",
+            cell("", BTreeMap::new()),
+        );
+        let spawn = build_agent_spawn_command(&settings, "codex", None, Some("A")).unwrap();
+        // The composition `commands::session::compute_profile_outdated` does by hand.
+        let agent_cfg = settings.agents.iter().find(|a| a.id == "codex").unwrap();
+        let drift = profile_content_hash(
+            &super::compose_effective_command(
+                &agent_cfg.command,
+                &spawn.profile_resolution.cell.command,
+            ),
+            &super::raw_merged_profile_env(agent_cfg, &spawn.profile_resolution.cell.env),
+        );
+        assert_eq!(spawn.profile_content_hash, drift);
+    }
+
+    #[test]
+    fn profile_hash_preimage_tag_is_v2() {
+        let preimage = super::profile_hash_preimage("claude --x", &BTreeMap::new());
+        assert!(
+            preimage.starts_with("v2\u{0}exe\u{0}claude\u{0}argc\u{0}1\u{0}a\u{0}--x\u{0}"),
+            "{preimage:?}"
+        );
+        let fallback = super::profile_hash_preimage("claude \"unclosed", &BTreeMap::new());
+        assert!(fallback.starts_with("v2\u{0}rawcmd\u{0}"), "{fallback:?}");
+    }
+
+    #[test]
+    fn canonical_command_text_round_trips_through_the_tokenizer() {
+        // Vectors already canonical (lowercase exe basename, lowercase args), so
+        // canonical_command_text(render(v)) must render v back unchanged.
+        let table: &[&[&str]] = &[
+            &["claude", "a b"],
+            &["claude", "a", "b"],
+            &["my tool", "--x"],
+            &["it's", "--x"],
+            &["back\\slash", "--x"],
+            &["claude", "ends\\"],
+            &["claude", "ends\\\\"],
+            &["claude", "q\\\"x"],
+            &["claude", "q\\\\\"x"],
+            &["claude", "\"x"],
+            &["claude", ""],
+            &["claude", "a", "", "b"],
+            &["claude", "c:\\x\\y"],
+            &["claude", "it's here"],
+        ];
+        for row in table {
+            let vector: Vec<String> = row.iter().map(|s| s.to_string()).collect();
+            let text = vector
+                .iter()
+                .map(|t| super::render_command_token(t))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let parsed = normalize_legacy_agent_command(&text)
+                .unwrap_or_else(|e| panic!("{text:?} failed to parse: {e}"));
+            let mut round = vec![parsed.shell];
+            round.extend(parsed.shell_args);
+            assert_eq!(round, vector, "rendered {text:?}");
+        }
+        let canon = super::canonical_command_text;
+        assert_ne!(canon("claude \"a b\""), canon("claude a b"));
+        assert_eq!(canon("claude \"a b\""), "claude \"a b\"");
+        assert_eq!(canon("claude a b"), "claude a b");
+        assert_eq!(canon("\"/bin/my tool\""), "\"my tool\"");
+        assert_ne!(canon("\"/bin/my tool\""), canon("/bin/my tool"));
+        assert_eq!(canon("claude \"it's\""), "claude \"it's\"");
+        assert_eq!(canon("C:\\tools\\Claude.EXE --Foo"), "claude --foo");
+    }
+
+    #[test]
+    fn cell_identity_matches_the_spawn_path() {
+        let cell_env = BTreeMap::from([("kk".to_string(), "v".to_string())]);
+        let mut settings = settings_with_cell("codex --base", "A", cell("--p \"x y\"", cell_env));
+        settings.agents[0].envs = vec![env_row("Base", "b", true)];
+        let spawn = build_agent_spawn_command(&settings, "codex", None, Some("A")).unwrap();
+        assert_eq!(
+            super::cell_identity(&settings.agents[0], &spawn.profile_resolution.cell),
+            spawn.profile_content_hash
         );
     }
 
