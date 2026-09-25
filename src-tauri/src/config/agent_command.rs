@@ -1503,6 +1503,8 @@ mod tests {
         assert!(spawn.generated_env.is_empty());
     }
 
+    // #2561 - the agent command joins with `\`, a separator only on Windows.
+    #[cfg(windows)]
     #[test]
     fn ac_root_command_expands_after_parse_for_replica_launch_root() {
         let temp = tempfile::tempdir().unwrap();
@@ -2037,20 +2039,12 @@ mod tests {
     fn command_runs_opencode_matches_basename_and_wrapper() {
         assert!(command_runs_opencode("opencode", &[]));
         assert!(command_runs_opencode("opencode.exe", &[]));
-        assert!(command_runs_opencode(
-            r"C:\tools\opencode.exe",
-            &["--flag".to_string()]
-        ));
         // cmd /c opencode wrapper: opencode appears as an arg token.
         assert!(command_runs_opencode(
             "cmd.exe",
             &["/c".to_string(), "opencode".to_string()]
         ));
-        // Allowlisted executable forms still match as args (path + npm-style shim).
-        assert!(command_runs_opencode(
-            "cmd.exe",
-            &["/c".to_string(), r"C:\tools\opencode.cmd".to_string()]
-        ));
+        // Allowlisted executable forms still match as args (npm-style shim).
         assert!(command_runs_opencode(
             "cmd.exe",
             &["/c opencode.bat".to_string()]
@@ -2058,6 +2052,22 @@ mod tests {
         // Non-opencode commands do not match.
         assert!(!command_runs_opencode("codex", &[]));
         assert!(!command_runs_opencode("claude", &["--resume".to_string()]));
+    }
+
+    // #2561 - `\` is a path separator only on Windows; on POSIX `file_stem` and
+    // `file_name` keep the whole `C:\tools\...` string, so these run there only.
+    #[cfg(windows)]
+    #[test]
+    fn command_runs_opencode_matches_windows_paths() {
+        assert!(command_runs_opencode(
+            r"C:\tools\opencode.exe",
+            &["--flag".to_string()]
+        ));
+        // Allowlisted executable forms still match as args (path form).
+        assert!(command_runs_opencode(
+            "cmd.exe",
+            &["/c".to_string(), r"C:\tools\opencode.cmd".to_string()]
+        ));
     }
 
     #[test]
