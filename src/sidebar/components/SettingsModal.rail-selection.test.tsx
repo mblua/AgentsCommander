@@ -504,7 +504,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     }
   });
 
-  it("expands the editor from the chevron without assigning a rail", async () => {
+  it("chevron expand assigns the rail; collapse keeps it", async () => {
     const r = renderAgents();
     try {
       await ready(r.root);
@@ -512,11 +512,11 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
 
       click(r.root, "settings.agentRow.2.toggle");
       await waitFor(() => expect(byTestId(r.root, "settings.agentRow.2.editor")).toBeTruthy());
-      expect(rails(r.root)).toEqual(["codex", null]);
+      expect(rails(r.root)).toEqual(["opencode", null]);
 
       click(r.root, "settings.agentRow.2.toggle");
       await waitFor(() => expect(byTestId(r.root, "settings.agentRow.2.editor")).toBeNull());
-      expect(rails(r.root)).toEqual(["codex", null]);
+      expect(rails(r.root)).toEqual(["opencode", null]);
     } finally {
       r.cleanup();
     }

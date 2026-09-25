@@ -4081,6 +4081,103 @@ describe("SettingsModal automation hooks", () => {
       await settle();
       expect(unlisten).toHaveBeenCalledTimes(1);
     });
+
+    describe("#2539 chevron expand selects the rail", () => {
+      const editorShown = (index: number) =>
+        document.querySelector(`[data-ac-testid="settings.agentRow.${index}.editor"]`) !== null;
+      // Rows only: in 2-rail mode the rails also carry data-ac-agent-id.
+      const rowPills = (): Record<string, string | null> =>
+        Object.fromEntries(
+          [...document.querySelectorAll<HTMLElement>(".settings-agent-row")].map((row) => [
+            row.getAttribute("data-ac-agent-id")!,
+            row.getAttribute("data-ac-rail"),
+          ]),
+        );
+      /** Number of row pill changes one press of `control` on row 1 causes. */
+      const pillChangesFrom = async (control: "toggle" | "use") => {
+        const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+        let changes = 0;
+        const observer = new MutationObserver((records) => { changes += records.length; });
+        document.querySelectorAll(".settings-agent-row").forEach((row) =>
+          observer.observe(row, { attributes: true, attributeFilter: ["data-ac-rail"] }),
+        );
+        byTestId<HTMLElement>(`settings.agentRow.1.${control}`).click();
+        await settle();
+        changes += observer.takeRecords().length;
+        observer.disconnect();
+        dispose();
+        return changes;
+      };
+
+      /** Mount fresh, optionally prepare the rails, press one control, return the pills. */
+      const pillsAfter = async (control: "toggle" | "use", index: number, prepare = async () => {}) => {
+        const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+        await prepare();
+        byTestId<HTMLElement>(`settings.agentRow.${index}.${control}`).click();
+        await settle();
+        const pills = rowPills();
+        dispose();
+        return pills;
+      };
+
+      it("expanding an assign row shows its editor and moves the pill like See profiles; collapsing keeps it", async () => {
+        const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+        const before = rowPills();
+        expect(byTestId("settings.agentRow.1.use").hasAttribute("disabled")).toBe(false);
+
+        expandAgentRow(1);
+        await settle();
+        expect(editorShown(1)).toBe(true);
+        const expandedPills = rowPills();
+        expect(expandedPills).not.toEqual(before);
+
+        expandAgentRow(1);
+        await settle();
+        expect(editorShown(1)).toBe(false);
+        expect(rowPills()).toEqual(expandedPills);
+        dispose();
+
+        expect(await pillsAfter("use", 1)).toEqual(expandedPills);
+      });
+
+      it("expanding a row whose rail action is none shows its editor and changes no pill", async () => {
+        const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+        const before = rowPills();
+        expect(byTestId("settings.agentRow.0.use").hasAttribute("disabled")).toBe(true);
+
+        expandAgentRow(0);
+        await settle();
+        expect(editorShown(0)).toBe(true);
+        expect(rowPills()).toEqual(before);
+        dispose();
+      });
+
+      it("in 2-rail mode expanding a row on the other rail swaps exactly as See profiles does", async () => {
+        const twoRailsWithClaudeLeft = async () => {
+          byTestId<HTMLElement>("settings.agentRow.1.select").click();
+          await settle();
+          await enterTwoRails();
+        };
+        const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+        await twoRailsWithClaudeLeft();
+        const swapIndex = [0, 1, 2].find((index) =>
+          byTestId(`settings.agentRow.${index}.use`).getAttribute("title")?.startsWith("Swap"),
+        );
+        expect(swapIndex).toBeDefined();
+        const before = rowPills();
+        dispose();
+
+        const viaChevron = await pillsAfter("toggle", swapIndex!, twoRailsWithClaudeLeft);
+        expect(viaChevron).not.toEqual(before);
+        expect(await pillsAfter("use", swapIndex!, twoRailsWithClaudeLeft)).toEqual(viaChevron);
+      });
+
+      it("one chevron press makes one rail change, the same as one See profiles press", async () => {
+        const viaChevron = await pillChangesFrom("toggle");
+        expect(viaChevron).toBeGreaterThan(0);
+        expect(viaChevron).toBe(await pillChangesFrom("use"));
+      });
+    });
   });
 });
 
