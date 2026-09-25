@@ -169,6 +169,37 @@ class GraphError extends Error {
 // Argument parsing
 // ---------------------------------------------------------------------------
 
+function optionNameOf(arg) {
+  if (arg === '--graph' || arg.startsWith('--graph=')) return 'graph';
+  if (arg === '--out' || arg.startsWith('--out=')) return 'out';
+  return null;
+}
+
+function unknownArgMessage(arg) {
+  if (arg.startsWith('-')) return `usage: unknown option '${arg}'`;
+  return `usage: unexpected positional argument '${arg}'`;
+}
+
+function readOptionValue(argv, index, name) {
+  if (argv[index] === `--${name}`) {
+    // A value that starts with '-' is still a value: the parser does not guess which of two
+    // options the caller meant, it fails later at read time instead.
+    if (index + 1 >= argv.length) return { error: `usage: --${name} requires a file path` };
+    return { value: argv[index + 1], next: index + 1 };
+  }
+  return { value: argv[index].slice(`--${name}=`.length), next: index };
+}
+
+function finalArgsError(result, argv) {
+  if (result.selfTest && argv.length > 1) {
+    return 'usage: --self-test may not be combined with any other argument';
+  }
+  if (!result.selfTest && result.graph === null) {
+    return 'usage: --graph <file> is required; there is no default graph path and no autodiscovery';
+  }
+  return null;
+}
+
 function parseArgs(argv) {
   const result = { help: false, version: false, selfTest: false, graph: null, out: null, error: null };
 
@@ -196,37 +227,21 @@ function parseArgs(argv) {
       continue;
     }
 
-    let name = null;
-    if (arg === '--graph' || arg.startsWith('--graph=')) name = 'graph';
-    else if (arg === '--out' || arg.startsWith('--out=')) name = 'out';
+    const name = optionNameOf(arg);
 
-    if (name === null) {
-      if (arg.startsWith('-')) return fail(`usage: unknown option '${arg}'`);
-      return fail(`usage: unexpected positional argument '${arg}'`);
-    }
+    if (name === null) return fail(unknownArgMessage(arg));
 
     if (result[name] !== null) return fail(`usage: --${name} may be given at most once`);
 
-    let value;
-    if (arg === `--${name}`) {
-      // A value that starts with '-' is still a value: the parser does not guess which of two
-      // options the caller meant, it fails later at read time instead.
-      if (index + 1 >= argv.length) return fail(`usage: --${name} requires a file path`);
-      value = argv[index + 1];
-      index += 1;
-    } else {
-      value = arg.slice(`--${name}=`.length);
-    }
-    if (value === '') return fail(`usage: --${name} requires a file path`);
-    result[name] = value;
+    const read = readOptionValue(argv, index, name);
+    if (read.error) return fail(read.error);
+    index = read.next;
+    if (read.value === '') return fail(`usage: --${name} requires a file path`);
+    result[name] = read.value;
   }
 
-  if (result.selfTest && argv.length > 1) {
-    return fail('usage: --self-test may not be combined with any other argument');
-  }
-  if (!result.selfTest && result.graph === null) {
-    return fail('usage: --graph <file> is required; there is no default graph path and no autodiscovery');
-  }
+  const finalError = finalArgsError(result, argv);
+  if (finalError) return fail(finalError);
 
   return result;
 }
