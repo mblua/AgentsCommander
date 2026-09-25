@@ -2,14 +2,6 @@
   "version": 1,
   "entries": [
     {
-      "class": "agent-profile-provider-card-wrap",
-      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
-    },
-    {
-      "class": "agent-profile-provider-moves",
-      "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
-    },
-    {
       "class": "agent-projection-status",
       "reason": "Pre-existing at 38c6bd03; unstyled, not triaged (#2410 baseline)."
     },

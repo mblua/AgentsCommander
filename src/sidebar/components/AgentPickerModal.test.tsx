@@ -22,10 +22,12 @@ import type {
 } from "../../shared/types";
 import { resolveProfilePreview } from "../../shared/profile-utils";
 import { baseSettings } from "../../shared/testing/base-settings";
+import { dispatchPointer, stubAgentRowGeometry } from "./settings/agentReorderDnd.testkit";
 
 const mockSettingsApi = vi.hoisted(() => ({
   get: vi.fn(),
   moveCodingAgent: vi.fn(),
+  reorderCodingAgent: vi.fn(),
   resolveCodingAgentProfile: vi.fn(),
   previewCodingAgentProfileSelection: vi.fn(),
   applyCodingAgentProfileSelection: vi.fn(),
@@ -46,6 +48,7 @@ vi.mock("../../shared/ipc", async () => {
     SettingsAPI: {
       get: mockSettingsApi.get,
       moveCodingAgent: mockSettingsApi.moveCodingAgent,
+      reorderCodingAgent: mockSettingsApi.reorderCodingAgent,
       resolveCodingAgentProfile: mockSettingsApi.resolveCodingAgentProfile,
       previewCodingAgentProfileSelection: mockSettingsApi.previewCodingAgentProfileSelection,
       applyCodingAgentProfileSelection: mockSettingsApi.applyCodingAgentProfileSelection,
@@ -481,6 +484,7 @@ describe("AgentPickerModal", () => {
     mockSettingsApi.onCodingAgentProfileSelectionUpdated.mockReset();
     mockSettingsApi.onCodingAgentSettingsUpdated.mockReset();
     mockSettingsApi.moveCodingAgent.mockReset();
+    mockSettingsApi.reorderCodingAgent.mockReset();
     mockSettingsApi.get.mockResolvedValue(currentSettings);
     mockSettingsApi.resolveCodingAgentProfile.mockImplementation(defaultBackendResolve);
     scopeAwarePreview();
@@ -2522,13 +2526,11 @@ describe("AgentPickerModal", () => {
       await settle();
     };
 
-    const installMove = (): void => {
-      mockSettingsApi.moveCodingAgent.mockImplementation(
-        async (request: { id: string; neighborId: string; direction: "up" | "down" }) => {
-          const ids = cardIds();
-          const from = ids.indexOf(request.id);
-          const to = request.direction === "up" ? from - 1 : from + 1;
-          ids.splice(to, 0, ids.splice(from, 1)[0]!);
+    const installReorder = (): void => {
+      mockSettingsApi.reorderCodingAgent.mockImplementation(
+        async (request: { id: string; expectedIds: string[]; targetIndex: number }) => {
+          const ids = [...request.expectedIds];
+          ids.splice(request.targetIndex, 0, ids.splice(ids.indexOf(request.id), 1)[0]!);
           currentSettings = orderedSnapshot(orderOf(ids));
           mockSettingsApi.get.mockResolvedValue(currentSettings);
           return ids;
@@ -2559,231 +2561,424 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    it("sends the exact adjacent payload per direction and installs the authoritative refetch", async () => {
+    const grip = (id: string): HTMLButtonElement =>
+      target<HTMLButtonElement>(`agentPicker.provider.${id}.dragHandle`);
+    const allGrips = (): HTMLButtonElement[] =>
+      [
+        ...document.querySelectorAll<HTMLButtonElement>(".agent-profile-provider-drag-handle"),
+      ].filter((node) => node.hasAttribute("data-ac-testid"));
+
+    const altKey = (id: string, key: "ArrowUp" | "ArrowDown"): KeyboardEvent => {
+      const event = new KeyboardEvent("keydown", { key, altKey: true, bubbles: true, cancelable: true });
+      grip(id).dispatchEvent(event);
+      return event;
+    };
+
+    /** Stubs geometry (40 px rows) and presses the grip of `id` at its row middle. */
+    const pressGrip = (id: string): { handle: HTMLButtonElement; y: number } => {
+      const rows = [
+        ...target("agentPicker.providers").querySelectorAll<HTMLElement>(
+          ".agent-profile-provider-card-wrap",
+        ),
+      ];
+      const handle = grip(id);
+      stubAgentRowGeometry(rows, handle);
+      const index = rows.findIndex((row) => row.contains(handle));
+      const y = index * 40 + 20;
+      dispatchPointer(handle, "pointerdown", 5, y);
+      return { handle, y };
+    };
+
+    const expectNoMoveCommand = (): void => {
+      expect(mockSettingsApi.moveCodingAgent).not.toHaveBeenCalled();
+    };
+
+    it("pointer drag reorders an agent through reorderCodingAgent", async () => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValue(currentSettings);
-      installMove();
+      installReorder();
       const { dispose } = renderPicker({ currentAgentId: "c" });
       await settle();
 
-      target<HTMLButtonElement>("agentPicker.provider.c.moveUp").click();
+      const { handle } = pressGrip("c");
+      dispatchPointer(handle, "pointermove", 5, 70);
+      dispatchPointer(handle, "pointermove", 5, 50);
+      expect(document.body.querySelector(".drag-ghost")).not.toBeNull();
+      expect(document.body.classList.contains("is-dragging")).toBe(true);
+      expect(maybe("agentPicker.providers.dropIndicator")).not.toBeNull();
+      expect(target("agentPicker.providerWrap.c").classList.contains("is-drag-source")).toBe(true);
+      dispatchPointer(handle, "pointerup", 5, 50);
       await settle();
 
-      expect(mockSettingsApi.moveCodingAgent).toHaveBeenNthCalledWith(1, {
+      expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledTimes(1);
+      expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledWith({
         id: "c",
-        neighborId: "b",
-        direction: "up",
+        expectedIds: ["a", "b", "c", "d", "e"],
+        targetIndex: 1,
       });
       expect(cardIds()).toEqual(["a", "c", "b", "d", "e"]);
-      expect(target("agentPicker.provider.c").getAttribute("data-ac-state")).toBe("active");
-      expect(text("agentPicker.moveStatus")).toBe("Moved Agent C up to position 2 of 5.");
-
-      target<HTMLButtonElement>("agentPicker.provider.c.moveDown").click();
-      await settle();
-
-      expect(mockSettingsApi.moveCodingAgent).toHaveBeenNthCalledWith(2, {
-        id: "c",
-        neighborId: "b",
-        direction: "down",
-      });
-      expect(cardIds()).toEqual(["a", "b", "c", "d", "e"]);
-      expect(text("agentPicker.moveStatus")).toBe("Moved Agent C down to position 3 of 5.");
+      expect(text("agentPicker.moveStatus")).toBe("Moved Agent C to position 2 of 5.");
+      expect(document.body.querySelector(".drag-ghost")).toBeNull();
+      expect(maybe("agentPicker.providers.dropIndicator")).toBeNull();
+      expectNoMoveCommand();
 
       dispose();
     });
 
-    it("disables first-up and last-down and every move while filtered", async () => {
+    it("pointer drag downward sends the post-removal target index", async () => {
+      currentSettings = orderedSnapshot(FIVE);
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      installReorder();
+      const { dispose } = renderPicker({ currentAgentId: "c" });
+      await settle();
+
+      // A (row 0) dropped below C: y=110 is past C's midpoint (100) and above D's (140).
+      const { handle } = pressGrip("a");
+      dispatchPointer(handle, "pointermove", 5, 60);
+      dispatchPointer(handle, "pointermove", 5, 110);
+      dispatchPointer(handle, "pointerup", 5, 110);
+      await settle();
+
+      expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledTimes(1);
+      expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledWith({
+        id: "a",
+        expectedIds: ["a", "b", "c", "d", "e"],
+        targetIndex: 2,
+      });
+      expect(cardIds()).toEqual(["b", "c", "a", "d", "e"]);
+      expect(text("agentPicker.moveStatus")).toBe("Moved Agent A to position 3 of 5.");
+      expectNoMoveCommand();
+
+      dispose();
+    });
+
+    it("Alt+Arrow on a grip moves one step and announces first and last", async () => {
+      currentSettings = orderedSnapshot(FIVE);
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      installReorder();
+      const { dispose } = renderPicker({ currentAgentId: "c" });
+      await settle();
+
+      altKey("c", "ArrowDown");
+      await settle();
+      expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledWith({
+        id: "c",
+        expectedIds: ["a", "b", "c", "d", "e"],
+        targetIndex: 3,
+      });
+      expect(cardIds()).toEqual(["a", "b", "d", "c", "e"]);
+      expect(text("agentPicker.moveStatus")).toBe("Moved Agent C to position 4 of 5.");
+
+      altKey("a", "ArrowUp");
+      await settle();
+      expect(text("agentPicker.moveStatus")).toBe("Agent A is already first.");
+      altKey("e", "ArrowDown");
+      await settle();
+      expect(text("agentPicker.moveStatus")).toBe("Agent E is already last.");
+      expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledTimes(1);
+      expectNoMoveCommand();
+
+      dispose();
+    });
+
+    it("Alt+Arrow on a grip does not move the highlighted card", async () => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValue(currentSettings);
       const { dispose } = renderPicker({ currentAgentId: "c" });
       await settle();
 
-      expect(target<HTMLButtonElement>("agentPicker.provider.a.moveUp").disabled).toBe(true);
-      expect(target<HTMLButtonElement>("agentPicker.provider.a.moveDown").disabled).toBe(false);
-      expect(target<HTMLButtonElement>("agentPicker.provider.e.moveDown").disabled).toBe(true);
-      expect(target<HTMLButtonElement>("agentPicker.provider.e.moveUp").disabled).toBe(false);
+      const event = altKey("a", "ArrowUp");
+      await settle();
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(target("agentPicker.provider.c").getAttribute("data-ac-state")).toBe("active");
+      expect(target("agentPicker.provider.b").getAttribute("data-ac-state")).toBe("inactive");
+      expect(mockSettingsApi.reorderCodingAgent).not.toHaveBeenCalled();
+      expectNoMoveCommand();
+
+      dispose();
+    });
+
+    it("filter text disables every grip", async () => {
+      currentSettings = orderedSnapshot(FIVE);
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      const { dispose } = renderPicker({ currentAgentId: "c" });
+      await settle();
+
+      expect(allGrips().every((node) => !node.disabled)).toBe(true);
+      expect(grip("c").getAttribute("aria-label")).toBe("Reorder Agent C, position 3 of 5");
+      expect(grip("c").getAttribute("title")).toBe("Drag to reorder (Alt+Up / Alt+Down)");
 
       await setFilter("Agent B");
       expect(cardIds()).toEqual(["b"]);
-      expect(target<HTMLButtonElement>("agentPicker.provider.b.moveUp").disabled).toBe(true);
-      expect(target<HTMLButtonElement>("agentPicker.provider.b.moveDown").disabled).toBe(true);
-
-      target<HTMLButtonElement>("agentPicker.provider.b.moveUp").click();
+      expect(allGrips()).toHaveLength(1);
+      for (const node of allGrips()) {
+        expect(node.disabled).toBe(true);
+        expect(node.getAttribute("aria-label")).toMatch(/Clear the filter to reorder\.$/);
+        expect(node.getAttribute("title")).toBe("Clear the filter to reorder.");
+      }
+      altKey("b", "ArrowDown");
+      dispatchPointer(grip("b"), "pointerdown", 5, 20);
       await settle();
-      expect(mockSettingsApi.moveCodingAgent).not.toHaveBeenCalled();
+      expect(mockSettingsApi.reorderCodingAgent).not.toHaveBeenCalled();
 
       await setFilter("");
-      expect(target<HTMLButtonElement>("agentPicker.provider.b.moveUp").disabled).toBe(false);
-      expect(target<HTMLButtonElement>("agentPicker.provider.b.moveDown").disabled).toBe(false);
+      expect(allGrips().every((node) => !node.disabled)).toBe(true);
+      expectNoMoveCommand();
 
       dispose();
     });
 
-    it("serializes moves per modal: every control disables until reconciliation", async () => {
+    it("grips stay disabled while a reorder is in flight", async () => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValue(currentSettings);
-      let resolveMove!: (ids: string[]) => void;
-      mockSettingsApi.moveCodingAgent.mockImplementation(
-        () => new Promise<string[]>((resolve) => { resolveMove = resolve; }),
+      let resolveReorder!: (ids: string[]) => void;
+      mockSettingsApi.reorderCodingAgent.mockImplementation(
+        () => new Promise<string[]>((resolve) => { resolveReorder = resolve; }),
       );
       const { dispose } = renderPicker({ currentAgentId: "c" });
       await settle();
 
-      target<HTMLButtonElement>("agentPicker.provider.c.moveUp").click();
+      altKey("c", "ArrowUp");
       await settle();
+      expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledTimes(1);
+      expect(allGrips()).toHaveLength(5);
+      expect(allGrips().every((node) => node.disabled)).toBe(true);
 
-      expect(mockSettingsApi.moveCodingAgent).toHaveBeenCalledTimes(1);
-      for (const id of ["a", "b", "c", "d", "e"]) {
-        expect(target<HTMLButtonElement>(`agentPicker.provider.${id}.moveUp`).disabled).toBe(true);
-        expect(target<HTMLButtonElement>(`agentPicker.provider.${id}.moveDown`).disabled).toBe(true);
-      }
+      altKey("d", "ArrowUp");
+      const { handle } = pressGrip("e");
+      dispatchPointer(handle, "pointermove", 5, 10);
+      dispatchPointer(handle, "pointerup", 5, 10);
+      await settle();
+      expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledTimes(1);
 
       const ids = ["a", "c", "b", "d", "e"];
       currentSettings = orderedSnapshot(orderOf(ids));
       mockSettingsApi.get.mockResolvedValue(currentSettings);
-      resolveMove(ids);
+      resolveReorder(ids);
       await settle();
 
       expect(cardIds()).toEqual(ids);
-      expect(target<HTMLButtonElement>("agentPicker.provider.c.moveUp").disabled).toBe(false);
+      expect(allGrips().every((node) => !node.disabled)).toBe(true);
+      expectNoMoveCommand();
 
       dispose();
     });
 
-    it("disables moves under the local-overlay owner, shows the reason and never calls the API", async () => {
+    it("overlay ownership disables every grip", async () => {
       currentSettings = orderedSnapshot([byId("d"), byId("b"), byId("a")], true);
       mockSettingsApi.get.mockResolvedValue(currentSettings);
       const { dispose } = renderPicker({ currentAgentId: "b" });
       await settle();
 
-      // The overlay-derived vector order is what both views display.
       expect(cardIds()).toEqual(["d", "b", "a"]);
-      const up = target<HTMLButtonElement>("agentPicker.provider.b.moveUp");
-      const down = target<HTMLButtonElement>("agentPicker.provider.b.moveDown");
-      expect(up.disabled).toBe(true);
-      expect(down.disabled).toBe(true);
-      expect(up.getAttribute("title")).toContain("local settings overlay");
-      expect(up.getAttribute("aria-label")).toContain("local settings overlay");
+      expect(allGrips()).toHaveLength(3);
+      for (const node of allGrips()) {
+        expect(node.disabled).toBe(true);
+        expect(node.getAttribute("aria-label")).toContain("local settings overlay");
+        expect(node.getAttribute("title")).toContain("local settings overlay");
+      }
       expect(text("agentPicker.overlayReason")).toContain("local settings overlay");
 
-      up.click();
+      altKey("b", "ArrowUp");
+      dispatchPointer(grip("b"), "pointerdown", 5, 60);
       await settle();
-      expect(mockSettingsApi.moveCodingAgent).not.toHaveBeenCalled();
+      expect(mockSettingsApi.reorderCodingAgent).not.toHaveBeenCalled();
+      expectNoMoveCommand();
 
       dispose();
     });
 
-    it("command failure refetches, keeps the authoritative order and shows a polite inline error", async () => {
+    it("command rejection refetches and shows the move error", async () => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValue(currentSettings);
-      mockSettingsApi.moveCodingAgent.mockRejectedValue(new Error("settings lock busy"));
+      mockSettingsApi.reorderCodingAgent.mockRejectedValue(new Error("settings lock busy"));
       const { dispose } = renderPicker({ currentAgentId: "c" });
       await settle();
       const fetchesBefore = mockSettingsApi.get.mock.calls.length;
 
-      target<HTMLButtonElement>("agentPicker.provider.c.moveUp").click();
+      altKey("c", "ArrowUp");
       await settle();
 
-      expect(mockSettingsApi.moveCodingAgent).toHaveBeenCalledTimes(1);
+      expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledTimes(1);
       expect(mockSettingsApi.get.mock.calls.length).toBe(fetchesBefore + 1);
       expect(cardIds()).toEqual(["a", "b", "c", "d", "e"]);
       const error = target("agentPicker.moveError");
       expect(error.getAttribute("aria-live")).toBe("polite");
       expect(error.textContent).toContain("settings lock busy");
       expect(text("agentPicker.moveStatus")).toBe("");
+      expectNoMoveCommand();
 
       dispose();
     });
 
-    it.each([
-      { label: "a shorter order", returned: ["b", "a"] },
-      {
-        label: "a same-length order that is not the requested swap",
-        returned: ["a", "b", "c", "d", "e"],
-      },
-    ])("rejects $label as a successful move", async ({ returned }) => {
+    it("unexpected returned order is reported and the refetch wins", async () => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValue(currentSettings);
-      mockSettingsApi.moveCodingAgent.mockResolvedValue(returned);
+      mockSettingsApi.reorderCodingAgent.mockResolvedValue(["a", "b", "c", "d", "e"]);
       const { dispose } = renderPicker({ currentAgentId: "c" });
       await settle();
 
-      target<HTMLButtonElement>("agentPicker.provider.c.moveUp").click();
+      altKey("c", "ArrowUp");
       await settle();
 
       expect(cardIds()).toEqual(["a", "b", "c", "d", "e"]);
       expect(text("agentPicker.moveError")).toContain("unexpected agent order");
+      expectNoMoveCommand();
 
       dispose();
     });
 
-    it("treats a refetch failure as an error and keeps the last authoritative order", async () => {
+    it("refetch failure after a reorder keeps the last order", async () => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValueOnce(currentSettings);
       mockSettingsApi.get.mockImplementation(() => Promise.reject(new Error("offline")));
-      mockSettingsApi.moveCodingAgent.mockResolvedValue(["a", "c", "b", "d", "e"]);
+      mockSettingsApi.reorderCodingAgent.mockResolvedValue(["a", "c", "b", "d", "e"]);
       const { dispose } = renderPicker({ currentAgentId: "c" });
       await settle();
 
-      target<HTMLButtonElement>("agentPicker.provider.c.moveUp").click();
+      altKey("c", "ArrowUp");
       await settle();
 
       expect(cardIds()).toEqual(["a", "b", "c", "d", "e"]);
       expect(text("agentPicker.moveError")).toContain("offline");
+      expectNoMoveCommand();
 
       dispose();
     });
 
-    it("restores focus to the same control after an interior move", async () => {
+    it("keyboard move keeps focus on the moved grip", async () => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValue(currentSettings);
-      installMove();
+      installReorder();
       const { dispose } = renderPicker({ currentAgentId: "c" });
       await settle();
 
-      target<HTMLButtonElement>("agentPicker.provider.c.moveUp").click();
+      grip("c").focus();
+      altKey("c", "ArrowUp");
       await settle();
 
-      expect(document.activeElement).toBe(target("agentPicker.provider.c.moveUp"));
+      expect(cardIds()).toEqual(["a", "c", "b", "d", "e"]);
+      expect(document.activeElement).toBe(grip("c"));
+      expectNoMoveCommand();
 
       dispose();
     });
 
-    it("focuses the remaining direction when the moved control hits a new boundary", async () => {
+    it("Escape mid-drag cancels without closing the modal", async () => {
       currentSettings = orderedSnapshot(FIVE);
       mockSettingsApi.get.mockResolvedValue(currentSettings);
-      installMove();
-      const { dispose } = renderPicker({ currentAgentId: "c" });
+      const { dispose, onClose } = renderPicker({ currentAgentId: "c" });
       await settle();
 
-      target<HTMLButtonElement>("agentPicker.provider.b.moveUp").click();
-      await settle();
-
-      expect(cardIds()).toEqual(["b", "a", "c", "d", "e"]);
-      expect(target<HTMLButtonElement>("agentPicker.provider.b.moveUp").disabled).toBe(true);
-      expect(document.activeElement).toBe(target("agentPicker.provider.b.moveDown"));
-
-      dispose();
-    });
-
-    it("gives each move button a distinct tool-and-direction accessible name and no nested buttons", async () => {
-      currentSettings = orderedSnapshot(FIVE);
-      mockSettingsApi.get.mockResolvedValue(currentSettings);
-      const { dispose } = renderPicker({ currentAgentId: "c" });
-      await settle();
-
-      const up = target<HTMLButtonElement>("agentPicker.provider.c.moveUp");
-      expect(up.tagName).toBe("BUTTON");
-      expect(up.getAttribute("type")).toBe("button");
-      expect(up.getAttribute("aria-label")).toBe("Move Agent C up");
-      expect(target("agentPicker.provider.c.moveDown").getAttribute("aria-label")).toBe(
-        "Move Agent C down",
+      const { handle } = pressGrip("c");
+      dispatchPointer(handle, "pointermove", 5, 50);
+      expect(document.body.querySelector(".drag-ghost")).not.toBeNull();
+      handle.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
       );
-      expect(target("agentPicker.provider.d.moveUp").getAttribute("aria-label")).toBe(
-        "Move Agent D up",
-      );
-      // The card stays a single button: the move controls are siblings, not children.
-      expect(target("agentPicker.provider.c").contains(up)).toBe(false);
+      dispatchPointer(handle, "pointerup", 5, 50);
+      await settle();
+
+      expect(mockSettingsApi.reorderCodingAgent).not.toHaveBeenCalled();
+      expect(text("agentPicker.moveStatus")).toBe("Move cancelled.");
+      expect(document.body.querySelector(".drag-ghost")).toBeNull();
+      expect(document.body.classList.contains("is-dragging")).toBe(false);
+      expect(onClose).not.toHaveBeenCalled();
+      expectNoMoveCommand();
+
+      dispose();
+    });
+
+    it("drop at the source slot or under the threshold sends nothing", async () => {
+      currentSettings = orderedSnapshot(FIVE);
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      const { dispose } = renderPicker({ currentAgentId: "c" });
+      await settle();
+
+      // Source slot: a started drag that ends over its own row.
+      const first = pressGrip("c");
+      dispatchPointer(first.handle, "pointermove", 5, first.y + 5);
+      expect(document.body.querySelector(".drag-ghost")).not.toBeNull();
+      expect(maybe("agentPicker.providers.dropIndicator")).toBeNull();
+      dispatchPointer(first.handle, "pointerup", 5, first.y + 5);
+      await settle();
+
+      // Under the threshold: the drag never starts, even over another row's slot.
+      const second = pressGrip("c");
+      dispatchPointer(second.handle, "pointermove", 5, second.y - 2);
+      expect(document.body.querySelector(".drag-ghost")).toBeNull();
+      dispatchPointer(second.handle, "pointerup", 5, second.y - 2);
+      await settle();
+
+      expect(mockSettingsApi.reorderCodingAgent).not.toHaveBeenCalled();
+      expectNoMoveCommand();
+
+      dispose();
+    });
+
+    it("no arrow move buttons remain", async () => {
+      currentSettings = orderedSnapshot(FIVE);
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      const { dispose } = renderPicker({ currentAgentId: "c" });
+      await settle();
+
+      expect(document.querySelectorAll('[data-ac-testid$=".moveUp"]')).toHaveLength(0);
+      expect(document.querySelectorAll('[data-ac-testid$=".moveDown"]')).toHaveLength(0);
+      expect(document.querySelectorAll(".agent-profile-provider-moves")).toHaveLength(0);
+      expect(document.querySelectorAll("#agentPickerAgentList button button")).toHaveLength(0);
+      expect(allGrips()).toHaveLength(5);
+      expect(target("agentPicker.provider.c").contains(grip("c"))).toBe(false);
+      expectNoMoveCommand();
+
+      dispose();
+    });
+
+    it("unmount mid-drag removes the ghost and is-dragging", async () => {
+      currentSettings = orderedSnapshot(FIVE);
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      const { dispose } = renderPicker({ currentAgentId: "c" });
+      await settle();
+
+      const { handle } = pressGrip("c");
+      dispatchPointer(handle, "pointermove", 5, 50);
+      expect(document.body.querySelector(".drag-ghost")).not.toBeNull();
+      expect(document.body.classList.contains("is-dragging")).toBe(true);
+
+      dispose();
+
+      expect(document.body.querySelector(".drag-ghost")).toBeNull();
+      expect(document.body.classList.contains("is-dragging")).toBe(false);
+      expect(mockSettingsApi.reorderCodingAgent).not.toHaveBeenCalled();
+      expectNoMoveCommand();
+    });
+
+    it("each card wrap holds the grip then the card button as siblings", async () => {
+      currentSettings = orderedSnapshot(FIVE);
+      mockSettingsApi.get.mockResolvedValue(currentSettings);
+      const { dispose } = renderPicker({ currentAgentId: "c" });
+      await settle();
+
+      const wraps = [
+        ...target("agentPicker.providers").querySelectorAll<HTMLElement>(".agent-profile-provider-card-wrap"),
+      ];
+      expect(wraps).toHaveLength(5);
+      for (const wrap of wraps) {
+        expect(wrap.children.length).toBe(2);
+        const id = wrap.children[1].getAttribute("data-ac-testid")?.replace(/^agentPicker\.provider\./, "");
+        expect(id).toBeTruthy();
+        expect(wrap.children[0]).toBe(grip(id as string));
+        expect(wrap.children[1]).toBe(target(`agentPicker.provider.${id}`));
+        expect(wrap.children[1].contains(wrap.children[0])).toBe(false);
+      }
+
+      await setFilter("Agent B");
+      const list = document.getElementById("agentPickerAgentList") as HTMLElement;
+      const filtered = list.querySelectorAll(".agent-profile-provider-card-wrap");
+      expect(filtered).toHaveLength(1);
+      expect(list.firstElementChild).toBe(filtered[0]);
+      expect(filtered[0].children[1]).toBe(target("agentPicker.provider.b"));
+      expectNoMoveCommand();
 
       dispose();
     });
