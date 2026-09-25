@@ -3758,6 +3758,88 @@ describe("SettingsModal automation hooks", () => {
       dispose();
     });
 
+    it("cancels a pick-up on a pointer press so a row control acts on the agent it shows", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      expect(rowIds()).toEqual(["claude", "codex", "opencode"]);
+
+      // The remove button on the row that SHOWS Codex; a real click is
+      // always preceded by a pointerdown on the same target.
+      const removeCodex = byTestId<HTMLButtonElement>("settings.agentRow.1.remove");
+      expect(removeCodex.closest(".settings-agent-row")?.getAttribute("data-ac-agent-id")).toBe("codex");
+      pointer(removeCodex, "pointerdown", 5, 5);
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(
+        "Move cancelled, order restored.",
+      );
+      removeCodex.click();
+      await settle();
+
+      expect(rowIds()).toEqual(["claude", "opencode"]);
+      expect(reorderCalls()).toHaveLength(0);
+
+      dispose();
+    });
+
+    it("keeps a pick-up alive on a pointer press on the grabbed handle itself", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      pointer(handle(1), "pointerdown", 5, 5);
+      expect(rowIds()).toEqual(["claude", "codex", "opencode"]);
+      expect(byTestId("settings.agentRow.1").classList.contains("is-kbd-grabbed")).toBe(true);
+
+      // A press on ANOTHER row's handle still cancels.
+      pointer(handle(2), "pointerdown", 5, 5);
+      await settle();
+      expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
+      expect(document.querySelector(".settings-agent-row.is-kbd-grabbed")).toBeNull();
+
+      dispose();
+    });
+
+    it("clears the draft gate after an Add whose save hits the terminal-snapshot conflict", async () => {
+      const current = orderSnapshot(ORDER_AGENTS);
+      const dispose = await mountAgents(() => current);
+
+      byTestId<HTMLButtonElement>("settings.agents.add").click();
+      await settle();
+      expect(handle(0).disabled).toBe(true);
+
+      byTestId<HTMLButtonElement>("settings.tab.general").click();
+      await settle();
+      const optIn = byTestId<HTMLInputElement>("settings.general.terminalSnapshotsEnabled");
+      optIn.checked = true;
+      optIn.dispatchEvent(new Event("change", { bubbles: true }));
+      await settle();
+      vi.mocked(SettingsAPI.setTerminalSnapshotsEnabled).mockRejectedValueOnce(
+        new Error("terminal_snapshot_setting_conflict"),
+      );
+      byTestId<HTMLButtonElement>("settings.save").click();
+      await settle();
+      await settle();
+      expect(SettingsAPI.setTerminalSnapshotsEnabled).toHaveBeenCalledTimes(1);
+      const savedIds = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]![0].agents.map((a) => a.id);
+      expect(savedIds).toHaveLength(4);
+
+      byTestId<HTMLButtonElement>("settings.tab.agents").click();
+      await settle();
+      expect(document.querySelector('[data-ac-testid="settings.agents.reorderDraftReason"]')).toBeNull();
+      altOnHandle(0, "ArrowDown");
+      await settle();
+      expect(reorderCalls()).toEqual([
+        [{ id: "codex", expectedIds: savedIds, targetIndex: 1 }],
+      ]);
+
+      dispose();
+    });
+
     it("cancels a pick-up on Tab without preventing the focus move", async () => {
       const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
 

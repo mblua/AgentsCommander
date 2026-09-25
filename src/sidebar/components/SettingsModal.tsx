@@ -1467,6 +1467,22 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }
   };
 
+  // #2544 - while picked up, rows render in `pendingOrder` but row controls
+  // write by draft index. Any pointer press other than on the grabbed handle
+  // cancels the pick-up first, so a remove, edit or select never lands on
+  // another agent.
+  createEffect(() => {
+    if (!pendingOrder()) return;
+    const onPointerDownOutside = (e: Event) => {
+      const grip = (e.target as Element | null)?.closest?.(".settings-agent-drag-handle");
+      const gripAgentId = grip?.closest(".settings-agent-row")?.getAttribute("data-ac-agent-id");
+      if (gripAgentId && gripAgentId === kbdGrabbedId()) return;
+      cancelPickUp("Move cancelled, order restored.");
+    };
+    window.addEventListener("pointerdown", onPointerDownOutside, true);
+    onCleanup(() => window.removeEventListener("pointerdown", onPointerDownOutside, true));
+  });
+
   let pointerDrag: PointerDrag | null = null;
   const panelRows = (): HTMLElement[] =>
     agentsPanelBody

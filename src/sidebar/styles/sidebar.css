@@ -2564,7 +2564,7 @@ html.light-theme .settings-api-client-warning {
   cursor: default;
 }
 
-.settings-agent-row-head[aria-disabled="true"] button:not(:disabled) {
+.settings-agent-row-head[aria-disabled="true"] button:not(:disabled):not(.settings-agent-drag-handle) {
   cursor: pointer;
 }
 
