@@ -14704,6 +14704,15 @@ pub(crate) mod reader_demand_tests {
         async fn bridge(&self) -> tauri::State<'_, TelegramBridgeState> {
             self.app.handle().state::<TelegramBridgeState>()
         }
+
+        /// #2525 set the two global Co-managed inputs in the live settings.
+        pub(crate) async fn set_global_co_managed(&self, enabled: bool, key: &str) {
+            let settings = self.app.handle().state::<SettingsState>();
+            let mut guard = settings.write().await;
+            guard.co_managed_enabled = enabled;
+            guard.jev_api_key = key.to_string();
+            drop(guard);
+        }
     }
 
     /// Test 15: **Room demand scope.** A session in a room whose
@@ -16500,7 +16509,7 @@ pub(crate) mod reader_demand_tests {
     /// Spawn the Room raise for `id`, wait until it parks at the armed seam
     /// (`reached`), run `interfere`, resume it (`release`) and return what the
     /// raise answered.
-    async fn race_room_raise<Fut>(
+    pub(crate) async fn race_room_raise<Fut>(
         h: &Harness,
         room: &std::path::Path,
         id: Uuid,
@@ -16537,9 +16546,8 @@ pub(crate) mod reader_demand_tests {
         assert!(!config.enabled);
     }
 
-    /// T1's assertions: the aborted raise left no demand, no reader, no slot.
-    async fn assert_no_room_reader_state(h: &Harness, raised: bool, id: Uuid) {
-        assert!(!raised, "a raise overtaken by a release must answer false");
+    /// No Room demand, no reader and no capture slot for `id`.
+    pub(crate) async fn assert_no_room_reader_state_for(h: &Harness, id: Uuid) {
         {
             let tg = h.bridge().await;
             let tg = tg.lock().await;
@@ -16553,6 +16561,12 @@ pub(crate) mod reader_demand_tests {
             !h.captures.is_open(&id.to_string()),
             "no capture slot may be opened"
         );
+    }
+
+    /// T1's assertions: the aborted raise left no demand, no reader, no slot.
+    pub(crate) async fn assert_no_room_reader_state(h: &Harness, raised: bool, id: Uuid) {
+        assert!(!raised, "a raise overtaken by a release must answer false");
+        assert_no_room_reader_state_for(h, id).await;
     }
 
     /// #2516 T1, the positive control: a disable landing between readiness
