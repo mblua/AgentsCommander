@@ -2258,7 +2258,9 @@ jobs:
           release_id="$(release_resolve_id draft "$EXPECTED_RELEASE_ID")"
           test "$release_id" = "$EXPECTED_RELEASE_ID"
           response="$(mktemp "$RUNNER_TEMP/release-publish-response.XXXXXX")"
-          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false --raw-field make_latest=true > "$response"
+          # New releases are not marked latest: a maintainer promotes the GitHub
+          # Release together with the npm `latest` dist-tag after testing `next` (#2029).
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false --raw-field make_latest=false > "$response"
           response_id="$(release_validate_object "$response" public "$release_id")"
           test "$response_id" = "$release_id"
           published_id="$(release_resolve_id public "$release_id")"
@@ -2786,15 +2788,19 @@ jobs:
               exit 1
               ;;
           esac
+          # Every release is published under the `next` dist-tag. `latest` only
+          # moves when a maintainer promotes the tested version by hand (#2029).
+          latest_before="$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" view "$package_name" dist-tags.latest --registry "$REGISTRY_URL")"
+          test -n "$latest_before"
           if [ "$registry_state" = absent ]; then
             (
               cd npm
-              env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG -u NPM_TOKEN -u NPM_AGENTSCOMMANDER -u NPM_ID_TOKEN -u SIGSTORE_ID_TOKEN npm --userconfig "$TOKENLESS_NPMRC" publish --access public --provenance --registry "$REGISTRY_URL"
+              env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG -u NPM_TOKEN -u NPM_AGENTSCOMMANDER -u NPM_ID_TOKEN -u SIGSTORE_ID_TOKEN npm --userconfig "$TOKENLESS_NPMRC" publish --access public --provenance --tag next --registry "$REGISTRY_URL"
             )
           fi
           # Right after a publish the registry propagates in pieces: the version
           # document can return 200 before its attestations and signatures appear,
-          # and the packument can still report the previous dist-tags.latest.
+          # and the packument can still report the previous dist-tags.next.
           # Wait for all of them within one bounded window instead of failing on
           # the first read.
           # Propagation budget shared by every post-publish wait below. The npm
@@ -2829,16 +2835,24 @@ jobs:
             fi
             exit 1
           fi
+          # A rerun after the maintainer already promoted this version finds it
+          # under `latest`; that is accepted too.
+          next=""
           latest=""
           for attempt in $(seq 1 "$propagation_attempts"); do
+            next="$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" view "$package_name" dist-tags.next --registry "$REGISTRY_URL" || true)"
             latest="$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" view "$package_name" dist-tags.latest --registry "$REGISTRY_URL" || true)"
-            if [ "$latest" = "$VERSION" ]; then
+            if [ "$next" = "$VERSION" ] || [ "$latest" = "$VERSION" ]; then
               break
             fi
             sleep "$propagation_delay"
           done
-          if [ "$latest" != "$VERSION" ]; then
-            echo "::error::registry dist-tags.latest for $package_name is '$latest', expected $VERSION"
+          if [ "$next" != "$VERSION" ] && [ "$latest" != "$VERSION" ]; then
+            echo "::error::registry dist-tags.next for $package_name is '$next' (latest '$latest'), expected $VERSION"
+            exit 1
+          fi
+          if [ "$registry_state" = absent ] && [ "$latest" != "$latest_before" ]; then
+            echo "::error::publishing $package_name@$VERSION moved dist-tags.latest from '$latest_before' to '$latest'; latest must only move by manual promotion"
             exit 1
           fi
           registry_tarball_url="$(node - "$work_dir/version-metadata.json" "$local_tarball" "$package_name" "$VERSION" <<'NODE'
