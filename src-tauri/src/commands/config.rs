@@ -11584,7 +11584,8 @@ mod tests {
     fn issue_2557_unreadable_folder_is_named_too() {
         let fixture = selection_api_fixture();
         let missing = fixture.ac_root.join("no-existe");
-        let collectors: [(&str, fn(&Path, &mut super::CandidateDirs)); 2] = [
+        type Collector = fn(&Path, &mut super::CandidateDirs);
+        let collectors: [(&str, Collector); 2] = [
             ("kind", super::collect_kind_replica_dirs),
             ("workgroup", super::collect_replica_dirs_in_workgroup),
         ];
