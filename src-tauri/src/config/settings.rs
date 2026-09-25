@@ -252,6 +252,11 @@ pub struct CodingAgentProfilesConfig {
     /// profiles_by_agent, so the key is always present on disk.
     #[serde(default)]
     pub profile_labels_by_agent: BTreeMap<String, BTreeMap<String, String>>,
+    /// #2450: agent id -> `agent_profile_identity` as of the last save. Rows for
+    /// ids that are no longer agents are kept: they are the orphans a recreated
+    /// agent adopts (`adopt_orphaned_profiles`). Absent in an older file.
+    #[serde(default)]
+    pub identity_by_agent: BTreeMap<String, String>,
 }
 
 impl Default for CodingAgentProfilesConfig {
@@ -262,6 +267,7 @@ impl Default for CodingAgentProfilesConfig {
             default_profile_by_agent: BTreeMap::new(),
             profiles_by_agent: BTreeMap::new(),
             profile_labels_by_agent: BTreeMap::new(),
+            identity_by_agent: BTreeMap::new(),
         }
     }
 }
@@ -2722,6 +2728,156 @@ pub fn repair_coding_agent_profiles_config(
     changed
 }
 
+/// #2450: stable, local-only identity of an agent, used to re-bind orphaned
+/// profiles. NOT the per-cell digest: a cell's own hash changes whenever that cell
+/// is edited, so keying a cell's home by it would move the home on every edit.
+/// The case-folded label is mixed in so two agents sharing a command and env stay
+/// distinct. Never leaves the machine.
+pub fn agent_profile_identity(agent: &AgentConfig) -> String {
+    use sha2::{Digest, Sha256};
+    let env: BTreeMap<String, String> = agent
+        .envs
+        .iter()
+        .filter(|row| row.enabled)
+        .map(|row| (row.key.clone(), row.value.clone()))
+        .collect();
+    let mut buf = crate::config::agent_command::profile_hash_preimage(&agent.command, &env);
+    buf.push_str("label\u{0}");
+    buf.push_str(&agent.label.to_ascii_lowercase());
+    buf.push('\u{0}');
+    let digest = format!("{:x}", Sha256::digest(buf.as_bytes()));
+    digest[..16].to_string()
+}
+
+fn is_identity_shape(identity: &str) -> bool {
+    identity.len() == 16 && identity.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// #2450: an agent's profile entry holds nothing real: absent, empty, or exactly
+/// the empty `A` that repair creates, with no label overrides.
+fn is_profile_gap(profiles: &CodingAgentProfilesConfig, id: &str) -> bool {
+    let no_labels = profiles
+        .profile_labels_by_agent
+        .get(id)
+        .is_none_or(|labels| labels.is_empty());
+    let no_cells = match profiles.profiles_by_agent.get(id) {
+        None => true,
+        Some(cells) => {
+            cells.is_empty() || (cells.len() == 1 && cells.get("A") == Some(&empty_profile_cell()))
+        }
+    };
+    no_labels && no_cells
+}
+
+/// #2450: re-bind an orphaned profile set to the agent that now carries its
+/// identity. Returns true when anything moved. NO-OP while any overlay is in
+/// force. Runs before every `repair_coding_agent_profiles_config` call, because
+/// repair fills a gap with an empty `A` that would otherwise hide it.
+pub(crate) fn adopt_orphaned_profiles(settings: &mut AppSettings) -> bool {
+    if settings.coding_agent_profiles.identity_by_agent.is_empty() {
+        return false;
+    }
+    if !settings.local_overlay_state.is_empty() {
+        log::info!(
+            "[profiles] #2450 - orphan adoption skipped: a settings.local.json overlay is in force"
+        );
+        return false;
+    }
+    let current: HashSet<&str> = settings.agents.iter().map(|a| a.id.as_str()).collect();
+    let mut orphans: Vec<(String, String)> = settings
+        .coding_agent_profiles
+        .identity_by_agent
+        .iter()
+        .filter(|(id, identity)| !current.contains(id.as_str()) && is_identity_shape(identity))
+        .map(|(id, identity)| (id.clone(), identity.clone()))
+        .collect();
+    // Earliest agent in `settings.agents` order owns an identity; a later
+    // colliding agent keeps its own state and never adopts.
+    let mut claimed: BTreeMap<String, String> = BTreeMap::new();
+    let mut moved = false;
+    for agent in &settings.agents {
+        let identity = agent_profile_identity(agent);
+        if let Some(winner) = claimed.get(&identity) {
+            log::warn!(
+                "[profiles] #2450 - agents '{}' and '{}' share identity {}; only '{}' may adopt",
+                winner,
+                agent.id,
+                identity,
+                winner
+            );
+            continue;
+        }
+        claimed.insert(identity.clone(), agent.id.clone());
+        if !is_profile_gap(&settings.coding_agent_profiles, &agent.id) {
+            continue;
+        }
+        let Some(pos) = orphans.iter().position(|(_, o)| *o == identity) else {
+            continue;
+        };
+        let (orphan_id, _) = orphans.remove(pos);
+        let profiles = &mut settings.coding_agent_profiles;
+        match profiles.profiles_by_agent.remove(&orphan_id) {
+            Some(cells) => {
+                profiles.profiles_by_agent.insert(agent.id.clone(), cells);
+            }
+            None => {
+                profiles.profiles_by_agent.remove(&agent.id);
+            }
+        }
+        if let Some(labels) = profiles.profile_labels_by_agent.remove(&orphan_id) {
+            profiles
+                .profile_labels_by_agent
+                .insert(agent.id.clone(), labels);
+        }
+        profiles.identity_by_agent.remove(&orphan_id);
+        log::info!(
+            "[profiles] #2450 - agent '{}' adopted the orphaned profiles of '{}'",
+            agent.id,
+            orphan_id
+        );
+        moved = true;
+    }
+    moved
+}
+
+/// #2450: record `identityByAgent[id]` for every agent actually written to the
+/// base file. Under an overlay those are the agents `restore_base` leaves, so a
+/// clone is restored first and an overlay's effective definition is never
+/// recorded; `restore_base` itself still runs last over `out`. Rows for other
+/// ids are kept verbatim (orphans).
+fn write_identity_rows(out: &mut Map<String, Value>, overlay: &LocalSettingsOverlay) {
+    let base_agents = if overlay.is_empty() {
+        out.get("agents").cloned()
+    } else {
+        let mut restored = out.clone();
+        overlay.restore_base(&mut restored);
+        restored.remove("agents")
+    };
+    let Some(Value::Array(agents)) = base_agents else {
+        return;
+    };
+    let Some(Value::Object(profiles)) = out.get_mut("codingAgentProfiles") else {
+        return;
+    };
+    let Value::Object(rows) = profiles
+        .entry("identityByAgent")
+        .or_insert_with(|| Value::Object(Map::new()))
+    else {
+        return;
+    };
+    for agent in agents {
+        match serde_json::from_value::<AgentConfig>(agent) {
+            Ok(agent) => {
+                rows.insert(
+                    agent.id.clone(),
+                    Value::String(agent_profile_identity(&agent)),
+                );
+            }
+            Err(e) => log::warn!("[profiles] #2450 - identity row skipped: {e}"),
+        }
+    }
+}
+
 pub fn normalize_env_key_for_platform(key: &str) -> String {
     if cfg!(windows) {
         key.to_ascii_uppercase()
@@ -2935,6 +3091,7 @@ fn normalize_agent_backend_configs(settings: &mut AppSettings) -> Result<(), Str
 }
 
 pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), String> {
+    adopt_orphaned_profiles(settings);
     normalize_agent_backend_configs(settings)?;
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     validate_agent_commands(settings)?;
@@ -3412,6 +3569,9 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
         log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
         needs_save = true;
     }
+    if adopt_orphaned_profiles(&mut settings) {
+        needs_save = true;
+    }
     if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
         log::info!("[settings-migration] repaired codingAgentProfiles invariants");
         needs_save = true;
@@ -3681,6 +3841,7 @@ pub fn load_settings_for_cli() -> AppSettings {
     // `new-project`; it must not race with the GUI's settings writes). The
     // next GUI launch finalizes the migration to disk via load_settings.
     apply_issue_248_migration(&mut settings);
+    adopt_orphaned_profiles(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
 
     // NO root_token auto-gen, NO save_settings call.
@@ -3751,6 +3912,7 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
         settings.main_always_on_top = true;
     }
     apply_issue_248_migration(&mut settings);
+    adopt_orphaned_profiles(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
 
     Ok(settings)
@@ -3912,11 +4074,20 @@ pub(crate) const OVERLAY_INELIGIBLE_LEGACY_KEYS: &[&str] = &[
 /// never be persisted into the base file. Deliberately narrower than the whole
 /// `codingAgentProfiles` key: that key has three other production writers whose
 /// payloads the operator did not override. See plan D13 and evidence 2.11.
-pub(crate) const OVERLAY_DERIVED_ID_CLOSURES: &[DerivedIdClosure] = &[DerivedIdClosure {
-    source_key: "agents",
-    id_field: "id",
-    derived_prefix: &["codingAgentProfiles", "profilesByAgent"],
-}];
+/// #2450: `identityByAgent` needs its own closure, since a sibling key does not
+/// inherit the protection.
+pub(crate) const OVERLAY_DERIVED_ID_CLOSURES: &[DerivedIdClosure] = &[
+    DerivedIdClosure {
+        source_key: "agents",
+        id_field: "id",
+        derived_prefix: &["codingAgentProfiles", "profilesByAgent"],
+    },
+    DerivedIdClosure {
+        source_key: "agents",
+        id_field: "id",
+        derived_prefix: &["codingAgentProfiles", "identityByAgent"],
+    },
+];
 
 /// #1737 (D7c) - migration destination keys. Each names a top-level key that a
 /// migration WRITES after the merge, so a migration whose destination the overlay
@@ -5676,6 +5847,7 @@ fn save_settings_value_locked(
     // into the base file. Runs in both project write modes: Reconcile seeds `out`
     // from the live settings when the file is absent. The overlay-ineligible sets
     // (D7a, D7b) already exclude every key the #1077 and #1173 stages touch.
+    write_identity_rows(&mut out, &settings.local_overlay_state);
     settings.local_overlay_state.restore_base(&mut out);
 
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
@@ -12141,6 +12313,540 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // #2450 - orphaned profiles are re-bound by a recorded agent identity.
+    // ─────────────────────────────────────────────────────────────────────────
+    mod profile_identity_2450 {
+        use super::super::*;
+        use super::local_overlay_1737::{base_fixture, disk_object, seed};
+        use crate::config::coding_agent_mutations::{apply_coding_agent_op, CodingAgentOp};
+        use serde_json::json;
+        use std::path::Path;
+
+        fn agent_value(id: &str, label: &str, command: &str) -> Value {
+            json!({
+                "id": id,
+                "label": label,
+                "command": command,
+                "color": "#000000",
+                "blockingMenus": [],
+            })
+        }
+
+        fn agent(id: &str, label: &str, command: &str) -> AgentConfig {
+            serde_json::from_value(agent_value(id, label, command)).unwrap()
+        }
+
+        fn identity_of(id: &str, label: &str, command: &str) -> String {
+            agent_profile_identity(&agent(id, label, command))
+        }
+
+        fn cell(command: &str) -> ProfileCellConfig {
+            ProfileCellConfig {
+                command: command.to_string(),
+                ..empty_profile_cell()
+            }
+        }
+
+        fn cell_value(command: &str) -> Value {
+            serde_json::to_value(cell(command)).unwrap()
+        }
+
+        /// Settings with agent `n` (a gap) and orphan `o` whose recorded identity is
+        /// `n`'s and whose `A` holds `--special`.
+        fn gap_and_matching_orphan() -> AppSettings {
+            let mut settings = AppSettings {
+                agents: vec![agent("n", "Claude", "claude")],
+                ..AppSettings::default()
+            };
+            let profiles = &mut settings.coding_agent_profiles;
+            profiles.profiles_by_agent.insert(
+                "o".to_string(),
+                BTreeMap::from([("A".to_string(), cell("--special"))]),
+            );
+            profiles
+                .identity_by_agent
+                .insert("o".to_string(), identity_of("n", "Claude", "claude"));
+            settings
+        }
+
+        fn a_command(settings: &AppSettings, id: &str) -> Option<String> {
+            settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .get(id)
+                .and_then(|cells| cells.get("A"))
+                .map(|cell| cell.command.clone())
+        }
+
+        fn load_save(path: &Path) -> AppSettings {
+            let settings = load_settings_from_path(path);
+            save_settings_to_path_preserving_project_paths(&settings, path).unwrap();
+            load_settings_from_path(path)
+        }
+
+        // 1
+        #[test]
+        fn identity_is_stable_across_a_reminted_id() {
+            assert_eq!(
+                identity_of("agent_1_aaaaaa", "Claude", "claude --x"),
+                identity_of("agent_2_bbbbbb", "Claude", "claude --x")
+            );
+            let identity = identity_of("agent_1_aaaaaa", "Claude", "claude --x");
+            assert_eq!(identity.len(), 16);
+            assert!(identity.bytes().all(|b| b.is_ascii_hexdigit()));
+        }
+
+        // 2
+        #[test]
+        fn identity_changes_with_command_env_or_label() {
+            let base = agent("a", "Claude", "claude");
+            let identity = agent_profile_identity(&base);
+
+            let command = agent("a", "Claude", "claude --other");
+            assert_ne!(agent_profile_identity(&command), identity);
+
+            let mut env = base.clone();
+            env.envs.push(CodingAgentEnv {
+                key: "K".to_string(),
+                value: "V".to_string(),
+                source: CodingAgentEnvSource::User,
+                enabled: true,
+            });
+            assert_ne!(agent_profile_identity(&env), identity);
+            // A disabled env row is not an input.
+            env.envs[0].enabled = false;
+            assert_eq!(agent_profile_identity(&env), identity);
+
+            let label = agent("a", "Other", "claude");
+            assert_ne!(agent_profile_identity(&label), identity);
+            // The label is case-folded.
+            let folded = agent("a", "CLAUDE", "claude");
+            assert_eq!(agent_profile_identity(&folded), identity);
+        }
+
+        // 3
+        #[test]
+        fn identity_is_not_the_cell_digest() {
+            let base = agent("a", "Claude", "claude");
+            let before = agent_profile_identity(&base);
+            let digest_before = crate::config::agent_command::cell_identity(&base, &cell("--one"));
+            let digest_after = crate::config::agent_command::cell_identity(&base, &cell("--two"));
+            assert_ne!(
+                digest_before, digest_after,
+                "the cell digest follows the cell"
+            );
+            assert_eq!(
+                agent_profile_identity(&base),
+                before,
+                "the agent identity does not"
+            );
+            assert_ne!(before, digest_before);
+        }
+
+        // 4
+        #[test]
+        fn absent_identity_by_agent_changes_nothing() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["agents"] = json!([agent_value("n", "Claude", "claude")]);
+            let path = seed(temp.path(), Some(&base), None);
+            // Normalize the file to today's full shape, then strip the new key.
+            load_save(&path);
+            let mut old = disk_object(&path);
+            old["codingAgentProfiles"]
+                .as_object_mut()
+                .unwrap()
+                .remove("identityByAgent")
+                .expect("the save writes identityByAgent");
+            std::fs::write(&path, serde_json::to_string_pretty(&old).unwrap()).unwrap();
+
+            let settings = load_settings_from_path(&path);
+            assert_eq!(a_command(&settings, "n").as_deref(), Some(""));
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            let mut written = disk_object(&path);
+            let rows = written["codingAgentProfiles"]
+                .as_object_mut()
+                .unwrap()
+                .remove("identityByAgent")
+                .unwrap();
+            assert_eq!(rows, json!({"n": identity_of("n", "Claude", "claude")}));
+            assert_eq!(written, old, "the only diff is the added key");
+        }
+
+        // 5
+        #[test]
+        fn remove_then_add_through_the_real_ops_keeps_the_cells() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(temp.path(), Some(&base_fixture()), None);
+            let mut settings = load_settings_from_path(&path);
+
+            let add = |id: &str| CodingAgentOp::Add {
+                agent: agent(id, "Claude", "claude"),
+            };
+            apply_coding_agent_op(&mut settings, &add("agent_1_aaaaaa")).unwrap();
+            settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .get_mut("agent_1_aaaaaa")
+                .unwrap()
+                .insert("A".to_string(), cell("--special"));
+            settings
+                .coding_agent_profiles
+                .profile_labels_by_agent
+                .insert(
+                    "agent_1_aaaaaa".to_string(),
+                    BTreeMap::from([("A".to_string(), "Mine".to_string())]),
+                );
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+            let mut settings = load_settings_from_path(&path);
+            apply_coding_agent_op(
+                &mut settings,
+                &CodingAgentOp::Remove {
+                    id: "agent_1_aaaaaa".to_string(),
+                },
+            )
+            .unwrap();
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+            let object = disk_object(&path);
+            assert_eq!(object["agents"], json!([]));
+            assert_eq!(
+                object["codingAgentProfiles"]["profilesByAgent"]["agent_1_aaaaaa"]["A"],
+                cell_value("--special")
+            );
+            assert_eq!(
+                object["codingAgentProfiles"]["identityByAgent"]["agent_1_aaaaaa"],
+                json!(identity_of("x", "Claude", "claude"))
+            );
+
+            let mut settings = load_settings_from_path(&path);
+            apply_coding_agent_op(&mut settings, &add("agent_2_bbbbbb")).unwrap();
+            assert_eq!(
+                a_command(&settings, "agent_2_bbbbbb").as_deref(),
+                Some("--special"),
+                "the recreated agent holds the original cells, not a repaired empty A"
+            );
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+            let object = disk_object(&path);
+            let profiles = &object["codingAgentProfiles"];
+            assert_eq!(
+                profiles["profilesByAgent"]["agent_2_bbbbbb"]["A"],
+                cell_value("--special")
+            );
+            assert_eq!(
+                profiles["profileLabelsByAgent"]["agent_2_bbbbbb"],
+                json!({"A": "Mine"})
+            );
+            assert!(profiles["profilesByAgent"].get("agent_1_aaaaaa").is_none());
+            assert!(profiles["identityByAgent"].get("agent_1_aaaaaa").is_none());
+            assert_eq!(
+                profiles["identityByAgent"]["agent_2_bbbbbb"],
+                json!(identity_of("x", "Claude", "claude"))
+            );
+        }
+
+        // 6
+        #[test]
+        fn adoption_runs_before_repair() {
+            let mut settings = gap_and_matching_orphan();
+            validate_and_repair_settings(&mut settings).unwrap();
+            assert_eq!(a_command(&settings, "n").as_deref(), Some("--special"));
+            assert!(!settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .contains_key("o"));
+            assert!(!settings
+                .coding_agent_profiles
+                .identity_by_agent
+                .contains_key("o"));
+
+            // An orphan without an `A` cell is what exposes the order: repair's
+            // empty `A` also counts as a gap, so adoption after repair would still
+            // fire, but it would replace that `A` and leave the agent without one.
+            let mut settings = gap_and_matching_orphan();
+            settings.coding_agent_profiles.profiles_by_agent.insert(
+                "o".to_string(),
+                BTreeMap::from([("B".to_string(), cell("--b"))]),
+            );
+            validate_and_repair_settings(&mut settings).unwrap();
+            let cells = &settings.coding_agent_profiles.profiles_by_agent["n"];
+            assert_eq!(cells["B"].command, "--b");
+            assert_eq!(cells.get("A"), Some(&empty_profile_cell()));
+        }
+
+        // 7
+        #[test]
+        fn a_repair_default_entry_counts_as_a_gap() {
+            let mut settings = gap_and_matching_orphan();
+            settings.coding_agent_profiles.profiles_by_agent.insert(
+                "n".to_string(),
+                BTreeMap::from([("A".to_string(), empty_profile_cell())]),
+            );
+            validate_and_repair_settings(&mut settings).unwrap();
+            assert_eq!(a_command(&settings, "n").as_deref(), Some("--special"));
+        }
+
+        // 8
+        #[test]
+        fn an_agent_with_a_real_cell_is_never_adopted_into() {
+            let mut settings = gap_and_matching_orphan();
+            settings.coding_agent_profiles.profiles_by_agent.insert(
+                "n".to_string(),
+                BTreeMap::from([("A".to_string(), cell("--mine"))]),
+            );
+            let mut labelled = gap_and_matching_orphan();
+            labelled
+                .coding_agent_profiles
+                .profile_labels_by_agent
+                .insert(
+                    "n".to_string(),
+                    BTreeMap::from([("A".to_string(), "Mine".to_string())]),
+                );
+            for mut s in [settings, labelled] {
+                let before = s.coding_agent_profiles.clone();
+                assert!(!adopt_orphaned_profiles(&mut s));
+                assert_eq!(s.coding_agent_profiles, before);
+            }
+        }
+
+        // 9
+        #[test]
+        fn orphans_survive_a_save_round_trip() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["agents"] = json!([agent_value("n", "Claude", "claude")]);
+            base["codingAgentProfiles"] = json!({
+                "profilesByAgent": {"o": {"B": cell_value("--orphan")}},
+                "profileLabelsByAgent": {"o": {"B": "Old"}},
+                "identityByAgent": {"o": identity_of("x", "Gone", "gone")},
+            });
+            let path = seed(temp.path(), Some(&base), None);
+            load_save(&path);
+            let profiles = &disk_object(&path)["codingAgentProfiles"];
+            assert_eq!(
+                profiles["profilesByAgent"]["o"],
+                base["codingAgentProfiles"]["profilesByAgent"]["o"]
+            );
+            assert_eq!(
+                profiles["profileLabelsByAgent"]["o"],
+                base["codingAgentProfiles"]["profileLabelsByAgent"]["o"]
+            );
+            assert_eq!(
+                profiles["identityByAgent"]["o"],
+                base["codingAgentProfiles"]["identityByAgent"]["o"]
+            );
+        }
+
+        // 10
+        #[test]
+        fn two_agents_with_one_identity_adopt_once_and_warn() {
+            let mut settings = gap_and_matching_orphan();
+            settings.agents.push(agent("m", "claude", "claude"));
+            // A second orphan with the same identity must not reach the loser.
+            settings.coding_agent_profiles.profiles_by_agent.insert(
+                "p".to_string(),
+                BTreeMap::from([("A".to_string(), cell("--second"))]),
+            );
+            settings
+                .coding_agent_profiles
+                .identity_by_agent
+                .insert("p".to_string(), identity_of("n", "Claude", "claude"));
+            validate_and_repair_settings(&mut settings).unwrap();
+            assert_eq!(a_command(&settings, "n").as_deref(), Some("--special"));
+            assert_eq!(
+                a_command(&settings, "m").as_deref(),
+                Some(""),
+                "the loser keeps its own empty state"
+            );
+            assert!(settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .contains_key("p"));
+        }
+
+        // 11
+        #[test]
+        fn identity_rows_record_the_base_agent_under_an_overlay() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["agents"] = json!([agent_value("a", "Agent", "claude")]);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"agents": [agent_value("a", "Agent", "codex")]})),
+            );
+            let settings = load_settings_from_path(&path);
+            assert_eq!(settings.agents[0].command, "codex");
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            let row = disk_object(&path)["codingAgentProfiles"]["identityByAgent"]["a"].clone();
+            assert_eq!(row, json!(identity_of("a", "Agent", "claude")));
+            assert_ne!(row, json!(identity_of("a", "Agent", "codex")));
+        }
+
+        // 12
+        #[test]
+        fn an_overlay_introduced_agent_id_does_not_persist_its_identity_row() {
+            assert!(OVERLAY_DERIVED_ID_CLOSURES.iter().any(|closure| {
+                closure.source_key == "agents"
+                    && closure.id_field == "id"
+                    && closure.derived_prefix == ["codingAgentProfiles", "identityByAgent"]
+            }));
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["agents"] = json!([agent_value("codex", "codex", "codex")]);
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"agents": [
+                    agent_value("codex", "codex", "codex"),
+                    agent_value("scratch", "scratch", "scratch"),
+                ]})),
+            );
+            let mut settings = load_settings_from_path(&path);
+            // Even a row the caller put in memory stays out of the base file.
+            settings
+                .coding_agent_profiles
+                .identity_by_agent
+                .insert("scratch".to_string(), identity_of("x", "s", "s"));
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            let rows = &disk_object(&path)["codingAgentProfiles"]["identityByAgent"];
+            assert!(rows.get("scratch").is_none(), "{rows}");
+            assert!(rows.get("codex").is_some());
+        }
+
+        /// Base orphan `o` with cells, labels and an identity row equal to `n`'s.
+        fn orphan_profiles_value(identity: &str) -> Value {
+            json!({
+                "profilesByAgent": {"o": {"A": cell_value("--special")}},
+                "profileLabelsByAgent": {"o": {"A": "Special"}},
+                "identityByAgent": {"o": identity},
+            })
+        }
+
+        // 13
+        #[test]
+        fn an_overlay_only_agent_never_consumes_a_base_orphan() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            let orphan = orphan_profiles_value(&identity_of("n", "Claude", "claude"));
+            base["codingAgentProfiles"] = orphan.clone();
+            let path = seed(
+                temp.path(),
+                Some(&base),
+                Some(&json!({"agents": [agent_value("n", "Claude", "claude")]})),
+            );
+            let mut settings = load_settings_from_path(&path);
+            assert!(!settings.local_overlay_state.is_empty());
+            validate_and_repair_settings(&mut settings).unwrap();
+            assert_eq!(
+                a_command(&settings, "n").as_deref(),
+                Some(""),
+                "n never held them"
+            );
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+
+            let profiles = &disk_object(&path)["codingAgentProfiles"];
+            for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                assert_eq!(profiles[key]["o"], orphan[key]["o"], "{key}");
+                assert!(profiles[key].get("n").is_none(), "{key}");
+            }
+        }
+
+        /// Base `n` with repair's empty `A`, orphan `o` matching it.
+        fn profile_only_overlay_base() -> Value {
+            let mut base = base_fixture();
+            base["agents"] = json!([agent_value("n", "Claude", "claude")]);
+            let mut profiles = orphan_profiles_value(&identity_of("n", "Claude", "claude"));
+            profiles["profilesByAgent"]["n"] = json!({"A": cell_value("")});
+            base["codingAgentProfiles"] = profiles;
+            base
+        }
+
+        // 14
+        #[test]
+        fn a_profile_only_overlay_never_loses_a_cell() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(
+                temp.path(),
+                Some(&profile_only_overlay_base()),
+                Some(
+                    &json!({"codingAgentProfiles": {"profilesByAgent": {"n": {"A": {"command": ""}}}}}),
+                ),
+            );
+            let mut settings = load_settings_from_path(&path);
+            assert!(!settings.local_overlay_state.is_empty());
+            validate_and_repair_settings(&mut settings).unwrap();
+            assert_eq!(a_command(&settings, "o").as_deref(), Some("--special"));
+            save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+
+            let profiles = &disk_object(&path)["codingAgentProfiles"];
+            assert_eq!(
+                profiles["profilesByAgent"]["o"]["A"],
+                cell_value("--special")
+            );
+            assert_eq!(
+                profiles["identityByAgent"]["o"],
+                json!(identity_of("n", "Claude", "claude"))
+            );
+        }
+
+        // 15
+        #[test]
+        fn adoption_resumes_once_the_overlay_is_gone() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(temp.path(), Some(&profile_only_overlay_base()), None);
+            let settings = load_settings_from_path(&path);
+            assert_eq!(a_command(&settings, "n").as_deref(), Some("--special"));
+            let profiles = &disk_object(&path)["codingAgentProfiles"];
+            assert_eq!(
+                profiles["profilesByAgent"]["n"]["A"],
+                cell_value("--special")
+            );
+            assert_eq!(
+                profiles["profileLabelsByAgent"]["n"],
+                json!({"A": "Special"})
+            );
+            assert!(profiles["profilesByAgent"].get("o").is_none());
+            assert!(profiles["identityByAgent"].get("o").is_none());
+        }
+
+        // 16
+        #[test]
+        fn save_then_load_is_a_fixed_point() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut base = base_fixture();
+            base["agents"] = json!([agent_value("n", "Claude", "claude")]);
+            base["codingAgentProfiles"] = orphan_profiles_value(&identity_of("x", "Gone", "gone"));
+            let path = seed(temp.path(), Some(&base), None);
+            load_save(&path);
+            let first = std::fs::read(&path).unwrap();
+            load_save(&path);
+            assert_eq!(std::fs::read(&path).unwrap(), first);
+        }
+
+        // 17
+        #[test]
+        #[allow(non_snake_case)]
+        fn repair_still_gives_every_agent_an_A_cell() {
+            let mut settings = gap_and_matching_orphan();
+            settings.coding_agent_profiles.profiles_by_agent.insert(
+                "o".to_string(),
+                BTreeMap::from([("B".to_string(), cell("--b"))]),
+            );
+            settings.agents.push(agent("k", "Other", "codex"));
+            validate_and_repair_settings(&mut settings).unwrap();
+            let cells = &settings.coding_agent_profiles.profiles_by_agent;
+            assert_eq!(cells["n"]["B"].command, "--b");
+            assert_eq!(cells["n"]["A"], empty_profile_cell());
+            assert_eq!(cells["k"]["A"], empty_profile_cell());
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // #1737 - the `.local` alter-ego override layer. Plan section 11, S1 to S34.
     // ─────────────────────────────────────────────────────────────────────────
     mod local_overlay_1737 {
@@ -12433,6 +13139,10 @@ mod tests {
   "coManagedEnabled": false,
   "codingAgentProfiles": {
     "defaultProfileByAgent": {},
+    "identityByAgent": {
+      "claude": "57bf1d23533f9c40",
+      "codex": "460361e30eb7c7a5"
+    },
     "profileLabelsByAgent": {},
     "profileSlots": {
       "A": {
@@ -12719,7 +13429,7 @@ mod tests {
         // S11
         #[test]
         fn the_derived_id_closure_table_is_pinned_to_serialized_names() {
-            assert_eq!(OVERLAY_DERIVED_ID_CLOSURES.len(), 1);
+            assert_eq!(OVERLAY_DERIVED_ID_CLOSURES.len(), 2);
             let closure = &OVERLAY_DERIVED_ID_CLOSURES[0];
             assert_eq!(closure.source_key, "agents");
             assert_eq!(closure.id_field, "id");
