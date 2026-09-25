@@ -143,6 +143,15 @@ export interface SessionContextPayload {
   percent: number | null;
 }
 
+/** #2482 - the session's weekly (7-day) coding-agent quota reading.
+ *  `weeklyUsedPercent` is the USED percentage, 0..100, or null when unavailable.
+ *  Mirrors `AgentQuotaPayload` (`pty/agent_quota/mod.rs`) field for field.
+ *  null is the ONLY unknown: never 0, never 100, never an absent key. */
+export interface SessionAgentQuotaPayload {
+  sessionId: string;
+  weeklyUsedPercent: number | null;
+}
+
 /** #1682 - the instant of the most recent busy->idle edge on `sessionId` that the
  *  backend judged an agent turn, RFC3339/UTC as it stored it. It is the backend's
  *  proxy for the agent having finished responding, not a proof of it: an armed
@@ -344,6 +353,23 @@ export type WatcherEntry = WatcherConfig | UnrecognizedWatcherEntry;
  * when it is wrong.
  */
 export type UnrecognizedWatcherEntry = JsonValue;
+
+/** #2482 - one configured weekly-quota source. Mirrors `QuotaSourceConfig`
+ *  (`config/settings.rs`); `kind` is the discriminant and the extension point, so a
+ *  second agent's source is a second member of this union. */
+export type QuotaSourceConfig = {
+  kind: "screenRegex";
+  pattern: string;
+  enabled?: boolean;
+};
+
+/** #2482 - one entry of the root `quotaSources` map, valid or not. Mirrors
+ *  `QuotaSourceEntry`; same shape and same reason as `WatcherEntry`. An entry from a
+ *  newer AC round-trips verbatim. The fallback arm is the existing `JsonValue` (`:848`),
+ *  NOT `Record<string, unknown>`: p1's Rust arm is `Invalid(serde_json::Value)`, which
+ *  accepts every JSON value - `null`, a number, a string, a boolean, an array - not only
+ *  an object, and an object type would let the reader index into a number. */
+export type QuotaSourceEntry = QuotaSourceConfig | JsonValue;
 
 // ── terminal output wire payload ──────────────────────────────────────
 
@@ -788,6 +814,9 @@ export interface AppSettings {
    * sees the key appear.
    */
   watchers?: Record<string, WatcherEntry>;
+  /** #2482 - root-level weekly-quota sources, keyed by agent id. Optional because the
+   *  Rust field skips serializing while the map is empty. */
+  quotaSources?: Record<string, QuotaSourceEntry>;
   /** #1171 - geometry of the watcher activity window; skipped while unset. */
   watchersGeometry?: WindowGeometry;
   // #2232 phase 9 - OPTIONAL on purpose, following the #2064 block above: Rust
@@ -799,6 +828,9 @@ export interface AppSettings {
   jevTimeoutSecs?: number;
   jevThreshold?: number;
   jevMargin?: number;
+  /** Global Co-managed switch. Absent or `false` = off.
+   *  Off by default: the feature is in development. */
+  coManagedEnabled?: boolean;
 }
 
 // ── #2265/#2232 Co-managed: the phase-2 command wire shapes ──────────────────
@@ -813,6 +845,7 @@ export type CoManagedConfig = { enabled: boolean; catalogPath: string | null };
 
 /** The single reason a room is not effective. Variant names are the wire form. */
 export type OffReason =
+  | "GlobalSwitchOff"
   | "NotAnOrchestrator"
   | "RoomFlagOff"
   | "NoApiKey"
@@ -1399,6 +1432,7 @@ export interface SessionsState {
   coordSortByActivity: boolean;
   lastActivityBySessionId: Record<string, number>;
   contextPercentBySessionId: Record<string, number | null>;
+  weeklyQuotaUsedBySessionId: Record<string, number | null>;
   hydrated: boolean;
 }
 

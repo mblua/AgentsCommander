@@ -378,10 +378,11 @@ See [Telegram bridge setup](../integrations/telegram.md).
 
 ### Co-managed (Jev)
 
-Six top-level keys, all in `settings.json`, all global. They configure the classifier; the per-room on/off flag is **not** here, it lives under the room root. See [Co-managed rooms](../features/co-managed-rooms.md).
+Seven top-level keys, all in `settings.json`, all global. `coManagedEnabled` is the global switch, and the other six configure the classifier; the per-room on/off flag is **not** here, it lives under the room root. See [Co-managed rooms](../features/co-managed-rooms.md).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `coManagedEnabled` | bool | `false` | Global Co-managed switch. **Off by default because the feature is in development.** While `false`, no room is co-managed, the **Co-managed** checkbox is not drawn and no Jev call is made, whatever the room flags say. No UI control: edit `settings.json` and restart AC. |
 | `jevApiKey` | string | `""` | Jev API key. Plaintext — protect your account. **Empty means the feature is inert**, in every room, whatever the room flags say. |
 | `jevModel` | string | `jev-1.13.0` | Classification model. A **pinned** version, not a floating tag. |
 | `jevEndpoint` | string | `https://api.typesafe.ai/v1/systemone` | The Typesafe System One endpoint the candidate text and catalog questions are sent to. |
@@ -395,7 +396,7 @@ Six top-level keys, all in `settings.json`, all global. They configure the class
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | The room's Co-managed flag. Written by the **Co-managed** toggle on the orchestrator row. |
+| `enabled` | bool | `false` | The room's Co-managed flag. Written by the **Co-managed** toggle on the orchestrator row. Has no effect while the global switch `coManagedEnabled` is off. |
 | `catalogPath` | string or null | `null` | Path to the category catalog. Relative paths resolve against the room root. No UI field yet; edit the file. |
 
 **Both keys absent means off.** A malformed file is **repaired to defaults on load**, never fatally rejected, and unknown keys survive a rewrite so a newer build's key is not lost by an older one. The directory also holds `state.json`, the `queue/` directory and one advisory `lock` file governing config and state. `room-*/` is gitignored, so none of it enters your repository.

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
   CLAUDE_CONTEXT_REGEX,
+  CLAUDE_WEEKLY_QUOTA_REGEX,
   CODEX_CONTEXT_REGEX,
   PI_CONTEXT_REGEX,
   commandExecutableBasename,
@@ -31,6 +32,7 @@ import {
   shouldOfferRestartAfterAssign,
   stringifyArgv,
   suggestedContextRegex,
+  suggestedQuotaRegex,
   validateEnvRows,
 } from "./profile-utils";
 
@@ -626,5 +628,39 @@ describe("profileSlotHolders and profileCellHoldsData (#2057 slot-delete guard)"
     expect(profileSlotHolders(profiles, "B", ["zeta", "beta"])).toEqual(["zeta", "beta"]);
     // ghost is fully configured but not live (D2).
     expect(profileSlotHolders(profiles, "B", liveAgentIds)).not.toContain("ghost");
+  });
+});
+
+describe("suggestedQuotaRegex (#2482 weekly quota)", () => {
+  const row = "ctx 10% | 5h 3% | 7d 28%";
+
+  it("suggested_quota_regex_returns_the_claude_pattern_for_a_claude_command", () => {
+    expect(suggestedQuotaRegex("claude")).toBe(CLAUDE_WEEKLY_QUOTA_REGEX);
+    expect(suggestedQuotaRegex("C:\\tools\\claude.exe --model opus")).toBe(CLAUDE_WEEKLY_QUOTA_REGEX);
+  });
+
+  it("suggested_quota_regex_unwraps_cmd_slash_c", () => {
+    expect(suggestedQuotaRegex("cmd.exe /c claude")).toBe(CLAUDE_WEEKLY_QUOTA_REGEX);
+    expect(suggestedQuotaRegex("cmd /C claude.cmd")).toBe(CLAUDE_WEEKLY_QUOTA_REGEX);
+  });
+
+  it("suggested_quota_regex_returns_null_for_codex_pi_and_antigravity", () => {
+    for (const command of ["codex", "pi", "antigravity", "cmd.exe /c codex", ""]) {
+      expect(suggestedQuotaRegex(command)).toBeNull();
+    }
+  });
+
+  it("the_claude_quota_pattern_extracts_28_from_a_real_statusline_row", () => {
+    expect(new RegExp(CLAUDE_WEEKLY_QUOTA_REGEX).exec(row)?.[1]).toBe("28");
+  });
+
+  it("the_claude_quota_pattern_fails_closed_on_a_truncated_row", () => {
+    expect(new RegExp(CLAUDE_WEEKLY_QUOTA_REGEX).exec("ctx 10% | 5h 3% | 7d 2")).toBeNull();
+  });
+
+  it("the_claude_quota_pattern_does_not_match_the_five_hour_field", () => {
+    const match = new RegExp(CLAUDE_WEEKLY_QUOTA_REGEX).exec(row);
+    expect(match).not.toBeNull();
+    expect(match?.[1]).not.toBe("3");
   });
 });

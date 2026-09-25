@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use tauri::Manager;
 
+use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
+
 fn folder_name(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -133,7 +135,7 @@ async fn auto_unarchive_for_activation<R: tauri::Runtime>(
     // the reconcile serializer records the unarchived pair (with its companion).
     crate::config::settings::resync_project_state_from_runtime(&mut candidate);
     let path = match crate::config::config_dir() {
-        Some(dir) => dir.join("settings.json"),
+        Some(dir) => dir.join(SETTINGS_FILE_NAME),
         None => return Err("Could not determine settings directory".to_string()),
     };
     match crate::config::settings::reconcile_project_state_to_path(&candidate, &path, true, true) {
