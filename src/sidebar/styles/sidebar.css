@@ -7115,29 +7115,30 @@ html.light-theme .settings-hint-error {
    #2064 rejected a fill on `.branch` on measured contrast grounds, so this rule is
    measured, not assumed.
    Text #d1fae5 over the used red, over rgba(16,185,129,0.45), over rows #0a0a0f / #12121e /
-   #222227, WCAG 2.x from unrounded composited channels. #2512 (user request) raised the red from
-   0.16 to 0.32 and the green to text #d1fae5 / tint 0.45: used 6.91 / 6.58 / 6.01 (was
-   7.53 / 6.92 / 5.86), unfilled control 7.36 / 6.87 / 6.06. All six clear 4.5:1. The red is a
+   #222227, WCAG 2.x from unrounded composited channels. #2565 (user request) raised the red from
+   0.32 to 0.60: used 5.46 / 5.32 / 5.06 (was 6.91 / 6.58 / 6.01), unfilled control
+   7.36 / 6.87 / 6.06. All six clear 4.5:1. The red is a
    custom property so light theme sets its own (see the #2512 light rule). Re-measure if the red
    alpha changes. */
 .ac-discovery-badge.agent.quota-fill {
   background-image: linear-gradient(
     to right,
     transparent 0 var(--ac-quota-remaining),
-    var(--ac-quota-used-tint, rgba(239, 68, 68, 0.32)) var(--ac-quota-remaining) 100%
+    var(--ac-quota-used-tint, rgba(239, 68, 68, 0.60)) var(--ac-quota-remaining) 100%
   );
 }
 
 /* #2512 - light-theme palette. Text #064e3b over rgba(5,150,105,0.18) over light rows
    #f5f5f7 / #e8e8ec / #dcdce4 / banner rgba(0,102,204,0.04|0.08) on #f5f5f7, WCAG 2.x,
    unrounded composited channels: unfilled 7.24 / 6.54 / 5.94 / 6.90 / 6.56, quota used
-   side over the light red rgba(239,68,68,0.16) 6.00 / 5.47 / 5.02 / 5.73 / 5.48.
-   The dark 0.32 red would drop the active row to 4.25, below 4.5, so light keeps 0.16.
+   side over the light red rgba(239,68,68,0.22) 5.58 / 5.12 / 4.71 / 5.35 / 5.12.
+   The dark 0.60 red would drop the active row to 3.27, below 4.5, so light keeps its own
+   0.22 (#2565, was 0.16).
    All clear 4.5:1. Re-measure if any alpha changes. */
 html.light-theme .ac-discovery-badge.agent {
   background-color: rgba(5, 150, 105, 0.18);
   color: #064e3b;
-  --ac-quota-used-tint: rgba(239, 68, 68, 0.16);
+  --ac-quota-used-tint: rgba(239, 68, 68, 0.22);
 }
 
 .ac-discovery-badge.running-peer {
