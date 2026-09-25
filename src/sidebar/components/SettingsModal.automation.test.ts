@@ -3784,6 +3784,73 @@ describe("SettingsModal automation hooks", () => {
       dispose();
     });
 
+    it("cancels a pick-up on focus and click with no pointerdown, so remove hits the shown agent", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      expect(rowIds()).toEqual(["claude", "codex", "opencode"]);
+
+      // Screen-reader browse mode / scripted activation: focus + click only.
+      const removeCodex = byTestId<HTMLButtonElement>("settings.agentRow.1.remove");
+      removeCodex.focus();
+      removeCodex.click();
+      await settle();
+
+      expect(rowIds()).toEqual(["claude", "opencode"]);
+      expect(reorderCalls()).toHaveLength(0);
+
+      dispose();
+    });
+
+    it("cancels a pick-up on a bare click with no focus or pointerdown", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      byTestId<HTMLButtonElement>("settings.agentRow.1.remove").click();
+      await settle();
+
+      expect(rowIds()).toEqual(["claude", "opencode"]);
+      dispose();
+    });
+
+    it("cancels a pick-up when focus moves into an editor, so typing edits the shown agent", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      expandAgentRow(0);
+      await settle();
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      expect(rowIds()).toEqual(["claude", "codex", "opencode"]);
+
+      const codexLabel = byTestId<HTMLInputElement>("settings.agentRow.1.label");
+      expect(codexLabel.closest(".settings-agent-row")?.getAttribute("data-ac-agent-id")).toBe("codex");
+      codexLabel.focus();
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(
+        "Move cancelled, order restored.",
+      );
+      codexLabel.value = "Typed Codex";
+      codexLabel.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+
+      expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
+      const labelOf = (id: string) =>
+        document
+          .querySelector(`[data-ac-agent-id="${id}"] .settings-agent-row-name`)
+          ?.textContent;
+      expect(labelOf("codex")).toBe("Typed Codex");
+      expect(labelOf("claude")).toBe("Claude Code");
+
+      dispose();
+    });
+
     it("keeps a pick-up alive on a pointer press on the grabbed handle itself", async () => {
       const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
 

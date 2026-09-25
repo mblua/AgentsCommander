@@ -1468,19 +1468,26 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
 
   // #2544 - while picked up, rows render in `pendingOrder` but row controls
-  // write by draft index. Any pointer press other than on the grabbed handle
-  // cancels the pick-up first, so a remove, edit or select never lands on
-  // another agent.
+  // write by draft index. Any pointer press, focus move or click that is not on
+  // the grabbed handle cancels the pick-up first, so a remove, edit or select
+  // never lands on another agent. Focus and click cover a screen reader's
+  // browse-mode activation and scripted clicks, which send no pointerdown. The
+  // refocus after a step targets the grabbed handle, which is exempt.
+  const PICK_UP_CANCEL_EVENTS = ["pointerdown", "focusin", "click"] as const;
   createEffect(() => {
     if (!pendingOrder()) return;
-    const onPointerDownOutside = (e: Event) => {
+    const onInteractionOutside = (e: Event) => {
       const grip = (e.target as Element | null)?.closest?.(".settings-agent-drag-handle");
       const gripAgentId = grip?.closest(".settings-agent-row")?.getAttribute("data-ac-agent-id");
       if (gripAgentId && gripAgentId === kbdGrabbedId()) return;
       cancelPickUp("Move cancelled, order restored.");
     };
-    window.addEventListener("pointerdown", onPointerDownOutside, true);
-    onCleanup(() => window.removeEventListener("pointerdown", onPointerDownOutside, true));
+    for (const type of PICK_UP_CANCEL_EVENTS) window.addEventListener(type, onInteractionOutside, true);
+    onCleanup(() => {
+      for (const type of PICK_UP_CANCEL_EVENTS) {
+        window.removeEventListener(type, onInteractionOutside, true);
+      }
+    });
   });
 
   let pointerDrag: PointerDrag | null = null;
