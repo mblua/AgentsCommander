@@ -3566,4 +3566,66 @@ describe("SettingsModal compact hotkey capture (#2236)", () => {
     expect(probe).toHaveBeenCalledTimes(2);
     dispose();
   });
+
+  // #2510 room number mask control. Lives in this block to reuse mountModal.
+  function exampleText(): string {
+    return byTestId("settings.general.roomNumberMask.example").textContent ?? "";
+  }
+
+  it("T7 saves an edited room number mask through saveDraft", async () => {
+    const dispose = await mountModal();
+    const input = byTestId<HTMLInputElement>("settings.general.roomNumberMask");
+    input.value = "###";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    await saveAndReadDraft();
+    const matcher = expect.objectContaining({ roomNumberMask: "###" });
+    expect(SettingsAPI.saveDraft).toHaveBeenCalledWith(matcher);
+    // Anti-vacuous: the same matcher rejects an empty-object call.
+    expect(matcher.asymmetricMatch({})).toBe(false);
+    dispose();
+  });
+
+  it("T8 the example hint tracks the mask", async () => {
+    let dispose = await mountModal({ roomNumberMask: "###" });
+    expect(exampleText()).toContain("room-001-my-team");
+    expect(exampleText()).toContain("room-100-my-team");
+    dispose();
+    document.body.innerHTML = "";
+
+    dispose = await mountModal({ roomNumberMask: "##" });
+    expect(exampleText()).toContain("room-01-my-team");
+    dispose();
+    document.body.innerHTML = "";
+
+    // Absent key: the field is optional in TS and defaulted in Rust.
+    const fixture = settings();
+    delete fixture.roomNumberMask;
+    expect("roomNumberMask" in fixture).toBe(false);
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(fixture);
+    dispose = await mountModal();
+    expect(exampleText()).toContain("room-1-my-team");
+    expect(byTestId<HTMLInputElement>("settings.general.roomNumberMask").value).toBe("#");
+    dispose();
+  });
+
+  it("T9 an invalid mask blocks Save", async () => {
+    let dispose = await mountModal({ roomNumberMask: "2" });
+    expect(byTestId<HTMLButtonElement>("settings.save").disabled).toBe(true);
+    expect(document.querySelector(".modal-save-error")?.textContent).toContain(
+      "Room number mask",
+    );
+    expect(byTestId("settings.general.roomNumberMask.error").textContent).toContain(
+      "Room number mask: ",
+    );
+    dispose();
+    document.body.innerHTML = "";
+
+    // Negative control: a valid mask leaves Save enabled with no error.
+    dispose = await mountModal({ roomNumberMask: "##" });
+    expect(byTestId<HTMLButtonElement>("settings.save").disabled).toBe(false);
+    expect(document.querySelector(".modal-save-error")).toBeNull();
+    dispose();
+  });
 });

@@ -90,6 +90,9 @@ import {
 
 type ProfileCellEnvRow = { key: string; value: string };
 
+const DEFAULT_ROOM_NUMBER_MASK = "#";
+const ROOM_NUMBER_MASK_MAX_WIDTH = 9;
+
 const AC_PLACEHOLDER_HELP = [
   "AC path placeholders (expand at launch):",
   `${AC_REPLICA_ROOT_PLACEHOLDER} — this replica's working dir`,
@@ -2114,6 +2117,23 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       ? null
       : "Sidebar compact hotkey: expected Ctrl+Shift+<A-Z>, excluding W, R, C and V";
 
+  const roomNumberMaskWidth = (): number | null => {
+    const raw = settings.data?.roomNumberMask ?? DEFAULT_ROOM_NUMBER_MASK;
+    if (raw.length === 0 || raw.length > ROOM_NUMBER_MASK_MAX_WIDTH) return null;
+    return [...raw].every((c) => c === "#") ? raw.length : null;
+  };
+
+  const validateRoomNumberMask = (): string | null =>
+    roomNumberMaskWidth() === null
+      ? `Room number mask: must be 1 to ${ROOM_NUMBER_MASK_MAX_WIDTH} '#' characters, e.g. # or ##`
+      : null;
+
+  // Display text only, with a fixed sample team; never a room naming helper.
+  const roomNumberMaskExample = (): string => {
+    const width = roomNumberMaskWidth() ?? DEFAULT_ROOM_NUMBER_MASK.length;
+    return `Room 1 -> room-${"1".padStart(width, "0")}-my-team . Room 100 -> room-${"100".padStart(width, "0")}-my-team (wider numbers are never cut).`;
+  };
+
   const validateTypingHoldSeconds = (): string | null => {
     if (!settings.data) return null;
     if (parseTypingHoldSeconds(typingHoldSecondsText()) === null) {
@@ -2129,7 +2149,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateTypingHoldSeconds() ??
     validateApiServerSettings() ??
     validateScreenshotHotkey() ??
-    validateSidebarCompactHotkey();
+    validateSidebarCompactHotkey() ??
+    validateRoomNumberMask();
 
   const handleSave = async () => {
     if (!settings.data) return;
@@ -2335,6 +2356,25 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <Show when={hotkeyCaptureError()}>
             {(message) => (
               <div class="settings-hint settings-hint-error" data-ac-testid="settings.general.sidebarCompactHotkey.error">
+                {message()}
+              </div>
+            )}
+          </Show>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Room number mask</span>
+          <input
+            class="settings-input settings-input-sm"
+            value={settings.data?.roomNumberMask ?? DEFAULT_ROOM_NUMBER_MASK}
+            onInput={(e) => updateField("roomNumberMask", e.currentTarget.value)}
+            data-ac-testid="settings.general.roomNumberMask"
+          />
+          <div class="settings-hint" data-ac-testid="settings.general.roomNumberMask.example">
+            {roomNumberMaskExample()}
+          </div>
+          <Show when={validateRoomNumberMask()}>
+            {(message) => (
+              <div class="settings-hint settings-hint-error" data-ac-testid="settings.general.roomNumberMask.error">
                 {message()}
               </div>
             )}

@@ -791,6 +791,9 @@ export interface AppSettings {
   /** #2281 Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E". Validated on save;
    * an invalid value blocks the save. */
   sidebarCompactHotkey?: string;
+  /** #2507 Mask for numbering NEW room directories: one `#` per zero-padded digit.
+   * Optional so a snapshot saved before the field reads as the backend default ("#"). */
+  roomNumberMask?: string;
   /**
    * #1171 - root-level watcher patterns, keyed by watcher id. Optional because the Rust
    * field skips serializing while the map is empty, so a user who configures nothing never
