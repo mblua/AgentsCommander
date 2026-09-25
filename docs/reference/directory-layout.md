@@ -2,7 +2,7 @@
 
 For anyone who needs to know where AgentsCommander keeps its on-disk data, which files are shared with the team, and which are per-instance state you must never share.
 
-A new entity directory is always `room-<N>-<team>`. Every `wg-*` directory that already exists keeps its name and stays fully supported; nothing on disk is renamed or converted. The CLI names `room`, `purge-room` and `--room` are canonical, and `workgroup`, `purge-wg`, `--wg` and `--workgroup` remain accepted as deprecated aliases that a later release will remove.
+A new entity directory is always `room-<N>-<team>`, where `<N>` is the room number zero-padded to the width of the `roomNumberMask` setting (default `#`, one digit, so `room-1-<team>`); a number wider than the mask is never truncated. Every `wg-*` directory that already exists keeps its name and stays fully supported; nothing on disk is renamed or converted. The CLI names `room`, `purge-room` and `--room` are canonical, and `workgroup`, `purge-wg`, `--wg` and `--workgroup` remain accepted as deprecated aliases that a later release will remove.
 
 AgentsCommander keeps its on-disk data in two distinct trees:
 
