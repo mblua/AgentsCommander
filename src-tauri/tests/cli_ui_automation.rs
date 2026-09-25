@@ -2,6 +2,8 @@ use serde_json::{json, Value};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -206,42 +208,136 @@ fn write_session(bin: &Path, pid: u32, ready_windows: &[&str]) {
     .unwrap();
 }
 
-fn spawn_fake_responder<F>(bin: &Path, make_response: F) -> thread::JoinHandle<()>
+/// Backstop for a watcher whose owner never called `finish()` and whose `Drop`
+/// never ran (a process-level abort), and the hang cap for bounds that have no
+/// request-file anchor yet. The normal exit is the stop flag.
+const WATCHER_HARD_CAP: Duration = Duration::from_secs(60);
+
+/// What the watcher thread observed. `LateRequest` exists so that a request
+/// observed only after the stop flag is reported, never acted on.
+enum WatchOutcome {
+    /// Acted on the request; the `Instant` is when the file was first observed.
+    Served(Instant),
+    /// A request file was present on the scan that followed the stop flag.
+    LateRequest(PathBuf),
+    /// No request file ever appeared.
+    NeverArrived,
+}
+
+/// A worker that watches the automation requests directory while the CLI runs.
+struct RequestWatcher {
+    handle: Option<thread::JoinHandle<WatchOutcome>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl RequestWatcher {
+    /// Call after the CLI run has returned. Signals that the CLI can no longer
+    /// write a request, joins, and asserts the worker actually served one.
+    /// Returns the instant the request file was first observed: the only
+    /// load-independent zero point for a "did not hang" assertion.
+    fn finish(mut self) -> Instant {
+        self.stop.store(true, Ordering::SeqCst);
+        let handle = self.handle.take().expect("watcher joined twice");
+        match handle.join().expect("request watcher panicked") {
+            WatchOutcome::Served(seen_at) => seen_at,
+            WatchOutcome::LateRequest(path) => panic!(
+                "request file observed only after the stop flag, not served: {}",
+                path.display()
+            ),
+            WatchOutcome::NeverArrived => {
+                panic!("request watcher saw no request file before the CLI exited")
+            }
+        }
+    }
+}
+
+/// A test that panics before `finish()` must not leave a detached thread polling
+/// a directory that `Tmp`'s drop is about to delete. Setting the flag retires
+/// the worker within one poll interval. Drop does not join: the owner may
+/// already be unwinding, and blocking there would hide the real failure.
+impl Drop for RequestWatcher {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+fn spawn_request_watcher<F>(requests_dir: PathBuf, mut act: F) -> RequestWatcher
+where
+    F: FnMut(&Path, &Value) + Send + 'static,
+{
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop);
+    let hard_cap = Instant::now() + WATCHER_HARD_CAP;
+    let handle = thread::spawn(move || loop {
+        // Read the stop flag BEFORE scanning, so the scan that follows a set
+        // flag is a complete final scan of the state the CLI left behind.
+        let stopped = worker_stop.load(Ordering::SeqCst);
+        // An unreadable directory is treated as "no entries": after the owner is
+        // gone, `Tmp` may already have deleted it, and an orphan worker must
+        // retire quietly instead of panicking into a later test's output.
+        let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
+            .map(|dir| {
+                dir.filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                    .filter(|path| {
+                        path.extension().and_then(|extension| extension.to_str()) == Some("json")
+                            && !path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .is_some_and(|name| name.ends_with(".inflight.json"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(path) = entries.first() {
+            // Acting once the flag has been observed would strand an
+            // `.inflight.json` and break the `remaining.is_empty()` assertion.
+            // Report the file instead.
+            if stopped {
+                return WatchOutcome::LateRequest(path.clone());
+            }
+            let seen_at = Instant::now();
+            let request: Value =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            act(path, &request);
+            return WatchOutcome::Served(seen_at);
+        }
+        if stopped || Instant::now() >= hard_cap {
+            return WatchOutcome::NeverArrived;
+        }
+        thread::sleep(Duration::from_millis(10));
+    });
+    RequestWatcher {
+        handle: Some(handle),
+        stop,
+    }
+}
+
+fn spawn_fake_responder<F>(bin: &Path, make_response: F) -> RequestWatcher
 where
     F: Fn(&Value) -> Value + Send + 'static,
 {
     let automation_dir = config_dir_for(bin).join("ui-automation");
-    let requests_dir = automation_dir.join("requests");
     let responses_dir = automation_dir.join("responses");
-    thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
-                .unwrap()
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| {
-                    path.extension().and_then(|extension| extension.to_str()) == Some("json")
-                        && !path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .is_some_and(|name| name.ends_with(".inflight.json"))
-                })
-                .collect();
-            if let Some(path) = entries.first() {
-                let request: Value =
-                    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-                let request_id = request["requestId"].as_str().unwrap();
-                let response = make_response(&request);
-                std::fs::write(
-                    responses_dir.join(format!("{request_id}.json")),
-                    serde_json::to_string(&response).unwrap(),
-                )
-                .unwrap();
-                return;
-            }
-            assert!(Instant::now() < deadline, "timed out waiting for request");
-            thread::sleep(Duration::from_millis(10));
-        }
+    spawn_request_watcher(automation_dir.join("requests"), move |_path, request| {
+        let request_id = request["requestId"].as_str().unwrap().to_string();
+        let response = make_response(request);
+        std::fs::write(
+            responses_dir.join(format!("{request_id}.json")),
+            serde_json::to_string(&response).unwrap(),
+        )
+        .unwrap();
+    })
+}
+
+/// Renames the request to `<id>.inflight.json`, i.e. the frontend accepted it
+/// but never answered. Used by the two timeout tests.
+fn spawn_inflight_mover(bin: &Path, expected_action: &'static str) -> RequestWatcher {
+    let requests_dir = config_dir_for(bin).join("ui-automation").join("requests");
+    let mover_dir = requests_dir.clone();
+    spawn_request_watcher(requests_dir, move |path, request| {
+        assert_eq!(request["action"], expected_action);
+        let request_id = request["requestId"].as_str().unwrap();
+        std::fs::rename(path, mover_dir.join(format!("{request_id}.inflight.json"))).unwrap();
     })
 }
 
@@ -428,7 +524,7 @@ fn fake_response_makes_ui_terminal_succeed_with_exact_request_and_target() {
             "top",
         ],
     );
-    responder.join().unwrap();
+    responder.finish();
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     let parsed = assert_bounded_terminal_output(&stdout, &stderr);
     assert_eq!(parsed["ok"], true);
@@ -514,7 +610,7 @@ fn ui_terminal_passes_frontend_failures_through_as_bounded_json() {
                 "query",
             ],
         );
-        responder.join().unwrap();
+        responder.finish();
         assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
         let parsed = assert_bounded_terminal_output(&stdout, &stderr);
         assert_eq!(parsed["error"], error);
@@ -676,55 +772,32 @@ fn fake_response_makes_ui_query_succeed() {
     let tmp = Tmp::new("ui-fake-response");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, pid, &["main"]);
-    let automation_dir = config_dir_for(&bin).join("ui-automation");
-    let requests_dir = automation_dir.join("requests");
-    let responses_dir = automation_dir.join("responses");
 
-    let responder = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
-                .unwrap()
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
-                .collect();
-            if let Some(path) = entries.first() {
-                let raw = std::fs::read_to_string(path).unwrap();
-                let request: Value = serde_json::from_str(&raw).unwrap();
-                assert_eq!(request["window"], "main");
-                assert_eq!(request["action"], "query");
-                assert_eq!(request["selector"], "onboarding.confirm");
-                let request_id = request["requestId"].as_str().unwrap();
-                let response = json!({
-                    "ok": true,
-                    "requestId": request_id,
-                    "window": "main",
-                    "action": "query",
-                    "selector": "onboarding.confirm",
-                    "target": {
-                        "testId": "onboarding.confirm",
-                        "role": "button",
-                        "state": "ready",
-                        "tag": "button",
-                        "visible": true,
-                        "disabled": false,
-                        "checked": null,
-                        "selected": null,
-                        "pressed": null,
-                        "expanded": null,
-                        "rect": null
-                    }
-                });
-                std::fs::write(
-                    responses_dir.join(format!("{request_id}.json")),
-                    serde_json::to_string(&response).unwrap(),
-                )
-                .unwrap();
-                return;
+    let responder = spawn_fake_responder(&bin, move |request| {
+        assert_eq!(request["window"], "main");
+        assert_eq!(request["action"], "query");
+        assert_eq!(request["selector"], "onboarding.confirm");
+        let request_id = request["requestId"].as_str().unwrap();
+        json!({
+            "ok": true,
+            "requestId": request_id,
+            "window": "main",
+            "action": "query",
+            "selector": "onboarding.confirm",
+            "target": {
+                "testId": "onboarding.confirm",
+                "role": "button",
+                "state": "ready",
+                "tag": "button",
+                "visible": true,
+                "disabled": false,
+                "checked": null,
+                "selected": null,
+                "pressed": null,
+                "expanded": null,
+                "rect": null
             }
-            assert!(Instant::now() < deadline, "timed out waiting for request");
-            thread::sleep(Duration::from_millis(25));
-        }
+        })
     });
 
     let (code, stdout, stderr) = run(
@@ -739,7 +812,7 @@ fn fake_response_makes_ui_query_succeed() {
             "3000",
         ],
     );
-    responder.join().unwrap();
+    responder.finish();
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
@@ -757,55 +830,32 @@ fn fake_response_makes_ui_context_click_succeed() {
     let tmp = Tmp::new("ui-context-click-fake-response");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, pid, &["main"]);
-    let automation_dir = config_dir_for(&bin).join("ui-automation");
-    let requests_dir = automation_dir.join("requests");
-    let responses_dir = automation_dir.join("responses");
 
-    let responder = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
-                .unwrap()
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
-                .collect();
-            if let Some(path) = entries.first() {
-                let raw = std::fs::read_to_string(path).unwrap();
-                let request: Value = serde_json::from_str(&raw).unwrap();
-                assert_eq!(request["window"], "main");
-                assert_eq!(request["action"], "contextClick");
-                assert_eq!(request["selector"], "project.loops.header.test");
-                let request_id = request["requestId"].as_str().unwrap();
-                let response = json!({
-                    "ok": true,
-                    "requestId": request_id,
-                    "window": "main",
-                    "action": "contextClick",
-                    "selector": "project.loops.header.test",
-                    "target": {
-                        "testId": "project.loops.header.test",
-                        "role": "button",
-                        "state": "ready",
-                        "tag": "button",
-                        "visible": true,
-                        "disabled": false,
-                        "checked": null,
-                        "selected": null,
-                        "pressed": null,
-                        "expanded": null,
-                        "rect": null
-                    }
-                });
-                std::fs::write(
-                    responses_dir.join(format!("{request_id}.json")),
-                    serde_json::to_string(&response).unwrap(),
-                )
-                .unwrap();
-                return;
+    let responder = spawn_fake_responder(&bin, move |request| {
+        assert_eq!(request["window"], "main");
+        assert_eq!(request["action"], "contextClick");
+        assert_eq!(request["selector"], "project.loops.header.test");
+        let request_id = request["requestId"].as_str().unwrap();
+        json!({
+            "ok": true,
+            "requestId": request_id,
+            "window": "main",
+            "action": "contextClick",
+            "selector": "project.loops.header.test",
+            "target": {
+                "testId": "project.loops.header.test",
+                "role": "button",
+                "state": "ready",
+                "tag": "button",
+                "visible": true,
+                "disabled": false,
+                "checked": null,
+                "selected": null,
+                "pressed": null,
+                "expanded": null,
+                "rect": null
             }
-            assert!(Instant::now() < deadline, "timed out waiting for request");
-            thread::sleep(Duration::from_millis(25));
-        }
+        })
     });
 
     let (code, stdout, stderr) = run(
@@ -820,7 +870,7 @@ fn fake_response_makes_ui_context_click_succeed() {
             "3000",
         ],
     );
-    responder.join().unwrap();
+    responder.finish();
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
@@ -921,63 +971,40 @@ fn fake_response_makes_ui_hover_succeed() {
     let tmp = Tmp::new("ui-hover-fake-response");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, pid, &["main"]);
-    let automation_dir = config_dir_for(&bin).join("ui-automation");
-    let requests_dir = automation_dir.join("requests");
-    let responses_dir = automation_dir.join("responses");
 
-    let responder = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
-                .unwrap()
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
-                .collect();
-            if let Some(path) = entries.first() {
-                let raw = std::fs::read_to_string(path).unwrap();
-                let request: Value = serde_json::from_str(&raw).unwrap();
-                assert_eq!(request["window"], "main");
-                assert_eq!(request["action"], "hover");
-                assert_eq!(request["selector"], "replica.coord-a.menu.repo.0");
-                // `value` is `skip_serializing_if = "Option::is_none"` (ui_automation.rs
-                // :128-129), so a plain hover emits NO key at all. The bridge keys the
-                // leave form on `value === "leave"`, so a stray key here would silently
-                // invert the meaning of the verb.
-                assert!(
-                    request.get("value").is_none(),
-                    "a plain hover must emit no `value` key, got: {request}"
-                );
-                let request_id = request["requestId"].as_str().unwrap();
-                let response = json!({
-                    "ok": true,
-                    "requestId": request_id,
-                    "window": "main",
-                    "action": "hover",
-                    "selector": "replica.coord-a.menu.repo.0",
-                    "target": {
-                        "testId": "replica.coord-a.menu.repo.0",
-                        "role": "menuitem",
-                        "state": "ready",
-                        "tag": "button",
-                        "visible": true,
-                        "disabled": false,
-                        "checked": null,
-                        "selected": null,
-                        "pressed": null,
-                        "expanded": null,
-                        "rect": null
-                    }
-                });
-                std::fs::write(
-                    responses_dir.join(format!("{request_id}.json")),
-                    serde_json::to_string(&response).unwrap(),
-                )
-                .unwrap();
-                return;
+    let responder = spawn_fake_responder(&bin, move |request| {
+        assert_eq!(request["window"], "main");
+        assert_eq!(request["action"], "hover");
+        assert_eq!(request["selector"], "replica.coord-a.menu.repo.0");
+        // `value` is `skip_serializing_if = "Option::is_none"` (ui_automation.rs
+        // :128-129), so a plain hover emits NO key at all. The bridge keys the
+        // leave form on `value === "leave"`, so a stray key here would silently
+        // invert the meaning of the verb.
+        assert!(
+            request.get("value").is_none(),
+            "a plain hover must emit no `value` key, got: {request}"
+        );
+        let request_id = request["requestId"].as_str().unwrap();
+        json!({
+            "ok": true,
+            "requestId": request_id,
+            "window": "main",
+            "action": "hover",
+            "selector": "replica.coord-a.menu.repo.0",
+            "target": {
+                "testId": "replica.coord-a.menu.repo.0",
+                "role": "menuitem",
+                "state": "ready",
+                "tag": "button",
+                "visible": true,
+                "disabled": false,
+                "checked": null,
+                "selected": null,
+                "pressed": null,
+                "expanded": null,
+                "rect": null
             }
-            assert!(Instant::now() < deadline, "timed out waiting for request");
-            thread::sleep(Duration::from_millis(25));
-        }
+        })
     });
 
     let (code, stdout, stderr) = run(
@@ -992,7 +1019,7 @@ fn fake_response_makes_ui_hover_succeed() {
             "3000",
         ],
     );
-    responder.join().unwrap();
+    responder.finish();
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
@@ -1010,64 +1037,41 @@ fn fake_response_makes_ui_hover_leave_succeed() {
     let tmp = Tmp::new("ui-hover-leave-fake-response");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, pid, &["main"]);
-    let automation_dir = config_dir_for(&bin).join("ui-automation");
-    let requests_dir = automation_dir.join("requests");
-    let responses_dir = automation_dir.join("responses");
 
-    let responder = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
-                .unwrap()
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
-                .collect();
-            if let Some(path) = entries.first() {
-                let raw = std::fs::read_to_string(path).unwrap();
-                let request: Value = serde_json::from_str(&raw).unwrap();
-                assert_eq!(request["window"], "main");
-                assert_eq!(request["action"], "hover");
-                assert_eq!(request["value"], "leave");
-                // Target-free (plan R5): --leave takes no --selector and conflicts with it
-                // at the CLI, so the emitted selector is empty. The bridge intercepts
-                // `value == "leave"` BEFORE it resolves any node, which is what makes the
-                // leave form incapable of returning missing_selector / target_hidden /
-                // target_obscured, and it echoes the selector back so `complete()`'s
-                // window/action/selector equality check in `complete()` still matches on ""
-                // (grep `fn complete`; the line number is deliberately omitted, it rotted
-                // twice already: 317 -> 361 -> 370).
-                assert_eq!(request["selector"], "");
-                let request_id = request["requestId"].as_str().unwrap();
-                let response = json!({
-                    "ok": true,
-                    "requestId": request_id,
-                    "window": "main",
-                    "action": "hover",
-                    "selector": "",
-                    "target": {
-                        "testId": "",
-                        "role": null,
-                        "state": null,
-                        "tag": "",
-                        "visible": false,
-                        "disabled": false,
-                        "checked": null,
-                        "selected": null,
-                        "pressed": null,
-                        "expanded": null,
-                        "rect": null
-                    }
-                });
-                std::fs::write(
-                    responses_dir.join(format!("{request_id}.json")),
-                    serde_json::to_string(&response).unwrap(),
-                )
-                .unwrap();
-                return;
+    let responder = spawn_fake_responder(&bin, move |request| {
+        assert_eq!(request["window"], "main");
+        assert_eq!(request["action"], "hover");
+        assert_eq!(request["value"], "leave");
+        // Target-free (plan R5): --leave takes no --selector and conflicts with it
+        // at the CLI, so the emitted selector is empty. The bridge intercepts
+        // `value == "leave"` BEFORE it resolves any node, which is what makes the
+        // leave form incapable of returning missing_selector / target_hidden /
+        // target_obscured, and it echoes the selector back so `complete()`'s
+        // window/action/selector equality check in `complete()` still matches on ""
+        // (grep `fn complete`; the line number is deliberately omitted, it rotted
+        // twice already: 317 -> 361 -> 370).
+        assert_eq!(request["selector"], "");
+        let request_id = request["requestId"].as_str().unwrap();
+        json!({
+            "ok": true,
+            "requestId": request_id,
+            "window": "main",
+            "action": "hover",
+            "selector": "",
+            "target": {
+                "testId": "",
+                "role": null,
+                "state": null,
+                "tag": "",
+                "visible": false,
+                "disabled": false,
+                "checked": null,
+                "selected": null,
+                "pressed": null,
+                "expanded": null,
+                "rect": null
             }
-            assert!(Instant::now() < deadline, "timed out waiting for request");
-            thread::sleep(Duration::from_millis(25));
-        }
+        })
     });
 
     let (code, stdout, stderr) = run(
@@ -1081,7 +1085,7 @@ fn fake_response_makes_ui_hover_leave_succeed() {
             "3000",
         ],
     );
-    responder.join().unwrap();
+    responder.finish();
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert_empty_output("stderr", &stderr);
     assert_eq!(first_json(&stdout)["ok"], true);
@@ -1126,39 +1130,9 @@ fn ui_query_timeout_after_frontend_accepts_request_returns_bounded_stdout() {
     let tmp = Tmp::new("ui-query-inflight-timeout");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, pid, &["main"]);
-    let automation_dir = config_dir_for(&bin).join("ui-automation");
-    let requests_dir = automation_dir.join("requests");
 
-    let mover_dir = requests_dir.clone();
-    let mover = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let entries: Vec<PathBuf> = std::fs::read_dir(&mover_dir)
-                .unwrap()
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| {
-                    path.extension().and_then(|e| e.to_str()) == Some("json")
-                        && !path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|name| name.ends_with(".inflight.json"))
-                })
-                .collect();
-            if let Some(path) = entries.first() {
-                let raw = std::fs::read_to_string(path).unwrap();
-                let request: Value = serde_json::from_str(&raw).unwrap();
-                assert_eq!(request["action"], "query");
-                let request_id = request["requestId"].as_str().unwrap();
-                std::fs::rename(path, mover_dir.join(format!("{request_id}.inflight.json")))
-                    .unwrap();
-                return;
-            }
-            assert!(Instant::now() < deadline, "timed out waiting for request");
-            thread::sleep(Duration::from_millis(10));
-        }
-    });
+    let mover = spawn_inflight_mover(&bin, "query");
 
-    let start = Instant::now();
     let (code, stdout, stderr) = run(
         &bin,
         &[
@@ -1171,11 +1145,11 @@ fn ui_query_timeout_after_frontend_accepts_request_returns_bounded_stdout() {
             "250",
         ],
     );
-    mover.join().unwrap();
+    let seen_at = mover.finish();
 
     assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "ui-query should not hang"
+        seen_at.elapsed() < Duration::from_secs(5),
+        "ui-query should not hang after the frontend accepted the request"
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
     assert_empty_output("stderr", &stderr);
@@ -1194,72 +1168,48 @@ fn ui_query_large_missing_selector_response_is_bounded_stdout() {
     let tmp = Tmp::new("ui-large-missing-selector");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, pid, &["main"]);
-    let automation_dir = config_dir_for(&bin).join("ui-automation");
-    let requests_dir = automation_dir.join("requests");
-    let responses_dir = automation_dir.join("responses");
 
-    let responder = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
-                .unwrap()
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
-                .collect();
-            if let Some(path) = entries.first() {
-                let raw = std::fs::read_to_string(path).unwrap();
-                let request: Value = serde_json::from_str(&raw).unwrap();
-                let request_id = request["requestId"].as_str().unwrap();
-                let available: Vec<Value> = (0..256)
-                    .map(|i| {
-                        json!({
-                            "testId": format!("target.{i}"),
-                            "role": "button",
-                            "state": "ready",
-                            "tag": "button",
-                            "text": "x".repeat(2000),
-                            "visible": true,
-                            "disabled": false,
-                            "checked": null,
-                            "selected": null,
-                            "pressed": null,
-                            "expanded": null,
-                            "rect": {
-                                "x": i,
-                                "y": i,
-                                "width": 100,
-                                "height": 30
-                            }
-                        })
-                    })
-                    .collect();
-                let response = json!({
-                    "ok": false,
-                    "requestId": request_id,
-                    "window": "main",
-                    "action": "query",
-                    "selector": "does.not.exist",
-                    "error": "missing_selector",
-                    "message": "No automation target matched data-ac-testid=\"does.not.exist\" in window \"main\".",
-                    "available": available,
-                    "diagnostics": {
-                        "devicePixelRatio": 1,
-                        "viewport": { "width": 1280, "height": 720 }
+    let responder = spawn_fake_responder(&bin, move |request| {
+        let request_id = request["requestId"].as_str().unwrap();
+        let available: Vec<Value> = (0..256)
+            .map(|i| {
+                json!({
+                    "testId": format!("target.{i}"),
+                    "role": "button",
+                    "state": "ready",
+                    "tag": "button",
+                    "text": "x".repeat(2000),
+                    "visible": true,
+                    "disabled": false,
+                    "checked": null,
+                    "selected": null,
+                    "pressed": null,
+                    "expanded": null,
+                    "rect": {
+                        "x": i,
+                        "y": i,
+                        "width": 100,
+                        "height": 30
                     }
-                });
-                std::fs::write(
-                    responses_dir.join(format!("{request_id}.json")),
-                    serde_json::to_string(&response).unwrap(),
-                )
-                .unwrap();
-                return;
+                })
+            })
+            .collect();
+        json!({
+            "ok": false,
+            "requestId": request_id,
+            "window": "main",
+            "action": "query",
+            "selector": "does.not.exist",
+            "error": "missing_selector",
+            "message": "No automation target matched data-ac-testid=\"does.not.exist\" in window \"main\".",
+            "available": available,
+            "diagnostics": {
+                "devicePixelRatio": 1,
+                "viewport": { "width": 1280, "height": 720 }
             }
-            assert!(Instant::now() < deadline, "timed out waiting for request");
-            thread::sleep(Duration::from_millis(10));
-        }
+        })
     });
 
-    let start = Instant::now();
     let (code, stdout, stderr, timed_out) = run_without_draining_output_until_exit(
         &bin,
         &[
@@ -1271,12 +1221,12 @@ fn ui_query_large_missing_selector_response_is_bounded_stdout() {
             "--timeout-ms",
             "3000",
         ],
-        Duration::from_secs(5),
+        WATCHER_HARD_CAP,
     );
-    responder.join().unwrap();
+    let seen_at = responder.finish();
 
     assert!(!timed_out, "ui-query should not hang");
-    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(seen_at.elapsed() < Duration::from_secs(5));
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
     assert_empty_output("stderr", &stderr);
     assert!(
@@ -1308,34 +1258,7 @@ fn ui_click_timeout_removes_inflight_request_with_json_only_stdout() {
     let automation_dir = config_dir_for(&bin).join("ui-automation");
     let requests_dir = automation_dir.join("requests");
 
-    let mover_dir = requests_dir.clone();
-    let mover = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let entries: Vec<PathBuf> = std::fs::read_dir(&mover_dir)
-                .unwrap()
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| {
-                    path.extension().and_then(|e| e.to_str()) == Some("json")
-                        && !path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|name| name.ends_with(".inflight.json"))
-                })
-                .collect();
-            if let Some(path) = entries.first() {
-                let raw = std::fs::read_to_string(path).unwrap();
-                let request: Value = serde_json::from_str(&raw).unwrap();
-                assert_eq!(request["action"], "click");
-                let request_id = request["requestId"].as_str().unwrap();
-                std::fs::rename(path, mover_dir.join(format!("{request_id}.inflight.json")))
-                    .unwrap();
-                return;
-            }
-            assert!(Instant::now() < deadline, "timed out waiting for request");
-            thread::sleep(Duration::from_millis(10));
-        }
-    });
+    let mover = spawn_inflight_mover(&bin, "click");
 
     let (code, stdout, stderr) = run(
         &bin,
@@ -1349,7 +1272,7 @@ fn ui_click_timeout_removes_inflight_request_with_json_only_stdout() {
             "250",
         ],
     );
-    mover.join().unwrap();
+    mover.finish();
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
     assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
@@ -1451,7 +1374,6 @@ fn reap_on_drop_kills_the_child_when_the_caller_panics() {
     write_session(&bin, pid, &["main"]);
     let requests_dir = config_dir_for(&bin).join("ui-automation").join("requests");
 
-    let started = Instant::now();
     let guard = ReapOnDrop(
         command_for_binary(&bin)
             .args([
@@ -1469,10 +1391,13 @@ fn reap_on_drop_kills_the_child_when_the_caller_panics() {
             .expect("spawn binary"),
     );
     let child_pid = guard.0.id();
+    // Anchored after the spawn: this cap only has to catch a child that never
+    // starts. The child's own budget is --timeout-ms 30000.
+    let readiness_cap = Instant::now() + WATCHER_HARD_CAP;
 
     // Readiness: the child has written its request file and is therefore in, or
     // entering, its response-poll loop. Asserted here, outside catch_unwind.
-    let request_file = loop {
+    let (request_file, seen_at) = loop {
         let pending = std::fs::read_dir(&requests_dir)
             .expect("requests dir")
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
@@ -1484,10 +1409,10 @@ fn reap_on_drop_kills_the_child_when_the_caller_panics() {
                         .is_some_and(|name| name.ends_with(".inflight.json"))
             });
         if let Some(path) = pending {
-            break path;
+            break (path, Instant::now());
         }
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            Instant::now() < readiness_cap,
             "child {child_pid} never wrote its request file into {}",
             requests_dir.display()
         );
@@ -1509,7 +1434,7 @@ fn reap_on_drop_kills_the_child_when_the_caller_panics() {
         Some(&SENTINEL),
         "the caught panic must be the sentinel, not a failed assertion"
     );
-    let unwound_after = started.elapsed();
+    let unwound_after = seen_at.elapsed();
     assert!(
         unwound_after < Duration::from_secs(10),
         "the guard must kill the child, not wait for its 30 s timeout: {unwound_after:?}"
