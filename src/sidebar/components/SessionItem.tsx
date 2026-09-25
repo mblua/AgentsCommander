@@ -14,6 +14,7 @@ import AgentPickerModal from "./AgentPickerModal";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
 import ContextBadge from "./ContextBadge";
 import { contextBadgeConfigured } from "./session-context";
+import { quotaChipAttrs } from "./agent-quota";
 import { TelegramIcon } from "./TelegramIcon";
 import DetachIcon from "./DetachIcon";
 import ReattachIcon from "./ReattachIcon";
@@ -54,6 +55,7 @@ const SessionItem: Component<{
   const ctxVisible = () =>
     contextBadgeConfigured(settingsStore.current?.agents, props.session.agentId);
   const ctxPercent = () => sessionsStore.contextPercentBySessionId[props.session.id];
+  const quotaUsed = () => sessionsStore.weeklyQuotaUsedBySessionId[props.session.id];
   const profileBadgeTitle = () => {
     const badge = profileBadge();
     if (!badge) return undefined;
@@ -398,7 +400,7 @@ const SessionItem: Component<{
                 by label or by PTY liveness. Liveness is still carried by the
                 row status dot and .session-item.inactive-member. */}
             <Show when={sessionAgentLabel()}>{(agentLabel) => (
-              <span class="ac-discovery-badge agent">{agentLabel()}</span>
+              <span {...quotaChipAttrs(agentLabel(), quotaUsed())}>{agentLabel()}</span>
             )}</Show>
             <Show when={profileBadge()}>{(badge) => (
               <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>

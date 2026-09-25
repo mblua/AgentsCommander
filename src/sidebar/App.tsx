@@ -27,6 +27,7 @@ import {
   onSessionBusy,
   onSessionComanagedState,
   onSessionContext,
+  onSessionAgentQuota,
   onSessionGitRepos,
   onSessionCoordinatorChanged,
   onTelegramBridgeAttached,
@@ -983,6 +984,25 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (disposed) return;
 
     await register(
+      onSessionAgentQuota(({ sessionId, weeklyUsedPercent }) => {
+        sessionsStore.setSessionAgentQuota(sessionId, weeklyUsedPercent);
+      }),
+    );
+    if (disposed) return;
+
+    try {
+      await Promise.all(
+        sessionsStore.sessions
+          .filter((session) => session.agentId)
+          .map(async (session) => {
+            const used = await PtyAPI.getSessionAgentQuota(session.id);
+            if (!disposed) sessionsStore.hydrateSessionAgentQuota(session.id, used);
+          }),
+      );
+    } catch {}
+    if (disposed) return;
+
+    await register(
       onSessionGitRepos(({ sessionId, repos }) => {
         sessionsStore.setGitRepos(sessionId, repos);
       })
@@ -1066,7 +1086,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
           <Titlebar />
         </Show>
         <ActionBar />
-        <RootAgentBanner compact={sidebarCompact()} />
+        <RootAgentBanner compact={sidebarCompact()} railSide={railSide()} />
         <div class="sidebar-body" data-rail-side={railSide()}>
           <Show when={railSide() === "left"}>
             <WorkgroupGroupRail projects={projectStore.projects} />

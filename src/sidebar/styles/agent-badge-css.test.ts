@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { declProps, declValue } from "./css-test-helpers";
 
 // #1167 - acceptance criterion 4: the sidebar coding-agent badge has ONE constant
 // style, so no rule anywhere may colour .agent-badge by label. The four per-TOOL
@@ -238,5 +239,160 @@ describe("coding-agent badge CSS (#1167)", () => {
     expect(declarations).toContain("background: rgba(16, 185, 129, 0.14);");
     expect(declarations).toContain("color: #34d399;");
     expect(declarations).toContain("text-transform: none;");
+  });
+});
+
+// #2482 - the weekly-quota fill on the agent chip. Every colour below is PARSED out
+// of sidebar.css, never restated, so a stylesheet change moves the numbers these pins
+// check. Only the three dark sidebar rows (named at `.ac-discovery-badge.branch.ci-running`)
+// and the rounded ratios are literals: they are the claims under test.
+type Rgb = [number, number, number];
+type Rgba = { rgb: Rgb; alpha: number };
+
+const DARK_ROWS = ["#0a0a0f", "#12121e", "#222227"] as const;
+const CONTRAST_FLOOR = 4.5;
+
+function parseColour(text: string): Rgba {
+  const colour = text.trim();
+  if (colour === "transparent") return { rgb: [0, 0, 0], alpha: 0 };
+  const hex = colour.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (hex) return { rgb: [1, 2, 3].map((i) => parseInt(hex[i], 16)) as Rgb, alpha: 1 };
+  const rgba = colour.match(/^rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)$/);
+  if (rgba) return { rgb: [Number(rgba[1]), Number(rgba[2]), Number(rgba[3])], alpha: Number(rgba[4]) };
+  throw new Error(`unparsed colour: ${colour}`);
+}
+
+// sRGB source-over per channel, unrounded.
+function composite(fg: Rgb, alpha: number, bg: Rgb): Rgb {
+  return fg.map((channel, i) => channel * alpha + bg[i] * (1 - alpha)) as Rgb;
+}
+
+function relativeLuminance(rgb: Rgb): number {
+  const [r, g, b] = rgb.map((channel) => {
+    const c = channel / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrastRatio(a: Rgb, b: Rgb): number {
+  const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// Paints `layers` bottom-up over an opaque row.
+function stack(row: string, layers: Rgba[]): Rgb {
+  return layers.reduce((bg, layer) => composite(layer.rgb, layer.alpha, bg), parseColour(row).rgb);
+}
+
+// Top-level comma split, so the commas inside rgba() and var() stay with their stop.
+function topLevelArgs(text: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") depth--;
+    else if (text[i] === "," && depth === 0) {
+      args.push(text.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  args.push(text.slice(start).trim());
+  return args;
+}
+
+// The colour of a stop such as `transparent 0 var(--x)` or `rgba(...) var(--x) 100%`.
+function stopColour(stop: string): string {
+  return stop.startsWith("rgba(") ? stop.slice(0, stop.indexOf(")") + 1) : stop.split(" ")[0];
+}
+
+// Everything after the colour: the stop's position(s).
+function stopPosition(stop: string): string {
+  return stop.slice(stopColour(stop).length).trim();
+}
+
+// The one custom property both stops share, as the plan's rule spells it. p4 sets it
+// inline, so a misspelling here would silently paint nothing.
+const QUOTA_BOUNDARY = "var(--ac-quota-remaining)";
+
+function ruleBody(compound: string): string {
+  const body = declarationsOf(CSS_SOURCES["./sidebar.css"], compound);
+  expect(body).not.toBeNull();
+  return body as string;
+}
+
+function quotaStops(): { remaining: Rgba; used: Rgba } {
+  const image = declValue(ruleBody(".ac-discovery-badge.agent.quota-fill"), "background-image");
+  const inner = image.match(/^linear-gradient\((.*)\)$/)?.[1];
+  if (inner === undefined) throw new Error(`not a linear-gradient: ${image}`);
+  const [direction, first, second, ...rest] = topLevelArgs(inner);
+  expect(direction).toBe("to right");
+  expect(rest).toEqual([]);
+  // The positions are what make it a fill: remaining side from 0 to the boundary,
+  // used side from the same boundary to 100%. Colours alone do not pin that.
+  expect(stopPosition(first)).toBe(`0 ${QUOTA_BOUNDARY}`);
+  expect(stopPosition(second)).toBe(`${QUOTA_BOUNDARY} 100%`);
+  return { remaining: parseColour(stopColour(first)), used: parseColour(stopColour(second)) };
+}
+
+function baseChip(): { tint: Rgba; text: Rgb } {
+  const body = ruleBody(".ac-discovery-badge.agent");
+  return { tint: parseColour(declValue(body, "background")), text: parseColour(declValue(body, "color")).rgb };
+}
+
+const round2 = (ratio: number) => Number(ratio.toFixed(2));
+
+describe("weekly-quota fill on the agent chip (#2482)", () => {
+  it("the_quota_rule_declares_only_background_image", () => {
+    expect(declProps(ruleBody(".ac-discovery-badge.agent.quota-fill"))).toEqual(["background-image"]);
+  });
+
+  it("the_remaining_stop_is_transparent_and_not_a_green_tint", () => {
+    const body = ruleBody(".ac-discovery-badge.agent.quota-fill");
+    const inner = declValue(body, "background-image").match(/^linear-gradient\((.*)\)$/)?.[1] ?? "";
+    expect(stopColour(topLevelArgs(inner)[1])).toBe("transparent");
+    expect(body).not.toContain("16, 185, 129");
+  });
+
+  it("the_base_agent_rule_still_sets_the_green_tint_through_the_background_shorthand", () => {
+    expect(declValue(ruleBody(".ac-discovery-badge.agent"), "background")).toBe("rgba(16, 185, 129, 0.14)");
+  });
+
+  it("the_gradient_stops_meet_at_the_shared_quota_boundary", () => {
+    quotaStops(); // asserts both stop positions and the shared custom property
+  });
+
+  it("the_remaining_half_composites_to_exactly_the_unfilled_chip", () => {
+    const { tint } = baseChip();
+    const { remaining } = quotaStops();
+    for (const row of DARK_ROWS) {
+      expect(stack(row, [tint, remaining])).toEqual(stack(row, [tint]));
+    }
+  });
+
+  // Negative control for the pin above. A green remaining stop composites green on
+  // green (effective alpha 1 - (1 - 0.14)^2 = 0.2604), so it differs from the unfilled
+  // chip - yet it still clears 4.5:1 on every dark row. Contrast therefore cannot
+  // detect the bug; only the exact composite comparison does.
+  it("a_green_remaining_stop_would_not_composite_to_the_unfilled_chip", () => {
+    const { tint, text } = baseChip();
+    const wrong = DARK_ROWS.map((row) => {
+      const wrongStack = stack(row, [tint, tint]);
+      expect(wrongStack).not.toEqual(stack(row, [tint]));
+      return contrastRatio(text, wrongStack);
+    });
+    expect(wrong.map(round2)).toEqual([6.79, 6.21, 5.24]);
+    for (const ratio of wrong) expect(ratio).toBeGreaterThanOrEqual(CONTRAST_FLOOR);
+  });
+
+  it("the_used_half_clears_the_contrast_floor_on_every_row", () => {
+    const { tint, text } = baseChip();
+    const { used } = quotaStops();
+    const usedRatios = DARK_ROWS.map((row) => contrastRatio(text, stack(row, [tint, used])));
+    const controls = DARK_ROWS.map((row) => contrastRatio(text, stack(row, [tint])));
+    expect(usedRatios.map(round2)).toEqual([7.53, 6.92, 5.86]);
+    expect(controls.map(round2)).toEqual([8.61, 7.89, 6.59]);
+    for (const ratio of usedRatios) expect(ratio).toBeGreaterThanOrEqual(CONTRAST_FLOOR);
   });
 });

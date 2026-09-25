@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
-import SettingsModal from "./SettingsModal";
+import SettingsModal, { isScreenRegexSource } from "./SettingsModal";
 import type {
   MoveCodingAgentRequest,
   AgentConfig,
@@ -14,6 +14,7 @@ import {
   AC_MATRIX_ROOT_PLACEHOLDER,
   AC_REPLICA_ROOT_PLACEHOLDER,
   AC_WORKSPACE_ROOT_PLACEHOLDER,
+  CLAUDE_WEEKLY_QUOTA_REGEX,
   PI_CONTEXT_REGEX,
 } from "../../shared/profile-utils";
 import { registerShortcuts, unregisterShortcuts } from "../../shared/shortcuts";
@@ -3564,6 +3565,317 @@ describe("SettingsModal compact hotkey capture (#2236)", () => {
     expect(tabPrevent).not.toHaveBeenCalled();
     expect(tabStop).not.toHaveBeenCalled();
     expect(probe).toHaveBeenCalledTimes(2);
+    dispose();
+  });
+
+  // #2510 room number mask control. Lives in this block to reuse mountModal.
+  function exampleText(): string {
+    return byTestId("settings.general.roomNumberMask.example").textContent ?? "";
+  }
+
+  it("T7 saves an edited room number mask through saveDraft", async () => {
+    const dispose = await mountModal();
+    const input = byTestId<HTMLInputElement>("settings.general.roomNumberMask");
+    input.value = "###";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    await saveAndReadDraft();
+    const matcher = expect.objectContaining({ roomNumberMask: "###" });
+    expect(SettingsAPI.saveDraft).toHaveBeenCalledWith(matcher);
+    // Anti-vacuous: the same matcher rejects an empty-object call.
+    expect(matcher.asymmetricMatch({})).toBe(false);
+    dispose();
+  });
+
+  it("T8 the example hint tracks the mask", async () => {
+    let dispose = await mountModal({ roomNumberMask: "###" });
+    expect(exampleText()).toContain("room-001-my-team");
+    expect(exampleText()).toContain("room-100-my-team");
+    dispose();
+    document.body.innerHTML = "";
+
+    dispose = await mountModal({ roomNumberMask: "##" });
+    expect(exampleText()).toContain("room-01-my-team");
+    dispose();
+    document.body.innerHTML = "";
+
+    // Absent key: the field is optional in TS and defaulted in Rust.
+    const fixture = settings();
+    delete fixture.roomNumberMask;
+    expect("roomNumberMask" in fixture).toBe(false);
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(fixture);
+    dispose = await mountModal();
+    expect(exampleText()).toContain("room-1-my-team");
+    expect(byTestId<HTMLInputElement>("settings.general.roomNumberMask").value).toBe("#");
+    dispose();
+  });
+
+  it("T9 an invalid mask blocks Save", async () => {
+    let dispose = await mountModal({ roomNumberMask: "2" });
+    expect(byTestId<HTMLButtonElement>("settings.save").disabled).toBe(true);
+    expect(document.querySelector(".modal-save-error")?.textContent).toContain(
+      "Room number mask",
+    );
+    expect(byTestId("settings.general.roomNumberMask.error").textContent).toContain(
+      "Room number mask: ",
+    );
+    dispose();
+    document.body.innerHTML = "";
+
+    // Negative control: a valid mask leaves Save enabled with no error.
+    dispose = await mountModal({ roomNumberMask: "##" });
+    expect(byTestId<HTMLButtonElement>("settings.save").disabled).toBe(false);
+    expect(document.querySelector(".modal-save-error")).toBeNull();
+    dispose();
+  });
+});
+
+// #2482 p5a - the quota-source shape predicate, bound to the normative
+// malformed-entry table of the p5a plan. p5b binds the rendering to the same rows.
+describe("isScreenRegexSource (#2482)", () => {
+  it("is_screen_regex_source_accepts_a_minimal_entry_and_one_with_enabled_true_and_false", () => {
+    expect(isScreenRegexSource({ kind: "screenRegex", pattern: "7d (\\d+)%" })).toBe(true);
+    expect(isScreenRegexSource({ kind: "screenRegex", pattern: "7d (\\d+)%", enabled: true })).toBe(true);
+    expect(isScreenRegexSource({ kind: "screenRegex", pattern: "7d (\\d+)%", enabled: false })).toBe(true);
+  });
+
+  it("is_screen_regex_source_rejects_every_row_of_the_table_above", () => {
+    const rows: unknown[] = [
+      null,
+      42,
+      "7d (\\d+)%",
+      true,
+      [],
+      {},
+      { kind: "somethingNew", pattern: "x" },
+      { kind: "screenRegex", pattern: 42 },
+      { kind: "screenRegex", pattern: "7d (.*)", enabled: "bad" },
+    ];
+    expect(rows).toHaveLength(9);
+    for (const row of rows) {
+      expect(isScreenRegexSource(row), JSON.stringify(row)).toBe(false);
+    }
+  });
+});
+
+// #2482 p5b - the per-agent "Weekly quota pattern" field. The store draft is read
+// through `quotaSources` on the saveDraft argument, which is the store node itself
+// (the save merge spreads the draft shallowly); the wire view is its JSON round-trip.
+describe("SettingsModal weekly quota pattern (#2482)", () => {
+  const QUOTA_AGENTS: AgentConfig[] = [
+    { id: "a1", label: "Claude Code", command: "claude", color: "#d97706", envs: [], isolatedHome: false },
+    { id: "b2", label: "Codex", command: "codex", color: "#10b981", envs: [], isolatedHome: false },
+  ];
+  // The nine rows of p5a's normative malformed-entry table, same order as above.
+  const MALFORMED_ROWS: unknown[] = [
+    null,
+    42,
+    "7d (\\d+)%",
+    true,
+    [],
+    {},
+    { kind: "somethingNew", pattern: "x" },
+    { kind: "screenRegex", pattern: 42 },
+    { kind: "screenRegex", pattern: "7d (.*)", enabled: "bad" },
+  ];
+
+  const seed = (quotaSources?: Record<string, unknown>): SettingsSnapshot =>
+    settings({
+      agents: QUOTA_AGENTS,
+      ...(quotaSources ? { quotaSources: quotaSources as AppSettings["quotaSources"] } : {}),
+    });
+
+  const mountQuota = async (snapshot: SettingsSnapshot, row = 0): Promise<() => void> => {
+    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(snapshot));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(() => SettingsModal({ onClose: () => {}, section: "agents" }), root);
+    await settle();
+    expandAgentRow(row);
+    await settle();
+    return dispose;
+  };
+
+  const field = (row = 0) => byTestId<HTMLInputElement>(`settings.agentRow.${row}.quotaPattern`);
+  const suggestButton = (row = 0) =>
+    document.querySelector<HTMLButtonElement>(`[data-ac-testid="settings.agentRow.${row}.quotaPattern.suggest"]`);
+
+  const typeInto = async (input: HTMLInputElement, value: string): Promise<void> => {
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+  };
+
+  // Store draft (the live node) and the wire bytes of the saved payload.
+  const views = (saved: AppSettings | undefined) => {
+    const store = (saved?.quotaSources ?? {}) as Record<string, unknown>;
+    const wire = (JSON.parse(JSON.stringify(saved ?? {})).quotaSources ?? {}) as Record<string, unknown>;
+    return { store, wire };
+  };
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings()));
+    vi.mocked(onCodingAgentSettingsUpdated).mockImplementation(() => Promise.resolve(() => {}));
+  });
+
+  it("typing_a_pattern_writes_a_screen_regex_entry_for_that_agent", async () => {
+    const dispose = await mountQuota(seed());
+    await typeInto(field(), "7d (\\d+)%");
+    expect(field().value).toBe("7d (\\d+)%");
+    const { store, wire } = views(await saveAndReadDraft());
+    expect(store.a1).toEqual({ kind: "screenRegex", pattern: "7d (\\d+)%" });
+    expect(wire.a1).toStrictEqual({ kind: "screenRegex", pattern: "7d (\\d+)%" });
+    dispose();
+  });
+
+  it("the_suggest_button_fills_the_claude_pattern", async () => {
+    const dispose = await mountQuota(seed());
+    expect(field().placeholder).toBe(CLAUDE_WEEKLY_QUOTA_REGEX);
+    suggestButton()!.click();
+    await settle();
+    expect(field().value).toBe(CLAUDE_WEEKLY_QUOTA_REGEX);
+    const { wire } = views(await saveAndReadDraft());
+    expect(wire.a1).toStrictEqual({ kind: "screenRegex", pattern: CLAUDE_WEEKLY_QUOTA_REGEX });
+    dispose();
+  });
+
+  it("clearing_the_pattern_removes_the_agents_key", async () => {
+    const dispose = await mountQuota(seed({ a1: { kind: "screenRegex", pattern: "OLD (\\d+)%" } }));
+    expect(field().value).toBe("OLD (\\d+)%");
+    await typeInto(field(), "");
+    const { store, wire } = views(await saveAndReadDraft());
+    expect("a1" in store).toBe(false);
+    expect("a1" in wire).toBe(false);
+    dispose();
+  });
+
+  it("a_whitespace_only_pattern_removes_the_key", async () => {
+    const dispose = await mountQuota(seed({ a1: { kind: "screenRegex", pattern: "OLD (\\d+)%" } }));
+    await typeInto(field(), "   ");
+    const { store, wire } = views(await saveAndReadDraft());
+    expect("a1" in store).toBe(false);
+    expect("a1" in wire).toBe(false);
+    dispose();
+  });
+
+  it("clearing_one_agents_pattern_keeps_another_agents_entry", async () => {
+    const b2 = { kind: "screenRegex", pattern: "B2 (\\d+)%", enabled: false };
+    const dispose = await mountQuota(seed({ a1: { kind: "screenRegex", pattern: "A1 (\\d+)%" }, b2 }));
+    await typeInto(field(), "");
+    const { store, wire } = views(await saveAndReadDraft());
+    expect("a1" in store).toBe(false);
+    expect("a1" in wire).toBe(false);
+    expect(store.b2).toEqual(b2);
+    expect(wire.b2).toStrictEqual(b2);
+    dispose();
+  });
+
+  it("clearing_a_field_with_no_map_at_all_creates_no_key", async () => {
+    const dispose = await mountQuota(seed());
+    await typeInto(field(), "");
+    const saved = await saveAndReadDraft();
+    const { store, wire } = views(saved);
+    expect("a1" in store).toBe(false);
+    expect("a1" in wire).toBe(false);
+    expect(saved?.quotaSources).toBeUndefined();
+    dispose();
+  });
+
+  it("a_pattern_with_leading_spaces_is_stored_untrimmed", async () => {
+    const dispose = await mountQuota(seed());
+    await typeInto(field(), "   7d (\\d+)%  ");
+    const { store, wire } = views(await saveAndReadDraft());
+    expect((store.a1 as { pattern: string }).pattern).toBe("   7d (\\d+)%  ");
+    expect(wire.a1).toStrictEqual({ kind: "screenRegex", pattern: "   7d (\\d+)%  " });
+    dispose();
+  });
+
+  it("the_suggest_button_is_absent_for_a_non_claude_agent", async () => {
+    const dispose = await mountQuota(seed(), 1);
+    expect(field(1).placeholder).toBe("");
+    expect(suggestButton(1)).toBeNull();
+    await typeInto(field(1), "X (\\d+)%");
+    const { wire } = views(await saveAndReadDraft());
+    expect(wire.b2).toStrictEqual({ kind: "screenRegex", pattern: "X (\\d+)%" });
+    dispose();
+  });
+
+  it("an_agent_with_no_entry_shows_a_blank_field", async () => {
+    const dispose = await mountQuota(seed({ b2: { kind: "screenRegex", pattern: "B2" } }));
+    expect(field().value).toBe("");
+    const { store, wire } = views(await saveAndReadDraft());
+    expect("a1" in store).toBe(false);
+    expect("a1" in wire).toBe(false);
+    dispose();
+  });
+
+  it("every_malformed_entry_shows_a_blank_field", async () => {
+    expect(MALFORMED_ROWS).toHaveLength(9);
+    for (const row of MALFORMED_ROWS) {
+      const dispose = await mountQuota(seed({ a1: row }));
+      expect(field().value, JSON.stringify(row)).toBe("");
+      expect(suggestButton(), JSON.stringify(row)).not.toBeNull();
+      dispose();
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("a_malformed_entry_survives_an_unrelated_save_unchanged", async () => {
+    expect(MALFORMED_ROWS).toHaveLength(9);
+    for (const row of MALFORMED_ROWS) {
+      vi.mocked(SettingsAPI.saveDraft).mockClear();
+      const dispose = await mountQuota(seed({ a1: row }));
+      await typeInto(byTestId<HTMLInputElement>("settings.agentRow.0.label"), "Renamed");
+      const saved = await saveAndReadDraft();
+      expect(saved?.agents[0]?.label).toBe("Renamed");
+      const { store, wire } = views(saved);
+      expect("a1" in store, JSON.stringify(row)).toBe(true);
+      expect(store.a1, JSON.stringify(row)).toEqual(row);
+      expect(wire.a1, JSON.stringify(row)).toStrictEqual(row);
+      dispose();
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("typing_replaces_a_malformed_entry_with_a_valid_one", async () => {
+    const dispose = await mountQuota(seed({ a1: { kind: "screenRegex", pattern: 42 } }));
+    await typeInto(field(), "NEW (\\d+)%");
+    const { wire } = views(await saveAndReadDraft());
+    expect(wire.a1).toStrictEqual({ kind: "screenRegex", pattern: "NEW (\\d+)%" });
+    dispose();
+  });
+
+  it("a_typed_pattern_survives_a_settings_refresh", async () => {
+    // Arm BEFORE mount: the modal subscribes in onMount (same shape as captureSettingsEvent).
+    let fire!: () => void;
+    vi.mocked(onCodingAgentSettingsUpdated).mockImplementation(
+      (callback: (payload: { op: string; agentId: string | null }) => void) => {
+        fire = () => callback({ op: "move", agentId: null });
+        return Promise.resolve(() => {});
+      },
+    );
+    // SettingsAPI.get keeps returning the OLD entry at the same key for the whole test.
+    const dispose = await mountQuota(seed({ a1: { kind: "screenRegex", pattern: "OLD (\\d+)%" } }));
+    await typeInto(field(), "NEW (\\d+)%");
+    fire();
+    await settle();
+    expect(field().value).toBe("NEW (\\d+)%");
+    const { wire } = views(await saveAndReadDraft());
+    expect(wire.a1).toStrictEqual({ kind: "screenRegex", pattern: "NEW (\\d+)%" });
+    dispose();
+  });
+
+  it("typing_over_a_disabled_entry_drops_the_enabled_flag", async () => {
+    const dispose = await mountQuota(
+      seed({ a1: { kind: "screenRegex", pattern: "OLD (\\d+)%", enabled: false } }),
+    );
+    expect(field().value).toBe("OLD (\\d+)%");
+    await typeInto(field(), "NEW (\\d+)%");
+    const { wire } = views(await saveAndReadDraft());
+    expect(wire.a1).toStrictEqual({ kind: "screenRegex", pattern: "NEW (\\d+)%" });
     dispose();
   });
 });

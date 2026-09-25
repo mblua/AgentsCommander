@@ -72,7 +72,7 @@ A session row packs several indicators. Each belongs to a feature documented els
 | Indicator | What it means | Page |
 |---|---|---|
 | Status dot | The session's lifecycle state | [Concepts: Session](../concepts.md#session) |
-| Co-managed circle and toggle | The orchestrator is in a Co-managed capture cycle; the toggle turns the room's flag on | [Co-managed rooms](co-managed-rooms.md) |
+| Co-managed circle and toggle | The orchestrator is in a Co-managed capture cycle; the toggle turns the room's flag on, and is not drawn while the global `coManagedEnabled` switch is off | [Co-managed rooms](co-managed-rooms.md) |
 | Profile drift badge | The session's coding-agent profile no longer matches its definition | [Coding Agent Profiles](coding-agent-profiles.md#drift-the-outdated-badge) |
 | Context badge | How much of the agent's context window is used | [Context tracking](context-tracking.md) |
 | Idle badge and AUTO-CLOSED badge | How long the team has been idle, and that auto-close already closed it | [Session auto-close](session-auto-close.md) |
@@ -94,7 +94,7 @@ A [Co-managed](co-managed-rooms.md) orchestrator paints its status circle **red*
 
 Precedence: `exited` wins over Co-managed, so the two never paint the same circle at once even though they share red. Co-managed wins over `waiting` and `pending`, on purpose: the idle edge is exactly where those would otherwise light up.
 
-The orchestrator row also carries the room's **Co-managed** checkbox, tooltipped `Let Jev read this room's orchestrator activity and route it when the room is idle`, with the reason underneath when the room is not effective.
+The orchestrator row also carries the room's **Co-managed** checkbox, tooltipped `Let Jev read this room's orchestrator activity and route it when the room is idle`, with the reason underneath when the room is not effective. The checkbox **is not drawn** while the global `coManagedEnabled` switch in `settings.json` is off, which is the default while the feature is in development.
 
 A co-managed replica row is **findable by searching for `comanaged`**: the circle's class is the row's search text.
 

@@ -148,6 +148,22 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
     expect(selections(r.fake)).toBe(1);
   });
 
+  it("4a. #2519: compact keeps the expanded row height (hidden text never wraps, banner clips)", () => {
+    // jsdom has no layout, so the height itself cannot be measured; pin the two rules that hold it.
+    const css = readFileSync(new URL("../styles/sidebar.css", moduleUrl), "utf8");
+    const rules = scanRules(css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " ")));
+    const hidden = ".sidebar-layout.sidebar-compact .root-agent-banner > :not(.root-agent-banner-toggle)";
+    const hiddenRule = rules.find((x) => x.selectors.includes(hidden));
+    expect(hiddenRule, hidden).toBeDefined();
+    expect(declValue(hiddenRule!.body, "white-space")).toBe("nowrap");
+    const banner = ".sidebar-layout.sidebar-compact .root-agent-banner";
+    const bannerRule = rules.find((x) => x.selectors.includes(banner));
+    expect(bannerRule, banner).toBeDefined();
+    expect(declValue(bannerRule!.body, "overflow")).toBe("hidden");
+    // Padding stays untouched (the row would lose 12px otherwise).
+    expect(bannerRule!.body).not.toMatch(/(^|[;\s])padding[\w-]*\s*:/);
+  });
+
   it("4b. accessibility: a group with a real open button and no widget inside a widget", () => {
     sessionsStore.setSessions([rootLive()]);
     const r = renderBanner();
@@ -336,6 +352,38 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
     expect(r.toggle.getAttribute("aria-label")).toContain("Ctrl+Shift+B");
     expect(r.toggle.getAttribute("title")).toContain("Ctrl+Shift+B");
     expect(r.toggle.getAttribute("aria-label")).not.toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
+  });
+
+  it("6b. #2519: the toggle is addressable by the UI bridge and reports compact/expanded", () => {
+    const r = renderBanner();
+    expect(r.root.querySelector('[data-ac-testid="rootAgent.compactToggle"]')).toBe(r.toggle);
+    expect(r.toggle.getAttribute("data-ac-role")).toBe("button");
+    expect(r.toggle.getAttribute("data-ac-state")).toBe("expanded");
+    setSidebarCompactMode(true);
+    expect(r.toggle.getAttribute("data-ac-state")).toBe("compact");
+  });
+
+  it.each([
+    ["right", false, ">>"],
+    ["right", true, "<<"],
+    ["left", false, "<<"],
+    ["left", true, ">>"],
+  ] as const)("6c. #2519: %s rail, compact=%s shows %s", (railSide, isCompact, glyph) => {
+    const rendered = mount(() => <RootAgentBanner compact={isCompact} railSide={railSide} />, bannerFake());
+    const toggle = rendered.root.querySelector(".root-agent-banner-toggle") as HTMLElement;
+    expect(toggle.textContent).toBe(glyph);
+    // The glyph is the only thing that mirrors.
+    expect(toggle.getAttribute("data-ac-state")).toBe(isCompact ? "compact" : "expanded");
+    expect(toggle.getAttribute("aria-expanded")).toBe(String(!isCompact));
+  });
+
+  it("6d. #2519: SidebarApp hands its rail side to the banner", async () => {
+    const fake = new FakeTransport();
+    setupApp(fake);
+    const rendered = mount(() => <SidebarApp embedded railSide="left" />, fake);
+    await appSettled(fake);
+    const toggle = rendered.root.querySelector(".root-agent-banner-toggle") as HTMLElement;
+    expect(toggle.textContent).toBe(sidebarCompact() ? ">>" : "<<");
   });
 
   it("7. SidebarApp hydrates the configured shortcut on load and every refresh, without a remount", async () => {

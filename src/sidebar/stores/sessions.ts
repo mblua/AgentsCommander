@@ -96,6 +96,9 @@ const [state, setState] = createStore<SessionsStateWithComanaged>({
   // wholesale `state.sessions` replacement in projectStoredSelection cannot
   // touch it, so a list refresh never wipes an event-only Co-managed flag.
   comanagedBySessionId: {},
+  // #2482 - keyed sidecar for the same reason: a list refresh never wipes an
+  // event-only weekly quota reading.
+  weeklyQuotaUsedBySessionId: {},
   hydrated: false,
 });
 
@@ -605,6 +608,9 @@ export const sessionsStore = {
   get comanagedBySessionId() {
     return state.comanagedBySessionId;
   },
+  get weeklyQuotaUsedBySessionId() {
+    return state.weeklyQuotaUsedBySessionId;
+  },
   get hydrated() {
     return state.hydrated;
   },
@@ -690,6 +696,24 @@ export const sessionsStore = {
     const emptyReadings: Record<string, number | null> = {};
     setState(
       "contextPercentBySessionId",
+      reconcile(emptyReadings),
+    );
+  },
+
+  setSessionAgentQuota(sessionId: string, weeklyUsedPercent: number | null) {
+    setState("weeklyQuotaUsedBySessionId", (prev) => ({ ...prev, [sessionId]: weeklyUsedPercent }));
+  },
+
+  hydrateSessionAgentQuota(sessionId: string, weeklyUsedPercent: number | null) {
+    setState("weeklyQuotaUsedBySessionId", (prev) =>
+      sessionId in prev ? prev : { ...prev, [sessionId]: weeklyUsedPercent },
+    );
+  },
+
+  resetQuotaReadingsForTests() {
+    const emptyReadings: Record<string, number | null> = {};
+    setState(
+      "weeklyQuotaUsedBySessionId",
       reconcile(emptyReadings),
     );
   },

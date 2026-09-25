@@ -1295,4 +1295,14 @@ mod tests {
             }
         ));
     }
+
+    /// #2470 - the overlay name is typed twice, here and in the registry. The
+    /// tie is test-only because this module has no outgoing arc to spend.
+    #[test]
+    fn overlay_file_name_matches_the_registry() {
+        assert_eq!(
+            SETTINGS_LOCAL_FILE_NAME,
+            crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME
+        );
+    }
 }

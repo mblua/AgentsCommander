@@ -6,6 +6,10 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Changed
+
+- **Co-managed is now off for the whole app by default, because the feature is in development.** A new global switch, `coManagedEnabled` in `settings.json`, defaults to `false`. While it is off, no room is co-managed, the **Co-managed** checkbox is not drawn and AC makes no Jev calls. Rooms you already enabled become inert when you update; their `.co-managed/config.json` is left untouched, so they come back as they were once you turn the switch on. To turn it on, add `"coManagedEnabled": true` to `settings.json` and restart AC; there is no UI control. ([#2491](https://github.com/mblua/AgentsCommander/issues/2491))
+
 ## 0.39.0
 
 ### Added

@@ -20,6 +20,7 @@ import type {
   WatcherPatternPreview,
   WatcherReachEntry,
   WatcherReachRow,
+  QuotaSourceConfig,
 } from "../../shared/types";
 import {
   SettingsAPI,
@@ -44,6 +45,16 @@ import { codingAgentsStore } from "../stores/coding-agents";
 import TrashIcon from "./TrashIcon";
 import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
+import AgentHelpTipsModal from "./AgentHelpTipsModal";
+import {
+  EMPTY_AGENT_HELP_OVERLAY,
+  docsUrlFor,
+  loadAgentHelpOverlay,
+  paramsExampleFor,
+  resolveAgentHelpEntry,
+  resolveAgentHelpGeneral,
+  type AgentHelpOverlay,
+} from "../../shared/agent-help";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import { applySelectedRowRail, isValidRailColor, isValidRailWidth } from "../selected-row-rail";
 import {
@@ -85,10 +96,14 @@ import {
   shouldMaskEnvValue,
   sortedProfileLetters,
   suggestedContextRegex,
+  suggestedQuotaRegex,
   validateEnvRows,
 } from "../../shared/profile-utils";
 
 type ProfileCellEnvRow = { key: string; value: string };
+
+const DEFAULT_ROOM_NUMBER_MASK = "#";
+const ROOM_NUMBER_MASK_MAX_WIDTH = 9;
 
 const AC_PLACEHOLDER_HELP = [
   "AC path placeholders (expand at launch):",
@@ -147,6 +162,17 @@ const MOVE_OVERLAY_REASON =
 export function isPlausibleCompleteExecutablePath(value: string): boolean {
   const trimmed = value.trim();
   return trimmed === "" || trimmed.includes("/") || trimmed.includes("\\");
+}
+
+/** #2482 - the full runtime shape check, exported for its own tests. Accepts
+ *  exactly what p1's `QuotaSourceConfig::ScreenRegex` deserializes, nothing more. */
+export function isScreenRegexSource(v: unknown): v is QuotaSourceConfig {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  const o = v as Record<string, unknown>;
+  if (o.kind !== "screenRegex") return false;
+  if (typeof o.pattern !== "string") return false;
+  if (o.enabled !== undefined && typeof o.enabled !== "boolean") return false;
+  return true;
 }
 
 /** #1951 - the invalid Default Shell warning is platform-specific. Windows
@@ -1003,6 +1029,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [activeAgentId, setActiveAgentId] = createSignal<string | null>(null);
 
   const [reseedTarget, setReseedTarget] = createSignal<CodingAgentDefinition | null>(null);
+
+  // #2143: one overlay feeds the params placeholder, the docs links and both tips windows.
+  const [agentHelpOverlay, setAgentHelpOverlay] =
+    createSignal<AgentHelpOverlay>(EMPTY_AGENT_HELP_OVERLAY);
+  onMount(() => {
+    void loadAgentHelpOverlay().then(setAgentHelpOverlay);
+  });
+  // Keyed by profile card: one agent renders a card per profile letter.
+  const [tipsFor, setTipsFor] = createSignal<string | null>(null);
+  const [generalOpen, setGeneralOpen] = createSignal(false);
+  const generalLabel = () =>
+    resolveAgentHelpGeneral(agentHelpOverlay())?.label || "Best Practices";
   const [reseeding, setReseeding] = createSignal(false);
 
   const agentList = () => settings.data?.agents ?? [];
@@ -1521,6 +1559,30 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     if (!settings.data) return;
     setDraftDirty(true);
     setSettings("data", "agents", index, field as any, value as any);
+  };
+
+  /** #2482 - what the field shows. Reads the root map, never `AgentConfig`. */
+  const quotaPattern = (agentId: string): string => {
+    const entry = settings.data?.quotaSources?.[agentId];
+    // Narrows the FULL shape, not just `kind`: p1's fallback arm is any JSON value.
+    return isScreenRegexSource(entry) ? entry.pattern : "";
+  };
+
+  /** #2482 - write, or remove the key when the field is cleared. */
+  const setQuotaPattern = (agentId: string, pattern: string): void => {
+    if (!settings.data) return;
+    const blank = pattern.trim() === "";
+    // Early return: on an absent map a write CREATES the key (present, undefined).
+    if (blank && !settings.data.quotaSources) return;
+    setDraftDirty(true);
+    setSettings("data", "quotaSources", (map) =>
+      // Blank REMOVES the key; `[agentId]: undefined`, never `delete` (the store
+      // diffs the returned object, so an omitted key survives). The non-blank arm
+      // REPLACES the whole entry and spreads siblings untouched.
+      blank
+        ? { ...map, [agentId]: undefined }
+        : { ...(map ?? {}), [agentId]: { kind: "screenRegex", pattern } },
+    );
   };
 
   const setAgentConfigSeedEnabled = (index: number, enabled: boolean) => {
@@ -2114,6 +2176,23 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       ? null
       : "Sidebar compact hotkey: expected Ctrl+Shift+<A-Z>, excluding W, R, C and V";
 
+  const roomNumberMaskWidth = (): number | null => {
+    const raw = settings.data?.roomNumberMask ?? DEFAULT_ROOM_NUMBER_MASK;
+    if (raw.length === 0 || raw.length > ROOM_NUMBER_MASK_MAX_WIDTH) return null;
+    return [...raw].every((c) => c === "#") ? raw.length : null;
+  };
+
+  const validateRoomNumberMask = (): string | null =>
+    roomNumberMaskWidth() === null
+      ? `Room number mask: must be 1 to ${ROOM_NUMBER_MASK_MAX_WIDTH} '#' characters, e.g. # or ##`
+      : null;
+
+  // Display text only, with a fixed sample team; never a room naming helper.
+  const roomNumberMaskExample = (): string => {
+    const width = roomNumberMaskWidth() ?? DEFAULT_ROOM_NUMBER_MASK.length;
+    return `Room 1 -> room-${"1".padStart(width, "0")}-my-team . Room 100 -> room-${"100".padStart(width, "0")}-my-team (wider numbers are never cut).`;
+  };
+
   const validateTypingHoldSeconds = (): string | null => {
     if (!settings.data) return null;
     if (parseTypingHoldSeconds(typingHoldSecondsText()) === null) {
@@ -2129,7 +2208,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateTypingHoldSeconds() ??
     validateApiServerSettings() ??
     validateScreenshotHotkey() ??
-    validateSidebarCompactHotkey();
+    validateSidebarCompactHotkey() ??
+    validateRoomNumberMask();
 
   const handleSave = async () => {
     if (!settings.data) return;
@@ -2335,6 +2415,25 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <Show when={hotkeyCaptureError()}>
             {(message) => (
               <div class="settings-hint settings-hint-error" data-ac-testid="settings.general.sidebarCompactHotkey.error">
+                {message()}
+              </div>
+            )}
+          </Show>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Room number mask</span>
+          <input
+            class="settings-input settings-input-sm"
+            value={settings.data?.roomNumberMask ?? DEFAULT_ROOM_NUMBER_MASK}
+            onInput={(e) => updateField("roomNumberMask", e.currentTarget.value)}
+            data-ac-testid="settings.general.roomNumberMask"
+          />
+          <div class="settings-hint" data-ac-testid="settings.general.roomNumberMask.example">
+            {roomNumberMaskExample()}
+          </div>
+          <Show when={validateRoomNumberMask()}>
+            {(message) => (
+              <div class="settings-hint settings-hint-error" data-ac-testid="settings.general.roomNumberMask.error">
                 {message()}
               </div>
             )}
@@ -3536,6 +3635,35 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               be unavailable, stale or absent, and a high one does not mean the session needs
               restarting. <strong>Leave blank for no badge.</strong>
             </div>
+            <label class="settings-field">
+              <span class="settings-label">Weekly quota pattern</span>
+              <input
+                class="settings-input"
+                value={quotaPattern(agent.id)}
+                onInput={(e) => setQuotaPattern(agent.id, e.currentTarget.value)}
+                placeholder={suggestedQuotaRegex(agent.command) ?? ""}
+                data-ac-testid={`settings.agentRow.${i()}.quotaPattern`}
+                data-ac-role="textbox"
+                spellcheck={false}
+              />
+            </label>
+            <Show when={suggestedQuotaRegex(agent.command)}>
+              {(suggested) => (
+                <button
+                  class="settings-add-btn"
+                  onClick={() => setQuotaPattern(agent.id, suggested())}
+                  data-ac-testid={`settings.agentRow.${i()}.quotaPattern.suggest`}
+                  data-ac-role="button"
+                >
+                  Use suggested pattern
+                </button>
+              )}
+            </Show>
+            <div class="settings-hint">
+              Best-effort pattern AC runs over what this agent draws in its terminal, to fill its
+              chip with the remaining 7-day quota. Capture group 1 is the USED percentage. The
+              reading can be unavailable or stale; then the chip looks as it does with this field blank.
+            </div>
             <label class="settings-checkbox-field">
               <input
                 type="checkbox"
@@ -3618,6 +3746,22 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const renderAgentPresets = () => (
     <div class="settings-agent-actions">
+      <button
+        type="button"
+        class="settings-row-btn"
+        data-ac-testid="settings.agentHelp.bestPractices"
+        onClick={() => setGeneralOpen(true)}
+      >
+        {generalLabel()}
+      </button>
+      <Show when={generalOpen()}>
+        <AgentHelpTipsModal
+          title={generalLabel()}
+          entry={resolveAgentHelpGeneral(agentHelpOverlay())}
+          localError={agentHelpOverlay().localError}
+          onClose={() => setGeneralOpen(false)}
+        />
+      </Show>
       {/* #1965 — catalog status. Failures and warnings render path/reason as
           text and are never replaced by selectable embedded defaults. */}
       <Show when={codingAgentsStore.loading()}>
@@ -3970,6 +4114,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const command = () => displayedProfileCellCommand(agent.id, letter);
     const cellError = () => profileCellErrors[profileCellKey(agent.id, letter)];
     const cardId = `settings.profileCard.${railIndex}.${letter}`;
+    const docsUrl = () => docsUrlFor(agentHelpOverlay(), agent.id, agent.command);
     const expanded = () => isCellExpanded(agent.id, letter);
     const preview = () =>
       resolveProfilePreview(settings.data!.codingAgentProfiles, agent.id, letter);
@@ -4051,6 +4196,30 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             >
               ?
             </button>
+            <Show when={docsUrl()}>
+              {(url) => (
+                <a
+                  class="settings-field-help settings-field-help-link"
+                  href={url()}
+                  title="Official documentation"
+                  aria-label={`Official documentation for ${agent.label || agent.command}`}
+                  data-ac-testid={`${cardId}.docsLink`}
+                >
+                  ↗
+                </a>
+              )}
+            </Show>
+            <button
+              type="button"
+              class="settings-field-help"
+              title="Tips"
+              aria-label={`Tips for ${agent.label || agent.command}`}
+              onClick={() => setTipsFor(cardId)}
+              data-ac-testid={`${cardId}.tipsButton`}
+              data-ac-role="button"
+            >
+              i
+            </button>
           </div>
           <div class="settings-profile-command-base" data-ac-testid={`${cardId}.commandBase`}>
             Runs <code>{agent.command || "(set the Coding Agent command first)"}</code> then your params:
@@ -4060,7 +4229,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             classList={{ invalid: Boolean(cellError()) }}
             value={command()}
             onInput={(e) => updateProfileCellCommand(agent.id, letter, e.currentTarget.value)}
-            placeholder="--sandbox workspace-write --model gpt-5-codex"
+            placeholder={paramsExampleFor(agentHelpOverlay(), agent.id, agent.command)}
             data-ac-testid={`${cardId}.command`}
             data-ac-role="textbox"
             data-ac-state={cellError() ? "invalid" : "valid"}
@@ -4217,6 +4386,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               </Show>
             </div>
           </Show>
+        </Show>
+        <Show when={tipsFor() === cardId}>
+          <AgentHelpTipsModal
+            title={agent.label}
+            entry={resolveAgentHelpEntry(agentHelpOverlay(), agent.id, agent.command)}
+            localError={agentHelpOverlay().localError}
+            onClose={() => setTipsFor(null)}
+          />
         </Show>
       </article>
     );
@@ -4531,7 +4708,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             type="password"
             value={settings.data!.jevApiKey ?? ""}
             onInput={(e) => updateField("jevApiKey", e.currentTarget.value)}
-            placeholder="Empty means Co-managed is inert"
+            placeholder="Co-managed is off by default while in development (coManagedEnabled)"
             data-ac-testid="settings.integrations.jevApiKey"
           />
         </label>

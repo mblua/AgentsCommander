@@ -183,3 +183,48 @@ describe("sessionsStore context readings (#1033)", () => {
     expect(sessionsStore.contextPercentBySessionId["ctx-h"]).toBe(42);
   });
 });
+
+describe("sessionsStore weekly quota readings (#2482)", () => {
+  beforeEach(() => {
+    sessionsStore.setSessions([]);
+    sessionsStore.resetQuotaReadingsForTests();
+  });
+  afterEach(() => {
+    sessionsStore.setSessions([]);
+    sessionsStore.resetQuotaReadingsForTests();
+  });
+
+  it("keeps two sessions independent (two_sessions_never_cross)", () => {
+    sessionsStore.setSessionAgentQuota("q-a1", 28);
+    sessionsStore.setSessionAgentQuota("q-a2", 90);
+
+    expect(sessionsStore.weeklyQuotaUsedBySessionId["q-a1"]).toBe(28);
+    expect(sessionsStore.weeklyQuotaUsedBySessionId["q-a2"]).toBe(90);
+  });
+
+  // A stored zero is a real reading: red if the guard is truthiness, not key presence.
+  it("never clobbers an event (hydrate_does_not_overwrite_a_reading_already_set_by_an_event)", () => {
+    sessionsStore.setSessionAgentQuota("q-b", 0);
+
+    sessionsStore.hydrateSessionAgentQuota("q-b", 42);
+
+    expect(sessionsStore.weeklyQuotaUsedBySessionId["q-b"]).toBe(0);
+  });
+
+  it("survives a wholesale replace (a_sessions_list_replacement_leaves_the_quota_sidecar_intact)", () => {
+    sessionsStore.setSessionAgentQuota("q-c", 28);
+
+    sessionsStore.setSessions([session({ id: "q-c" })]);
+
+    expect(sessionsStore.weeklyQuotaUsedBySessionId["q-c"]).toBe(28);
+  });
+
+  it("empties the sidecar (reset_quota_readings_for_tests_empties_the_sidecar)", () => {
+    sessionsStore.setSessionAgentQuota("q-d1", 28);
+    sessionsStore.setSessionAgentQuota("q-d2", null);
+
+    sessionsStore.resetQuotaReadingsForTests();
+
+    expect(Object.keys(sessionsStore.weeklyQuotaUsedBySessionId)).toEqual([]);
+  });
+});

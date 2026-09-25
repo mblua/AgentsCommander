@@ -10,6 +10,7 @@ use terminal_snapshot_renderer::{
 };
 use uuid::Uuid;
 
+use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::phone::terminal_snapshot::{confirmation_tag, HostTerminalSnapshotRequest};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -421,16 +422,18 @@ fn is_persisted_static_token(token: &str) -> bool {
     let Some(directory) = crate::config::config_dir() else {
         return false;
     };
-    let settings_token =
-        crate::path_identity::read_bounded_regular(&directory.join("settings.json"), 1024 * 1024)
-            .ok()
-            .and_then(|(bytes, _)| crate::path_identity::parse_json_no_duplicates(&bytes).ok())
-            .and_then(|value| {
-                value
-                    .get("rootToken")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-            });
+    let settings_token = crate::path_identity::read_bounded_regular(
+        &directory.join(SETTINGS_FILE_NAME),
+        1024 * 1024,
+    )
+    .ok()
+    .and_then(|(bytes, _)| crate::path_identity::parse_json_no_duplicates(&bytes).ok())
+    .and_then(|value| {
+        value
+            .get("rootToken")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    });
     if settings_token.as_deref() == Some(token) {
         return true;
     }

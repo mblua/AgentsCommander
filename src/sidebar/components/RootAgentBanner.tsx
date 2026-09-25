@@ -39,13 +39,16 @@ import {
   sidebarCompact,
   toggleSidebarCompact,
 } from "../../shared/sidebar-compact";
+import type { MainSidebarSide } from "../../shared/types";
 
 // #2236 D23 - a click whose target sits inside one of these is a nested
 // control's own click and must not also activate the row.
 const CONTROL_SEL = "button, a, [role='button'], [role='menuitem']";
 
-const RootAgentBanner: Component<{ compact?: boolean }> = (props) => {
+const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide }> = (props) => {
   const compact = () => props.compact ?? sidebarCompact();
+  // #2519: the arrows point the way the panel moves, so the left rail mirrors the glyph.
+  const toggleGlyph = () => ((props.railSide === "left") !== compact() ? "<<" : ">>");
   const [busy, setBusy] = createSignal(false);
   // #1871 - the menu is open iff menuPos() !== null. menuEpoch is a plain let,
   // not a signal, exactly as replicaCtxMenuEpoch is in ProjectPanel: nothing
@@ -534,9 +537,12 @@ const RootAgentBanner: Component<{ compact?: boolean }> = (props) => {
           aria-expanded={!compact()}
           aria-label={toggleLabel()}
           title={toggleLabel()}
+          data-ac-testid="rootAgent.compactToggle"
+          data-ac-role="button"
+          data-ac-state={compact() ? "compact" : "expanded"}
           onClick={() => toggleSidebarCompact()}
         >
-          {compact() ? "<<" : ">>"}
+          {toggleGlyph()}
         </button>
       </div>
       <Show when={showAgentPicker()}>

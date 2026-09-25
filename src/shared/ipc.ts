@@ -21,6 +21,7 @@ import type {
   SessionRepo,
   SessionAgentMessagePayload,
   SessionContextPayload,
+  SessionAgentQuotaPayload,
   SessionEnvWarningPayload,
   SessionWarning,
   PtyOutputEvent,
@@ -307,6 +308,9 @@ export const PtyAPI = {
 
   getSessionContext: (sessionId: string) =>
     transport.invoke<number | null>("get_session_context", { sessionId }),
+
+  getSessionAgentQuota: (sessionId: string) =>
+    transport.invoke<number | null>("get_session_agent_quota", { sessionId }),
 
   /** #1171 - the session's watcher activity ring plus its loss and warm-up signals.
    *  A session with no buffer answers with an empty snapshot, never null and never an
@@ -1037,6 +1041,14 @@ export function onSessionContext(
   callback: (data: SessionContextPayload) => void
 ): Promise<UnlistenFn> {
   return transport.listen<SessionContextPayload>("session_context", callback);
+}
+
+/** Registered UNSCOPED, exactly like `onSessionContext`: the backend emits to
+ *  every window so a detached terminal receives it too. */
+export function onSessionAgentQuota(
+  callback: (data: SessionAgentQuotaPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<SessionAgentQuotaPayload>("session_agent_quota", callback);
 }
 
 /**

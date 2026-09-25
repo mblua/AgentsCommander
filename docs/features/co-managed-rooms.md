@@ -1,8 +1,10 @@
 # Co-managed rooms
 
+> **Off by default: this feature is in development.** Co-managed is switched off for the whole app until you add `"coManagedEnabled": true` to `settings.json` and restart AC. While the switch is off, no room is co-managed, the **Co-managed** checkbox is not drawn, and AC makes no Jev calls, whatever the room flags and the key say.
+
 For developers who want a room's orchestrator to be read and routed automatically when it goes idle. After this page you know what Co-managed does, how to turn it on, how to write the category catalog, what the red dot means, and what the feature explicitly does not prove.
 
-**Co-managed is per room, off by default, and applies only to that room's orchestrator.** When the orchestrator reaches idle, AC takes the latest complete captured agent message, classifies it with [Jev](#what-jev-is-and-what-leaves-your-machine), and routes it to one of exactly four destinations. It reuses the transcript capture AC already runs for the [Telegram bridge](telegram-bridge.md), it **never requires a Telegram bot**, and enabling or disabling Telegram does not change it.
+**Co-managed is off by default for the whole app and, once switched on, per room and off by default, and applies only to that room's orchestrator.** When the orchestrator reaches idle, AC takes the latest complete captured agent message, classifies it with [Jev](#what-jev-is-and-what-leaves-your-machine), and routes it to one of exactly four destinations. It reuses the transcript capture AC already runs for the [Telegram bridge](telegram-bridge.md), it **never requires a Telegram bot**, and enabling or disabling Telegram does not change it.
 
 ## What it does not prove
 
@@ -13,21 +15,23 @@ Two claims this feature never makes, and never lets a document make for it:
 
 ## Turning it on
 
-Two steps, in this order:
+Three steps, in this order:
 
-1. **Set a Jev API key.** Settings > Integrations > **Co-managed (Jev)** > `Jev API Key`. An empty key leaves the feature inert everywhere. The five other `jev*` keys have working defaults; see [Settings: Co-managed (Jev)](../reference/settings.md#co-managed-jev).
-2. **Turn on the room.** In the sidebar's project panel, the orchestrator row of the room carries a **Co-managed** checkbox, tooltipped `Let Jev read this room's orchestrator activity and route it when the room is idle`. One control per room, on the row that already carries the status dot. It writes `enabled` into `<room-root>/.co-managed/config.json`.
+1. **Turn on the global switch.** Add `"coManagedEnabled": true` to `settings.json` and restart AC. There is no UI control for it, and it takes effect only on restart. See [Settings: Co-managed (Jev)](../reference/settings.md#co-managed-jev).
+2. **Set a Jev API key.** Settings > Integrations > **Co-managed (Jev)** > `Jev API Key`. An empty key leaves the feature inert everywhere. The five other `jev*` keys have working defaults; see [Settings: Co-managed (Jev)](../reference/settings.md#co-managed-jev).
+3. **Turn on the room.** In the sidebar's project panel, the orchestrator row of the room carries a **Co-managed** checkbox, tooltipped `Let Jev read this room's orchestrator activity and route it when the room is idle`. One control per room, on the row that already carries the status dot. It writes `enabled` into `<room-root>/.co-managed/config.json`.
 
 Then point the room at a **category catalog**, the file that says what to do with a classified message. Set `catalogPath` in that same `config.json`; there is no UI field for it yet. Without a catalog the room stays off with the reason `Set a category catalog file for this room.`
 
 The room flag lives under the room root, so it **dies with the room**, and `room-*/` is gitignored, so nothing from `.co-managed/` enters your repository.
 
-## The six reasons a room is off
+## The seven reasons a room is off
 
 The orchestrator row shows the reason under the toggle when Co-managed is not effective. The reasons are checked in this order, and exactly one is reported:
 
 | Reason | What you see | Fix |
 |---|---|---|
+| `GlobalSwitchOff` | no line: the checkbox is not drawn while the switch is off | Add `"coManagedEnabled": true` to `settings.json` and restart AC. |
 | `NotAnOrchestrator` | Only this room's orchestrator can be co-managed. | Use the orchestrator row; worker replicas cannot be co-managed. |
 | `UnsupportedProvider` | `<agent>` has no transcript reader, so nothing can be captured. | Run the orchestrator on a coding agent AC can read a transcript for (Claude or Codex). Antigravity and Pi take the PTY fallback, and Muse is rejected outright. |
 | `RoomFlagOff` | no line: the toggle itself is the answer | Turn the room's Co-managed toggle on. |

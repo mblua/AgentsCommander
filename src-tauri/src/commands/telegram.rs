@@ -13,7 +13,7 @@ use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
 use crate::telegram::bridge::{self, ReaderDest, SessionReaderKind};
-use crate::telegram::manager::{ReaderConsumer, ReaderEntry, TelegramBridgeState};
+use crate::telegram::manager::{DemandEpoch, ReaderConsumer, ReaderEntry, TelegramBridgeState};
 use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
 
 /// Derive which session-reader pipeline to spawn for a given session.
@@ -145,6 +145,46 @@ async fn session_is_live<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid
     mgr.get_session(session_id).await.is_some()
 }
 
+/// True while `session_id` already holds a **Room** demand (#2456).
+///
+/// An in-memory lookup under the bridge lock, the same query as the fast path
+/// in [`raise_reader_demand`], so the re-raise tick can skip a satisfied
+/// session before paying for readiness resolution.
+pub(crate) async fn holds_room_reader_demand<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) -> bool {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return false;
+    };
+    let tg = tg_state.lock().await;
+    tg.reader_demands(session_id)
+        .contains(&ReaderConsumer::Room)
+}
+
+/// The Room demand's release epoch for `session_id` (#2516), read under the
+/// bridge lock; [`DemandEpoch::ZERO`] when the bridge state is unmanaged.
+pub(crate) async fn room_demand_epoch<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) -> DemandEpoch {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return DemandEpoch::ZERO;
+    };
+    let tg = tg_state.lock().await;
+    tg.demand_epoch(session_id, ReaderConsumer::Room)
+}
+
+/// [`raise_reader_demand_guarded`] with no epoch guard: the Bot path.
+pub(crate) async fn raise_reader_demand<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    consumer: ReaderConsumer,
+    dest: Option<ReaderDest>,
+) -> bool {
+    raise_reader_demand_guarded(app, session_id, consumer, dest, None).await
+}
+
 /// Raise `consumer`'s demand on `session_id`'s transcript reader (#2232 phase 4
 /// section 5).
 ///
@@ -155,11 +195,18 @@ async fn session_is_live<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid
 /// production.
 ///
 /// Returns `true` when a reader is running for the session afterwards.
-pub(crate) async fn raise_reader_demand<R: tauri::Runtime>(
+///
+/// With `expected` set (#2516), the raise aborts and returns `false`, adding
+/// no demand, opening no capture slot and spawning no reader, when a release
+/// of this `(session_id, consumer)` demand has happened since the caller
+/// sampled `expected`. The check is the first statement under each bridge
+/// lock, so compare and mutation share one critical section.
+pub(crate) async fn raise_reader_demand_guarded<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
     consumer: ReaderConsumer,
     dest: Option<ReaderDest>,
+    expected: Option<DemandEpoch>,
 ) -> bool {
     let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
         return false;
@@ -167,6 +214,9 @@ pub(crate) async fn raise_reader_demand<R: tauri::Runtime>(
     // Fast path taken without resolving anything: the reader is already there.
     {
         let mut tg = tg_state.lock().await;
+        if expected.is_some_and(|e| tg.demand_epoch(session_id, consumer) != e) {
+            return false;
+        }
         if tg.reader_is_running(session_id) {
             return tg.reader_demand_add(session_id, consumer, dest);
         }
@@ -182,6 +232,9 @@ pub(crate) async fn raise_reader_demand<R: tauri::Runtime>(
     let network = app.state::<OutboundNetwork>().inner().clone();
 
     let mut tg = tg_state.lock().await;
+    if expected.is_some_and(|e| tg.demand_epoch(session_id, consumer) != e) {
+        return false;
+    }
     // Re-check under the lock: another demand may have spawned it meanwhile.
     if tg.reader_is_running(session_id) {
         return tg.reader_demand_add(session_id, consumer, dest);

@@ -1179,12 +1179,7 @@ pub(crate) async fn create_workgroup_on_disk(
         };
 
     let wg_number = determine_next_wg_number(&base);
-    let wg_name = format!(
-        "{}{}-{}",
-        crate::config::entity_prefix::ROOM_DIR_PREFIX,
-        wg_number,
-        safe_team
-    );
+    let wg_name = room_dir_name(wg_number, &safe_team, room_number_pad_width());
     let wg_dir = base.join(&wg_name);
     if wg_dir.exists() {
         return Err(format!("Room directory already exists: {}", wg_name));
@@ -2937,12 +2932,7 @@ pub async fn create_workgroup(
     // Determine next WG number
     let wg_number = determine_next_wg_number(&base);
 
-    let wg_name = format!(
-        "{}{}-{}",
-        crate::config::entity_prefix::ROOM_DIR_PREFIX,
-        wg_number,
-        safe_team
-    );
+    let wg_name = room_dir_name(wg_number, &safe_team, room_number_pad_width());
     let wg_dir = base.join(&wg_name);
     if wg_dir.exists() {
         return Err(format!("Room directory already exists: {}", wg_name));
@@ -4370,6 +4360,23 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
 /// `room-1-{team}` is in fact present; otherwise the slot-1 creation
 /// succeeds with stale state. Surfacing the read error is tracked
 /// separately and is out of scope for #177.
+/// #2507 Pure seam: mask -> pad width, applying the fallback.
+pub(crate) fn pad_width_for_mask(mask: &str) -> usize {
+    crate::config::settings::validate_room_number_mask(mask)
+        .unwrap_or_else(|_| crate::config::settings::default_room_number_mask().len())
+}
+
+/// #2507 The ONLY place a room directory name is built from a number.
+pub(crate) fn room_dir_name(wg_number: u32, suffix: &str, width: usize) -> String {
+    use crate::config::entity_prefix::ROOM_DIR_PREFIX;
+    format!("{ROOM_DIR_PREFIX}{wg_number:0width$}-{suffix}")
+}
+
+/// #2507 Pad width for a NEW room number, from persisted settings.
+pub(crate) fn room_number_pad_width() -> usize {
+    pad_width_for_mask(&crate::config::settings::load_settings_for_cli().room_number_mask)
+}
+
 pub(crate) fn determine_next_wg_number(ac_root: &Path) -> u32 {
     let mut taken: HashSet<u32> = HashSet::new();
 
@@ -8173,6 +8180,76 @@ mod tests {
             vec![wg_dir],
             "`room-shared` under a room root must not appear as a phantom room"
         );
+    }
+
+    // ── #2507 room number mask ──
+
+    #[test]
+    fn default_mask_reproduces_todays_names() {
+        let width = pad_width_for_mask("#");
+        assert_eq!(width, 1);
+        for n in [1u32, 9, 10, 99, 100] {
+            assert_eq!(room_dir_name(n, "team", width), format!("room-{n}-team"));
+        }
+    }
+
+    #[test]
+    fn room_dir_name_pads_and_never_truncates() {
+        for width in 1usize..=9 {
+            for n in [1u32, 9, 10, 99, 100, 4294967295] {
+                let digits = n.to_string();
+                let expected = if digits.len() < width {
+                    format!("room-{}{digits}-team", "0".repeat(width - digits.len()))
+                } else {
+                    format!("room-{digits}-team")
+                };
+                assert_eq!(room_dir_name(n, "team", width), expected, "n={n} w={width}");
+            }
+        }
+        assert_eq!(room_dir_name(100, "team", 2), "room-100-team");
+        assert_eq!(room_dir_name(1, "team", 1), "room-1-team");
+        assert_eq!(room_dir_name(1, "team", 2), "room-01-team");
+        assert_eq!(room_dir_name(1, "team", 4), "room-0001-team");
+    }
+
+    #[test]
+    fn pad_width_for_mask_returns_the_mask_width() {
+        assert_eq!(pad_width_for_mask("#"), 1);
+        assert_eq!(pad_width_for_mask("##"), 2);
+        assert_eq!(pad_width_for_mask("#########"), 9);
+    }
+
+    #[test]
+    fn allocated_room_number_is_never_zero() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        touch_dir(tmp.path(), "room-0-team");
+        let n = determine_next_wg_number(tmp.path());
+        assert_eq!(n, 1);
+        assert_eq!(room_dir_name(n, "team", 2), "room-01-team");
+    }
+
+    #[test]
+    fn unpadded_existing_room_does_not_collide_with_a_padded_new_one() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        touch_dir(tmp.path(), "room-1-team");
+        let n = determine_next_wg_number(tmp.path());
+        assert_eq!(n, 2);
+        let name = room_dir_name(n, "team", 2);
+        assert_eq!(name, "room-02-team");
+        for entry in std::fs::read_dir(tmp.path()).expect("read_dir") {
+            assert_ne!(entry.expect("entry").file_name().to_string_lossy(), name);
+        }
+    }
+
+    #[test]
+    fn invalid_or_missing_mask_falls_back_to_the_default_width() {
+        let default_width = crate::config::settings::default_room_number_mask().len();
+        assert_eq!(default_width, 1);
+        for mask in ["", " ##", "##1", "2", "#-#", "##########"] {
+            let width = pad_width_for_mask(mask);
+            assert_eq!(width, default_width, "mask {mask:?}");
+            assert_eq!(room_dir_name(1, "team", width), "room-1-team");
+        }
     }
 }
 

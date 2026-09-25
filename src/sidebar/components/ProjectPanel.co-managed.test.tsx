@@ -126,12 +126,19 @@ interface MountOptions {
   rejectSetEnabled?: string;
   /** Leave the orchestrator without a session so its menu is the inactive one. */
   inactive?: boolean;
+  /** `coManagedEnabled` in the loaded settings; defaults to `true` so the item
+   *  renders. `null` leaves the key absent, the real default. */
+  globalSwitch?: boolean | null;
 }
 
 async function mountCoManagedPanel(options: MountOptions = {}) {
   const fake = new FakeTransport();
   fake.resolve("new_project", { path: projectPath, registered: true, created: false });
-  fake.resolve("get_settings", baseSettings());
+  const globalSwitch = options.globalSwitch === undefined ? true : options.globalSwitch;
+  fake.resolve(
+    "get_settings",
+    globalSwitch === null ? baseSettings() : { ...baseSettings(), coManagedEnabled: globalSwitch }
+  );
   fake.resolve("discover_project", coManagedDiscovery());
   const config = options.config ?? { enabled: false, catalogPath: null };
   fake.onInvoke("co_managed_get", (args) => options.get?.(args) ?? config);
@@ -366,6 +373,63 @@ describe("ProjectPanel Co-managed menu entry (#2232 phase 9, #2408)", () => {
     }
   });
 
+  /** Open the orchestrator's active menu and let the open-time reads settle,
+   *  without requiring the item to exist. */
+  async function openMenuWithoutItem(): Promise<void> {
+    openMenu();
+    await waitFor(() => expect(menuEl()).not.toBeNull());
+    await settle();
+    await settle();
+  }
+
+  for (const globalSwitch of [false, null] as const) {
+    const label = globalSwitch === null ? "an absent coManagedEnabled" : "coManagedEnabled: false";
+    it(`global switch: ${label} hides the item; true shows it`, async () => {
+      const off = await mountCoManagedPanel({ globalSwitch });
+      try {
+        await openMenuWithoutItem();
+        expect(byTestId(coManagedTestId("active"))).toBeNull();
+      } finally {
+        off.rendered.cleanup();
+        document.body.replaceChildren();
+      }
+
+      const on = await mountCoManagedPanel({ globalSwitch: true });
+      try {
+        await openAndSettle();
+        expect(byTestId(coManagedTestId("active"))).not.toBeNull();
+      } finally {
+        on.rendered.cleanup();
+      }
+    });
+  }
+
+  it("global switch: off also hides the .reason and .error lines", async () => {
+    const effective = () => ({ Off: { reason: "NoApiKey" } } as CoManagedState);
+    const off = await mountCoManagedPanel({
+      globalSwitch: false,
+      config: { enabled: true, catalogPath: null },
+      effective,
+      rejectSetEnabled: "boom",
+    });
+    try {
+      await openMenuWithoutItem();
+      expect(reasonLine()).toBeNull();
+      expect(errorLine()).toBeNull();
+      expect(document.querySelector('[data-ac-testid^="replica.coManaged."]')).toBeNull();
+    } finally {
+      off.rendered.cleanup();
+      document.body.replaceChildren();
+    }
+
+    const on = await mountWithReason("NoApiKey", { enabled: true, catalogPath: null });
+    try {
+      expect(reasonLine()?.textContent).toBe("Add a Jev API key in Settings.");
+    } finally {
+      on.rendered.cleanup();
+    }
+  });
+
   it("8. an enabled but ineffective room can still be turned off, with its note", async () => {
     const { fake, rendered } = await mountWithReason("NoApiKey", { enabled: true, catalogPath: null });
     try {
@@ -488,6 +552,7 @@ describe("ProjectPanel Co-managed menu entry (#2232 phase 9, #2408)", () => {
   });
 
   const REASON_LINES: Array<{ name: string; reason: OffReason; line: string | null }> = [
+    { name: "GlobalSwitchOff", reason: "GlobalSwitchOff", line: 'Co-managed is off for the whole app while the feature is in development. Set "coManagedEnabled": true in settings.json and restart.' },
     { name: "NotAnOrchestrator", reason: "NotAnOrchestrator", line: "Only this room's orchestrator can be co-managed." },
     { name: "UnsupportedProvider", reason: { UnsupportedProvider: { agent: "antigravity" } }, line: "antigravity has no transcript reader, so nothing can be captured." },
     { name: "RoomFlagOff", reason: "RoomFlagOff", line: null },
