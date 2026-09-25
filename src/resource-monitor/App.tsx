@@ -141,8 +141,10 @@ const STATUS_FILTERS: ReadonlyArray<{ value: RmStatusFilter; label: string }> = 
   { value: "inactive", label: "Inactive" },
 ];
 
+const compareCodeUnits = (a: string, b: string): number => Number(a > b) - Number(a < b);
+
 const distinct = (values: (string | null | undefined)[]): string[] =>
-  [...new Set(values.filter((v): v is string => !!v))].sort((a, b) => Number(a > b) - Number(a < b));
+  [...new Set(values.filter((v): v is string => !!v))].sort(compareCodeUnits);
 
 const toggleFilter = (
   get: () => Set<string>,
@@ -645,9 +647,9 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
   const filterSignature = createMemo(() =>
     JSON.stringify([
       statusFilter(),
-      [...projectFilter()].sort(),
-      [...workgroupFilter()].sort(),
-      [...roleFilter()].sort(),
+      [...projectFilter()].sort(compareCodeUnits),
+      [...workgroupFilter()].sort(compareCodeUnits),
+      [...roleFilter()].sort(compareCodeUnits),
       pidParse().pids,
       appliedSearch(),
     ])
