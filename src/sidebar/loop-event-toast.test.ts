@@ -15,8 +15,8 @@ function summary(overrides: Partial<AcLoopSummary> = {}): AcLoopSummary {
     promptPreview: "",
     busyCoordinator: "waitUntilIdle",
     sessionStart: "fresh",
-    path: "C:\Project\.ac\loops\standup",
-    configPath: "C:\Project\.ac\loops\standup\loop.json",
+    path: "C:\\Project\\.ac\\loops\\standup",
+    configPath: "C:\\Project\\.ac\\loops\\standup\\loop.json",
     lastCheckedAt: null,
     lastDueAt: null,
     lastDeliveredAt: null,
@@ -31,7 +31,7 @@ function summary(overrides: Partial<AcLoopSummary> = {}): AcLoopSummary {
 function event(kind: string, overrides: Partial<LoopEventPayload> = {}): LoopEventPayload {
   return {
     kind,
-    projectPath: "C:\Project",
+    projectPath: "C:\\Project",
     loopId: "standup",
     message: null,
     ...overrides,
