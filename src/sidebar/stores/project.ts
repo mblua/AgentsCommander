@@ -175,22 +175,24 @@ function visitJsonNode(value: unknown, stack: unknown[], seen: Set<object>): boo
   const kind = typeof value;
   if (kind === "string" || kind === "boolean") return true;
   if (kind === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return pushJsonChildren(value, value as unknown[], stack, seen);
+  if (Array.isArray(value)) return pushJsonChildren(value, () => value as unknown[], stack, seen);
   if (isPlainObject(value)) {
-    return pushJsonChildren(value, Object.keys(value).map((key) => value[key]), stack, seen);
+    return pushJsonChildren(value, () => Object.keys(value).map((key) => value[key]), stack, seen);
   }
   return false; // undefined, function, symbol, bigint, non-plain object
 }
 
+// Children are read only after the `seen` check, so a repeated container's
+// getters or proxy traps never run twice.
 function pushJsonChildren(
   container: object,
-  children: unknown[],
+  readChildren: () => unknown[],
   stack: unknown[],
   seen: Set<object>,
 ): boolean {
   if (seen.has(container)) return false;
   seen.add(container);
-  for (const item of children) stack.push(item);
+  for (const item of readChildren()) stack.push(item);
   return true;
 }
 
