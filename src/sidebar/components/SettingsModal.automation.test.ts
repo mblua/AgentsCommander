@@ -4,6 +4,7 @@ import { render } from "solid-js/web";
 import SettingsModal, { isScreenRegexSource } from "./SettingsModal";
 import type {
   MoveCodingAgentRequest,
+  ReorderCodingAgentRequest,
   AgentConfig,
   AppSettings,
   ProfileCellConfig,
@@ -88,6 +89,9 @@ vi.mock("../../shared/ipc", async () => {
       update: vi.fn(() => Promise.resolve()),
       saveDraft: vi.fn(() => Promise.resolve()),
       moveCodingAgent: vi.fn((_request?: MoveCodingAgentRequest) => Promise.resolve([] as string[])),
+      reorderCodingAgent: vi.fn((_request?: ReorderCodingAgentRequest) =>
+        Promise.resolve([] as string[]),
+      ),
       setTerminalSnapshotsEnabled: vi.fn(() => Promise.resolve()),
       updateCodingAgentProfiles: vi.fn(() => Promise.resolve()),
       updateCodingAgentEnvSettings: vi.fn(() => Promise.resolve()),
@@ -3021,28 +3025,30 @@ describe("SettingsModal automation hooks", () => {
         (row) => row.getAttribute("data-ac-agent-id") ?? "",
       );
 
-    const mountAgents = async (read: () => SettingsSnapshot): Promise<() => void> => {
+    const mountAgents = async (
+      read: () => SettingsSnapshot,
+      onClose: () => void = () => {},
+    ): Promise<() => void> => {
       vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(read()));
       const root = document.createElement("div");
       document.body.append(root);
       const dispose = render(
-        () => SettingsModal({ onClose: () => {}, section: "agents" }),
+        () => SettingsModal({ onClose, section: "agents" }),
         root,
       );
       await settle();
       return dispose;
     };
 
-    const setMoveSucceeds = (
+    const setReorderSucceeds = (
       read: () => SettingsSnapshot,
       write: (next: SettingsSnapshot) => void,
     ): void => {
-      vi.mocked(SettingsAPI.moveCodingAgent).mockImplementation(
-        async (request?: MoveCodingAgentRequest) => {
+      vi.mocked(SettingsAPI.reorderCodingAgent).mockImplementation(
+        async (request?: ReorderCodingAgentRequest) => {
           const ids = read().agents.map((candidate) => candidate.id);
           const from = ids.indexOf(request!.id);
-          const to = request!.direction === "up" ? from - 1 : from + 1;
-          ids.splice(to, 0, ids.splice(from, 1)[0]!);
+          ids.splice(request!.targetIndex, 0, ids.splice(from, 1)[0]!);
           write(orderSnapshot(ids.map((id) => agentById(id))));
           return ids;
         },
@@ -3060,21 +3066,73 @@ describe("SettingsModal automation hooks", () => {
       return () => fire();
     };
 
+    const handle = (index: number): HTMLButtonElement =>
+      byTestId<HTMLButtonElement>(`settings.agentRow.${index}.dragHandle`);
+
+    const pressKey = (target: EventTarget, key: string, init: KeyboardEventInit = {}) => {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
+      target.dispatchEvent(event);
+      return event;
+    };
+
+    /** Focus the handle, then press the key on whatever holds focus. */
+    const altOnHandle = (index: number, key: "ArrowUp" | "ArrowDown") => {
+      handle(index).focus();
+      return pressKey(document.activeElement ?? handle(index), key, { altKey: true });
+    };
+
+    const reorderCalls = () => vi.mocked(SettingsAPI.reorderCodingAgent).mock.calls;
+
+    const railsById = (): Record<string, string | null> =>
+      Object.fromEntries(
+        [...document.querySelectorAll<HTMLElement>("[data-ac-agent-id]")]
+          .filter((row) => row.hasAttribute("data-ac-testid"))
+          .map((row) => [row.getAttribute("data-ac-agent-id")!, row.getAttribute("data-ac-rail")]),
+      );
+
+    // jsdom has no PointerEvent and no layout: pointer events are MouseEvents
+    // with a defined pointerId, and each row gets a 40 px tall box.
+    const pointer = (target: Element, type: string, clientX: number, clientY: number) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY, button: 0 });
+      Object.defineProperty(event, "pointerId", { value: 1 });
+      target.dispatchEvent(event);
+      return event;
+    };
+
+    const prepareDrag = (index: number): HTMLButtonElement => {
+      [...document.querySelectorAll<HTMLElement>(".settings-agent-row")].forEach((row, k) => {
+        row.getBoundingClientRect = () =>
+          ({ top: k * 40, bottom: k * 40 + 40, height: 40, left: 0, right: 200, width: 200, x: 0, y: k * 40 }) as DOMRect;
+        Object.defineProperty(row, "offsetTop", { configurable: true, value: k * 40 });
+        Object.defineProperty(row, "offsetHeight", { configurable: true, value: 40 });
+      });
+      const grip = handle(index);
+      let held = false;
+      grip.setPointerCapture = vi.fn(() => { held = true; });
+      grip.releasePointerCapture = vi.fn(() => { held = false; });
+      grip.hasPointerCapture = vi.fn(() => held);
+      return grip;
+    };
+
     afterEach(() => {
+      vi.useRealTimers();
       vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings()));
       vi.mocked(SettingsAPI.moveCodingAgent).mockImplementation(() => Promise.resolve([]));
+      vi.mocked(SettingsAPI.reorderCodingAgent).mockImplementation(() => Promise.resolve([]));
       vi.mocked(onCodingAgentSettingsUpdated).mockImplementation(() =>
         Promise.resolve(() => {}),
       );
     });
 
-    it("moves a compact row through the narrow command and installs the authoritative order", async () => {
+    it("moves a compact row through the reorder command and installs the authoritative order", async () => {
       let current = orderSnapshot(ORDER_AGENTS);
-      setMoveSucceeds(() => current, (next) => { current = next; });
+      setReorderSucceeds(() => current, (next) => { current = next; });
       const dispose = await mountAgents(() => current);
 
       expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
-      // The move controls live OUTSIDE the [use, remove, toggle] action column.
+      // The grip is the FIRST child of the row head, outside the [use, remove, toggle] column.
+      const head = byTestId("settings.agentRow.1.select");
+      expect(head.firstElementChild).toBe(handle(1));
       const actions = [
         ...document.querySelectorAll<HTMLElement>(
           '[data-ac-testid="settings.agentRow.1"] .settings-agent-row-actions button',
@@ -3086,32 +3144,40 @@ describe("SettingsModal automation hooks", () => {
         "settings.agentRow.1.toggle",
       ]);
 
-      byTestId<HTMLButtonElement>("settings.agentRow.1.moveUp").click();
+      altOnHandle(1, "ArrowUp");
       await settle();
 
-      expect(vi.mocked(SettingsAPI.moveCodingAgent)).toHaveBeenCalledWith({
-        id: "claude",
-        neighborId: "codex",
-        direction: "up",
-      });
+      expect(reorderCalls()).toEqual([
+        [{ id: "claude", expectedIds: ["codex", "claude", "opencode"], targetIndex: 0 }],
+      ]);
       expect(rowIds()).toEqual(["claude", "codex", "opencode"]);
       expect(byTestId("settings.agents.moveStatus").textContent).toContain(
-        "Moved Claude Code up to position 1 of 3.",
+        "Moved Claude Code to position 1 of 3.",
       );
 
-      byTestId<HTMLButtonElement>("settings.agentRow.0.moveDown").click();
+      altOnHandle(0, "ArrowDown");
       await settle();
-      expect(vi.mocked(SettingsAPI.moveCodingAgent)).toHaveBeenLastCalledWith({
-        id: "claude",
-        neighborId: "codex",
-        direction: "down",
-      });
+      expect(reorderCalls()[1]).toEqual([
+        { id: "claude", expectedIds: ["claude", "codex", "opencode"], targetIndex: 1 },
+      ]);
       expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
+      expect(vi.mocked(SettingsAPI.moveCodingAgent)).not.toHaveBeenCalled();
 
       dispose();
     });
 
-    it("keeps the backend order and disables boundaries and every control in flight", async () => {
+    it("renders no moveUp or moveDown control for any row", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(FOUR_AGENTS));
+      expect(document.querySelectorAll("[data-ac-testid$='.moveUp'], [data-ac-testid$='.moveDown']")).toHaveLength(0);
+      for (const index of [0, 1, 2, 3]) {
+        expect(
+          document.querySelectorAll(`[data-ac-testid="settings.agentRow.${index}.dragHandle"]`),
+        ).toHaveLength(1);
+      }
+      dispose();
+    });
+
+    it("disables every handle while a move is in flight", async () => {
       let current = orderSnapshot([
         agentById("opencode"),
         agentById("codex"),
@@ -3120,39 +3186,68 @@ describe("SettingsModal automation hooks", () => {
       const dispose = await mountAgents(() => current);
 
       expect(rowIds()).toEqual(["opencode", "codex", "claude"]);
-      expect(byTestId<HTMLButtonElement>("settings.agentRow.0.moveUp").disabled).toBe(true);
-      expect(byTestId<HTMLButtonElement>("settings.agentRow.0.moveDown").disabled).toBe(false);
-      expect(byTestId<HTMLButtonElement>("settings.agentRow.2.moveDown").disabled).toBe(true);
-      expect(byTestId<HTMLButtonElement>("settings.agentRow.2.moveUp").disabled).toBe(false);
+      for (const index of [0, 1, 2]) expect(handle(index).disabled).toBe(false);
 
       let release!: (ids: string[]) => void;
-      vi.mocked(SettingsAPI.moveCodingAgent).mockImplementation(
+      vi.mocked(SettingsAPI.reorderCodingAgent).mockImplementation(
         () => new Promise<string[]>((resolve) => { release = resolve; }),
       );
-      byTestId<HTMLButtonElement>("settings.agentRow.1.moveUp").click();
+      altOnHandle(1, "ArrowUp");
       await settle();
 
-      expect(vi.mocked(SettingsAPI.moveCodingAgent)).toHaveBeenCalledTimes(1);
-      for (const index of [0, 1, 2]) {
-        expect(byTestId<HTMLButtonElement>(`settings.agentRow.${index}.moveUp`).disabled).toBe(true);
-        expect(byTestId<HTMLButtonElement>(`settings.agentRow.${index}.moveDown`).disabled).toBe(true);
-      }
-      byTestId<HTMLButtonElement>("settings.agentRow.2.moveUp").click();
-      expect(vi.mocked(SettingsAPI.moveCodingAgent)).toHaveBeenCalledTimes(1);
+      expect(reorderCalls()).toHaveLength(1);
+      for (const index of [0, 1, 2]) expect(handle(index).disabled).toBe(true);
+      pressKey(handle(2), "ArrowUp", { altKey: true });
+      expect(reorderCalls()).toHaveLength(1);
 
       const ids = ["codex", "opencode", "claude"];
       current = orderSnapshot(ids.map((id) => agentById(id)));
       release(ids);
       await settle();
       expect(rowIds()).toEqual(ids);
-      expect(byTestId<HTMLButtonElement>("settings.agentRow.1.moveUp").disabled).toBe(false);
+      expect(handle(1).disabled).toBe(false);
+
+      dispose();
+    });
+
+    it("announces the boundary and never calls at the first and the last row", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      const up = altOnHandle(0, "ArrowUp");
+      expect(up.defaultPrevented).toBe(true);
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe("Codex is already first.");
+      const down = altOnHandle(2, "ArrowDown");
+      expect(down.defaultPrevented).toBe(true);
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe("OpenCode is already last.");
+      await settle();
+      expect(reorderCalls()).toHaveLength(0);
+
+      dispose();
+    });
+
+    it("sends the expectedIds of the order at each moment for two Alt+ArrowDown presses", async () => {
+      let current = orderSnapshot(ORDER_AGENTS);
+      setReorderSucceeds(() => current, (next) => { current = next; });
+      const dispose = await mountAgents(() => current);
+
+      altOnHandle(0, "ArrowDown");
+      await settle();
+      expect(document.activeElement).toBe(handle(1));
+      pressKey(document.activeElement!, "ArrowDown", { altKey: true });
+      await settle();
+
+      expect(reorderCalls()).toEqual([
+        [{ id: "codex", expectedIds: ["codex", "claude", "opencode"], targetIndex: 1 }],
+        [{ id: "codex", expectedIds: ["claude", "codex", "opencode"], targetIndex: 2 }],
+      ]);
+      expect(rowIds()).toEqual(["claude", "opencode", "codex"]);
 
       dispose();
     });
 
     it("keeps a dirty unrelated draft field across the success refetch and a later save", async () => {
       let current = orderSnapshot(FOUR_AGENTS);
-      setMoveSucceeds(() => current, (next) => { current = next; });
+      setReorderSucceeds(() => current, (next) => { current = next; });
       const dispose = await mountAgents(() => current);
 
       expandAgentRow(0);
@@ -3162,7 +3257,7 @@ describe("SettingsModal automation hooks", () => {
       label.dispatchEvent(new Event("input", { bubbles: true }));
       await settle();
 
-      byTestId<HTMLButtonElement>("settings.agentRow.2.moveUp").click();
+      altOnHandle(2, "ArrowUp");
       await settle();
 
       expect(rowIds()).toEqual(["codex", "opencode", "claude", "pi"]);
@@ -3205,10 +3300,11 @@ describe("SettingsModal automation hooks", () => {
       expect(rowIds()).toEqual(["opencode", "claude", "codex"]);
       expect(byTestId<HTMLInputElement>("settings.agentRow.2.label").value).toBe("Draft Codex");
 
-      vi.mocked(SettingsAPI.moveCodingAgent).mockRejectedValue(new Error("settings lock busy"));
-      byTestId<HTMLButtonElement>("settings.agentRow.1.moveDown").click();
+      vi.mocked(SettingsAPI.reorderCodingAgent).mockRejectedValue(new Error("settings lock busy"));
+      altOnHandle(1, "ArrowDown");
       await settle();
 
+      expect(reorderCalls()).toHaveLength(1);
       expect(rowIds()).toEqual(["opencode", "claude", "codex"]);
       const error = byTestId("settings.agents.moveError");
       expect(error.getAttribute("aria-live")).toBe("polite");
@@ -3218,7 +3314,7 @@ describe("SettingsModal automation hooks", () => {
       dispose();
     });
 
-    it("disables every move under the overlay owner with an accessible reason and never moves", async () => {
+    it("disables every handle under the overlay owner with an accessible reason and never moves", async () => {
       const current = orderSnapshot(
         [agentById("opencode"), agentById("claude"), agentById("codex")],
         true,
@@ -3226,18 +3322,21 @@ describe("SettingsModal automation hooks", () => {
       const dispose = await mountAgents(() => current);
 
       expect(rowIds()).toEqual(["opencode", "claude", "codex"]);
-      const up = byTestId<HTMLButtonElement>("settings.agentRow.1.moveUp");
-      const down = byTestId<HTMLButtonElement>("settings.agentRow.1.moveDown");
-      expect(up.disabled).toBe(true);
-      expect(down.disabled).toBe(true);
-      expect(up.getAttribute("title")).toContain("local settings overlay");
-      expect(up.getAttribute("aria-label")).toContain("local settings overlay");
+      for (const index of [0, 1, 2]) expect(handle(index).disabled).toBe(true);
+      expect(handle(1).getAttribute("aria-label")).toContain("local settings overlay");
       expect(byTestId("settings.agents.overlayReason").textContent).toContain(
         "local settings overlay",
       );
 
-      up.click();
+      pressKey(handle(1), "ArrowDown", { altKey: true });
+      pressKey(handle(1), " ");
+      const grip = prepareDrag(1);
+      pointer(grip, "pointerdown", 5, 60);
+      pointer(grip, "pointermove", 5, 140);
+      pointer(grip, "pointerup", 5, 140);
       await settle();
+      expect(reorderCalls()).toHaveLength(0);
+      expect(document.querySelector(".drag-ghost")).toBeNull();
       expect(vi.mocked(SettingsAPI.moveCodingAgent)).not.toHaveBeenCalled();
 
       dispose();
@@ -3309,17 +3408,17 @@ describe("SettingsModal automation hooks", () => {
       dispose();
     });
 
-    it("rejects a same-length returned order that is not the exact requested swap", async () => {
-      let current = orderSnapshot(ORDER_AGENTS);
-      // Same ids, same length, but the requested claude-up swap never happened.
-      vi.mocked(SettingsAPI.moveCodingAgent).mockResolvedValue([
+    it("rejects a same-length returned order that is not the exact requested reorder", async () => {
+      const current = orderSnapshot(ORDER_AGENTS);
+      // Same ids, same length, but the requested claude-to-0 reorder never happened.
+      vi.mocked(SettingsAPI.reorderCodingAgent).mockResolvedValue([
         "codex",
         "opencode",
         "claude",
       ]);
       const dispose = await mountAgents(() => current);
 
-      byTestId<HTMLButtonElement>("settings.agentRow.1.moveUp").click();
+      altOnHandle(1, "ArrowUp");
       await settle();
 
       expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
@@ -3330,39 +3429,590 @@ describe("SettingsModal automation hooks", () => {
       dispose();
     });
 
-    it("restores focus to the moved control, or the remaining direction at a boundary", async () => {
+    it("returns focus to the moved row's handle", async () => {
       let current = orderSnapshot(FOUR_AGENTS);
-      setMoveSucceeds(() => current, (next) => { current = next; });
+      setReorderSucceeds(() => current, (next) => { current = next; });
       const dispose = await mountAgents(() => current);
 
-      byTestId<HTMLButtonElement>("settings.agentRow.2.moveUp").click();
+      altOnHandle(2, "ArrowUp");
       await settle();
       expect(rowIds()).toEqual(["codex", "opencode", "claude", "pi"]);
-      expect(document.activeElement).toBe(byTestId("settings.agentRow.1.moveUp"));
+      expect(document.activeElement).toBe(handle(1));
 
-      byTestId<HTMLButtonElement>("settings.agentRow.1.moveUp").click();
+      pressKey(document.activeElement!, "ArrowUp", { altKey: true });
       await settle();
       expect(rowIds()).toEqual(["opencode", "codex", "claude", "pi"]);
-      expect(byTestId<HTMLButtonElement>("settings.agentRow.0.moveUp").disabled).toBe(true);
-      expect(document.activeElement).toBe(byTestId("settings.agentRow.0.moveDown"));
+      expect(document.activeElement).toBe(handle(0));
 
       dispose();
     });
 
-    it("gives every row move button a distinct tool-and-direction accessible name", async () => {
+    it("gives each handle a distinct name carrying its position, and the overlay reason when disabled", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      expect(handle(0).getAttribute("aria-label")).toBe("Reorder Codex, position 1 of 3");
+      expect(handle(1).getAttribute("aria-label")).toBe("Reorder Claude Code, position 2 of 3");
+      expect(handle(2).getAttribute("aria-label")).toBe("Reorder OpenCode, position 3 of 3");
+      expect(handle(1).tagName).toBe("BUTTON");
+      expect(handle(1).getAttribute("aria-describedby")).toBe("settings-agents-dnd-help");
+      expect(document.getElementById("settings-agents-dnd-help")?.hidden).toBe(true);
+      dispose();
+      document.body.innerHTML = "";
+
+      const disposeOverlay = await mountAgents(() => orderSnapshot(ORDER_AGENTS, true));
+      expect(handle(1).getAttribute("aria-label")).toBe(
+        "Reorder Claude Code, position 2 of 3 — Agent order is controlled by the local settings overlay (settings.local.json).",
+      );
+      disposeOverlay();
+    });
+
+    it("drags across two rows past a threshold and persists with one reorder call", async () => {
+      let current = orderSnapshot(ORDER_AGENTS);
+      setReorderSucceeds(() => current, (next) => { current = next; });
+      const dispose = await mountAgents(() => current);
+
+      const grip = prepareDrag(0);
+      const down = pointer(grip, "pointerdown", 5, 20);
+      expect(down.defaultPrevented).toBe(true);
+      expect(grip.setPointerCapture).toHaveBeenCalledWith(1);
+      pointer(grip, "pointermove", 5, 22);
+      expect(document.querySelector(".drag-ghost")).toBeNull();
+      expect(document.querySelector('[data-ac-testid="settings.agents.dropIndicator"]')).toBeNull();
+      expect(document.body.classList.contains("is-dragging")).toBe(false);
+
+      pointer(grip, "pointermove", 5, 110);
+      expect(document.querySelector(".drag-ghost")).not.toBeNull();
+      expect(document.body.classList.contains("is-dragging")).toBe(true);
+      const indicator = byTestId<HTMLElement>("settings.agents.dropIndicator");
+      expect(indicator.style.top).toBe("121px");
+      expect(indicator.getAttribute("aria-hidden")).toBe("true");
+      expect(byTestId("settings.agentRow.0").classList.contains("is-drag-source")).toBe(true);
+      expect(reorderCalls()).toHaveLength(0);
+
+      pointer(grip, "pointerup", 5, 110);
+      await settle();
+
+      expect(reorderCalls()).toEqual([
+        [{ id: "codex", expectedIds: ["codex", "claude", "opencode"], targetIndex: 2 }],
+      ]);
+      expect(rowIds()).toEqual(["claude", "opencode", "codex"]);
+      expect(document.querySelector('[data-ac-testid="settings.agents.dropIndicator"]')).toBeNull();
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(
+        "Moved Codex to position 3 of 3.",
+      );
+
+      dispose();
+    });
+
+    it("cancels a drag on Escape with no call, no modal close and an announcement", async () => {
+      const onClose = vi.fn();
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS), onClose);
+
+      const grip = prepareDrag(0);
+      pointer(grip, "pointerdown", 5, 20);
+      pointer(grip, "pointermove", 5, 110);
+      expect(document.querySelector(".drag-ghost")).not.toBeNull();
+
+      const escape = pressKey(grip, "Escape");
+      expect(escape.defaultPrevented).toBe(true);
+      expect(onClose).not.toHaveBeenCalled();
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe("Move cancelled.");
+      expect(document.querySelector(".drag-ghost")).toBeNull();
+      expect(document.body.classList.contains("is-dragging")).toBe(false);
+      expect(grip.releasePointerCapture).toHaveBeenCalledWith(1);
+
+      pointer(grip, "pointerup", 5, 110);
+      await settle();
+      expect(reorderCalls()).toHaveLength(0);
+      expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
+
+      dispose();
+    });
+
+    it("treats a drop back at the source index as a no-op", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      const grip = prepareDrag(0);
+      pointer(grip, "pointerdown", 5, 20);
+      pointer(grip, "pointermove", 5, 30);
+      expect(document.querySelector(".drag-ghost")).not.toBeNull();
+      expect(document.querySelector('[data-ac-testid="settings.agents.dropIndicator"]')).toBeNull();
+      pointer(grip, "pointerup", 5, 30);
+      await settle();
+
+      expect(reorderCalls()).toHaveLength(0);
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe("");
+      expect(document.querySelector("[data-ac-testid='settings.agents.moveError']")).toBeNull();
+
+      dispose();
+    });
+
+    it("leaves no ghost, body class or window Escape listener after a completed or cancelled drag", async () => {
+      let current = orderSnapshot(ORDER_AGENTS);
+      setReorderSucceeds(() => current, (next) => { current = next; });
+      const dispose = await mountAgents(() => current);
+
+      let grip = prepareDrag(0);
+      pointer(grip, "pointerdown", 5, 20);
+      pointer(grip, "pointermove", 5, 110);
+      pointer(grip, "pointerup", 5, 110);
+      await settle();
+      expect(reorderCalls()).toHaveLength(1);
+      expect(document.body.classList.contains("is-dragging")).toBe(false);
+      expect(document.querySelectorAll(".drag-ghost")).toHaveLength(0);
+
+      // A leaked capture listener would preventDefault this Escape.
+      let status = byTestId("settings.agents.moveStatus").textContent;
+      let escape = pressKey(window, "Escape");
+      expect(escape.defaultPrevented).toBe(false);
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(status);
+
+      grip = prepareDrag(0);
+      pointer(grip, "pointerdown", 5, 20);
+      pointer(grip, "pointermove", 5, 110);
+      pointer(grip, "pointercancel", 5, 110);
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe("Move cancelled.");
+      expect(document.body.classList.contains("is-dragging")).toBe(false);
+      expect(document.querySelectorAll(".drag-ghost")).toHaveLength(0);
+
+      status = byTestId("settings.agents.moveStatus").textContent;
+      escape = pressKey(window, "Escape");
+      expect(escape.defaultPrevented).toBe(false);
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(status);
+      await settle();
+      expect(reorderCalls()).toHaveLength(1);
+
+      dispose();
+    });
+
+    it("never doubles a row test id during a drag and hides the ghost from assistive tech", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      const grip = prepareDrag(0);
+      pointer(grip, "pointerdown", 5, 20);
+      pointer(grip, "pointermove", 5, 110);
+
+      const ghost = document.querySelector<HTMLElement>(".drag-ghost")!;
+      expect(ghost.parentElement).toBe(document.body);
+      expect(ghost.getAttribute("aria-hidden")).toBe("true");
+      expect(ghost.hasAttribute("inert")).toBe(true);
+      expect(ghost.getAttribute("tabindex")).toBe("-1");
+      expect(ghost.querySelector("[data-ac-testid], [data-ac-role], [id]")).toBeNull();
+      const counts = new Map<string, number>();
+      for (const node of document.querySelectorAll('[data-ac-testid^="settings.agentRow.0"]')) {
+        const id = node.getAttribute("data-ac-testid")!;
+        counts.set(id, (counts.get(id) ?? 0) + 1);
+      }
+      expect(counts.size).toBeGreaterThan(2);
+      expect([...counts.values()].every((count) => count === 1)).toBe(true);
+
+      pressKey(window, "Escape");
+      dispose();
+    });
+
+    it("marks the moved row just-dropped until the 420 ms timer is advanced", async () => {
+      let current = orderSnapshot(ORDER_AGENTS);
+      setReorderSucceeds(() => current, (next) => { current = next; });
+      const dispose = await mountAgents(() => current);
+
+      const grip = prepareDrag(0);
+      pointer(grip, "pointerdown", 5, 20);
+      pointer(grip, "pointermove", 5, 110);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      pointer(grip, "pointerup", 5, 110);
+      for (let n = 0; n < 5; n += 1) await vi.advanceTimersByTimeAsync(0);
+
+      expect(rowIds()).toEqual(["claude", "opencode", "codex"]);
+      expect(byTestId("settings.agentRow.2").classList.contains("just-dropped")).toBe(true);
+      await vi.advanceTimersByTimeAsync(419);
+      expect(byTestId("settings.agentRow.2").classList.contains("just-dropped")).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(byTestId("settings.agentRow.2").classList.contains("just-dropped")).toBe(false);
+      vi.useRealTimers();
+
+      dispose();
+    });
+
+    it("never changes the rail pill from a handle click, Enter, Space or a completed drag", async () => {
+      let current = orderSnapshot(ORDER_AGENTS);
+      setReorderSucceeds(() => current, (next) => { current = next; });
+      const dispose = await mountAgents(() => current);
+      const before = railsById();
+
+      handle(1).click();
+      await settle();
+      expect(railsById()).toEqual(before);
+
+      handle(1).focus();
+      pressKey(document.activeElement!, "Enter");
+      expect(byTestId("settings.agentRow.1").classList.contains("is-kbd-grabbed")).toBe(true);
+      pressKey(document.activeElement!, "Escape");
+      await settle();
+      expect(railsById()).toEqual(before);
+
+      handle(1).focus();
+      const space = pressKey(document.activeElement!, " ");
+      expect(space.defaultPrevented).toBe(true);
+      pressKey(document.activeElement!, "Escape");
+      await settle();
+      expect(railsById()).toEqual(before);
+
+      const grip = prepareDrag(1);
+      pointer(grip, "pointerdown", 5, 60);
+      pointer(grip, "pointermove", 5, 140);
+      pointer(grip, "pointerup", 5, 140);
+      grip.click();
+      await settle();
+      expect(reorderCalls()).toHaveLength(1);
+      expect(railsById()).toEqual(before);
+
+      // Positive control: the row head itself does move the pill.
+      byTestId<HTMLElement>("settings.agentRow.1.select").click();
+      await settle();
+      expect(railsById()).not.toEqual(before);
+
+      dispose();
+    });
+
+    it("pick-up then Escape restores the backend order with no call and keeps the modal open", async () => {
+      const onClose = vi.fn();
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS), onClose);
+
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(
+        "Picked up Codex, position 1. Arrows move, Space drops, Escape cancels.",
+      );
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      expect(rowIds()).toEqual(["claude", "codex", "opencode"]);
+
+      const escape = pressKey(document.activeElement!, "Escape");
+      await settle();
+      expect(escape.defaultPrevented).toBe(true);
+      expect(onClose).not.toHaveBeenCalled();
+      expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(
+        "Move cancelled, order restored.",
+      );
+      expect(document.querySelector(".settings-agent-row.is-kbd-grabbed")).toBeNull();
+      expect(reorderCalls()).toHaveLength(0);
+
+      dispose();
+    });
+
+    it("abandons a pick-up when a live refresh changes the backend order", async () => {
+      let current = orderSnapshot(ORDER_AGENTS);
+      const fire = captureSettingsEvent();
+      const dispose = await mountAgents(() => current);
+
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+
+      current = orderSnapshot([agentById("opencode"), agentById("codex"), agentById("claude")]);
+      fire();
+      await settle();
+
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(
+        "Move cancelled, the agent list changed.",
+      );
+      expect(rowIds()).toEqual(["opencode", "codex", "claude"]);
+      expect(document.querySelector(".settings-agent-row.is-kbd-grabbed")).toBeNull();
+      handle(1).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "Escape");
+      await settle();
+      expect(reorderCalls()).toHaveLength(0);
+
+      dispose();
+    });
+
+    it("pick-up keeps focus on the moved handle and drops with one call at the final index", async () => {
+      let current = orderSnapshot(FOUR_AGENTS);
+      setReorderSucceeds(() => current, (next) => { current = next; });
+      const dispose = await mountAgents(() => current);
+
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      expect(byTestId("settings.agentRow.0").classList.contains("is-kbd-grabbed")).toBe(true);
+      const firstStep = pressKey(document.activeElement!, "ArrowDown");
+      expect(firstStep.defaultPrevented).toBe(true);
+      await settle();
+      expect(document.activeElement).toBe(handle(1));
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe("Codex: position 2 of 4.");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      expect(document.activeElement).toBe(handle(2));
+      expect(reorderCalls()).toHaveLength(0);
+
+      pressKey(document.activeElement!, " ");
+      await settle();
+      expect(reorderCalls()).toEqual([
+        [{ id: "codex", expectedIds: ["codex", "claude", "opencode", "pi"], targetIndex: 2 }],
+      ]);
+      expect(rowIds()).toEqual(["claude", "opencode", "codex", "pi"]);
+      expect(document.activeElement).toBe(handle(2));
+
+      dispose();
+    });
+
+    it("cancels a pick-up on a pointer press so a row control acts on the agent it shows", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      expect(rowIds()).toEqual(["claude", "codex", "opencode"]);
+
+      // The remove button on the row that SHOWS Codex; a real click is
+      // always preceded by a pointerdown on the same target.
+      const removeCodex = byTestId<HTMLButtonElement>("settings.agentRow.1.remove");
+      expect(removeCodex.closest(".settings-agent-row")?.getAttribute("data-ac-agent-id")).toBe("codex");
+      pointer(removeCodex, "pointerdown", 5, 5);
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(
+        "Move cancelled, order restored.",
+      );
+      removeCodex.click();
+      await settle();
+
+      expect(rowIds()).toEqual(["claude", "opencode"]);
+      expect(reorderCalls()).toHaveLength(0);
+
+      dispose();
+    });
+
+    it("cancels a pick-up on focus and click with no pointerdown, so remove hits the shown agent", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      expect(rowIds()).toEqual(["claude", "codex", "opencode"]);
+
+      // Screen-reader browse mode / scripted activation: focus + click only.
+      const removeCodex = byTestId<HTMLButtonElement>("settings.agentRow.1.remove");
+      removeCodex.focus();
+      removeCodex.click();
+      await settle();
+
+      expect(rowIds()).toEqual(["claude", "opencode"]);
+      expect(reorderCalls()).toHaveLength(0);
+
+      dispose();
+    });
+
+    it("cancels a pick-up on a bare click with no focus or pointerdown", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      byTestId<HTMLButtonElement>("settings.agentRow.1.remove").click();
+      await settle();
+
+      expect(rowIds()).toEqual(["claude", "opencode"]);
+      dispose();
+    });
+
+    it("cancels a pick-up when focus moves into an editor, so typing edits the shown agent", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      expandAgentRow(0);
+      await settle();
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      expect(rowIds()).toEqual(["claude", "codex", "opencode"]);
+
+      const codexLabel = byTestId<HTMLInputElement>("settings.agentRow.1.label");
+      expect(codexLabel.closest(".settings-agent-row")?.getAttribute("data-ac-agent-id")).toBe("codex");
+      codexLabel.focus();
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(
+        "Move cancelled, order restored.",
+      );
+      codexLabel.value = "Typed Codex";
+      codexLabel.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+
+      expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
+      const labelOf = (id: string) =>
+        document
+          .querySelector(`[data-ac-agent-id="${id}"] .settings-agent-row-name`)
+          ?.textContent;
+      expect(labelOf("codex")).toBe("Typed Codex");
+      expect(labelOf("claude")).toBe("Claude Code");
+
+      dispose();
+    });
+
+    it("keeps a pick-up alive on a pointer press on the grabbed handle itself", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      pressKey(document.activeElement!, "ArrowDown");
+      await settle();
+      pointer(handle(1), "pointerdown", 5, 5);
+      expect(rowIds()).toEqual(["claude", "codex", "opencode"]);
+      expect(byTestId("settings.agentRow.1").classList.contains("is-kbd-grabbed")).toBe(true);
+
+      // A press on ANOTHER row's handle still cancels.
+      pointer(handle(2), "pointerdown", 5, 5);
+      await settle();
+      expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
+      expect(document.querySelector(".settings-agent-row.is-kbd-grabbed")).toBeNull();
+
+      dispose();
+    });
+
+    it("clears the draft gate after an Add whose save hits the terminal-snapshot conflict", async () => {
       const current = orderSnapshot(ORDER_AGENTS);
       const dispose = await mountAgents(() => current);
 
-      expect(byTestId("settings.agentRow.1.moveUp").getAttribute("aria-label")).toBe(
-        "Move Claude Code up",
+      byTestId<HTMLButtonElement>("settings.agents.add").click();
+      await settle();
+      expect(handle(0).disabled).toBe(true);
+
+      byTestId<HTMLButtonElement>("settings.tab.general").click();
+      await settle();
+      const optIn = byTestId<HTMLInputElement>("settings.general.terminalSnapshotsEnabled");
+      optIn.checked = true;
+      optIn.dispatchEvent(new Event("change", { bubbles: true }));
+      await settle();
+      vi.mocked(SettingsAPI.setTerminalSnapshotsEnabled).mockRejectedValueOnce(
+        new Error("terminal_snapshot_setting_conflict"),
       );
-      expect(byTestId("settings.agentRow.1.moveDown").getAttribute("aria-label")).toBe(
-        "Move Claude Code down",
+      byTestId<HTMLButtonElement>("settings.save").click();
+      await settle();
+      await settle();
+      expect(SettingsAPI.setTerminalSnapshotsEnabled).toHaveBeenCalledTimes(1);
+      const savedIds = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]![0].agents.map((a) => a.id);
+      expect(savedIds).toHaveLength(4);
+
+      byTestId<HTMLButtonElement>("settings.tab.agents").click();
+      await settle();
+      expect(document.querySelector('[data-ac-testid="settings.agents.reorderDraftReason"]')).toBeNull();
+      altOnHandle(0, "ArrowDown");
+      await settle();
+      expect(reorderCalls()).toEqual([
+        [{ id: "codex", expectedIds: savedIds, targetIndex: 1 }],
+      ]);
+
+      dispose();
+    });
+
+    it("cancels a pick-up on Tab without preventing the focus move", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      handle(1).focus();
+      pressKey(document.activeElement!, "Enter");
+      pressKey(document.activeElement!, "ArrowUp");
+      await settle();
+      expect(rowIds()).toEqual(["claude", "codex", "opencode"]);
+      const tab = pressKey(document.activeElement!, "Tab");
+      await settle();
+      expect(tab.defaultPrevented).toBe(false);
+      expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(
+        "Move cancelled, order restored.",
       );
-      expect(byTestId("settings.agentRow.0.moveUp").getAttribute("aria-label")).toBe(
-        "Move Codex up",
+      expect(reorderCalls()).toHaveLength(0);
+
+      dispose();
+    });
+
+    it("gates every handle on an unsaved add until Save adopts the saved order, with no refresh", async () => {
+      const current = orderSnapshot(ORDER_AGENTS);
+      const dispose = await mountAgents(() => current);
+      expect(document.querySelector('[data-ac-testid="settings.agents.reorderDraftReason"]')).toBeNull();
+
+      byTestId<HTMLButtonElement>("settings.agents.add").click();
+      await settle();
+      expect(rowIds()).toHaveLength(4);
+      for (const index of [0, 1, 2, 3]) expect(handle(index).disabled).toBe(true);
+      expect(byTestId("settings.agents.reorderDraftReason").textContent).toBe(
+        "Save your agent changes before reordering.",
       );
-      expect(byTestId("settings.agentRow.1.moveUp").tagName).toBe("BUTTON");
+      expect(handle(0).getAttribute("aria-label")).toBe(
+        "Reorder Codex, position 1 of 4 — Save your agent changes before reordering.",
+      );
+      pressKey(handle(0), "ArrowDown", { altKey: true });
+      await settle();
+      expect(reorderCalls()).toHaveLength(0);
+
+      const getCallsBeforeSave = vi.mocked(SettingsAPI.get).mock.calls.length;
+      byTestId<HTMLButtonElement>("settings.save").click();
+      await settle();
+      const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+      const savedIds = saved!.agents.map((agent) => agent.id);
+      expect(savedIds).toHaveLength(4);
+      // Only saveCurrentSettingsDraft's own read; no refresh, no settings event.
+      expect(vi.mocked(SettingsAPI.get).mock.calls.length).toBe(getCallsBeforeSave + 1);
+
+      expect(document.querySelector('[data-ac-testid="settings.agents.reorderDraftReason"]')).toBeNull();
+      expect(handle(0).disabled).toBe(false);
+      altOnHandle(0, "ArrowDown");
+      await settle();
+      expect(reorderCalls()).toEqual([
+        [{ id: "codex", expectedIds: savedIds, targetIndex: 1 }],
+      ]);
+
+      dispose();
+    });
+
+    it("gates every handle on an unsaved removal", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+
+      byTestId<HTMLButtonElement>("settings.agentRow.1.remove").click();
+      await settle();
+      expect(rowIds()).toEqual(["codex", "opencode"]);
+      for (const index of [0, 1]) expect(handle(index).disabled).toBe(true);
+      expect(byTestId("settings.agents.reorderDraftReason")).toBeTruthy();
+      pressKey(handle(0), "ArrowDown", { altKey: true });
+      await settle();
+      expect(reorderCalls()).toHaveLength(0);
+
+      dispose();
+    });
+
+    it("gates every handle when the draft holds the same ids in another order than the backend", async () => {
+      // Mount race: the draft is seeded from settingsStore.current, a field is
+      // edited before SettingsAPI.get resolves, and the backend then answers
+      // with the same ids in a different order. The dirty draft keeps its order.
+      settingsStoreMock.current = orderSnapshot(ORDER_AGENTS);
+      let resolveGet!: (snapshot: SettingsSnapshot) => void;
+      vi.mocked(SettingsAPI.get).mockImplementationOnce(
+        () => new Promise<SettingsSnapshot>((resolve) => { resolveGet = resolve; }),
+      );
+      const root = document.createElement("div");
+      document.body.append(root);
+      const dispose = render(() => SettingsModal({ onClose: () => {}, section: "agents" }), root);
+      await settle();
+      expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
+      expect(handle(0).disabled).toBe(false);
+
+      expandAgentRow(0);
+      await settle();
+      const label = byTestId<HTMLInputElement>("settings.agentRow.0.label");
+      label.value = "Early edit";
+      label.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+
+      resolveGet(orderSnapshot([agentById("opencode"), agentById("codex"), agentById("claude")]));
+      await settle();
+
+      expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
+      for (const index of [0, 1, 2]) expect(handle(index).disabled).toBe(true);
+      expect(byTestId("settings.agents.reorderDraftReason")).toBeTruthy();
+      pressKey(handle(0), "ArrowDown", { altKey: true });
+      await settle();
+      expect(reorderCalls()).toHaveLength(0);
 
       dispose();
     });
@@ -3370,7 +4020,7 @@ describe("SettingsModal automation hooks", () => {
     it("treats a refetch failure as an error and keeps the last authoritative order", async () => {
       vi.mocked(SettingsAPI.get).mockResolvedValueOnce(orderSnapshot(ORDER_AGENTS));
       vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.reject(new Error("offline")));
-      vi.mocked(SettingsAPI.moveCodingAgent).mockResolvedValue(["claude", "codex", "opencode"]);
+      vi.mocked(SettingsAPI.reorderCodingAgent).mockResolvedValue(["claude", "codex", "opencode"]);
       const root = document.createElement("div");
       document.body.append(root);
       const dispose = render(
@@ -3379,9 +4029,10 @@ describe("SettingsModal automation hooks", () => {
       );
       await settle();
 
-      byTestId<HTMLButtonElement>("settings.agentRow.1.moveUp").click();
+      altOnHandle(1, "ArrowUp");
       await settle();
 
+      expect(reorderCalls()).toHaveLength(1);
       expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
       expect(byTestId("settings.agents.moveError").textContent).toContain("offline");
 

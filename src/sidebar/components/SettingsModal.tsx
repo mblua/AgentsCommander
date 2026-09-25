@@ -7,7 +7,6 @@ import type {
   CodingAgentEnv,
   CodingAgentDefinition,
   LogLevel,
-  MoveCodingAgentDirection,
   TelegramBotConfig,
   ProfileCellConfig,
   ApiClientMintResponse,
@@ -29,7 +28,6 @@ import {
   CodingAgentsAPI,
   PtyAPI,
   assertCodingAgentMoveOrder,
-  expectedCodingAgentMoveOrder,
   onCodingAgentSettingsUpdated,
 } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
@@ -43,6 +41,13 @@ import { projectStore } from "../stores/project";
 import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 import TrashIcon from "./TrashIcon";
+import {
+  DRAG_THRESHOLD,
+  autoScrollDelta,
+  insertionSlot,
+  reorderIndex,
+  reorderedIds,
+} from "./settings/agentReorderDnd";
 import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
 import AgentHelpTipsModal from "./AgentHelpTipsModal";
@@ -153,6 +158,47 @@ const errorMessage = (err: unknown): string =>
  *  top-level `agents`. Kept identical here and in AgentPickerModal. */
 const MOVE_OVERLAY_REASON =
   "Agent order is controlled by the local settings overlay (settings.local.json).";
+
+/** #2544 - why every reorder handle is disabled while the draft's agent id
+ *  sequence differs from the last backend-known one. */
+const REORDER_DRAFT_REASON = "Save your agent changes before reordering.";
+
+/** #2544 - `.just-dropped` lifetime; equal to the CSS keyframe duration. */
+const JUST_DROPPED_MS = 420;
+
+/** #2544 - ordered comparison: same length and the same id at every index. */
+const sameIdSequence = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((id, index) => id === b[index]);
+
+/** #2544 - six-dot grip for the Settings agent reorder handle. */
+const GripIcon: Component = () => (
+  <svg viewBox="0 0 8 14" fill="currentColor" aria-hidden="true">
+    <circle cx="2" cy="2" r="1.2" />
+    <circle cx="6" cy="2" r="1.2" />
+    <circle cx="2" cy="7" r="1.2" />
+    <circle cx="6" cy="7" r="1.2" />
+    <circle cx="2" cy="12" r="1.2" />
+    <circle cx="6" cy="12" r="1.2" />
+  </svg>
+);
+
+/** #2544 - one in-flight pointer drag. Not render state: only `dragSourceId`
+ *  and `dropIndicatorTop` are signals the view reads. */
+type PointerDrag = {
+  agentId: string;
+  handle: HTMLElement;
+  row: HTMLElement;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  lastY: number;
+  rowTop: number;
+  slot: number;
+  started: boolean;
+  ghost: HTMLElement | null;
+  raf: number | null;
+  onEscape: (e: KeyboardEvent) => void;
+};
 
 /** #1313 - shape-only check: a plausible complete executable path must contain
  *  a directory separator (`\` or `/`). Bare names like `powershell.exe` or
@@ -806,6 +852,31 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [moveBusy, setMoveBusy] = createSignal(false);
   const [moveError, setMoveError] = createSignal("");
   const [moveAnnouncement, setMoveAnnouncement] = createSignal("");
+  // #2544 - the last backend-known agent id sequence. `expectedIds` is read from
+  // the draft only while the draft holds exactly this sequence.
+  const [backendAgentIds, setBackendAgentIds] = createSignal<string[]>(
+    (seededSettings?.agents ?? []).map((agent) => agent.id),
+  );
+  const [pendingOrder, setPendingOrder] = createSignal<string[] | null>(null);
+  const [kbdGrabbedId, setKbdGrabbedId] = createSignal<string | null>(null);
+  const [dragSourceId, setDragSourceId] = createSignal<string | null>(null);
+  const [dropIndicatorTop, setDropIndicatorTop] = createSignal<number | null>(null);
+  const [justDroppedId, setJustDroppedId] = createSignal<string | null>(null);
+
+  const cancelPickUp = (announcement: string) => {
+    setPendingOrder(null);
+    setKbdGrabbedId(null);
+    setMoveAnnouncement(announcement);
+  };
+
+  /** #2544 - the one writer of `backendAgentIds`. A keyboard pick-up taken from
+   *  an order the backend no longer holds is abandoned, never committed. */
+  const adoptBackendAgentOrder = (agents: readonly AgentConfig[]) => {
+    const ids = agents.map((agent) => agent.id);
+    const changed = !sameIdSequence(ids, backendAgentIds());
+    setBackendAgentIds(ids);
+    if (changed && pendingOrder()) cancelPickUp("Move cancelled, the agent list changed.");
+  };
   const [profileCellText, setProfileCellText] = createStore<Record<string, string>>({});
   const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
   const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
@@ -837,6 +908,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     });
     setSettings("data", nextDraft);
     setModalSeed(nextModalSeed);
+    adoptBackendAgentOrder(nextSettings.agents);
     setDraftDirty(terminalSnapshotsDraft !== terminalSnapshotsOpeningValue());
     return nextSettings;
   };
@@ -1138,6 +1210,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const installSnapshotMetadata = (loaded: SettingsSnapshot) => {
     setSettingsFilePath(loaded.settingsFilePath ?? null);
     setOverlayOwnsAgents(loaded.overlayOwnsAgents === true);
+    adoptBackendAgentOrder(loaded.agents);
   };
 
   /** Keep the draft's agent records and membership exactly as drafted and apply
@@ -1227,78 +1300,89 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return settingsRefreshInFlight;
   };
 
-  const settingsMoveTestId = (index: number, direction: MoveCodingAgentDirection) =>
-    `settings.agentRow.${index}.move${direction === "up" ? "Up" : "Down"}`;
+  const reorderDraftStale = () =>
+    !sameIdSequence((settings.data?.agents ?? []).map((agent) => agent.id), backendAgentIds());
+  /** #2544 - the one gate for every reorder gesture: busy, overlay-owned, or a
+   *  draft whose id sequence the backend does not hold. */
+  const settingsReorderDisabled = () =>
+    moveBusy() || overlayOwnsAgents() || reorderDraftStale();
+  /** Position-bearing accessible name. A disabled handle carries its reason,
+   *  the overlay one first because saving cannot clear it. */
+  const reorderHandleLabel = (agent: AgentConfig, index: number) => {
+    const name = `Reorder ${agent.label || agent.id || "agent"}, position ${index + 1} of ${agentList().length}`;
+    if (overlayOwnsAgents()) return `${name} — ${MOVE_OVERLAY_REASON}`;
+    if (reorderDraftStale()) return `${name} — ${REORDER_DRAFT_REASON}`;
+    return name;
+  };
+  const agentName = (agentId: string) => agentById(agentId)?.label || agentId;
+  const draftAgentIds = () => (settings.data?.agents ?? []).map((agent) => agent.id);
 
-  const focusSettingsMoveControl = (agentId: string, direction: MoveCodingAgentDirection) => {
+  /** While a keyboard pick-up is active the list renders from `pendingOrder`. */
+  const displayedAgents = createMemo(() => {
+    const agents = settings.data?.agents ?? [];
+    const pending = pendingOrder();
+    if (!pending) return agents;
+    const byId = new Map(agents.map((agent) => [agent.id, agent]));
+    return pending.flatMap((id) => byId.get(id) ?? []);
+  });
+
+  let agentsPanelBody: HTMLDivElement | undefined;
+  /** `<For>` moves row nodes, which drops focus; re-query the handle at the
+   *  agent's current index once Solid has applied the DOM update. */
+  const focusReorderHandle = (agentId: string, scrollTop?: number) => {
     queueMicrotask(() => {
-      const agents = settings.data?.agents ?? [];
-      const index = agents.findIndex((agent) => agent.id === agentId);
+      const index = displayedAgents().findIndex((agent) => agent.id === agentId);
       if (index < 0) return;
-      const order: MoveCodingAgentDirection[] =
-        direction === "up" ? ["up", "down"] : ["down", "up"];
-      for (const candidate of order) {
-        const control = document.querySelector<HTMLButtonElement>(
-          `[data-ac-testid="${settingsMoveTestId(index, candidate)}"]`,
-        );
-        if (control && !control.disabled) {
-          control.focus();
-          return;
-        }
-      }
       document
-        .querySelector<HTMLElement>(`[data-ac-testid="settings.agentRow.${index}.select"]`)
-        ?.focus();
+        .querySelector<HTMLElement>(`[data-ac-testid="settings.agentRow.${index}.dragHandle"]`)
+        ?.focus({ preventScroll: true });
+      if (scrollTop !== undefined && agentsPanelBody) agentsPanelBody.scrollTop = scrollTop;
     });
   };
 
-  const settingsMoveDisabled = () => moveBusy() || overlayOwnsAgents();
-  const settingsMoveUpDisabled = (index: number) => settingsMoveDisabled() || index <= 0;
-  const settingsMoveDownDisabled = (index: number) =>
-    settingsMoveDisabled() || index >= (settings.data?.agents.length ?? 0) - 1;
-  /** Distinct tool-and-direction accessible name; when the overlay owns the
-   *  order, the name carries the backend ownership reason it is disabled for. */
-  const settingsMoveLabel = (agent: AgentConfig, direction: MoveCodingAgentDirection) => {
-    const name = agent.label || agent.id || "agent";
-    return overlayOwnsAgents()
-      ? `Move ${name} ${direction} \u2014 ${MOVE_OVERLAY_REASON}`
-      : `Move ${name} ${direction}`;
+  let justDroppedTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearJustDropped = () => {
+    if (justDroppedTimer !== undefined) clearTimeout(justDroppedTimer);
+    justDroppedTimer = undefined;
+    setJustDroppedId(null);
   };
-  const settingsMoveTitle = (agent: AgentConfig, direction: MoveCodingAgentDirection) =>
-    overlayOwnsAgents()
-      ? MOVE_OVERLAY_REASON
-      : `Move ${agent.label || agent.id || "agent"} ${direction}`;
+  const markJustDropped = (agentId: string) => {
+    clearJustDropped();
+    setJustDroppedId(agentId);
+    justDroppedTimer = setTimeout(() => {
+      justDroppedTimer = undefined;
+      setJustDroppedId(null);
+    }, JUST_DROPPED_MS);
+  };
 
-  /** #2306 - one adjacent move through the narrow command for this surface. The
-   *  returned order is a consistency check only; the authoritative state always
+  /** #2544 - one reorder per gesture. `expectedIds` is the order the user saw;
+   *  the gate makes it the backend-known order. The authoritative state always
    *  comes from the follow-up get_settings. */
-  const moveSettingsAgent = async (agent: AgentConfig, direction: MoveCodingAgentDirection) => {
-    if (!settings.data || moveBusy() || overlayOwnsAgents()) return;
-    const list = settings.data.agents;
-    const index = list.findIndex((candidate) => candidate.id === agent.id);
-    const neighbor = direction === "up" ? list[index - 1] : list[index + 1];
-    if (index < 0 || !neighbor) return;
+  const reorderSettingsAgent = async (agentId: string, targetIndex: number) => {
+    if (!settings.data || settingsReorderDisabled()) return;
+    const ids = draftAgentIds();
+    const from = ids.indexOf(agentId);
+    if (from < 0 || targetIndex === from) return;
+    const scrollTop = agentsPanelBody?.scrollTop;
+    clearJustDropped();
     setMoveBusy(true);
     setMoveError("");
     setMoveAnnouncement("");
     try {
-      const ids = await SettingsAPI.moveCodingAgent({
-        id: agent.id,
-        neighborId: neighbor.id,
-        direction,
+      const returned = await SettingsAPI.reorderCodingAgent({
+        id: agentId,
+        expectedIds: ids,
+        targetIndex,
       });
-      assertCodingAgentMoveOrder(
-        ids,
-        expectedCodingAgentMoveOrder(list.map((candidate) => candidate.id), agent.id, direction),
-      );
+      assertCodingAgentMoveOrder(returned, reorderedIds(ids, from, targetIndex));
       await refreshCodingAgentSettings();
-      const nextIndex = (settings.data?.agents ?? []).findIndex(
-        (candidate) => candidate.id === agent.id,
-      );
+      const agents = settings.data?.agents ?? [];
+      const nextIndex = agents.findIndex((agent) => agent.id === agentId);
       if (nextIndex >= 0) {
         setMoveAnnouncement(
-          `Moved ${agent.label || agent.id} ${direction} to position ${nextIndex + 1} of ${settings.data?.agents.length ?? 0}.`,
+          `Moved ${agentName(agentId)} to position ${nextIndex + 1} of ${agents.length}.`,
         );
+        markJustDropped(agentId);
       }
     } catch (err: unknown) {
       setMoveError(errorMessage(err));
@@ -1309,9 +1393,242 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       }
     } finally {
       setMoveBusy(false);
-      focusSettingsMoveControl(agent.id, direction);
+      focusReorderHandle(agentId, scrollTop);
     }
   };
+
+  const stepAgentByKeyboard = (agentId: string, delta: -1 | 1) => {
+    if (settingsReorderDisabled()) return;
+    const ids = draftAgentIds();
+    const from = ids.indexOf(agentId);
+    if (from < 0) return;
+    const target = from + delta;
+    if (target < 0) {
+      setMoveAnnouncement(`${agentName(agentId)} is already first.`);
+    } else if (target >= ids.length) {
+      setMoveAnnouncement(`${agentName(agentId)} is already last.`);
+    } else {
+      void reorderSettingsAgent(agentId, target);
+    }
+  };
+
+  const pickUpAgent = (agentId: string) => {
+    if (settingsReorderDisabled() || pointerDrag) return;
+    const ids = draftAgentIds();
+    const index = ids.indexOf(agentId);
+    if (index < 0) return;
+    setPendingOrder(ids);
+    setKbdGrabbedId(agentId);
+    setMoveAnnouncement(
+      `Picked up ${agentName(agentId)}, position ${index + 1}. Arrows move, Space drops, Escape cancels.`,
+    );
+  };
+
+  const stepPickedUp = (grabbed: string, pending: string[], delta: -1 | 1) => {
+    const from = pending.indexOf(grabbed);
+    const to = Math.min(pending.length - 1, Math.max(0, from + delta));
+    setPendingOrder(reorderedIds(pending, from, to));
+    setMoveAnnouncement(`${agentName(grabbed)}: position ${to + 1} of ${pending.length}.`);
+    focusReorderHandle(grabbed);
+  };
+
+  const onPickedUpKeyDown = (e: KeyboardEvent, grabbed: string, pending: string[]) => {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      stepPickedUp(grabbed, pending, e.key === "ArrowUp" ? -1 : 1);
+    } else if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      setPendingOrder(null);
+      setKbdGrabbedId(null);
+      focusReorderHandle(grabbed);
+      void reorderSettingsAgent(grabbed, pending.indexOf(grabbed));
+    } else if (e.key === "Escape") {
+      // The modal closes on a document Escape; a pick-up cancel must not close it.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      cancelPickUp("Move cancelled, order restored.");
+      focusReorderHandle(grabbed);
+    } else if (e.key === "Tab") {
+      cancelPickUp("Move cancelled, order restored.");
+    }
+  };
+
+  const onReorderHandleKeyDown = (e: KeyboardEvent, agentId: string) => {
+    const pending = pendingOrder();
+    const grabbed = kbdGrabbedId();
+    if (pending && grabbed) {
+      onPickedUpKeyDown(e, grabbed, pending);
+    } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      stepAgentByKeyboard(agentId, e.key === "ArrowUp" ? -1 : 1);
+    } else if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      pickUpAgent(agentId);
+    }
+  };
+
+  // #2544 - while picked up, rows render in `pendingOrder` but row controls
+  // write by draft index. Any pointer press, focus move or click that is not on
+  // the grabbed handle cancels the pick-up first, so a remove, edit or select
+  // never lands on another agent. Focus and click cover a screen reader's
+  // browse-mode activation and scripted clicks, which send no pointerdown. The
+  // refocus after a step targets the grabbed handle, which is exempt.
+  const PICK_UP_CANCEL_EVENTS = ["pointerdown", "focusin", "click"] as const;
+  createEffect(() => {
+    if (!pendingOrder()) return;
+    const onInteractionOutside = (e: Event) => {
+      const grip = (e.target as Element | null)?.closest?.(".settings-agent-drag-handle");
+      const gripAgentId = grip?.closest(".settings-agent-row")?.getAttribute("data-ac-agent-id");
+      if (gripAgentId && gripAgentId === kbdGrabbedId()) return;
+      cancelPickUp("Move cancelled, order restored.");
+    };
+    for (const type of PICK_UP_CANCEL_EVENTS) window.addEventListener(type, onInteractionOutside, true);
+    onCleanup(() => {
+      for (const type of PICK_UP_CANCEL_EVENTS) {
+        window.removeEventListener(type, onInteractionOutside, true);
+      }
+    });
+  });
+
+  let pointerDrag: PointerDrag | null = null;
+  const panelRows = (): HTMLElement[] =>
+    agentsPanelBody
+      ? [...agentsPanelBody.querySelectorAll<HTMLElement>(".settings-agent-row")]
+      : [];
+
+  /** Ghost position, insertion slot and drop line, in the panel body's offset space. */
+  const updatePointerDrag = (drag: PointerDrag) => {
+    if (drag.ghost) drag.ghost.style.top = `${drag.lastY - (drag.startY - drag.rowTop)}px`;
+    const rows = panelRows();
+    const from = rows.indexOf(drag.row);
+    const others = rows.filter((row) => row !== drag.row);
+    drag.slot = insertionSlot(drag.lastY, others.map((row) => row.getBoundingClientRect()));
+    const atSlot = others[drag.slot];
+    const last = others[others.length - 1];
+    if (from < 0 || drag.slot === from || !last) {
+      setDropIndicatorTop(null);
+    } else {
+      setDropIndicatorTop(atSlot ? atSlot.offsetTop - 3 : last.offsetTop + last.offsetHeight + 1);
+    }
+  };
+
+  /** Runs on every exit path, including onCleanup: the ghost lives on
+   *  document.body and a dead webview never runs a framework unmount. */
+  const teardownPointerDrag = () => {
+    const drag = pointerDrag;
+    if (!drag) return;
+    pointerDrag = null;
+    if (drag.raf !== null) cancelAnimationFrame(drag.raf);
+    drag.ghost?.remove();
+    setDropIndicatorTop(null);
+    setDragSourceId(null);
+    document.body.classList.remove("is-dragging");
+    window.removeEventListener("keydown", drag.onEscape, true);
+    if (drag.handle.hasPointerCapture(drag.pointerId)) {
+      drag.handle.releasePointerCapture(drag.pointerId);
+    }
+  };
+
+  const cancelPointerDrag = () => {
+    const started = pointerDrag?.started ?? false;
+    teardownPointerDrag();
+    if (started) setMoveAnnouncement("Move cancelled.");
+  };
+
+  const startPointerDrag = (drag: PointerDrag) => {
+    const rect = drag.row.getBoundingClientRect();
+    drag.rowTop = rect.top;
+    const ghost = drag.row.cloneNode(true) as HTMLElement;
+    // The clone must not double any test id, id or focusable control.
+    for (const node of [ghost, ...ghost.querySelectorAll("*")]) {
+      node.removeAttribute("data-ac-testid");
+      node.removeAttribute("data-ac-role");
+      node.removeAttribute("id");
+    }
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.setAttribute("tabindex", "-1");
+    ghost.setAttribute("inert", "");
+    ghost.classList.add("drag-ghost");
+    ghost.style.width = `${rect.width}px`;
+    ghost.style.left = `${rect.left}px`;
+    document.body.append(ghost);
+    drag.ghost = ghost;
+    drag.started = true;
+    setDragSourceId(drag.agentId);
+    document.body.classList.add("is-dragging");
+    window.addEventListener("keydown", drag.onEscape, true);
+    const tick = () => {
+      if (pointerDrag !== drag) return;
+      if (agentsPanelBody) {
+        const list = agentsPanelBody.getBoundingClientRect();
+        const delta = autoScrollDelta(drag.lastY, list.top, list.bottom);
+        if (delta !== 0) {
+          agentsPanelBody.scrollTop += delta;
+          updatePointerDrag(drag);
+        }
+      }
+      drag.raf = requestAnimationFrame(tick);
+    };
+    drag.raf = requestAnimationFrame(tick);
+  };
+
+  const onHandlePointerDown = (e: PointerEvent, agentId: string) => {
+    if (e.button !== 0 || settingsReorderDisabled() || pendingOrder() || pointerDrag) return;
+    const handle = (e.target as Element).closest<HTMLElement>(".settings-agent-drag-handle");
+    const row = handle?.closest<HTMLElement>(".settings-agent-row");
+    if (!handle || !row) return;
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    pointerDrag = {
+      agentId,
+      handle,
+      row,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      lastY: e.clientY,
+      rowTop: 0,
+      slot: -1,
+      started: false,
+      ghost: null,
+      raf: null,
+      onEscape: (key: KeyboardEvent) => {
+        if (key.key !== "Escape") return;
+        key.preventDefault();
+        key.stopPropagation();
+        cancelPointerDrag();
+      },
+    };
+  };
+
+  const onHandlePointerMove = (e: PointerEvent) => {
+    const drag = pointerDrag;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    drag.lastY = e.clientY;
+    if (!drag.started) {
+      if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < DRAG_THRESHOLD) return;
+      startPointerDrag(drag);
+    }
+    updatePointerDrag(drag);
+  };
+
+  const onHandlePointerUp = (e: PointerEvent) => {
+    const drag = pointerDrag;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    const from = panelRows().indexOf(drag.row);
+    teardownPointerDrag();
+    if (!drag.started || from < 0 || drag.slot === from) return;
+    void reorderSettingsAgent(drag.agentId, reorderIndex(from, drag.slot));
+  };
+
+  const onHandlePointerCancel = (e: PointerEvent) => {
+    if (pointerDrag && e.pointerId === pointerDrag.pointerId) cancelPointerDrag();
+  };
+
+  onCleanup(() => {
+    teardownPointerDrag();
+    if (justDroppedTimer !== undefined) clearTimeout(justDroppedTimer);
+  });
 
   onMount(() => {
     let disposed = false;
@@ -2244,6 +2561,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           const reloadedSeed = cloneSettings(reloadedSettings);
           setSettings("data", cloneSettings(reloadedSettings));
           setModalSeed(reloadedSeed);
+          adoptBackendAgentOrder(reloadedSettings.agents);
           setTerminalSnapshotsOpeningValue(authoritative.terminalSnapshotsEnabled);
           setDraftDirty(false);
           setSaveError(TERMINAL_SNAPSHOT_CONFLICT_MESSAGE);
@@ -2264,6 +2582,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const nextModalSeed = cloneSettings(nextSettings);
       setSettings("data", cloneSettings(nextSettings));
       setModalSeed(nextModalSeed);
+      adoptBackendAgentOrder(nextSettings.agents);
       setTerminalSnapshotsOpeningValue(nextSettings.terminalSnapshotsEnabled);
       setDraftDirty(false);
       if (wasApiServerRunning && apiServerEndpointChanged(nextSettings, seedBeforeSave)) {
@@ -3306,7 +3625,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return (
       <div
         class="settings-agent-row"
-        classList={{ expanded: expanded() }}
+        classList={{
+          expanded: expanded(),
+          "is-drag-source": dragSourceId() === agent.id,
+          "is-kbd-grabbed": kbdGrabbedId() === agent.id,
+          "just-dropped": justDroppedId() === agent.id,
+        }}
         style={{ "--agent-color": agent.color }}
         data-ac-testid={`settings.agentRow.${i()}`}
         data-ac-role="group"
@@ -3331,6 +3655,27 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           data-ac-role="button"
           data-ac-state={pill()}
         >
+          {/* #2544 - the reorder handle never selects the rail: its click is
+              always stopped, and its keydown never reaches the row head. */}
+          <button
+            class="settings-agent-drag-handle"
+            type="button"
+            disabled={settingsReorderDisabled()}
+            aria-label={reorderHandleLabel(agent, i())}
+            aria-describedby="settings-agents-dnd-help"
+            title="Drag to reorder (Alt+Up / Alt+Down)"
+            data-ac-testid={`settings.agentRow.${i()}.dragHandle`}
+            data-ac-role="button"
+            onPointerDown={(e) => onHandlePointerDown(e, agent.id)}
+            onPointerMove={onHandlePointerMove}
+            onPointerUp={onHandlePointerUp}
+            onPointerCancel={onHandlePointerCancel}
+            onLostPointerCapture={onHandlePointerCancel}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => onReorderHandleKeyDown(e, agent.id)}
+          >
+            <GripIcon />
+          </button>
           <span class="settings-agent-dot" style={{ background: agent.color }} />
           <div class="settings-agent-row-meta">
             <div class="settings-agent-row-name">{agent.label || "New Agent"}</div>
@@ -3398,36 +3743,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               {expanded() ? "▾" : "▸"}
             </button>
           </div>
-            {/* #2306 - adjacent move controls live OUTSIDE the rail/remove/toggle
-                action column and never nest inside another button. */}
-            <button
-              class="settings-row-btn"
-              disabled={settingsMoveUpDisabled(i())}
-              onClick={(e) => {
-                e.stopPropagation();
-                void moveSettingsAgent(agent, "up");
-              }}
-              title={settingsMoveTitle(agent, "up")}
-              aria-label={settingsMoveLabel(agent, "up")}
-              data-ac-testid={`settings.agentRow.${i()}.moveUp`}
-              data-ac-role="button"
-            >
-              {"\u2191"}
-            </button>
-            <button
-              class="settings-row-btn"
-              disabled={settingsMoveDownDisabled(i())}
-              onClick={(e) => {
-                e.stopPropagation();
-                void moveSettingsAgent(agent, "down");
-              }}
-              title={settingsMoveTitle(agent, "down")}
-              aria-label={settingsMoveLabel(agent, "down")}
-              data-ac-testid={`settings.agentRow.${i()}.moveDown`}
-              data-ac-role="button"
-            >
-              {"\u2193"}
-            </button>
           </div>
         </div>
 
@@ -4513,7 +4828,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               Add Agent
             </button>
           </div>
-          <div class="settings-agents-panel-body">
+          <div class="settings-agents-panel-body" ref={agentsPanelBody}>
             <Show
               when={agentList().length > 0}
               fallback={
@@ -4522,9 +4837,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 </div>
               }
             >
-              <For each={settings.data!.agents}>
+              <For each={displayedAgents()}>
                 {(agent, i) => renderAgentRow(agent, i)}
               </For>
+            </Show>
+            <Show when={dropIndicatorTop() != null}>
+              <div
+                class="drop-indicator"
+                style={{ top: `${dropIndicatorTop()}px` }}
+                data-ac-testid="settings.agents.dropIndicator"
+                aria-hidden="true"
+              />
             </Show>
 
             {/* #2306 - move outcomes: inline error + polite announcements. */}
@@ -4544,6 +4867,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <Show when={overlayOwnsAgents()}>
               <div data-ac-testid="settings.agents.overlayReason">{MOVE_OVERLAY_REASON}</div>
             </Show>
+            <Show when={reorderDraftStale()}>
+              <div data-ac-testid="settings.agents.reorderDraftReason">{REORDER_DRAFT_REASON}</div>
+            </Show>
+            <div id="settings-agents-dnd-help" hidden>
+              Alt+Up or Alt+Down moves one step. Space picks up, arrows move, Space drops, Escape
+              cancels.
+            </div>
 
             <div class="settings-agents-actions-block">
               <div class="settings-agents-actions-title">Actions</div>

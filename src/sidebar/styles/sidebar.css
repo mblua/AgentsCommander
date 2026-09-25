@@ -2524,6 +2524,8 @@ html.light-theme .settings-api-client-warning {
 }
 
 .settings-agents-panel-body {
+  /* #2544 - the rows' offset parent: the drop indicator's top is an offsetTop. */
+  position: relative;
   min-height: 0;
   overflow-y: auto;
   display: flex;
@@ -2548,10 +2550,10 @@ html.light-theme .settings-api-client-warning {
 
 .settings-agent-row-head {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--spacing-xs);
-  padding: var(--spacing-xs) var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-sm) var(--spacing-xs) 2px;
   cursor: pointer;
 }
 
@@ -2562,8 +2564,109 @@ html.light-theme .settings-api-client-warning {
   cursor: default;
 }
 
-.settings-agent-row-head[aria-disabled="true"] button:not(:disabled) {
+.settings-agent-row-head[aria-disabled="true"] button:not(:disabled):not(.settings-agent-drag-handle) {
   cursor: pointer;
+}
+
+/* #2544 - grip handle, drag ghost, drop line and the reorder feedback states. */
+.settings-agent-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: grab;
+  touch-action: none;
+  transition: color var(--transition-fast);
+}
+
+.settings-agent-drag-handle:hover {
+  color: var(--sidebar-accent);
+}
+
+.settings-agent-drag-handle:disabled {
+  cursor: default;
+  opacity: 0.35;
+  color: var(--sidebar-fg-dim);
+}
+
+.settings-agent-drag-handle svg {
+  width: 8px;
+  height: 14px;
+  display: block;
+}
+
+body.is-dragging,
+body.is-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+.settings-agent-row.is-drag-source {
+  opacity: 0.35;
+}
+
+.drag-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 10;
+  margin: 0;
+  background: var(--sidebar-surface);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.drop-indicator {
+  position: absolute;
+  left: var(--spacing-sm);
+  right: var(--spacing-sm);
+  height: 2px;
+  background: var(--sidebar-accent);
+  pointer-events: none;
+}
+
+.drop-indicator::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sidebar-accent);
+}
+
+.settings-agent-row.is-kbd-grabbed {
+  outline: 1px dashed var(--sidebar-accent);
+  outline-offset: 1px;
+  transition: outline-color var(--transition-fast);
+}
+
+.settings-agent-row.just-dropped {
+  animation: settings-agent-just-dropped 420ms ease-out;
+}
+
+@keyframes settings-agent-just-dropped {
+  from {
+    background: rgba(0, 212, 255, 0.18);
+  }
+  to {
+    background: rgba(255, 255, 255, 0.03);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-agent-drag-handle,
+  .settings-agent-row.is-kbd-grabbed {
+    transition: none;
+  }
+
+  .settings-agent-row.just-dropped {
+    animation: none;
+  }
 }
 
 .settings-agent-dot {
