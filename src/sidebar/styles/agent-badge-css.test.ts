@@ -417,7 +417,7 @@ describe("weekly-quota fill on the agent chip (#2482)", () => {
     const { used } = quotaStops();
     const usedRatios = DARK_ROWS.map((row) => contrastRatio(text, stack(row, [tint, used])));
     const controls = DARK_ROWS.map((row) => contrastRatio(text, stack(row, [tint])));
-    expect(usedRatios.map(round2)).toEqual([6.91, 6.58, 6.01]);
+    expect(usedRatios.map(round2)).toEqual([5.46, 5.32, 5.06]);
     expect(controls.map(round2)).toEqual([7.36, 6.87, 6.06]);
     for (const ratio of usedRatios) expect(ratio).toBeGreaterThanOrEqual(CONTRAST_FLOOR);
   });
@@ -448,7 +448,7 @@ function lightChip(): { tint: Rgba; text: Rgb; used: Rgba } {
 describe("light-theme agent chip (#2512)", () => {
   it("the_light_rule_sets_only_the_colour_longhands_and_the_used_tint", () => {
     expect(declProps(ruleBody(LIGHT_RULE))).toEqual(["background-color", "color", "--ac-quota-used-tint"]);
-    expect(lightChip().used.alpha).toBe(0.16);
+    expect(lightChip().used.alpha).toBe(0.22);
   });
 
   it("the_light_chip_clears_the_contrast_floor_unfilled_and_used", () => {
@@ -456,18 +456,18 @@ describe("light-theme agent chip (#2512)", () => {
     const unfilled = LIGHT_ROWS.map((row) => contrastRatio(text, stack(row, [tint])));
     const usedRatios = LIGHT_ROWS.map((row) => contrastRatio(text, stack(row, [tint, used])));
     expect(unfilled.map(round2)).toEqual([7.24, 6.54, 5.94, 6.9, 6.56]);
-    expect(usedRatios.map(round2)).toEqual([6.0, 5.47, 5.02, 5.73, 5.48]);
+    expect(usedRatios.map(round2)).toEqual([5.58, 5.12, 4.71, 5.35, 5.12]);
     for (const ratio of [...unfilled, ...usedRatios]) expect(ratio).toBeGreaterThanOrEqual(CONTRAST_FLOOR);
   });
 
-  // Negative control: the dark fallback red (0.32) on the light active row drops
+  // Negative control: the dark fallback red (0.60) on the light active row drops
   // below the floor, which is why light theme sets its own tint.
   it("the_dark_red_would_fail_the_light_active_row", () => {
     const { tint, text } = lightChip();
     const { used: darkRed } = quotaStops();
-    expect(darkRed.alpha).toBe(0.32);
+    expect(darkRed.alpha).toBe(0.6);
     const ratio = contrastRatio(text, stack("#dcdce4", [tint, darkRed]));
-    expect(round2(ratio)).toBe(4.25);
+    expect(round2(ratio)).toBe(3.27);
     expect(ratio).toBeLessThan(CONTRAST_FLOOR);
   });
 });
