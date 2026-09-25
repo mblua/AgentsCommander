@@ -3183,19 +3183,21 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 // Resolve label: use provided agent_label, or look up from settings by agent_id.
                 // Without this fallback, callers that pass agent_id but no label (session-requests,
                 // web remote) would write app: "Unknown" into the per-instance config.json.
-                let resolved_label = match agent_label.as_deref() {
-                    Some(l) => l.to_string(),
-                    None => {
-                        let settings = app.state::<SettingsState>();
-                        let cfg = settings.read().await;
-                        resolve_agent_label(aid, &cfg).unwrap_or_else(|| {
+                let (resolved_label, (descriptor_command, descriptor_identity)) = {
+                    let settings = app.state::<SettingsState>();
+                    let cfg = settings.read().await;
+                    let label = match agent_label.as_deref() {
+                        Some(l) => l.to_string(),
+                        None => resolve_agent_label(aid, &cfg).unwrap_or_else(|| {
                             log::warn!(
                             "Could not resolve label for agent_id='{}' — defaulting to 'Unknown'",
                             aid
                         );
                             "Unknown".to_string()
-                        })
-                    }
+                        }),
+                    };
+                    // #2433 - the portable descriptor for the launched agent only.
+                    (label, coding_agent_descriptor(aid, &cfg))
                 };
                 let session_id_str = id.to_string();
                 if let Err(e) = agent_config::set_last_coding_agent(
@@ -3203,6 +3205,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                     aid,
                     &resolved_label,
                     Some(&session_id_str),
+                    &descriptor_command,
+                    &descriptor_identity,
                 ) {
                     log::warn!("Failed to save lastCodingAgent: {}", e);
                 }
@@ -5274,6 +5278,46 @@ fn resolve_agent_label(agent_id: &str, settings: &AppSettings) -> Option<String>
         .map(|a| a.label.clone())
 }
 
+/// #2433 / #2450 seam - the enabled profile cells of `agent_id`. The single
+/// accessor for reading an agent's cells here; #2450 re-keys the map and changes
+/// only this body.
+fn enabled_profile_cells<'a>(
+    settings: &'a AppSettings,
+    agent_id: &str,
+) -> impl Iterator<Item = (&'a String, &'a crate::config::settings::ProfileCellConfig)> + 'a {
+    settings
+        .coding_agent_profiles
+        .profiles_by_agent
+        .get(agent_id)
+        .into_iter()
+        .flat_map(|cells| cells.iter())
+        .filter(|(_, cell)| cell.enabled)
+}
+
+/// #2433 - `(canonical command, enabled letter -> cell identity)` for `agent_id`,
+/// written beside its `codingAgents` entry. An agent absent from settings yields
+/// an empty command and an empty identity.
+fn coding_agent_descriptor(
+    agent_id: &str,
+    settings: &AppSettings,
+) -> (String, std::collections::BTreeMap<String, String>) {
+    let Some(agent) = settings.agents.iter().find(|a| a.id == agent_id) else {
+        return (String::new(), std::collections::BTreeMap::new());
+    };
+    let identity = enabled_profile_cells(settings, agent_id)
+        .map(|(letter, cell)| {
+            (
+                letter.clone(),
+                crate::config::agent_command::cell_identity(agent, cell),
+            )
+        })
+        .collect();
+    (
+        crate::config::agent_command::canonical_command_text(&agent.command),
+        identity,
+    )
+}
+
 fn resolve_actual_agent(
     shell: &str,
     shell_args: &[String],
@@ -5970,7 +6014,7 @@ async fn inject_restart_resume_prompt(app: &AppHandle, target: &RestartResumeTar
 mod tests {
     use super::{
         classify_existing_root, claude_projects_dir_for_config_dir,
-        claude_resume_probe_target_for_kind, compute_profile_outdated,
+        claude_resume_probe_target_for_kind, coding_agent_descriptor, compute_profile_outdated,
         container_path_context_for_cwd, count_working_members, effective_restart_requested_profile,
         execute_manual_coordinator_destroy, inject_codex_resume, inject_pi_resume,
         injected_claude_config_dir_for_copy, maybe_inject_pi_resume,
@@ -14599,6 +14643,104 @@ mod tests {
 
         assert!(watchers.is_session_registered(id));
         assert!(quota.engine.is_session_registered(id));
+    }
+
+    // #2433 descriptor persistence
+
+    fn descriptor_settings() -> AppSettings {
+        let agent = |id: &str, command: &str| AgentConfig {
+            id: id.to_string(),
+            label: id.to_string(),
+            command: command.to_string(),
+            color: "#10b981".to_string(),
+            order: None,
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+            context_regex: None,
+            blocking_menus: None,
+            backend: Default::default(),
+        };
+        let cell = |enabled: bool, command: &str| ProfileCellConfig {
+            enabled,
+            command: command.to_string(),
+            env: BTreeMap::new(),
+            notes: String::new(),
+        };
+        let mut settings = AppSettings {
+            agents: vec![agent("claude", "Claude --Foo"), agent("codex", "codex")],
+            ..AppSettings::default()
+        };
+        settings.coding_agent_profiles.profiles_by_agent.insert(
+            "claude".to_string(),
+            BTreeMap::from([
+                ("A".to_string(), cell(true, "--a")),
+                ("B".to_string(), cell(false, "--b")),
+                ("C".to_string(), cell(true, "")),
+            ]),
+        );
+        settings
+    }
+
+    #[test]
+    fn descriptor_identity_skips_disabled_cells() {
+        let settings = descriptor_settings();
+        let agent = &settings.agents[0];
+        let cells = &settings.coding_agent_profiles.profiles_by_agent["claude"];
+        let (command, identity) = coding_agent_descriptor("claude", &settings);
+        assert_eq!(
+            command,
+            crate::config::agent_command::canonical_command_text("Claude --Foo")
+        );
+        let expected: BTreeMap<String, String> = ["A", "C"]
+            .iter()
+            .map(|l| {
+                (
+                    l.to_string(),
+                    crate::config::agent_command::cell_identity(agent, &cells[*l]),
+                )
+            })
+            .collect();
+        assert_eq!(identity, expected);
+
+        let (_, none) = coding_agent_descriptor("codex", &settings);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn spawn_writes_the_descriptor_for_the_launched_agent_only() {
+        let settings = descriptor_settings();
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        let other = serde_json::json!({"app": "codex", "lastUsed": "2026-01-01T00:00:00+00:00"});
+        let seed = serde_json::json!({"tooling": {"codingAgents": {"codex": other}}});
+        let instance = repo.join(crate::config::agent_local_dir_name());
+        std::fs::create_dir_all(&instance).unwrap();
+        for path in [instance.join("config.json"), repo.join("config.json")] {
+            std::fs::write(&path, serde_json::to_string(&seed).unwrap()).unwrap();
+        }
+
+        let (command, identity) = coding_agent_descriptor("claude", &settings);
+        assert_eq!(identity.len(), 2);
+        crate::config::agent_config::set_last_coding_agent(
+            &repo.to_string_lossy(),
+            "claude",
+            "claude",
+            Some("sid"),
+            &command,
+            &identity,
+        )
+        .unwrap();
+
+        for path in [instance.join("config.json"), repo.join("config.json")] {
+            let value: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let agents = &value["tooling"]["codingAgents"];
+            assert_eq!(agents["claude"]["command"], serde_json::json!(command));
+            assert_eq!(agents["claude"]["identity"], serde_json::json!(identity));
+            assert_eq!(agents["codex"], other, "{path:?}");
+        }
     }
 }
 
