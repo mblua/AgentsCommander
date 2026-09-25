@@ -416,6 +416,29 @@ function rustAttributedFnMatches(source) {
   return matches;
 }
 
+function resolveRustBodyClose(masked, maskedComments, bodyOpen, sourceLength) {
+  let bodyClose = findMatchingBrace(masked, bodyOpen);
+  let usedFallbackClose = false;
+  if (bodyClose === -1) {
+    const nextTest = maskedComments.slice(bodyOpen + 1).search(/#\s*\[\s*test\b/);
+    if (nextTest !== -1) {
+      bodyClose = bodyOpen + 1 + nextTest;
+      usedFallbackClose = true;
+    } else {
+      bodyClose = sourceLength;
+      usedFallbackClose = true;
+    }
+  }
+  return { bodyClose, usedFallbackClose };
+}
+
+function rustModulePath(modules, fnStart) {
+  return modules
+    .filter((mod) => mod.start < fnStart && fnStart < mod.end)
+    .sort((a, b) => a.start - b.start)
+    .map((mod) => mod.name);
+}
+
 function scanRustFile(root, filePath) {
   const source = fs.readFileSync(filePath, 'utf8');
   const rel = relPath(root, filePath);
@@ -440,23 +463,9 @@ function scanRustFile(root, filePath) {
       });
       continue;
     }
-    let bodyClose = findMatchingBrace(masked, bodyOpen);
-    let usedFallbackClose = false;
-    if (bodyClose === -1) {
-      const nextTest = maskedComments.slice(bodyOpen + 1).search(/#\s*\[\s*test\b/);
-      if (nextTest !== -1) {
-        bodyClose = bodyOpen + 1 + nextTest;
-        usedFallbackClose = true;
-      } else {
-        bodyClose = source.length;
-        usedFallbackClose = true;
-      }
-    }
+    const { bodyClose, usedFallbackClose } = resolveRustBodyClose(masked, maskedComments, bodyOpen, source.length);
 
-    const modulePath = modules
-      .filter((mod) => mod.start < fnStart && fnStart < mod.end)
-      .sort((a, b) => a.start - b.start)
-      .map((mod) => mod.name);
+    const modulePath = rustModulePath(modules, fnStart);
     const id = rustTestId(rel, modulePath, fnName);
     const line = lineOf(source, match.index);
     const hasIgnore = /#\s*\[\s*ignore(?:\s|\]|=)/.test(attrs);
@@ -615,27 +624,29 @@ function isFrontendPlaceholder(body) {
   return false;
 }
 
+function pushFrontendPlaceholder(source, masked, rel, ranges, findings, matchIndex, nameStart) {
+  const added = addFrontendFinding([], 'placeholder-frontend-test', source, rel, ranges, matchIndex, nameStart);
+  if (!added) return;
+  const comma = masked.indexOf(',', added.literal.end);
+  if (comma === -1) return;
+  const body = callbackBody(source, masked, comma + 1);
+  if (!body) return;
+  if (isFrontendPlaceholder(body.body)) {
+    findings.push({
+      category: 'placeholder-frontend-test',
+      id: added.finding.id,
+      file: rel,
+      line: lineOf(source, matchIndex),
+    });
+  }
+}
+
 function addFrontendPlaceholderFindings(source, rel, ranges, findings, warnings) {
   const masked = maskCommentsAndStrings(source);
   const directRe = /\b(it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\(/g;
   let match;
   while ((match = directRe.exec(masked)) !== null) {
-    const added = addFrontendFinding([], 'placeholder-frontend-test', source, rel, ranges, match.index, directRe.lastIndex);
-    if (!added) continue;
-    const comma = masked.indexOf(',', added.literal.end);
-    if (comma === -1) continue;
-    const body = callbackBody(source, masked, comma + 1);
-    if (!body) {
-      continue;
-    }
-    if (isFrontendPlaceholder(body.body)) {
-      findings.push({
-        category: 'placeholder-frontend-test',
-        id: added.finding.id,
-        file: rel,
-        line: lineOf(source, match.index),
-      });
-    }
+    pushFrontendPlaceholder(source, masked, rel, ranges, findings, match.index, directRe.lastIndex);
   }
 
   const eachRe = /\b(it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*each\s*\(/g;
@@ -645,20 +656,7 @@ function addFrontendPlaceholderFindings(source, rel, ranges, findings, warnings)
     if (/^\s*\.\s*(?:skip|todo)\s*\(/.test(masked.slice(eachClose + 1))) continue;
     const nameOpen = masked.indexOf('(', eachClose + 1);
     if (nameOpen === -1) continue;
-    const added = addFrontendFinding([], 'placeholder-frontend-test', source, rel, ranges, match.index, nameOpen + 1);
-    if (!added) continue;
-    const comma = masked.indexOf(',', added.literal.end);
-    if (comma === -1) continue;
-    const body = callbackBody(source, masked, comma + 1);
-    if (!body) continue;
-    if (isFrontendPlaceholder(body.body)) {
-      findings.push({
-        category: 'placeholder-frontend-test',
-        id: added.finding.id,
-        file: rel,
-        line: lineOf(source, match.index),
-      });
-    }
+    pushFrontendPlaceholder(source, masked, rel, ranges, findings, match.index, nameOpen + 1);
   }
 }
 
