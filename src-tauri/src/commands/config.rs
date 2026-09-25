@@ -1390,6 +1390,7 @@ pub struct PreviewSelectionLockRemovalResult {
     pub invalid_count: usize,
     pub targets: Vec<ProfileAssignmentTarget>,
     pub warnings: Vec<String>,
+    pub scope_faults: Vec<ScopeFault>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1789,6 +1790,60 @@ struct ProfileCandidate {
     matrix_dir: PathBuf,
 }
 
+/// #2557 - one replica or folder the scope walk could not count, and why.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeFault {
+    pub code: ScopeFaultCode,
+    pub replica_name: String,
+    pub replica_path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScopeFaultCode {
+    ConfigUnreadable,
+    ConfigNotJson,
+    ConfigNotObject,
+    IdentityMissing,
+    IdentityMismatch,
+    LocationInvalid,
+    PathUnreadable,
+    FolderUnreadable,
+}
+
+impl ScopeFault {
+    /// Unlike `build_profile_assignment_target`, a missing `__agent_` prefix
+    /// keeps the whole folder name: a fault is never nameless.
+    fn new(code: ScopeFaultCode, path: &Path) -> Self {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Self {
+            code,
+            replica_name: name
+                .strip_prefix("__agent_")
+                .map(str::to_string)
+                .unwrap_or(name),
+            replica_path: crate::path_utils::path_to_string_without_windows_verbatim_prefix(path),
+        }
+    }
+}
+
+// Exhaustive on purpose: a new replica_identity fault must break the build here.
+fn scope_fault_code(fault: crate::config::replica_identity::ReplicaConfigFault) -> ScopeFaultCode {
+    use crate::config::replica_identity::ReplicaConfigFault;
+    match fault {
+        ReplicaConfigFault::ConfigUnreadable => ScopeFaultCode::ConfigUnreadable,
+        ReplicaConfigFault::ConfigNotJson => ScopeFaultCode::ConfigNotJson,
+        ReplicaConfigFault::ConfigNotObject => ScopeFaultCode::ConfigNotObject,
+        ReplicaConfigFault::IdentityMissing => ScopeFaultCode::IdentityMissing,
+        ReplicaConfigFault::IdentityMismatch => ScopeFaultCode::IdentityMismatch,
+        ReplicaConfigFault::LocationInvalid => ScopeFaultCode::LocationInvalid,
+    }
+}
+
 /// #1941 - the complete identified candidate set for one scope, together with
 /// whether the directory walk could establish that set.
 struct ProfileTargetEnumeration {
@@ -1796,6 +1851,7 @@ struct ProfileTargetEnumeration {
     anchor_matrix_dir: PathBuf,
     candidates: Vec<ProfileCandidate>,
     warnings: Vec<String>,
+    scope_faults: Vec<ScopeFault>,
     counts_complete: bool,
 }
 
@@ -1815,6 +1871,7 @@ impl ProfileTargetEnumeration {
 struct CandidateDirs {
     dirs: Vec<PathBuf>,
     warnings: Vec<String>,
+    faults: Vec<ScopeFault>,
     complete: bool,
 }
 
@@ -1823,12 +1880,14 @@ impl CandidateDirs {
         Self {
             dirs: Vec::new(),
             warnings: Vec::new(),
+            faults: Vec::new(),
             complete: true,
         }
     }
 
-    fn mark_incomplete(&mut self, warning: String) {
+    fn mark_incomplete(&mut self, warning: String, fault: ScopeFault) {
         self.warnings.push(warning);
+        self.faults.push(fault);
         self.complete = false;
     }
 }
@@ -1992,6 +2051,7 @@ fn enumerate_profile_assignment_targets(
         }
     }
     let mut warnings = candidate_dirs.warnings;
+    let mut scope_faults = candidate_dirs.faults;
     let mut counts_complete = candidate_dirs.complete;
 
     let anchor_matrix_key = canonical_compare_key(&anchor_matrix_dir);
@@ -2024,6 +2084,7 @@ fn enumerate_profile_assignment_targets(
                 "Skipping unreadable replica '{}'",
                 candidate.display()
             ));
+            scope_faults.push(ScopeFault::new(ScopeFaultCode::PathUnreadable, &candidate));
             counts_complete = false;
             continue;
         };
@@ -2031,19 +2092,24 @@ fn enumerate_profile_assignment_targets(
         if !seen.insert(key) {
             continue;
         }
-        let Ok((config, identity)) =
-            crate::config::replica_identity::read_wg_replica_config_read_only(&replica_dir)
-        else {
-            // #1941 - an unprovable identity inside the scope means membership
-            // cannot be established: keep the diagnostic visible and refuse to
-            // certify a scope total for it.
-            warnings.push(format!(
-                "Skipping invalid replica '{}'",
-                replica_dir.display()
-            ));
-            counts_complete = false;
-            continue;
-        };
+        let (config, identity) =
+            match crate::config::replica_identity::read_wg_replica_config_read_only_classified(
+                &replica_dir,
+            ) {
+                Ok(read) => read,
+                Err((fault, _message)) => {
+                    // #1941 - an unprovable identity inside the scope means membership
+                    // cannot be established: keep the diagnostic visible and refuse to
+                    // certify a scope total for it.
+                    warnings.push(format!(
+                        "Skipping invalid replica '{}'",
+                        replica_dir.display()
+                    ));
+                    scope_faults.push(ScopeFault::new(scope_fault_code(fault), &replica_dir));
+                    counts_complete = false;
+                    continue;
+                }
+            };
         if *scope == ProfileAssignmentScope::Kind
             && canonical_compare_key(&identity.matrix_dir) != anchor_matrix_key
         {
@@ -2068,11 +2134,14 @@ fn enumerate_profile_assignment_targets(
             .then_with(|| a.target.replica_name.cmp(&b.target.replica_name))
             .then_with(|| a.target.replica_path.cmp(&b.target.replica_path))
     });
+    // read_dir order is platform-defined; the payload order must not be.
+    scope_faults.sort_by(|a, b| (&a.replica_path, a.code).cmp(&(&b.replica_path, b.code)));
     Ok(ProfileTargetEnumeration {
         anchor_dir,
         anchor_matrix_dir,
         candidates,
         warnings,
+        scope_faults,
         counts_complete,
     })
 }
@@ -2135,7 +2204,10 @@ fn collect_replica_dirs_in_workgroup(wg_dir: &Path, out: &mut CandidateDirs) {
     let entries = match std::fs::read_dir(wg_dir) {
         Ok(entries) => entries,
         Err(e) => {
-            out.mark_incomplete(format!("Failed to read room '{}': {}", wg_dir.display(), e));
+            out.mark_incomplete(
+                format!("Failed to read room '{}': {}", wg_dir.display(), e),
+                ScopeFault::new(ScopeFaultCode::FolderUnreadable, wg_dir),
+            );
             return;
         }
     };
@@ -2143,22 +2215,28 @@ fn collect_replica_dirs_in_workgroup(wg_dir: &Path, out: &mut CandidateDirs) {
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
-                out.mark_incomplete(format!(
-                    "Failed to read an entry in room '{}': {}",
-                    wg_dir.display(),
-                    e
-                ));
+                out.mark_incomplete(
+                    format!(
+                        "Failed to read an entry in room '{}': {}",
+                        wg_dir.display(),
+                        e
+                    ),
+                    ScopeFault::new(ScopeFaultCode::FolderUnreadable, wg_dir),
+                );
                 continue;
             }
         };
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(e) => {
-                out.mark_incomplete(format!(
-                    "Failed to inspect an entry in room '{}': {}",
-                    wg_dir.display(),
-                    e
-                ));
+                out.mark_incomplete(
+                    format!(
+                        "Failed to inspect an entry in room '{}': {}",
+                        wg_dir.display(),
+                        e
+                    ),
+                    ScopeFault::new(ScopeFaultCode::FolderUnreadable, wg_dir),
+                );
                 continue;
             }
         };
@@ -2176,11 +2254,10 @@ fn collect_kind_replica_dirs(ac_root: &Path, out: &mut CandidateDirs) {
     let entries = match std::fs::read_dir(ac_root) {
         Ok(entries) => entries,
         Err(e) => {
-            out.mark_incomplete(format!(
-                "Failed to read workspace '{}': {}",
-                ac_root.display(),
-                e
-            ));
+            out.mark_incomplete(
+                format!("Failed to read workspace '{}': {}", ac_root.display(), e),
+                ScopeFault::new(ScopeFaultCode::FolderUnreadable, ac_root),
+            );
             return;
         }
     };
@@ -2188,22 +2265,28 @@ fn collect_kind_replica_dirs(ac_root: &Path, out: &mut CandidateDirs) {
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
-                out.mark_incomplete(format!(
-                    "Failed to read an entry in workspace '{}': {}",
-                    ac_root.display(),
-                    e
-                ));
+                out.mark_incomplete(
+                    format!(
+                        "Failed to read an entry in workspace '{}': {}",
+                        ac_root.display(),
+                        e
+                    ),
+                    ScopeFault::new(ScopeFaultCode::FolderUnreadable, ac_root),
+                );
                 continue;
             }
         };
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(e) => {
-                out.mark_incomplete(format!(
-                    "Failed to inspect an entry in workspace '{}': {}",
-                    ac_root.display(),
-                    e
-                ));
+                out.mark_incomplete(
+                    format!(
+                        "Failed to inspect an entry in workspace '{}': {}",
+                        ac_root.display(),
+                        e
+                    ),
+                    ScopeFault::new(ScopeFaultCode::FolderUnreadable, ac_root),
+                );
                 continue;
             }
         };
@@ -2877,6 +2960,7 @@ pub(crate) async fn preview_selection_lock_removal_inner(
         invalid_count,
         targets: enumeration.targets(),
         warnings: enumeration.warnings,
+        scope_faults: enumeration.scope_faults,
     })
 }
 
@@ -6128,6 +6212,7 @@ mod tests {
                 })
                 .collect(),
             warnings: Vec::new(),
+            scope_faults: Vec::new(),
             counts_complete: true,
         }
     }
@@ -11409,6 +11494,142 @@ mod tests {
             "countsComplete": false,
         });
         assert_eq!(actual, expected);
+    }
+
+    /// #2557 - the #2475 byte-identity fixture: two invalid replicas
+    /// (`broken` is not JSON, `unreadable` has config.json as a directory).
+    fn issue_2557_broken_room() -> (
+        SelectionApiFixture,
+        super::ProfileTargetEnumeration,
+        PathBuf,
+    ) {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            locked_tooling("B", "agent-0"),
+        );
+        selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "qa",
+            unlocked_tooling("A", "agent-1"),
+        );
+        selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "bad-tooling",
+            json!({ "selectionLocked": "yes" }),
+        );
+        let broken = selection_api_replica(&fixture, "room-1-team", "broken", json!({}));
+        std::fs::write(broken.join("config.json"), b"{not json").expect("break config");
+        let unreadable = selection_api_replica(&fixture, "room-1-team", "unreadable", json!({}));
+        std::fs::remove_file(unreadable.join("config.json")).expect("remove config");
+        std::fs::create_dir(unreadable.join("config.json")).expect("config.json as a dir");
+
+        let settings = selection_api_settings(&fixture);
+        let enumeration = super::enumerate_profile_assignment_targets(
+            &settings,
+            &anchor,
+            &super::ProfileAssignmentScope::Workgroup,
+            &[],
+        )
+        .expect("enumerate");
+        let room = super::canonical_real_dir(&fixture.ac_root.join("room-1-team"), "test")
+            .expect("canonical");
+        (fixture, enumeration, room)
+    }
+
+    #[test]
+    fn issue_2557_scope_faults_name_the_replica_and_the_reason() {
+        let (_fixture, enumeration, room) = issue_2557_broken_room();
+        let wire =
+            |path: &Path| crate::path_utils::path_to_string_without_windows_verbatim_prefix(path);
+        let faults = &enumeration.scope_faults;
+
+        assert_eq!(faults.len(), 2, "{faults:?}");
+        assert_eq!(
+            faults
+                .iter()
+                .map(|fault| (fault.replica_name.as_str(), fault.code))
+                .collect::<Vec<_>>(),
+            vec![
+                ("broken", super::ScopeFaultCode::ConfigNotJson),
+                ("unreadable", super::ScopeFaultCode::ConfigUnreadable),
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&faults[0]).expect("serialize"),
+            json!({
+                "code": "configNotJson",
+                "replicaName": "broken",
+                "replicaPath": wire(&room.join("__agent_broken")),
+            })
+        );
+    }
+
+    #[test]
+    fn issue_2557_warnings_stay_byte_identical() {
+        let (_fixture, enumeration, _room) = issue_2557_broken_room();
+        assert_eq!(enumeration.warnings.len(), 2);
+        assert_eq!(
+            enumeration.warnings.len(),
+            enumeration.scope_faults.len(),
+            "every skipped replica yields one warning and one fault"
+        );
+    }
+
+    #[test]
+    fn issue_2557_unreadable_folder_is_named_too() {
+        let fixture = selection_api_fixture();
+        let missing = fixture.ac_root.join("no-existe");
+        let collectors: [(&str, fn(&Path, &mut super::CandidateDirs)); 2] = [
+            ("kind", super::collect_kind_replica_dirs),
+            ("workgroup", super::collect_replica_dirs_in_workgroup),
+        ];
+        for (label, collect) in collectors {
+            let mut dirs = super::CandidateDirs::new();
+            collect(&missing, &mut dirs);
+            assert!(!dirs.complete, "{label}");
+            assert_eq!(dirs.faults.len(), 1, "{label}: {:?}", dirs.faults);
+            assert_eq!(
+                dirs.faults[0].code,
+                super::ScopeFaultCode::FolderUnreadable,
+                "{label}"
+            );
+            assert_eq!(dirs.faults[0].replica_name, "no-existe", "{label}");
+        }
+    }
+
+    #[test]
+    fn issue_2557_clean_scope_has_zero_faults() {
+        let fixture = selection_api_fixture();
+        let anchor = selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "dev-rust",
+            locked_tooling("B", "agent-0"),
+        );
+        selection_api_replica(
+            &fixture,
+            "room-1-team",
+            "qa",
+            unlocked_tooling("A", "agent-1"),
+        );
+        let enumeration = super::enumerate_profile_assignment_targets(
+            &selection_api_settings(&fixture),
+            &anchor,
+            &super::ProfileAssignmentScope::Workgroup,
+            &[],
+        )
+        .expect("enumerate");
+        assert!(enumeration.counts_complete);
+        assert!(
+            enumeration.scope_faults.is_empty(),
+            "{:?}",
+            enumeration.scope_faults
+        );
     }
 
     #[test]

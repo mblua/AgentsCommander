@@ -16,6 +16,18 @@ pub struct WgReplicaIdentity {
     pub identity: String,
 }
 
+/// #2557 - why a replica config could not be read or validated. Classified at
+/// the source so callers never parse the message text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplicaConfigFault {
+    ConfigUnreadable,
+    ConfigNotJson,
+    ConfigNotObject,
+    IdentityMissing,
+    IdentityMismatch,
+    LocationInvalid,
+}
+
 fn strip_unc(path: PathBuf) -> PathBuf {
     crate::path_utils::normalize_windows_verbatim_path_buf(&path)
 }
@@ -266,23 +278,36 @@ pub fn validate_or_repair_wg_replica_identity(
     replica_dir: &Path,
     persisted_identity: Option<&str>,
 ) -> Result<WgReplicaIdentity, String> {
-    let expected = expected_wg_replica_identity(replica_dir)?;
+    validate_or_repair_wg_replica_identity_classified(replica_dir, persisted_identity)
+        .map_err(|(_, message)| message)
+}
+
+pub fn validate_or_repair_wg_replica_identity_classified(
+    replica_dir: &Path,
+    persisted_identity: Option<&str>,
+) -> Result<WgReplicaIdentity, (ReplicaConfigFault, String)> {
+    let expected = expected_wg_replica_identity(replica_dir)
+        .map_err(|message| (ReplicaConfigFault::LocationInvalid, message))?;
     let persisted = persisted_identity.ok_or_else(|| {
-        format!(
-            "Room replica '{}' has no config.json identity; expected '{}'",
-            display_path(replica_dir),
-            expected.identity
+        (
+            ReplicaConfigFault::IdentityMissing,
+            format!(
+                "Room replica '{}' has no config.json identity; expected '{}'",
+                display_path(replica_dir),
+                expected.identity
+            ),
         )
     })?;
-    let persisted_agent = persisted_identity_agent_name(persisted)?;
+    let persisted_agent = persisted_identity_agent_name(persisted)
+        .map_err(|message| (ReplicaConfigFault::IdentityMismatch, message))?;
     if !persisted_identity_names_match(&persisted_agent, &expected.agent_name) {
-        return Err(format!(
+        return Err((ReplicaConfigFault::IdentityMismatch, format!(
             "Room replica '{}' identity '{}' names '_agent_{}', but the replica directory requires '_agent_{}'",
             display_path(replica_dir),
             persisted,
             persisted_agent,
             expected.agent_name
-        ));
+        )));
     }
     Ok(expected)
 }
@@ -368,17 +393,35 @@ pub fn repair_wg_replica_config_value(
 pub fn read_wg_replica_config_read_only(
     replica_dir: &Path,
 ) -> Result<(Value, WgReplicaIdentity), String> {
+    read_wg_replica_config_read_only_classified(replica_dir).map_err(|(_, message)| message)
+}
+
+pub fn read_wg_replica_config_read_only_classified(
+    replica_dir: &Path,
+) -> Result<(Value, WgReplicaIdentity), (ReplicaConfigFault, String)> {
     #[cfg(test)]
     strict_read_probe::record(replica_dir);
     let config_path = replica_dir.join("config.json");
     let (bytes, _) = crate::path_identity::read_bounded_regular(&config_path, 1024 * 1024)
-        .map_err(|_| "Room replica config failed a bounded path-safe read".to_string())?;
-    let config = crate::path_identity::parse_json_no_duplicates(&bytes)
-        .map_err(|_| "Room replica config is not duplicate-free JSON".to_string())?;
+        .map_err(|_| {
+            (
+                ReplicaConfigFault::ConfigUnreadable,
+                "Room replica config failed a bounded path-safe read".to_string(),
+            )
+        })?;
+    let config = crate::path_identity::parse_json_no_duplicates(&bytes).map_err(|_| {
+        (
+            ReplicaConfigFault::ConfigNotJson,
+            "Room replica config is not duplicate-free JSON".to_string(),
+        )
+    })?;
     if !config.is_object() {
-        return Err("Room replica config must be a JSON object".to_string());
+        return Err((
+            ReplicaConfigFault::ConfigNotObject,
+            "Room replica config must be a JSON object".to_string(),
+        ));
     }
-    let identity = validate_or_repair_wg_replica_identity(
+    let identity = validate_or_repair_wg_replica_identity_classified(
         replica_dir,
         config.get("identity").and_then(|value| value.as_str()),
     )?;
@@ -667,5 +710,111 @@ mod tests {
 
         assert_eq!(identity.identity, "../../_agent_tech-lead");
         assert_eq!(config["identity"], "../../_agent_tech-lead");
+    }
+
+    /// #2557 - seven replicas, one per fault cause; two share ConfigUnreadable.
+    fn issue_2557_fault_cases(temp: &tempfile::TempDir) -> Vec<(PathBuf, ReplicaConfigFault)> {
+        let room = temp
+            .path()
+            .join("AgentsCommander_ac")
+            .join(".ac")
+            .join("wg-2-dev-team");
+        let replica = |dir: &str, config: Option<&[u8]>| {
+            let path = room.join(dir);
+            std::fs::create_dir_all(&path).expect("create replica");
+            // Only the location case lacks a valid Matrix; the others need one
+            // so the identity checks are reached.
+            if let Some(agent) = dir.strip_prefix("__agent_") {
+                let matrix = room
+                    .parent()
+                    .expect("ac root")
+                    .join(format!("_agent_{agent}"));
+                std::fs::create_dir_all(&matrix).expect("create matrix");
+                std::fs::write(matrix.join(ROLE_MD_FILENAME), "# Role\n").expect("write Role.md");
+            }
+            if let Some(bytes) = config {
+                std::fs::write(path.join("config.json"), bytes).expect("write config");
+            }
+            path
+        };
+        let dir_config = replica("__agent_dir-config", None);
+        std::fs::create_dir(dir_config.join("config.json")).expect("config.json as a dir");
+        vec![
+            (
+                replica("__agent_no-config", None),
+                ReplicaConfigFault::ConfigUnreadable,
+            ),
+            (dir_config, ReplicaConfigFault::ConfigUnreadable),
+            (
+                replica("__agent_not-json", Some(b"{not json")),
+                ReplicaConfigFault::ConfigNotJson,
+            ),
+            (
+                replica("__agent_array", Some(b"[]")),
+                ReplicaConfigFault::ConfigNotObject,
+            ),
+            (
+                replica("__agent_no-identity", Some(b"{}")),
+                ReplicaConfigFault::IdentityMissing,
+            ),
+            (
+                replica(
+                    "__agent_tech-lead",
+                    Some(br#"{"identity":"../../_agent_otro"}"#),
+                ),
+                ReplicaConfigFault::IdentityMismatch,
+            ),
+            (
+                replica("plain", Some(br#"{"identity":"../../_agent_plain"}"#)),
+                ReplicaConfigFault::LocationInvalid,
+            ),
+        ]
+    }
+
+    #[test]
+    fn issue_2557_each_fault_cause_gets_its_own_code() {
+        let temp = setup_replica(".ac");
+        let cases = issue_2557_fault_cases(&temp);
+        let mut seen = HashSet::new();
+        for (dir, expected) in &cases {
+            let (fault, _) =
+                read_wg_replica_config_read_only_classified(dir).expect_err("every case must fail");
+            assert_eq!(fault, *expected, "{}", dir.display());
+            seen.insert(format!("{fault:?}"));
+        }
+        assert_eq!(cases.len(), 7);
+        assert_eq!(seen.len(), 6, "{seen:?}");
+    }
+
+    #[test]
+    fn issue_2557_wrapper_message_is_byte_identical() {
+        let temp = setup_replica(".ac");
+        for (dir, _) in issue_2557_fault_cases(&temp) {
+            let (_, classified) =
+                read_wg_replica_config_read_only_classified(&dir).expect_err("classified fails");
+            let plain = read_wg_replica_config_read_only(&dir).expect_err("wrapper fails");
+            assert_eq!(plain, classified, "{}", dir.display());
+        }
+    }
+
+    #[test]
+    fn issue_2557_classified_reader_records_one_probe_call() {
+        let temp = setup_replica(".ac");
+        let replica = temp
+            .path()
+            .join("AgentsCommander_ac")
+            .join(".ac")
+            .join("wg-2-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::write(
+            replica.join("config.json"),
+            br#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .expect("write config");
+        strict_read_probe::register(temp.path());
+        let read = read_wg_replica_config_read_only(&replica);
+        let count = strict_read_probe::unregister(temp.path());
+        read.expect("valid replica reads");
+        assert_eq!(count, 1);
     }
 }
