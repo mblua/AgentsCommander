@@ -1,6 +1,7 @@
 import { Component, For, Show, createSignal, onCleanup, onMount } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AgentHelpEntry, AgentHelpTip } from "../../shared/agent-help";
+import SelectionCopyMenu from "./context-menu/SelectionCopyMenu";
 
 interface AgentHelpTipsModalProps {
   title: string;
@@ -26,10 +27,8 @@ function tipLink(tip: AgentHelpTip): { label: string; url: string } | null {
 const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
   let dialogRef: HTMLDivElement | undefined;
   let closeRef: HTMLButtonElement | undefined;
-  let copyResetTimer: ReturnType<typeof setTimeout> | undefined;
-  let disposed = false;
   const previouslyFocused = document.activeElement as HTMLElement | null;
-  const [copied, setCopied] = createSignal(false);
+  const [copyMenu, setCopyMenu] = createSignal<{ x: number; y: number; text: string } | null>(null);
 
   // Read defensively here: this is the first reader of `tips`.
   const tips = (): AgentHelpTip[] => {
@@ -37,25 +36,13 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
     return Array.isArray(raw) ? raw.filter(isTip) : [];
   };
 
-  const tipsAsText = () =>
-    tips()
-      .map((tip) => {
-        const link = tipLink(tip);
-        return [tip.title, tip.body, ...(link ? [`${link.label}: ${link.url}`] : [])].join("\n");
-      })
-      .join("\n\n");
-
-  const copyTips = async () => {
-    try {
-      await navigator.clipboard.writeText(tipsAsText());
-      // The window may have closed while the clipboard promise was pending.
-      if (disposed) return;
-      setCopied(true);
-      if (copyResetTimer) clearTimeout(copyResetTimer);
-      copyResetTimer = setTimeout(() => setCopied(false), 1500);
-    } catch (err) {
-      console.error("[agent-help-tips] clipboard write failed:", err);
-    }
+  // Capture the selection now: pressing the menu item collapses it.
+  const openCopyMenu = (event: MouseEvent) => {
+    const text = window.getSelection()?.toString() ?? "";
+    // Nothing selected: leave the event to the sidebar's blocker, as everywhere else.
+    if (!text) return;
+    event.preventDefault();
+    setCopyMenu({ x: event.clientX, y: event.clientY, text });
   };
 
   onMount(() => {
@@ -63,6 +50,11 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopImmediatePropagation();
+        // An open copy menu takes the first Escape; the window takes the next.
+        if (copyMenu()) {
+          setCopyMenu(null);
+          return;
+        }
         props.onClose();
         return;
       }
@@ -93,9 +85,7 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
     document.addEventListener("keydown", onKeyDown, true);
     queueMicrotask(() => closeRef?.focus());
     onCleanup(() => {
-      disposed = true;
       document.removeEventListener("keydown", onKeyDown, true);
-      if (copyResetTimer) clearTimeout(copyResetTimer);
       try {
         previouslyFocused?.focus();
       } catch {
@@ -120,7 +110,7 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
             </span>
           </div>
 
-          <div class="agent-help-tips-body">
+          <div class="agent-help-tips-body" onContextMenu={openCopyMenu}>
             <Show when={props.localError}>
               {(reason) => (
                 <div
@@ -159,14 +149,6 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
 
           <div class="agent-modal-footer">
             <button
-              type="button"
-              class="modal-btn"
-              onClick={() => void copyTips()}
-              data-ac-testid="agentHelpTips.copy"
-            >
-              {copied() ? "Copied" : "Copy"}
-            </button>
-            <button
               ref={closeRef}
               type="button"
               class="modal-btn modal-btn-save"
@@ -178,6 +160,13 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
           </div>
         </div>
       </div>
+      <SelectionCopyMenu
+        open={copyMenu() !== null}
+        x={copyMenu()?.x ?? 0}
+        y={copyMenu()?.y ?? 0}
+        text={copyMenu()?.text ?? ""}
+        onDismiss={() => setCopyMenu(null)}
+      />
     </Portal>
   );
 };

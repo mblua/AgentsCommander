@@ -29,9 +29,10 @@ const SOURCES = import.meta.glob<string>("../../**/*.{ts,tsx}", {
 
 const CONTEXT_MENU_DIR = "sidebar/components/context-menu/";
 
-/** Assertion 1: exactly these four product files, exactly these specifiers. */
+/** Assertion 1: exactly these five product files, exactly these specifiers. */
 const ALLOWED_IMPORTS: Record<string, string[]> = {
   "sidebar/components/context-menu/ContextMenuSurface.tsx": ["solid-js", "solid-js/web"],
+  "sidebar/components/context-menu/SelectionCopyMenu.tsx": ["./ContextMenuSurface", "solid-js"],
   "sidebar/components/context-menu/SessionRowMenu.tsx": [
     "../DetachIcon",
     "../ReattachIcon",
@@ -50,10 +51,13 @@ const ALLOWED_IMPORTS: Record<string, string[]> = {
   "sidebar/components/context-menu/session-row-menu-types.ts": ["../../../shared/types"],
 };
 
-/** Assertion 2: ContextMenuSurface is private to the folder. One element, not
- *  two: the surface test is black-box through SessionRowMenu and imports
- *  nothing named ContextMenuSurface. */
-const ALLOWED_SURFACE_IMPORTERS = ["sidebar/components/context-menu/SessionRowMenu.tsx"];
+/** Assertion 2: ContextMenuSurface is private to the folder. Two siblings,
+ *  SessionRowMenu and #2143's SelectionCopyMenu; the surface test is black-box
+ *  through SessionRowMenu and imports nothing named ContextMenuSurface. */
+const ALLOWED_SURFACE_IMPORTERS = [
+  "sidebar/components/context-menu/SelectionCopyMenu.tsx",
+  "sidebar/components/context-menu/SessionRowMenu.tsx",
+];
 
 function rel(globKey: string): string {
   const normalized = globKey.replace(/\\/g, "/");
@@ -176,7 +180,7 @@ describe("#1871 context-menu import boundary", () => {
     expect(sortedActual).toEqual(sortedExpected);
   });
 
-  it("ContextMenuSurface is imported by SessionRowMenu.tsx and nothing else", () => {
+  it("ContextMenuSurface is imported by its two context-menu/ siblings and nothing else", () => {
     const importers = new Set<string>();
     for (const [file, source] of Object.entries(SOURCES)) {
       const relativeFile = rel(file);

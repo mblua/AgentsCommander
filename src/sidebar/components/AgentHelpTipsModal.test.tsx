@@ -9,7 +9,7 @@ const ENTRY: AgentHelpEntry = {
   label: "Tool",
   tips: [
     { title: "First tip", body: "First body", link: { label: "Docs", url: "https://example.com/docs" } },
-    { title: "Second tip", body: "Second body" },
+    { title: "Second tip", body: "Second body", link: { label: "More", url: "https://example.com/more" } },
   ],
 };
 
@@ -19,6 +19,22 @@ function byTestId<T extends HTMLElement = HTMLElement>(testId: string): T | null
 
 function tipSections(): NodeListOf<HTMLElement> {
   return document.querySelectorAll<HTMLElement>(".agent-help-tips-tip");
+}
+
+function stubSelection(text: () => string): void {
+  vi.spyOn(window, "getSelection").mockImplementation(() => ({ toString: text }) as Selection);
+}
+
+function rightClickBody(x = 100, y = 120): MouseEvent {
+  const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: x, clientY: y });
+  document.querySelector(".agent-help-tips-body")!.dispatchEvent(event);
+  return event;
+}
+
+async function flushClipboard(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 let dispose: (() => void) | null = null;
@@ -100,31 +116,81 @@ describe("AgentHelpTipsModal (#2143)", () => {
     expect(tipSections()).toHaveLength(2);
   });
 
-  it("the copy button writes the tips as text", async () => {
-    const writeText = vi.fn(() => Promise.resolve());
-    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  it("a right-click with a selection opens the copy menu", () => {
+    stubSelection(() => "First body");
     mount({ entry: ENTRY });
-    byTestId<HTMLButtonElement>("agentHelpTips.copy")!.click();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(writeText).toHaveBeenCalledTimes(1);
-    const text = (writeText.mock.calls[0] as unknown as [string])[0];
-    expect(text).toContain("First tip");
-    expect(text).toContain("Second tip");
-    expect(byTestId("agentHelpTips.copy")?.textContent).toBe("Copied");
+    const event = rightClickBody(100, 120);
+    expect(event.defaultPrevented).toBe(true);
+    const menu = byTestId("agentHelpTips.copyMenu");
+    expect(menu).toBeTruthy();
+    expect(menu!.style.left).toBe("100px");
+    expect(menu!.style.top).toBe("120px");
+    expect(byTestId("agentHelpTips.copyMenuItem")?.textContent).toBe("Copy");
   });
 
-  it("a clipboard rejection keeps the window open", async () => {
+  it("a right-click with no selection opens nothing", () => {
+    stubSelection(() => "");
+    mount({ entry: ENTRY });
+    const event = rightClickBody();
+    expect(event.defaultPrevented).toBe(false);
+    expect(byTestId("agentHelpTips.copyMenu")).toBeNull();
+  });
+
+  it("the copy item writes the text selected at open time", async () => {
+    let selected = "First body";
+    stubSelection(() => selected);
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    mount({ entry: ENTRY });
+    rightClickBody();
+    // Pressing the item collapses the live selection.
+    selected = "";
+    byTestId<HTMLButtonElement>("agentHelpTips.copyMenuItem")!.click();
+    await flushClipboard();
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText.mock.calls[0][0]).toBe("First body");
+    expect(byTestId("agentHelpTips.copyMenu")).toBeNull();
+  });
+
+  it("a clipboard rejection dismisses the menu and keeps the window open", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubSelection(() => "First body");
     const writeText = vi.fn(() => Promise.reject(new Error("denied")));
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     mount({ entry: ENTRY });
-    byTestId<HTMLButtonElement>("agentHelpTips.copy")!.click();
-    await Promise.resolve();
-    await Promise.resolve();
+    rightClickBody();
+    byTestId<HTMLButtonElement>("agentHelpTips.copyMenuItem")!.click();
+    await flushClipboard();
     expect(error).toHaveBeenCalledTimes(1);
     expect(byTestId("agentHelpTips.modal")).toBeTruthy();
-    expect(byTestId("agentHelpTips.copy")?.textContent).toBe("Copy");
+    expect(byTestId("agentHelpTips.copyMenu")).toBeNull();
+  });
+
+  it("Escape closes the menu first, then the window", () => {
+    stubSelection(() => "First body");
+    const onClose = vi.fn();
+    mount({ entry: ENTRY, onClose });
+    rightClickBody();
+    expect(byTestId("agentHelpTips.copyMenu")).toBeTruthy();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(byTestId("agentHelpTips.copyMenu")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Ctrl+C is not intercepted", () => {
+    mount({ entry: ENTRY });
+    const reached = vi.fn();
+    document.addEventListener("keydown", reached);
+    try {
+      const event = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true });
+      document.querySelector(".agent-help-tips-body")!.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(reached).toHaveBeenCalledTimes(1);
+    } finally {
+      document.removeEventListener("keydown", reached);
+    }
   });
 
   it("no tips renders the empty line", () => {
@@ -157,8 +223,7 @@ describe("AgentHelpTipsModal (#2143)", () => {
   it("Tab wraps from the last control to the first tip link", async () => {
     mount({ entry: ENTRY });
     await Promise.resolve();
-    const link = document.querySelector<HTMLAnchorElement>(".agent-help-tips-tip-link")!;
-    const copy = byTestId<HTMLButtonElement>("agentHelpTips.copy")!;
+    const [link] = document.querySelectorAll<HTMLAnchorElement>(".agent-help-tips-tip-link");
     const close = byTestId<HTMLButtonElement>("agentHelpTips.close")!;
     expect(document.activeElement).toBe(close);
 
@@ -168,7 +233,7 @@ describe("AgentHelpTipsModal (#2143)", () => {
     expect(document.activeElement).toBe(link);
 
     // Inside the list the browser moves focus itself; the trap stays out of the way.
-    copy.focus();
+    link.focus();
     const inner = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
     document.dispatchEvent(inner);
     expect(inner.defaultPrevented).toBe(false);
@@ -177,9 +242,9 @@ describe("AgentHelpTipsModal (#2143)", () => {
   it("Shift-Tab wraps from the first tip link to the last control", async () => {
     mount({ entry: ENTRY });
     await Promise.resolve();
-    const link = document.querySelector<HTMLAnchorElement>(".agent-help-tips-tip-link")!;
-    const copy = byTestId<HTMLButtonElement>("agentHelpTips.copy")!;
+    const [link, second] = document.querySelectorAll<HTMLAnchorElement>(".agent-help-tips-tip-link");
     const close = byTestId<HTMLButtonElement>("agentHelpTips.close")!;
+    expect(second).toBeTruthy();
 
     link.focus();
     const back = new KeyboardEvent("keydown", {
@@ -192,8 +257,8 @@ describe("AgentHelpTipsModal (#2143)", () => {
     expect(back.defaultPrevented).toBe(true);
     expect(document.activeElement).toBe(close);
 
-    // Shift-Tab from Copy goes back to the link by default, not to Close.
-    copy.focus();
+    // Shift-Tab from the second link goes back to the first by default, not to Close.
+    second.focus();
     const inner = new KeyboardEvent("keydown", {
       key: "Tab",
       shiftKey: true,
@@ -202,31 +267,6 @@ describe("AgentHelpTipsModal (#2143)", () => {
     });
     document.dispatchEvent(inner);
     expect(inner.defaultPrevented).toBe(false);
-    expect(document.activeElement).toBe(copy);
-  });
-
-  it("a copy that resolves after close arms no timer", async () => {
-    let resolveWrite: () => void = () => {};
-    const writeText = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveWrite = resolve;
-        }),
-    );
-    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
-    mount({ entry: ENTRY });
-    const copy = byTestId<HTMLButtonElement>("agentHelpTips.copy")!;
-    copy.click();
-    expect(writeText).toHaveBeenCalledTimes(1);
-
-    dispose?.();
-    dispose = null;
-    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
-    resolveWrite();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(setTimeoutSpy.mock.calls.some((call) => call[1] === 1500)).toBe(false);
-    expect(copy.textContent).toBe("Copy");
+    expect(document.activeElement).toBe(second);
   });
 });
