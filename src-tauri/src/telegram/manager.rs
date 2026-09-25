@@ -29,6 +29,19 @@ pub enum ReaderConsumer {
     Room,
 }
 
+/// How many times a `(session_id, consumer)` demand has been released (#2516).
+///
+/// Every release moves it, including one that removed nothing, so a raise that
+/// sampled it before resolving readiness can tell, under the bridge lock, that
+/// a release overtook it. Distinct from `reader_id`, the other `u64` counter.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DemandEpoch(u64);
+
+impl DemandEpoch {
+    /// The epoch of a demand that has never been released.
+    pub const ZERO: Self = Self(0);
+}
+
 /// A live reader task and the demands keeping it alive.
 ///
 /// The reader lives here and **not** in [`BridgeHandle::tasks`]: a room can ask
@@ -77,6 +90,9 @@ pub struct TelegramBridgeManager {
     /// The single registry created in `lib.rs` (phase 3 section 5.1). The
     /// manager closes a session's entry when the last demand is released.
     captures: Arc<CaptureRegistry>,
+    /// #2516: release counters per `(session, consumer)`. Never pruned: pruning
+    /// on `reader_release_all` would reset the epoch a racing raise sampled.
+    demand_epochs: HashMap<(Uuid, ReaderConsumer), u64>,
     #[cfg(test)]
     detach_counts: HashMap<Uuid, usize>,
 }
@@ -150,6 +166,7 @@ impl TelegramBridgeManager {
             readers: HashMap::new(),
             next_reader_id: 1,
             captures,
+            demand_epochs: HashMap::new(),
             #[cfg(test)]
             detach_counts: HashMap::new(),
         }
@@ -171,6 +188,25 @@ impl TelegramBridgeManager {
     /// The reader's stable identity, or `None` when no reader is running.
     pub fn reader_id(&self, session_id: Uuid) -> Option<u64> {
         self.readers.get(&session_id).map(|entry| entry.reader_id)
+    }
+
+    /// The release epoch of `consumer`'s demand on `session_id`;
+    /// [`DemandEpoch::ZERO`] when it has never been released.
+    pub fn demand_epoch(&self, session_id: Uuid, consumer: ReaderConsumer) -> DemandEpoch {
+        DemandEpoch(
+            self.demand_epochs
+                .get(&(session_id, consumer))
+                .copied()
+                .unwrap_or(0),
+        )
+    }
+
+    fn bump_demand_epoch(&mut self, session_id: Uuid, consumer: ReaderConsumer) {
+        let epoch = self
+            .demand_epochs
+            .entry((session_id, consumer))
+            .or_insert(0);
+        *epoch = epoch.wrapping_add(1);
     }
 
     /// The demands currently keeping `session_id`'s reader alive.
@@ -265,6 +301,7 @@ impl TelegramBridgeManager {
         session_id: Uuid,
         consumer: ReaderConsumer,
     ) -> Option<BridgeShutdown> {
+        self.bump_demand_epoch(session_id, consumer);
         let entry = self.readers.get_mut(&session_id)?;
         let removed = entry.demands.remove(&consumer);
         // Releasing an **absent** Bot demand must not send a `None` transition:
@@ -288,6 +325,8 @@ impl TelegramBridgeManager {
     /// a persistence rollback releases only the bot demand (section 5).
     #[must_use = "the reader shutdown must be consumed after releasing TelegramBridgeState"]
     pub fn reader_release_all(&mut self, session_id: Uuid) -> Option<BridgeShutdown> {
+        self.bump_demand_epoch(session_id, ReaderConsumer::Bot);
+        self.bump_demand_epoch(session_id, ReaderConsumer::Room);
         let entry = self.readers.remove(&session_id)?;
         entry.cancel.cancel();
         self.captures.close(&session_id.to_string());
@@ -511,6 +550,42 @@ mod tests {
             consumer,
         );
         cancel
+    }
+
+    /// #2516 T5: every release moves its own consumer's epoch, including one
+    /// that removed nothing, and `reader_release_all` moves both without
+    /// clearing the map.
+    #[tokio::test]
+    async fn demand_epochs_move_on_every_release() {
+        let captures = Arc::new(CaptureRegistry::new());
+        let mut manager = test_manager(&captures);
+        let session_id = Uuid::new_v4();
+        let bot = ReaderConsumer::Bot;
+        let room = ReaderConsumer::Room;
+        assert_eq!(manager.demand_epoch(session_id, bot), DemandEpoch::ZERO);
+        assert_eq!(manager.demand_epoch(session_id, room), DemandEpoch::ZERO);
+
+        // No reader installed: nothing is removed, the Room epoch still moves.
+        assert!(manager.reader_demand_release(session_id, room).is_none());
+        let room_after_first = manager.demand_epoch(session_id, room);
+        assert_ne!(room_after_first, DemandEpoch::ZERO);
+        assert_eq!(manager.demand_epoch(session_id, bot), DemandEpoch::ZERO);
+
+        // A reader holding only Room: releasing the absent Bot moves Bot only.
+        let _cancel = install(&mut manager, session_id, room);
+        assert!(manager.reader_demand_release(session_id, bot).is_none());
+        let bot_after_release = manager.demand_epoch(session_id, bot);
+        assert_ne!(bot_after_release, DemandEpoch::ZERO);
+        assert_eq!(manager.demand_epoch(session_id, room), room_after_first);
+
+        // Release-all moves both and keeps the entries.
+        if let Some(shutdown) = manager.reader_release_all(session_id) {
+            shutdown.abort_now();
+        }
+        assert_ne!(manager.demand_epoch(session_id, bot), bot_after_release);
+        assert_ne!(manager.demand_epoch(session_id, bot), DemandEpoch::ZERO);
+        assert_ne!(manager.demand_epoch(session_id, room), room_after_first);
+        assert_ne!(manager.demand_epoch(session_id, room), DemandEpoch::ZERO);
     }
 
     /// Test 5: adding a Room demand to a session that already has a Bot demand
