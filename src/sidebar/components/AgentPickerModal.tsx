@@ -872,7 +872,10 @@ const AgentPickerModal: Component<{
   const removeInvalidCount = createMemo(() => removePreview()?.invalidCount ?? 0);
   const removeScopeCountLabel = (scope: ProfileAssignmentScope): string => {
     const preview = removePreviews()[scope];
-    if (!preview) return removePreviewBusyMap()[scope] ? "…" : "—";
+    if (!preview) {
+      if (removePreviewErrorMap()[scope]) return "count failed";
+      return removePreviewBusyMap()[scope] ? "counting…" : "not counted yet";
+    }
     if (!preview.countsComplete) return "count unknown";
     return scope === "replica"
       ? `${preview.protectedCount} protected`
@@ -916,7 +919,13 @@ const AgentPickerModal: Component<{
   const removeNote = createMemo(() => {
     const failure = removePreviewErrorMap()[removeScope()];
     if (failure) return failure;
-    if (!removeCountsComplete()) return "Scope totals could not be established here; nothing is offered for removal.";
+    const preview = removePreviews()[removeScope()];
+    if (!preview) {
+      return removePreviewBusyMap()[removeScope()]
+        ? "Counting replicas in this scope…"
+        : "Not counted yet.";
+    }
+    if (!preview.countsComplete) return "Scope totals could not be established here; nothing is offered for removal.";
     return removeProtectedCount() > 0
       ? "Keeps Coding Agent + Profile. No restart."
       : "No protected replicas in this scope — nothing to remove.";
