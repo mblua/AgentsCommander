@@ -460,6 +460,27 @@ export function suggestedContextRegex(command: string): string | null {
   return null;
 }
 
+/** #2482 - a STARTING POINT for the 7-day quota pattern, not a guarantee: the
+ *  statusline format is the user's own configuration, not something Claude Code
+ *  fixes, so this matches only the common `... | 7d 28%` shape. The trailing `%` is
+ *  REQUIRED, for the reason `context_scrape/rows.rs` pins: a narrow terminal truncates
+ *  the row right-to-left, eating the `%` before a digit, and a pattern without it
+ *  reports a confidently wrong number instead of failing closed. */
+export const CLAUDE_WEEKLY_QUOTA_REGEX = String.raw`(?:^|[ |])7d (\d{1,3})%`;
+
+export function suggestedQuotaRegex(command: string): string | null {
+  const parsed = parseArgvText(command);
+  const tokens = parsed.error
+    ? command.trim().split(/\s+/).filter(Boolean)
+    : parsed.argv;
+  const directStem = executableTokenBasename(tokens[0] ?? "");
+  const stem =
+    directStem === "cmd" && tokens[1]?.toLowerCase() === "/c"
+      ? executableTokenBasename(tokens[2] ?? "")
+      : directStem;
+  return stem.startsWith("claude") ? CLAUDE_WEEKLY_QUOTA_REGEX : null;
+}
+
 export function agentNameFromPathOrSession(
   path: string | null | undefined,
   sessionName: string,
