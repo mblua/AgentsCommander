@@ -3445,6 +3445,7 @@ mod tests {
             "codex",
             "Codex",
             Some("session-1"),
+            None,
         )
         .expect("set last coding agent");
 
