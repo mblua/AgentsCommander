@@ -58,11 +58,16 @@ function installSidebarMenuLockObserver(): void {
   if (sidebarMenuLockObserverInstalled) return;
   if (typeof document === "undefined" || !document.body) return; // node-env unit tests
   sidebarMenuLockObserverInstalled = true;
-  new MutationObserver(() => {
+  const observer = new MutationObserver(() => {
+    if (typeof document === "undefined") {
+      observer.disconnect(); // #2504 - jsdom teardown removed `document`
+      return;
+    }
     updateSidebarMenuOpen(
       document.querySelector(".session-context-menu, .session-context-flyout") !== null
     );
-  }).observe(document.body, { childList: true, subtree: true });
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
 }
 installSidebarMenuLockObserver();
 
