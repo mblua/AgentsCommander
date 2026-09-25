@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "note": "Published from main to every installed AgentsCommander that downloads per-agent help; it is served live and applies at the next start. Generate it from src-tauri/resources/agent-help/agent-help.json: byCommand only, no byAgent. Put local overrides in agent-help.local.json. Installed copies replace this note with their download record.",
   "general": {
-    "label": "Crucial Practices",
+    "label": "Best Practices",
     "tips": [
       {
         "title": "Isolation and sandboxes",

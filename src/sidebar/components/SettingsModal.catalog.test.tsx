@@ -426,3 +426,182 @@ describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () =
     }
   });
 });
+
+// #2143 - the COMMAND block reads the shared agent-help resolvers.
+function helpAgent(id: string, label: string, command: string): AgentConfig {
+  return { id, label, command, color: "#334155", envs: [], isolatedHome: false };
+}
+
+const CARD = "settings.profileCard.0.A";
+
+async function mountAgentHelp(
+  agents: AgentConfig[],
+  overlay?: unknown,
+): Promise<{ fake: FakeTransport; rendered: ReturnType<typeof renderWithFakeTransport> }> {
+  const fake = new FakeTransport();
+  fake.resolve("get_settings", baseSettings({ agents }));
+  fake.resolve("get_web_server_status", false);
+  fake.resolve(REPORT_CMD, report());
+  if (overlay !== undefined) fake.resolve("get_agent_help", overlay);
+  const rendered = renderWithFakeTransport(
+    () => <SettingsModal section="agents" onClose={() => {}} />,
+    fake,
+  );
+  try {
+    await waitFor(() => expect(byTestId(rendered.root, `${CARD}.command`)).toBeTruthy());
+    await tick();
+  } catch (error) {
+    rendered.cleanup();
+    throw error;
+  }
+  return { fake, rendered };
+}
+
+function tipsWindow(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-ac-testid="agentHelpTips.modal"]');
+}
+
+function tipsWindowTitle(): string | null | undefined {
+  return tipsWindow()?.querySelector(".agent-modal-title")?.textContent;
+}
+
+function localErrorText(): string | null | undefined {
+  return document.querySelector('[data-ac-testid="agentHelpTips.localError"]')?.textContent;
+}
+
+describe("SettingsModal agent help (#2143)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+    vi.spyOn(console, "debug").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  async function placeholderFor(command: string): Promise<string | null> {
+    const { rendered } = await mountAgentHelp([helpAgent("agent_x", "X", command)]);
+    try {
+      return byTestId<HTMLInputElement>(rendered.root, `${CARD}.command`)!.getAttribute("placeholder");
+    } finally {
+      rendered.cleanup();
+    }
+  }
+
+  it("the params placeholder follows the resolved agent", async () => {
+    expect(await placeholderFor("claude")).toBe("--model opus");
+    expect(await placeholderFor("codex")).toBe("--sandbox workspace-write --model gpt-5-codex");
+    expect(await placeholderFor("")).toBe("--help");
+  });
+
+  it("the docs anchor is absent when no url resolves", async () => {
+    const { rendered } = await mountAgentHelp([helpAgent("agent_x", "X", "no-such-tool")]);
+    try {
+      expect(byTestId(rendered.root, `${CARD}.docsLink`)).toBeNull();
+      expect(byTestId(rendered.root, `${CARD}.tipsButton`)).toBeTruthy();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("the docs anchor is a plain anchor", async () => {
+    const { fake, rendered } = await mountAgentHelp([helpAgent("agent_x", "X", "claude")]);
+    try {
+      const anchor = byTestId<HTMLAnchorElement>(rendered.root, `${CARD}.docsLink`)!;
+      expect(anchor.tagName).toBe("A");
+      expect(anchor.getAttribute("href")).toBe(
+        "https://docs.claude.com/en/docs/claude-code/cli-reference",
+      );
+      anchor.addEventListener("click", (event) => event.preventDefault());
+      anchor.click();
+      await tick();
+      expect(fake.calls.some((call) => call.cmd === "open_external_url")).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("the tips button opens the window for its own agent", async () => {
+    const first = await mountAgentHelp([helpAgent("agent_c", "My Claude", "claude")]);
+    try {
+      expect(tipsWindow()).toBeNull();
+      byTestId<HTMLButtonElement>(first.rendered.root, `${CARD}.tipsButton`)!.click();
+      await waitFor(() => expect(tipsWindow()).toBeTruthy());
+      expect(tipsWindowTitle()).toBe("My Claude");
+      expect(tipsWindow()!.textContent).toContain("--enable-auto-mode");
+    } finally {
+      first.rendered.cleanup();
+    }
+    document.body.replaceChildren();
+
+    const second = await mountAgentHelp([helpAgent("agent_o", "My Codex", "codex")]);
+    try {
+      byTestId<HTMLButtonElement>(second.rendered.root, `${CARD}.tipsButton`)!.click();
+      await waitFor(() => expect(tipsWindow()).toBeTruthy());
+      expect(tipsWindowTitle()).toBe("My Codex");
+      expect(tipsWindow()!.textContent).toContain("Load CLAUDE.md as project instructions");
+      expect(tipsWindow()!.textContent).not.toContain("--enable-auto-mode");
+    } finally {
+      second.rendered.cleanup();
+    }
+  });
+
+  it("the local error reaches both windows", async () => {
+    const reason = "agent-help.local.json: expected value at line 1 column 1";
+    const { rendered } = await mountAgentHelp([helpAgent("agent_c", "My Claude", "claude")], {
+      local: null,
+      remote: null,
+      localError: reason,
+    });
+    try {
+      byTestId<HTMLButtonElement>(rendered.root, `${CARD}.tipsButton`)!.click();
+      await waitFor(() => expect(tipsWindow()).toBeTruthy());
+      expect(tipsWindowTitle()).toBe("My Claude");
+      expect(localErrorText()).toBe(`Your agent-help.local.json was ignored: ${reason}`);
+      document.querySelector<HTMLButtonElement>('[data-ac-testid="agentHelpTips.close"]')!.click();
+      await waitFor(() => expect(tipsWindow()).toBeNull());
+
+      byTestId<HTMLButtonElement>(rendered.root, "settings.agentHelp.bestPractices")!.click();
+      await waitFor(() => expect(tipsWindow()).toBeTruthy());
+      expect(tipsWindowTitle()).toBe("Best Practices");
+      expect(localErrorText()).toBe(`Your agent-help.local.json was ignored: ${reason}`);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("the Best Practices button opens the general window", async () => {
+    const { rendered } = await mountAgentHelp([helpAgent("agent_c", "My Claude", "claude")]);
+    try {
+      const button = byTestId<HTMLButtonElement>(rendered.root, "settings.agentHelp.bestPractices")!;
+      expect(button.textContent).toBe("Best Practices");
+      button.click();
+      await waitFor(() => expect(tipsWindow()).toBeTruthy());
+      expect(tipsWindowTitle()).toBe("Best Practices");
+      expect(tipsWindow()!.textContent).toContain("Specification first");
+      expect(tipsWindow()!.textContent).not.toContain("--enable-auto-mode");
+      expect(tipsWindow()!.textContent).not.toContain("Load CLAUDE.md as project instructions");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("an agent window shows no general tip", async () => {
+    const { rendered } = await mountAgentHelp([helpAgent("agent_c", "My Claude", "claude")]);
+    try {
+      byTestId<HTMLButtonElement>(rendered.root, `${CARD}.tipsButton`)!.click();
+      await waitFor(() => expect(tipsWindow()).toBeTruthy());
+      expect(tipsWindow()!.textContent).toContain("--enable-auto-mode");
+      expect(tipsWindow()!.textContent).not.toContain("Specification first");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});

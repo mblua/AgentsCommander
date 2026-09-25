@@ -1933,7 +1933,7 @@ pub(crate) fn load_local_agent_help_file(settings_path: &Path) -> (AgentHelpFile
             return (AgentHelpFile::default(), None)
         }
         Err(e) => {
-            log::error!("[agent-help] could not read {}: {e}", path.display());
+            log::warn!("[agent-help] could not read {}: {e}", path.display());
             return (
                 AgentHelpFile::default(),
                 Some(format!("could not read {}: {e}", path.display())),
@@ -1943,7 +1943,7 @@ pub(crate) fn load_local_agent_help_file(settings_path: &Path) -> (AgentHelpFile
     match parse_agent_help_file(&contents) {
         Ok(file) => (file, None),
         Err(e) => {
-            log::error!("[agent-help] {} {e}; ignoring the file", path.display());
+            log::warn!("[agent-help] {} {e}; ignoring the file", path.display());
             (
                 AgentHelpFile::default(),
                 Some(format!("{} {e}", path.display())),
