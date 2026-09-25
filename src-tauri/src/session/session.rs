@@ -162,6 +162,15 @@ pub struct Session {
     pub profile_fallback_chain: Vec<String>,
     #[serde(default)]
     pub profile_fallback_applied: bool,
+    /// #2434 - how a portable coding-agent reference was matched for this
+    /// session. `None` means "not matched by the tiered matcher": a local-id hit,
+    /// or a session that never went through it. Wire: `matchTier`.
+    #[serde(default)]
+    pub match_tier: Option<String>,
+    /// #2434 - the profile letter the stored reference asked for, when it is
+    /// known and differs from the effective one. Wire: `originalProfileLetter`.
+    #[serde(default)]
+    pub original_profile_letter: Option<String>,
     #[serde(skip)]
     pub effective_codex_home: Option<String>,
     #[serde(skip)]
@@ -340,6 +349,15 @@ pub struct SessionInfo {
     pub profile_fallback_chain: Vec<String>,
     #[serde(default)]
     pub profile_fallback_applied: bool,
+    /// #2434 - how a portable coding-agent reference was matched for this
+    /// session. `None` means "not matched by the tiered matcher": a local-id hit,
+    /// or a session that never went through it. Wire: `matchTier`.
+    #[serde(default)]
+    pub match_tier: Option<String>,
+    /// #2434 - the profile letter the stored reference asked for, when it is
+    /// known and differs from the effective one. Wire: `originalProfileLetter`.
+    #[serde(default)]
+    pub original_profile_letter: Option<String>,
     #[serde(skip)]
     pub effective_codex_home: Option<String>,
     /// #592 - internal carrier (NOT on the wire) of the session's loaded hash,
@@ -433,6 +451,8 @@ impl From<&Session> for SessionInfo {
             effective_profile: s.effective_profile.clone(),
             profile_fallback_chain: s.profile_fallback_chain.clone(),
             profile_fallback_applied: s.profile_fallback_applied,
+            match_tier: s.match_tier.clone(),
+            original_profile_letter: s.original_profile_letter.clone(),
             effective_codex_home: s.effective_codex_home.clone(),
             profile_content_hash: s.profile_content_hash.clone(),
             trusted_configured_spawn: s.trusted_configured_spawn,
@@ -478,6 +498,8 @@ mod tests {
             effective_profile: None,
             profile_fallback_chain: Vec::new(),
             profile_fallback_applied: false,
+            match_tier: None,
+            original_profile_letter: None,
             effective_codex_home: None,
             resolved_claude_projects_dir: None,
             profile_content_hash: None,
@@ -572,6 +594,45 @@ mod tests {
         let info = SessionInfo::from(&s);
 
         assert_eq!(info.telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    // #2451 - match carrier plumbing: always on the wire, `null` when unset.
+    #[test]
+    fn session_info_serializes_match_tier_as_null_when_absent() {
+        let json = serde_json::to_value(SessionInfo::from(&sample_session(None)))
+            .expect("serialize SessionInfo");
+
+        assert_eq!(json.get("matchTier"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            json.get("originalProfileLetter"),
+            Some(&serde_json::Value::Null)
+        );
+    }
+
+    #[test]
+    fn session_info_deserializes_a_payload_without_the_new_keys() {
+        let mut json = serde_json::to_value(SessionInfo::from(&sample_session(None)))
+            .expect("serialize SessionInfo");
+        let object = json.as_object_mut().expect("SessionInfo is an object");
+        object.remove("matchTier");
+        object.remove("originalProfileLetter");
+
+        let info: SessionInfo = serde_json::from_value(json).expect("old payload loads");
+
+        assert_eq!(info.match_tier, None);
+        assert_eq!(info.original_profile_letter, None);
+    }
+
+    #[test]
+    fn from_session_copies_the_match_carrier() {
+        let mut s = sample_session(None);
+        s.match_tier = Some("labelAndLetter".to_string());
+        s.original_profile_letter = Some("B".to_string());
+
+        let info = SessionInfo::from(&s);
+
+        assert_eq!(info.match_tier.as_deref(), Some("labelAndLetter"));
+        assert_eq!(info.original_profile_letter.as_deref(), Some("B"));
     }
 
     #[test]

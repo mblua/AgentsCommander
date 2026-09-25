@@ -2967,6 +2967,8 @@ async fn execute_restore_dormant<R: Runtime>(
         effective_profile: None,
         profile_fallback_chain: Vec::new(),
         profile_fallback_applied: false,
+        match_tier: None,
+        original_profile_letter: None,
         effective_codex_home: None,
         resolved_claude_projects_dir: None,
         profile_content_hash: None,
@@ -5399,6 +5401,58 @@ fn commit_selection_transition() {
             "session_switched"
         );
         assert!(events_rx.try_recv().is_err());
+        guard.finish();
+        coordinator.close_and_join().await;
+    }
+
+    // #2451 - a restored dormant session was matched by nothing, and the tier
+    // is session-lifetime state that `PersistedSession` does not carry.
+    #[tokio::test]
+    async fn restored_dormant_session_has_no_match_tier() {
+        use crate::config::sessions_persistence::PersistedSession;
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build restore transaction app");
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            LifecycleTestBackend::default(),
+        ))));
+        assert!(app.manage(pty));
+        coordinator
+            .start(app.handle().clone())
+            .expect("start restore coordinator");
+        let guard = coordinator.submit_restore_first().await.unwrap();
+        let transaction = guard.transaction(app.handle().clone());
+
+        let restored = transaction
+            .restore_dormant_inline(DormantRestoreRequest {
+                persisted: PersistedSession {
+                    name: "dormant".to_string(),
+                    shell: "shell".to_string(),
+                    shell_args: Vec::new(),
+                    working_directory: "C:/dormant".to_string(),
+                    status: Some(SessionStatus::Exited(0)),
+                    effective_profile: Some("A".to_string()),
+                    ..PersistedSession::default()
+                },
+                working_directory: "C:/dormant".to_string(),
+                is_coordinator: false,
+                is_root_agent: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(restored.match_tier, None);
+        assert_eq!(restored.original_profile_letter, None);
+        let id = Uuid::parse_str(&restored.id).unwrap();
+        let stored = manager.read().await.get_session(id).await.unwrap();
+        assert_eq!(stored.match_tier, None);
+        assert_eq!(stored.original_profile_letter, None);
         guard.finish();
         coordinator.close_and_join().await;
     }

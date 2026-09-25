@@ -1225,6 +1225,8 @@ mod tests {
             effective_profile: None,
             profile_fallback_chain: Vec::new(),
             profile_fallback_applied: false,
+            match_tier: None,
+            original_profile_letter: None,
             effective_codex_home: None,
             profile_content_hash: None,
             trusted_configured_spawn: false,
