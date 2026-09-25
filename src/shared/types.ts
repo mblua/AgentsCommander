@@ -354,6 +354,23 @@ export type WatcherEntry = WatcherConfig | UnrecognizedWatcherEntry;
  */
 export type UnrecognizedWatcherEntry = JsonValue;
 
+/** #2482 - one configured weekly-quota source. Mirrors `QuotaSourceConfig`
+ *  (`config/settings.rs`); `kind` is the discriminant and the extension point, so a
+ *  second agent's source is a second member of this union. */
+export type QuotaSourceConfig = {
+  kind: "screenRegex";
+  pattern: string;
+  enabled?: boolean;
+};
+
+/** #2482 - one entry of the root `quotaSources` map, valid or not. Mirrors
+ *  `QuotaSourceEntry`; same shape and same reason as `WatcherEntry`. An entry from a
+ *  newer AC round-trips verbatim. The fallback arm is the existing `JsonValue` (`:848`),
+ *  NOT `Record<string, unknown>`: p1's Rust arm is `Invalid(serde_json::Value)`, which
+ *  accepts every JSON value - `null`, a number, a string, a boolean, an array - not only
+ *  an object, and an object type would let the reader index into a number. */
+export type QuotaSourceEntry = QuotaSourceConfig | JsonValue;
+
 // ── terminal output wire payload ──────────────────────────────────────
 
 /**
@@ -800,6 +817,9 @@ export interface AppSettings {
    * sees the key appear.
    */
   watchers?: Record<string, WatcherEntry>;
+  /** #2482 - root-level weekly-quota sources, keyed by agent id. Optional because the
+   *  Rust field skips serializing while the map is empty. */
+  quotaSources?: Record<string, QuotaSourceEntry>;
   /** #1171 - geometry of the watcher activity window; skipped while unset. */
   watchersGeometry?: WindowGeometry;
   // #2232 phase 9 - OPTIONAL on purpose, following the #2064 block above: Rust

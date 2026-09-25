@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
-import SettingsModal from "./SettingsModal";
+import SettingsModal, { isScreenRegexSource } from "./SettingsModal";
 import type {
   MoveCodingAgentRequest,
   AgentConfig,
@@ -3627,5 +3627,33 @@ describe("SettingsModal compact hotkey capture (#2236)", () => {
     expect(byTestId<HTMLButtonElement>("settings.save").disabled).toBe(false);
     expect(document.querySelector(".modal-save-error")).toBeNull();
     dispose();
+  });
+});
+
+// #2482 p5a - the quota-source shape predicate, bound to the normative
+// malformed-entry table of the p5a plan. p5b binds the rendering to the same rows.
+describe("isScreenRegexSource (#2482)", () => {
+  it("is_screen_regex_source_accepts_a_minimal_entry_and_one_with_enabled_true_and_false", () => {
+    expect(isScreenRegexSource({ kind: "screenRegex", pattern: "7d (\\d+)%" })).toBe(true);
+    expect(isScreenRegexSource({ kind: "screenRegex", pattern: "7d (\\d+)%", enabled: true })).toBe(true);
+    expect(isScreenRegexSource({ kind: "screenRegex", pattern: "7d (\\d+)%", enabled: false })).toBe(true);
+  });
+
+  it("is_screen_regex_source_rejects_every_row_of_the_table_above", () => {
+    const rows: unknown[] = [
+      null,
+      42,
+      "7d (\\d+)%",
+      true,
+      [],
+      {},
+      { kind: "somethingNew", pattern: "x" },
+      { kind: "screenRegex", pattern: 42 },
+      { kind: "screenRegex", pattern: "7d (.*)", enabled: "bad" },
+    ];
+    expect(rows).toHaveLength(9);
+    for (const row of rows) {
+      expect(isScreenRegexSource(row), JSON.stringify(row)).toBe(false);
+    }
   });
 });
