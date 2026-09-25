@@ -206,6 +206,34 @@ function startAutoExecuteCountdown(
   }, 1000);
 }
 
+async function clearStoppedBackendRecording(sessionId: string): Promise<void> {
+  if (backendRecordingSessionId !== sessionId) return;
+  backendRecordingSessionId = null;
+  try {
+    await VoiceAPI.markRecording(sessionId, false);
+  } catch (error) {
+    console.error("[Voice] Failed to clear backend recording state:", error);
+  }
+}
+
+async function maybeAutoExecute(lease: OperationLease): Promise<void> {
+  let settings: Awaited<ReturnType<typeof SettingsAPI.get>>;
+  try {
+    settings = await SettingsAPI.get();
+  } catch {
+    // Preserve the existing behavior: settings failure skips auto-execute.
+    return;
+  }
+  if (!isCurrent(lease)) return;
+  if (settings.voiceAutoExecute) {
+    startAutoExecuteCountdown(
+      lease.sessionId,
+      settings.voiceAutoExecuteDelay || 15,
+      lease,
+    );
+  }
+}
+
 async function processStoppedRecording(
   lease: OperationLease,
   stream: MediaStream,
@@ -218,14 +246,7 @@ async function processStoppedRecording(
   setRecordingSessionId(null);
   recorder = null;
 
-  if (backendRecordingSessionId === lease.sessionId) {
-    backendRecordingSessionId = null;
-    try {
-      await VoiceAPI.markRecording(lease.sessionId, false);
-    } catch (error) {
-      console.error("[Voice] Failed to clear backend recording state:", error);
-    }
-  }
+  await clearStoppedBackendRecording(lease.sessionId);
   if (!isCurrent(lease) || recordedChunks.length === 0) return;
 
   setProcessingSessionId(lease.sessionId);
@@ -242,21 +263,7 @@ async function processStoppedRecording(
       showTypingWarning(lease.sessionId, lease);
       return;
     }
-    let settings: Awaited<ReturnType<typeof SettingsAPI.get>>;
-    try {
-      settings = await SettingsAPI.get();
-    } catch {
-      // Preserve the existing behavior: settings failure skips auto-execute.
-      return;
-    }
-    if (!isCurrent(lease)) return;
-    if (settings.voiceAutoExecute) {
-      startAutoExecuteCountdown(
-        lease.sessionId,
-        settings.voiceAutoExecuteDelay || 15,
-        lease,
-      );
-    }
+    await maybeAutoExecute(lease);
   } catch (error) {
     if (!isCurrent(lease)) return;
     const message = describeError(error, "Transcription failed");

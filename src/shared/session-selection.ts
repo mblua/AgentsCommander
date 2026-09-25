@@ -95,6 +95,44 @@ function requireLiteral<T extends string | boolean | null>(
   return expected;
 }
 
+interface CauseRule {
+  /** Allowed modes; null = any mode. */
+  modes: readonly SessionSelectionMode[] | null;
+  /** Required userInitiated value (also the value returned); null = any value. */
+  userInitiated: boolean | null;
+  /** Only initialHydration also requires revision 0. */
+  revisionZero: boolean;
+  message: string;
+}
+
+/** One rule per selection source; mirrors the SessionSelectionCause union. */
+const CAUSE_RULES: ReadonlyMap<string, CauseRule> = new Map<string, CauseRule>([
+  ["initialHydration", { modes: ["none"], userInitiated: false, revisionZero: true, message: "initialHydration requires none/false/revision 0" }],
+  ["sessionCreated", { modes: ["live"], userInitiated: null, revisionZero: false, message: "sessionCreated requires live" }],
+  ["userSwitch", { modes: ["live", "dormant"], userInitiated: true, revisionZero: false, message: "userSwitch requires live|dormant and true" }],
+  ["manualClose", { modes: ["live", "none"], userInitiated: true, revisionZero: false, message: "manualClose requires live|none and true" }],
+  ["autoClose", { modes: ["none"], userInitiated: false, revisionZero: false, message: "autoClose requires none/false" }],
+  ["restart", { modes: ["live", "none"], userInitiated: null, revisionZero: false, message: "restart requires live|none" }],
+  ["restore", { modes: null, userInitiated: false, revisionZero: false, message: "restore requires false" }],
+  ["detach", { modes: ["live", "none"], userInitiated: true, revisionZero: false, message: "detach requires live|none and true" }],
+  ["attach", { modes: ["live", "dormant"], userInitiated: true, revisionZero: false, message: "attach requires live|dormant and true" }],
+  ["spawnRollback", { modes: ["none"], userInitiated: false, revisionZero: false, message: "spawnRollback requires none/false" }],
+  ["resourceMonitor", { modes: ["none"], userInitiated: null, revisionZero: false, message: "resourceMonitor requires none" }],
+  ["backgroundCleanup", { modes: ["none"], userInitiated: false, revisionZero: false, message: "backgroundCleanup requires none/false" }],
+  ["livenessReconcile", { modes: ["dormant", "none"], userInitiated: false, revisionZero: false, message: "livenessReconcile requires dormant|none and false" }],
+]);
+
+function violatesCauseRule(
+  rule: CauseRule,
+  userInitiated: boolean,
+  mode: SessionSelectionMode,
+  revision: number,
+): boolean {
+  if (rule.userInitiated !== null && userInitiated !== rule.userInitiated) return true;
+  if (rule.modes !== null && !rule.modes.includes(mode)) return true;
+  return rule.revisionZero && revision !== 0;
+}
+
 function decodeCause(
   sourceValue: unknown,
   userValue: unknown,
@@ -105,75 +143,15 @@ function decodeCause(
   if (sourceValue !== "initialHydration" && revision === 0) {
     return fail("revision", "revision 0 is reserved for initialHydration");
   }
-  switch (sourceValue) {
-    case "initialHydration":
-      if (mode !== "none" || userInitiated || revision !== 0) {
-        return fail("source", "initialHydration requires none/false/revision 0");
-      }
-      return { source: "initialHydration", userInitiated: false, mode: "none" };
-    case "sessionCreated":
-      if (mode !== "live") return fail("source", "sessionCreated requires live");
-      return { source: "sessionCreated", userInitiated, mode: "live" };
-    case "userSwitch":
-      if (!userInitiated || (mode !== "live" && mode !== "dormant")) {
-        return fail("source", "userSwitch requires live|dormant and true");
-      }
-      return mode === "live"
-        ? { source: "userSwitch", userInitiated: true, mode: "live" }
-        : { source: "userSwitch", userInitiated: true, mode: "dormant" };
-    case "manualClose":
-      if (!userInitiated || (mode !== "live" && mode !== "none")) {
-        return fail("source", "manualClose requires live|none and true");
-      }
-      return mode === "live"
-        ? { source: "manualClose", userInitiated: true, mode: "live" }
-        : { source: "manualClose", userInitiated: true, mode: "none" };
-    case "autoClose":
-      if (userInitiated || mode !== "none") return fail("source", "autoClose requires none/false");
-      return { source: "autoClose", userInitiated: false, mode: "none" };
-    case "restart":
-      if (mode !== "live" && mode !== "none") return fail("source", "restart requires live|none");
-      return mode === "live"
-        ? { source: "restart", userInitiated, mode: "live" }
-        : { source: "restart", userInitiated, mode: "none" };
-    case "restore":
-      if (userInitiated) return fail("source", "restore requires false");
-      if (mode === "live") return { source: "restore", userInitiated: false, mode: "live" };
-      if (mode === "dormant") return { source: "restore", userInitiated: false, mode: "dormant" };
-      return { source: "restore", userInitiated: false, mode: "none" };
-    case "detach":
-      if (!userInitiated || (mode !== "live" && mode !== "none")) {
-        return fail("source", "detach requires live|none and true");
-      }
-      return mode === "live"
-        ? { source: "detach", userInitiated: true, mode: "live" }
-        : { source: "detach", userInitiated: true, mode: "none" };
-    case "attach":
-      if (!userInitiated || (mode !== "live" && mode !== "dormant")) {
-        return fail("source", "attach requires live|dormant and true");
-      }
-      return mode === "live"
-        ? { source: "attach", userInitiated: true, mode: "live" }
-        : { source: "attach", userInitiated: true, mode: "dormant" };
-    case "spawnRollback":
-      if (userInitiated || mode !== "none") return fail("source", "spawnRollback requires none/false");
-      return { source: "spawnRollback", userInitiated: false, mode: "none" };
-    case "resourceMonitor":
-      if (mode !== "none") return fail("source", "resourceMonitor requires none");
-      return { source: "resourceMonitor", userInitiated, mode: "none" };
-    case "backgroundCleanup":
-      if (userInitiated || mode !== "none") return fail("source", "backgroundCleanup requires none/false");
-      return { source: "backgroundCleanup", userInitiated: false, mode: "none" };
-    case "livenessReconcile":
-      if (userInitiated || (mode !== "dormant" && mode !== "none")) {
-        return fail("source", "livenessReconcile requires dormant|none and false");
-      }
-      return mode === "dormant"
-        ? { source: "livenessReconcile", userInitiated: false, mode: "dormant" }
-        : { source: "livenessReconcile", userInitiated: false, mode: "none" };
-    default:
-      return fail("source", "unknown selection source");
-  }
+  const rule = typeof sourceValue === "string" ? CAUSE_RULES.get(sourceValue) : undefined;
+  if (!rule) return fail("source", "unknown selection source");
+  if (violatesCauseRule(rule, userInitiated, mode, revision)) return fail("source", rule.message);
+  // CAUSE_RULES admits exactly the source/userInitiated/mode combinations of the union.
+  return {
+    source: sourceValue,
+    userInitiated: rule.userInitiated ?? userInitiated,
+    mode,
+  } as SessionSelectionCause;
 }
 
 function decodeExitedStatus(value: unknown): { exited: number } {

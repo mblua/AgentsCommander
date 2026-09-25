@@ -600,17 +600,29 @@ function parseKeyValueLine(body) {
 // content WHATEVER it contains, so a `name: x` inside a `description: |` block is content
 // and never a second top-level key.
 function readBlockScalar(lines, startIndex, explicitIndent, style) {
-  let indent = explicitIndent;
-  if (indent === null) {
-    let probe = startIndex;
-    while (probe < lines.length && isBlankLine(lines[probe])) probe += 1;
-    if (probe >= lines.length) return { endIndex: startIndex, content: '' };
-    const width = indentWidth(lines[probe]);
-    if (width === 0) return { endIndex: startIndex, content: '' };
-    indent = width;
-  }
+  const indent = resolveBlockIndent(lines, startIndex, explicitIndent);
   if (indent <= 0) return { endIndex: startIndex, content: '' };
 
+  const { endIndex, content } = collectBlockLines(lines, startIndex, indent);
+
+  // Exact folded whitespace is never load-bearing: no outcome depends on anything but
+  // whether the value trims to empty, and both foldings agree on that.
+  if (style === '>') return { endIndex, content: foldBlockLines(content) };
+  return { endIndex, content: content.join('\n') };
+}
+
+// The explicit indicator when given, otherwise the first non-empty line's indentation.
+// Returns 0 when there is no usable indentation (the block is then empty).
+function resolveBlockIndent(lines, startIndex, explicitIndent) {
+  if (explicitIndent !== null) return explicitIndent;
+  let probe = startIndex;
+  while (probe < lines.length && isBlankLine(lines[probe])) probe += 1;
+  if (probe >= lines.length) return 0;
+  return indentWidth(lines[probe]);
+}
+
+// Collect the block's content lines, dropping trailing blank lines.
+function collectBlockLines(lines, startIndex, indent) {
   const content = [];
   let i = startIndex;
   while (i < lines.length) {
@@ -625,18 +637,16 @@ function readBlockScalar(lines, startIndex, explicitIndent, style) {
     i += 1;
   }
   while (content.length > 0 && content[content.length - 1] === '') content.pop();
+  return { endIndex: i, content };
+}
 
-  // Exact folded whitespace is never load-bearing: no outcome depends on anything but
-  // whether the value trims to empty, and both foldings agree on that.
-  if (style === '>') {
-    let folded = '';
-    for (let j = 0; j < content.length; j += 1) {
-      if (j > 0) folded += content[j] === '' || content[j - 1] === '' ? '\n' : ' ';
-      folded += content[j];
-    }
-    return { endIndex: i, content: folded };
+function foldBlockLines(content) {
+  let folded = '';
+  for (let j = 0; j < content.length; j += 1) {
+    if (j > 0) folded += content[j] === '' || content[j - 1] === '' ? '\n' : ' ';
+    folded += content[j];
   }
-  return { endIndex: i, content: content.join('\n') };
+  return folded;
 }
 
 function resolveScalar(value) {
