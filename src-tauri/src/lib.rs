@@ -6547,7 +6547,7 @@ fn spawn_co_managed_supervisor<R: tauri::Runtime>(
                 biased;
                 _ = shutdown.cancelled() => break,
                 _ = discovery.tick() => watch_capture_slots(&app, &handle).await,
-                _ = reader_demand.tick() => reraise_room_reader_demands(&app).await,
+                _ = reader_demand.tick() => reader_demand_pass(&app).await,
                 trigger = triggers.recv() => {
                     let Some(trigger) = trigger else { break };
                     handle_co_managed_trigger(&app, &handle, trigger).await;
@@ -6589,6 +6589,60 @@ pub(crate) fn tick_recheck_calls(session_id: uuid::Uuid) -> usize {
         .get(&session_id)
         .copied()
         .unwrap_or(0)
+}
+
+/// #2525 one reader-demand tick: sweep when Co-managed is unavailable
+/// globally, otherwise the unchanged #2456 re-raise pass.
+async fn reader_demand_pass<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if release_room_reader_demands_when_globally_off(app).await {
+        return;
+    }
+    reraise_room_reader_demands(app).await;
+}
+
+/// #2525 release the Room demand of every live session when the global switch
+/// is off or the Jev API key is empty; `true` iff it swept. The release runs
+/// for sessions holding nothing too: it still bumps the Room `DemandEpoch`,
+/// which aborts a raise already in flight (D-e). Logs once per pass, and only
+/// when a session actually held a Room demand, so a steady Off is silent.
+async fn release_room_reader_demands_when_globally_off<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> bool {
+    let Some(settings) = app.try_state::<SettingsState>() else {
+        return false;
+    };
+    let (enabled, api_key) = {
+        let guard = settings.read().await;
+        (guard.co_managed_enabled, guard.jev_api_key.clone())
+    };
+    if crate::config::co_managed::globally_available(enabled, &api_key) {
+        return false;
+    }
+    let session_ids: Vec<uuid::Uuid> = {
+        let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+            return false;
+        };
+        let guard = manager.read().await;
+        guard
+            .list_sessions()
+            .await
+            .into_iter()
+            .filter_map(|s| uuid::Uuid::parse_str(&s.id).ok())
+            .collect()
+    };
+    let mut held = 0usize;
+    for session_id in session_ids {
+        if commands::telegram::holds_room_reader_demand(app, session_id).await {
+            held += 1;
+        }
+        commands::session::release_room_reader_demand(app, session_id).await;
+    }
+    if held > 0 {
+        log::info!(
+            "[co-managed] {held} reader demands released: Co-managed is unavailable globally"
+        );
+    }
+    true
 }
 
 /// #2456 raise the Room reader demand for every live session that lacks one.
@@ -11728,5 +11782,164 @@ mod reader_reraise_tests {
             holds_room_reader_demand(h.app.handle(), id).await,
             "the tick only releases what it installed in the same iteration"
         );
+    }
+
+    /// #2525 T-r1 (reproduction, global switch): switching Co-managed off
+    /// globally releases a running Room demand within one pass.
+    #[tokio::test]
+    async fn p2525_switch_off_releases_a_running_room_demand() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        super::reader_demand_pass(h.app.handle()).await;
+        assert!(holds_room_reader_demand(h.app.handle(), id).await);
+
+        h.set_global_co_managed(false, "test-key").await;
+        super::reader_demand_pass(h.app.handle()).await;
+
+        assert!(
+            !holds_room_reader_demand(h.app.handle(), id).await,
+            "the global switch off must release the Room demand"
+        );
+        crate::commands::session::reader_demand_tests::assert_no_room_reader_state_for(&h, id)
+            .await;
+    }
+
+    /// #2525 T-r2 (reproduction, API key): a whitespace-only key counts as
+    /// cleared and releases a running Room demand within one pass. Mutation:
+    /// sweep on the switch only.
+    #[tokio::test]
+    async fn p2525_cleared_api_key_releases_a_running_room_demand() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        super::reader_demand_pass(h.app.handle()).await;
+        assert!(holds_room_reader_demand(h.app.handle(), id).await);
+
+        h.set_global_co_managed(true, "   ").await;
+        super::reader_demand_pass(h.app.handle()).await;
+
+        assert!(
+            !holds_room_reader_demand(h.app.handle(), id).await,
+            "a cleared API key must release the Room demand"
+        );
+        crate::commands::session::reader_demand_tests::assert_no_room_reader_state_for(&h, id)
+            .await;
+    }
+
+    /// #2525 T-r3 (guard): while available globally the pass keeps running the
+    /// ordinary re-raise. Mutations: an inverted predicate, or a sweep that
+    /// answers `true` while available.
+    #[tokio::test]
+    async fn p2525_available_globally_keeps_re_raising() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+
+        for pass in 0..10 {
+            release_room_reader_demand(h.app.handle(), id).await;
+            super::reader_demand_pass(h.app.handle()).await;
+            assert!(
+                holds_room_reader_demand(h.app.handle(), id).await,
+                "pass {pass} re-raises the demand"
+            );
+            assert_eq!(tick_raise_calls(id), pass + 1, "pass {pass}");
+        }
+    }
+
+    /// #2525 T-r4 (recovery): restoring the key lets the next pass re-raise.
+    /// Builds T-r2's state inline. Mutation: any sticky "swept" flag.
+    #[tokio::test]
+    async fn p2525_restoring_the_key_lets_the_next_pass_re_raise() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        super::reader_demand_pass(h.app.handle()).await;
+        assert!(holds_room_reader_demand(h.app.handle(), id).await);
+        h.set_global_co_managed(true, "   ").await;
+        super::reader_demand_pass(h.app.handle()).await;
+        assert!(!holds_room_reader_demand(h.app.handle(), id).await);
+
+        h.set_global_co_managed(true, "test-key").await;
+        super::reader_demand_pass(h.app.handle()).await;
+
+        assert!(
+            holds_room_reader_demand(h.app.handle(), id).await,
+            "the next available pass re-raises"
+        );
+    }
+
+    /// #2525 T-r5 (the early return): a swept pass never resolves readiness.
+    /// Mutation: drop the `return` in `reader_demand_pass`.
+    #[tokio::test]
+    async fn p2525_a_swept_pass_does_not_resolve_readiness() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        h.set_global_co_managed(false, "test-key").await;
+        let calls = tick_raise_calls(id);
+
+        for _ in 0..5 {
+            super::reader_demand_pass(h.app.handle()).await;
+        }
+
+        assert_eq!(tick_raise_calls(id), calls, "no readiness resolution");
+        assert!(!holds_room_reader_demand(h.app.handle(), id).await);
+    }
+
+    /// #2525 T-r6 (the unconditional release): the sweep moves the Room epoch
+    /// of a session that holds nothing. Mutation: guard the release with
+    /// `holds_room_reader_demand`.
+    #[tokio::test]
+    async fn p2525_sweep_moves_the_epoch_of_a_session_with_no_demand() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+        let before = crate::commands::telegram::room_demand_epoch(h.app.handle(), id).await;
+
+        h.set_global_co_managed(false, "test-key").await;
+        super::reader_demand_pass(h.app.handle()).await;
+
+        assert_ne!(
+            crate::commands::telegram::room_demand_epoch(h.app.handle(), id).await,
+            before,
+            "the sweep must bump the epoch of a session with no demand"
+        );
+    }
+
+    /// #2525 T-r7 (the stale-raise interleaving): a raise that resolved Ready
+    /// and parks before the install, overtaken by a globally-off sweep,
+    /// installs nothing. Mutation: a holders-only sweep.
+    #[tokio::test]
+    async fn p2525_a_raise_in_flight_when_the_sweep_runs_installs_nothing() {
+        use crate::commands::session::reader_demand_tests::{
+            assert_no_room_reader_state, race_room_raise,
+        };
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = harness(&fixture);
+        let id = h.session_in(fixture.coordinator_path()).await;
+
+        let barrier =
+            crate::commands::session::room_raise_seam::install_before_add(&id.to_string());
+        let raised = race_room_raise(
+            &h,
+            fixture.room_path(),
+            id,
+            &barrier.reached,
+            &barrier.release,
+            async {
+                h.set_global_co_managed(false, "test-key").await;
+                super::reader_demand_pass(h.app.handle()).await;
+            },
+        )
+        .await;
+        assert_no_room_reader_state(&h, raised, id).await;
     }
 }

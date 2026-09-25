@@ -190,6 +190,14 @@ fn read_config_object(path: &Path) -> Map<String, Value> {
     }
 }
 
+/// #2525 whether Co-managed is available globally: the conjunction of the
+/// negations of `effective_state`'s `GlobalSwitchOff` and `NoApiKey` legs,
+/// with the same `trim()` rule. `Ready` implies it; the converse is not
+/// claimed, since a room can still be Off for a per-room reason.
+pub fn globally_available(globally_enabled: bool, api_key: &str) -> bool {
+    globally_enabled && !api_key.trim().is_empty()
+}
+
 /// The single answer phase 2 exists to provide. Check order is fixed so the
 /// reason a user sees is stable:
 /// `GlobalSwitchOff` -> `NotAnOrchestrator` -> `UnsupportedProvider` -> `RoomFlagOff` -> `NoApiKey`
@@ -675,5 +683,47 @@ mod tests {
         let _ = effective_state(&room, false, "key", true, true, "claude");
         let after = Sha256::digest(std::fs::read(config_path(&room)).unwrap());
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn globally_available_is_true_only_with_switch_on_and_a_key() {
+        assert!(globally_available(true, "k"));
+        assert!(!globally_available(false, "k"));
+        assert!(!globally_available(true, ""));
+    }
+
+    #[test]
+    fn globally_available_treats_whitespace_as_absent() {
+        assert!(!globally_available(true, "   "));
+        assert!(!globally_available(true, "	"));
+        assert!(!globally_available(
+            true, "
+"
+        ));
+    }
+
+    #[test]
+    fn globally_available_accepts_a_padded_key() {
+        assert!(globally_available(true, "  k  "));
+    }
+
+    /// #2525 D-d: `Ready` implies `globally_available`, so the sweep never
+    /// releases a demand an available room should hold.
+    #[test]
+    fn a_ready_room_is_never_globally_unavailable() {
+        let temp = tempfile::tempdir().unwrap();
+        let room = ready_room(&temp);
+        assert_eq!(
+            effective_state(&room, true, "test-key", true, true, "claude"),
+            CoManagedState::Ready
+        );
+        for (enabled, key) in [(false, "test-key"), (true, ""), (true, "   ")] {
+            assert_ne!(
+                effective_state(&room, enabled, key, true, true, "claude"),
+                CoManagedState::Ready,
+                "({enabled}, {key:?})"
+            );
+            assert!(!globally_available(enabled, key), "({enabled}, {key:?})");
+        }
     }
 }
