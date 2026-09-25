@@ -317,6 +317,27 @@ const TYPING_HOLD_SECONDS_MAX = 3600;
 
 /** Whole seconds in range, or null. A blank or a fraction is invalid and is
  *  NEVER coerced: the input keeps the user's text and Save stays blocked. */
+// #2597 — grow the params textarea to fit its content. scrollHeight excludes
+// the border (box-sizing: border-box), so add it back; 28px = one-line floor.
+function fitProfileCommand(el: HTMLTextAreaElement): void {
+  const border = el.offsetHeight - el.clientHeight;
+  el.style.height = "auto";
+  el.style.height = `${Math.max(28, el.scrollHeight + border)}px`;
+}
+
+// #2597 — params are one logical line: newlines (paste/drop) become spaces.
+// Keeps the caret at the same logical offset. Returns the sanitized value.
+function sanitizeProfileCommandInput(el: HTMLTextAreaElement): string {
+  const raw = el.value;
+  const v = raw.replace(/\r\n|\r|\n/g, " ");
+  if (v !== raw) {
+    const caret = raw.slice(0, el.selectionStart ?? raw.length).replace(/\r\n|\r|\n/g, " ").length;
+    el.value = v;
+    el.setSelectionRange(caret, caret);
+  }
+  return v;
+}
+
 function parseTypingHoldSeconds(raw: string): number | null {
   const text = raw.trim();
   if (!/^\d+$/.test(text)) return null;
@@ -4532,11 +4553,27 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <div class="settings-profile-command-base" data-ac-testid={`${cardId}.commandBase`}>
             Runs <code>{agent.command || "(set the Coding Agent command first)"}</code> then your params:
           </div>
-          <input
+          <textarea
             class="settings-input settings-profile-command"
             classList={{ invalid: Boolean(cellError()) }}
             value={command()}
-            onInput={(e) => updateProfileCellCommand(agent.id, letter, e.currentTarget.value)}
+            rows={1}
+            wrap="soft"
+            spellcheck={false}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.isComposing) e.preventDefault();
+            }}
+            onFocus={(e) => fitProfileCommand(e.currentTarget)}
+            onBlur={(e) => {
+              e.currentTarget.style.height = "";
+              e.currentTarget.scrollTop = 0;
+            }}
+            onInput={(e) => {
+              const el = e.currentTarget;
+              const v = sanitizeProfileCommandInput(el);
+              updateProfileCellCommand(agent.id, letter, v);
+              if (document.activeElement === el) fitProfileCommand(el);
+            }}
             placeholder={paramsExampleFor(agentHelpOverlay(), agent.id, agent.command)}
             data-ac-testid={`${cardId}.command`}
             data-ac-role="textbox"

@@ -489,7 +489,7 @@ describe("SettingsModal agent help (#2143)", () => {
   async function placeholderFor(command: string): Promise<string | null> {
     const { rendered } = await mountAgentHelp([helpAgent("agent_x", "X", command)]);
     try {
-      return byTestId<HTMLInputElement>(rendered.root, `${CARD}.command`)!.getAttribute("placeholder");
+      return byTestId<HTMLTextAreaElement>(rendered.root, `${CARD}.command`)!.getAttribute("placeholder");
     } finally {
       rendered.cleanup();
     }
