@@ -268,7 +268,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
-  min-height: 0;
+  flex-shrink: 0;
 }
 
 .rm-section-header {
@@ -597,6 +597,33 @@ button {
 .rm-process-error,
 .rm-warning-line {
   color: var(--status-pending);
+}
+
+/* #2581 - per-agent warning: a button that jumps to the agent row. */
+.rm-warning-link {
+  display: block;
+  width: 100%;
+  border: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rm-warning-link:hover {
+  outline: 1px solid currentColor;
+}
+
+.rm-warning-link:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: 1px;
+}
+
+.rm-warning-link strong {
+  color: var(--sidebar-fg);
+}
+
+.rm-warning-line.is-kill {
+  color: var(--status-exited);
 }
 
 /* #647 D: AV/security guidance — shown beside (never replacing) the per-PID
