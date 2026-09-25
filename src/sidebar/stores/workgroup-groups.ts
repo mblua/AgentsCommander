@@ -180,24 +180,35 @@ function formatError(error: unknown): string {
   }
 }
 
+function fallbackSelection(config: WorkgroupGroupsConfig): WorkgroupGroupSelection {
+  return config.showAll ? { kind: "all" } : { kind: "ungrouped" };
+}
+
+function isSelectionVisible(
+  selection: WorkgroupGroupSelection,
+  config: WorkgroupGroupsConfig
+): boolean {
+  switch (selection.kind) {
+    case "group":
+      return config.groups.some((group) => group.id === selection.id);
+    case "all":
+      return config.showAll;
+    case "ungrouped":
+      return config.showUngrouped;
+    case "nonstop":
+      return !!config.nonStop?.show;
+  }
+}
+
 function normalizeSelection(
   selection: WorkgroupGroupSelection,
   config: WorkgroupGroupsConfig
 ): WorkgroupGroupSelection {
-  if (selection.kind === "group") {
-    if (config.groups.some((group) => group.id === selection.id)) return selection;
-    return config.showAll ? { kind: "all" } : { kind: "ungrouped" };
-  }
-  if (selection.kind === "all" && !config.showAll) {
+  if (isSelectionVisible(selection, config)) return selection;
+  if (selection.kind === "all") {
     return config.showUngrouped ? { kind: "ungrouped" } : { kind: "all" };
   }
-  if (selection.kind === "ungrouped" && !config.showUngrouped) {
-    return config.showAll ? { kind: "all" } : { kind: "ungrouped" };
-  }
-  if (selection.kind === "nonstop" && !config.nonStop?.show) {
-    return config.showAll ? { kind: "all" } : { kind: "ungrouped" };
-  }
-  return selection;
+  return fallbackSelection(config);
 }
 
 function ensureEntry(projectPath: string): ProjectGroupsEntry {
