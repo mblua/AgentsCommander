@@ -213,29 +213,61 @@ const wgReplicaMemo = createMemo(() => {
   return { names, paths };
 });
 
+function teamFilteredSessions(nonRootSessions: Session[]): Session[] {
+  if (!state.teamFilter) return nonRootSessions;
+
+  let matches: (normalizedPath: string) => boolean;
+
+  if (state.teamFilter === NO_TEAM) {
+    const allPaths = allTeamPathsMemo();
+    matches = (p) => !allPaths.has(p);
+  } else {
+    const team = state.teams.find((t) => t.id === state.teamFilter);
+    if (!team) return nonRootSessions;
+    const paths = new Set(team.members.map((m) => normalizePath(m.path)));
+    matches = (p) => paths.has(p);
+  }
+
+  return nonRootSessions.filter((s) => {
+    if (!s.workingDirectory) return state.teamFilter === NO_TEAM;
+    return matches(normalizePath(s.workingDirectory));
+  });
+}
+
+// Name/path pairs that may appear as inactive entries under the current team filter, in display-candidate order.
+function inactiveCandidates(): { name: string; path: string }[] {
+  if (!state.teamFilter) {
+    return state.repos.map((repo) => ({ name: repo.name, path: repo.path }));
+  }
+  if (state.teamFilter === NO_TEAM) {
+    const teamPaths = allTeamPathsMemo();
+    return state.repos
+      .filter((repo) => !teamPaths.has(normalizePath(repo.path)))
+      .map((repo) => ({ name: repo.name, path: repo.path }));
+  }
+  const team = state.teams.find((t) => t.id === state.teamFilter);
+  return team ? team.members.map((m) => ({ name: m.name, path: m.path })) : [];
+}
+
+function collectInactiveEntries(activePathSet: Set<string>): Session[] {
+  const addedPaths = new Set<string>();
+  const inactiveEntries: Session[] = [];
+
+  for (const { name, path } of inactiveCandidates()) {
+    const np = normalizePath(path);
+    if (!activePathSet.has(np) && !addedPaths.has(np)) {
+      addedPaths.add(np);
+      inactiveEntries.push(makeInactiveEntry(name, path));
+    }
+  }
+
+  return inactiveEntries;
+}
+
 const filteredSessionsMemo = createMemo(() => {
   const nonRootSessions = state.sessions.filter((s) => !s.isRootAgent);
 
-  const activeSessions = (() => {
-    if (!state.teamFilter) return nonRootSessions;
-
-    let matches: (normalizedPath: string) => boolean;
-
-    if (state.teamFilter === NO_TEAM) {
-      const allPaths = allTeamPathsMemo();
-      matches = (p) => !allPaths.has(p);
-    } else {
-      const team = state.teams.find((t) => t.id === state.teamFilter);
-      if (!team) return nonRootSessions;
-      const paths = new Set(team.members.map((m) => normalizePath(m.path)));
-      matches = (p) => paths.has(p);
-    }
-
-    return nonRootSessions.filter((s) => {
-      if (!s.workingDirectory) return state.teamFilter === NO_TEAM;
-      return matches(normalizePath(s.workingDirectory));
-    });
-  })();
+  const activeSessions = teamFilteredSessions(nonRootSessions);
 
   const wg = wgReplicaMemo();
   const visibleSessions = wg.names.size > 0
@@ -258,36 +290,7 @@ const filteredSessionsMemo = createMemo(() => {
       .filter((s) => s.workingDirectory)
       .map((s) => normalizePath(s.workingDirectory))
   );
-  const addedPaths = new Set<string>();
-  const inactiveEntries: Session[] = [];
-
-  const addInactive = (name: string, path: string) => {
-    const np = normalizePath(path);
-    if (!activePathSet.has(np) && !addedPaths.has(np)) {
-      addedPaths.add(np);
-      inactiveEntries.push(makeInactiveEntry(name, path));
-    }
-  };
-
-  if (!state.teamFilter) {
-    for (const repo of state.repos) {
-      addInactive(repo.name, repo.path);
-    }
-  } else if (state.teamFilter === NO_TEAM) {
-    const teamPaths = allTeamPathsMemo();
-    for (const repo of state.repos) {
-      if (!teamPaths.has(normalizePath(repo.path))) {
-        addInactive(repo.name, repo.path);
-      }
-    }
-  } else {
-    const team = state.teams.find((t) => t.id === state.teamFilter);
-    if (team) {
-      for (const m of team.members) {
-        addInactive(m.name, m.path);
-      }
-    }
-  }
+  const inactiveEntries = collectInactiveEntries(activePathSet);
 
   const filteredInactive = wg.paths.size > 0
     ? inactiveEntries.filter((e) => !wg.paths.has(normalizePath(e.workingDirectory)))
