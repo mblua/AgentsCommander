@@ -2569,7 +2569,8 @@ html.light-theme .settings-api-client-warning {
 }
 
 /* #2544 - grip handle, drag ghost, drop line and the reorder feedback states. */
-.settings-agent-drag-handle {
+.settings-agent-drag-handle,
+.agent-profile-provider-drag-handle {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2584,17 +2585,20 @@ html.light-theme .settings-api-client-warning {
   transition: color var(--transition-fast);
 }
 
-.settings-agent-drag-handle:hover {
+.settings-agent-drag-handle:hover,
+.agent-profile-provider-drag-handle:hover {
   color: var(--sidebar-accent);
 }
 
-.settings-agent-drag-handle:disabled {
+.settings-agent-drag-handle:disabled,
+.agent-profile-provider-drag-handle:disabled {
   cursor: default;
   opacity: 0.35;
   color: var(--sidebar-fg-dim);
 }
 
-.settings-agent-drag-handle svg {
+.settings-agent-drag-handle svg,
+.agent-profile-provider-drag-handle svg {
   width: 8px;
   height: 14px;
   display: block;
@@ -2660,6 +2664,7 @@ body.is-dragging * {
 
 @media (prefers-reduced-motion: reduce) {
   .settings-agent-drag-handle,
+  .agent-profile-provider-drag-handle,
   .settings-agent-row.is-kbd-grabbed {
     transition: none;
   }
@@ -4057,7 +4062,7 @@ html.light-theme .settings-hint-error {
   flex-direction: column;
   min-height: 0;
   max-height: 40%;
-  padding: 6px 4px 4px;
+  padding: 6px 0 4px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
 
@@ -4066,6 +4071,31 @@ html.light-theme .settings-hint-error {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  padding: 0 4px;
+}
+
+.workgroup-group-rail-favorites > .workgroup-group-rail-header {
+  width: auto;
+  margin-left: 4px;
+  margin-right: 4px;
+}
+
+.workgroup-group-rail-scroll::-webkit-scrollbar,
+.workgroup-group-rail-favorites-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.workgroup-group-rail-scroll::-webkit-scrollbar-button,
+.workgroup-group-rail-favorites-scroll::-webkit-scrollbar-button {
+  display: none;
+}
+.workgroup-group-rail-scroll::-webkit-scrollbar-track,
+.workgroup-group-rail-favorites-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.workgroup-group-rail-scroll::-webkit-scrollbar-thumb,
+.workgroup-group-rail-favorites-scroll::-webkit-scrollbar-thumb {
+  background: var(--sidebar-border);
+  border-radius: 2px;
 }
 
 .workgroup-group-rail-button {
@@ -4807,6 +4837,35 @@ html.light-theme .settings-hint-error {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   border-left-color: var(--agent-color, var(--sidebar-border));
+}
+
+/* #2577 - picker-scoped: rows keep their own height (no stretch), and the
+   grip sits INSIDE the card border as in Settings. The grip stays a sibling
+   button painted over the card's left padding (no nested buttons). */
+.agent-picker-modal .agent-profile-provider-list {
+  position: relative;
+  align-content: start;
+}
+
+.agent-profile-provider-list > .agent-profile-provider-card-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+.agent-profile-provider-card-wrap > .agent-profile-provider-drag-handle {
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  z-index: 1;
+  transform: translateY(-50%);
+}
+
+.agent-profile-provider-card-wrap > .agent-profile-provider-card {
+  padding-left: 22px;
+}
+
+.agent-profile-provider-card-wrap.is-drag-source {
+  opacity: 0.35;
 }
 
 .agent-profile-provider-card.active,
