@@ -1171,6 +1171,60 @@ const AgentPickerModal: Component<{
     }
   };
 
+  const needsConflictReview = (scope: ProfileAssignmentScope, mode: AssignmentMode): boolean =>
+    mode === "assignAndLock" && scope !== "replica" && conflictCount() > 0 && !conflictDecision();
+
+  const confirmedFingerprintFor = (
+    scope: ProfileAssignmentScope,
+    mode: AssignmentMode,
+    decision: ConflictDecision | null
+  ): string | null => {
+    // Each reviewed policy carries its OWN backend-issued fingerprint; the
+    // no-conflict path uses the preview's direct fingerprint.
+    const reviewedFingerprint = decision
+      ? conflictProjection(decision)?.fingerprint ?? null
+      : null;
+    // #2051 - "This replica + lock" is confirmed by the replica-scope preview's
+    // own fingerprint; the legacy replica ordinary apply deliberately sends none
+    // (the backend still accepts a missing fingerprint for replica + ordinary).
+    const previewFingerprint = scopePreview()?.targetFingerprint ?? null;
+    if (scope === "replica") return mode === "assignAndLock" ? previewFingerprint : null;
+    return reviewedFingerprint ?? previewFingerprint;
+  };
+
+  const reportApplyErrors = (
+    errors: ProfileAssignmentError[],
+    scope: ProfileAssignmentScope,
+    agentId: string
+  ) => {
+    setApplyErrors(errors);
+    const firstError = errors[0];
+    const extra = errors.length - 1;
+    showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
+    setDangerArmed(false);
+    setConflictDecision(null);
+    if (scope !== "replica") setScopePreviews((prev) => ({ ...prev, [scope]: null }));
+    setBusy(false);
+    runScopePreview(scope, agentId, selectedProfile());
+  };
+
+  const resetAfterRejectedApply = (
+    scope: ProfileAssignmentScope,
+    mode: AssignmentMode,
+    target: string | null | undefined,
+    agentId: string
+  ) => {
+    // #2051 - a rejected replica + lock needs the same fresh review the bulk
+    // scopes get; the old fingerprint must never be replayed. Replica ordinary
+    // keeps today's behavior.
+    const needsFreshReview = scope !== "replica" || mode === "assignAndLock";
+    if (needsFreshReview && target && isWgReplica()) {
+      setDangerArmed(false);
+      setScopePreviews((prev) => ({ ...prev, [scope]: null }));
+      runScopePreview(scope, agentId, selectedProfile());
+    }
+  };
+
   const apply = async () => {
     const agent = selectedAgent();
     if (!agent || !applyEnabled()) return;
@@ -1178,12 +1232,7 @@ const AgentPickerModal: Component<{
     const mode = assignmentMode();
     // A bulk assign-and-lock that found protected replicas cannot proceed on a
     // guess: pick one of the two reviewed outcomes first.
-    if (
-      mode === "assignAndLock" &&
-      scope !== "replica" &&
-      conflictCount() > 0 &&
-      !conflictDecision()
-    ) {
+    if (needsConflictReview(scope, mode)) {
       openConflictReview();
       return;
     }
@@ -1195,21 +1244,7 @@ const AgentPickerModal: Component<{
     const effective = effectivePreview().effectiveProfile;
     const target = targetReplicaPath();
     const restart = selectionRestart(scope);
-    // Each reviewed policy carries its OWN backend-issued fingerprint; the
-    // no-conflict path uses the preview's direct fingerprint.
-    const reviewedFingerprint = decision
-      ? conflictProjection(decision)?.fingerprint ?? null
-      : null;
-    // #2051 - "This replica + lock" is confirmed by the replica-scope preview's
-    // own fingerprint; the legacy replica ordinary apply deliberately sends none
-    // (the backend still accepts a missing fingerprint for replica + ordinary).
-    const previewFingerprint = scopePreview()?.targetFingerprint ?? null;
-    const confirmedFingerprint =
-      scope === "replica"
-        ? mode === "assignAndLock"
-          ? previewFingerprint
-          : null
-        : reviewedFingerprint ?? previewFingerprint;
+    const confirmedFingerprint = confirmedFingerprintFor(scope, mode, decision);
     try {
       let updatedCount: number | undefined;
       let restartedCount: number | undefined;
@@ -1228,15 +1263,7 @@ const AgentPickerModal: Component<{
           ...(decision ? { conflictDecision: decision } : {}),
         });
         if (result.errors.length > 0) {
-          setApplyErrors(result.errors);
-          const firstError = result.errors[0];
-          const extra = result.errors.length - 1;
-          showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
-          setDangerArmed(false);
-          setConflictDecision(null);
-          if (scope !== "replica") setScopePreviews((prev) => ({ ...prev, [scope]: null }));
-          setBusy(false);
-          runScopePreview(scope, agent.id, selectedProfile());
+          reportApplyErrors(result.errors, scope, agent.id);
           return;
         }
         updatedCount = result.updatedCount;
@@ -1256,15 +1283,7 @@ const AgentPickerModal: Component<{
       setError(message);
       showToast(message);
       setConflictDecision(null);
-      // #2051 - a rejected replica + lock needs the same fresh review the bulk
-      // scopes get; the old fingerprint must never be replayed. Replica ordinary
-      // keeps today's behavior.
-      const needsFreshReview = scope !== "replica" || mode === "assignAndLock";
-      if (needsFreshReview && target && isWgReplica()) {
-        setDangerArmed(false);
-        setScopePreviews((prev) => ({ ...prev, [scope]: null }));
-        runScopePreview(scope, agent.id, selectedProfile());
-      }
+      resetAfterRejectedApply(scope, mode, target, agent.id);
     } finally {
       // The backend-owned mutation has settled. Releasing the gate here (instead
       // of only on the error paths) keeps "busy until the promise settles" true
