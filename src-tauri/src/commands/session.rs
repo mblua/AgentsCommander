@@ -4413,7 +4413,14 @@ pub(crate) fn matched_selection(
     let current = config
         .as_ref()
         .and_then(|value| value.get("tooling")?.get("currentCodingAgent")?.as_str())
+        // An empty or whitespace-only id names nothing: it is absent, always.
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
         .map(str::to_string);
+    // Only a stale `currentCodingAgent` on a session with no agent of its own
+    // may degrade to the saved shell; an explicit request never does.
+    let plain_shell_selection =
+        requested_agent_id.is_none() && stored_agent_id.is_none() && current.is_some();
     let Some(id) = requested_agent_id
         .map(str::to_string)
         .or(current)
@@ -4433,7 +4440,17 @@ pub(crate) fn matched_selection(
             original_letter: found.original_letter,
         },
         crate::config::agent_command::MatchOutcome::NoMatch { reference } => {
-            MatchedSelection::Unresolved { reference }
+            if plain_shell_selection {
+                // Nothing else to launch: the session already is a plain shell.
+                log::warn!(
+                    "[agent-match] ignoring unresolvable currentCodingAgent '{}' in '{}'; restarting the saved shell",
+                    reference,
+                    cwd
+                );
+                MatchedSelection::NoAgent
+            } else {
+                MatchedSelection::Unresolved { reference }
+            }
         }
     }
 }
@@ -15322,6 +15339,174 @@ mod tests {
             );
             h.close().await;
         }
+    }
+
+    fn selection_for(
+        tooling: serde_json::Value,
+        requested: Option<&str>,
+        stored: Option<&str>,
+    ) -> (tempfile::TempDir, super::MatchedSelection) {
+        let temp = tempfile::tempdir().unwrap();
+        merge_tooling(temp.path(), tooling);
+        let selection = super::matched_selection(
+            &route_settings(),
+            &temp.path().to_string_lossy(),
+            requested,
+            stored,
+            None,
+        );
+        (temp, selection)
+    }
+
+    async fn assert_saved_shell_restart(current: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        merge_tooling(
+            temp.path(),
+            serde_json::json!({"currentCodingAgent": current}),
+        );
+        let h = RouteHarness::new(route_settings());
+        let old = h.live(temp.path(), None, "test-shell", &["--keep"]).await;
+        let restarted = h.restart(old, None).await.expect("plain shell restart");
+        assert_eq!(restarted.shell, "test-shell");
+        assert_eq!(restarted.shell_args, vec!["--keep".to_string()]);
+        assert_eq!(restarted.agent_id, None);
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn an_empty_current_coding_agent_restarts_the_saved_shell() {
+        let (_t, selection) =
+            selection_for(serde_json::json!({"currentCodingAgent": ""}), None, None);
+        assert_eq!(selection, super::MatchedSelection::NoAgent);
+        assert_saved_shell_restart("").await;
+    }
+
+    #[tokio::test]
+    async fn a_whitespace_current_coding_agent_is_absent() {
+        let (_t, selection) =
+            selection_for(serde_json::json!({"currentCodingAgent": "   "}), None, None);
+        assert_eq!(selection, super::MatchedSelection::NoAgent);
+        // With a stored agent the blank id must not become a reference either.
+        let (_t, selection) = selection_for(
+            serde_json::json!({"currentCodingAgent": "   "}),
+            None,
+            Some("codex"),
+        );
+        assert!(
+            matches!(selection, super::MatchedSelection::Agent { ref agent_id, .. } if agent_id == "codex"),
+            "{selection:?}"
+        );
+        assert_saved_shell_restart("   ").await;
+    }
+
+    #[test]
+    fn an_empty_current_coding_agent_is_absent_even_with_a_stored_agent() {
+        let (_t, selection) = selection_for(
+            serde_json::json!({"currentCodingAgent": ""}),
+            None,
+            Some("codex"),
+        );
+        assert!(
+            matches!(selection, super::MatchedSelection::Agent { ref agent_id, tier: None, .. } if agent_id == "codex"),
+            "{selection:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plain_shell_ignores_an_unresolvable_current_coding_agent() {
+        let (_t, selection) = selection_for(
+            serde_json::json!({"currentCodingAgent": "ghost-agent"}),
+            None,
+            None,
+        );
+        assert_eq!(selection, super::MatchedSelection::NoAgent);
+        assert_saved_shell_restart("ghost-agent").await;
+    }
+
+    #[tokio::test]
+    async fn an_unresolvable_reference_still_fails_a_session_that_has_an_agent() {
+        let (_t, selection) = selection_for(
+            serde_json::json!({"currentCodingAgent": "ghost-agent"}),
+            None,
+            Some("codex"),
+        );
+        assert_eq!(
+            selection,
+            super::MatchedSelection::Unresolved {
+                reference: "ghost-agent".to_string()
+            }
+        );
+        let temp = tempfile::tempdir().unwrap();
+        merge_tooling(
+            temp.path(),
+            serde_json::json!({"currentCodingAgent": "ghost-agent"}),
+        );
+        let h = RouteHarness::new(route_settings());
+        let old = h.live(temp.path(), Some("codex"), "codex", &[]).await;
+        let err = h.restart(old, None).await.unwrap_err();
+        assert!(err.contains("unresolved_coding_agent_reference"), "{err}");
+        assert!(h.backend.has_session(old), "no teardown");
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn an_explicit_unresolvable_request_fails_without_a_stored_agent() {
+        let (_t, selection) = selection_for(serde_json::json!({}), Some("ghost-agent"), None);
+        assert_eq!(
+            selection,
+            super::MatchedSelection::Unresolved {
+                reference: "ghost-agent".to_string()
+            }
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let h = RouteHarness::new(route_settings());
+        let old = h.live(temp.path(), None, "test-shell", &[]).await;
+        let settings = h.app.state::<crate::config::settings::SettingsState>();
+        let err = super::restart_session_inner_with_intent(
+            h.app.handle(),
+            &h.manager,
+            &h.pty,
+            settings.inner(),
+            old,
+            Some("ghost-agent".to_string()),
+            None,
+            Some(true),
+            true,
+            crate::session::selection::TrustedRestartIntent::User,
+            None,
+            crate::config::sessions_persistence::default_creation_gate_enforcement(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("unresolved_coding_agent_reference"), "{err}");
+        assert!(h.backend.has_session(old), "no teardown");
+        h.close().await;
+    }
+
+    #[test]
+    fn drift_is_false_for_a_plain_shell_with_a_stale_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        merge_tooling(
+            temp.path(),
+            serde_json::json!({"currentCodingAgent": "ghost-agent"}),
+        );
+        let info = make_info(
+            &temp.path().to_string_lossy(),
+            None,
+            None,
+            Some("stale".to_string()),
+        );
+        assert!(!compute_profile_outdated(&route_settings(), &info));
+        assert_eq!(
+            super::matched_selection(
+                &route_settings(),
+                &temp.path().to_string_lossy(),
+                None,
+                None,
+                None
+            ),
+            super::MatchedSelection::NoAgent
+        );
     }
 
     // #2433 descriptor persistence

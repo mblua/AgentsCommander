@@ -3457,6 +3457,27 @@ mod tests {
     }
 
     #[test]
+    fn hash_match_targets_only_the_source_letters_digest() {
+        // The first agent carries the descriptor's OTHER digest (B=y); only the
+        // second carries the source letter's (A=x). Searching every digest
+        // would pick the first agent.
+        let settings = match_settings(
+            vec![agent("first", "codex"), agent("second", "codex")],
+            &[("first", "C", "--y", true), ("second", "D", "--x", true)],
+        );
+        let mut r = reference("foreign", Some("A"));
+        r.identity = identity(&[
+            ("A", &digest_of(&settings, "second", "D")),
+            ("B", &digest_of(&settings, "first", "C")),
+        ]);
+        let found = resolve(&settings, &r);
+        assert_eq!(found.agent_id, "second");
+        assert_eq!(found.profile_letter.as_deref(), Some("D"));
+        assert_eq!(found.original_letter.as_deref(), Some("A"));
+        assert_eq!(found.tier, Some(super::MatchTier::Hash));
+    }
+
+    #[test]
     fn hash_match_on_the_source_letter_reports_no_original_letter() {
         let settings = match_settings(
             vec![agent("codex", "codex")],
