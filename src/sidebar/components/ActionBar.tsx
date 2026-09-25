@@ -24,6 +24,46 @@ type ResourceBadgeState =
   | "enforcing"
   | "limit";
 
+type ResourceMonitorView = Pick<typeof resourceMonitorStore, "snapshot" | "error">;
+
+export function computeResourceBadgeState(
+  monitorEnabled: boolean | undefined,
+  monitor: ResourceMonitorView,
+): ResourceBadgeState {
+  if (monitorEnabled === false) return "disabled";
+
+  const snapshot = monitor.snapshot;
+  if (!snapshot || monitor.error) return "unknown";
+  if (snapshot.overallState === "critical" || snapshot.overallState === "enforcing") {
+    return snapshot.overallState;
+  }
+  if (snapshot.overallState === "warn") return "warn";
+  if (
+    snapshot.maxConcurrentAgentGroups > 0 &&
+    snapshot.activeAgentGroups >= snapshot.maxConcurrentAgentGroups
+  ) {
+    return "limit";
+  }
+  if (snapshot.overallState === "unknown" || snapshot.networkState === "unknown") {
+    return "unknown";
+  }
+  return "ok";
+}
+
+/** `on` stays a thunk so it is read (and tracked) only when not disabled. */
+export function triState(
+  disabled: boolean,
+  on: () => boolean,
+  labels: [disabled: string, on: string, off: string],
+): string {
+  if (disabled) return labels[0];
+  return on() ? labels[1] : labels[2];
+}
+
+export function activeClass(flag: boolean): string {
+  return flag ? "active" : "";
+}
+
 const ActionBar: Component = () => {
   const [showDropdown, setShowDropdown] = createSignal(false);
   const [showSettings, setShowSettings] = createSignal(false);
@@ -184,26 +224,8 @@ const ActionBar: Component = () => {
     }
   };
 
-  const resourceBadgeState = (): ResourceBadgeState => {
-    if (settingsStore.current?.resourceMonitorEnabled === false) return "disabled";
-
-    const snapshot = resourceMonitorStore.snapshot;
-    if (!snapshot || resourceMonitorStore.error) return "unknown";
-    if (snapshot.overallState === "critical" || snapshot.overallState === "enforcing") {
-      return snapshot.overallState;
-    }
-    if (snapshot.overallState === "warn") return "warn";
-    if (
-      snapshot.maxConcurrentAgentGroups > 0 &&
-      snapshot.activeAgentGroups >= snapshot.maxConcurrentAgentGroups
-    ) {
-      return "limit";
-    }
-    if (snapshot.overallState === "unknown" || snapshot.networkState === "unknown") {
-      return "unknown";
-    }
-    return "ok";
-  };
+  const resourceBadgeState = (): ResourceBadgeState =>
+    computeResourceBadgeState(settingsStore.current?.resourceMonitorEnabled, resourceMonitorStore);
 
   const resourceBadgeTitle = (): string => {
     const state = resourceBadgeState();
@@ -233,7 +255,7 @@ const ActionBar: Component = () => {
             aria-expanded={showDropdown()}
             data-ac-testid="actionBar.newOpen"
             data-ac-role="button"
-            data-ac-state={isPendingDialog() ? "disabled" : showDropdown() ? "open" : "closed"}
+            data-ac-state={triState(isPendingDialog(), () => showDropdown(), ["disabled", "open", "closed"])}
           >
             New / Open
             <svg class="action-bar-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none">
@@ -285,7 +307,7 @@ const ActionBar: Component = () => {
           </Show>
 
           <button
-            class={`toolbar-gear-btn home-toggle-btn ${homeStore.visible ? "active" : ""}`}
+            class={`toolbar-gear-btn home-toggle-btn ${activeClass(homeStore.visible)}`}
             onClick={() => homeStore.toggle()}
             title={homeStore.visible ? "Hide Home" : "Show Home"}
             aria-label={homeStore.visible ? "Hide Home" : "Show Home"}
@@ -297,19 +319,23 @@ const ActionBar: Component = () => {
             &#x1F3E0;
           </button>
           <button
-            class={`toolbar-gear-btn coord-sort-activity-btn ${sessionsStore.coordSortByActivity ? "active" : ""}`}
+            class={`toolbar-gear-btn coord-sort-activity-btn ${activeClass(sessionsStore.coordSortByActivity)}`}
             disabled={!sessionsStore.hydrated || sessionsStore.toggleInFlight}
             onClick={() => sessionsStore.toggleCoordSortByActivity()}
             title={sessionsStore.coordSortByActivity ? "Show recent orchestrators first" : "Show orchestrators in default order"}
             aria-pressed={sessionsStore.coordSortByActivity}
             data-ac-testid="actionBar.sortCoordinators"
             data-ac-role="button"
-            data-ac-state={!sessionsStore.hydrated || sessionsStore.toggleInFlight ? "disabled" : sessionsStore.coordSortByActivity ? "recent" : "default"}
+            data-ac-state={triState(
+              !sessionsStore.hydrated || sessionsStore.toggleInFlight,
+              () => sessionsStore.coordSortByActivity,
+              ["disabled", "recent", "default"],
+            )}
           >
             &#x1F525;
           </button>
           <button
-            class={`toolbar-gear-btn sounds-mute-btn ${isSoundsEnabled() ? "" : "active"}`}
+            class={`toolbar-gear-btn sounds-mute-btn ${activeClass(!isSoundsEnabled())}`}
             disabled={!settingsStore.current}
             onClick={handleToggleMute}
             title={isSoundsEnabled() ? "Mute all app sounds" : "Unmute app sounds"}
@@ -317,12 +343,12 @@ const ActionBar: Component = () => {
             aria-pressed={!isSoundsEnabled()}
             data-ac-testid="actionBar.sounds"
             data-ac-role="button"
-            data-ac-state={!settingsStore.current ? "disabled" : isSoundsEnabled() ? "audible" : "muted"}
+            data-ac-state={triState(!settingsStore.current, () => isSoundsEnabled(), ["disabled", "audible", "muted"])}
           >
             {isSoundsEnabled() ? "🔊" : "🔇"}
           </button>
           <button
-            class={`toolbar-gear-btn show-categories-btn ${sessionsStore.showCategories ? "active" : ""}`}
+            class={`toolbar-gear-btn show-categories-btn ${activeClass(sessionsStore.showCategories)}`}
             onClick={() => sessionsStore.toggleShowCategories()}
             title={sessionsStore.showCategories ? "Hide category sections" : "Show category sections"}
             aria-pressed={sessionsStore.showCategories}
@@ -333,7 +359,7 @@ const ActionBar: Component = () => {
             &#x1F441;
           </button>
           <button
-            class={`toolbar-gear-btn show-categories-btn ${sessionsStore.alwaysShowSelectedWorkgroup ? "active" : ""}`}
+            class={`toolbar-gear-btn show-categories-btn ${activeClass(sessionsStore.alwaysShowSelectedWorkgroup)}`}
             onClick={() => sessionsStore.toggleAlwaysShowSelectedWorkgroup()}
             title={SELECTED_WORKGROUP_VISIBILITY_LABEL}
             aria-label={SELECTED_WORKGROUP_VISIBILITY_LABEL}
@@ -345,7 +371,7 @@ const ActionBar: Component = () => {
             &#x1F4CC;
           </button>
           <button
-            class={`toolbar-gear-btn resource-monitor-btn state-${resourceBadgeState()} ${centralViewStore.isResourceMonitor ? "active" : ""}`}
+            class={`toolbar-gear-btn resource-monitor-btn state-${resourceBadgeState()} ${activeClass(centralViewStore.isResourceMonitor)}`}
             onClick={handleToggleResourceMonitor}
             title={resourceBadgeTitle()}
             aria-label={resourceBadgeTitle()}
@@ -364,7 +390,7 @@ const ActionBar: Component = () => {
             title="Toggle theme"
             data-ac-testid="actionBar.theme"
             data-ac-role="button"
-            data-ac-state={!settingsStore.current ? "disabled" : isLight() ? "light" : "dark"}
+            data-ac-state={triState(!settingsStore.current, () => isLight(), ["disabled", "light", "dark"])}
           >
             {isLight() ? "\u2600\uFE0F" : "\uD83C\uDF19"}
           </button>
