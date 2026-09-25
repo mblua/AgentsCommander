@@ -13,6 +13,7 @@ import {
   renderWithFakeTransport,
   resetUiStoresForTests,
   session,
+  settingsSnapshot,
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { sessionsStore } from "../stores/sessions";
@@ -87,6 +88,38 @@ describe("session workflow automation hooks", () => {
           requestedProfile: null,
           skipAutoResume: null,
         })
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("issue_2523_coding_agent_menu_item_is_addressable", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", settingsSnapshot());
+
+    const rendered = renderWithFakeTransport(
+      () => (
+        <SessionItem
+          session={session({ id: "session-1", name: "General" })}
+          isActive={true}
+        />
+      ),
+      fake
+    );
+    try {
+      const row = rendered.root.querySelector('[data-ac-testid="session.session-1"]');
+      contextMenu(row!);
+      const selector = '[data-ac-testid="session.session-1.coding-agent"]';
+      await waitFor(() => {
+        const item = document.querySelector(selector);
+        expect(item).not.toBeNull();
+        expect(item?.getAttribute("data-ac-role")).toBe("menuitem");
+      });
+
+      click(document.querySelector(selector)!);
+      await waitFor(() =>
+        expect(document.querySelector('[data-ac-testid="agentPicker.modal"]')).not.toBeNull()
       );
     } finally {
       rendered.cleanup();

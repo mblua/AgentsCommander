@@ -1,4 +1,6 @@
+import { entityDirNumber } from "../shared/entity-prefix";
 import type { LoopEventPayload } from "../shared/types";
+import { formatLoopNextDue } from "./components/loop-modal-helpers";
 
 export type LoopToast = {
   message: string;
@@ -32,11 +34,14 @@ export function loopToastFromEvent(data: LoopEventPayload): LoopToast | null {
         message: data.message ?? `Loop "${name}" is pending until the orchestrator is idle`,
         className: "toast-info",
       };
-    case "delivered":
-      return {
-        message: data.message ?? `Loop "${name}" delivered`,
-        className: "toast-info",
-      };
+    case "delivered": {
+      const room = data.summary ? entityDirNumber(data.summary.workgroup) : null;
+      const next = formatLoopNextDue(data.summary?.nextDueAt);
+      let message = `Loop "${name}" delivered`;
+      if (room !== null) message += ` to room ${room}`;
+      if (next) message += ` · next ${next}`;
+      return { message, className: "toast-info" };
+    }
     case "coalesced":
     case "coalescedPending":
       return {
