@@ -31,7 +31,7 @@ const replicaChip = (root: Element, ctx: "quick" | "workgroups", wg: string, rep
 
 function oneChip(ctx: "quick" | "workgroups", replica: string): HTMLElement {
   const all = replicaChip(document.body, ctx, wgName, replica);
-  expect(all.length).toBe(1);
+  expect(all).toHaveLength(1);
   return all[0];
 }
 
@@ -133,9 +133,9 @@ describe("ProjectPanel replica weekly-quota chip (#2482)", () => {
     setupTransport(fake);
     rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
     await waitFor(() => {
-      expect(replicaChip(document.body, "quick", wgName, coordName).length).toBe(1);
-      expect(replicaChip(document.body, "workgroups", wgName, workerName).length).toBe(1);
-      expect(replicaChip(document.body, "workgroups", wgName, idleName).length).toBe(1);
+      expect(replicaChip(document.body, "quick", wgName, coordName)).toHaveLength(1);
+      expect(replicaChip(document.body, "workgroups", wgName, workerName)).toHaveLength(1);
+      expect(replicaChip(document.body, "workgroups", wgName, idleName)).toHaveLength(1);
     });
     await waitFor(() => expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0));
     return fake;

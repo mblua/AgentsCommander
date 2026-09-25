@@ -524,66 +524,64 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
 
   function oneReplicaChip(root: Element): HTMLElement {
     const all = replicaChip(root);
-    expect(all.length).toBe(1);
+    expect(all).toHaveLength(1);
     return all[0];
   }
 
-  it("one_backend_event_per_session_fills_BOTH_the_replica_chip_and_the_origin_chip", async () => {
+  function expectFilled(el: HTMLElement): void {
+    expect(el.className).toContain("quota-fill");
+    expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
+  }
+
+  // Mounts the real SidebarApp with the replica and the origin session, runs the
+  // case, and always cleans up. `snapshot` answers get_session_agent_quota.
+  async function withReplicaAndOrigin(
+    snapshot: ((args: Record<string, unknown>) => number | null) | null,
+    body: (fake: FakeTransport, root: Element) => Promise<void>,
+  ): Promise<void> {
     const fake = new FakeTransport();
     setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
-
+    if (snapshot) fake.onInvoke("get_session_agent_quota", snapshot);
     const rendered = await mountedWithOrigin(fake);
     try {
       await waitFor(() => expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0));
-      fake.emitFromBackend("session_agent_quota", { sessionId, weeklyUsedPercent: 28 });
-      fake.emitFromBackend("session_agent_quota", { sessionId: originSessionId, weeklyUsedPercent: 28 });
-      await waitFor(() => {
-        for (const el of [oneReplicaChip(rendered.root), oneChip(rendered.root)]) {
-          expect(el.className).toContain("quota-fill");
-          expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
-        }
-      });
+      await body(fake, rendered.root);
     } finally {
       rendered.cleanup();
     }
-  });
+  }
 
-  it("a_reloaded_sidebar_hydrates_a_replica_already_sitting_at_a_reading", async () => {
-    const fake = new FakeTransport();
-    setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
-    fake.onInvoke("get_session_agent_quota", (args) => (args.sessionId === sessionId ? 28 : null));
+  const replicaReading = (fake: FakeTransport, id: string, weeklyUsedPercent: number | null) =>
+    fake.emitFromBackend("session_agent_quota", { sessionId: id, weeklyUsedPercent });
 
-    const rendered = await mountedWithOrigin(fake);
-    try {
+  it("one_backend_event_per_session_fills_BOTH_the_replica_chip_and_the_origin_chip", () =>
+    withReplicaAndOrigin(null, async (fake, root) => {
+      replicaReading(fake, sessionId, 28);
+      replicaReading(fake, originSessionId, 28);
       await waitFor(() => {
-        const el = oneReplicaChip(rendered.root);
-        expect(el.className).toContain("quota-fill");
-        expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("72%");
+        expectFilled(oneReplicaChip(root));
+        expectFilled(oneChip(root));
       });
-      expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0);
-    } finally {
-      rendered.cleanup();
-    }
-  });
+    }));
 
-  it("a_null_event_clears_the_replica_chip", async () => {
-    const fake = new FakeTransport();
-    setupTransport(fake, { agents: [agentConfig()], sessions: [agentSession(), originSession()] });
+  it("a_reloaded_sidebar_hydrates_a_replica_already_sitting_at_a_reading", () =>
+    withReplicaAndOrigin(
+      (args) => (args.sessionId === sessionId ? 28 : null),
+      async (_fake, root) => {
+        // No event is emitted in this case: only the snapshot can paint the chip.
+        await waitFor(() => expectFilled(oneReplicaChip(root)));
+      },
+    ));
 
-    const rendered = await mountedWithOrigin(fake);
-    try {
-      await waitFor(() => expect(fake.callsFor("get_session_agent_quota").length).toBeGreaterThan(0));
-      fake.emitFromBackend("session_agent_quota", { sessionId, weeklyUsedPercent: 28 });
-      await waitFor(() => expect(oneReplicaChip(rendered.root).className).toContain("quota-fill"));
-
-      fake.emitFromBackend("session_agent_quota", { sessionId, weeklyUsedPercent: null });
+  it("a_null_event_clears_the_replica_chip", () =>
+    withReplicaAndOrigin(null, async (fake, root) => {
+      replicaReading(fake, sessionId, 28);
+      await waitFor(() => expectFilled(oneReplicaChip(root)));
+      replicaReading(fake, sessionId, null);
       await waitFor(() => {
-        const el = oneReplicaChip(rendered.root);
+        const el = oneReplicaChip(root);
         expect(el.className).not.toContain("quota-fill");
         expect(el.getAttribute("style")).toBeNull();
       });
-    } finally {
-      rendered.cleanup();
-    }
-  });
+    }));
 });
