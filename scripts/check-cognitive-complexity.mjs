@@ -64,7 +64,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKIP_DIRS = new Set(['target', 'node_modules', 'dist', '.git']);
 const PLATFORMS = ['windows', 'linux', 'macos'];
 const ROOT_CARGO_CONFIG = '.cargo/config.toml';
-const ROOT_CARGO_CONFIG_SHA256 = '1a6beaf1efa85bf82baeda067d35dbae04ceab94de10e1416ce3e70956055fb5';
+const ROOT_CARGO_CONFIG_SHA256 = 'a64c48300486b9bd06dd77b2ab72ebb53b18dc6a475be4546a26c8d9bb67963e';
 const PINNED_THRESHOLD_LINE = 'cognitive-complexity-threshold = 25';
 const CARGO_CONFIG_RE = /(^|\/)\.cargo\/config(\.toml)?$/;
 const S1_RE = /cognitive_complexity|cognitive-complexity/g;
@@ -2514,7 +2514,7 @@ const PINNED_CLIPPY_TOML = [
 ].join('\n');
 
 // The exact bytes of the allowlisted root .cargo/config.toml.
-const ALLOWED_CARGO_CONFIG = '[build]\njobs = 12\n';
+const ALLOWED_CARGO_CONFIG = '[build]\njobs = 4\n';
 
 // The eight real target_os = "macos" forms of
 // crates/session-bridge/src/bin/agentscommander-api-helper.rs, copied verbatim.
@@ -2799,7 +2799,7 @@ mod m {
     ['case 50: the allowlisted Cargo config passes, every other byte or path fails S4', () => {
       expectNoHits(runFixture([ROOT_CARGO_CONFIG], { [ROOT_CARGO_CONFIG]: ALLOWED_CARGO_CONFIG }));
       const variants = [
-        ['one-byte change', ROOT_CARGO_CONFIG, '[build]\njobs = 13\n'],
+        ['one-byte change', ROOT_CARGO_CONFIG, '[build]\njobs = 5\n'],
         ['legacy .cargo/config', '.cargo/config', ALLOWED_CARGO_CONFIG],
         ['nested .cargo/config.toml', 'crates/x/.cargo/config.toml', ALLOWED_CARGO_CONFIG],
         ['quoted rustflags', ROOT_CARGO_CONFIG, '[build]\nrustflags = "--cap-lints allow"\n'],
