@@ -18,6 +18,7 @@ import {
   type GithubRepoRef,
 } from "../../shared/github-url";
 import { stripFrontmatter } from "../../shared/markdown";
+import { quotaChipAttrs } from "./agent-quota";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { focusOnMount } from "../../shared/focus-on-mount";
 import BlockedMenuIcon from "./BlockedMenuIcon";
@@ -2752,6 +2753,12 @@ const ProjectPanel: Component = () => {
             const s = session();
             return s ? sessionsStore.contextPercentBySessionId[s.id] : undefined;
           };
+          // #2482 - same sidecar, same builder as the origin chip (SessionItem, p6). The
+          // reading is keyed by session id, so a replica with no live session has none.
+          const quotaUsed = () => {
+            const s = session();
+            return s ? sessionsStore.weeklyQuotaUsedBySessionId[s.id] : undefined;
+          };
           const profileBadgeTitle = () => {
             const s = session();
             const cfg = settingsStore.current?.codingAgentProfiles;
@@ -2905,7 +2912,7 @@ const ProjectPanel: Component = () => {
                     <span class="ac-discovery-badge coord">orchestrator</span>
                   </Show>
                   <Show when={liveAgentLabel()}>
-                    <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
+                    <span {...quotaChipAttrs(liveAgentLabel() as string, quotaUsed())}>{liveAgentLabel()}</span>
                   </Show>
                   <Show when={profileBadge()}>
                     {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
