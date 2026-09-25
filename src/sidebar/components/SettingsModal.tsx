@@ -315,8 +315,6 @@ const TYPING_HOLD_SECONDS_DEFAULT = 30;
 const TYPING_HOLD_SECONDS_MIN = 1;
 const TYPING_HOLD_SECONDS_MAX = 3600;
 
-/** Whole seconds in range, or null. A blank or a fraction is invalid and is
- *  NEVER coerced: the input keeps the user's text and Save stays blocked. */
 // #2597 — grow the params textarea to fit its content. scrollHeight excludes
 // the border (box-sizing: border-box), so add it back; 28px = one-line floor.
 function fitProfileCommand(el: HTMLTextAreaElement): void {
@@ -338,6 +336,8 @@ function sanitizeProfileCommandInput(el: HTMLTextAreaElement): string {
   return v;
 }
 
+/** Whole seconds in range, or null. A blank or a fraction is invalid and is
+ *  NEVER coerced: the input keeps the user's text and Save stays blocked. */
 function parseTypingHoldSeconds(raw: string): number | null {
   const text = raw.trim();
   if (!/^\d+$/.test(text)) return null;
