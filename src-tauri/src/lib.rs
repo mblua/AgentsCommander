@@ -2787,7 +2787,23 @@ impl QuitGateClock for TokioQuitClock {
 /// Side-effect seam: event emission and process exit. Injected in tests.
 pub trait QuitGateHost: Send + Sync + 'static {
     fn emit_to(&self, label: &str, event: &str, payload: serde_json::Value) -> Result<(), String>;
+    /// Destroys every detached terminal window. Returns the labels destroyed.
+    /// Called immediately before `exit`, never on a non-Exiting outcome.
+    fn close_detached_terminals(&self) -> Vec<String>;
     fn exit(&self, code: i32);
+}
+
+/// #2563 - closes detached terminal windows at the moment quit is decided,
+/// before the blocking `RunEvent::Exit` work, then exits.
+fn exit_closing_detached(host: &dyn QuitGateHost) {
+    let closed = host.close_detached_terminals();
+    if !closed.is_empty() {
+        log::info!(
+            "[shutdown] destroyed {} detached terminal window(s)",
+            closed.len()
+        );
+    }
+    host.exit(0);
 }
 
 /// Production host: targeted Tauri emits and `AppHandle::exit`.
@@ -2804,6 +2820,22 @@ impl TauriQuitHost {
 impl QuitGateHost for TauriQuitHost {
     fn emit_to(&self, label: &str, event: &str, payload: serde_json::Value) -> Result<(), String> {
         tauri::Emitter::emit_to(&self.app, label, event, payload).map_err(|e| e.to_string())
+    }
+
+    fn close_detached_terminals(&self) -> Vec<String> {
+        // Never touches `was_detached`: restore reads the session flag, not
+        // the live window set, so detached sessions restore detached.
+        let mut closed = Vec::new();
+        for (label, window) in self.app.webview_windows() {
+            if !label.starts_with("terminal-") {
+                continue;
+            }
+            if let Err(e) = window.destroy() {
+                log::warn!("[shutdown] detached window destroy failed: {label}: {e}");
+            }
+            closed.push(label);
+        }
+        closed
     }
 
     fn exit(&self, code: i32) {
@@ -3271,7 +3303,7 @@ pub async fn quit_gate_run(
         }
         gate.notify.notify_waiters();
         if gate.try_claim_exit(supplied) {
-            host.exit(0);
+            exit_closing_detached(host.as_ref());
         }
         return Ok(QuitOutcome::exiting(supplied));
     }
@@ -3396,7 +3428,7 @@ pub async fn quit_gate_run(
 
     guard.armed = false;
     if outcome.outcome == QuitOutcomeKind::Exiting && gate.try_claim_exit(new_epoch) {
-        host.exit(0);
+        exit_closing_detached(host.as_ref());
     }
     Ok(outcome)
 }
@@ -5041,6 +5073,27 @@ pub fn run(
                             if let Err(e) = rm.destroy() {
                                 log::warn!("[shutdown] RM window destroy failed: {e}");
                             }
+                        }
+                        // #2563 - same orphan class for detached terminals when
+                        // main is destroyed without a quit round (OS logoff,
+                        // programmatic destroy). Leaves `was_detached` intact.
+                        let mut destroyed = 0usize;
+                        for (label, window) in app_handle.webview_windows() {
+                            if !label.starts_with("terminal-") {
+                                continue;
+                            }
+                            if let Err(e) = window.destroy() {
+                                log::warn!(
+                                    "[shutdown] detached window destroy failed: {label}: {e}"
+                                );
+                            }
+                            destroyed += 1;
+                        }
+                        if destroyed > 0 {
+                            log::info!(
+                                "[shutdown] main destroyed: destroyed {} detached terminal window(s)",
+                                destroyed
+                            );
                         }
                     }
                     // Detached-window destroyed (by any mechanism — X, Alt+F4, programmatic).
@@ -10451,6 +10504,8 @@ mod quit_gate_tests {
     struct TestHost {
         events: Mutex<Vec<(String, String, serde_json::Value)>>,
         exits: AtomicUsize,
+        /// Ordered side effects: `"close_detached"` and `"exit"`.
+        ops: Mutex<Vec<String>>,
         fail_event: Mutex<Option<String>>,
         gate: Mutex<Option<Weak<QuitGate>>>,
         /// Registration attempted from inside the `app_quit_started` emit, to
@@ -10485,12 +10540,35 @@ mod quit_gate_tests {
             Ok(())
         }
 
+        fn close_detached_terminals(&self) -> Vec<String> {
+            self.ops.lock().unwrap().push("close_detached".to_string());
+            Vec::new()
+        }
+
         fn exit(&self, _code: i32) {
+            self.ops.lock().unwrap().push("exit".to_string());
             self.exits.fetch_add(1, Ordering::SeqCst);
         }
     }
 
     impl TestHost {
+        fn ops(&self) -> Vec<String> {
+            self.ops.lock().unwrap().clone()
+        }
+
+        fn ops_named(&self, op: &str) -> usize {
+            self.ops().iter().filter(|o| *o == op).count()
+        }
+
+        /// Both ops present, close strictly before exit.
+        fn assert_closed_before_exit(&self) {
+            let ops = self.ops();
+            let close = ops.iter().position(|o| o == "close_detached");
+            let exit = ops.iter().position(|o| o == "exit");
+            assert!(close.is_some() && exit.is_some(), "ops: {ops:?}");
+            assert!(close < exit, "close_detached must precede exit: {ops:?}");
+        }
+
         fn exits(&self) -> usize {
             self.exits.load(Ordering::SeqCst)
         }
@@ -11055,6 +11133,63 @@ mod quit_gate_tests {
         apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 2, true));
         assert_eq!(second.await.unwrap().unwrap(), QuitOutcome::exiting(2));
         assert_eq!(host.exits(), 1);
+    }
+
+    // --- #2563 detached windows close before exit ----------------------------
+
+    #[tokio::test]
+    async fn exiting_round_closes_detached_before_exit() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, true));
+
+        assert_eq!(quit.await.unwrap().unwrap(), QuitOutcome::exiting(1));
+        host.assert_closed_before_exit();
+        assert_eq!(host.ops_named("close_detached"), 1);
+        assert_eq!(host.ops_named("exit"), 1);
+    }
+
+    #[tokio::test]
+    async fn force_round_closes_detached_before_exit_once() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+
+        assert_eq!(
+            force_quit(&gate, &dyn_host, Some(1)).await,
+            QuitOutcome::exiting(1)
+        );
+        assert_eq!(quit.await.unwrap().unwrap(), QuitOutcome::exiting(1));
+        host.assert_closed_before_exit();
+        assert_eq!(host.ops(), vec!["close_detached", "exit"]);
+    }
+
+    #[tokio::test]
+    async fn refused_round_never_closes_detached() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        gate.register("spec-board");
+        let quit = spawn_quit(&gate, &dyn_host, "attempt-1");
+        settle().await;
+        apply_quit_gate_effects(host.as_ref(), &gate.resolve("spec-board", 1, false));
+
+        let outcome = quit.await.unwrap().unwrap();
+        assert_eq!(outcome.reason, Some(QuitAbortReason::Refused));
+        assert_eq!(host.ops_named("close_detached"), 0);
+        assert_eq!(host.ops_named("exit"), 0);
+    }
+
+    #[tokio::test]
+    async fn stale_force_never_closes_detached() {
+        let (gate, host, dyn_host, _clock) = new_gate();
+        assert_eq!(
+            force_quit(&gate, &dyn_host, Some(1)).await,
+            QuitOutcome::stale(1)
+        );
+        assert_eq!(host.ops_named("close_detached"), 0);
+        assert_eq!(host.ops_named("exit"), 0);
     }
 
     // --- force ---------------------------------------------------------------
