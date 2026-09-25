@@ -48,6 +48,7 @@ import {
   reorderIndex,
   reorderedIds,
 } from "./settings/agentReorderDnd";
+import { GripIcon } from "./settings/GripIcon";
 import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
 import AgentHelpTipsModal from "./AgentHelpTipsModal";
@@ -169,18 +170,6 @@ const JUST_DROPPED_MS = 420;
 /** #2544 - ordered comparison: same length and the same id at every index. */
 const sameIdSequence = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((id, index) => id === b[index]);
-
-/** #2544 - six-dot grip for the Settings agent reorder handle. */
-const GripIcon: Component = () => (
-  <svg viewBox="0 0 8 14" fill="currentColor" aria-hidden="true">
-    <circle cx="2" cy="2" r="1.2" />
-    <circle cx="6" cy="2" r="1.2" />
-    <circle cx="2" cy="7" r="1.2" />
-    <circle cx="6" cy="7" r="1.2" />
-    <circle cx="2" cy="12" r="1.2" />
-    <circle cx="6" cy="12" r="1.2" />
-  </svg>
-);
 
 /** #2544 - one in-flight pointer drag. Not render state: only `dragSourceId`
  *  and `dropIndicatorTop` are signals the view reads. */

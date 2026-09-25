@@ -2569,7 +2569,8 @@ html.light-theme .settings-api-client-warning {
 }
 
 /* #2544 - grip handle, drag ghost, drop line and the reorder feedback states. */
-.settings-agent-drag-handle {
+.settings-agent-drag-handle,
+.agent-profile-provider-drag-handle {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2584,17 +2585,20 @@ html.light-theme .settings-api-client-warning {
   transition: color var(--transition-fast);
 }
 
-.settings-agent-drag-handle:hover {
+.settings-agent-drag-handle:hover,
+.agent-profile-provider-drag-handle:hover {
   color: var(--sidebar-accent);
 }
 
-.settings-agent-drag-handle:disabled {
+.settings-agent-drag-handle:disabled,
+.agent-profile-provider-drag-handle:disabled {
   cursor: default;
   opacity: 0.35;
   color: var(--sidebar-fg-dim);
 }
 
-.settings-agent-drag-handle svg {
+.settings-agent-drag-handle svg,
+.agent-profile-provider-drag-handle svg {
   width: 8px;
   height: 14px;
   display: block;
@@ -2660,6 +2664,7 @@ body.is-dragging * {
 
 @media (prefers-reduced-motion: reduce) {
   .settings-agent-drag-handle,
+  .agent-profile-provider-drag-handle,
   .settings-agent-row.is-kbd-grabbed {
     transition: none;
   }
@@ -4807,6 +4812,27 @@ html.light-theme .settings-hint-error {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   border-left-color: var(--agent-color, var(--sidebar-border));
+}
+
+/* #2577 - grip beside each provider card; the list anchors the drop line. */
+.agent-profile-provider-list {
+  position: relative;
+}
+
+.agent-profile-provider-card-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-profile-provider-card-wrap > .agent-profile-provider-card {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.agent-profile-provider-card-wrap.is-drag-source {
+  opacity: 0.35;
 }
 
 .agent-profile-provider-card.active,
