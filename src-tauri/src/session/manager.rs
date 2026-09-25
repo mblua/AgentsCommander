@@ -2604,6 +2604,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_session_starts_without_match_fields_and_pending_setter_carries_them() {
+        let mgr = SessionManager::new();
+        let (session, binding) = mgr
+            .create_transaction_pending_session(
+                "claude-mb".to_string(),
+                Vec::new(),
+                "C:\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("pending session should be created");
+        assert!(session.match_tier.is_none());
+        assert!(session.original_profile_letter.is_none());
+
+        mgr.set_pending_profile_metadata(
+            binding,
+            Some("B".to_string()),
+            Some("A".to_string()),
+            Vec::new(),
+            false,
+            Some("commandAndLetter".to_string()),
+            Some("B".to_string()),
+            None,
+            None,
+        )
+        .await
+        .expect("pending metadata should be set");
+
+        let stored = mgr
+            .get_pending_session(binding)
+            .await
+            .expect("pending session should still exist");
+        assert_eq!(stored.match_tier.as_deref(), Some("commandAndLetter"));
+        assert_eq!(stored.original_profile_letter.as_deref(), Some("B"));
+    }
+
+    #[tokio::test]
     async fn set_effective_shell_args_writes_field() {
         let mgr = SessionManager::new();
         let session = mgr
