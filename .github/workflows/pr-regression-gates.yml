@@ -64,6 +64,9 @@ jobs:
         # installed.
         run: npm ci --ignore-scripts
 
+      - name: "Check class coverage (#2615, guard from #2410)"
+        run: npx vitest run src/shared/styles/class-coverage.test.ts
+
       - name: Check ignored and placeholder test debt
         run: npm run test:debt
       - name: "Check #480 guard controls"
