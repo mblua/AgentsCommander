@@ -84,35 +84,35 @@ function quotedStringStop(source, index, quote) {
   return source.length;
 }
 
+function rustCharEscapeStop(source, index) {
+  let i = index;
+  if (i >= source.length || source[i] === '\n' || source[i] === '\r') return -1;
+  if (source[i] === 'x') {
+    i += 1;
+    for (let count = 0; count < 2; count += 1) {
+      if (!/[0-9A-Fa-f]/.test(source[i] ?? '')) return -1;
+      i += 1;
+    }
+    return i;
+  }
+  if (source[i] === 'u' && source[i + 1] === '{') {
+    i += 2;
+    while (i < source.length && source[i] !== '}') {
+      if (source[i] === '\n' || source[i] === '\r') return -1;
+      i += 1;
+    }
+    if (source[i] !== '}') return -1;
+    return i + 1;
+  }
+  return i + 1;
+}
+
 function rustCharLiteralStop(source, index) {
   if (source[index] !== '\'') return -1;
   let i = index + 1;
   if (i >= source.length || source[i] === '\n' || source[i] === '\r') return -1;
-
-  if (source[i] === '\\') {
-    i += 1;
-    if (i >= source.length || source[i] === '\n' || source[i] === '\r') return -1;
-    if (source[i] === 'x') {
-      i += 1;
-      for (let count = 0; count < 2; count += 1) {
-        if (!/[0-9A-Fa-f]/.test(source[i] ?? '')) return -1;
-        i += 1;
-      }
-    } else if (source[i] === 'u' && source[i + 1] === '{') {
-      i += 2;
-      while (i < source.length && source[i] !== '}') {
-        if (source[i] === '\n' || source[i] === '\r') return -1;
-        i += 1;
-      }
-      if (source[i] !== '}') return -1;
-      i += 1;
-    } else {
-      i += 1;
-    }
-  } else {
-    i += 1;
-  }
-
+  i = source[i] === '\\' ? rustCharEscapeStop(source, i + 1) : i + 1;
+  if (i === -1) return -1;
   return source[i] === '\'' ? i + 1 : -1;
 }
 
@@ -121,66 +121,53 @@ function appendLiteral(out, source, start, stop, maskStrings) {
   return out + (maskStrings ? blankPreserveNewlines(slice) : slice);
 }
 
+function literalStopAt(source, i, singleQuote) {
+  const rawStop = rustRawStringStop(source, i);
+  if (rawStop !== -1) return rawStop;
+  const isByteLiteral = isTokenBoundary(source, i) && source[i] === 'b';
+  if (isByteLiteral && source[i + 1] === '"') return quotedStringStop(source, i + 1, '"');
+  if (isByteLiteral && source[i + 1] === '\'') {
+    const byteStop = rustCharLiteralStop(source, i + 1);
+    if (byteStop !== -1) return byteStop;
+  }
+  const ch = source[i];
+  if (ch === '"' || ch === '`' || (singleQuote && ch === '\'')) return quotedStringStop(source, i, ch);
+  if (!singleQuote && ch === '\'') return rustCharLiteralStop(source, i);
+  return -1;
+}
+
+function commentStopAt(source, i) {
+  if (source.startsWith('//', i)) {
+    const end = source.indexOf('\n', i);
+    return end === -1 ? { stop: source.length, keepNewline: false } : { stop: end, keepNewline: true };
+  }
+  if (source.startsWith('/*', i)) {
+    const end = source.indexOf('*/', i + 2);
+    return { stop: end === -1 ? source.length : end + 2, keepNewline: false };
+  }
+  return null;
+}
+
 function maskSource(source, options = {}) {
   const maskStrings = options.maskStrings ?? false;
   const singleQuote = options.singleQuote ?? true;
   let out = '';
   for (let i = 0; i < source.length;) {
-    const rawStop = rustRawStringStop(source, i);
-    if (rawStop !== -1) {
-      out = appendLiteral(out, source, i, rawStop, maskStrings);
-      i = rawStop;
+    const literalStop = literalStopAt(source, i, singleQuote);
+    if (literalStop !== -1) {
+      out = appendLiteral(out, source, i, literalStop, maskStrings);
+      i = literalStop;
       continue;
     }
-
-    if (isTokenBoundary(source, i) && source[i] === 'b' && source[i + 1] === '"') {
-      const stop = quotedStringStop(source, i + 1, '"');
-      out = appendLiteral(out, source, i, stop, maskStrings);
-      i = stop;
-      continue;
-    }
-
-    if (isTokenBoundary(source, i) && source[i] === 'b' && source[i + 1] === '\'') {
-      const stop = rustCharLiteralStop(source, i + 1);
-      if (stop !== -1) {
-        out = appendLiteral(out, source, i, stop, maskStrings);
-        i = stop;
-        continue;
+    const comment = commentStopAt(source, i);
+    if (comment) {
+      out += blankPreserveNewlines(source.slice(i, comment.stop));
+      if (comment.keepNewline) {
+        out += '\n';
+        i = comment.stop + 1;
+      } else {
+        i = comment.stop;
       }
-    }
-
-    const ch = source[i];
-    if (ch === '"' || ch === '`' || (singleQuote && ch === '\'')) {
-      const stop = quotedStringStop(source, i, ch);
-      out = appendLiteral(out, source, i, stop, maskStrings);
-      i = stop;
-      continue;
-    }
-
-    if (!singleQuote && ch === '\'') {
-      const stop = rustCharLiteralStop(source, i);
-      if (stop !== -1) {
-        out = appendLiteral(out, source, i, stop, maskStrings);
-        i = stop;
-        continue;
-      }
-    }
-
-    if (source.startsWith('//', i)) {
-      const end = source.indexOf('\n', i);
-      if (end === -1) {
-        out += blankPreserveNewlines(source.slice(i));
-        break;
-      }
-      out += blankPreserveNewlines(source.slice(i, end)) + '\n';
-      i = end + 1;
-      continue;
-    }
-    if (source.startsWith('/*', i)) {
-      const end = source.indexOf('*/', i + 2);
-      const stop = end === -1 ? source.length : end + 2;
-      out += blankPreserveNewlines(source.slice(i, stop));
-      i = stop;
       continue;
     }
     out += source[i];

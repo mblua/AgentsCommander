@@ -913,40 +913,50 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return running;
   };
 
+  const saveDraftBeforeApiServerStart = async (enabled: boolean): Promise<boolean> => {
+    if (enabled && settings.data && apiServerEndpointChanged(settings.data, modalSeed())) {
+      const validationError = currentValidationError();
+      if (validationError) {
+        setSaveError(validationError);
+        return false;
+      }
+      await saveCurrentSettingsDraft();
+    }
+    return true;
+  };
+
+  const apiServerToggleMismatch = (enabled: boolean, running: boolean): string => {
+    if (enabled && !running) return "API server did not report running after start.";
+    if (!enabled && running) return "API server is still running after stop.";
+    return "";
+  };
+
+  const apiServerToggleFailure = (enabled: boolean, err: unknown): string => {
+    const action = enabled ? "start" : "stop";
+    return `API server ${action} failed: ${
+      err instanceof Error ? err.message : String(err)
+    }`;
+  };
+
   const handleApiServerToggle = async (enabled: boolean) => {
     if (apiServerBusy()) return;
     setSaveError("");
     setApiServerBusy(true);
     try {
-      if (enabled && settings.data && apiServerEndpointChanged(settings.data, modalSeed())) {
-        const validationError = currentValidationError();
-        if (validationError) {
-          setSaveError(validationError);
-          return;
-        }
-        await saveCurrentSettingsDraft();
-      }
+      if (!(await saveDraftBeforeApiServerStart(enabled))) return;
       if (enabled) {
         await SettingsAPI.startApiServer();
       } else {
         await SettingsAPI.stopApiServer();
       }
       const running = await refreshApiServerRunning(true);
-      if (enabled && !running) {
-        setSaveError("API server did not report running after start.");
-      } else if (!enabled && running) {
-        setSaveError("API server is still running after stop.");
-      }
+      const mismatch = apiServerToggleMismatch(enabled, running);
+      if (mismatch) setSaveError(mismatch);
     } catch (err: unknown) {
       try {
         await refreshApiServerRunning(false);
       } catch {}
-      const action = enabled ? "start" : "stop";
-      setSaveError(
-        `API server ${action} failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      setSaveError(apiServerToggleFailure(enabled, err));
     } finally {
       setApiServerBusy(false);
     }
