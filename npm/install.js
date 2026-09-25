@@ -104,11 +104,74 @@ async function verifyChecksum(filePath, fileName, expectedShasums) {
   });
 }
 
+function installMacBundle() {
+  console.log('Extracting macOS bundle...');
+  const extractTmpDir = path.join(binDir, 'tmp-extract');
+  if (fs.existsSync(extractTmpDir)) fs.rmSync(extractTmpDir, { recursive: true, force: true });
+  fs.mkdirSync(extractTmpDir, { recursive: true });
+  try {
+    execSync(`tar -xzf "${tmpPath}" -C "${extractTmpDir}"`);
+    const extractedFiles = fs.readdirSync(extractTmpDir);
+    for (const file of extractedFiles) {
+      const dest = path.join(binDir, file);
+      if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true, force: true });
+      fs.renameSync(path.join(extractTmpDir, file), dest);
+    }
+  } finally {
+    if (fs.existsSync(extractTmpDir)) fs.rmSync(extractTmpDir, { recursive: true, force: true });
+  }
+  fs.unlinkSync(tmpPath);
+  const macBinPath = assertExecutable('darwin', binDir);
+  // <bundle>.app/Contents/MacOS/<exe> -> <bundle>.app
+  const bundlePath = path.dirname(path.dirname(path.dirname(macBinPath)));
+  try {
+    const alias = createLaunchpadAlias(bundlePath, { platform });
+    if (alias.created) {
+      console.log(`Launchpad alias created: ${alias.path}`);
+      console.log('The app bundle is not signed, so macOS may block the first launch. Do not bypass Gatekeeper: report the block at https://github.com/mblua/AgentsCommander/issues');
+    }
+  } catch (err) {
+    console.warn(`Warning: Launchpad alias not created: ${err.message}`);
+  }
+}
+
+function createPlatformShortcut(finalBinPath) {
+  if (platform === 'win32') {
+    try {
+      const shortcut = createStartMenuShortcut(finalBinPath);
+      if (shortcut.created) console.log(`Start Menu shortcut created: ${shortcut.path}`);
+    } catch (err) {
+      console.warn(`Warning: Start Menu shortcut not created: ${err.message}`);
+    }
+  }
+  if (platform === 'linux') {
+    try {
+      const entry = createDesktopEntry(finalBinPath, { platform });
+      if (entry.created) console.log(`Application menu entry created: ${entry.path}`);
+    } catch (err) {
+      console.warn(`Warning: application menu entry not created: ${err.message}`);
+    }
+  }
+}
+
+function installBinary() {
+  const finalBinPath = path.join(binDir, platform === 'win32' ? 'agentscommander.exe' : 'agentscommander');
+  if (platform !== 'win32') {
+    fs.chmodSync(tmpPath, 0o755);
+  }
+  fs.renameSync(tmpPath, finalBinPath);
+  createPlatformShortcut(finalBinPath);
+}
+
+function cleanupFailedInstall(shasumTmpPath) {
+  if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+  if (typeof shasumTmpPath !== 'undefined' && fs.existsSync(shasumTmpPath)) fs.unlinkSync(shasumTmpPath);
+}
+
 async function main() {
   const shasumTmpPath = path.join(binDir, 'SHASUMS256.txt.tmp');
   try {
     console.log(`Downloading SHASUMS256.txt from ${shasumUrl}`);
-    // moved to top
     await downloadFile(shasumUrl, shasumTmpPath);
     const expectedShasums = fs.readFileSync(shasumTmpPath, 'utf8');
 
@@ -119,65 +182,14 @@ async function main() {
     await verifyChecksum(tmpPath, assetName, expectedShasums);
     console.log('Checksum verified.');
 
-    if (platform === 'darwin') {
-      console.log('Extracting macOS bundle...');
-      const extractTmpDir = path.join(binDir, 'tmp-extract');
-      if (fs.existsSync(extractTmpDir)) fs.rmSync(extractTmpDir, { recursive: true, force: true });
-      fs.mkdirSync(extractTmpDir, { recursive: true });
-      try {
-        execSync(`tar -xzf "${tmpPath}" -C "${extractTmpDir}"`);
-        const extractedFiles = fs.readdirSync(extractTmpDir);
-        for (const file of extractedFiles) {
-          const dest = path.join(binDir, file);
-          if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true, force: true });
-          fs.renameSync(path.join(extractTmpDir, file), dest);
-        }
-      } finally {
-        if (fs.existsSync(extractTmpDir)) fs.rmSync(extractTmpDir, { recursive: true, force: true });
-      }
-      fs.unlinkSync(tmpPath);
-      const macBinPath = assertExecutable('darwin', binDir);
-      // <bundle>.app/Contents/MacOS/<exe> -> <bundle>.app
-      const bundlePath = path.dirname(path.dirname(path.dirname(macBinPath)));
-      try {
-        const alias = createLaunchpadAlias(bundlePath, { platform });
-        if (alias.created) {
-          console.log(`Launchpad alias created: ${alias.path}`);
-          console.log('The app bundle is not signed, so macOS may block the first launch. Do not bypass Gatekeeper: report the block at https://github.com/mblua/AgentsCommander/issues');
-        }
-      } catch (err) {
-        console.warn(`Warning: Launchpad alias not created: ${err.message}`);
-      }
-    } else {
-      const finalBinPath = path.join(binDir, platform === 'win32' ? 'agentscommander.exe' : 'agentscommander');
-      if (platform !== 'win32') {
-        fs.chmodSync(tmpPath, 0o755);
-      }
-      fs.renameSync(tmpPath, finalBinPath);
-      if (platform === 'win32') {
-        try {
-          const shortcut = createStartMenuShortcut(finalBinPath);
-          if (shortcut.created) console.log(`Start Menu shortcut created: ${shortcut.path}`);
-        } catch (err) {
-          console.warn(`Warning: Start Menu shortcut not created: ${err.message}`);
-        }
-      }
-      if (platform === 'linux') {
-        try {
-          const entry = createDesktopEntry(finalBinPath, { platform });
-          if (entry.created) console.log(`Application menu entry created: ${entry.path}`);
-        } catch (err) {
-          console.warn(`Warning: application menu entry not created: ${err.message}`);
-        }
-      }
-    }
+    if (platform === 'darwin') installMacBundle();
+    else installBinary();
 
     fs.unlinkSync(shasumTmpPath);
     console.log('Installation completed successfully.');
   } catch (err) {
     console.error('Installation failed:', err.message);
-    if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-    if (typeof shasumTmpPath !== 'undefined' && fs.existsSync(shasumTmpPath)) fs.unlinkSync(shasumTmpPath);
+    cleanupFailedInstall(shasumTmpPath);
     process.exit(1);
   }
 }

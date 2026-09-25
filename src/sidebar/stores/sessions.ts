@@ -592,7 +592,7 @@ export const sessionsStore = {
     try {
       const current = await SettingsAPI.get();
       await SettingsAPI.update({ ...current, alwaysShowSelectedWorkgroup: next });
-      void settingsStore.refresh();
+      settingsStore.refresh();
     } catch (e) {
       console.error("[always-show-wg] Failed to persist alwaysShowSelectedWorkgroup:", e);
       setState("alwaysShowSelectedWorkgroup", !next);
