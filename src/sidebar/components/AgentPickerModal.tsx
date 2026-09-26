@@ -1556,7 +1556,6 @@ const AgentPickerModal: Component<{
                         classList={{
                           active: selected(),
                           missing: !configured(),
-                          default: configuredDefault() === letter,
                         }}
                         aria-pressed={selected()}
                         onClick={() => chooseProfile(letter)}
@@ -1733,7 +1732,7 @@ const AgentPickerModal: Component<{
 
               <Show when={effectivePreview().fallbackApplied || hasBackendWarnings()}>
                 <div
-                  class="agent-profile-warning-strip agent-projection-status"
+                  class="agent-profile-warning-strip"
                   classList={{ visible: true }}
                   data-component="Coding Agent profile fallback explanation"
                   {...automationAttrs("agentPicker.fallback", "status", "warning")}
@@ -2151,7 +2150,7 @@ const AgentPickerModal: Component<{
               </div>
               <For each={applyErrors()}>
                 {(e) => (
-                  <div class="agent-scope-error-row">
+                  <div>
                     {e.message}
                     <Show when={e.sessionIds.length > 0}>
                       <span class="agent-scope-error-ids"> ({e.sessionIds.join(", ")})</span>
@@ -2240,7 +2239,7 @@ const AgentPickerModal: Component<{
             aria-modal="true"
             aria-labelledby="agentPickerConflictTitle"
           >
-            <div class="lock-conflict-head">
+            <div>
               <div class="lock-conflict-title" id="agentPickerConflictTitle">
                 {lockedKindTargets().length}{" "}
                 {lockedKindTargets().length === 1 ? "replica is" : "replicas are"} already locked
@@ -2259,7 +2258,7 @@ const AgentPickerModal: Component<{
                     data-ac-role="row"
                     data-ac-replica-path={t.replicaPath}
                   >
-                    <span class="lock-conflict-who">
+                    <span>
                       <span class="wg">{t.workgroupName}</span> ·{" "}
                       <span class="name">{t.replicaName}</span>
                     </span>

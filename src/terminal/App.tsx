@@ -426,7 +426,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
         >
           <TerminalView lockedSessionId={props.lockedSessionId} />
           <Show when={!props.lockedSessionId && terminalStore.bindingState === "pending"}>
-            <div class="terminal-empty terminal-pending" data-ac-testid="terminal.pending">
+            <div class="terminal-empty" data-ac-testid="terminal.pending">
               <span>Loading session…</span>
             </div>
           </Show>

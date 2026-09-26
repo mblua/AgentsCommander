@@ -296,12 +296,12 @@ describe("ActionBar selected workgroup visibility toggle", () => {
   it("renders the default toolbar class and state strings", () => {
     const { dispose } = renderActionBar();
     expect(buttonAttrs("actionBar.newOpen")).toEqual(["action-bar-dropdown-btn", "closed"]);
-    expect(buttonAttrs("actionBar.home")).toEqual(["toolbar-gear-btn home-toggle-btn ", "hidden"]);
+    expect(buttonAttrs("actionBar.home")).toEqual(["toolbar-gear-btn ", "hidden"]);
     expect(buttonAttrs("actionBar.sortCoordinators")).toEqual([
       "toolbar-gear-btn coord-sort-activity-btn ",
       "default",
     ]);
-    expect(buttonAttrs("actionBar.sounds")).toEqual(["toolbar-gear-btn sounds-mute-btn ", "audible"]);
+    expect(buttonAttrs("actionBar.sounds")).toEqual(["toolbar-gear-btn ", "audible"]);
     expect(buttonAttrs("actionBar.categories")).toEqual([
       "toolbar-gear-btn show-categories-btn active",
       "visible",
@@ -331,7 +331,7 @@ describe("ActionBar selected workgroup visibility toggle", () => {
       "recent",
     ]);
     expect(buttonAttrs("actionBar.sounds")).toEqual([
-      "toolbar-gear-btn sounds-mute-btn active",
+      "toolbar-gear-btn active",
       "muted",
     ]);
     expect(buttonAttrs("actionBar.categories")).toEqual([

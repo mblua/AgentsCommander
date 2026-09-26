@@ -183,7 +183,7 @@ const EditLoopModal: Component<{
 
   return (
     <div class="modal-overlay" onKeyDown={handleKeyDown}>
-      <div class="agent-modal new-agent-modal loop-modal">
+      <div class="agent-modal loop-modal">
         <div class="agent-modal-header">
           <span class="agent-modal-title">Edit Loop</span>
         </div>

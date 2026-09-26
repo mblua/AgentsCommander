@@ -71,7 +71,7 @@ const AutoUnarchiveModal: Component = () => {
   return (
     <Show when={autoUnarchiveStore.open}>
       <Portal>
-        <div class="modal-overlay auto-unarchive-overlay" data-ac-testid="autoUnarchive.modal">
+        <div class="modal-overlay" data-ac-testid="autoUnarchive.modal">
           <div
             class="agent-modal auto-unarchive-modal"
             role="alertdialog"

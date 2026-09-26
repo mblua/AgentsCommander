@@ -238,7 +238,7 @@ const WorkgroupTask: Component = () => {
         <div class="workgroup-task-label">
           TASK
           <Show when={taskTitle()}>
-            <span class="workgroup-task-label-sep">: </span>
+            <span>: </span>
             <span class="workgroup-task-title">{taskTitle()}</span>
           </Show>
         </div>

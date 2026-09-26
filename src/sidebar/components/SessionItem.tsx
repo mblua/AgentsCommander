@@ -518,7 +518,6 @@ const SessionItem: Component<{
         <Show when={sessionHasLivePty()}>
           <button
             class="session-item-detach"
-            classList={{ attached: isDetached() }}
             onClick={handleDetachToggle}
             title={detachUi(isDetached()).title}
             data-ac-testid={`session.${props.session.id}.detachToggle`}

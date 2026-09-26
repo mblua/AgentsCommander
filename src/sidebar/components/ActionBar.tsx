@@ -307,7 +307,7 @@ const ActionBar: Component = () => {
           </Show>
 
           <button
-            class={`toolbar-gear-btn home-toggle-btn ${activeClass(homeStore.visible)}`}
+            class={`toolbar-gear-btn ${activeClass(homeStore.visible)}`}
             onClick={() => homeStore.toggle()}
             title={homeStore.visible ? "Hide Home" : "Show Home"}
             aria-label={homeStore.visible ? "Hide Home" : "Show Home"}
@@ -335,7 +335,7 @@ const ActionBar: Component = () => {
             &#x1F525;
           </button>
           <button
-            class={`toolbar-gear-btn sounds-mute-btn ${activeClass(!isSoundsEnabled())}`}
+            class={`toolbar-gear-btn ${activeClass(!isSoundsEnabled())}`}
             disabled={!settingsStore.current}
             onClick={handleToggleMute}
             title={isSoundsEnabled() ? "Mute all app sounds" : "Unmute app sounds"}
