@@ -335,110 +335,134 @@ function readFrontmatter(filePath) {
   }
 
   try {
-    const chunk = Buffer.allocUnsafe(READ_CHUNK_BYTES);
-    let chunkLength = 0;
-    let chunkPos = 0;
-    let readFailure = null;
-
-    const nextByte = () => {
-      if (chunkPos >= chunkLength) {
-        try {
-          chunkLength = fs.readSync(fd, chunk, 0, chunk.length, null);
-        } catch (err) {
-          readFailure = err;
-          return -1;
-        }
-        chunkPos = 0;
-        if (chunkLength === 0) return -1;
-      }
-      chunkPos += 1;
-      return chunk[chunkPos - 1];
-    };
-
-    let sawOpening = false;
-    let currentLine = [];
-    const frontmatter = [];
-
-    const appendLine = () => {
-      for (let i = 0; i < currentLine.length; i += 1) frontmatter.push(currentLine[i]);
-    };
+    const reader = createByteReader(fd);
+    const st = { sawOpening: false, currentLine: [], frontmatter: [] };
 
     for (;;) {
-      const byte = nextByte();
+      const byte = reader.next();
       if (byte === -1) break;
-      currentLine.push(byte);
+      st.currentLine.push(byte);
 
       // Size guards, mirroring the if/else on saw_opening at :342-351. Both run after
       // the byte is pushed and before the `\n` short-circuit at :353, so the terminator
       // is counted on both arms.
-      if (!sawOpening) {
-        if (currentLine.length > FIRST_LINE_MAX_BYTES) {
-          return { ok: false, code: 'E-FM-FIRST-LINE-TOO-LONG' };
-        }
-      } else {
-        // Guard A, mid-line (:346-351). The `+ 8` is verbatim from
-        // remaining.saturating_add(8). It also covers the closing delimiter line,
-        // which never reaches the append path.
-        const remaining = Math.max(0, FRONTMATTER_MAX_BYTES - frontmatter.length);
-        if (currentLine.length > remaining + 8) {
-          return { ok: false, code: 'E-FM-TOO-LARGE' };
-        }
-      }
+      const sizeError = checkLineSize(st);
+      if (sizeError !== null) return sizeError;
 
       if (byte !== 0x0a) continue;
 
-      if (!sawOpening) {
-        if (!isFrontmatterDelimiter(currentLine, true)) {
-          return { ok: false, code: 'E-FM-NO-OPEN' };
-        }
-        sawOpening = true;
-        currentLine = [];
-        continue;
-      }
-
-      if (isFrontmatterDelimiter(currentLine, false)) {
-        return decodeFrontmatter(frontmatter);
-      }
-
-      // Guard B, on append (:311-317).
-      if (frontmatter.length + currentLine.length > FRONTMATTER_MAX_BYTES) {
-        return { ok: false, code: 'E-FM-TOO-LARGE' };
-      }
-      appendLine();
-      currentLine = [];
+      const lineResult = consumeTerminatedLine(st);
+      if (lineResult !== null) return lineResult;
     }
 
-    if (readFailure !== null) {
-      return { ok: false, code: 'E-ENTRYPOINT-UNREADABLE', detail: errnoOf(readFailure), verb: 'read' };
+    if (reader.failure() !== null) {
+      return { ok: false, code: 'E-ENTRYPOINT-UNREADABLE', detail: errnoOf(reader.failure()), verb: 'read' };
     }
-
-    // EOF with an unterminated final line (:374-386). Not symmetric, and row 3 below is
-    // the common shape every editor without "insert final newline" produces.
-    if (currentLine.length > 0) {
-      if (!sawOpening) {
-        if (isFrontmatterDelimiter(currentLine, true)) return { ok: false, code: 'E-FM-NO-CLOSE' };
-        return { ok: false, code: 'E-FM-NO-OPEN' };
-      }
-      if (isFrontmatterDelimiter(currentLine, false)) {
-        return decodeFrontmatter(frontmatter);
-      }
-      // :385 appends before the `missing closing` return at :389, so an overflowing
-      // unterminated body line yields E-FM-TOO-LARGE, not E-FM-NO-CLOSE.
-      if (frontmatter.length + currentLine.length > FRONTMATTER_MAX_BYTES) {
-        return { ok: false, code: 'E-FM-TOO-LARGE' };
-      }
-      appendLine();
-      return { ok: false, code: 'E-FM-NO-CLOSE' };
-    }
-
-    if (!sawOpening) return { ok: false, code: 'E-FM-NO-OPEN' };
-    return { ok: false, code: 'E-FM-NO-CLOSE' };
+    return finishAtEof(st);
   } finally {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      // Closing a descriptor we already finished with cannot change a verdict.
+    closeQuietly(fd);
+  }
+}
+
+// Buffered byte reader over fd; next() returns -1 at EOF or on a read failure.
+function createByteReader(fd) {
+  const chunk = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+  let chunkLength = 0;
+  let chunkPos = 0;
+  let readFailure = null;
+
+  const next = () => {
+    if (chunkPos >= chunkLength) {
+      try {
+        chunkLength = fs.readSync(fd, chunk, 0, chunk.length, null);
+      } catch (err) {
+        readFailure = err;
+        return -1;
+      }
+      chunkPos = 0;
+      if (chunkLength === 0) return -1;
     }
+    chunkPos += 1;
+    return chunk[chunkPos - 1];
+  };
+
+  return { next, failure: () => readFailure };
+}
+
+function appendBytes(target, bytes) {
+  for (let i = 0; i < bytes.length; i += 1) target.push(bytes[i]);
+}
+
+function checkLineSize(st) {
+  if (!st.sawOpening) {
+    if (st.currentLine.length > FIRST_LINE_MAX_BYTES) {
+      return { ok: false, code: 'E-FM-FIRST-LINE-TOO-LONG' };
+    }
+  } else {
+    // Guard A, mid-line (:346-351). The `+ 8` is verbatim from
+    // remaining.saturating_add(8). It also covers the closing delimiter line,
+    // which never reaches the append path.
+    const remaining = Math.max(0, FRONTMATTER_MAX_BYTES - st.frontmatter.length);
+    if (st.currentLine.length > remaining + 8) {
+      return { ok: false, code: 'E-FM-TOO-LARGE' };
+    }
+  }
+  return null;
+}
+
+// Handle a `\n`-terminated line. Returns a verdict, or null to keep reading.
+function consumeTerminatedLine(st) {
+  if (!st.sawOpening) {
+    if (!isFrontmatterDelimiter(st.currentLine, true)) {
+      return { ok: false, code: 'E-FM-NO-OPEN' };
+    }
+    st.sawOpening = true;
+    st.currentLine = [];
+    return null;
+  }
+
+  if (isFrontmatterDelimiter(st.currentLine, false)) {
+    return decodeFrontmatter(st.frontmatter);
+  }
+
+  // Guard B, on append (:311-317).
+  if (st.frontmatter.length + st.currentLine.length > FRONTMATTER_MAX_BYTES) {
+    return { ok: false, code: 'E-FM-TOO-LARGE' };
+  }
+  appendBytes(st.frontmatter, st.currentLine);
+  st.currentLine = [];
+  return null;
+}
+
+function finishAtEof(st) {
+  // EOF with an unterminated final line (:374-386). Not symmetric, and row 3 below is
+  // the common shape every editor without "insert final newline" produces.
+  if (st.currentLine.length > 0) {
+    if (!st.sawOpening) {
+      if (isFrontmatterDelimiter(st.currentLine, true)) return { ok: false, code: 'E-FM-NO-CLOSE' };
+      return { ok: false, code: 'E-FM-NO-OPEN' };
+    }
+    if (isFrontmatterDelimiter(st.currentLine, false)) {
+      return decodeFrontmatter(st.frontmatter);
+    }
+    // :385 appends before the `missing closing` return at :389, so an overflowing
+    // unterminated body line yields E-FM-TOO-LARGE, not E-FM-NO-CLOSE.
+    if (st.frontmatter.length + st.currentLine.length > FRONTMATTER_MAX_BYTES) {
+      return { ok: false, code: 'E-FM-TOO-LARGE' };
+    }
+    appendBytes(st.frontmatter, st.currentLine);
+    return { ok: false, code: 'E-FM-NO-CLOSE' };
+  }
+
+  if (!st.sawOpening) return { ok: false, code: 'E-FM-NO-OPEN' };
+  return { ok: false, code: 'E-FM-NO-CLOSE' };
+}
+
+function closeQuietly(fd) {
+  try {
+    fs.closeSync(fd);
+  } catch {
+    // Closing a descriptor we already finished with cannot change a verdict.
   }
 }
 
@@ -484,47 +508,36 @@ function leadingWsRun(line) {
 }
 
 function readQuotedScalar(text, start) {
-  const quote = text[start];
-  let i = start + 1;
+  return text[start] === "'" ? readSingleQuoted(text, start + 1) : readDoubleQuoted(text, start + 1);
+}
+
+function readSingleQuoted(text, i) {
   let out = '';
-  if (quote === "'") {
-    while (i < text.length) {
-      const ch = text[i];
-      if (ch === "'") {
-        if (text[i + 1] === "'") {
-          out += "'";
-          i += 2;
-          continue;
-        }
-        return { ok: true, value: out, end: i + 1 };
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "'") {
+      if (text[i + 1] === "'") {
+        out += "'";
+        i += 2;
+        continue;
       }
-      out += ch;
-      i += 1;
+      return { ok: true, value: out, end: i + 1 };
     }
-    return { ok: false, reason: 'a single-quoted scalar whose closing quote is not on the same line' };
+    out += ch;
+    i += 1;
   }
+  return { ok: false, reason: 'a single-quoted scalar whose closing quote is not on the same line' };
+}
+
+function readDoubleQuoted(text, i) {
+  let out = '';
   while (i < text.length) {
     const ch = text[i];
     if (ch === '\\') {
-      const esc = text[i + 1];
-      if (esc === '\\') out += '\\';
-      else if (esc === '"') out += '"';
-      else if (esc === '/') out += '/';
-      else if (esc === 'n') out += '\n';
-      else if (esc === 'r') out += '\r';
-      else if (esc === 't') out += '\t';
-      else if (esc === 'u') {
-        const hex = text.slice(i + 2, i + 6);
-        if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
-          return { ok: false, reason: 'a double-quoted scalar with a malformed \\u escape' };
-        }
-        out += String.fromCharCode(parseInt(hex, 16));
-        i += 6;
-        continue;
-      } else {
-        return { ok: false, reason: 'a double-quoted scalar with a backslash escape outside the supported set' };
-      }
-      i += 2;
+      const escape = decodeEscape(text, i);
+      if (!escape.ok) return escape;
+      out += escape.value;
+      i += escape.width;
       continue;
     }
     if (ch === '"') return { ok: true, value: out, end: i + 1 };
@@ -532,6 +545,30 @@ function readQuotedScalar(text, start) {
     i += 1;
   }
   return { ok: false, reason: 'a double-quoted scalar whose closing quote is not on the same line' };
+}
+
+const SIMPLE_ESCAPES = new Map([
+  ['\\', '\\'],
+  ['"', '"'],
+  ['/', '/'],
+  ['n', '\n'],
+  ['r', '\r'],
+  ['t', '\t'],
+]);
+
+// Decode the escape whose backslash is at text[i]: its text and width, or a failure.
+function decodeEscape(text, i) {
+  const esc = text[i + 1];
+  const simple = SIMPLE_ESCAPES.get(esc);
+  if (simple !== undefined) return { ok: true, value: simple, width: 2 };
+  if (esc === 'u') {
+    const hex = text.slice(i + 2, i + 6);
+    if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
+      return { ok: false, reason: 'a double-quoted scalar with a malformed \\u escape' };
+    }
+    return { ok: true, value: String.fromCharCode(parseInt(hex, 16)), width: 6 };
+  }
+  return { ok: false, reason: 'a double-quoted scalar with a backslash escape outside the supported set' };
 }
 
 // 6.5.1a. A mapping entry is a key, then `:`, then end of line or at least one space or
@@ -728,15 +765,18 @@ function parseMiniYaml(text) {
     significant: 0,
   };
 
-  const lines = splitFrontmatterLines(text);
-  let firstSignificantSeen = false;
-  let mappingCandidate = false;
-  let i = 0;
+  const st = {
+    result,
+    lines: splitFrontmatterLines(text),
+    i: 0,
+    firstSignificantSeen: false,
+    mappingCandidate: false,
+  };
 
-  while (i < lines.length) {
-    const line = lines[i];
-    const lineNo = i + 1;
-    i += 1;
+  while (st.i < st.lines.length) {
+    const line = st.lines[st.i];
+    const lineNo = st.i + 1;
+    st.i += 1;
 
     if (isBlankLine(line)) continue;
 
@@ -760,105 +800,123 @@ function parseMiniYaml(text) {
 
     result.significant += 1;
 
-    if (indent > 0) {
-      result.undecidables.push({
-        line: lineNo,
-        construct: 'an indented line at top level (a nested mapping or sequence)',
-      });
-      continue;
-    }
-
-    if (!firstSignificantSeen) {
-      firstSignificantSeen = true;
-      if (body === '-' || body.startsWith('- ')) {
-        result.certainError = {
-          code: 'E-YAML-NOT-MAPPING',
-          line: lineNo,
-          detail: 'the document root is a sequence, not a mapping',
-        };
-        return result;
-      }
-    }
-
-    const lead = body[0];
-    if (lead === '{') {
-      mappingCandidate = true;
-      result.undecidables.push({ line: lineNo, construct: 'a flow mapping at the document root' });
-      continue;
-    }
-    if (lead === '[') {
-      result.undecidables.push({ line: lineNo, construct: 'a flow sequence at the document root' });
-      continue;
-    }
-    if (lead === '%' || lead === '!' || lead === '&' || lead === '*') {
-      mappingCandidate = true;
-      result.undecidables.push({
-        line: lineNo,
-        construct: 'a directive, tag, anchor or alias at the document root',
-      });
-      continue;
-    }
-    if (body === '?' || body.startsWith('? ')) {
-      mappingCandidate = true;
-      result.undecidables.push({ line: lineNo, construct: 'an explicit key' });
-      continue;
-    }
-    if (body === '...' || body.startsWith('... ')) {
-      result.undecidables.push({ line: lineNo, construct: 'the document-end marker' });
-      continue;
-    }
-
-    const entry = parseKeyValueLine(body);
-    if (!entry.ok) {
-      result.undecidables.push({ line: lineNo, construct: entry.reason });
-      continue;
-    }
-    if (entry.key === '<<') {
-      result.undecidables.push({ line: lineNo, construct: 'a merge key' });
-      continue;
-    }
-
-    let resolved;
-    if (entry.blockScalar) {
-      const block = readBlockScalar(lines, i, entry.blockIndent, entry.blockStyle);
-      i = block.endIndex;
-      resolved = { kind: 'string', value: block.content, raw: entry.value };
-    } else {
-      resolved = resolveScalar(entry.value);
-    }
-    if (resolved.kind === 'undecidable') {
-      result.undecidables.push({ line: lineNo, construct: resolved.construct });
-    }
-
-    result.recognized += 1;
-
-    // 6.5.4. Key identity is the unquoted key text, byte-exact and case-sensitive,
-    // matching Value::String equality at :449-450. The check lives in Mapping's
-    // deserializer (mapping.rs:813-822) and runs before any field lookup, so it covers
-    // EVERY top-level key, not just the three the indexer reads.
-    if (result.entries.has(entry.key)) {
-      result.duplicate = {
-        key: entry.key,
-        firstLine: result.entries.get(entry.key).line,
-        line: lineNo,
-      };
-      return result;
-    }
-    result.entries.set(entry.key, {
-      line: lineNo,
-      kind: resolved.kind,
-      value: resolved.value === undefined ? null : resolved.value,
-      raw: resolved.raw === undefined ? entry.value : resolved.raw,
-    });
+    if (parseSignificantLine(st, body, indent, lineNo)) return result;
   }
 
+  finalizeMapping(result, st.mappingCandidate);
+  return result;
+}
+
+// Parse one significant (non-blank, non-comment) line. Returns true when parsing must stop.
+function parseSignificantLine(st, body, indent, lineNo) {
+  const result = st.result;
+  if (indent > 0) {
+    result.undecidables.push({
+      line: lineNo,
+      construct: 'an indented line at top level (a nested mapping or sequence)',
+    });
+    return false;
+  }
+
+  if (!st.firstSignificantSeen) {
+    st.firstSignificantSeen = true;
+    if (body === '-' || body.startsWith('- ')) {
+      result.certainError = {
+        code: 'E-YAML-NOT-MAPPING',
+        line: lineNo,
+        detail: 'the document root is a sequence, not a mapping',
+      };
+      return true;
+    }
+  }
+
+  const root = rootConstruct(body);
+  if (root !== null) {
+    if (root.mappingCandidate) st.mappingCandidate = true;
+    result.undecidables.push({ line: lineNo, construct: root.construct });
+    return false;
+  }
+
+  const entry = parseKeyValueLine(body);
+  if (!entry.ok) {
+    result.undecidables.push({ line: lineNo, construct: entry.reason });
+    return false;
+  }
+  if (entry.key === '<<') {
+    result.undecidables.push({ line: lineNo, construct: 'a merge key' });
+    return false;
+  }
+
+  const resolved = resolveEntryValue(st, entry);
+  if (resolved.kind === 'undecidable') {
+    result.undecidables.push({ line: lineNo, construct: resolved.construct });
+  }
+
+  result.recognized += 1;
+  return recordEntry(result, entry, resolved, lineNo);
+}
+
+// A document-root construct the mini-parser cannot judge, or null.
+function rootConstruct(body) {
+  const lead = body[0];
+  if (lead === '{') {
+    return { construct: 'a flow mapping at the document root', mappingCandidate: true };
+  }
+  if (lead === '[') {
+    return { construct: 'a flow sequence at the document root', mappingCandidate: false };
+  }
+  if (lead === '%' || lead === '!' || lead === '&' || lead === '*') {
+    return { construct: 'a directive, tag, anchor or alias at the document root', mappingCandidate: true };
+  }
+  if (body === '?' || body.startsWith('? ')) {
+    return { construct: 'an explicit key', mappingCandidate: true };
+  }
+  if (body === '...' || body.startsWith('... ')) {
+    return { construct: 'the document-end marker', mappingCandidate: false };
+  }
+  return null;
+}
+
+function resolveEntryValue(st, entry) {
+  if (entry.blockScalar) {
+    const block = readBlockScalar(st.lines, st.i, entry.blockIndent, entry.blockStyle);
+    st.i = block.endIndex;
+    return { kind: 'string', value: block.content, raw: entry.value };
+  }
+  return resolveScalar(entry.value);
+}
+
+// Store a recognized entry. Returns true when it is a duplicate key (parsing stops).
+function recordEntry(result, entry, resolved, lineNo) {
+  // 6.5.4. Key identity is the unquoted key text, byte-exact and case-sensitive,
+  // matching Value::String equality at :449-450. The check lives in Mapping's
+  // deserializer (mapping.rs:813-822) and runs before any field lookup, so it covers
+  // EVERY top-level key, not just the three the indexer reads.
+  if (result.entries.has(entry.key)) {
+    result.duplicate = {
+      key: entry.key,
+      firstLine: result.entries.get(entry.key).line,
+      line: lineNo,
+    };
+    return true;
+  }
+  result.entries.set(entry.key, {
+    line: lineNo,
+    kind: resolved.kind,
+    value: resolved.value === undefined ? null : resolved.value,
+    raw: resolved.raw === undefined ? entry.value : resolved.raw,
+  });
+  return false;
+}
+
+function finalizeMapping(result, mappingCandidate) {
   if (result.significant === 0) {
     result.certainError = {
       code: 'E-YAML-NOT-MAPPING',
       line: null,
       detail: 'the frontmatter block is empty or contains only blank and comment lines',
     };
-    return result;
+    return;
   }
 
   // 6.5.3 row 4. Zero recognized entries alone is not proof the root is a scalar; zero
@@ -870,7 +928,6 @@ function parseMiniYaml(text) {
       detail: 'the document root is a scalar, not a mapping',
     };
   }
-  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -890,167 +947,194 @@ function walk(root, collector) {
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch (err) {
-      const code = errnoOf(err);
-      if (isCanonicalSkillsRoot(dir)) {
-        collector.add({
-          code: 'E-SKILLS-DIR-UNREADABLE',
-          absolutePath: dir,
-          message: `The \`skills\` directory could not be listed (${code}). The indexer treats this as a hard error and indexes no skill from this matrix.`,
-          indexerMessage: `\`skills\` directory could not be read: ${sanitizeForReport(code)}`,
-        });
-      } else if (isCanonicalSkillDir(dir)) {
-        collector.add({
-          code: 'E-SKILL-DIR-UNREADABLE',
-          absolutePath: dir,
-          skillDirectory: dir,
-          message: `The skill directory could not be listed (${code}). The indexer skips this skill.`,
-          indexerMessage: skippedDirectory(
-            path.basename(dir),
-            `unable to read skill directory: ${sanitizeForReport(code)}`,
-          ),
-        });
-      } else {
-        collector.add({
-          code: 'W-DIR-UNREADABLE',
-          absolutePath: dir,
-          message: `The directory could not be listed (${code}); it was skipped and the walk continued. If this is a case-variant \`skills\` directory it may still be the live skills root on Windows, where the indexer reaches it by joining the constant \`skills\`.`,
-        });
-      }
+      reportUnreadableDir(dir, err, collector);
       continue;
     }
     directoriesScanned += 1;
 
-    // 6.3 discovery. toLowerCase() is deliberate here and is the single exception to the
-    // asciiLower() rule: over-matching is harmless because the byte-exact test follows.
-    const matches = entries.filter((entry) => entry.name.toLowerCase() === 'skill.md');
-    entrypointsFound += matches.length;
-
-    if (matches.length === 0) {
-      if (isSkillsNameCi(path.basename(path.dirname(dir)))) {
-        const canonical = isCanonicalSkillDir(dir);
-        collector.add({
-          code: canonical ? 'E-NO-ENTRYPOINT' : 'I-NO-ENTRYPOINT',
-          absolutePath: dir,
-          skillDirectory: dir,
-          message: canonical
-            ? 'No `SKILL.md` entrypoint in any casing. The indexer requires an exact `SKILL.md` and skips this directory.'
-            : 'No `SKILL.md` entrypoint in any casing. This directory sits under a `skills/` folder that the indexer never scans, so it is a note only.',
-          indexerMessage: canonical
-            ? skippedDirectory(path.basename(dir), 'missing exact SKILL.md entrypoint')
-            : null,
-        });
-      }
-    } else {
-      const exact = matches.filter((entry) => entry.name === SKILL_MD);
-      for (const entry of matches) {
-        if (exact.length > 0 && entry.name !== SKILL_MD) {
-          // The skill works today; the stray variant is a hazard, not a rejection.
-          collector.add({
-            code: 'W-ENTRYPOINT-CASE-SHADOWED',
-            absolutePath: path.join(dir, entry.name),
-            skillDirectory: dir,
-            message: `\`${entry.name}\` sits beside an exact \`SKILL.md\`, which is the file the indexer uses. This stray variant is never read and is a hazard for the next reader.`,
-          });
-          continue;
-        }
-        candidates.push({
-          dir,
-          entryName: entry.name,
-          entrypoint: path.join(dir, entry.name),
-          dirent: entry,
-          casingError: entry.name !== SKILL_MD,
-        });
-      }
-    }
+    entrypointsFound += discoverEntrypoints(dir, entries, candidates, collector);
 
     // Step 3. The order and the guard shape are load-bearing: readdirSync returns Dirents
     // with lstat semantics, so isDirectory() is false for every symlink and any symlink
     // test nested under an isDirectory() guard never runs. Mirrors :578-585.
-    for (const entry of entries) {
-      const entryPath = path.join(dir, entry.name);
-
-      if (entry.isSymbolicLink()) {
-        // Never descend, and never apply a directory test. Node reports Windows junctions
-        // and reparse points as symbolic links, so one code path covers both platforms.
-        if (isSkillsNameCi(path.basename(dir))) {
-          const canonical = MATRIX_DIR_RE.test(path.basename(path.dirname(dir)));
-          if (canonical) {
-            collector.add({
-              code: 'E-SKILL-DIR-LINK',
-              absolutePath: entryPath,
-              skillDirectory: entryPath,
-              message:
-                'A linked entry directly under `skills/` is never followed. :578 tests only is_symlink() and never inspects the target, so this holds whether the link resolves to a directory, to a file, or to nothing.',
-              indexerMessage: `Skipped linked skill directory \`${sanitizeForReport(entry.name)}\`: linked/reparse-point directories are not followed`,
-            });
-          } else {
-            collector.add({
-              code: 'W-SKILL-DIR-LINK',
-              absolutePath: entryPath,
-              skillDirectory: entryPath,
-              message:
-                'A linked entry directly under a `skills/` folder that is not in canonical position. The indexer never scans this tree, so this is a note about a shape that would be fatal if the folder were a real skills root.',
-            });
-          }
-        }
-        continue;
-      }
-
-      if (entry.isDirectory()) {
-        // SKIP_DIRS never applies inside a `skills/` directory: the indexer applies no
-        // name filter at all, and `target` matches ^[a-z0-9-]{1,64}$ so it is a legal
-        // skill name. Skipping it would hide a real skill from the checker.
-        if (!isSkillsNameCi(path.basename(dir)) && SKIP_DIRS.has(asciiLower(entry.name))) continue;
-        const resolved = path.resolve(entryPath);
-        if (visited.has(resolved)) continue;
-        visited.add(resolved);
-        stack.push(entryPath);
-        continue;
-      }
-
-      // Step 4. An entry named `skills` that is not a directory, under an `_agent_*`
-      // parent. A plain file directly inside `skills/` produces nothing, agreeing with
-      // :583's `else if is_dir()`.
-      if (isSkillsNameCi(entry.name) && MATRIX_DIR_RE.test(path.basename(dir))) {
-        collector.add({
-          code: 'E-SKILLS-NOT-DIR',
-          absolutePath: entryPath,
-          message:
-            '`skills` exists but is not a directory, so the indexer finds no skills in this matrix at all.',
-          indexerMessage: `\`skills\` exists but is not a directory: ${sanitizeForReport(entryPath)}`,
-        });
-      }
-    }
+    for (const entry of entries) visitChildEntry(dir, entry, stack, visited, collector);
 
     // Step 4, symlink arm. Handled separately because a symlink is excluded from the
     // isDirectory() branch above and must be probed to tell a resolving link from a
     // broken one: :520 gates on Path::exists, which follows links, so a broken `skills`
     // link makes exists() false and the indexer returns at :521 with NO warning at all.
     // This statSync is the only place in the walk that follows a link.
-    for (const entry of entries) {
-      if (!entry.isSymbolicLink()) continue;
-      if (!isSkillsNameCi(entry.name)) continue;
-      if (!MATRIX_DIR_RE.test(path.basename(dir))) continue;
-      const entryPath = path.join(dir, entry.name);
-      let resolves = false;
-      try {
-        resolves = fs.statSync(entryPath, { throwIfNoEntry: false }) !== undefined;
-      } catch {
-        // Path::exists returns false on ANY stat error, and the indexer is silent there.
-        resolves = false;
-      }
-      if (!resolves) continue;
-      collector.add({
-        code: 'E-SKILLS-NOT-DIR',
-        absolutePath: entryPath,
-        message:
-          '`skills` is a symlink that resolves, and :534 rejects it on is_symlink() even when the target is a directory. The indexer finds no skills in this matrix at all.',
-        indexerMessage: `\`skills\` exists but is not a directory: ${sanitizeForReport(entryPath)}`,
-      });
-    }
+    for (const entry of entries) reportResolvingSkillsLink(dir, entry, collector);
   }
 
   return { candidates, directoriesScanned, entrypointsFound };
+}
+
+function reportUnreadableDir(dir, err, collector) {
+  const code = errnoOf(err);
+  if (isCanonicalSkillsRoot(dir)) {
+    collector.add({
+      code: 'E-SKILLS-DIR-UNREADABLE',
+      absolutePath: dir,
+      message: `The \`skills\` directory could not be listed (${code}). The indexer treats this as a hard error and indexes no skill from this matrix.`,
+      indexerMessage: `\`skills\` directory could not be read: ${sanitizeForReport(code)}`,
+    });
+  } else if (isCanonicalSkillDir(dir)) {
+    collector.add({
+      code: 'E-SKILL-DIR-UNREADABLE',
+      absolutePath: dir,
+      skillDirectory: dir,
+      message: `The skill directory could not be listed (${code}). The indexer skips this skill.`,
+      indexerMessage: skippedDirectory(
+        path.basename(dir),
+        `unable to read skill directory: ${sanitizeForReport(code)}`,
+      ),
+    });
+  } else {
+    collector.add({
+      code: 'W-DIR-UNREADABLE',
+      absolutePath: dir,
+      message: `The directory could not be listed (${code}); it was skipped and the walk continued. If this is a case-variant \`skills\` directory it may still be the live skills root on Windows, where the indexer reaches it by joining the constant \`skills\`.`,
+    });
+  }
+}
+
+// Returns the number of SKILL.md entrypoints (any casing) in dir.
+function discoverEntrypoints(dir, entries, candidates, collector) {
+  // 6.3 discovery. toLowerCase() is deliberate here and is the single exception to the
+  // asciiLower() rule: over-matching is harmless because the byte-exact test follows.
+  const matches = entries.filter((entry) => entry.name.toLowerCase() === 'skill.md');
+
+  if (matches.length === 0) {
+    reportMissingEntrypoint(dir, collector);
+  } else {
+    addEntrypointCandidates(dir, matches, candidates, collector);
+  }
+  return matches.length;
+}
+
+function reportMissingEntrypoint(dir, collector) {
+  if (isSkillsNameCi(path.basename(path.dirname(dir)))) {
+    const canonical = isCanonicalSkillDir(dir);
+    collector.add({
+      code: canonical ? 'E-NO-ENTRYPOINT' : 'I-NO-ENTRYPOINT',
+      absolutePath: dir,
+      skillDirectory: dir,
+      message: canonical
+        ? 'No `SKILL.md` entrypoint in any casing. The indexer requires an exact `SKILL.md` and skips this directory.'
+        : 'No `SKILL.md` entrypoint in any casing. This directory sits under a `skills/` folder that the indexer never scans, so it is a note only.',
+      indexerMessage: canonical
+        ? skippedDirectory(path.basename(dir), 'missing exact SKILL.md entrypoint')
+        : null,
+    });
+  }
+}
+
+function addEntrypointCandidates(dir, matches, candidates, collector) {
+  const exact = matches.filter((entry) => entry.name === SKILL_MD);
+  for (const entry of matches) {
+    if (exact.length > 0 && entry.name !== SKILL_MD) {
+      // The skill works today; the stray variant is a hazard, not a rejection.
+      collector.add({
+        code: 'W-ENTRYPOINT-CASE-SHADOWED',
+        absolutePath: path.join(dir, entry.name),
+        skillDirectory: dir,
+        message: `\`${entry.name}\` sits beside an exact \`SKILL.md\`, which is the file the indexer uses. This stray variant is never read and is a hazard for the next reader.`,
+      });
+      continue;
+    }
+    candidates.push({
+      dir,
+      entryName: entry.name,
+      entrypoint: path.join(dir, entry.name),
+      dirent: entry,
+      casingError: entry.name !== SKILL_MD,
+    });
+  }
+}
+
+// One Step-3 entry: never descend into links, queue unvisited directories, and flag a
+// `skills` entry that is not a directory.
+function visitChildEntry(dir, entry, stack, visited, collector) {
+  const entryPath = path.join(dir, entry.name);
+
+  if (entry.isSymbolicLink()) {
+    // Never descend, and never apply a directory test. Node reports Windows junctions
+    // and reparse points as symbolic links, so one code path covers both platforms.
+    reportSkillDirLink(dir, entry, entryPath, collector);
+    return;
+  }
+
+  if (entry.isDirectory()) {
+    // SKIP_DIRS never applies inside a `skills/` directory: the indexer applies no
+    // name filter at all, and `target` matches ^[a-z0-9-]{1,64}$ so it is a legal
+    // skill name. Skipping it would hide a real skill from the checker.
+    if (!isSkillsNameCi(path.basename(dir)) && SKIP_DIRS.has(asciiLower(entry.name))) return;
+    const resolved = path.resolve(entryPath);
+    if (visited.has(resolved)) return;
+    visited.add(resolved);
+    stack.push(entryPath);
+    return;
+  }
+
+  // Step 4. An entry named `skills` that is not a directory, under an `_agent_*`
+  // parent. A plain file directly inside `skills/` produces nothing, agreeing with
+  // :583's `else if is_dir()`.
+  if (isSkillsNameCi(entry.name) && MATRIX_DIR_RE.test(path.basename(dir))) {
+    collector.add({
+      code: 'E-SKILLS-NOT-DIR',
+      absolutePath: entryPath,
+      message:
+        '`skills` exists but is not a directory, so the indexer finds no skills in this matrix at all.',
+      indexerMessage: `\`skills\` exists but is not a directory: ${sanitizeForReport(entryPath)}`,
+    });
+  }
+}
+
+function reportSkillDirLink(dir, entry, entryPath, collector) {
+  if (isSkillsNameCi(path.basename(dir))) {
+    const canonical = MATRIX_DIR_RE.test(path.basename(path.dirname(dir)));
+    if (canonical) {
+      collector.add({
+        code: 'E-SKILL-DIR-LINK',
+        absolutePath: entryPath,
+        skillDirectory: entryPath,
+        message:
+          'A linked entry directly under `skills/` is never followed. :578 tests only is_symlink() and never inspects the target, so this holds whether the link resolves to a directory, to a file, or to nothing.',
+        indexerMessage: `Skipped linked skill directory \`${sanitizeForReport(entry.name)}\`: linked/reparse-point directories are not followed`,
+      });
+    } else {
+      collector.add({
+        code: 'W-SKILL-DIR-LINK',
+        absolutePath: entryPath,
+        skillDirectory: entryPath,
+        message:
+          'A linked entry directly under a `skills/` folder that is not in canonical position. The indexer never scans this tree, so this is a note about a shape that would be fatal if the folder were a real skills root.',
+      });
+    }
+  }
+}
+
+function reportResolvingSkillsLink(dir, entry, collector) {
+  if (!entry.isSymbolicLink()) return;
+  if (!isSkillsNameCi(entry.name)) return;
+  if (!MATRIX_DIR_RE.test(path.basename(dir))) return;
+  const entryPath = path.join(dir, entry.name);
+  let resolves = false;
+  try {
+    resolves = fs.statSync(entryPath, { throwIfNoEntry: false }) !== undefined;
+  } catch {
+    // Path::exists returns false on ANY stat error, and the indexer is silent there.
+    resolves = false;
+  }
+  if (!resolves) return;
+  collector.add({
+    code: 'E-SKILLS-NOT-DIR',
+    absolutePath: entryPath,
+    message:
+      '`skills` is a symlink that resolves, and :534 rejects it on is_symlink() even when the target is a directory. The indexer finds no skills in this matrix at all.',
+    indexerMessage: `\`skills\` exists but is not a directory: ${sanitizeForReport(entryPath)}`,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1059,9 +1143,28 @@ function walk(root, collector) {
 
 function validateFields(candidate, mapping, collector, lineOffset) {
   const folder = path.basename(candidate.dir);
-  const entrypoint = candidate.entrypoint;
   const fileLine = (bodyLine) => (bodyLine === null ? null : bodyLine + lineOffset);
 
+  reportHyphenVariant(candidate, mapping, fileLine, collector);
+
+  // ---- name (:641-660) ----
+  const name = resolveNameField(candidate, mapping.entries.get('name'), folder, fileLine, collector);
+  if (name.stop) return { resolvedName: null, nameLine: null };
+  if (name.nameResolved && reportInvalidName(candidate, folder, name, collector)) {
+    return { resolvedName: null, nameLine: name.nameLine };
+  }
+
+  // ---- description (:674-684) ----
+  checkDescription(candidate, mapping.entries.get('description'), name.resolvedName, fileLine, collector);
+
+  // ---- when_to_use (:687-692) ----
+  checkWhenToUse(candidate, mapping.entries.get('when_to_use'), name.resolvedName, fileLine, collector);
+
+  return { resolvedName: name.nameResolved ? name.resolvedName : null, nameLine: name.nameLine };
+}
+
+function reportHyphenVariant(candidate, mapping, fileLine, collector) {
+  const entrypoint = candidate.entrypoint;
   const hyphenVariant = mapping.entries.get('when-to-use');
   if (hyphenVariant) {
     collector.add({
@@ -1073,9 +1176,12 @@ function validateFields(candidate, mapping, collector, lineOffset) {
         'The key `when-to-use` is never read. The indexer reads only the underscored `when_to_use` (:687), so this spelling is silently ignored.',
     });
   }
+}
 
-  // ---- name (:641-660) ----
-  const nameEntry = mapping.entries.get('name');
+// Resolve the skill name. Returns { stop: true } after E-NAME-NOT-STRING (the indexer
+// skips the skill), otherwise the resolved name, its source and line.
+function resolveNameField(candidate, nameEntry, folder, fileLine, collector) {
+  const entrypoint = candidate.entrypoint;
   let resolvedName = null;
   let nameSource = 'folder';
   let nameLine = null;
@@ -1114,7 +1220,7 @@ function validateFields(candidate, mapping, collector, lineOffset) {
     // 6.6.1 step 2: STOP. :641-650 is `Err(e) => { push; continue }`, so `description`
     // (:674) and `when_to_use` (:687) are never reached and any finding about them would
     // carry an indexerMessage the startup log will never print.
-    return { resolvedName: null, nameLine: null };
+    return { stop: true };
   } else {
     // :453 trims with Rust str::trim; Y5 maps an empty result to absent (:452-459).
     const trimmed = trimYamlValue(nameEntry.value);
@@ -1129,38 +1235,44 @@ function validateFields(candidate, mapping, collector, lineOffset) {
     nameResolved = true;
   }
 
-  if (nameResolved) {
-    // :464-470 is chars().count() in 1..=64 plus is_ascii_lowercase()/is_ascii_digit()/'-'.
-    // NAME_RE covers both, and for a charset-valid name the UTF-16 length equals the
-    // scalar count, so the two formulations agree; the scalar count is what the message
-    // reports, because `name.length` would misreport astral characters.
-    const scalarLength = [...resolvedName].length;
-    if (!NAME_RE.test(resolvedName)) {
-      const source =
-        nameSource === 'key'
-          ? `the \`name:\` key on line ${nameLine}.`
-          : 'the containing directory name, because no usable `name:` key is present. Either rename the directory or add a valid `name:` key.';
-      collector.add({
-        code: 'E-NAME-INVALID',
-        absolutePath: entrypoint,
-        skillDirectory: candidate.dir,
-        skillName: resolvedName,
-        line: nameLine,
-        message: `Resolved name \`${sanitizeForReport(resolvedName)}\` is not valid; expected 1-64 characters from [a-z0-9-] and this one is ${scalarLength}. Source: ${source}`,
-        indexerMessage: skippedSkill(
-          folder,
-          `invalid skill name \`${sanitizeForReport(resolvedName)}\`; expected 1-64 lowercase ASCII letters, digits, or hyphens`,
-        ),
-      });
-      // Same stop, for the same reason: :653-660 also `continue`s past the field layer.
-      // The plan states the stop only for the type failure at step 2, so this half is a
-      // tech-lead decision recorded in the Step 9 dispatch rather than plan text.
-      return { resolvedName: null, nameLine };
-    }
-  }
+  return { stop: false, resolvedName, nameSource, nameLine, nameResolved };
+}
 
-  // ---- description (:674-684) ----
-  const descEntry = mapping.entries.get('description');
+// Returns true when E-NAME-INVALID was reported (the indexer skips the skill).
+function reportInvalidName(candidate, folder, name, collector) {
+  const entrypoint = candidate.entrypoint;
+  // :464-470 is chars().count() in 1..=64 plus is_ascii_lowercase()/is_ascii_digit()/'-'.
+  // NAME_RE covers both, and for a charset-valid name the UTF-16 length equals the
+  // scalar count, so the two formulations agree; the scalar count is what the message
+  // reports, because `name.length` would misreport astral characters.
+  const scalarLength = [...name.resolvedName].length;
+  if (!NAME_RE.test(name.resolvedName)) {
+    const source =
+      name.nameSource === 'key'
+        ? `the \`name:\` key on line ${name.nameLine}.`
+        : 'the containing directory name, because no usable `name:` key is present. Either rename the directory or add a valid `name:` key.';
+    collector.add({
+      code: 'E-NAME-INVALID',
+      absolutePath: entrypoint,
+      skillDirectory: candidate.dir,
+      skillName: name.resolvedName,
+      line: name.nameLine,
+      message: `Resolved name \`${sanitizeForReport(name.resolvedName)}\` is not valid; expected 1-64 characters from [a-z0-9-] and this one is ${scalarLength}. Source: ${source}`,
+      indexerMessage: skippedSkill(
+        folder,
+        `invalid skill name \`${sanitizeForReport(name.resolvedName)}\`; expected 1-64 lowercase ASCII letters, digits, or hyphens`,
+      ),
+    });
+    // Same stop, for the same reason: :653-660 also `continue`s past the field layer.
+    // The plan states the stop only for the type failure at step 2, so this half is a
+    // tech-lead decision recorded in the Step 9 dispatch rather than plan text.
+    return true;
+  }
+  return false;
+}
+
+function checkDescription(candidate, descEntry, resolvedName, fileLine, collector) {
+  const entrypoint = candidate.entrypoint;
   if (descEntry === undefined) {
     collector.add({
       code: 'W-DESC-MISSING',
@@ -1195,9 +1307,10 @@ function validateFields(candidate, mapping, collector, lineOffset) {
       indexerMessage: 'description must be a string; inspect SKILL.md before use.',
     });
   }
+}
 
-  // ---- when_to_use (:687-692) ----
-  const whenEntry = mapping.entries.get('when_to_use');
+function checkWhenToUse(candidate, whenEntry, resolvedName, fileLine, collector) {
+  const entrypoint = candidate.entrypoint;
   if (whenEntry !== undefined && whenEntry.kind !== 'string' && whenEntry.kind !== 'undecidable') {
     collector.add({
       code: 'W-WHEN-NOT-STRING',
@@ -1209,8 +1322,6 @@ function validateFields(candidate, mapping, collector, lineOffset) {
       indexerMessage: 'when_to_use must be a string; omitted when_to_use metadata.',
     });
   }
-
-  return { resolvedName: nameResolved ? resolvedName : null, nameLine };
 }
 
 // ---------------------------------------------------------------------------
