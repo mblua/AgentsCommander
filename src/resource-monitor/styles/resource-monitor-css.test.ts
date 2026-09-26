@@ -211,7 +211,7 @@ const BASE_HIDING_EXCEPTIONS: ReadonlyArray<string> = [];
 const CONDITIONAL_HIDING_EXCEPTIONS: ReadonlyArray<string> = [];
 
 const METRIC_LEG_SELECTORS = [
-  ".rm-group-main > span:not(.rm-group-identity):not(.rm-network-pill)",
+  ".rm-group-main > span:not(.rm-group-identity)",
   ".rm-process-header > span:not(:first-child)",
   ".rm-process-row > span:not(:first-child)",
 ];
@@ -237,7 +237,7 @@ const hasColourLiteral = (body: string): boolean =>
  * the file, in either family and in whatever form it is spelled, is covered by
  * default, and a literal added to any of them fails by naming that selector.
  *
- * The stylesheet cannot simply ban literals outright: these twenty rules are
+ * The stylesheet cannot simply ban literals outright: these seventeen rules are
  * untouched pre-existing bytes that legitimately carry rgba() and hex values.
  */
 const LEGACY_COLOUR_LITERAL_SELECTORS = [
@@ -256,9 +256,6 @@ const LEGACY_COLOUR_LITERAL_SELECTORS = [
   ".rm-kill-btn:hover:not(:disabled)",
   ".rm-modal",
   ".rm-modal-backdrop",
-  ".rm-network-pill",
-  ".rm-network-pill.network-observed",
-  ".rm-network-pill.network-unknown",
   ".rm-process-empty, .rm-empty, .rm-process-error, .rm-warning-line",
   ".rm-titlebar-btn-close:hover",
 ];
@@ -328,7 +325,7 @@ describe("#2245 resource-monitor.css byte contract", () => {
 
     // Five rule groups, asserted present rather than merely not-absent.
     expect(declares(containerRule(".rm-group-main").body, "display", "grid")).toBe(true);
-    expect(trackCount(containerRule(".rm-group-main"))).toBe(8);
+    expect(trackCount(containerRule(".rm-group-main"))).toBe(7);
     const processes = containerRule(".rm-process-header");
     expect(processes.selectors).toEqual([".rm-process-header", ".rm-process-row"]);
     expect(declares(processes.body, "display", "grid")).toBe(true);
@@ -337,7 +334,7 @@ describe("#2245 resource-monitor.css byte contract", () => {
       expect(declares(containerRule(selector).body, "min-width", "0")).toBe(true);
     }
     expect(declaredValue(containerRule(".rm-status-strip"), "grid-template-columns"))
-      .toBe("repeat(5, minmax(110px, 1fr))");
+      .toBe("repeat(4, minmax(110px, 1fr))");
     expect(declares(containerRule(".rm-header").body, "flex-direction", "row")).toBe(true);
 
     // Order, in bytes. @container adds no specificity, so this comparison — and
@@ -399,15 +396,6 @@ describe("#2245 resource-monitor.css byte contract", () => {
     // strings and let a descendant or unspaced spelling through alongside.
     expect(new Set(withMaxContent[0].selectors)).toEqual(new Set(METRIC_LEG_SELECTORS));
     expect(withMaxContent[0].atRule).toBeNull();
-
-    // The pill keeps the shared ellipsis rule it already had, outside every
-    // at-rule, which is why excluding it from the leg costs nothing.
-    const shared = ALL_RULES.find(
-      (r) => r.atRule === null && r.selectors.includes(".rm-network-pill")
-    );
-    if (!shared) throw new Error("missing .rm-network-pill rule");
-    expect(declares(shared.body, "min-width", "0")).toBe(true);
-    expect(declares(shared.body, "text-overflow", "ellipsis")).toBe(true);
   });
 
   // 28
@@ -465,16 +453,16 @@ describe("#2245 resource-monitor.css byte contract", () => {
   });
 
   // 29
-  it("holds the eight- and six-track templates exactly once, inside the block", () => {
-    const eight = ALL_RULES.filter(
-      (r) => /(^|;)\s*grid-template-columns\s*:/i.test(r.body) && trackCount(r) === 8
+  it("holds the seven- and six-track templates exactly once, inside the block", () => {
+    const seven = ALL_RULES.filter(
+      (r) => /(^|;)\s*grid-template-columns\s*:/i.test(r.body) && trackCount(r) === 7
     );
     const six = ALL_RULES.filter(
       (r) => /(^|;)\s*grid-template-columns\s*:/i.test(r.body) && trackCount(r) === 6
     );
-    expect(eight).toHaveLength(1);
+    expect(seven).toHaveLength(1);
     expect(six).toHaveLength(1);
-    expect(eight[0].atRule).toBe("container");
+    expect(seven[0].atRule).toBe("container");
     expect(six[0].atRule).toBe("container");
   });
 
@@ -583,5 +571,11 @@ describe("#2581 sections never shrink under their content", () => {
       expect(declares(rule.body, "flex-shrink", "0"), selector).toBe(true);
       expect(declares(rule.body, "min-height", "0"), selector).toBe(false);
     }
+  });
+});
+
+describe("#2583 the retired socket column leaves no stylesheet bytes", () => {
+  it("never spells network anywhere in the file, comments included", () => {
+    expect(CSS).not.toContain("network");
   });
 });

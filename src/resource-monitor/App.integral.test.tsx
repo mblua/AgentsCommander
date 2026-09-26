@@ -64,8 +64,6 @@ const baseSnapshot = (): ResourceSnapshot => ({
   maxConcurrentAgentGroups: 4,
   appPrivateBytes: 2 * 1024 ** 3,
   appWorkingSetBytes: 3 * 1024 ** 3,
-  networkState: "observed",
-  networkSummary: "Observed",
   warnings: [],
   groups: [
     {
@@ -81,8 +79,6 @@ const baseSnapshot = (): ResourceSnapshot => ({
       privateBytes: 300 * MB,
       workingSetBytes: 400 * MB,
       cpuPercent: 5,
-      networkState: "observed",
-      networkSummary: "Observed",
       killAllowed: true,
       processes: [
         process(4242, { name: "node.exe", depth: 0 }),
@@ -103,8 +99,6 @@ const baseSnapshot = (): ResourceSnapshot => ({
       privateBytes: 100 * MB,
       workingSetBytes: 150 * MB,
       cpuPercent: 1,
-      networkState: "observed",
-      networkSummary: "Observed",
       killAllowed: true,
       processes: [process(5120, { name: "python.exe" })],
     },
@@ -121,8 +115,6 @@ const baseSnapshot = (): ResourceSnapshot => ({
       privateBytes: null,
       workingSetBytes: null,
       cpuPercent: null,
-      networkState: "unknown",
-      networkSummary: "Unknown",
       killAllowed: true,
       processes: [process(42, { name: "old.exe" })],
     },
@@ -146,8 +138,6 @@ const pinSnapshot = (): ResourceSnapshot => {
     privateBytes: cpu * MB,
     workingSetBytes: cpu * MB,
     cpuPercent: cpu,
-    networkState: "observed",
-    networkSummary: "Observed",
     killAllowed: true,
     processes: [process(9000 + index)],
   })) satisfies ResourceAgentGroupSnapshot[];
@@ -187,8 +177,6 @@ const numericPinSnapshot = (): ResourceSnapshot => {
     workingSetBytes: MB,
     // Distinct values, so nothing here rests on the sessionId tie-break.
     cpuPercent: 120 - index * 10,
-    networkState: "observed" as const,
-    networkSummary: "Observed",
     killAllowed: true,
     processes: [process(8000 + index)],
   }));
@@ -1055,7 +1043,6 @@ describe("#2245 Resource Monitor integral view", () => {
         "resourceMonitor.summary.activeGroups",
         "resourceMonitor.summary.processCount",
         "resourceMonitor.summary.appPrivateBytes",
-        "resourceMonitor.summary.network",
       ]);
 
       await typePid(rendered.root, "5120");
@@ -1311,7 +1298,6 @@ describe("#2245 Resource Monitor integral view", () => {
           "privateBytes",
           "workingSetBytes",
           "cpu",
-          "network",
         ]) {
           // Presence, not visibility: jsdom lays nothing out (11.6).
           expect(
@@ -1346,6 +1332,55 @@ describe("#2245 Resource Monitor integral view", () => {
         "CPU",
         "Kill Scope",
       ]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #2583 - the retired per-agent socket field leaves no element behind.
+  it("renders no retired socket tile or cell, and seven cells per group row", async () => {
+    const harness = makeHarness();
+    const rendered = await renderApp(harness);
+    try {
+      const retiredSummaryId = "resourceMonitor.summary." + "network";
+      expect(
+        rendered.root.querySelector(`[data-ac-testid="${retiredSummaryId}"]`)
+      ).toBeNull();
+      for (const groupId of ["session-a", "session-b", "session-c"]) {
+        const retiredGroupId = `resourceMonitor.group.${groupId}.` + "network";
+        expect(
+          rendered.root.querySelector(`[data-ac-testid="${retiredGroupId}"]`),
+          retiredGroupId
+        ).toBeNull();
+      }
+      const mains = Array.from(rendered.root.querySelectorAll(".rm-group-main"));
+      expect(mains).toHaveLength(3);
+      for (const main of mains) {
+        expect(main.children).toHaveLength(7);
+      }
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #2583 - a healthy snapshot reads OK even when it still carries an unknown
+  // value of the removed per-agent socket field.
+  it("renders the healthy state as OK on the State tile and the group row", async () => {
+    const okSnapshot = {
+      ...baseSnapshot(),
+      overallState: "ok",
+      ...({ ["network" + "State"]: "unknown" } as Record<string, unknown>),
+      groups: [{ ...baseSnapshot().groups[0], ...({ ["network" + "State"]: "unknown" } as Record<string, unknown>) }] } as unknown as ResourceSnapshot;
+    const harness = makeHarness(okSnapshot);
+    const rendered = await renderApp(harness);
+    try {
+      const tile = must(rendered.root, "resourceMonitor.summary.state");
+      expect(tile.className).toBe("rm-status-tile state-ok");
+      expect(tile.getAttribute("data-ac-state")).toBe("ok");
+      expect(tile.textContent).toContain("OK");
+      const rows = Array.from(rendered.root.querySelectorAll(".rm-group-row"));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].matches(".rm-group-row.state-ok")).toBe(true);
     } finally {
       rendered.cleanup();
     }
