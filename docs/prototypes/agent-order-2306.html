@@ -1403,6 +1403,12 @@
     var tool = byId(id);
     var isProposed = ctx.isProposed;
     var isRail = state.railTool === id;
+    var orderChip = "";
+    if (isProposed) {
+      var first = i === 0;
+      orderChip = '<span class="settings-agent-order-chip' + (first ? hlClass() : "") + '" title="Campo propuesto settings.json.agents[].order">order ' + ctx.orderValues[id] + '</span>' +
+        (first ? changeBadge("10") : "");
+    }
     return '' +
       '<div class="settings-agent-row-colorline">' +
         '<span class="settings-agent-swatch" style="background:' + attr(hex) + '"></span>' +
@@ -1411,10 +1417,7 @@
           ' data-color-tool="' + attr(id) + '" data-focus-key="color-' + attr(id) + '">' +
         (isProposed && i === 0 ? changeBadge("3") : "") +
         (i === 0 ? '<span class="proto-tag">Solo prototipo</span>' : "") +
-        (isProposed
-          ? '<span class="settings-agent-order-chip' + (i === 0 ? hlClass() : "") + '" title="Campo propuesto settings.json.agents[].order">order ' + ctx.orderValues[id] + '</span>' +
-            (i === 0 ? changeBadge("10") : "")
-          : "") +
+        orderChip +
         '<span class="settings-rail-pill ' + (isRail ? "left" : "available") + '">' + (isRail ? "LEFT" : "AVAILABLE") + '</span>' +
         (editing ? '<span class="draft-chip">Sin guardar</span>' : "") +
       '</div>';
