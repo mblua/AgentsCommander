@@ -44,7 +44,6 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 ### Security
 
 - **Hardening from a SonarCloud security pass.** The remote access token and window type read from the URL are validated, reconnect jitter uses a cryptographic random source, the session-bridge Docker image runs as `nobody`, npm installs in CI and Docker skip install scripts, and workflow permissions are set per job. Valid input behaves as before. ([#2645](https://github.com/mblua/AgentsCommander/issues/2645), [#2646](https://github.com/mblua/AgentsCommander/issues/2646), [#2649](https://github.com/mblua/AgentsCommander/issues/2649), [#2651](https://github.com/mblua/AgentsCommander/issues/2651), [#2653](https://github.com/mblua/AgentsCommander/issues/2653))
-
 ## 0.39.0
 
 ### Added
