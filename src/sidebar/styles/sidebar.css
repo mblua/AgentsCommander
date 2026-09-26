@@ -4090,6 +4090,7 @@ html.light-theme .settings-hint-error {
   width: auto;
   margin-left: 4px;
   margin-right: 4px;
+  flex-shrink: 0;
 }
 
 .workgroup-group-rail-scroll::-webkit-scrollbar,
