@@ -206,6 +206,22 @@ function buildRecord(now: number): IpcBlackBoxRecord {
 }
 
 /**
+ * #2646 - every `window=` value the app creates, plus the legacy detached
+ * "terminal" that main.tsx still reads. The URL is untrusted, so any other
+ * value (or a missing one) is recorded as "main".
+ */
+const KNOWN_WINDOW_TYPES: ReadonlySet<string> = new Set([
+  "main",
+  "browser",
+  "detached",
+  "resource-monitor",
+  "screenshot-overlay",
+  "spec-board",
+  "watchers",
+  "terminal",
+]);
+
+/**
  * The one writer. The heartbeat and the `pagehide` handler both call it, so the
  * record shape cannot drift between them.
  *
@@ -255,7 +271,8 @@ async function runInstall(): Promise<void> {
   }
 
   try {
-    windowType = new URLSearchParams(window.location.search).get("window") ?? "main";
+    const raw = new URLSearchParams(window.location.search).get("window");
+    windowType = raw !== null && KNOWN_WINDOW_TYPES.has(raw) ? raw : "main";
   } catch {
     windowType = "main";
   }
