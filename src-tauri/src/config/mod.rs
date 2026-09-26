@@ -4,6 +4,7 @@ pub mod agent_command;
 pub mod agent_config;
 pub mod agent_creation;
 pub(crate) mod agent_memory;
+pub mod agent_path;
 pub mod archive_gate;
 pub mod co_managed;
 pub mod coding_agent_mutations;

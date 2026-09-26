@@ -969,6 +969,22 @@ pub(crate) fn resolve_claude_projects_dir(
     shell_args: &[String],
     cwd: &str,
 ) -> Option<std::path::PathBuf> {
+    resolve_claude_projects_dir_in(
+        shell,
+        shell_args,
+        cwd,
+        &crate::config::agent_path::effective_search_path(),
+    )
+}
+
+/// #2589 - `resolve_claude_projects_dir` resolving a bare wrapper token through
+/// an explicit search path.
+pub(crate) fn resolve_claude_projects_dir_in(
+    shell: &str,
+    shell_args: &[String],
+    cwd: &str,
+    search_path: &std::ffi::OsStr,
+) -> Option<std::path::PathBuf> {
     use std::path::{Path, PathBuf};
 
     fn default_base() -> Option<PathBuf> {
@@ -1094,7 +1110,8 @@ pub(crate) fn resolve_claude_projects_dir(
 
     // Non-default name (e.g. `claude-mb`). Try to resolve to an actual file
     // and parse it for a CLAUDE_CONFIG_DIR override.
-    if let Some(file) = crate::config::agent_command::resolve_program(&claude_token) {
+    if let Some(file) = crate::config::agent_command::resolve_program_in(&claude_token, search_path)
+    {
         if looks_like_wrapper_extension(&file) {
             if let Some(custom_base) = parse_config_dir_from_wrapper(&file) {
                 return Some(custom_base.join("projects").join(&mangled));
@@ -12337,6 +12354,99 @@ mod tests {
                     "/home/test/repo",
                 ));
         assert_eq!(resolved, Some(expected));
+    }
+
+    #[cfg(unix)]
+    fn agent_path_2589_wrapper_fixture(name: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("user-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let custom_base = tmp.path().join(".claude-mb");
+        let wrapper = write_wrapper(
+            &bin,
+            name,
+            &format!(
+                "#!/usr/bin/env bash
+export CLAUDE_CONFIG_DIR={}
+exec claude \"$@\"
+",
+                custom_base.display()
+            ),
+        );
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (tmp, bin, custom_base)
+    }
+
+    #[cfg(unix)]
+    fn agent_path_2589_search_path(extra: Option<&std::path::Path>) -> std::ffi::OsString {
+        crate::config::agent_path::compose(&crate::config::agent_path::SearchPathInputs {
+            inherited: Some(std::ffi::OsString::from("/bin:/usr/bin")),
+            home: None,
+            login_shell_path: extra.map(|dir| dir.as_os_str().to_os_string()),
+        })
+    }
+
+    #[cfg(unix)]
+    fn agent_path_2589_default_base(cwd: &str) -> Option<PathBuf> {
+        dirs::home_dir().map(|home| {
+            home.join(".claude")
+                .join("projects")
+                .join(crate::session::session::mangle_cwd_for_claude(cwd))
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_path_2589_claude_wrapper_in_a_user_bin_dir_is_parsed() {
+        let (_tmp, bin, custom_base) = agent_path_2589_wrapper_fixture("claude-mb.sh");
+        let cwd = "/home/test/repo";
+        let resolved = super::resolve_claude_projects_dir_in(
+            "claude-mb.sh",
+            &[],
+            cwd,
+            &agent_path_2589_search_path(Some(&bin)),
+        );
+        let expected = custom_base
+            .join("projects")
+            .join(crate::session::session::mangle_cwd_for_claude(cwd));
+        assert_eq!(resolved, Some(expected));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_path_2589_claude_wrapper_without_the_added_dir_falls_back() {
+        let (_tmp, _bin, custom_base) = agent_path_2589_wrapper_fixture("claude-mb.sh");
+        let cwd = "/home/test/repo";
+        let resolved = super::resolve_claude_projects_dir_in(
+            "claude-mb.sh",
+            &[],
+            cwd,
+            &agent_path_2589_search_path(None),
+        );
+        assert_eq!(resolved, agent_path_2589_default_base(cwd));
+        assert_ne!(
+            resolved,
+            Some(
+                custom_base
+                    .join("projects")
+                    .join(crate::session::session::mangle_cwd_for_claude(cwd))
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_path_2589_claude_wrapper_without_extension_uses_the_default_base() {
+        let (_tmp, bin, _custom_base) = agent_path_2589_wrapper_fixture("claude-mb");
+        let search_path = agent_path_2589_search_path(Some(&bin));
+        assert!(
+            crate::config::agent_command::resolve_program_in("claude-mb", &search_path).is_some(),
+            "the extensionless wrapper now resolves through the added dir"
+        );
+        let cwd = "/home/test/repo";
+        let resolved = super::resolve_claude_projects_dir_in("claude-mb", &[], cwd, &search_path);
+        assert_eq!(resolved, agent_path_2589_default_base(cwd));
     }
 
     // ──────────────────────────────────────────────────────────────────────

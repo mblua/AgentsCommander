@@ -8,6 +8,8 @@ import { bridgesStore } from "../stores/bridges";
 import { sessionsStore } from "../stores/sessions";
 import { requestCoordinatorClose } from "../stores/coordinator-close";
 import { settingsStore } from "../../shared/stores/settings";
+import { toastStore } from "../../shared/stores/toasts";
+import { launchErrorMessage } from "../../shared/launch-errors";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
@@ -18,7 +20,7 @@ import { quotaChipAttrs } from "./agent-quota";
 import { TelegramIcon } from "./TelegramIcon";
 import DetachIcon from "./DetachIcon";
 import ReattachIcon from "./ReattachIcon";
-import { profileDisplayLabel, sessionProfileBadge } from "../../shared/profile-utils";
+import { profileDisplayLabel, sessionProfileBadge, sessionTierBadge } from "../../shared/profile-utils";
 import { sessionDotClass } from "./session-status";
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
@@ -362,6 +364,7 @@ const SessionItem: Component<{
       );
     } catch (e) {
       console.error("Failed to restart session:", e);
+      toastStore.error(launchErrorMessage(e));
     }
   };
 
@@ -463,6 +466,13 @@ const SessionItem: Component<{
             )}</Show>
             <Show when={profileBadge()}>{(badge) => (
               <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>
+            )}</Show>
+            <Show when={sessionTierBadge(props.session)}>{(tier) => (
+              <span
+                class="profile-badge profile-badge--tier"
+                title={tier().title}
+                data-ac-testid={`session.${props.session.id}.tierBadge`}
+              >{tier().text}</span>
             )}</Show>
             <Show when={ctxVisible()}>
               <ContextBadge percent={ctxPercent()} testId={`session.${props.session.id}.contextBadge`} />

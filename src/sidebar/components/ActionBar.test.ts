@@ -363,7 +363,6 @@ describe("ActionBar helpers (#2611)", () => {
     return {
       snapshot: {
         overallState: "ok",
-        networkState: "ok",
         activeAgentGroups: 1,
         maxConcurrentAgentGroups: 4,
         ...overrides,
@@ -379,10 +378,11 @@ describe("ActionBar helpers (#2611)", () => {
     ["critical", true, snap({ overallState: "critical" })],
     ["enforcing", true, snap({ overallState: "enforcing" })],
     ["warn", true, snap({ overallState: "warn", activeAgentGroups: 9 })],
-    ["limit", true, snap({ activeAgentGroups: 4, networkState: "unknown" })],
+    ["limit", true, snap({ activeAgentGroups: 4 })],
     ["ok", true, snap({ activeAgentGroups: 9, maxConcurrentAgentGroups: 0 })],
     ["unknown", true, snap({ overallState: "unknown" })],
-    ["unknown", true, snap({ networkState: "unknown" })],
+    // retired-field probe for step 7: an unknown value of the removed per-agent socket field must not gate the badge
+    ["ok", true, snap({ ["network" + "State"]: "unknown" })],
     ["ok", undefined, snap()],
   ])("computeResourceBadgeState -> %s", (expected, enabled, monitor) => {
     expect(computeResourceBadgeState(enabled as boolean | undefined, monitor)).toBe(expected);

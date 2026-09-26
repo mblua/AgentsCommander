@@ -28,6 +28,7 @@ import {
   resolveProfileLabel,
   resolveProfilePreview,
   sessionProfileBadge,
+  sessionTierBadge,
   shouldMaskEnvValue,
   shouldOfferRestartAfterAssign,
   stringifyArgv,
@@ -692,5 +693,73 @@ describe("suggestedQuotaRegex (#2482 weekly quota)", () => {
     const match = new RegExp(CLAUDE_WEEKLY_QUOTA_REGEX).exec(row);
     expect(match).not.toBeNull();
     expect(match?.[1]).not.toBe("3");
+  });
+});
+
+describe("sessionTierBadge (#2435 weak-tier profile match)", () => {
+  const LABEL_TITLE = "Matched by coding-agent name, not by configuration. Effective profile: B.";
+  const CMD_TITLE = "Matched by command, not by name or configuration. Effective profile: B.";
+
+  it("hash tier adds no second badge", () => {
+    expect(sessionTierBadge({ effectiveProfile: "B", matchTier: "hash" })).toBeNull();
+  });
+
+  it("label tier renders the middle-dot name form with the label tooltip", () => {
+    const tier = sessionTierBadge({ effectiveProfile: "B", matchTier: "labelAndLetter" });
+    expect(tier).toEqual({ text: "B·nombre", title: LABEL_TITLE });
+    expect(tier!.text.codePointAt(1)).toBe(0x00b7);
+    expect(tier!.text).toHaveLength(8);
+  });
+
+  it("command tier renders the middle-dot cmd form with the command tooltip", () => {
+    const tier = sessionTierBadge({ effectiveProfile: "B", matchTier: "commandAndLetter" });
+    expect(tier).toEqual({ text: "B·cmd", title: CMD_TITLE });
+    expect(tier!.text.codePointAt(1)).toBe(0x00b7);
+  });
+
+  it("the two tier tooltips are not equal", () => {
+    const label = sessionTierBadge({ effectiveProfile: "B", matchTier: "labelAndLetter" });
+    const cmd = sessionTierBadge({ effectiveProfile: "B", matchTier: "commandAndLetter" });
+    expect(label!.title).not.toBe(cmd!.title);
+  });
+
+  it("an unknown original letter does not change the text", () => {
+    for (const matchTier of ["labelAndLetter", "commandAndLetter"] as const) {
+      const unknown = sessionTierBadge({ effectiveProfile: "B", matchTier, originalProfileLetter: null } as Parameters<typeof sessionTierBadge>[0]);
+      const known = sessionTierBadge({ effectiveProfile: "B", matchTier, originalProfileLetter: "A" } as Parameters<typeof sessionTierBadge>[0]);
+      expect(known).toEqual(unknown);
+      expect(known!.text).not.toContain("A");
+      expect(known!.text).not.toContain("->");
+    }
+  });
+
+  it("an absent tier returns null", () => {
+    expect(sessionTierBadge({ effectiveProfile: "B" })).toBeNull();
+  });
+
+  it("a null tier returns null", () => {
+    expect(sessionTierBadge({ effectiveProfile: "B", matchTier: null })).toBeNull();
+  });
+
+  it("an unrecognised tier string returns null", () => {
+    expect(
+      sessionTierBadge({ effectiveProfile: "B", matchTier: "localId" as unknown as "hash" }),
+    ).toBeNull();
+  });
+
+  it("a weak tier with no effective letter returns null", () => {
+    expect(sessionTierBadge({ effectiveProfile: null, matchTier: "labelAndLetter" })).toBeNull();
+    expect(sessionTierBadge({ effectiveProfile: "", matchTier: "commandAndLetter" })).toBeNull();
+  });
+
+  it("the existing fallback badge is unaffected", () => {
+    expect(
+      sessionProfileBadge({
+        requestedProfile: "A",
+        effectiveProfile: "B",
+        profileFallbackApplied: true,
+        matchTier: "labelAndLetter",
+      } as Parameters<typeof sessionProfileBadge>[0]),
+    ).toBe("A->B");
   });
 });

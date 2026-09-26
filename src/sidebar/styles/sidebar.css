@@ -998,6 +998,12 @@ html, body, #root {
   line-height: 1;
   white-space: nowrap;
 }
+/* #2435 - weak-tier profile match: same amber family as .profile-outdated-badge.
+   A signal, not a control: colour only. */
+.profile-badge--tier {
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+}
 
 /* #1033 - context-window reading. A signal, never a control: no cursor, no hover
    affordance, no colour that encodes a value, no threshold, no animation. */
@@ -4090,6 +4096,7 @@ html.light-theme .settings-hint-error {
   width: auto;
   margin-left: 4px;
   margin-right: 4px;
+  flex-shrink: 0;
 }
 
 .workgroup-group-rail-scroll::-webkit-scrollbar,
@@ -10149,4 +10156,10 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
    would leave it focusable by Tab while invisible. The rail is a sibling. */
 .sidebar-compact .sidebar-scrollable {
   display: none;
+}
+
+/* #2655 - overlay panels focused on mount so Escape reaches their backdrop;
+   the programmatic focus must not draw a ring. */
+.ac-escape-focus-host:focus {
+  outline: none;
 }

@@ -6,6 +6,7 @@
 //! `<program> <fixed argv>` with a bound, parses, sanitizes, and caches.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -955,8 +956,25 @@ fn parse_probe_completion(
 /// runner is NOT reused: it executes shell strings, is pinned by six tests, and
 /// has a different failure contract.
 pub async fn probe_version(program: &Path, args: &[&str], timeout: Duration) -> ProbeOutcome {
+    probe_version_in(
+        program,
+        args,
+        timeout,
+        &crate::config::agent_path::effective_search_path(),
+    )
+    .await
+}
+
+/// #2589 - `probe_version` with an explicit PATH for the probe process, so an
+/// agent whose shebang is `#!/usr/bin/env node` finds its interpreter.
+pub async fn probe_version_in(
+    program: &Path,
+    args: &[&str],
+    timeout: Duration,
+    search_path: &OsStr,
+) -> ProbeOutcome {
     let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-    match probe_version_cancellable(program, args, timeout, cancel_rx).await {
+    match probe_version_cancellable(program, args, timeout, search_path, cancel_rx).await {
         CancellableProbeOutcome::Completed(outcome) => outcome,
         CancellableProbeOutcome::Cancelled => {
             ProbeOutcome::Failed("probe cancelled unexpectedly".to_string())
@@ -969,6 +987,7 @@ pub async fn probe_version_cancellable(
     program: &Path,
     args: &[&str],
     timeout: Duration,
+    search_path: &OsStr,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> CancellableProbeOutcome {
     let mut owner = RetainedProbeOwner::default();
@@ -976,6 +995,7 @@ pub async fn probe_version_cancellable(
         program,
         args,
         timeout,
+        search_path,
         &mut cancel,
         &mut owner,
         || {},
@@ -990,10 +1010,12 @@ pub async fn probe_version_cancellable(
 /// runs synchronously only after the real process owner is stored in `owner_slot`;
 /// `cancellation_observed` runs while that owner is still retained and before
 /// settlement is awaited to completion.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn probe_version_cancellable_retained<I, O>(
     program: &Path,
     args: &[&str],
     timeout: Duration,
+    search_path: &OsStr,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     owner_slot: &mut RetainedProbeOwner,
     owner_installed: I,
@@ -1006,6 +1028,7 @@ where
     let mut command = {
         let mut c = tokio::process::Command::new(program);
         c.args(args);
+        c.env("PATH", search_path);
         c.stdin(Stdio::null());
         c.stdout(Stdio::piped());
         c.stderr(Stdio::piped());
@@ -1470,8 +1493,14 @@ mod tests {
             let args: Vec<String> = args.into_iter().map(str::to_string).collect();
             async move {
                 let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-                probe_version_cancellable(&program, &borrowed, Duration::from_secs(30), cancel_rx)
-                    .await
+                probe_version_cancellable(
+                    &program,
+                    &borrowed,
+                    Duration::from_secs(30),
+                    &std::env::var_os("PATH").unwrap_or_default(),
+                    cancel_rx,
+                )
+                .await
             }
         });
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1512,6 +1541,7 @@ mod tests {
                             &program,
                             &borrowed,
                             Duration::from_secs(10),
+                            &std::env::var_os("PATH").unwrap_or_default(),
                             cancel_rx,
                         )
                         .await

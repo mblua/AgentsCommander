@@ -21,6 +21,7 @@
 //! Dropping the public await cannot orphan the pass or release the gate early.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsStr;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -37,13 +38,14 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::agent_version::{
-    probe_version, probe_version_cancellable_retained, version_probe_args, AgentInstallCache,
+    probe_version_cancellable_retained, probe_version_in, version_probe_args, AgentInstallCache,
     CancellableProbeOutcome, Completion, InstallState, InstallStatus, ProbeOutcome, ProbeTicket,
     RetainedProbeOwner, Scheduling, INSTALL_CACHE_TTL, PROBE_TIMEOUT,
 };
 use crate::config::agent_command::{
-    is_bare_program_token, normalize_legacy_agent_command, resolve_program,
+    is_bare_program_token, normalize_legacy_agent_command, resolve_program, resolve_program_in,
 };
+use crate::config::agent_path::{effective_search_path, warm_login_shell_path};
 use crate::config::coding_agents_catalog::{
     load_catalog_for_settings, primary_project_root, CatalogUnavailable, CodingAgentDefinition,
 };
@@ -1548,12 +1550,27 @@ pub fn build_update_overview_rows(
 fn resolve_command_install_probe(
     command: &str,
 ) -> Result<(PathBuf, &'static [&'static str]), InstallState> {
+    resolve_command_install_probe_with(command, resolve_program)
+}
+
+/// #2589 - `resolve_command_install_probe` against an explicit search path.
+fn resolve_command_install_probe_in(
+    command: &str,
+    search_path: &OsStr,
+) -> Result<(PathBuf, &'static [&'static str]), InstallState> {
+    resolve_command_install_probe_with(command, |token| resolve_program_in(token, search_path))
+}
+
+fn resolve_command_install_probe_with(
+    command: &str,
+    resolve: impl FnOnce(&str) -> Option<PathBuf>,
+) -> Result<(PathBuf, &'static [&'static str]), InstallState> {
     let Ok(normalized) = normalize_legacy_agent_command(command) else {
         return Err(InstallState::missing("empty command".to_string()));
     };
     let token = normalized.shell;
     let bare = is_bare_program_token(&token);
-    let Some(path) = resolve_program(&token) else {
+    let Some(path) = resolve(&token) else {
         return Err(InstallState::missing(if bare {
             format!("'{token}' was not found on PATH")
         } else {
@@ -1580,11 +1597,18 @@ fn resolve_command_install_probe(
 }
 
 pub async fn probe_command_install_state(command: &str) -> InstallState {
-    let (path, args) = match resolve_command_install_probe(command) {
+    warm_login_shell_path().await;
+    probe_command_install_state_in(command, &effective_search_path()).await
+}
+
+/// #2589 - resolve AND execute the probe with `search_path`, so both the agent
+/// and its `#!/usr/bin/env` interpreter are found.
+async fn probe_command_install_state_in(command: &str, search_path: &OsStr) -> InstallState {
+    let (path, args) = match resolve_command_install_probe_in(command, search_path) {
         Ok(probe) => probe,
         Err(state) => return state,
     };
-    match probe_version(&path, args, PROBE_TIMEOUT).await {
+    match probe_version_in(&path, args, PROBE_TIMEOUT, search_path).await {
         ProbeOutcome::Version(version) => InstallState::installed(version, &path),
         ProbeOutcome::Failed(detail) => InstallState::probe_failed(&path, detail),
     }
@@ -1618,6 +1642,7 @@ where
         &path,
         args,
         PROBE_TIMEOUT,
+        &effective_search_path(),
         cancel,
         owner_slot,
         owner_installed,
@@ -2476,6 +2501,33 @@ async fn wait_for_target_cancellation(cancel: &mut tokio::sync::watch::Receiver<
 /// no stdin, output tail-captured concurrently with the wait (a chatty command
 /// must never block on the 64KB pipe buffer). Per-step timeout kills the WHOLE
 /// tree (Windows JobObject, Unix process-group kill).
+/// #2589 - one updater step's process, with `search_path` as its PATH so a
+/// GUI-launched app finds agents installed in the user's bin dirs.
+fn build_update_step_command(
+    cmd: &str,
+    cwd: &Path,
+    search_path: &OsStr,
+) -> tokio::process::Command {
+    let mut command = if cfg!(windows) {
+        let mut command = tokio::process::Command::new("cmd.exe");
+        command.arg("/C").arg(cmd);
+        command
+    } else {
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg(cmd);
+        command
+    };
+    command.current_dir(cwd);
+    command.env("PATH", search_path);
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    command.kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    command
+}
+
 async fn run_update_sequence_cancellable(
     target: &UpdateTarget,
     step_timeout: Duration,
@@ -2504,25 +2556,7 @@ async fn run_update_sequence_cancellable(
         gate.hold_after_step_commit_for_test(&target.command).await;
         owner_slot.arm(work, epoch, cancel);
 
-        let mut command = {
-            let mut command = if cfg!(windows) {
-                let mut command = tokio::process::Command::new("cmd.exe");
-                command.arg("/C").arg(cmd);
-                command
-            } else {
-                let mut command = tokio::process::Command::new("sh");
-                command.arg("-c").arg(cmd);
-                command
-            };
-            command.current_dir(&target.cwd);
-            command.stdin(Stdio::null());
-            command.stdout(Stdio::piped());
-            command.stderr(Stdio::piped());
-            command.kill_on_drop(true);
-            command
-        };
-        #[cfg(unix)]
-        command.process_group(0);
+        let mut command = build_update_step_command(cmd, &target.cwd, &effective_search_path());
 
         match TargetProcessOwner::spawn(&mut command).await {
             Ok(owner) => owner_slot.updater = Some(owner),
@@ -3453,6 +3487,7 @@ impl PassSupervisor {
 /// supervisor task owns every target and finalization fence, so aborting or
 /// dropping this outer future cannot abort the pass.
 pub async fn run_startup_updates(app: AppHandle, gate: Arc<AgentUpdateGate>) {
+    warm_login_shell_path().await;
     let completion = PassSupervisor::spawn(app, gate);
     let _ = completion.await;
 }
@@ -8533,5 +8568,160 @@ mod tests {
             vec!["pending", "prompt", "starting", "done"]
         );
         assert!(gate.snapshot().cancel_all_requested);
+    }
+
+    #[cfg(unix)]
+    fn agent_path_2589_executable(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// Test-chosen inherited PATH (never the runner's): enough for `sh` and
+    /// `/usr/bin/env`, and holding no fixture binary.
+    #[cfg(unix)]
+    fn agent_path_2589_compose(extra: &[&Path]) -> std::ffi::OsString {
+        crate::config::agent_path::compose(&crate::config::agent_path::SearchPathInputs {
+            inherited: Some(std::ffi::OsString::from("/bin:/usr/bin")),
+            home: None,
+            login_shell_path: (!extra.is_empty())
+                .then(|| std::env::join_paths(extra).expect("join test paths")),
+        })
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_path_2589_update_step_finds_a_user_bin_agent_and_fails_without_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("user-bin");
+        agent_path_2589_executable(
+            &bin,
+            "ac-2589-fake",
+            "#!/bin/sh
+exit 0
+",
+        );
+
+        // `output()`, not `status()`: tokio's `status()` drops the piped
+        // stdout/stderr, so `sh` dies of SIGPIPE writing "not found" (macOS)
+        // instead of exiting 127.
+        let with_dir = agent_path_2589_compose(&[&bin]);
+        let status = build_update_step_command("ac-2589-fake", tmp.path(), &with_dir)
+            .output()
+            .await
+            .expect("spawn update step")
+            .status;
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "the added dir makes the agent resolvable"
+        );
+
+        let without_dir = agent_path_2589_compose(&[]);
+        let status = build_update_step_command("ac-2589-fake", tmp.path(), &without_dir)
+            .output()
+            .await
+            .expect("spawn update step")
+            .status;
+        assert_eq!(
+            status.code(),
+            Some(127),
+            "without the dir the agent is not found"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_path_2589_install_probe_reports_installed_for_a_user_bin_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("agent-bin");
+        let agent = agent_path_2589_executable(
+            &bin,
+            "ac-2589-fake-agent",
+            "#!/bin/sh
+echo 'ac-2589-fake-agent 1.2.3'
+",
+        );
+        crate::agent_version::with_version_probe_args_for_test(
+            "ac-2589-fake-agent",
+            &["--version"],
+            async {
+                let state = probe_command_install_state_in(
+                    "ac-2589-fake-agent",
+                    &agent_path_2589_compose(&[&bin]),
+                )
+                .await;
+                assert_eq!(state.status, InstallStatus::Installed, "{state:?}");
+                assert_eq!(state.version.as_deref(), Some("1.2.3"));
+                assert_eq!(
+                    state.path.as_deref(),
+                    Some(agent.to_string_lossy().as_ref())
+                );
+
+                let state = probe_command_install_state_in(
+                    "ac-2589-fake-agent",
+                    &agent_path_2589_compose(&[]),
+                )
+                .await;
+                assert_eq!(state.status, InstallStatus::Missing, "{state:?}");
+                assert!(
+                    state
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("was not found on PATH")),
+                    "{state:?}"
+                );
+            },
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_path_2589_install_probe_resolves_an_env_shebang_interpreter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_bin = tmp.path().join("agent-bin");
+        let interp_bin = tmp.path().join("interp-bin");
+        agent_path_2589_executable(
+            &agent_bin,
+            "ac-2589-fake-agent",
+            "#!/usr/bin/env ac-2589-fake-interp
+",
+        );
+        agent_path_2589_executable(
+            &interp_bin,
+            "ac-2589-fake-interp",
+            "#!/bin/sh
+echo 'ac-2589-fake-agent 4.5.6'
+",
+        );
+        crate::agent_version::with_version_probe_args_for_test(
+            "ac-2589-fake-agent",
+            &["--version"],
+            async {
+                let state = probe_command_install_state_in(
+                    "ac-2589-fake-agent",
+                    &agent_path_2589_compose(&[&agent_bin, &interp_bin]),
+                )
+                .await;
+                assert_eq!(state.status, InstallStatus::Installed, "{state:?}");
+                assert_eq!(state.version.as_deref(), Some("4.5.6"));
+
+                let state = probe_command_install_state_in(
+                    "ac-2589-fake-agent",
+                    &agent_path_2589_compose(&[&agent_bin]),
+                )
+                .await;
+                assert_eq!(
+                    state.status,
+                    InstallStatus::ProbeFailed,
+                    "the agent resolves but its interpreter does not: {state:?}"
+                );
+            },
+        )
+        .await;
     }
 }

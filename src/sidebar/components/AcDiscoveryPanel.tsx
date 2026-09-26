@@ -1,4 +1,4 @@
-import { Component, createSignal, For, Show, onMount, onCleanup } from "solid-js";
+import { Component, createEffect, createSignal, For, Show, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcAgentMatrix, AcTeam, AcWorkgroup, AcAgentReplica } from "../../shared/types";
 import { AcDiscoveryAPI, SessionAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
@@ -7,6 +7,8 @@ import AgentPickerModal from "./AgentPickerModal";
 import { sessionsStore } from "../stores/sessions";
 import { stripFrontmatter } from "../../shared/markdown";
 import { homeStore } from "../../main/stores/home";
+import { toastStore } from "../../shared/stores/toasts";
+import { launchErrorMessage } from "../../shared/launch-errors";
 
 interface PendingLaunch {
   path: string;
@@ -176,6 +178,16 @@ const AcDiscoveryPanel: Component = () => {
     setNewCtxPath("");
   };
 
+  // #2655 - Escape = backdrop click while the panel is open (AgentMatrixNoticeModal idiom).
+  createEffect(() => {
+    if (!ctxFilesReplica()) return;
+    const onEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeContextFilesPanel();
+    };
+    document.addEventListener("keydown", onEscape);
+    onCleanup(() => document.removeEventListener("keydown", onEscape));
+  });
+
   let unmounted = false;
   let unlistenBranch: (() => void) | null = null;
 
@@ -344,7 +356,10 @@ const AcDiscoveryPanel: Component = () => {
                       setCtxMenuReplica(null);
                       cleanupCtxMenu();
                       try { await SessionAPI.restart(session.id); }
-                      catch (err) { console.error("Failed to restart session:", err); }
+                      catch (err) {
+                        console.error("Failed to restart session:", err);
+                        toastStore.error(launchErrorMessage(err));
+                      }
                     }}
                   >
                     Restart Session

@@ -564,3 +564,30 @@ export function sessionProfileBadge(
   }
   return session.effectiveProfile ?? session.requestedProfile;
 }
+
+/**
+ * #2435 - second badge for a profile matched by a weak tier (label or command
+ * instead of the content hash). `null` means "add no second badge": hash tier,
+ * absent, null or unknown tier, or no effective letter to print. The original
+ * letter is deliberately never shown. Separate from `sessionProfileBadge` so
+ * that function's output (search text) stays unchanged.
+ */
+export function sessionTierBadge(
+  session: Pick<Session, "effectiveProfile" | "matchTier">
+): { text: string; title: string } | null {
+  const letter = session.effectiveProfile;
+  if (!letter) return null;
+  if (session.matchTier === "labelAndLetter") {
+    return {
+      text: `${letter}·nombre`,
+      title: `Matched by coding-agent name, not by configuration. Effective profile: ${letter}.`,
+    };
+  }
+  if (session.matchTier === "commandAndLetter") {
+    return {
+      text: `${letter}·cmd`,
+      title: `Matched by command, not by name or configuration. Effective profile: ${letter}.`,
+    };
+  }
+  return null;
+}

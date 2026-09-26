@@ -124,4 +124,19 @@ describe("RestartPromptModal (#537)", () => {
     expect(onLater).not.toHaveBeenCalled();
     dispose();
   });
+
+  // #2655 - Escape on the dialog does exactly what a backdrop click does.
+  it("focuses the dialog on mount and treats Escape like a backdrop click", async () => {
+    const { dispose, onRestart, onLater } = renderModal({ busy: true });
+    const dialog = target("restartPrompt.modal");
+    await vi.waitFor(() => expect(document.activeElement).toBe(dialog));
+    for (const [key, calls] of [["Enter", 0], ["Escape", 1]] as const) {
+      dialog.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+      expect(onLater).toHaveBeenCalledTimes(calls);
+    }
+    target("restartPrompt.overlay").click();
+    expect(onLater).toHaveBeenCalledTimes(2);
+    expect(onRestart).not.toHaveBeenCalled();
+    dispose();
+  });
 });

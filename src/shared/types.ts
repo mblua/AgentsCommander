@@ -65,6 +65,10 @@ export interface Session {
   profileFallbackChain: string[];
   profileFallbackApplied: boolean;
   profileOutdated?: boolean;
+  /** #2434 - tier that matched the profile reference; absent and null are equal. */
+  matchTier?: "hash" | "labelAndLetter" | "commandAndLetter" | null;
+  /** #2434 - source letter when known and different. Not rendered by the UI. */
+  originalProfileLetter?: string | null;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };
@@ -1117,7 +1121,6 @@ export type ResourceOverallState =
   | "critical"
   | "enforcing"
   | "unknown";
-export type ResourceNetworkState = "unknown" | "observed";
 export type ResourceGroupState =
   | "starting"
   | "running"
@@ -1168,8 +1171,6 @@ export interface ResourceAgentGroupSnapshot {
   privateBytes?: number | null;
   workingSetBytes?: number | null;
   cpuPercent?: number | null;
-  networkState: ResourceNetworkState;
-  networkSummary: string;
   killAllowed?: boolean;
   processes: ResourceProcessSnapshot[];
   lastError?: string | null;
@@ -1183,8 +1184,6 @@ export interface ResourceSnapshot {
   maxConcurrentAgentGroups: number;
   appPrivateBytes?: number | null;
   appWorkingSetBytes?: number | null;
-  networkState: ResourceNetworkState;
-  networkSummary: string;
   groups: ResourceAgentGroupSnapshot[];
   warnings: string[];
   /** #2581 - per-agent memory warnings. Optional for older producers. */

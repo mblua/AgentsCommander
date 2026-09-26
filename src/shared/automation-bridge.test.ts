@@ -682,19 +682,19 @@ describe("automation bridge", () => {
   });
 
   it("includes text for telemetry roles used by automation assertions", async () => {
-    const metric = addTarget("div", "resourceMonitor.summary.network", "Network Unknown");
+    const metric = addTarget("div", "resourceMonitor.summary.appPrivateBytes", "120 MB");
     metric.setAttribute("data-ac-role", "metric");
     const group = addTarget("div", "resourceMonitor.group.session-1", "cap-one running");
     group.setAttribute("data-ac-role", "group");
 
     const response = await executeAutomationRequest(
       "resource-monitor",
-      request("query", "resourceMonitor.summary.network"),
+      request("query", "resourceMonitor.summary.appPrivateBytes"),
     );
 
     expect(response.ok).toBe(true);
     if (!response.ok) throw new Error(response.message);
-    expect(response.target.text).toBe("Network Unknown");
+    expect(response.target.text).toBe("120 MB");
 
     const groupResponse = await executeAutomationRequest(
       "resource-monitor",

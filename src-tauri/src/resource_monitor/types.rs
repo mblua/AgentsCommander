@@ -53,13 +53,6 @@ pub enum ResourceOverallState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum ResourceNetworkState {
-    Unknown,
-    Observed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub enum ResourceGroupState {
     Running,
     Terminating,
@@ -147,8 +140,6 @@ pub struct ResourceAgentGroupSnapshot {
     pub private_bytes: Option<u64>,
     pub working_set_bytes: Option<u64>,
     pub cpu_percent: Option<f64>,
-    pub network_state: ResourceNetworkState,
-    pub network_summary: String,
     pub processes: Vec<ResourceProcessSnapshot>,
     pub kill_allowed: bool,
     pub last_error: Option<String>,
@@ -164,8 +155,6 @@ pub struct ResourceSnapshot {
     pub max_concurrent_agent_groups: u32,
     pub app_private_bytes: Option<u64>,
     pub app_working_set_bytes: Option<u64>,
-    pub network_state: ResourceNetworkState,
-    pub network_summary: String,
     pub groups: Vec<ResourceAgentGroupSnapshot>,
     pub warnings: Vec<String>,
     /// #2581 - per-agent memory warnings, keyed by session so the UI can name
