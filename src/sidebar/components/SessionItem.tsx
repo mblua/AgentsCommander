@@ -533,7 +533,7 @@ const SessionItem: Component<{
             style={telegramUi(bridge()).style}
           ><TelegramIcon /></button>
           <Show when={showBotMenu()}>
-            <div class="session-item-bot-menu" role="presentation" onClick={(e) => e.stopPropagation()}>
+            <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
               <For each={availableBots()}>
                 {(bot) => (
                   <button
