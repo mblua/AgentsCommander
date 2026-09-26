@@ -1,4 +1,4 @@
-import { Component, createSignal, For, Show, onMount, onCleanup } from "solid-js";
+import { Component, createEffect, createSignal, For, Show, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcAgentMatrix, AcTeam, AcWorkgroup, AcAgentReplica } from "../../shared/types";
 import { AcDiscoveryAPI, SessionAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
@@ -177,6 +177,16 @@ const AcDiscoveryPanel: Component = () => {
     setCtxFiles([]);
     setNewCtxPath("");
   };
+
+  // #2655 - Escape = backdrop click while the panel is open (AgentMatrixNoticeModal idiom).
+  createEffect(() => {
+    if (!ctxFilesReplica()) return;
+    const onEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeContextFilesPanel();
+    };
+    document.addEventListener("keydown", onEscape);
+    onCleanup(() => document.removeEventListener("keydown", onEscape));
+  });
 
   let unmounted = false;
   let unlistenBranch: (() => void) | null = null;

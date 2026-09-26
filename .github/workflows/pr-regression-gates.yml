@@ -64,6 +64,9 @@ jobs:
         # installed.
         run: npm ci --ignore-scripts
 
+      - name: "Check class coverage (#2615, guard from #2410)"
+        run: npm test -- src/shared/styles/class-coverage.test.ts
+
       - name: Check ignored and placeholder test debt
         run: npm run test:debt
       - name: "Check #480 guard controls"
@@ -815,10 +818,10 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build frontend assets for Tauri config validation
         run: npm run build
@@ -906,7 +909,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Install frontend dependencies
         run: npm ci
@@ -1153,9 +1156,9 @@ jobs:
           set -euo pipefail
           FILTER=config::agent_command::tests
           # LINUX count: the Windows leg also compiles four cfg(windows) tests
-          # and reports 95. Update in the same commit that adds or removes a
+          # and reports 96. Update in the same commit that adds or removes a
           # test in that module.
-          EXPECTED=91
+          EXPECTED=92
           cargo test --locked --lib "$FILTER" -- --nocapture 2>&1 | tee test-2431.log
           grep -qF 'env_precedence_is_platform_independent' test-2431.log || {
             echo "::error::the POSIX precedence sentinel never ran; the filter matched nothing or it was renamed."
@@ -1732,6 +1735,40 @@ jobs:
           grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-default-root.log || { echo "::error::expected exactly two passing tests"; exit 1; }
           grep -qE '^ISSUE1850_REFUSAL_ONLY' test-1850-default-root.log && { echo "::error::refusal-only route taken on a non-Windows leg"; exit 1; } || true
 
+      # IS #2589: agent binaries resolve through the composed search path. The
+      # Phase 2 and integration tests are cfg(unix), so they run only here.
+      - name: "cargo test (IS #2589 agent PATH resolution, focused)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # The prefix is the filter: a bare `agent_path` also matches the
+          # pre-existing `replica_creation_rejects_filesystem_agent_paths`
+          # (commands/entity_creation.rs:4941).
+          FILTER=agent_path_2589_
+          # 8 platform-neutral + 11 cfg(unix) tests. Update in the same commit
+          # that adds or removes an agent_path_2589_ test.
+          EXPECTED=19
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2589.log
+
+          # Three guards, none redundant:
+          #   1. pipefail (LOAD-BEARING through the tee) catches a test that ran
+          #      and FAILED; without it the step exits with tee's code.
+          #   2. The sentinel grep is the POSITIVE CONTROL: a filter matching
+          #      nothing exits 0 and prints "0 passed". This sentinel is
+          #      cfg(unix), so it also proves the unix half ran.
+          #   3. The anchored count is the MUTATION PROBE: gating a test out
+          #      moves the number.
+          grep -qF 'agent_path_2589_install_probe_resolves_an_env_shebang_interpreter' test-2589.log || {
+            echo "::error::the sentinel test never ran; the filter matched nothing or it was renamed."
+            exit 1
+          }
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2589.log || {
+            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER}; the count changed or the filter matched something else."
+            exit 1
+          }
+
   rust-linux-release-parity:
     name: rust-linux-release-parity
     # #1842: the Linux PR gate runs ubuntu-latest (24.04) while the Linux
@@ -1867,10 +1904,10 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build frontend assets for Tauri config validation
         run: npm run build
@@ -2011,10 +2048,10 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build frontend assets for Tauri config validation
         run: npm run build
@@ -2660,6 +2697,40 @@ jobs:
           grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-default-root.log || { echo "::error::expected exactly two passing tests"; exit 1; }
           grep -qE '^ISSUE1850_REFUSAL_ONLY' test-1850-default-root.log && { echo "::error::refusal-only route taken on a non-Windows leg"; exit 1; } || true
 
+      # IS #2589: agent binaries resolve through the composed search path. The
+      # Phase 2 and integration tests are cfg(unix), so they run only here.
+      - name: "cargo test (IS #2589 agent PATH resolution, focused)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # The prefix is the filter: a bare `agent_path` also matches the
+          # pre-existing `replica_creation_rejects_filesystem_agent_paths`
+          # (commands/entity_creation.rs:4941).
+          FILTER=agent_path_2589_
+          # 8 platform-neutral + 11 cfg(unix) tests. Update in the same commit
+          # that adds or removes an agent_path_2589_ test.
+          EXPECTED=19
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2589.log
+
+          # Three guards, none redundant:
+          #   1. pipefail (LOAD-BEARING through the tee) catches a test that ran
+          #      and FAILED; without it the step exits with tee's code.
+          #   2. The sentinel grep is the POSITIVE CONTROL: a filter matching
+          #      nothing exits 0 and prints "0 passed". This sentinel is
+          #      cfg(unix), so it also proves the unix half ran.
+          #   3. The anchored count is the MUTATION PROBE: gating a test out
+          #      moves the number.
+          grep -qF 'agent_path_2589_install_probe_resolves_an_env_shebang_interpreter' test-2589.log || {
+            echo "::error::the sentinel test never ran; the filter matched nothing or it was renamed."
+            exit 1
+          }
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2589.log || {
+            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER}; the count changed or the filter matched something else."
+            exit 1
+          }
+
   rust-fmt:
     name: rust-fmt
     # Skip branch-deletion push events while still requiring pull request validation.
@@ -2961,10 +3032,10 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: TypeScript type check
         run: npm run typecheck

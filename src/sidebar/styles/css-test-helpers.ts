@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 // Test-only helpers shared by the stylesheet byte tests (#2271 dup gate).
 // Every extraction throws on a miss: the absence and count assertions in those
 // suites would otherwise pass vacuously on an empty or partial match.
@@ -55,4 +57,17 @@ export function declValue(body: string, prop: string): string {
   for (const [p, v] of declarations(body)) if (p === prop) found = v;
   if (found === undefined) throw new Error(`missing declaration: ${prop}`);
   return found;
+}
+
+/** Rules of a stylesheet with comments blanked (offsets kept), so commented-out CSS never matches. */
+export function scanSheet(url: URL): ScannedRule[] {
+  const css = readFileSync(url, "utf8");
+  return scanRules(css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " ")));
+}
+
+/** Body of the single rule whose selector list contains `selector`. Throws unless exactly one. */
+export function soleRuleBody(rules: ScannedRule[], selector: string): string {
+  const hits = rules.filter((r) => r.selectors.includes(selector));
+  if (hits.length !== 1) throw new Error(`expected 1 rule for ${selector}, got ${hits.length}`);
+  return hits[0].body;
 }

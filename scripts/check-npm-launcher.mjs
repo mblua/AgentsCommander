@@ -321,10 +321,7 @@ function assertNoInstallLeftovers(label) {
 
 // ---------- the checks ----------
 
-function runAllChecks() {
-  const requireFromWork = createRequire(path.join(workDir, 'check.cjs'));
-  const { resolveBinPath, assertExecutable } = requireFromWork(path.join(workDir, 'resolve-bin.js'));
-
+function runResolutionChecks(resolveBinPath, assertExecutable) {
   const darwinPaths = () => {
     const appDir = path.join(binDir, 'Renamed Bundle.app');
     return {
@@ -432,7 +429,9 @@ function runAllChecks() {
     fs.mkdirSync(exePath);
     assertThrows(() => assertExecutable('darwin', binDir), ['not a regular file', exePath], 'V3');
   });
+}
 
+function runPackageChecks() {
   // --- package plumbing ---
   test('P1', () => {
     const npmCli = npmCliArg ? path.resolve(npmCliArg) : resolveNpmCli();
@@ -542,7 +541,9 @@ function runAllChecks() {
       'P4: one candidate per documented layout',
     );
   });
+}
 
+function runShortcutChecks(requireFromWork) {
   // --- Windows Start Menu shortcut (issue #2053) ---
   const shortcutMod = requireFromWork(path.join(workDir, 'windows-shortcut.js'));
   const globalWinEnv = { npm_config_global: 'true', APPDATA: path.join(workDir, 'appdata') };
@@ -595,7 +596,9 @@ function runAllChecks() {
       return `wrote ${first.path}`;
     });
   }
+}
 
+function runMacAliasChecks(requireFromWork) {
   // --- macOS ~/Applications alias (issue #2065) ---
   const aliasMod = requireFromWork(path.join(workDir, 'macos-alias.js'));
   const macHome = path.join(workDir, 'mac-home');
@@ -686,7 +689,10 @@ function runAllChecks() {
       return `wrote ${first.path}`;
     });
   }
+  return symlinkProbe;
+}
 
+function runLinuxEntryChecks(requireFromWork) {
   // --- Linux application menu entry (issue #2066) ---
   const desktopMod = requireFromWork(path.join(workDir, 'linux-desktop-entry.js'));
   const linuxHome = path.join(workDir, 'linux-home');
@@ -820,9 +826,10 @@ function runAllChecks() {
       return `entry ${entry}`;
     });
   }
+}
 
+function runArtifactCheck(resolveBinPath, tarInfo) {
   // --- real published artifact (opt-in) ---
-  const tarInfo = resolveTar();
   if (!assetArg) {
     skip('A1', 'no --asset supplied');
   } else if (!tarInfo) {
@@ -842,7 +849,9 @@ function runAllChecks() {
       return `resolved ${expected}`;
     });
   }
+}
 
+function runLauncherScenarios() {
   // --- end-to-end launcher scenarios ---
   test('H1', () => {
     freshBin();
@@ -925,39 +934,44 @@ function runAllChecks() {
       expectExit(r, 0, `E7 ${name}`);
     }
   });
+}
 
+function buildDarwinFixtures(fixtureJobs, tarInfo) {
+  if (!tarInfo) {
+    return 'no usable tar for fixture creation/extraction';
+  }
+  try {
+    for (const job of fixtureJobs) {
+      const sourceRoot = path.join(workDir, job.source);
+      fs.rmSync(sourceRoot, { recursive: true, force: true });
+      const appDir = path.join(sourceRoot, 'Agents Commander.app');
+      fs.mkdirSync(path.join(appDir, 'Contents', 'MacOS'), { recursive: true });
+      fs.writeFileSync(path.join(appDir, 'Contents', 'Info.plist'), plistXml(FIXTURE_EXE));
+      if (job.id === 'I1') {
+        fs.writeFileSync(
+          path.join(appDir, 'Contents', 'MacOS', FIXTURE_EXE),
+          'fixture executable placeholder\n',
+        );
+      }
+      execFileSync(
+        tarInfo.cmd,
+        ['-czf', job.fixture, '-C', job.source, 'Agents Commander.app'],
+        { cwd: workDir, stdio: 'pipe' },
+      );
+    }
+  } catch (err) {
+    return `could not build fixture tarballs: ${err.message}`;
+  }
+  return null;
+}
+
+function runDarwinInstallChecks(tarInfo, symlinkProbe) {
   // --- the darwin branch of install.js, end to end ---
   const fixtureJobs = [
     { id: 'I1', fixture: 'mac-ok.tar.gz', source: 'fixture-ok' },
     { id: 'I2', fixture: 'mac-incomplete.tar.gz', source: 'fixture-incomplete' },
   ];
-  let fixtureError = null;
-  if (!tarInfo) {
-    fixtureError = 'no usable tar for fixture creation/extraction';
-  } else {
-    try {
-      for (const job of fixtureJobs) {
-        const sourceRoot = path.join(workDir, job.source);
-        fs.rmSync(sourceRoot, { recursive: true, force: true });
-        const appDir = path.join(sourceRoot, 'Agents Commander.app');
-        fs.mkdirSync(path.join(appDir, 'Contents', 'MacOS'), { recursive: true });
-        fs.writeFileSync(path.join(appDir, 'Contents', 'Info.plist'), plistXml(FIXTURE_EXE));
-        if (job.id === 'I1') {
-          fs.writeFileSync(
-            path.join(appDir, 'Contents', 'MacOS', FIXTURE_EXE),
-            'fixture executable placeholder\n',
-          );
-        }
-        execFileSync(
-          tarInfo.cmd,
-          ['-czf', job.fixture, '-C', job.source, 'Agents Commander.app'],
-          { cwd: workDir, stdio: 'pipe' },
-        );
-      }
-    } catch (err) {
-      fixtureError = `could not build fixture tarballs: ${err.message}`;
-    }
-  }
+  const fixtureError = buildDarwinFixtures(fixtureJobs, tarInfo);
 
   for (const job of fixtureJobs) {
     if (fixtureError) {
@@ -1029,6 +1043,20 @@ function runAllChecks() {
       });
     }
   }
+}
+
+function runAllChecks() {
+  const requireFromWork = createRequire(path.join(workDir, 'check.cjs'));
+  const { resolveBinPath, assertExecutable } = requireFromWork(path.join(workDir, 'resolve-bin.js'));
+  runResolutionChecks(resolveBinPath, assertExecutable);
+  runPackageChecks();
+  runShortcutChecks(requireFromWork);
+  const symlinkProbe = runMacAliasChecks(requireFromWork);
+  runLinuxEntryChecks(requireFromWork);
+  const tarInfo = resolveTar();
+  runArtifactCheck(resolveBinPath, tarInfo);
+  runLauncherScenarios();
+  runDarwinInstallChecks(tarInfo, symlinkProbe);
 }
 
 // ---------- main ----------

@@ -2312,6 +2312,18 @@ html.light-theme .settings-api-client-warning {
 .settings-profile-command {
   width: 100%;
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  display: block;
+  resize: none;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.settings-profile-command:focus {
+  overflow-y: auto;
+  max-height: 40vh;
 }
 
 .settings-profile-command.invalid {
@@ -4078,6 +4090,7 @@ html.light-theme .settings-hint-error {
   width: auto;
   margin-left: 4px;
   margin-right: 4px;
+  flex-shrink: 0;
 }
 
 .workgroup-group-rail-scroll::-webkit-scrollbar,
@@ -10120,4 +10133,10 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
    would leave it focusable by Tab while invisible. The rail is a sibling. */
 .sidebar-compact .sidebar-scrollable {
   display: none;
+}
+
+/* #2655 - overlay panels focused on mount so Escape reaches their backdrop;
+   the programmatic focus must not draw a ring. */
+.ac-escape-focus-host:focus {
+  outline: none;
 }

@@ -1036,7 +1036,7 @@ describe("SettingsModal automation hooks", () => {
     // Profile A card: configured → MATCH, one command input, an env row.
     expect(byTestId("settings.profileCard.0.A").getAttribute("data-ac-state")).toBe("match");
     expect(byTestId("settings.profileCard.0.A.badge").textContent).toContain("MATCH");
-    expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.command").value).toBe("codex --model gpt-5-codex");
+    expect(byTestId<HTMLTextAreaElement>("settings.profileCard.0.A.command").value).toBe("codex --model gpt-5-codex");
     expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.label")).toBeTruthy();
     expect(byTestId("settings.profileCard.0.A.env")).toBeTruthy();
     expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.envRow.0.key").value).toBe("OPENAI_ORG");
@@ -1074,7 +1074,7 @@ describe("SettingsModal automation hooks", () => {
     // Instead it exposes the same expand/edit affordance as every cell: a chevron
     // toggle plus an expanded-by-default empty command input the user can fill in.
     expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle")).toBeTruthy();
-    expect(byTestId<HTMLInputElement>("settings.profileCard.0.B.command").value).toBe("");
+    expect(byTestId<HTMLTextAreaElement>("settings.profileCard.0.B.command").value).toBe("");
     // Claude rail: B has its own enabled cell (non-A, direct match) → CONFIGURED,
     // NOT MATCH. MATCH is reserved for the A baseline (#526).
     expect(byTestId("settings.profileCard.1.B").getAttribute("data-ac-state")).toBe("configured");
@@ -1178,7 +1178,7 @@ describe("SettingsModal automation hooks", () => {
 
     // All profile slots are expanded by default, including non-A slots.
     expect(byTestId("settings.profileCard.0.A.command")).toBeTruthy();
-    expect(byTestId<HTMLInputElement>("settings.profileCard.0.B.command").value).toBe("claude --model opus");
+    expect(byTestId<HTMLTextAreaElement>("settings.profileCard.0.B.command").value).toBe("claude --model opus");
     expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").getAttribute("aria-expanded")).toBe("true");
 
     byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").click();
@@ -1188,7 +1188,7 @@ describe("SettingsModal automation hooks", () => {
 
     byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").click();
     await settle();
-    expect(byTestId<HTMLInputElement>("settings.profileCard.0.B.command").value).toBe("claude --model opus");
+    expect(byTestId<HTMLTextAreaElement>("settings.profileCard.0.B.command").value).toBe("claude --model opus");
 
     dispose();
   });
@@ -1261,7 +1261,7 @@ describe("SettingsModal automation hooks", () => {
     );
     await settle();
 
-    const command = byTestId<HTMLInputElement>("settings.profileCard.0.A.command");
+    const command = byTestId<HTMLTextAreaElement>("settings.profileCard.0.A.command");
     command.value = 'codex --review --prompt "missing close';
     command.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
@@ -1403,7 +1403,7 @@ describe("SettingsModal automation hooks", () => {
     );
     await settle();
 
-    const commandInput = document.querySelector<HTMLInputElement>('[data-ac-testid="settings.profileCard.0.A.command"]');
+    const commandInput = document.querySelector<HTMLTextAreaElement>('[data-ac-testid="settings.profileCard.0.A.command"]');
     if (!commandInput) throw new Error("missing profile command input");
     commandInput.value = "codex --fast";
     commandInput.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1419,6 +1419,88 @@ describe("SettingsModal automation hooks", () => {
     expect(saved?.codingAgentProfiles.profilesByAgent.codex?.A?.command).toBe("codex --fast");
 
     dispose();
+  });
+
+  describe("#2597 profile params textbox", () => {
+    async function mountProfiles() {
+      vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings());
+      const root = document.createElement("div");
+      document.body.append(root);
+      const dispose = render(
+        () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+        root,
+      );
+      await settle();
+      const el = byTestId<HTMLTextAreaElement>("settings.profileCard.0.A.command");
+      return { el, dispose };
+    }
+
+    it("renders a one-row textarea with the same testid, role and placeholder", async () => {
+      const { el, dispose } = await mountProfiles();
+      expect(el.tagName).toBe("TEXTAREA");
+      expect(el.getAttribute("rows")).toBe("1");
+      expect(el.getAttribute("data-ac-role")).toBe("textbox");
+      expect(el.getAttribute("placeholder")).toBeTruthy();
+      dispose();
+    });
+
+    it("turns newlines into spaces in the value and the saved draft", async () => {
+      const { el, dispose } = await mountProfiles();
+      el.value = "a\nb\r\nc";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      expect(el.value).toBe("a b c");
+      expect(el.getAttribute("data-ac-state")).toBe("valid");
+
+      byTestId<HTMLButtonElement>("settings.save").click();
+      await settle();
+      const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+      expect(saved?.codingAgentProfiles.profilesByAgent.codex?.A?.command).toBe("a b c");
+      dispose();
+    });
+
+    it("prevents Enter without changing the value", async () => {
+      const { el, dispose } = await mountProfiles();
+      const before = el.value;
+      const ev = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      el.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+      expect(el.value).toBe(before);
+      dispose();
+    });
+
+    it("grows on focus including the border, floors at 28px, and collapses on blur", async () => {
+      const { el, dispose } = await mountProfiles();
+      Object.defineProperty(el, "scrollHeight", { configurable: true, value: 60 });
+      Object.defineProperty(el, "offsetHeight", { configurable: true, value: 30 });
+      Object.defineProperty(el, "clientHeight", { configurable: true, value: 28 });
+      el.focus();
+      expect(el.style.height).toBe("62px");
+      el.blur();
+      expect(el.style.height).toBe("");
+
+      Object.defineProperty(el, "scrollHeight", { configurable: true, value: 10 });
+      el.focus();
+      expect(el.style.height).toBe("28px");
+      el.blur();
+      expect(el.style.height).toBe("");
+      dispose();
+    });
+
+    it("resets scrollTop on blur", async () => {
+      const { el, dispose } = await mountProfiles();
+      let top = 0;
+      Object.defineProperty(el, "scrollTop", {
+        configurable: true,
+        get: () => top,
+        set: (v: number) => { top = v; },
+      });
+      el.focus();
+      el.scrollTop = 40;
+      el.blur();
+      expect(el.scrollTop).toBe(0);
+      dispose();
+    });
   });
 
   it("distinguishes MATCH (A), CONFIGURED (own non-A cell), FALLBACK, and MISSING", async () => {
@@ -2116,7 +2198,9 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("visibly reloads the authoritative terminal snapshot value on CAS conflict", async () => {
+  // #2622 - shared by the CAS-conflict cases: toggle the snapshot opt-in, lose the
+  // CAS race on Save, and hand back what the assertions need.
+  async function saveWithSnapshotConflict() {
     vi.mocked(SettingsAPI.setTerminalSnapshotsEnabled).mockRejectedValueOnce(
       "terminal_snapshot_setting_conflict",
     );
@@ -2138,15 +2222,81 @@ describe("SettingsModal automation hooks", () => {
     byTestId<HTMLButtonElement>("settings.save").click();
     await settle();
     await settle();
+    await settle();
+    return { checkbox, dispose, onClose };
+  }
 
+  function expectConflictKeptModalOpen(onClose: ReturnType<typeof vi.fn>) {
     expect(SettingsAPI.setTerminalSnapshotsEnabled).toHaveBeenCalledWith(false, true);
-    expect(SettingsAPI.get).toHaveBeenCalledTimes(3);
-    expect(checkbox.checked).toBe(false);
     expect(document.querySelector(".modal-save-error")?.textContent).toContain(
       "current value was reloaded",
     );
     expect(byTestId<HTMLButtonElement>("settings.save").disabled).toBe(false);
     expect(onClose).not.toHaveBeenCalled();
+  }
+
+  it("visibly reloads the authoritative terminal snapshot value on CAS conflict", async () => {
+    const { checkbox, dispose, onClose } = await saveWithSnapshotConflict();
+
+    expectConflictKeptModalOpen(onClose);
+    expect(SettingsAPI.get).toHaveBeenCalledTimes(3);
+    expect(checkbox.checked).toBe(false);
+
+    dispose();
+  });
+
+  // #2622 - integer minute inputs write the parsed value and ignore a non-number.
+  it("writes a typed idle red threshold and ignores an empty value", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const red = byTestId<HTMLInputElement>(
+      "settings.general.coordinatorIdleBadgeRedMinutes",
+    );
+    red.value = "75";
+    red.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    red.value = "";
+    red.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+    await settle();
+
+    expect(
+      vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0]?.coordinatorIdleBadgeRedMinutes,
+    ).toBe(75);
+
+    dispose();
+  });
+
+  // #2622 - the conflict branch restarts only when bind/port changed; an unchanged
+  // endpoint with a running server must stay put while the modal stays open.
+  it("does not restart the API server on a snapshot CAS conflict when the endpoint is unchanged", async () => {
+    const runningSettings = settings({
+      apiServerEnabled: true,
+      apiServerBind: "0.0.0.0",
+      apiServerPort: 8766,
+      terminalSnapshotsEnabled: false,
+    });
+    vi.mocked(SettingsAPI.get)
+      .mockResolvedValueOnce(runningSettings)
+      .mockResolvedValueOnce(runningSettings)
+      .mockResolvedValueOnce(runningSettings);
+    vi.mocked(SettingsAPI.apiServerStatus)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+
+    const { dispose, onClose } = await saveWithSnapshotConflict();
+
+    expectConflictKeptModalOpen(onClose);
+    expect(SettingsAPI.stopApiServer).not.toHaveBeenCalled();
+    expect(SettingsAPI.startApiServer).not.toHaveBeenCalled();
 
     dispose();
   });
@@ -3868,6 +4018,38 @@ describe("SettingsModal automation hooks", () => {
       expect(rowIds()).toEqual(["codex", "claude", "opencode"]);
       expect(document.querySelector(".settings-agent-row.is-kbd-grabbed")).toBeNull();
 
+      dispose();
+    });
+
+    it("refuses a keyboard pick-up while a pointer drag is armed, before and after the threshold", async () => {
+      const dispose = await mountAgents(() => orderSnapshot(ORDER_AGENTS));
+      const grip = prepareDrag(1);
+      pointer(grip, "pointerdown", 5, 60);
+
+      // Armed, below the 4px threshold.
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      expect(byTestId("settings.agents.moveStatus").textContent).not.toMatch(/^Picked up /);
+      expect(document.querySelector(".settings-agent-row.is-kbd-grabbed")).toBeNull();
+
+      // Above the threshold, ghost present.
+      pointer(grip, "pointermove", 5, 140);
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      expect(byTestId("settings.agents.moveStatus").textContent).not.toMatch(/^Picked up /);
+      expect(document.querySelector(".settings-agent-row.is-kbd-grabbed")).toBeNull();
+
+      // Positive control: back to the source slot, drop, then pick-up works.
+      pointer(grip, "pointermove", 5, 60);
+      pointer(grip, "pointerup", 5, 60);
+      handle(0).focus();
+      pressKey(document.activeElement!, " ");
+      expect(byTestId("settings.agents.moveStatus").textContent).toBe(
+        "Picked up Codex, position 1. Arrows move, Space drops, Escape cancels.",
+      );
+      expect(document.querySelector(".settings-agent-row.is-kbd-grabbed")).not.toBeNull();
+
+      expect(reorderCalls()).toHaveLength(0);
       dispose();
     });
 

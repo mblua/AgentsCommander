@@ -345,7 +345,6 @@ const AgentUpdateOverlay: Component = () => {
                           </Show>
                           <Show when={node().detail}>
                             <span
-                              class="agent-update-node-detail"
                               data-ac-testid={`agent-update.node.${node().command}.detail`}
                               title={node().detailTitle ?? undefined}
                             >

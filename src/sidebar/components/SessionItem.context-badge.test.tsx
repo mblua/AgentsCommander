@@ -209,7 +209,7 @@ describe("SessionItem agent chip weekly-quota fill (#2482)", () => {
   });
 
   it("the_agent_chip_sets_the_remaining_custom_property_from_the_reading", async () => {
-    sessionsStore.setSessionAgentQuota(sessionId, 28);
+    sessionsStore.setAgentQuota("claude", 28);
     const rendered = await renderRow(baseSettings({ agents: [agentConfig()] }));
     try {
       await waitFor(() => expect(chip(rendered.root).className).toContain("quota-fill"));
@@ -220,11 +220,11 @@ describe("SessionItem agent chip weekly-quota fill (#2482)", () => {
   });
 
   it("a_null_reading_clears_a_previously_set_fill", async () => {
-    sessionsStore.setSessionAgentQuota(sessionId, 40);
+    sessionsStore.setAgentQuota("claude", 40);
     const rendered = await renderRow(baseSettings({ agents: [agentConfig()] }));
     try {
       await waitFor(() => expect(chip(rendered.root).style.getPropertyValue("--ac-quota-remaining")).toBe("60%"));
-      sessionsStore.setSessionAgentQuota(sessionId, null);
+      sessionsStore.setAgentQuota("claude", null);
       await waitFor(() => {
         const el = chip(rendered.root);
         expect(el.className).not.toContain("quota-fill");
@@ -235,8 +235,8 @@ describe("SessionItem agent chip weekly-quota fill (#2482)", () => {
     }
   });
 
-  it("a_reading_on_one_session_does_not_fill_another_session_chip", async () => {
-    sessionsStore.setSessionAgentQuota(otherSessionId, 50);
+  it("a_reading_on_an_agent_fills_every_session_chip_of_that_agent", async () => {
+    sessionsStore.setAgentQuota("claude", 50);
     const fake = new FakeTransport();
     fake.resolve("get_settings", baseSettings({ agents: [agentConfig()] }));
     const rendered = renderWithFakeTransport(
@@ -251,7 +251,37 @@ describe("SessionItem agent chip weekly-quota fill (#2482)", () => {
     await settingsStore.load();
     try {
       await waitFor(() => expect(chip(rendered.root, otherSessionId).className).toContain("quota-fill"));
-      const el = chip(rendered.root);
+      for (const id of [sessionId, otherSessionId]) {
+        const el = chip(rendered.root, id);
+        expect(el.className).toContain("quota-fill");
+        expect(el.style.getPropertyValue("--ac-quota-remaining")).toBe("50%");
+      }
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("a_reading_on_one_agent_does_not_fill_a_session_of_a_different_agent", async () => {
+    sessionsStore.setAgentQuota("claude", 50);
+    const fake = new FakeTransport();
+    fake.resolve(
+      "get_settings",
+      baseSettings({ agents: [agentConfig(), agentConfig({ id: "codex", label: "Codex", command: "codex" })] }),
+    );
+    const rendered = renderWithFakeTransport(
+      () => (
+        <>
+          <SessionItem session={session({ id: sessionId, agentId: "claude", agentLabel: "Claude Code" })} isActive={false} />
+          <SessionItem session={session({ id: otherSessionId, agentId: "codex", agentLabel: "Codex" })} isActive={false} />
+        </>
+      ),
+      fake,
+    );
+    await settingsStore.load();
+    try {
+      await waitFor(() => expect(chip(rendered.root).className).toContain("quota-fill"));
+      const el = chip(rendered.root, otherSessionId);
+      expect(el.textContent).toBe("Codex");
       expect(el.className).not.toContain("quota-fill");
       expect(el.getAttribute("style")).toBeNull();
     } finally {

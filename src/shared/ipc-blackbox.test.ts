@@ -252,6 +252,27 @@ describe("ipc black box", () => {
     expect(record.lastSentAtMs).toBe(0);
   });
 
+  // #2646 - the `window` URL param is untrusted: known values are kept, any
+  // other value (or an empty one) is recorded as "main".
+  it.each([
+    ...["main", "browser", "detached", "resource-monitor", "screenshot-overlay", "spec-board", "watchers", "terminal"].map(
+      (value) => [value, value] as const,
+    ),
+    ["evil", "main"],
+    ["<script>", "main"],
+    ["main&x=1", "main"],
+    ["", "main"],
+  ] as const)("records window=%j as %j", async (value, expected) => {
+    window.history.replaceState(null, "", `/?${new URLSearchParams({ window: value })}`);
+    try {
+      await installIpcBlackBox();
+      vi.advanceTimersByTime(TICK_MS);
+      expect(readRecord().windowType).toBe(expected);
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
   it("seeds visible from document.visibilityState at install", async () => {
     visibilityState = "visible";
     await installIpcBlackBox();
