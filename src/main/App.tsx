@@ -1268,6 +1268,27 @@ const MainApp: Component = () => {
     handleNormalOutcome(round, attemptId, result, rejection);
   }
 
+  /** The normal attempt's invoke result, for the attempt that is still current. */
+  function applyStartQuitResult(round: QuitRound, result: QuitOutcome): void {
+    if (!isLiveEpoch(result.epoch)) return;
+    if (round.epoch !== null && round.epoch !== result.epoch) return;
+    if (result.outcome === "Exiting") {
+      finishQuitExited(round);
+      return;
+    }
+    if (result.outcome === "Aborted") {
+      finishQuitAborted(round, result);
+      return;
+    }
+    if (result.outcome === "InFlight") {
+      bindQuitEpoch(round, result.epoch);
+      return;
+    }
+    if (result.outcome === "Stale") {
+      finishQuitStale(round);
+    }
+  }
+
   function handleNormalOutcome(
     round: QuitRound,
     attemptId: string,
@@ -1278,24 +1299,7 @@ const MainApp: Component = () => {
     if (round.attemptId !== attemptId) return;
 
     if (result) {
-      if (!isLiveEpoch(result.epoch)) return;
-      if (round.epoch !== null && round.epoch !== result.epoch) return;
-      if (result.outcome === "Exiting") {
-        finishQuitExited(round);
-        return;
-      }
-      if (result.outcome === "Aborted") {
-        finishQuitAborted(round, result);
-        return;
-      }
-      if (result.outcome === "InFlight") {
-        bindQuitEpoch(round, result.epoch);
-        return;
-      }
-      if (result.outcome === "Stale") {
-        finishQuitStale(round);
-        return;
-      }
+      applyStartQuitResult(round, result);
       return;
     }
 

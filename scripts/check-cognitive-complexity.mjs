@@ -1049,8 +1049,8 @@ function atItemPosition(previousSignificantChar, previousWord) {
   return ITEM_PREFIX_WORDS.has(previousWord);
 }
 
-/** True when the next code token after a `fn`/`mod`/`trait` is an identifier. */
-function nextItemNameStarts(source, start) {
+/** The offset of the next code token at or after `start`, past whitespace and comments. */
+function skipTrivia(source, start) {
   let index = start;
   for (;;) {
     while (index < source.length && /\s/.test(source[index])) index += 1;
@@ -1062,8 +1062,13 @@ function nextItemNameStarts(source, start) {
       index = skipBlockComment(source, index);
       continue;
     }
-    break;
+    return index;
   }
+}
+
+/** True when the next code token after a `fn`/`mod`/`trait` is an identifier. */
+function nextItemNameStarts(source, start) {
+  const index = skipTrivia(source, start);
   if (isIdentStart(source[index])) return true;
   return source[index] === 'r' && source[index + 1] === '#' && isIdentStart(source[index + 2]);
 }
@@ -1084,9 +1089,7 @@ function normalizeImplHeader(text) {
 function opaqueEnd(source, index) {
   const ch = source[index];
   if (ch === '/' && source[index + 1] === '/') {
-    let cursor = index + 2;
-    while (cursor < source.length && source[cursor] !== '\n') cursor += 1;
-    return { kind: 'comment', end: cursor };
+    return { kind: 'comment', end: lineCommentEnd(source, index) };
   }
   if (ch === '/' && source[index + 1] === '*') {
     return { kind: 'comment', end: skipBlockComment(source, index) };
@@ -1096,21 +1099,33 @@ function opaqueEnd(source, index) {
     if (end !== -1) return { kind: 'string', end };
   }
   if (ch === '"') {
-    let cursor = index + 1;
-    while (cursor < source.length) {
-      if (source[cursor] === '\\') {
-        cursor = Math.min(source.length, cursor + 2);
-        continue;
-      }
-      if (source[cursor] === '"') {
-        cursor += 1;
-        break;
-      }
-      cursor += 1;
-    }
-    return { kind: 'string', end: cursor };
+    return { kind: 'string', end: quotedStringEnd(source, index) };
   }
   return null;
+}
+
+/** The offset of the `\n` ending the `//` comment at `index`, or the source length. */
+function lineCommentEnd(source, index) {
+  let cursor = index + 2;
+  while (cursor < source.length && source[cursor] !== '\n') cursor += 1;
+  return cursor;
+}
+
+/** The offset just past the `"` string opened at `index`; unterminated runs to the end. */
+function quotedStringEnd(source, index) {
+  let cursor = index + 1;
+  while (cursor < source.length) {
+    if (source[cursor] === '\\') {
+      cursor = Math.min(source.length, cursor + 2);
+      continue;
+    }
+    if (source[cursor] === '"') {
+      cursor += 1;
+      break;
+    }
+    cursor += 1;
+  }
+  return cursor;
 }
 
 /**
@@ -1120,172 +1135,214 @@ function opaqueEnd(source, index) {
  * out of its own frame while its inner items land under it.
  */
 function lexSource(source, starts) {
-  const frames = [];
-  const stack = [];
-  const length = source.length;
-  let index = 0;
-  let braceDepth = 0;
-  let parenDepth = 0;
-  let previousSignificantChar = '';
-  let previousWord = '';
-  let pending = null;
-  let pubParenArmed = false;
-  let pubParenDepth = -1;
-
-  const append = (text) => {
-    if (pending !== null) pending.text += text;
-  };
-  const resetWord = (ch) => {
-    previousSignificantChar = ch;
-    previousWord = '';
+  const lx = {
+    source,
+    starts,
+    length: source.length,
+    frames: [],
+    stack: [],
+    index: 0,
+    braceDepth: 0,
+    parenDepth: 0,
+    previousSignificantChar: '',
+    previousWord: '',
+    pending: null,
+    pubParenArmed: false,
+    pubParenDepth: -1,
   };
 
-  while (index < length) {
-    const opaque = opaqueEnd(source, index);
+  while (lx.index < lx.length) {
+    const opaque = opaqueEnd(source, lx.index);
     if (opaque !== null) {
-      if (opaque.kind === 'string') {
-        if (source[index] === '"') {
-          const externBefore = previousWord === 'extern';
-          previousSignificantChar = '"';
-          previousWord = externBefore ? 'extern-string' : '';
-        } else {
-          resetWord('"');
-        }
-      }
-      index = opaque.end;
+      lexOpaque(lx, opaque);
       continue;
     }
-
-    const ch = source[index];
+    const ch = source[lx.index];
     if (ch === "'") {
-      if (isIdentContinue(source[index + 1]) && source[index + 2] !== "'") {
-        append("'");
-        previousSignificantChar = "'";
-        index += 1;
-        continue;
-      }
-      let cursor = index + 1;
-      if (source[cursor] === '\\') cursor += 2;
-      else cursor += 1;
-      while (cursor < length && source[cursor] !== "'" && source[cursor] !== '\n') cursor += 1;
-      index = cursor >= length ? length : cursor + 1;
-      resetWord("'");
+      lexQuote(lx);
       continue;
     }
-
-    if (isIdentStart(ch) && !isIdentContinue(source[index - 1])) {
-      const { value, end } = readIdentifier(source, index);
-      if (pending !== null) {
-        if (pending.kind !== 'impl' && pending.name === null) pending.name = value;
-        pending.text += value;
-      } else if (
-        ITEM_KEYWORDS.has(value)
-        && atItemPosition(previousSignificantChar, previousWord)
-        && (value === 'impl' || nextItemNameStarts(source, end))
-      ) {
-        pending = { kind: value, name: null, text: '', kwLine: lineNumberAt(starts, index), nest: 0 };
-      }
-      previousWord = value;
-      previousSignificantChar = value[value.length - 1];
-      pubParenArmed = value === 'pub';
-      index = end;
+    if (isIdentStart(ch) && !isIdentContinue(source[lx.index - 1])) {
+      lexIdentifier(lx);
       continue;
     }
-
-    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
-      append(ch);
-      index += 1;
-      continue;
-    }
-    if (ch === '(') {
-      parenDepth += 1;
-      if (pubParenArmed) {
-        pubParenDepth = parenDepth;
-        pubParenArmed = false;
-      }
-      if (pending !== null) pending.nest += 1;
-      append(ch);
-      previousSignificantChar = '(';
-      previousWord = pubParenDepth === parenDepth ? 'pub(' : '';
-      index += 1;
-      continue;
-    }
-    if (ch === ')') {
-      const closesPub = pubParenDepth === parenDepth;
-      parenDepth -= 1;
-      if (pending !== null) pending.nest -= 1;
-      append(ch);
-      previousSignificantChar = ')';
-      previousWord = closesPub ? 'pub(...)' : '';
-      if (closesPub) pubParenDepth = -1;
-      index += 1;
-      continue;
-    }
-    if (ch === '[') {
-      if (pending !== null) pending.nest += 1;
-      append(ch);
-      resetWord(ch);
-      index += 1;
-      continue;
-    }
-    if (ch === ']') {
-      if (pending !== null) pending.nest -= 1;
-      append(ch);
-      resetWord(ch);
-      index += 1;
-      continue;
-    }
-    if (ch === '{') {
-      braceDepth += 1;
-      if (pending !== null && pending.nest <= 0) {
-        const token = pending.kind === 'impl'
-          ? `impl:${normalizeImplHeader(pending.text)}`
-          : `${pending.kind}:${pending.name}`;
-        const frame = {
-          kind: pending.kind,
-          name: pending.kind === 'impl' ? null : pending.name,
-          token,
-          kwLine: pending.kwLine,
-          open: index,
-          close: length,
-          braceDepth,
-        };
-        frames.push(frame);
-        stack.push(frame);
-        pending = null;
-      } else if (pending !== null) {
-        append(ch);
-      }
-      resetWord(ch);
-      index += 1;
-      continue;
-    }
-    if (ch === '}') {
-      append(ch);
-      braceDepth -= 1;
-      if (braceDepth < 0) braceDepth = 0;
-      while (stack.length > 0 && stack[stack.length - 1].braceDepth > braceDepth) {
-        stack.pop().close = index;
-      }
-      resetWord(ch);
-      index += 1;
-      continue;
-    }
-    if (ch === ';') {
-      if (pending !== null && pending.nest <= 0) pending = null;
-      else append(ch);
-      resetWord(ch);
-      index += 1;
-      continue;
-    }
-    if (pubParenArmed) pubParenArmed = false;
-    append(ch);
-    resetWord(ch);
-    index += 1;
+    (LEX_PUNCTUATION.get(ch) ?? lexOther)(lx, ch);
   }
 
-  return frames;
+  return lx.frames;
 }
+
+function lexAppend(lx, text) {
+  if (lx.pending !== null) lx.pending.text += text;
+}
+
+function lexResetWord(lx, ch) {
+  lx.previousSignificantChar = ch;
+  lx.previousWord = '';
+}
+
+function lexOpaque(lx, opaque) {
+  if (opaque.kind === 'string') {
+    if (lx.source[lx.index] === '"') {
+      const externBefore = lx.previousWord === 'extern';
+      lx.previousSignificantChar = '"';
+      lx.previousWord = externBefore ? 'extern-string' : '';
+    } else {
+      lexResetWord(lx, '"');
+    }
+  }
+  lx.index = opaque.end;
+}
+
+/** A lifetime (`'a`) or a char literal (`'x'`, `'\''`), which may run to the line end. */
+function lexQuote(lx) {
+  const { source, length } = lx;
+  if (isIdentContinue(source[lx.index + 1]) && source[lx.index + 2] !== "'") {
+    lexAppend(lx, "'");
+    lx.previousSignificantChar = "'";
+    lx.index += 1;
+    return;
+  }
+  let cursor = lx.index + 1;
+  if (source[cursor] === '\\') cursor += 2;
+  else cursor += 1;
+  while (cursor < length && source[cursor] !== "'" && source[cursor] !== '\n') cursor += 1;
+  lx.index = cursor >= length ? length : cursor + 1;
+  lexResetWord(lx, "'");
+}
+
+function lexIdentifier(lx) {
+  const { value, end } = readIdentifier(lx.source, lx.index);
+  if (lx.pending !== null) {
+    if (lx.pending.kind !== 'impl' && lx.pending.name === null) lx.pending.name = value;
+    lx.pending.text += value;
+  } else if (
+    ITEM_KEYWORDS.has(value)
+    && atItemPosition(lx.previousSignificantChar, lx.previousWord)
+    && (value === 'impl' || nextItemNameStarts(lx.source, end))
+  ) {
+    lx.pending = { kind: value, name: null, text: '', kwLine: lineNumberAt(lx.starts, lx.index), nest: 0 };
+  }
+  lx.previousWord = value;
+  lx.previousSignificantChar = value[value.length - 1];
+  lx.pubParenArmed = value === 'pub';
+  lx.index = end;
+}
+
+function lexWhitespace(lx, ch) {
+  lexAppend(lx, ch);
+  lx.index += 1;
+}
+
+function lexOpenParen(lx) {
+  lx.parenDepth += 1;
+  if (lx.pubParenArmed) {
+    lx.pubParenDepth = lx.parenDepth;
+    lx.pubParenArmed = false;
+  }
+  if (lx.pending !== null) lx.pending.nest += 1;
+  lexAppend(lx, '(');
+  lx.previousSignificantChar = '(';
+  lx.previousWord = lx.pubParenDepth === lx.parenDepth ? 'pub(' : '';
+  lx.index += 1;
+}
+
+function lexCloseParen(lx) {
+  const closesPub = lx.pubParenDepth === lx.parenDepth;
+  lx.parenDepth -= 1;
+  if (lx.pending !== null) lx.pending.nest -= 1;
+  lexAppend(lx, ')');
+  lx.previousSignificantChar = ')';
+  lx.previousWord = closesPub ? 'pub(...)' : '';
+  if (closesPub) lx.pubParenDepth = -1;
+  lx.index += 1;
+}
+
+function lexOpenBracket(lx, ch) {
+  if (lx.pending !== null) lx.pending.nest += 1;
+  lexAppend(lx, ch);
+  lexResetWord(lx, ch);
+  lx.index += 1;
+}
+
+function lexCloseBracket(lx, ch) {
+  if (lx.pending !== null) lx.pending.nest -= 1;
+  lexAppend(lx, ch);
+  lexResetWord(lx, ch);
+  lx.index += 1;
+}
+
+function lexOpenBrace(lx, ch) {
+  lx.braceDepth += 1;
+  if (lx.pending !== null && lx.pending.nest <= 0) {
+    openFrame(lx);
+  } else if (lx.pending !== null) {
+    lexAppend(lx, ch);
+  }
+  lexResetWord(lx, ch);
+  lx.index += 1;
+}
+
+/** Push the frame of the pending item header, which opens at the current `{`. */
+function openFrame(lx) {
+  const pending = lx.pending;
+  const token = pending.kind === 'impl'
+    ? `impl:${normalizeImplHeader(pending.text)}`
+    : `${pending.kind}:${pending.name}`;
+  const frame = {
+    kind: pending.kind,
+    name: pending.kind === 'impl' ? null : pending.name,
+    token,
+    kwLine: pending.kwLine,
+    open: lx.index,
+    close: lx.length,
+    braceDepth: lx.braceDepth,
+  };
+  lx.frames.push(frame);
+  lx.stack.push(frame);
+  lx.pending = null;
+}
+
+function lexCloseBrace(lx, ch) {
+  lexAppend(lx, ch);
+  lx.braceDepth -= 1;
+  if (lx.braceDepth < 0) lx.braceDepth = 0;
+  while (lx.stack.length > 0 && lx.stack[lx.stack.length - 1].braceDepth > lx.braceDepth) {
+    lx.stack.pop().close = lx.index;
+  }
+  lexResetWord(lx, ch);
+  lx.index += 1;
+}
+
+function lexSemicolon(lx, ch) {
+  if (lx.pending !== null && lx.pending.nest <= 0) lx.pending = null;
+  else lexAppend(lx, ch);
+  lexResetWord(lx, ch);
+  lx.index += 1;
+}
+
+function lexOther(lx, ch) {
+  if (lx.pubParenArmed) lx.pubParenArmed = false;
+  lexAppend(lx, ch);
+  lexResetWord(lx, ch);
+  lx.index += 1;
+}
+
+// The mutually exclusive single characters with their own lexer branch; any other
+// character takes lexOther.
+const LEX_PUNCTUATION = new Map([
+  [' ', lexWhitespace],
+  ['\t', lexWhitespace],
+  ['\r', lexWhitespace],
+  ['\n', lexWhitespace],
+  ['(', lexOpenParen],
+  [')', lexCloseParen],
+  ['[', lexOpenBracket],
+  [']', lexCloseBracket],
+  ['{', lexOpenBrace],
+  ['}', lexCloseBrace],
+  [';', lexSemicolon],
+]);
 
 const lexCache = new WeakMap();
 
