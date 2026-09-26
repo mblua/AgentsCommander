@@ -4,6 +4,7 @@ import ProjectPanel from "./ProjectPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   baseSettings,
+  click,
   discovery,
   installBrowserDomStubs,
   renderWithFakeTransport,
@@ -182,6 +183,105 @@ describe("ProjectPanel replica tier badge (#2435)", () => {
       expect(Array.from(dormantBadges, (el) => el.textContent)).toEqual(["B"]);
       expect(dormant.querySelector('[data-ac-testid^="replica.tierBadge."]')).toBeNull();
       expect(dormant.querySelector(".profile-badge--tier")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});
+
+describe("ProjectPanel replica orphan notice (#2568)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+    sessionsStore.resetOrphanNoticesForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    sessionsStore.resetOrphanNoticesForTests();
+    document.body.replaceChildren();
+  });
+
+  const liveSelector =
+    '[data-ac-testid="replica.orphanNotice.workgroups.wg-2-dev-team.dev-webpage-ui"]';
+  const dormantSelector =
+    '[data-ac-testid="replica.orphanNotice.workgroups.wg-2-dev-team.dormant-ui"]';
+  // The coordinator row also renders in other panel sections; count the
+  // workgroups surface only.
+  const WG_NOTICES = '[data-ac-testid^="replica.orphanNotice.workgroups."]:not([data-ac-testid$=".dismiss"])';
+  const TEXT = "Saved coding agent not found. Using Codex B, same name.";
+
+  /** An adopted session on the named replica row; the agent key comes from `dir` + `agentId`. */
+  const adoptedOn = (id: string, name: string, dir: string, agentId: string) =>
+    session({
+      id,
+      name: `wg-2-dev-team/${name}`,
+      workingDirectory: dir,
+      status: "running",
+      agentId,
+      agentLabel: "Codex",
+      requestedProfile: "B",
+      effectiveProfile: "B",
+      profileFallbackApplied: false,
+      matchTier: "labelAndLetter",
+    });
+
+  it("shows the notice on an adopted replica row and none on a dormant row", async () => {
+    const rendered = await mount();
+    try {
+      sessionsStore.setSessions([
+        { ...adoptedOn("replica-live", replicaName, replicaPath, "codex"), isCoordinator: true },
+      ]);
+      await waitFor(() => expect(rendered.root.querySelector(liveSelector)).not.toBeNull());
+      const notice = rendered.root.querySelector<HTMLElement>(liveSelector)!;
+      expect(notice.querySelector(".orphan-notice-text")!.textContent).toBe(TEXT);
+      expect(notice.parentElement!.classList.contains("replica-item-info")).toBe(true);
+      expect(notice.parentElement!.lastElementChild).toBe(notice);
+      expect(rendered.root.querySelector(dormantSelector)).toBeNull();
+      expect(rendered.root.querySelectorAll(WG_NOTICES)).toHaveLength(1);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("dismissing one agent's notice leaves a different agent's notice standing", async () => {
+    const rendered = await mount();
+    try {
+      sessionsStore.setSessions([
+        adoptedOn("live-a", replicaName, replicaPath, "codex"),
+        adoptedOn("live-b", dormantName, `${workgroupPath}\\__agent_${dormantName}`, "claude"),
+      ]);
+      await waitFor(() => expect(rendered.root.querySelectorAll(WG_NOTICES)).toHaveLength(2));
+      click(rendered.root.querySelector<HTMLElement>(`${liveSelector.slice(0, -2)}.dismiss"]`)!);
+      await Promise.resolve();
+      expect(rendered.root.querySelector(liveSelector)).toBeNull();
+      expect(rendered.root.querySelector(dormantSelector)).not.toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // A replica row binds its session by name AND path, so two workgroup rows can
+  // never share one working directory. The coordinator row is the real case of
+  // one agent on two rows: it renders in the workgroups section and again in a
+  // second panel section, both reading the same session, so the same key.
+  it("two rows of the same agent clear together on one dismissal", async () => {
+    const rendered = await mount();
+    try {
+      sessionsStore.setSessions([
+        { ...adoptedOn("replica-live", replicaName, replicaPath, "codex"), isCoordinator: true },
+      ]);
+      const allNotices = '.orphan-notice[data-ac-testid^="replica.orphanNotice."]';
+      await waitFor(() => expect(rendered.root.querySelectorAll(allNotices)).toHaveLength(2));
+      const ids = Array.from(rendered.root.querySelectorAll(allNotices), (el) => el.getAttribute("data-ac-testid"));
+      expect(new Set(ids).size).toBe(2);
+      click(rendered.root.querySelector<HTMLElement>(`${liveSelector.slice(0, -2)}.dismiss"]`)!);
+      await Promise.resolve();
+      expect(rendered.root.querySelectorAll(allNotices)).toHaveLength(0);
     } finally {
       rendered.cleanup();
     }
