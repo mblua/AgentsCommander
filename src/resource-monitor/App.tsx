@@ -1570,7 +1570,33 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
               </div>
             }
           >
-            <div class="rm-group-list">
+            <>
+              {/* #2582 - captions only, so aria-hidden: the row button already
+                  reads every value, and associating a caption outside the button
+                  with a cell inside it would need table roles on markup that is
+                  not a table. Hidden below 860px by CSS; the cells' title
+                  tooltips carry the labels there. */}
+              <div
+                class="rm-column-header"
+                aria-hidden="true"
+                data-ac-testid="resourceMonitor.columnHeader"
+                data-ac-role="row"
+              >
+                <div
+                  class="rm-column-header-main"
+                  data-ac-testid="resourceMonitor.columnHeader.main"
+                >
+                  <span />
+                  <span>Agent</span>
+                  <span>State</span>
+                  <span>Procs</span>
+                  <span>Private</span>
+                  <span>Working set</span>
+                  <span>CPU</span>
+                </div>
+                <span />
+              </div>
+              <div class="rm-group-list">
               <For each={sortedGroups()}>
                 {(group) => (
                   <div
@@ -1635,6 +1661,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                       </span>
                       <span
                         class="rm-group-state"
+                        title="State"
                         data-ac-testid={`resourceMonitor.group.${group.sessionId}.state`}
                         data-ac-role="cell"
                         data-ac-state={group.state}
@@ -1642,12 +1669,14 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                         {group.state}
                       </span>
                       <span
+                        title="Processes"
                         data-ac-testid={`resourceMonitor.group.${group.sessionId}.processCount`}
                         data-ac-role="cell"
                       >
                         {group.processCount} proc
                       </span>
                       <span
+                        title="Private memory"
                         data-ac-testid={`resourceMonitor.group.${group.sessionId}.privateBytes`}
                         data-ac-role="cell"
                       >
@@ -1657,12 +1686,14 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                           width, so "no metric disappears" was false before the
                           change started. It now takes the eighth grid track. */}
                       <span
+                        title="Working set"
                         data-ac-testid={`resourceMonitor.group.${group.sessionId}.workingSetBytes`}
                         data-ac-role="cell"
                       >
                         {formatBytes(group.workingSetBytes)}
                       </span>
                       <span
+                        title="CPU"
                         data-ac-testid={`resourceMonitor.group.${group.sessionId}.cpu`}
                         data-ac-role="cell"
                       >
@@ -1811,6 +1842,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                 )}
               </For>
             </div>
+            </>
           </Show>
         </section>
 
