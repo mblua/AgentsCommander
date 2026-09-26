@@ -9,9 +9,11 @@ import {
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
+  session,
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
+import { sessionsStore } from "../stores/sessions";
 import { defaultGroupsConfig } from "../stores/workgroup-groups";
 import type { AcDiscoveryResult } from "../../shared/types";
 import { loopSummaryFixture as loop } from "./loop-summary-fixture";
@@ -295,6 +297,47 @@ describe("ProjectPanel collapse state", () => {
         expect(headerCollapsed(headerByName(rendered.root, "Orchestrators"))).toBe(true);
         expect(rendered.root.querySelector(quickRow)).toBeNull();
       });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #2657 - the 5 collapsible headers toggle by keyboard through their row key proxy.
+  it("toggles each collapsible header with Enter, Space and mouse click", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve("discover_project", projectDiscovery("Stable task title"));
+    // An active orchestrator session makes the Selected Room header render.
+    sessionsStore.setSessions([
+      session({
+        id: "coord",
+        name: "wg-2-dev-team/dev-webpage-ui",
+        workingDirectory: `${workgroupPath}\\__agent_dev-webpage-ui`,
+        status: "running",
+      }),
+    ]);
+    sessionsStore.setVisibleActiveIdForTests("coord");
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    const toggles = async (name: string, act: (header: HTMLElement) => void, expected: boolean) => {
+      act(headerByName(rendered.root, name));
+      await waitFor(() => expect(headerCollapsed(headerByName(rendered.root, name))).toBe(expected));
+    };
+    const press = (key: string) => (header: HTMLElement) => {
+      const proxy = header.firstElementChild!;
+      expect(proxy.classList.contains("ac-row-key-proxy")).toBe(true);
+      proxy.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    };
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => void headerByName(rendered.root, "Selected Room"));
+      for (const name of ["wg-2-dev-team", "Orchestrators", "Selected Room", "Rooms", "Loops"]) {
+        expect(headerCollapsed(headerByName(rendered.root, name))).toBe(false);
+        await toggles(name, press("Enter"), true);
+        await toggles(name, press(" "), false);
+        await toggles(name, click, true);
+        await toggles(name, click, false);
+      }
     } finally {
       rendered.cleanup();
     }
