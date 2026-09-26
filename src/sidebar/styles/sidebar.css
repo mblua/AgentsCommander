@@ -10134,3 +10134,9 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
 .sidebar-compact .sidebar-scrollable {
   display: none;
 }
+
+/* #2655 - overlay panels focused on mount so Escape reaches their backdrop;
+   the programmatic focus must not draw a ring. */
+.ac-escape-focus-host:focus {
+  outline: none;
+}
