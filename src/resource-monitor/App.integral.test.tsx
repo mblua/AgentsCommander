@@ -1385,4 +1385,88 @@ describe("#2245 Resource Monitor integral view", () => {
       rendered.cleanup();
     }
   });
+
+  // #2582 - the caption strip: one strip, seven spans over the row's seven
+  // cells, six captions, and the seventh span empty for the Kill track.
+  it("renders one column-header strip whose spans match the row cells", async () => {
+    const harness = makeHarness();
+    const rendered = await renderApp(harness);
+    try {
+      expect(rendered.root.querySelectorAll(".rm-column-header")).toHaveLength(1);
+      const strip = must(rendered.root, "resourceMonitor.columnHeader");
+      expect(strip.getAttribute("aria-hidden")).toBe("true");
+      // Two children: the caption grid and the 64px Kill spacer.
+      expect(strip.children).toHaveLength(2);
+      expect(strip.children[1].textContent).toBe("");
+
+      const captions = must(rendered.root, "resourceMonitor.columnHeader.main");
+      expect(Array.from(captions.children).map((el) => el.textContent)).toEqual([
+        "",
+        "Agent",
+        "State",
+        "Procs",
+        "Private",
+        "Working set",
+        "CPU",
+      ]);
+
+      // The drift guard, and the reason the first caption is empty: one span per
+      // row cell, the unlabeled expander included.
+      const row = must(rendered.root, "resourceMonitor.group.session-a.toggle");
+      expect(row.children).toHaveLength(7);
+      expect(captions.children).toHaveLength(row.children.length);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("renders no strip when the list is empty and none when filters empty it", async () => {
+    const harness = makeHarness({ ...baseSnapshot(), groups: [] });
+    const rendered = await renderApp(harness);
+    try {
+      expect(maybe(rendered.root, "resourceMonitor.columnHeader")).toBeNull();
+      expect(maybe(rendered.root, "resourceMonitor.empty")).not.toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+
+    const filtered = makeHarness();
+    const second = await renderApp(filtered);
+    try {
+      expect(maybe(second.root, "resourceMonitor.columnHeader")).not.toBeNull();
+      await typePid(second.root, "9999");
+      expect(order(second.root)).toHaveLength(0);
+      // A caption strip over nothing is the one state variant A must not show.
+      expect(maybe(second.root, "resourceMonitor.columnHeader")).toBeNull();
+    } finally {
+      second.cleanup();
+    }
+  });
+
+  it("titles every metric cell, so the narrow layout still names each value", async () => {
+    const harness = makeHarness();
+    const rendered = await renderApp(harness);
+    try {
+      const titles: ReadonlyArray<[string, string]> = [
+        ["state", "State"],
+        ["processCount", "Processes"],
+        ["privateBytes", "Private memory"],
+        ["workingSetBytes", "Working set"],
+        ["cpu", "CPU"],
+      ];
+      for (const [suffix, title] of titles) {
+        expect(
+          must(rendered.root, `resourceMonitor.group.session-a.${suffix}`).getAttribute(
+            "title"
+          ),
+          suffix
+        ).toBe(title);
+      }
+      // The expander is not a value and gets no tooltip.
+      const row = must(rendered.root, "resourceMonitor.group.session-a.toggle");
+      expect(row.children[0].getAttribute("title")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });

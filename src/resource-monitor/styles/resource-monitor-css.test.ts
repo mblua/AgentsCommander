@@ -205,9 +205,11 @@ const FORBIDDEN: ReadonlyArray<[string, string]> = [
   ["font-size", ZERO],
 ];
 
-// Both exception lists are empty, and both are written as empty literals so
-// that adding one is a visible edit in the diff rather than a silent relaxation.
-const BASE_HIDING_EXCEPTIONS: ReadonlyArray<string> = [];
+// The conditional list is empty and written as an empty literal, so adding one
+// is a visible edit in the diff rather than a silent relaxation. The base list
+// holds exactly one entry, #2582's caption strip, and criterion 26 asserts both
+// lists by value and proves the exception really is a caption and not a value.
+const BASE_HIDING_EXCEPTIONS: ReadonlyArray<string> = [".rm-column-header"];
 const CONDITIONAL_HIDING_EXCEPTIONS: ReadonlyArray<string> = [];
 
 const METRIC_LEG_SELECTORS = [
@@ -269,7 +271,7 @@ describe("#2245 resource-monitor.css byte contract", () => {
     expect(CONDITIONAL_RULES.length).toBeGreaterThan(0);
     expect(BASE_RULES.length + CONDITIONAL_RULES.length).toBe(ALL_RULES.length);
 
-    expect(BASE_HIDING_EXCEPTIONS).toEqual([]);
+    expect(BASE_HIDING_EXCEPTIONS).toEqual([".rm-column-header"]);
     expect(CONDITIONAL_HIDING_EXCEPTIONS).toEqual([]);
 
     // At-rule inventory. Counting the families separately is what stops the
@@ -283,8 +285,12 @@ describe("#2245 resource-monitor.css byte contract", () => {
     // here on its own and must survive.
     expect(SCAN.match(/@import\b/g)).toHaveLength(1);
 
-    for (const family of [BASE_RULES, CONDITIONAL_RULES]) {
+    for (const [family, exceptions] of [
+      [BASE_RULES, BASE_HIDING_EXCEPTIONS],
+      [CONDITIONAL_RULES, CONDITIONAL_HIDING_EXCEPTIONS],
+    ] as ReadonlyArray<[ReadonlyArray<StyleRule>, ReadonlyArray<string>]>) {
       for (const rule of family) {
+        if (rule.selectors.some((s) => exceptions.includes(s))) continue;
         for (const [prop, value] of FORBIDDEN) {
           expect(
             declares(rule.body, prop, value),
@@ -292,6 +298,16 @@ describe("#2245 resource-monitor.css byte contract", () => {
           ).toBe(false);
         }
       }
+    }
+
+    // #2582 - the exception is asserted in closed form: the base really hides
+    // the caption strip, the container block really brings it back as a grid,
+    // and no metric cell is in either list.
+    expect(declares(baseRule(".rm-column-header").body, "display", "none")).toBe(true);
+    expect(declares(containerRule(".rm-column-header").body, "display", "grid")).toBe(true);
+    for (const selector of METRIC_LEG_SELECTORS) {
+      expect(BASE_HIDING_EXCEPTIONS).not.toContain(selector);
+      expect(CONDITIONAL_HIDING_EXCEPTIONS).not.toContain(selector);
     }
 
     // The one legitimate hide is asserted POSITIVELY, so the sweep above can
@@ -325,7 +341,8 @@ describe("#2245 resource-monitor.css byte contract", () => {
 
     // Five rule groups, asserted present rather than merely not-absent.
     expect(declares(containerRule(".rm-group-main").body, "display", "grid")).toBe(true);
-    expect(trackCount(containerRule(".rm-group-main"))).toBe(7);
+    expect(declaredValue(containerRule(".rm-group-main"), "grid-template-columns"))
+      .toBe("var(--rm-group-tracks)");
     const processes = containerRule(".rm-process-header");
     expect(processes.selectors).toEqual([".rm-process-header", ".rm-process-row"]);
     expect(declares(processes.body, "display", "grid")).toBe(true);
@@ -342,6 +359,8 @@ describe("#2245 resource-monitor.css byte contract", () => {
     // actually beats the base min-width: max-content.
     const blockSelectors = new Set([
       ".rm-group-main",
+      ".rm-column-header",
+      ".rm-column-header-main",
       ".rm-process-header",
       ".rm-process-row",
       ".rm-status-strip",
@@ -379,6 +398,8 @@ describe("#2245 resource-monitor.css byte contract", () => {
     expect(templated).toEqual(
       new Set([
         ".rm-group-main",
+        ".rm-column-header",
+        ".rm-column-header-main",
         ".rm-process-header",
         ".rm-process-row",
         ".rm-status-strip",
@@ -453,16 +474,39 @@ describe("#2245 resource-monitor.css byte contract", () => {
   });
 
   // 29
-  it("holds the seven- and six-track templates exactly once, inside the block", () => {
+  it("holds the seven tracks in one property and the six-track template once", () => {
+    // The seven tracks now live in ONE custom property, so trackCount() can no
+    // longer see them through grid-template-columns: var(...). The property is
+    // the single source of truth the header strip and the row share: pinned by
+    // its value, its term count, its one declaration and its two references.
+    const tracks = declaredValue(baseRule(".rm-body"), "--rm-group-tracks");
+    expect(tracks).toBe("20px minmax(130px, 1.5fr) 110px 72px 96px 72px 72px");
+    expect(countTerms(tracks)).toBe(7);
+    expect(SCAN.match(/--rm-group-tracks\s*:/g)).toHaveLength(1);
+
+    const referencing = ALL_RULES.filter((r) =>
+      r.body.includes("var(--rm-group-tracks)")
+    );
+    expect(new Set(referencing.flatMap((r) => r.selectors))).toEqual(
+      new Set([".rm-group-main", ".rm-column-header-main"])
+    );
+    for (const rule of referencing) {
+      expect(rule.atRule).toBe("container");
+      expect(declaredValue(rule, "grid-template-columns")).toBe(
+        "var(--rm-group-tracks)"
+      );
+    }
+
+    // No literal seven-track list survives anywhere: a second copy would be the
+    // drift this property exists to prevent.
     const seven = ALL_RULES.filter(
       (r) => /(^|;)\s*grid-template-columns\s*:/i.test(r.body) && trackCount(r) === 7
     );
     const six = ALL_RULES.filter(
       (r) => /(^|;)\s*grid-template-columns\s*:/i.test(r.body) && trackCount(r) === 6
     );
-    expect(seven).toHaveLength(1);
+    expect(seven).toHaveLength(0);
     expect(six).toHaveLength(1);
-    expect(seven[0].atRule).toBe("container");
     expect(six[0].atRule).toBe("container");
   });
 
@@ -577,5 +621,60 @@ describe("#2581 sections never shrink under their content", () => {
 describe("#2583 the retired socket column leaves no stylesheet bytes", () => {
   it("never spells network anywhere in the file, comments included", () => {
     expect(CSS).not.toContain("network");
+  });
+});
+
+// #2582 - the caption strip rides on the row's own tracks, gap and padding.
+describe("#2582 the column-header strip cannot drift from the row", () => {
+  it("repeats the row's tracks, gap and padding as equalities", () => {
+    const header = containerRule(".rm-column-header-main");
+    const main = containerRule(".rm-group-main");
+    expect(declaredValue(header, "grid-template-columns")).toBe(
+      declaredValue(main, "grid-template-columns")
+    );
+    // gap and padding come from the BASE .rm-group-main rule, which is the only
+    // place either is declared for the row.
+    const baseMain = baseRule(".rm-group-main");
+    expect(declaredValue(header, "gap")).toBe(declaredValue(baseMain, "gap"));
+    expect(declaredValue(header, "padding")).toBe(declaredValue(baseMain, "padding"));
+  });
+
+  it("stops the captions at the Kill track and adds no gap of its own", () => {
+    const strip = containerRule(".rm-column-header");
+    expect(declaredValue(strip, "grid-template-columns")).toBe(
+      declaredValue(baseRule(".rm-group-row"), "grid-template-columns")
+    );
+    for (const prop of ["gap", "row-gap", "column-gap", "grid-gap"]) {
+      expect(
+        new RegExp(`(^|;)\\s*${prop}\\s*:`, "i").test(strip.body),
+        `.rm-column-header declares ${prop}`
+      ).toBe(false);
+    }
+    expect(declares(strip.body, "position", "sticky")).toBe(true);
+    // #2582 check 3: the strip covers .rm-body's 12px padding band above it.
+    expect(declaredValue(strip, "top")).toBe("calc(var(--spacing-md) * -1)");
+    expect(declaredValue(strip, "padding-top")).toBe("calc(4px + var(--spacing-md))");
+  });
+
+  it("changes no row padding and keeps the strip's colours tokenised", () => {
+    // The 12px row-height loss jsdom cannot see: absence leg over EVERY rule
+    // carrying the selector, not just the first. `.rm-process-row` is declared
+    // twice in the base today, and baseRule() returns only the first.
+    for (const selector of [".rm-group-row", ".rm-process-row"]) {
+      const carrying = ALL_RULES.filter((r) => r.selectors.includes(selector));
+      expect(carrying.length, selector).toBeGreaterThan(0);
+      for (const rule of carrying) {
+        expect(
+          /(^|;)\s*padding\s*:/i.test(rule.body),
+          `${selector} declares padding`
+        ).toBe(false);
+      }
+    }
+    expect(declaredValue(baseRule(".rm-group-main"), "padding")).toBe(
+      "0 var(--spacing-sm)"
+    );
+    expect(hasColourLiteral(baseRule(".rm-column-header").body)).toBe(false);
+    expect(hasColourLiteral(containerRule(".rm-column-header").body)).toBe(false);
+    expect(hasColourLiteral(containerRule(".rm-column-header-main").body)).toBe(false);
   });
 });
