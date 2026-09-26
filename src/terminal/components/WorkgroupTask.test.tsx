@@ -124,3 +124,38 @@ describe("WorkgroupTask, F6 dual-prefix gate (#1614)", () => {
     }
   });
 });
+
+describe("WorkgroupTask, frontmatter title parsing (#2608)", () => {
+  beforeEach(() => {
+    resetUiStoresForTests();
+    terminalStore.resetForTests();
+  });
+
+  afterEach(() => {
+    resetUiStoresForTests();
+    terminalStore.resetForTests();
+    document.body.replaceChildren();
+  });
+
+  async function shownTitle(task: string): Promise<string | null> {
+    const rendered = await renderWithCwd("C:\\P\\.ac\\room-1-t\\__agent_x");
+    try {
+      terminalStore.setActiveWorkgroupTask(task);
+      return document.querySelector(".workgroup-task-title")?.textContent ?? null;
+    } finally {
+      rendered.cleanup();
+    }
+  }
+
+  it("unescapes doubled quotes inside a single-quoted title", async () => {
+    expect(await shownTitle("---\ntitle: 'it''s'\n---\nbody")).toBe("it's");
+  });
+
+  it("keeps the first title line, matched case-insensitively", async () => {
+    expect(await shownTitle('---\nfoo: 1\nTITLE: "x"\ntitle: y\n---\n')).toBe("x");
+  });
+
+  it("shows no title when the frontmatter has no closer", async () => {
+    expect(await shownTitle("---\ntitle: a\n")).toBeNull();
+  });
+});

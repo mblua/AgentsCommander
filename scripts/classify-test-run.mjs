@@ -104,23 +104,35 @@ function checkShape(report) {
     return 'testResults is empty';
   }
   for (const suite of report.testResults) {
-    if (suite === null || typeof suite !== 'object' || Array.isArray(suite)) {
-      return 'a testResults entry is not an object';
-    }
-    if (typeof suite.name !== 'string' || suite.name === '') {
-      return 'a testResults entry has no name';
-    }
-    if (!Array.isArray(suite.assertionResults)) {
-      return 'a testResults entry has no assertionResults array';
-    }
-    for (const assertion of suite.assertionResults) {
-      if (assertion === null || typeof assertion !== 'object' || Array.isArray(assertion)) {
-        return 'an assertionResults entry is not an object';
-      }
-      if (!ASSERTION_STATUSES.includes(assertion.status)) {
-        return `an assertion carries an unknown status ${JSON.stringify(assertion.status)}`;
-      }
-    }
+    const error = checkSuiteShape(suite);
+    if (error) return error;
+  }
+  return null;
+}
+
+function checkSuiteShape(suite) {
+  if (suite === null || typeof suite !== 'object' || Array.isArray(suite)) {
+    return 'a testResults entry is not an object';
+  }
+  if (typeof suite.name !== 'string' || suite.name === '') {
+    return 'a testResults entry has no name';
+  }
+  if (!Array.isArray(suite.assertionResults)) {
+    return 'a testResults entry has no assertionResults array';
+  }
+  for (const assertion of suite.assertionResults) {
+    const error = checkAssertionShape(assertion);
+    if (error) return error;
+  }
+  return null;
+}
+
+function checkAssertionShape(assertion) {
+  if (assertion === null || typeof assertion !== 'object' || Array.isArray(assertion)) {
+    return 'an assertionResults entry is not an object';
+  }
+  if (!ASSERTION_STATUSES.includes(assertion.status)) {
+    return `an assertion carries an unknown status ${JSON.stringify(assertion.status)}`;
   }
   return null;
 }

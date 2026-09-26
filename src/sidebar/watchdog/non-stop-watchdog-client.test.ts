@@ -277,15 +277,20 @@ describe("#2180 nonStopWatchdogClient alarm listener", () => {
     dispose();
   });
 
-  it("cleanup stops every alarm and detaches the listener", async () => {
+  it.each([
+    ["before the listener registers", false],
+    ["after the listener registered", true],
+  ] as const)("cleanup stops every alarm and detaches the listener %s", async (_label, registered) => {
     const fake = await seedClient();
     const dispose = startInRoot();
+    if (registered) await Promise.resolve();
 
     dispose();
     expect(vi.mocked(stopAllNonStopAlarms)).toHaveBeenCalledTimes(1);
 
-    // The unlisten lands one microtask after dispose() via the disposed latch;
-    // advanceTimersByTime would not settle it because no timer is involved.
+    // Before registration the unlisten lands one microtask after dispose() via
+    // the disposed latch; after it, onCleanup calls the stored unlisten directly.
+    // advanceTimersByTime would not settle either because no timer is involved.
     await Promise.resolve();
     fake.emitFromBackend("non_stop_alarm", {
       projectPath: "C:\\P",

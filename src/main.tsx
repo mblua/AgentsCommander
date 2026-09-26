@@ -12,14 +12,12 @@ import { initAutomationBridge } from "./shared/automation-bridge";
 import { initLogLevelForWindow } from "./shared/log-level";
 import { harvestIpcBlackBox, installIpcBlackBox } from "./shared/ipc-blackbox";
 import { BlackBoxAPI } from "./shared/ipc";
+import { storeRemoteTokenFromUrl } from "./shared/remote-token";
 
 const params = new URLSearchParams(window.location.search);
 const windowType = params.get("window");
 
-const remoteToken = params.get("remoteToken");
-if (remoteToken) {
-  sessionStorage.setItem("remoteToken", remoteToken);
-}
+storeRemoteTokenFromUrl(params, sessionStorage);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Root element not found");

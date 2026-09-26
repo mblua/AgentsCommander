@@ -28,43 +28,58 @@ use crate::session::session::{SessionInfo, SessionRepo, SessionStatus};
 /// `format!`-into-log; `Relaxed` is canonical for an observed-but-not-synchronizing counter.
 static DISCOVERY_CALL_ID: AtomicU64 = AtomicU64::new(0);
 
-/// Resolve the preferred coding agent for a directory by matching the app
-/// label from the agent's config.json against THIS instance's settings.
+/// Resolve the preferred coding agent for a directory from its config.json
+/// `tooling.lastCodingAgent` and that id's `codingAgents` descriptor.
 ///
-/// Flow: read config.json → get lastCodingAgent ID → get its `app` label
-/// (e.g. "Claude Code") → find the agent in our settings with that label
-/// → return OUR agent's ID. This decouples discovery from foreign agent IDs.
+/// #2434 - resolved through `resolve_portable_reference` (local id, cell digest,
+/// case-insensitive label, canonical command), so a foreign id maps to OUR
+/// agent. The sidebar lists rather than launches: no letter is requested and
+/// only the resolved id is read. An unresolvable reference returns `None` with
+/// a warning; another agent is never substituted.
 fn read_preferred_agent_id(
     dir: &Path,
-    instance_agents: &[crate::config::settings::AgentConfig],
+    settings: &crate::config::settings::AppSettings,
+) -> Option<String> {
+    let mut warnings = Vec::new();
+    let preferred = read_preferred_agent_id_logged(dir, settings, &mut warnings);
+    for warning in warnings {
+        log::warn!("[discovery] {}", warning);
+    }
+    preferred
+}
+
+fn read_preferred_agent_id_logged(
+    dir: &Path,
+    settings: &crate::config::settings::AppSettings,
+    warnings: &mut Vec<String>,
 ) -> Option<String> {
     let config_path = dir.join("config.json");
     let content = std::fs::read_to_string(&config_path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let tooling = v.get("tooling")?;
-
-    // Get the foreign agent ID and its app label
-    let foreign_id = tooling.get("lastCodingAgent")?.as_str()?;
-    let app_label = tooling
-        .get("codingAgents")?
-        .get(foreign_id)?
-        .get("app")?
-        .as_str()?;
-
-    // Match by label against this instance's configured agents
-    let matches: Vec<_> = instance_agents
-        .iter()
-        .filter(|a| a.label == app_label)
-        .collect();
-    if matches.len() > 1 {
-        log::warn!(
-            "[discovery] Multiple agents with label '{}' — using first match (id={})",
-            app_label,
-            matches[0].id
-        );
+    let v: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            warnings.push(format!(
+                "malformed '{}', no coding-agent reference: {}",
+                config_path.display(),
+                e
+            ));
+            return None;
+        }
+    };
+    let foreign_id = v.get("tooling")?.get("lastCodingAgent")?.as_str()?;
+    let reference =
+        crate::config::agent_command::StoredReference::from_config(Some(&v), foreign_id);
+    match crate::config::agent_command::resolve_portable_reference(settings, &reference) {
+        crate::config::agent_command::MatchOutcome::Matched(found) => Some(found.agent_id),
+        crate::config::agent_command::MatchOutcome::NoMatch { reference } => {
+            warnings.push(format!(
+                "coding-agent reference '{}' in '{}' matches no configured agent",
+                reference,
+                config_path.display()
+            ));
+            None
+        }
     }
-    let local_agent = matches.into_iter().next()?;
-    Some(local_agent.id.clone())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1174,7 +1189,10 @@ pub async fn discover_ac_agents(
             let repo_dir_str = projected_path_string(&repo_dir);
 
             // Opportunistic: ensure gitignore exists for existing projects
-            let _ = ensure_ac_root_gitignore(&ac_root);
+            let _ = ensure_ac_root_gitignore_with_names(
+                &ac_root,
+                &crate::config::agent_command::managed_instructions_filenames(&cfg),
+            );
             let context_scan = crate::config::seed_manifest::run_blocking_owned({
                 let repo_dir = repo_dir.clone();
                 let ac_root = ac_root.clone();
@@ -1238,7 +1256,7 @@ pub async fn discover_ac_agents(
                     let display_name = agent_display_name(&project_folder, &dir_name);
                     let role_exists = path.join("Role.md").exists();
 
-                    let preferred_agent_id = read_preferred_agent_id(&path, &cfg.agents);
+                    let preferred_agent_id = read_preferred_agent_id(&path, &cfg);
 
                     log::info!(
                         "[ac-discovery] agent: dir={:?}, preferred_agent_id={:?}",
@@ -1304,7 +1322,7 @@ pub async fn discover_ac_agents(
                                 // Resolve identity to matrix dir and read its lastCodingAgent
                                 let preferred_agent_id =
                                     identity_read.identity.as_ref().and_then(|identity| {
-                                        read_preferred_agent_id(&identity.matrix_dir, &cfg.agents)
+                                        read_preferred_agent_id(&identity.matrix_dir, &cfg)
                                     });
                                 let current_coding_agent_id = crate::config::coding_agent_profiles::read_replica_current_coding_agent(&wg_path)
                                     .filter(|id| cfg.agents.iter().any(|agent| agent.id == *id));
@@ -1577,7 +1595,44 @@ pub async fn check_project_path(path: String) -> Result<bool, String> {
 
 /// Ensure the Project AC Root .gitignore exists and contains all required exclusion patterns.
 /// Called during project creation, workgroup creation, and opportunistically during discovery.
+///
+/// #2434 - also ignores every configured agent's instructions filename, read
+/// from the saved settings. Callers that already hold an `AppSettings` call
+/// [`ensure_ac_root_gitignore_with_names`] directly.
 pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
+    // Test builds never read the developer's real `settings.json` through this
+    // writer: they get the legacy floor rows only.
+    #[cfg(not(test))]
+    let configured = crate::config::agent_command::managed_instructions_filenames(
+        &crate::config::settings::load_settings(),
+    );
+    #[cfg(test)]
+    let configured: Vec<String> = Vec::new();
+    ensure_ac_root_gitignore_with_names(ac_root, &configured)
+}
+
+/// #2434 - escape a bare instructions filename for a gitignore pattern: `\`,
+/// `*`, `?`, `[`, `]` anywhere, and a leading `#` or `!`, each get a `\`
+/// prefix. Separators and trailing spaces are already rejected upstream.
+fn escape_gitignore_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 2);
+    for (index, ch) in name.chars().enumerate() {
+        if matches!(ch, '\\' | '*' | '?' | '[' | ']') || (index == 0 && matches!(ch, '#' | '!')) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// [`ensure_ac_root_gitignore`] with the already-resolved instructions
+/// filenames. The `CLAUDE.md` / `AGENTS.md` floor rows are always written; each
+/// other distinct name adds an escaped `**/__agent_*/<name>` row. A name failing
+/// `is_safe_instructions_filename` is dropped with a warning.
+pub(crate) fn ensure_ac_root_gitignore_with_names(
+    ac_root: &Path,
+    configured: &[String],
+) -> Result<(), String> {
     let gitignore_path = ac_root.join(".gitignore");
     const PROJECT_SETTINGS_GITIGNORE_PATTERN: &str = "/project-settings.json";
     const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n";
@@ -1600,8 +1655,27 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
         ]
         .map(|artifact| format!("/{artifact}"));
 
+    // #2434 - configured instructions filenames beyond the floor, escaped.
+    let mut custom_patterns: Vec<String> = Vec::new();
+    for name in configured {
+        if !crate::config::agent_command::is_safe_instructions_filename(name) {
+            log::warn!(
+                "[ac-gitignore] dropping unsafe instructions filename {:?}",
+                name
+            );
+            continue;
+        }
+        if name == "CLAUDE.md" || name == "AGENTS.md" {
+            continue;
+        }
+        let pattern = format!("**/__agent_*/{}", escape_gitignore_name(name));
+        if !custom_patterns.contains(&pattern) {
+            custom_patterns.push(pattern);
+        }
+    }
+
     // Each entry: (pattern, comment explaining why)
-    let required_entries: &[(&str, &str)] = &[
+    let mut required_entries: Vec<(&str, &str)> = vec![
         (
             "room-*/",
             "# AgentsCommander: exclude room cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.",
@@ -1718,6 +1792,12 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
             "# AgentsCommander: exclude coding-agent migration journal publication temporaries (the journal name starts with a dot).",
         ),
     ];
+    for pattern in &custom_patterns {
+        required_entries.push((
+            pattern.as_str(),
+            "# AgentsCommander: exclude managed session context files inside replica agent folders.",
+        ));
+    }
 
     if gitignore_path.exists() {
         let content = std::fs::read_to_string(&gitignore_path)
@@ -1725,7 +1805,7 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
         let (content, migrated) = migrate_legacy_seed_manifest_gitignore(content);
 
         let mut additions = String::new();
-        for (pattern, comment) in required_entries {
+        for (pattern, comment) in &required_entries {
             let is_present = content.lines().any(|line| {
                 if *pattern == PROJECT_SETTINGS_GITIGNORE_PATTERN {
                     line == *pattern
@@ -1762,7 +1842,7 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
         }
     } else {
         let mut content = String::new();
-        for (pattern, comment) in required_entries {
+        for (pattern, comment) in &required_entries {
             content.push_str(&format!("{}\n{}\n\n", comment, pattern));
         }
         content.push_str(SEED_MANIFEST_COORDINATION_BLOCK);
@@ -2070,7 +2150,10 @@ pub(crate) async fn discover_project_inner(
     };
 
     // Opportunistic: ensure gitignore protects workgroup clones
-    let _ = ensure_ac_root_gitignore(&ac_root);
+    let _ = ensure_ac_root_gitignore_with_names(
+        &ac_root,
+        &crate::config::agent_command::managed_instructions_filenames(&cfg),
+    );
     let context_scan = crate::config::seed_manifest::run_blocking_owned({
         let base = base.to_path_buf();
         let ac_root = ac_root.clone();
@@ -2148,7 +2231,7 @@ pub(crate) async fn discover_project_inner(
             let display_name = agent_display_name(&project_folder, &dir_name);
             let role_exists = entry_path.join("Role.md").exists();
 
-            let preferred_agent_id = read_preferred_agent_id(&entry_path, &cfg.agents);
+            let preferred_agent_id = read_preferred_agent_id(&entry_path, &cfg);
 
             agents.push(AcAgentMatrix {
                 name: display_name,
@@ -2202,7 +2285,7 @@ pub(crate) async fn discover_project_inner(
 
                         let preferred_agent_id =
                             identity_read.identity.as_ref().and_then(|identity| {
-                                read_preferred_agent_id(&identity.matrix_dir, &cfg.agents)
+                                read_preferred_agent_id(&identity.matrix_dir, &cfg)
                             });
                         let current_coding_agent_id = crate::config::coding_agent_profiles::read_replica_current_coding_agent(&wg_path)
                             .filter(|id| cfg.agents.iter().any(|agent| agent.id == *id));
@@ -4738,7 +4821,8 @@ mod tests {
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         assert!(
@@ -4763,7 +4847,8 @@ mod tests {
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         for pattern in [
@@ -4799,7 +4884,7 @@ mod tests {
 
         // Idempotent: a second ensure appends nothing.
         let before = content;
-        ensure_ac_root_gitignore(&ac_root).expect("second ensure");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("second ensure");
         assert_eq!(
             std::fs::read_to_string(ac_root.join(".gitignore")).expect("re-read"),
             before,
@@ -4823,7 +4908,8 @@ mod tests {
         const LEGACY: &str = "# AgentsCommander: exclude room cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\nwg-*/\n";
         std::fs::write(ac_root.join(".gitignore"), LEGACY).expect("seed legacy .gitignore");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         assert!(
@@ -4842,7 +4928,8 @@ mod tests {
 
         // Idempotent: a second call adds nothing.
         let before = content;
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore again");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore again");
         assert_eq!(
             std::fs::read_to_string(ac_root.join(".gitignore")).expect("re-read"),
             before,
@@ -4856,7 +4943,8 @@ mod tests {
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         assert!(
@@ -4897,7 +4985,8 @@ mod tests {
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         let block =
@@ -4924,7 +5013,8 @@ mod tests {
         std::fs::create_dir(&ac_root).expect("create .ac");
         std::fs::write(ac_root.join(".gitignore"), "wg-*/\n").expect("write .gitignore");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         let count = content
@@ -4943,7 +5033,8 @@ mod tests {
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         let block =
@@ -4979,7 +5070,8 @@ mod tests {
         let original = b"# User-authored rules\r\n!important.txt\r\n\r\n".to_vec();
         std::fs::write(&gitignore_path, &original).expect("write .gitignore");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let updated = std::fs::read(&gitignore_path).expect("read updated .gitignore");
         assert!(
@@ -5004,7 +5096,8 @@ mod tests {
         );
 
         let once_updated = updated;
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore again");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore again");
         let twice_updated = std::fs::read(&gitignore_path).expect("read .gitignore again");
         assert_eq!(
             twice_updated, once_updated,
@@ -5018,7 +5111,8 @@ mod tests {
         let project = tmp.path().join("project");
         let ac_root = project.join(".ac");
         std::fs::create_dir_all(ac_root.join("nested")).expect("create .ac tree");
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let init_status = std::process::Command::new("git")
             .args(["init", "--quiet"])
@@ -5117,7 +5211,8 @@ mod tests {
         let original = b" /project-settings.json\r\n wg-*/\r\n".to_vec();
         std::fs::write(&gitignore_path, &original).expect("write .gitignore");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let updated = std::fs::read(&gitignore_path).expect("read updated .gitignore");
         assert!(
@@ -5154,7 +5249,8 @@ mod tests {
         std::fs::write(&gitignore_path, b"/project-settings.json\r\n")
             .expect("write exact project-settings rule");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let content = std::fs::read_to_string(&gitignore_path).expect("read reconciled .gitignore");
         assert_eq!(
@@ -5180,7 +5276,8 @@ mod tests {
         let project = tmp.path().join("project");
         let ac_root = project.join(".ac");
         std::fs::create_dir_all(ac_root.join("nested")).expect("create .ac tree");
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         for relative in [
             ".ac/.seed-manifest.lock",
@@ -5248,7 +5345,8 @@ mod tests {
         );
         std::fs::write(&gitignore_path, &legacy).expect("seed legacy .gitignore");
 
-        ensure_ac_root_gitignore(&ac_root).expect("migrate legacy .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("migrate legacy .gitignore");
 
         let content = std::fs::read_to_string(&gitignore_path).expect("read .gitignore");
         assert!(
@@ -5280,7 +5378,7 @@ mod tests {
 
         // Idempotent: a second ensure appends nothing.
         let before = content;
-        ensure_ac_root_gitignore(&ac_root).expect("second ensure");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("second ensure");
         assert_eq!(
             std::fs::read_to_string(&gitignore_path).expect("re-read"),
             before,
@@ -5305,7 +5403,8 @@ mod tests {
         let fresh = tempfile::tempdir().expect("tempdir");
         let fresh_ac = fresh.path().join(".ac");
         std::fs::create_dir(&fresh_ac).expect("create .ac");
-        ensure_ac_root_gitignore(&fresh_ac).expect("ensure fresh .gitignore");
+        ensure_ac_root_gitignore_with_names(&fresh_ac, &floor_names())
+            .expect("ensure fresh .gitignore");
         let expected =
             std::fs::read_to_string(fresh_ac.join(".gitignore")).expect("read fresh .gitignore");
 
@@ -5319,7 +5418,8 @@ mod tests {
         );
         std::fs::write(old_ac.join(".gitignore"), &legacy_content).expect("seed legacy .gitignore");
 
-        ensure_ac_root_gitignore(&old_ac).expect("migrate legacy .gitignore");
+        ensure_ac_root_gitignore_with_names(&old_ac, &floor_names())
+            .expect("migrate legacy .gitignore");
 
         assert_eq!(
             std::fs::read_to_string(old_ac.join(".gitignore")).expect("read migrated .gitignore"),
@@ -5336,12 +5436,12 @@ mod tests {
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
         let gitignore_path = ac_root.join(".gitignore");
-        ensure_ac_root_gitignore(&ac_root).expect("ensure .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("ensure .gitignore");
         let mut content = std::fs::read_to_string(&gitignore_path).expect("read .gitignore");
         content.push_str("\n# user rule\n!/seed-manifest.toml\n");
         std::fs::write(&gitignore_path, &content).expect("append user negation");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure again");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("ensure again");
 
         assert_eq!(
             std::fs::read_to_string(&gitignore_path).expect("re-read"),
@@ -5366,7 +5466,8 @@ mod tests {
         );
         std::fs::write(&gitignore_path, legacy).expect("seed CRLF legacy .gitignore");
 
-        ensure_ac_root_gitignore(&ac_root).expect("migrate legacy .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("migrate legacy .gitignore");
 
         let content = std::fs::read_to_string(&gitignore_path).expect("read .gitignore");
         assert!(
@@ -5398,7 +5499,8 @@ mod tests {
         let project = tmp.path().join("project");
         let ac_root = project.join(".ac");
         std::fs::create_dir_all(&ac_root).expect("create .ac");
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
         std::fs::write(ac_root.join("seed-manifest.toml"), b"fixture").expect("write manifest");
         // A parent repository rule excludes the whole `.ac/` directory.
         std::fs::write(project.join(".gitignore"), b"/.ac/\n").expect("write parent .gitignore");
@@ -5441,7 +5543,8 @@ mod tests {
             let project = tmp.path().join("project");
             let ac_root = project.join(".ac");
             std::fs::create_dir_all(&ac_root).expect("create .ac");
-            ensure_ac_root_gitignore(&ac_root).expect("ensure .gitignore");
+            ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+                .expect("ensure .gitignore");
             // Append a later user negation (never reordered by AC).
             let mut content =
                 std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
@@ -5500,7 +5603,8 @@ mod tests {
             let project = tmp.path().join("project");
             let ac_root = project.join(".ac");
             std::fs::create_dir_all(&ac_root).expect("create .ac");
-            ensure_ac_root_gitignore(&ac_root).expect("ensure .gitignore");
+            ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+                .expect("ensure .gitignore");
             std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
             let init = std::process::Command::new("git")
                 .args(["init", "--quiet"])
@@ -5541,7 +5645,8 @@ mod tests {
             let project = tmp.path().join("project");
             let ac_root = project.join(".ac");
             std::fs::create_dir_all(&ac_root).expect("create .ac");
-            ensure_ac_root_gitignore(&ac_root).expect("ensure .gitignore");
+            ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+                .expect("ensure .gitignore");
             std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
             let init = std::process::Command::new("git")
                 .args(["init", "--quiet"])
@@ -5591,7 +5696,8 @@ mod tests {
             .to_vec();
         std::fs::write(&gitignore_path, &original).expect("write .gitignore");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let updated = std::fs::read(&gitignore_path).expect("read updated .gitignore");
         assert!(
@@ -5616,7 +5722,8 @@ mod tests {
         );
 
         let once_updated = updated;
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore again");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore again");
         let twice_updated = std::fs::read(&gitignore_path).expect("read .gitignore again");
         assert_eq!(
             twice_updated, once_updated,
@@ -5633,7 +5740,8 @@ mod tests {
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         let config_block =
@@ -5693,7 +5801,8 @@ mod tests {
         let original = b"# User-authored rules\r\n!important.txt\r\n\r\n".to_vec();
         std::fs::write(&gitignore_path, &original).expect("write .gitignore");
 
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let updated = std::fs::read(&gitignore_path).expect("read updated .gitignore");
         assert!(
@@ -5737,7 +5846,8 @@ mod tests {
         );
 
         let once_updated = updated;
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore again");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore again");
         let twice_updated = std::fs::read(&gitignore_path).expect("read .gitignore again");
         assert_eq!(
             twice_updated, once_updated,
@@ -5754,7 +5864,8 @@ mod tests {
         let project = tmp.path().join("project");
         let ac_root = project.join(".ac");
         std::fs::create_dir_all(&ac_root).expect("create .ac");
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let init_status = std::process::Command::new("git")
             .args(["init", "--quiet"])
@@ -5840,7 +5951,8 @@ mod tests {
         let project = tmp.path().join("project");
         let ac_root = project.join(".ac");
         std::fs::create_dir_all(&ac_root).expect("create .ac");
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let init_status = std::process::Command::new("git")
             .args(["init", "--quiet"])
@@ -6079,10 +6191,12 @@ mod tests {
             "invalid identity must not grant coordinator/root authority"
         );
 
-        let preferred_agent_id = identity_read
-            .identity
-            .as_ref()
-            .and_then(|identity| read_preferred_agent_id(&identity.matrix_dir, &[]));
+        let preferred_agent_id = identity_read.identity.as_ref().and_then(|identity| {
+            read_preferred_agent_id(
+                &identity.matrix_dir,
+                &crate::config::settings::AppSettings::default(),
+            )
+        });
         assert!(
             preferred_agent_id.is_none(),
             "invalid identity must not be used to read preferred coding agent"
@@ -6311,7 +6425,8 @@ mod tests {
         let project = tmp.path().join("project");
         let ac_root = project.join(".ac");
         std::fs::create_dir_all(&ac_root).expect("create .ac");
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let fixtures = [
             ".ac/_agent_probe/rtk-matrix-history.db",
@@ -6391,7 +6506,8 @@ mod tests {
 ",
         )
         .expect("write .gitignore");
-        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
 
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         assert_eq!(
@@ -6648,5 +6764,214 @@ mod tests {
         .await
         .expect("discover_project_inner");
         assert_discovery_selection_wire(&direct);
+    }
+
+    // #2434 - instructions-filename rows and the discovery matcher.
+
+    fn floor_names() -> Vec<String> {
+        vec!["CLAUDE.md".into(), "AGENTS.md".into()]
+    }
+
+    fn agent_rows(content: &str) -> Vec<&str> {
+        content
+            .lines()
+            .filter(|line| line.starts_with("**/__agent_*/"))
+            .collect()
+    }
+
+    #[test]
+    fn gitignore_rows_cover_a_custom_instructions_filename() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let names = vec!["CLAUDE.md".into(), "AGENTS.md".into(), "Squad.md".into()];
+        ensure_ac_root_gitignore_with_names(tmp.path(), &names).expect("ensure");
+        let content = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        for row in [
+            "**/__agent_*/Squad.md",
+            "**/__agent_*/CLAUDE.md",
+            "**/__agent_*/AGENTS.md",
+        ] {
+            assert!(content.lines().any(|l| l == row), "missing {row}");
+        }
+
+        // An existing floor-only file gains the row; nothing is removed.
+        let existing = tempfile::tempdir().expect("tempdir");
+        ensure_ac_root_gitignore_with_names(existing.path(), &floor_names()).expect("floor");
+        let before = std::fs::read_to_string(existing.path().join(".gitignore")).unwrap();
+        assert!(!before.contains("Squad.md"));
+        ensure_ac_root_gitignore_with_names(existing.path(), &["Squad.md".into()]).expect("add");
+        let after = std::fs::read_to_string(existing.path().join(".gitignore")).unwrap();
+        assert!(after.starts_with(&before), "the writer is purely additive");
+        assert!(after.lines().any(|l| l == "**/__agent_*/Squad.md"));
+    }
+
+    #[test]
+    fn gitignore_escapes_glob_metacharacters() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ac_root = project.join(".ac");
+        let replica = ac_root.join("replicas").join("__agent_dev");
+        std::fs::create_dir_all(&replica).expect("replica dir");
+        ensure_ac_root_gitignore_with_names(&ac_root, &["[Squad].md".into()]).expect("ensure");
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).unwrap();
+        assert!(
+            content.lines().any(|l| l == r"**/__agent_*/\[Squad\].md"),
+            "{content}"
+        );
+
+        let init_status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .status()
+            .expect("git init must execute");
+        assert!(init_status.success(), "git init must succeed");
+        let empty_excludes = project.join("empty-global-excludes");
+        std::fs::write(&empty_excludes, []).expect("empty excludes");
+        std::fs::write(replica.join("[Squad].md"), "x").expect("literal file");
+        // A file the raw class `[Squad].md` WOULD match must stay unignored.
+        std::fs::write(replica.join("S.md"), "x").expect("class-match file");
+        let excludes_override = format!(
+            "core.excludesFile={}",
+            empty_excludes.to_string_lossy().replace('\\', "/")
+        );
+        let check = |target: &str| {
+            std::process::Command::new("git")
+                .arg("-c")
+                .arg(&excludes_override)
+                .args(["check-ignore", "-v", "--no-index", "--", target])
+                .current_dir(&project)
+                .output()
+                .expect("git check-ignore must execute")
+        };
+        let literal = check(".ac/replicas/__agent_dev/[Squad].md");
+        assert!(
+            literal.status.success(),
+            "the literal file must be ignored: {}",
+            String::from_utf8_lossy(&literal.stderr)
+        );
+        let stdout = String::from_utf8(literal.stdout).expect("utf-8");
+        assert!(
+            stdout.contains(r":**/__agent_*/\[Squad\].md"),
+            "matched by the escaped row: {stdout}"
+        );
+        let class = check(".ac/replicas/__agent_dev/S.md");
+        assert_eq!(class.status.code(), Some(1), "S.md must not be ignored");
+    }
+
+    #[test]
+    fn gitignore_rows_are_idempotent_for_custom_names() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let names = vec!["Squad.md".into(), "[Squad].md".into(), "Squad.md".into()];
+        ensure_ac_root_gitignore_with_names(tmp.path(), &names).expect("first");
+        let first = std::fs::read(tmp.path().join(".gitignore")).unwrap();
+        ensure_ac_root_gitignore_with_names(tmp.path(), &names).expect("second");
+        let second = std::fs::read(tmp.path().join(".gitignore")).unwrap();
+        assert_eq!(first, second);
+        let content = String::from_utf8(first).unwrap();
+        assert_eq!(
+            content
+                .lines()
+                .filter(|l| *l == "**/__agent_*/Squad.md")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn gitignore_drops_an_unsafe_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        ensure_ac_root_gitignore_with_names(
+            tmp.path(),
+            &["../escape.md".into(), "Squad.md".into()],
+        )
+        .expect("ensure");
+        let content = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(content.lines().any(|l| l == "**/__agent_*/Squad.md"));
+        assert!(!content.contains("escape"), "{content}");
+        for row in agent_rows(&content) {
+            let name = row.strip_prefix("**/__agent_*/").unwrap();
+            assert!(
+                !name.contains('/') && !name.contains('\\') && !name.contains(".."),
+                "{row}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_names_never_reach_the_writer_unsafe() {
+        let mut unsafe_agent = matcher_agent("codex", "Codex", "codex");
+        unsafe_agent.instructions_filename = Some("../escape.md".to_string());
+        let settings = AppSettings {
+            agents: vec![unsafe_agent],
+            ..AppSettings::default()
+        };
+        let names = crate::config::agent_command::managed_instructions_filenames(&settings);
+        assert_eq!(names, vec!["AGENTS.md".to_string()]);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        ensure_ac_root_gitignore_with_names(tmp.path(), &names).expect("ensure");
+        let content = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(!content.contains("escape"));
+    }
+
+    fn matcher_agent(id: &str, label: &str, command: &str) -> crate::config::settings::AgentConfig {
+        crate::config::settings::AgentConfig {
+            id: id.to_string(),
+            label: label.to_string(),
+            command: command.to_string(),
+            color: "#000000".to_string(),
+            order: None,
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+            context_regex: None,
+            blocking_menus: None,
+            backend: Default::default(),
+        }
+    }
+
+    #[test]
+    fn discovery_returns_none_and_warns_on_no_match() {
+        let settings = AppSettings {
+            agents: vec![
+                matcher_agent("local-claude", "Claude Code", "claude"),
+                matcher_agent("local-codex", "Codex", "codex"),
+            ],
+            ..AppSettings::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let write = |name: &str, config: Value| {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
+            dir
+        };
+        let unknown = write(
+            "_agent_unknown",
+            json!({"tooling": {"lastCodingAgent": "foreign",
+                "codingAgents": {"foreign": {"app": "Gemini", "command": "gemini"}}}}),
+        );
+        let lowercase = write(
+            "_agent_lower",
+            json!({"tooling": {"lastCodingAgent": "their-codex",
+                "codingAgents": {"their-codex": {"app": "codex"}}}}),
+        );
+
+        let mut warnings = Vec::new();
+        assert_eq!(
+            read_preferred_agent_id_logged(&unknown, &settings, &mut warnings),
+            None,
+            "no other agent is substituted"
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("'foreign'"), "{warnings:?}");
+
+        // The next directory still resolves: discovery keeps listing, and the
+        // label now matches case-insensitively.
+        let mut warnings = Vec::new();
+        assert_eq!(
+            read_preferred_agent_id_logged(&lowercase, &settings, &mut warnings).as_deref(),
+            Some("local-codex")
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 }

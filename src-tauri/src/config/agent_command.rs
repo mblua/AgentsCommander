@@ -85,6 +85,11 @@ pub struct AgentSpawnCommand {
     /// session chokepoint, never here). `None` when the agent has no active seed
     /// or the launch root is not an AC replica/root-agent.
     pub seed: Option<crate::config::config_seed::ResolvedConfigSeed>,
+    /// #2434 - the #2451 `matchTier` carrier value (`MatchTier::as_wire_str`).
+    /// `None` unless a restart resolved a reference through the matcher.
+    pub match_tier: Option<String>,
+    /// #2434 - the #2451 `originalProfileLetter` carrier value.
+    pub original_profile_letter: Option<String>,
 }
 
 impl AgentSpawnCommand {
@@ -892,6 +897,265 @@ pub fn profile_content_hash(command: &str, env: &BTreeMap<String, String>) -> St
     digest[..16].to_string()
 }
 
+/// #2434 - which tier of `resolve_portable_reference` matched. A tier-0 local
+/// id hit guesses nothing and is `None` wherever this is carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MatchTier {
+    Hash,
+    LabelAndLetter,
+    CommandAndLetter,
+}
+
+impl MatchTier {
+    /// The wire string the #2451 `matchTier` carrier holds; equals the serde form.
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            MatchTier::Hash => "hash",
+            MatchTier::LabelAndLetter => "labelAndLetter",
+            MatchTier::CommandAndLetter => "commandAndLetter",
+        }
+    }
+}
+
+/// #2434 - a stored coding-agent reference, built by the caller from
+/// `tooling.currentCodingAgent` / `lastCodingAgent` plus, when present, the
+/// `tooling.codingAgents[<id>]` descriptor #2433 wrote.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoredReference {
+    /// The stored id; it IS the reference.
+    pub id: String,
+    /// `descriptor.app`.
+    pub app_label: Option<String>,
+    /// `descriptor.command`, already canonical.
+    pub command: Option<String>,
+    /// Letter -> cell digest; empty when an older build wrote the descriptor.
+    pub identity: BTreeMap<String, String>,
+    /// The letter this launch asks for.
+    pub source_letter: Option<String>,
+}
+
+impl StoredReference {
+    /// Build the reference for `id` from a parsed agent `config.json`. A missing
+    /// or non-object descriptor yields no descriptor fields; empty strings read
+    /// as absent (an older build wrote them).
+    pub fn from_config(config: Option<&serde_json::Value>, id: &str) -> Self {
+        let descriptor = config
+            .and_then(|value| value.get("tooling"))
+            .and_then(|tooling| tooling.get("codingAgents"))
+            .and_then(|agents| agents.get(id))
+            .filter(|entry| entry.is_object());
+        let text = |key: &str| {
+            descriptor
+                .and_then(|entry| entry.get(key))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let identity = descriptor
+            .and_then(|entry| entry.get("identity"))
+            .and_then(|value| value.as_object())
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(letter, digest)| {
+                        digest.as_str().map(|d| (letter.clone(), d.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        StoredReference {
+            id: id.to_string(),
+            app_label: text("app"),
+            command: text("command"),
+            identity,
+            source_letter: None,
+        }
+    }
+}
+
+/// #2434 - a resolved reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentMatch {
+    pub agent_id: String,
+    /// The LOCAL letter to launch, or `None` when the caller asked for no letter
+    /// and none was matched. `Some` at tier 1, where the match IS a letter.
+    pub profile_letter: Option<String>,
+    /// `None` for a tier-0 local-id hit: nothing was guessed. Wire: `null`.
+    pub tier: Option<MatchTier>,
+    /// The key in `reference.identity` whose digest matched, when it differs
+    /// from `profile_letter`; at tiers 2-3 the source letter when it differs.
+    pub original_letter: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatchOutcome {
+    Matched(AgentMatch),
+    NoMatch { reference: String },
+}
+
+/// #2434 - true when `letter` launches for `agent_id`: an enabled cell, or the
+/// implicit `A` that `resolve_profile` always resolves (to an empty cell when
+/// missing or disabled). Mirrors `coding_agent_profiles::cell_for_letter`.
+fn profile_letter_exists(settings: &AppSettings, agent_id: &str, letter: &str) -> bool {
+    letter == "A"
+        || settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get(agent_id)
+            .and_then(|cells| cells.get(letter))
+            .is_some_and(|cell| cell.enabled)
+}
+
+/// #2434 - resolve a stored reference to a local agent and letter. Pure: it
+/// writes nothing, and callers must not write the result back. Tiers apply in
+/// strict precedence: local id, cell digest, label + letter, command + letter.
+/// Every tie takes the earliest entry in `settings.agents` order and logs both.
+pub fn resolve_portable_reference(
+    settings: &AppSettings,
+    reference: &StoredReference,
+) -> MatchOutcome {
+    let mut warnings = Vec::new();
+    let outcome = resolve_portable_reference_logged(settings, reference, &mut warnings);
+    for warning in warnings {
+        log::warn!("[agent-match] {}", warning);
+    }
+    outcome
+}
+
+fn resolve_portable_reference_logged(
+    settings: &AppSettings,
+    reference: &StoredReference,
+    warnings: &mut Vec<String>,
+) -> MatchOutcome {
+    let source = reference.source_letter.as_deref();
+
+    // Tier 0: the id is local. Same machine, unchanged behaviour.
+    if settings.agents.iter().any(|agent| agent.id == reference.id) {
+        return MatchOutcome::Matched(AgentMatch {
+            agent_id: reference.id.clone(),
+            profile_letter: reference.source_letter.clone(),
+            tier: None,
+            original_letter: None,
+        });
+    }
+
+    // Tier 1: one target digest (the source letter's), else every descriptor digest.
+    if !reference.identity.is_empty() {
+        let targets: Vec<(&String, &String)> =
+            match source.and_then(|letter| reference.identity.get_key_value(letter)) {
+                Some(target) => vec![target],
+                None => reference.identity.iter().collect(),
+            };
+        // (agent index, local letter, matched descriptor key), settings order.
+        let mut hits: Vec<(usize, String, String)> = Vec::new();
+        for (index, agent) in settings.agents.iter().enumerate() {
+            let Some(cells) = settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .get(&agent.id)
+            else {
+                continue;
+            };
+            for (letter, cell) in cells.iter().filter(|(_, cell)| cell.enabled) {
+                let digest = cell_identity(agent, cell);
+                let matched: Vec<&String> = targets
+                    .iter()
+                    .filter(|(_, target)| **target == digest)
+                    .map(|(key, _)| *key)
+                    .collect();
+                let key = matched
+                    .iter()
+                    .find(|key| **key == letter)
+                    .or_else(|| matched.first());
+                if let Some(key) = key {
+                    hits.push((index, letter.clone(), (*key).clone()));
+                }
+            }
+        }
+        if let Some((winner, _, _)) = hits.first() {
+            let winner = *winner;
+            let agent_id = &settings.agents[winner].id;
+            if let Some((other, letter, _)) = hits.iter().find(|(index, _, _)| *index != winner) {
+                warnings.push(format!(
+                    "reference '{}' matched by digest in agents '{}' and '{}' (letter {}); using '{}'",
+                    reference.id, agent_id, settings.agents[*other].id, letter, agent_id
+                ));
+            }
+            let tied: Vec<&(usize, String, String)> = hits
+                .iter()
+                .filter(|(index, _, _)| *index == winner)
+                .collect();
+            let chosen = tied
+                .iter()
+                .find(|(_, letter, _)| Some(letter.as_str()) == source)
+                .unwrap_or(&tied[0]);
+            if tied.len() > 1 {
+                let letters: Vec<&str> = tied.iter().map(|(_, l, _)| l.as_str()).collect();
+                warnings.push(format!(
+                    "reference '{}' matched letters {} of agent '{}' by digest; using {}",
+                    reference.id,
+                    letters.join(" and "),
+                    agent_id,
+                    chosen.1
+                ));
+            }
+            let (_, letter, key) = (*chosen).clone();
+            return MatchOutcome::Matched(AgentMatch {
+                agent_id: agent_id.clone(),
+                original_letter: (key != letter).then_some(key),
+                profile_letter: Some(letter),
+                tier: Some(MatchTier::Hash),
+            });
+        }
+    }
+
+    // Tiers 2-3 test the candidate against the source letter, or the implicit
+    // `A`; that substitute never becomes `profile_letter`.
+    let test_letter = source.unwrap_or("A");
+    let tiers: [(MatchTier, Option<&str>); 2] = [
+        (MatchTier::LabelAndLetter, reference.app_label.as_deref()),
+        (MatchTier::CommandAndLetter, reference.command.as_deref()),
+    ];
+    for (tier, wanted) in tiers {
+        let Some(wanted) = wanted.filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let candidates: Vec<&AgentConfig> = settings
+            .agents
+            .iter()
+            .filter(|agent| match tier {
+                MatchTier::LabelAndLetter => agent.label.eq_ignore_ascii_case(wanted),
+                _ => canonical_command_text(&agent.command) == wanted,
+            })
+            .filter(|agent| profile_letter_exists(settings, &agent.id, test_letter))
+            .collect();
+        let Some(first) = candidates.first() else {
+            continue;
+        };
+        if let Some(second) = candidates.get(1) {
+            warnings.push(format!(
+                "reference '{}' matched agents '{}' and '{}' by {}; using '{}'",
+                reference.id,
+                first.id,
+                second.id,
+                tier.as_wire_str(),
+                first.id
+            ));
+        }
+        return MatchOutcome::Matched(AgentMatch {
+            agent_id: first.id.clone(),
+            profile_letter: reference.source_letter.clone(),
+            tier: Some(tier),
+            // The profile letter IS the source letter here, so it never differs.
+            original_letter: None,
+        });
+    }
+
+    MatchOutcome::NoMatch {
+        reference: reference.id.clone(),
+    }
+}
+
 fn normalize_launch_path_for_spawn(launch_path: Option<&Path>) -> Option<PathBuf> {
     launch_path.map(crate::path_utils::normalize_windows_verbatim_path_buf)
 }
@@ -1108,6 +1372,8 @@ pub(crate) fn resolve_agent_spawn_command(
         backend: agent.backend.clone(),
         isolated_codex_home_to_prepare: computed_codex_home.isolated_home_to_prepare,
         seed,
+        match_tier: None,
+        original_profile_letter: None,
     })
 }
 
@@ -1327,6 +1593,8 @@ mod tests {
             backend: AgentBackendConfig::default(),
             isolated_codex_home_to_prepare: None,
             seed: None,
+            match_tier: None,
+            original_profile_letter: None,
         }
     }
 
@@ -3133,5 +3401,435 @@ exit 0
         assert!(!is_bare_program_token(r"C:\x\claude.exe"));
         assert!(!is_bare_program_token("/usr/bin/claude"));
         assert!(!is_bare_program_token(r"bin\claude"));
+    }
+
+    // #2434 - tiered resolution of a stored coding-agent reference.
+
+    fn match_settings(agents: Vec<AgentConfig>, cells: &[(&str, &str, &str, bool)]) -> AppSettings {
+        let mut settings = AppSettings {
+            agents,
+            ..AppSettings::default()
+        };
+        for (agent_id, letter, command, enabled) in cells {
+            settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .entry(agent_id.to_string())
+                .or_default()
+                .insert(
+                    letter.to_string(),
+                    ProfileCellConfig {
+                        enabled: *enabled,
+                        command: command.to_string(),
+                        env: BTreeMap::new(),
+                        notes: String::new(),
+                    },
+                );
+        }
+        settings
+    }
+
+    fn labelled(id: &str, label: &str, command: &str) -> AgentConfig {
+        AgentConfig {
+            label: label.to_string(),
+            ..agent(id, command)
+        }
+    }
+
+    /// The digest #2433 would have written for `agent_id`'s `letter` cell.
+    fn digest_of(settings: &AppSettings, agent_id: &str, letter: &str) -> String {
+        let agent = settings.agents.iter().find(|a| a.id == agent_id).unwrap();
+        let cell = &settings.coding_agent_profiles.profiles_by_agent[agent_id][letter];
+        super::cell_identity(agent, cell)
+    }
+
+    fn reference(id: &str, source: Option<&str>) -> super::StoredReference {
+        super::StoredReference {
+            id: id.to_string(),
+            source_letter: source.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    fn identity(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn resolve_with_warnings(
+        settings: &AppSettings,
+        reference: &super::StoredReference,
+    ) -> (super::MatchOutcome, Vec<String>) {
+        let mut warnings = Vec::new();
+        let outcome = super::resolve_portable_reference_logged(settings, reference, &mut warnings);
+        (outcome, warnings)
+    }
+
+    fn matched(outcome: super::MatchOutcome) -> super::AgentMatch {
+        match outcome {
+            super::MatchOutcome::Matched(found) => found,
+            other => panic!("expected a match, got {other:?}"),
+        }
+    }
+
+    fn resolve(settings: &AppSettings, reference: &super::StoredReference) -> super::AgentMatch {
+        matched(super::resolve_portable_reference(settings, reference))
+    }
+
+    #[test]
+    fn hash_match_wins_over_label_and_command() {
+        let settings = match_settings(
+            vec![
+                labelled("claude", "Claude Code", "claude"),
+                labelled("other", "Other", "codex"),
+            ],
+            &[("other", "A", "--h", true)],
+        );
+        let mut r = reference("foreign", Some("A"));
+        r.app_label = Some("Claude Code".to_string());
+        r.command = Some(super::canonical_command_text("claude"));
+        r.identity = identity(&[("A", &digest_of(&settings, "other", "A"))]);
+        let found = resolve(&settings, &r);
+        assert_eq!(found.agent_id, "other");
+        assert_eq!(found.tier, Some(super::MatchTier::Hash));
+        assert_eq!(found.profile_letter.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn hash_match_finds_a_moved_letter() {
+        let settings = match_settings(
+            vec![agent("codex", "codex")],
+            &[("codex", "A", "--one", true), ("codex", "B", "--two", true)],
+        );
+        let mut r = reference("foreign", Some("A"));
+        r.identity = identity(&[("A", &digest_of(&settings, "codex", "B")), ("B", "y")]);
+        let found = resolve(&settings, &r);
+        assert_eq!(found.agent_id, "codex");
+        assert_eq!(found.profile_letter.as_deref(), Some("B"));
+        assert_eq!(found.original_letter.as_deref(), Some("A"));
+        assert_eq!(found.tier, Some(super::MatchTier::Hash));
+    }
+
+    #[test]
+    fn hash_match_targets_only_the_source_letters_digest() {
+        // The first agent carries the descriptor's OTHER digest (B=y); only the
+        // second carries the source letter's (A=x). Searching every digest
+        // would pick the first agent.
+        let settings = match_settings(
+            vec![agent("first", "codex"), agent("second", "codex")],
+            &[("first", "C", "--y", true), ("second", "D", "--x", true)],
+        );
+        let mut r = reference("foreign", Some("A"));
+        r.identity = identity(&[
+            ("A", &digest_of(&settings, "second", "D")),
+            ("B", &digest_of(&settings, "first", "C")),
+        ]);
+        let found = resolve(&settings, &r);
+        assert_eq!(found.agent_id, "second");
+        assert_eq!(found.profile_letter.as_deref(), Some("D"));
+        assert_eq!(found.original_letter.as_deref(), Some("A"));
+        assert_eq!(found.tier, Some(super::MatchTier::Hash));
+    }
+
+    #[test]
+    fn hash_match_on_the_source_letter_reports_no_original_letter() {
+        let settings = match_settings(
+            vec![agent("codex", "codex")],
+            &[("codex", "A", "--one", true), ("codex", "B", "--two", true)],
+        );
+        let mut r = reference("foreign", Some("A"));
+        r.identity = identity(&[("A", &digest_of(&settings, "codex", "A"))]);
+        let found = resolve(&settings, &r);
+        assert_eq!(found.profile_letter.as_deref(), Some("A"));
+        assert_eq!(found.original_letter, None);
+        assert_eq!(found.tier, Some(super::MatchTier::Hash));
+    }
+
+    #[test]
+    fn hash_match_without_a_source_letter_reports_the_matched_key() {
+        let settings = match_settings(
+            vec![agent("codex", "codex")],
+            &[("codex", "A", "--a", true), ("codex", "C", "--c", true)],
+        );
+        let mut r = reference("foreign", None);
+        r.identity = identity(&[("B", &digest_of(&settings, "codex", "C"))]);
+        let found = resolve(&settings, &r);
+        assert_eq!(found.profile_letter.as_deref(), Some("C"));
+        assert_eq!(found.original_letter.as_deref(), Some("B"));
+        assert_eq!(found.tier, Some(super::MatchTier::Hash));
+    }
+
+    #[test]
+    fn tier_zero_without_a_source_letter_yields_no_profile_letter() {
+        let settings = match_settings(vec![agent("codex", "codex")], &[]);
+        let found = resolve(&settings, &reference("codex", None));
+        assert_eq!(found.agent_id, "codex");
+        assert_eq!(found.profile_letter, None, "never Some(\"A\")");
+        assert_eq!(found.tier, None);
+    }
+
+    #[test]
+    fn tier_two_and_three_without_a_source_letter_yield_no_profile_letter() {
+        let settings = match_settings(vec![labelled("local", "Codex", "codex")], &[]);
+
+        let mut by_label = reference("foreign", None);
+        by_label.app_label = Some("Codex".to_string());
+        let found = resolve(&settings, &by_label);
+        assert_eq!(found.tier, Some(super::MatchTier::LabelAndLetter));
+        assert_eq!(found.profile_letter, None);
+        assert_eq!(found.original_letter, None);
+
+        let mut by_command = reference("foreign", None);
+        by_command.command = Some(super::canonical_command_text("codex"));
+        let found = resolve(&settings, &by_command);
+        assert_eq!(found.tier, Some(super::MatchTier::CommandAndLetter));
+        assert_eq!(found.profile_letter, None);
+        assert_eq!(found.original_letter, None);
+    }
+
+    #[test]
+    fn intra_agent_letter_tie_takes_the_earliest_letter() {
+        let settings = match_settings(
+            vec![agent("codex", "codex")],
+            &[
+                ("codex", "A", "--a", true),
+                ("codex", "B", "--same", true),
+                ("codex", "C", "--same", true),
+            ],
+        );
+        let same = digest_of(&settings, "codex", "B");
+
+        let mut r = reference("foreign", Some("A"));
+        r.identity = identity(&[("A", &same)]);
+        let (outcome, warnings) = resolve_with_warnings(&settings, &r);
+        let found = matched(outcome);
+        assert_eq!(found.profile_letter.as_deref(), Some("B"));
+        assert_eq!(found.original_letter.as_deref(), Some("A"));
+        assert!(
+            warnings.iter().any(|w| w.contains("B and C")),
+            "{warnings:?}"
+        );
+
+        // The source letter wins when it is one of the tied letters.
+        let mut r = reference("foreign", Some("C"));
+        r.identity = identity(&[("C", &same)]);
+        let (outcome, warnings) = resolve_with_warnings(&settings, &r);
+        let found = matched(outcome);
+        assert_eq!(found.profile_letter.as_deref(), Some("C"));
+        assert_eq!(found.original_letter, None);
+        assert!(
+            warnings.iter().any(|w| w.contains("B and C")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn label_match_is_case_insensitive() {
+        let settings = match_settings(vec![labelled("local", "Codex", "codex")], &[]);
+        let mut r = reference("foreign", Some("A"));
+        r.app_label = Some("CODEX".to_string());
+        let found = resolve(&settings, &r);
+        assert_eq!(found.agent_id, "local");
+        assert_eq!(found.tier, Some(super::MatchTier::LabelAndLetter));
+        assert_eq!(found.profile_letter.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn label_tier_outranks_command_tier() {
+        // agents[0] matches only by command, agents[1] only by label: the label
+        // tier runs first, so the later agent wins.
+        let settings = match_settings(
+            vec![
+                labelled("other", "Other", "codex"),
+                labelled("mine", "Codex", "x"),
+            ],
+            &[],
+        );
+        let mut r = reference("foreign", Some("A"));
+        r.app_label = Some("Codex".to_string());
+        r.command = Some(super::canonical_command_text("codex"));
+        let found = resolve(&settings, &r);
+        assert_eq!(found.agent_id, "mine");
+        assert_eq!(found.tier, Some(super::MatchTier::LabelAndLetter));
+    }
+
+    #[test]
+    fn command_match_is_used_when_label_differs() {
+        let settings = match_settings(vec![labelled("local", "Mine", "Codex --Yolo")], &[]);
+        let mut r = reference("foreign", Some("A"));
+        r.app_label = Some("Theirs".to_string());
+        r.command = Some(super::canonical_command_text("codex --yolo"));
+        let found = resolve(&settings, &r);
+        assert_eq!(found.agent_id, "local");
+        assert_eq!(found.tier, Some(super::MatchTier::CommandAndLetter));
+    }
+
+    #[test]
+    fn letter_a_always_exists_even_without_a_cell() {
+        // No cells at all: the implicit `A` still resolves, so `A` matches.
+        let settings = match_settings(vec![labelled("local", "Codex", "codex")], &[]);
+        let mut r = reference("foreign", Some("A"));
+        r.app_label = Some("Codex".to_string());
+        assert_eq!(resolve(&settings, &r).profile_letter.as_deref(), Some("A"));
+        // A disabled `A` still resolves too.
+        let disabled = match_settings(
+            vec![labelled("local", "Codex", "codex")],
+            &[("local", "A", "--a", false)],
+        );
+        assert_eq!(resolve(&disabled, &r).agent_id, "local");
+        // Any other missing letter does not exist.
+        r.source_letter = Some("B".to_string());
+        assert_eq!(
+            super::resolve_portable_reference(&settings, &r),
+            super::MatchOutcome::NoMatch {
+                reference: "foreign".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn disabled_cells_never_match() {
+        let settings = match_settings(
+            vec![labelled("local", "Codex", "codex")],
+            &[("local", "A", "--a", true), ("local", "B", "--b", false)],
+        );
+        let mut r = reference("foreign", Some("B"));
+        r.identity = identity(&[("B", &digest_of(&settings, "local", "B"))]);
+        r.app_label = Some("Codex".to_string());
+        assert_eq!(
+            super::resolve_portable_reference(&settings, &r),
+            super::MatchOutcome::NoMatch {
+                reference: "foreign".to_string()
+            },
+            "a disabled B is neither a digest candidate nor an existing letter"
+        );
+    }
+
+    #[test]
+    fn a_tie_across_agents_takes_the_first_in_settings_order() {
+        let build = || {
+            match_settings(
+                vec![
+                    labelled("first", "Codex", "codex"),
+                    labelled("second", "codex", "codex"),
+                ],
+                &[("first", "A", "--x", true), ("second", "A", "--x", true)],
+            )
+        };
+        let settings = build();
+        let mut by_hash = reference("foreign", Some("A"));
+        by_hash.identity = identity(&[("A", &digest_of(&settings, "first", "A"))]);
+        let mut by_label = reference("foreign", Some("A"));
+        by_label.app_label = Some("CODEX".to_string());
+        let mut by_command = reference("foreign", Some("A"));
+        by_command.command = Some(super::canonical_command_text("codex"));
+
+        for (r, tier) in [
+            (&by_hash, super::MatchTier::Hash),
+            (&by_label, super::MatchTier::LabelAndLetter),
+            (&by_command, super::MatchTier::CommandAndLetter),
+        ] {
+            for _ in 0..2 {
+                let (outcome, warnings) = resolve_with_warnings(&build(), r);
+                let found = matched(outcome);
+                assert_eq!(found.agent_id, "first", "{tier:?}");
+                assert_eq!(found.tier, Some(tier));
+                assert!(
+                    warnings
+                        .iter()
+                        .any(|w| w.contains("'first'") && w.contains("'second'")),
+                    "{tier:?}: {warnings:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn matching_never_rewrites_the_stored_reference() {
+        let settings = match_settings(
+            vec![labelled("local", "Codex", "codex")],
+            &[("local", "A", "--a", true), ("local", "B", "--b", true)],
+        );
+        let mut r = reference("foreign", Some("A"));
+        r.app_label = Some("Codex".to_string());
+        r.command = Some(super::canonical_command_text("codex"));
+        r.identity = identity(&[("A", &digest_of(&settings, "local", "B"))]);
+        let reference_before = r.clone();
+        let settings_before = serde_json::to_value(&settings).unwrap();
+        let found = resolve(&settings, &r);
+        assert_eq!(found.agent_id, "local");
+        assert_eq!(r, reference_before);
+        assert_eq!(serde_json::to_value(&settings).unwrap(), settings_before);
+    }
+
+    #[test]
+    fn local_id_hit_reports_no_tier() {
+        let settings = match_settings(
+            vec![labelled("codex", "Codex", "codex")],
+            &[("codex", "B", "--b", true)],
+        );
+        let mut r = reference("codex", Some("B"));
+        r.identity = identity(&[("B", "stale")]);
+        let found = resolve(&settings, &r);
+        assert_eq!(found.agent_id, "codex");
+        assert_eq!(found.tier, None);
+        assert_eq!(found.profile_letter.as_deref(), Some("B"));
+        assert_eq!(found.original_letter, None);
+        assert_eq!(
+            serde_json::to_value(found.tier).unwrap(),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            serde_json::to_value(super::MatchTier::LabelAndLetter).unwrap(),
+            super::MatchTier::LabelAndLetter.as_wire_str()
+        );
+    }
+
+    #[test]
+    fn no_match_returns_nomatch_and_does_not_fall_back() {
+        let settings = match_settings(
+            vec![labelled("claude", "Claude Code", "claude")],
+            &[("claude", "A", "--a", true)],
+        );
+        let mut r = reference("foreign", Some("A"));
+        r.app_label = Some("Codex".to_string());
+        r.command = Some(super::canonical_command_text("codex"));
+        r.identity = identity(&[("A", "0000000000000000")]);
+        assert_eq!(
+            super::resolve_portable_reference(&settings, &r),
+            super::MatchOutcome::NoMatch {
+                reference: "foreign".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn empty_identity_falls_back_to_label_tier() {
+        let settings = match_settings(
+            vec![labelled("local", "Codex", "codex")],
+            &[("local", "A", "--a", true)],
+        );
+        let mut r = reference("foreign", Some("A"));
+        r.app_label = Some("Codex".to_string());
+        assert!(r.identity.is_empty());
+        let found = resolve(&settings, &r);
+        assert_eq!(found.tier, Some(super::MatchTier::LabelAndLetter));
+    }
+
+    #[test]
+    fn empty_agents_binds_as_nomatch() {
+        let settings = match_settings(Vec::new(), &[]);
+        let mut r = reference("codex", Some("A"));
+        r.app_label = Some("Codex".to_string());
+        r.command = Some("codex".to_string());
+        r.identity = identity(&[("A", "x")]);
+        assert_eq!(
+            super::resolve_portable_reference(&settings, &r),
+            super::MatchOutcome::NoMatch {
+                reference: "codex".to_string()
+            }
+        );
     }
 }

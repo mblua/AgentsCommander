@@ -272,9 +272,15 @@ export function installBrowserDomStubs(): () => void {
   const previousCanvasGetContext = HTMLCanvasElement.prototype.getContext;
 
   class NoopResizeObserver implements ResizeObserver {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
+    observe(): void {
+      // Intentional no-op: jsdom has no layout, so there is nothing to observe.
+    }
+    unobserve(): void {
+      // Intentional no-op: nothing is ever observed.
+    }
+    disconnect(): void {
+      // Intentional no-op: nothing is ever observed.
+    }
   }
   Object.defineProperty(globalThis, "ResizeObserver", {
     configurable: true,

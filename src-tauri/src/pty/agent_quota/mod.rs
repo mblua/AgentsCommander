@@ -6,6 +6,14 @@
 //! `AppHandle`, `PtyManager` or settings type, so it can read, compile and emit and
 //! nothing else. It names only `crate::shutdown` and `crate::pty::context_scrape`, which
 //! keeps it out of the crate's cyclic SCC.
+//!
+//! #2566 - the reading belongs to an ACCOUNT, not to a session. The provider hands each
+//! agent an OPAQUE `account_key` (its command's program token); a successful sample is
+//! stored under that key and published to EVERY agent on it, so agents sharing a command
+//! show one number whether or not they have a terminal open. `pty::agent_quota` gains NO
+//! new import: the engine compares the key and never parses it. An import of
+//! `config::settings` here would close `settings -> ... -> lib -> agent_quota -> settings`
+//! and grow the crate's one 89-member cyclic SCC to 90.
 
 pub mod source;
 
@@ -31,13 +39,22 @@ pub trait QuotaRowsSource: Send + Sync {
     fn get_session_liveness(&self, id: Uuid) -> ContextSessionLiveness;
 }
 
-/// Every agent's enabled source, keyed by agent id, resolved fresh each tick.
+/// #2566 - one agent's enabled source plus the ACCOUNT it belongs to. `account_key`
+/// is OPAQUE here: the engine compares it and never parses it, which is what keeps
+/// this module free of `config::` (see the module doc).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentQuotaSource {
+    pub account_key: String,
+    pub spec: SourceSpec,
+}
+
+/// Every agent's source, keyed by agent id, resolved fresh each tick.
 ///
 /// `BoxFuture` and not a sync fn: the settings live behind a `tokio::sync::RwLock`, whose
 /// `blocking_read` panics inside a runtime - and the tick is inside one. A sync signature
 /// here would kill the engine on tick 1, silently and permanently.
 pub trait QuotaSourceProvider: Send + Sync {
-    fn sources(&self) -> BoxFuture<'_, HashMap<String, SourceSpec>>;
+    fn sources(&self) -> BoxFuture<'_, HashMap<String, AgentQuotaSource>>;
 }
 
 /// Where a reading goes.
@@ -49,7 +66,7 @@ pub trait QuotaEventSink: Send + Sync {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuotaPayload {
-    pub session_id: String,
+    pub agent_id: String,
     /// USED percentage of the 7-day window, 0..=100, or None when unavailable.
     /// NEVER 0 and NEVER 100 for "unknown".
     ///
@@ -61,13 +78,10 @@ pub struct AgentQuotaPayload {
     pub weekly_used_percent: Option<u8>,
 }
 
-/// One registered session: which agent's source applies to it, and the last reading
-/// emitted for it.
+/// One registered session: which agent's source applies to it. #2566 - a session is no
+/// longer a publication unit, so it carries no emitted value.
 struct Registered {
     agent_id: String,
-    /// Starts as `None` because `None` IS what the UI already shows, so an unconfigured
-    /// session never emits: `None != None` is false.
-    last_emitted: Option<u8>,
 }
 
 /// A resolved source, kept against the `spec_key` it came from. Keyed by agent rather
@@ -102,9 +116,16 @@ pub struct AgentQuotaEngine {
     rows: Arc<dyn QuotaRowsSource>,
     sources: Arc<dyn QuotaSourceProvider>,
     sink: Arc<dyn QuotaEventSink>,
-    /// Linearizes retirement against emission. Lock order: sequence, then registered.
+    /// Linearizes retirement against emission. Lock order: sequence, registered,
+    /// account_readings, published. None is ever held across an `.await`.
     sequence: Mutex<()>,
     registered: Mutex<HashMap<Uuid, Registered>>,
+    /// #2566 - the latest SUCCESSFUL sample per account key. An absent key IS "nothing
+    /// read yet"; only a success ever writes here (D4), so there is no None to store.
+    account_readings: Mutex<HashMap<String, u8>>,
+    /// #2566 - the last value EMITTED per agent id. `Option` exists only for the removal
+    /// branch of the reconcile step; absent and `Some(None)` compare equal there.
+    published: Mutex<HashMap<String, Option<u8>>>,
     /// Keyed by AGENT id, bounded by agent count.
     resolved: Mutex<HashMap<String, Cached>>,
     /// Rotates the sorted order so partial saturation cannot starve a fixed tail.
@@ -126,6 +147,8 @@ impl AgentQuotaEngine {
             sink,
             sequence: Mutex::new(()),
             registered: Mutex::new(HashMap::new()),
+            account_readings: Mutex::new(HashMap::new()),
+            published: Mutex::new(HashMap::new()),
             resolved: Mutex::new(HashMap::new()),
             sample_cursor: AtomicUsize::new(0),
             resolves: AtomicUsize::new(0),
@@ -184,40 +207,21 @@ impl AgentQuotaEngine {
         })
     }
 
-    /// Start sampling a session. A fresh entry always starts at `last_emitted: None`.
+    /// Start sampling a session.
     pub fn register_session(&self, id: Uuid, agent_id: String) {
         let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
         let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
-        registered.insert(
-            id,
-            Registered {
-                agent_id,
-                last_emitted: None,
-            },
-        );
+        registered.insert(id, Registered { agent_id });
     }
 
-    /// Stop sampling a session. Idempotent.
+    /// Stop sampling a session. Idempotent. Emits nothing: the account value outlives
+    /// the terminal (#2566 D4).
     pub fn retire_session(&self, id: Uuid) {
         let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
-        self.retire_session_under_sequence(id);
-    }
-
-    /// Retire under an already-held sequence lock, emitting one final `None` only when
-    /// the session had a live reading.
-    fn retire_session_under_sequence(&self, id: Uuid) {
-        let last_emitted = self
-            .registered
+        self.registered
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&id)
-            .and_then(|entry| entry.last_emitted);
-        if last_emitted.is_some() {
-            self.sink.emit(AgentQuotaPayload {
-                session_id: id.to_string(),
-                weekly_used_percent: None,
-            });
-        }
+            .remove(&id);
     }
 
     pub fn is_session_registered(&self, id: Uuid) -> bool {
@@ -227,14 +231,13 @@ impl AgentQuotaEngine {
             .contains_key(&id)
     }
 
-    /// The last reading emitted for a session. `None` covers both "no reading" and "not
-    /// registered", which are the same thing downstream.
-    pub fn last_reading(&self, id: Uuid) -> Option<u8> {
-        self.registered
+    /// #2566 - every value last emitted, by agent id. A `None` value and an absent key both
+    /// mean unavailable.
+    pub fn published(&self) -> HashMap<String, Option<u8>> {
+        self.published
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&id)
-            .and_then(|entry| entry.last_emitted)
+            .clone()
     }
 
     /// Resolve an agent's source, recomputing only when its `spec_key` changed. The guard
@@ -267,13 +270,15 @@ impl AgentQuotaEngine {
         resolved
     }
 
-    /// Drop every cached source whose agent is not in `live`, so the cache is bounded
-    /// by the live agent set rather than by every agent ever seen.
-    fn prune_resolved(&self, live: &[(Uuid, String)]) {
+    /// Drop every cached source whose agent is not configured, so the cache is bounded by
+    /// the configured agent set rather than by every agent ever seen. #2566 - keyed by
+    /// configured agents, not registered sessions: closing a terminal must not discard a
+    /// pattern other sessions and the published value still need.
+    fn prune_resolved(&self, configured: &HashMap<String, AgentQuotaSource>) {
         self.resolved
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|agent_id, _| live.iter().any(|(_, live_id)| live_id == agent_id));
+            .retain(|agent_id, _| configured.contains_key(agent_id));
     }
 
     pub(crate) async fn tick(&self) {
@@ -284,64 +289,109 @@ impl AgentQuotaEngine {
                 .map(|(id, entry)| (*id, entry.agent_id.clone()))
                 .collect()
         };
-        // Also on the empty path, so retiring the last session clears the cache.
-        self.prune_resolved(&ids);
 
-        // Before `sources()`, so an app with no agent session reads nothing at all.
-        if ids.is_empty() {
+        // Before `sources()`, so the fully idle app reads nothing at all. With something
+        // published it continues: an agent deleted while no terminal is open must still
+        // lose its chip.
+        if ids.is_empty()
+            && self
+                .published
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        {
+            self.resolved
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             return;
         }
 
         let sources = self.sources.sources().await;
+        self.prune_resolved(&sources);
 
         ids.sort_unstable_by_key(|(id, _)| *id);
-        let start = self.sample_cursor.fetch_add(1, Ordering::Relaxed) % ids.len();
-        ids.rotate_left(start);
+        if !ids.is_empty() {
+            let start = self.sample_cursor.fetch_add(1, Ordering::Relaxed) % ids.len();
+            ids.rotate_left(start);
+        }
 
         for (id, agent_id) in ids {
-            let usable = sources
-                .get(&agent_id)
-                .and_then(|spec| self.resolve(&agent_id, spec));
+            let usable = sources.get(&agent_id).and_then(|src| {
+                self.resolve(&agent_id, &src.spec)
+                    .map(|resolved| (src, resolved))
+            });
 
-            let (reading, session_over) = match usable {
-                // No entry, disabled, or unresolvable: liveness only, never the rows path.
-                None => match self.rows.get_session_liveness(id) {
-                    ContextSessionLiveness::Live | ContextSessionLiveness::Unavailable => {
-                        (None, false)
+            let session_over = match usable {
+                // No source behind this command, or unresolvable: liveness only, never the
+                // rows path.
+                None => matches!(
+                    self.rows.get_session_liveness(id),
+                    ContextSessionLiveness::SessionOver
+                ),
+                Some((src, resolved)) => match self.rows.get_screen_rows(id) {
+                    ScreenRowsRead::Rows(rows) => {
+                        // Only a SUCCESSFUL sample writes the account reading (D4). A
+                        // session retired mid-tick still contributes: the sample really
+                        // was taken from that account.
+                        if let Some(value) = source::sample(&resolved, &rows) {
+                            let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+                            self.account_readings
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(src.account_key.clone(), value);
+                        }
+                        false
                     }
-                    ContextSessionLiveness::SessionOver => (None, true),
-                },
-                Some(resolved) => match self.rows.get_screen_rows(id) {
-                    ScreenRowsRead::Rows(rows) => (source::sample(&resolved, &rows), false),
-                    ScreenRowsRead::Unavailable => (None, false),
-                    ScreenRowsRead::SessionOver => (None, true),
+                    ScreenRowsRead::Unavailable => false,
+                    ScreenRowsRead::SessionOver => true,
                 },
             };
-
-            let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
             if session_over {
-                self.retire_session_under_sequence(id);
-                continue;
+                self.retire_session(id);
             }
+        }
 
-            let changed = {
-                let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
-                match registered.get_mut(&id) {
-                    Some(entry) if entry.last_emitted != reading => {
-                        entry.last_emitted = reading;
-                        true
-                    }
-                    // Changed nothing, or retired mid-tick: no emit.
-                    _ => false,
-                }
-            };
-            if changed {
+        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+        let mut account_readings = self
+            .account_readings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut published = self.published.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mut configured: Vec<(&String, &AgentQuotaSource)> = sources.iter().collect();
+        configured.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        for (agent_id, src) in configured {
+            let desired = account_readings.get(&src.account_key).copied();
+            // `.flatten()`: "never spoken about" and "told it is unknown" are the same plain
+            // chip, so a configured agent with no reading never emits a first null.
+            if published.get(agent_id).copied().flatten() != desired {
                 self.sink.emit(AgentQuotaPayload {
-                    session_id: id.to_string(),
-                    weekly_used_percent: reading,
+                    agent_id: agent_id.clone(),
+                    weekly_used_percent: desired,
+                });
+                published.insert(agent_id.clone(), desired);
+            }
+        }
+
+        // The ONLY writer of a null: an agent that left the source map loses its chip once.
+        let mut gone: Vec<String> = published
+            .keys()
+            .filter(|agent_id| !sources.contains_key(*agent_id))
+            .cloned()
+            .collect();
+        gone.sort_unstable();
+        for agent_id in gone {
+            if let Some(Some(_)) = published.remove(&agent_id) {
+                self.sink.emit(AgentQuotaPayload {
+                    agent_id,
+                    weekly_used_percent: None,
                 });
             }
         }
+
+        // Bounded by the configured agents: the last agent leaving a command drops its reading.
+        account_readings.retain(|key, _| sources.values().any(|src| &src.account_key == key));
     }
 
     #[cfg(test)]
@@ -425,17 +475,26 @@ pub(crate) mod test_support {
 
     #[derive(Default)]
     pub(crate) struct SourcesFake {
-        specs: Mutex<HashMap<String, SourceSpec>>,
+        specs: Mutex<HashMap<String, AgentQuotaSource>>,
         calls: AtomicUsize,
         hang: std::sync::atomic::AtomicBool,
     }
 
     impl SourcesFake {
+        /// Account key == agent id: one agent, one account.
         pub(crate) fn configure(&self, agent_id: &str, spec: SourceSpec) {
-            self.specs
-                .lock()
-                .unwrap()
-                .insert(agent_id.to_string(), spec);
+            self.configure_on(agent_id, agent_id, spec);
+        }
+
+        /// #2566 - an agent on a named account key, for the shared-command cases.
+        pub(crate) fn configure_on(&self, agent_id: &str, account_key: &str, spec: SourceSpec) {
+            self.specs.lock().unwrap().insert(
+                agent_id.to_string(),
+                AgentQuotaSource {
+                    account_key: account_key.to_string(),
+                    spec,
+                },
+            );
         }
 
         /// What the adapter does for a disabled or removed entry: the engine sees none.
@@ -455,7 +514,7 @@ pub(crate) mod test_support {
     }
 
     impl QuotaSourceProvider for SourcesFake {
-        fn sources(&self) -> BoxFuture<'_, HashMap<String, SourceSpec>> {
+        fn sources(&self) -> BoxFuture<'_, HashMap<String, AgentQuotaSource>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 if self.hang.load(Ordering::SeqCst) {
@@ -531,9 +590,9 @@ mod tests {
         ScreenRowsRead::Rows(vec![format!("Weekly {percent}% used")])
     }
 
-    fn payload(id: Uuid, percent: Option<u8>) -> AgentQuotaPayload {
+    fn payload(agent_id: &str, percent: Option<u8>) -> AgentQuotaPayload {
         AgentQuotaPayload {
-            session_id: id.to_string(),
+            agent_id: agent_id.to_string(),
             weekly_used_percent: percent,
         }
     }
@@ -548,7 +607,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_empty_registration_set_never_calls_sources() {
+    async fn an_empty_registration_set_with_nothing_published_never_calls_sources() {
         let h = QuotaHarness::new();
         h.sources.configure(AGENT, spec(PATTERN));
 
@@ -556,6 +615,29 @@ mod tests {
 
         assert_eq!(h.sources.calls(), 0);
         assert!(h.rows.rows_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_empty_registration_set_still_reconciles_what_is_published() {
+        let (h, id) = configured();
+        h.rows.push(id, rows(42));
+        h.engine.tick().await;
+        h.engine.retire_session(id);
+        h.sources.disable(AGENT);
+        let calls = h.sources.calls();
+
+        h.engine.tick().await;
+
+        assert_eq!(
+            h.sources.calls(),
+            calls + 1,
+            "published state needs sources()"
+        );
+        assert_eq!(
+            h.sink.emitted(),
+            vec![payload(AGENT, Some(42)), payload(AGENT, None)]
+        );
+        assert!(h.engine.published().is_empty());
     }
 
     #[tokio::test]
@@ -574,7 +656,7 @@ mod tests {
         );
         assert_eq!(h.rows.liveness_calls(), vec![id, id]);
         assert!(h.sink.emitted().is_empty());
-        assert_eq!(h.engine.last_reading(id), None);
+        assert!(h.engine.published().is_empty());
     }
 
     #[tokio::test]
@@ -632,8 +714,8 @@ mod tests {
         h.engine.tick().await;
         h.engine.tick().await;
 
-        assert_eq!(h.sink.emitted(), vec![payload(id, Some(42))]);
-        assert_eq!(h.engine.last_reading(id), Some(42));
+        assert_eq!(h.sink.emitted(), vec![payload(AGENT, Some(42))]);
+        assert_eq!(h.engine.published().get(AGENT), Some(&Some(42)));
     }
 
     #[tokio::test]
@@ -647,12 +729,12 @@ mod tests {
 
         assert_eq!(
             h.sink.emitted(),
-            vec![payload(id, Some(42)), payload(id, Some(43))]
+            vec![payload(AGENT, Some(42)), payload(AGENT, Some(43))]
         );
     }
 
     #[tokio::test]
-    async fn a_reading_that_becomes_unavailable_emits_exactly_one_null() {
+    async fn a_reading_that_becomes_unavailable_keeps_the_last_account_value() {
         let (h, id) = configured();
         h.rows.push(id, rows(42));
         h.rows.push(id, ScreenRowsRead::Unavailable);
@@ -664,10 +746,8 @@ mod tests {
             h.engine.tick().await;
         }
 
-        assert_eq!(
-            h.sink.emitted(),
-            vec![payload(id, Some(42)), payload(id, None)]
-        );
+        assert_eq!(h.sink.emitted(), vec![payload(AGENT, Some(42))]);
+        assert_eq!(h.engine.published().get(AGENT), Some(&Some(42)));
         assert!(h.engine.is_session_registered(id));
     }
 
@@ -684,28 +764,22 @@ mod tests {
 
         assert_eq!(
             h.sink.emitted(),
-            vec![
-                payload(id, Some(0)),
-                payload(id, Some(100)),
-                payload(id, None)
-            ]
+            vec![payload(AGENT, Some(0)), payload(AGENT, Some(100))]
         );
     }
 
     #[tokio::test]
-    async fn session_over_retires_and_emits_one_final_null_only_when_a_reading_was_live() {
-        // Live reading, then over: exactly one final null.
+    async fn session_over_retires_the_session_and_keeps_the_account_value() {
+        // Live reading, then over: retired, and the account value stays published.
         let (h, id) = configured();
         h.rows.push(id, rows(42));
         h.rows.push(id, ScreenRowsRead::SessionOver);
         h.engine.tick().await;
         h.engine.tick().await;
         h.engine.tick().await;
-        assert_eq!(
-            h.sink.emitted(),
-            vec![payload(id, Some(42)), payload(id, None)]
-        );
+        assert_eq!(h.sink.emitted(), vec![payload(AGENT, Some(42))]);
         assert!(!h.engine.is_session_registered(id));
+        assert_eq!(h.engine.published().get(AGENT), Some(&Some(42)));
 
         // No reading ever, then over (liveness path): retired, nothing emitted.
         let h = QuotaHarness::new();
@@ -728,11 +802,11 @@ mod tests {
         h.engine.tick().await;
 
         assert_eq!(h.rows.rows_calls(), vec![id, id]);
-        assert_eq!(h.sink.emitted(), vec![payload(id, Some(55))]);
+        assert_eq!(h.sink.emitted(), vec![payload(AGENT, Some(55))]);
     }
 
     #[tokio::test]
-    async fn a_retired_session_reached_mid_tick_does_not_emit() {
+    async fn a_session_retired_mid_tick_still_contributes_its_sample() {
         let (h, id) = configured();
         h.rows.push(id, rows(42));
         let engine = Arc::downgrade(&h.engine);
@@ -742,7 +816,7 @@ mod tests {
 
         h.engine.tick().await;
 
-        assert!(h.sink.emitted().is_empty());
+        assert_eq!(h.sink.emitted(), vec![payload(AGENT, Some(42))]);
         assert!(!h.engine.is_session_registered(id));
     }
 
@@ -766,7 +840,7 @@ mod tests {
 
     #[test]
     fn the_payload_serializes_unknown_as_an_explicit_null_key() {
-        let value = serde_json::to_value(payload(Uuid::nil(), None)).unwrap();
+        let value = serde_json::to_value(payload("a1", None)).unwrap();
         let object = value.as_object().expect("an object");
         assert!(
             object.contains_key("weeklyUsedPercent"),
@@ -774,7 +848,7 @@ mod tests {
         );
         assert_eq!(value["weeklyUsedPercent"], serde_json::Value::Null);
 
-        let value = serde_json::to_value(payload(Uuid::nil(), Some(0))).unwrap();
+        let value = serde_json::to_value(payload("a1", Some(0))).unwrap();
         assert_eq!(value["weeklyUsedPercent"], serde_json::json!(0));
     }
 
@@ -788,8 +862,8 @@ mod tests {
 
         h.engine.tick().await;
 
-        assert_eq!(h.sink.emitted(), vec![payload(id, Some(73))]);
-        assert_eq!(h.engine.last_reading(id), Some(73));
+        assert_eq!(h.sink.emitted(), vec![payload(AGENT, Some(73))]);
+        assert_eq!(h.engine.published().get(AGENT), Some(&Some(73)));
     }
 
     #[test]
@@ -827,7 +901,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_resolution_cache_evicts_agents_that_are_no_longer_registered() {
+    async fn the_resolution_cache_evicts_agents_that_are_no_longer_configured() {
         let h = QuotaHarness::new();
         h.sources.configure("a", spec(PATTERN));
         h.sources.configure("b", spec(r"Week (\d{1,3})%"));
@@ -841,8 +915,25 @@ mod tests {
 
         h.engine.retire_session(b);
         h.engine.tick().await;
-        assert_eq!(h.engine.resolve_count(), 2, "A stayed cached");
+        assert_eq!(
+            h.engine.resolve_count(),
+            2,
+            "B is still configured: closing its terminal keeps it cached"
+        );
+        // Only a NEW resolve of B can prove the cache kept it across a tick with no B session.
+        let b2 = Uuid::new_v4();
+        h.engine.register_session(b2, "b".to_string());
+        h.engine.tick().await;
+        assert_eq!(
+            h.engine.resolve_count(),
+            2,
+            "a new B session reuses the cached pattern: no terminal close evicts it"
+        );
+        h.engine.retire_session(b2);
 
+        h.sources.disable("b");
+        h.engine.tick().await;
+        h.sources.configure("b", spec(r"Week (\d{1,3})%"));
         h.engine.register_session(b, "b".to_string());
         h.engine.tick().await;
         assert_eq!(h.engine.resolve_count(), 3, "B was evicted, not reused");
@@ -851,14 +942,142 @@ mod tests {
         h.engine.retire_session(b);
         let calls = h.sources.calls();
         h.engine.tick().await;
-        assert_eq!(h.sources.calls(), calls, "the empty path skips sources()");
+        assert_eq!(h.sources.calls(), calls, "the idle path skips sources()");
 
         h.engine.register_session(a, "a".to_string());
         h.engine.tick().await;
+        assert_eq!(h.engine.resolve_count(), 4, "the idle tick cleared the map");
+    }
+
+    #[tokio::test]
+    async fn two_agents_on_one_command_are_both_filled_from_one_session() {
+        let h = QuotaHarness::new();
+        h.sources.configure_on("a1", "claude", spec(PATTERN));
+        h.sources.configure_on("a2", "claude", spec(PATTERN));
+        let id = Uuid::new_v4();
+        h.engine.register_session(id, "a1".to_string());
+        h.rows.push(id, rows(42));
+
+        h.engine.tick().await;
+
         assert_eq!(
-            h.engine.resolve_count(),
-            4,
-            "the empty tick cleared the map"
+            h.sink.emitted(),
+            vec![payload("a1", Some(42)), payload("a2", Some(42))]
+        );
+    }
+
+    #[tokio::test]
+    async fn two_agents_on_different_commands_keep_separate_readings() {
+        let h = QuotaHarness::new();
+        h.sources.configure_on("a1", "claude", spec(PATTERN));
+        h.sources.configure_on("a2", "/a/claude", spec(PATTERN));
+        let s1 = Uuid::new_v4();
+        let s2 = Uuid::new_v4();
+        h.engine.register_session(s1, "a1".to_string());
+        h.engine.register_session(s2, "a2".to_string());
+        h.rows.push(s1, rows(30));
+        h.rows.push(s2, rows(70));
+
+        h.engine.tick().await;
+        h.engine.tick().await;
+
+        assert_eq!(
+            h.sink.emitted(),
+            vec![payload("a1", Some(30)), payload("a2", Some(70))]
+        );
+        let published = h.engine.published();
+        assert_eq!(published.get("a1"), Some(&Some(30)));
+        assert_eq!(published.get("a2"), Some(&Some(70)));
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_no_session_is_filled_and_stays_filled_after_the_last_session_retires() {
+        let (h, id) = configured();
+        h.rows.push(id, rows(42));
+        h.engine.tick().await;
+
+        h.engine.retire_session(id);
+        h.engine.tick().await;
+
+        assert_eq!(h.sink.emitted(), vec![payload(AGENT, Some(42))]);
+        assert_eq!(h.engine.published().get(AGENT), Some(&Some(42)));
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_leaves_the_source_map_is_published_as_null_once() {
+        let (h, id) = configured();
+        h.rows.push(id, rows(42));
+        h.engine.tick().await;
+
+        h.sources.disable(AGENT);
+        h.engine.tick().await;
+        h.engine.tick().await;
+
+        assert_eq!(
+            h.sink.emitted(),
+            vec![payload(AGENT, Some(42)), payload(AGENT, None)]
+        );
+        assert!(h.engine.published().is_empty());
+    }
+
+    #[tokio::test]
+    async fn nothing_is_emitted_twice_for_an_unchanged_account_value() {
+        let (h, id) = configured();
+        for _ in 0..3 {
+            h.rows.push(id, rows(42));
+        }
+
+        for _ in 0..3 {
+            h.engine.tick().await;
+        }
+
+        assert_eq!(h.sink.emitted(), vec![payload(AGENT, Some(42))]);
+    }
+
+    #[tokio::test]
+    async fn emission_order_is_sorted_by_agent_id() {
+        let h = QuotaHarness::new();
+        h.sources.configure_on("b", "claude", spec(PATTERN));
+        h.sources.configure_on("a", "claude", spec(PATTERN));
+        let id = Uuid::new_v4();
+        h.engine.register_session(id, "b".to_string());
+        h.rows.push(id, rows(42));
+
+        h.engine.tick().await;
+
+        assert_eq!(
+            h.sink.emitted(),
+            vec![payload("a", Some(42)), payload("b", Some(42))]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_configured_agent_with_no_reading_emits_nothing_on_the_first_tick() {
+        let (h, id) = configured();
+        h.rows
+            .push(id, ScreenRowsRead::Rows(vec!["no match".to_string()]));
+
+        h.engine.tick().await;
+
+        assert!(h.sink.emitted().is_empty());
+        assert!(h.engine.published().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_disabled_agent_is_still_filled_from_its_enabled_sibling_on_the_same_command() {
+        // What `lib.rs` hands over when `a1` is disabled and `a2` is enabled on one command.
+        let h = QuotaHarness::new();
+        h.sources.configure_on("a1", "claude", spec(PATTERN));
+        h.sources.configure_on("a2", "claude", spec(PATTERN));
+        let id = Uuid::new_v4();
+        h.engine.register_session(id, "a1".to_string());
+        h.rows.push(id, rows(42));
+
+        h.engine.tick().await;
+
+        assert_eq!(
+            h.sink.emitted(),
+            vec![payload("a1", Some(42)), payload("a2", Some(42))]
         );
     }
 }

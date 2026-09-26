@@ -60,7 +60,7 @@ jobs:
 
       - name: Pin npm version
         if: steps.changes.outputs.changed == 'true'
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Regenerate lockfile in-place
         if: steps.changes.outputs.changed == 'true'

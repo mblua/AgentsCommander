@@ -8,9 +8,10 @@ use uuid::Uuid;
 
 use super::types::{
     ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory,
-    ResourceAgentGroupSnapshot, ResourceGroupState, ResourceKillReason, ResourceKillResult,
-    ResourceLaunchMetadata, ResourceLimits, ResourceNetworkState, ResourceOverallState,
-    ResourceProcessSnapshot, ResourceSnapshot, TerminateOutcome,
+    ResourceAgentGroupSnapshot, ResourceGroupState, ResourceGroupWarning,
+    ResourceGroupWarningLevel, ResourceKillReason, ResourceKillResult, ResourceLaunchMetadata,
+    ResourceLimits, ResourceNetworkState, ResourceOverallState, ResourceProcessSnapshot,
+    ResourceSnapshot, TerminateOutcome,
 };
 
 #[derive(Debug, Error, Clone)]
@@ -1268,19 +1269,36 @@ fn build_snapshot(
     inner: &ResourceMonitorInner,
     limits: ResourceLimits,
     app_memory: ProcessMemory,
-    mut warnings: Vec<String>,
+    warnings: Vec<String>,
 ) -> ResourceSnapshot {
     let groups = inner
         .groups
         .values()
         .map(group_snapshot)
         .collect::<Vec<_>>();
+    let mut group_warnings = Vec::new();
     for group in &groups {
         if let Some(bytes) = group.private_bytes {
-            if bytes >= limits.group_kill_private_bytes {
-                warnings.push(format!("{} exceeds group kill threshold", group.name));
+            let level = if bytes >= limits.group_kill_private_bytes {
+                Some((
+                    ResourceGroupWarningLevel::Kill,
+                    limits.group_kill_private_bytes,
+                ))
             } else if bytes >= limits.group_warn_private_bytes {
-                warnings.push(format!("{} exceeds group warn threshold", group.name));
+                Some((
+                    ResourceGroupWarningLevel::Warn,
+                    limits.group_warn_private_bytes,
+                ))
+            } else {
+                None
+            };
+            if let Some((level, limit_bytes)) = level {
+                group_warnings.push(ResourceGroupWarning {
+                    session_id: group.session_id.clone(),
+                    level,
+                    private_bytes: bytes,
+                    limit_bytes,
+                });
             }
         }
     }
@@ -1308,7 +1326,7 @@ fn build_snapshot(
         ResourceOverallState::Enforcing
     } else if has_critical {
         ResourceOverallState::Critical
-    } else if !warnings.is_empty() {
+    } else if !warnings.is_empty() || !group_warnings.is_empty() {
         ResourceOverallState::Warn
     } else {
         ResourceOverallState::Unknown
@@ -1326,6 +1344,7 @@ fn build_snapshot(
         network_summary: "Socket attribution unavailable".to_string(),
         groups,
         warnings,
+        group_warnings,
     }
 }
 
@@ -1380,6 +1399,7 @@ fn disabled_snapshot(limits: ResourceLimits) -> ResourceSnapshot {
         network_summary: "Socket attribution unavailable".to_string(),
         groups: Vec::new(),
         warnings: Vec::new(),
+        group_warnings: Vec::new(),
     }
 }
 
@@ -3616,5 +3636,90 @@ mod tests {
             snap.groups[0].process_count, 2,
             "errored sample must not prune the live child"
         );
+    }
+
+    // #2581 - per-agent memory warnings are structured (session id + level +
+    // bytes + limit) and never duplicated as free text in `warnings`.
+    fn snapshot_with_group_at(bytes: u32) -> (Uuid, ResourceSnapshot) {
+        let (state, backend) = state_with_fake();
+        let root = identity(bytes, bytes as u64);
+        backend.add_tree(root, vec![observed(bytes, bytes as u64, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(
+                permit,
+                id,
+                "Claude Code".into(),
+                None,
+                None,
+                Some("room-1-team".into()),
+                Some("dev-rust".into()),
+                None,
+                root,
+            )
+            .unwrap();
+        (id, state.snapshot(limits(3)))
+    }
+
+    #[test]
+    fn group_over_warn_limit_emits_structured_group_warning() {
+        let (id, snap) = snapshot_with_group_at(150);
+        assert_eq!(snap.group_warnings.len(), 1);
+        let warning = &snap.group_warnings[0];
+        assert_eq!(warning.session_id, id.to_string());
+        assert_eq!(warning.level, ResourceGroupWarningLevel::Warn);
+        assert_eq!(warning.private_bytes, 150);
+        assert_eq!(warning.limit_bytes, 100);
+        assert!(snap.warnings.iter().all(|w| !w.contains("exceeds group")));
+        assert_eq!(snap.overall_state, ResourceOverallState::Warn);
+    }
+
+    #[test]
+    fn group_over_kill_limit_emits_kill_group_warning() {
+        let (id, snap) = snapshot_with_group_at(250);
+        assert_eq!(snap.group_warnings.len(), 1);
+        let warning = &snap.group_warnings[0];
+        assert_eq!(warning.session_id, id.to_string());
+        assert_eq!(warning.level, ResourceGroupWarningLevel::Kill);
+        assert_eq!(warning.private_bytes, 250);
+        assert_eq!(warning.limit_bytes, 200);
+        assert!(snap.warnings.iter().all(|w| !w.contains("exceeds group")));
+        assert_eq!(snap.overall_state, ResourceOverallState::Critical);
+    }
+
+    #[test]
+    fn group_under_warn_limit_emits_no_group_warning() {
+        let (_id, snap) = snapshot_with_group_at(50);
+        assert!(snap.group_warnings.is_empty());
+        assert_eq!(snap.overall_state, ResourceOverallState::Unknown);
+    }
+
+    #[test]
+    fn disabled_snapshot_has_no_group_warnings() {
+        assert!(disabled_snapshot(limits(1)).group_warnings.is_empty());
+    }
+
+    #[test]
+    fn group_warnings_serialize_in_camel_case() {
+        let (id, snap) = snapshot_with_group_at(150);
+        let value = serde_json::to_value(&snap).unwrap();
+        assert_eq!(
+            value["groupWarnings"],
+            serde_json::json!([{
+                "sessionId": id.to_string(),
+                "level": "warn",
+                "privateBytes": 150,
+                "limitBytes": 100,
+            }])
+        );
+    }
+
+    #[test]
+    fn snapshot_without_group_warnings_key_deserializes_to_empty() {
+        let mut value = serde_json::to_value(disabled_snapshot(limits(1))).unwrap();
+        value.as_object_mut().unwrap().remove("groupWarnings");
+        let snap: ResourceSnapshot = serde_json::from_value(value).unwrap();
+        assert!(snap.group_warnings.is_empty());
     }
 }

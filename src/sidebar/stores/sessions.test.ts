@@ -194,37 +194,46 @@ describe("sessionsStore weekly quota readings (#2482)", () => {
     sessionsStore.resetQuotaReadingsForTests();
   });
 
-  it("keeps two sessions independent (two_sessions_never_cross)", () => {
-    sessionsStore.setSessionAgentQuota("q-a1", 28);
-    sessionsStore.setSessionAgentQuota("q-a2", 90);
+  it("keeps two agents independent (two_agents_never_cross)", () => {
+    sessionsStore.setAgentQuota("claude", 28);
+    sessionsStore.setAgentQuota("codex", 90);
 
-    expect(sessionsStore.weeklyQuotaUsedBySessionId["q-a1"]).toBe(28);
-    expect(sessionsStore.weeklyQuotaUsedBySessionId["q-a2"]).toBe(90);
+    expect(sessionsStore.weeklyQuotaUsedByAgentId["claude"]).toBe(28);
+    expect(sessionsStore.weeklyQuotaUsedByAgentId["codex"]).toBe(90);
   });
 
   // A stored zero is a real reading: red if the guard is truthiness, not key presence.
   it("never clobbers an event (hydrate_does_not_overwrite_a_reading_already_set_by_an_event)", () => {
-    sessionsStore.setSessionAgentQuota("q-b", 0);
+    sessionsStore.setAgentQuota("claude", 0);
 
-    sessionsStore.hydrateSessionAgentQuota("q-b", 42);
+    sessionsStore.hydrateAgentQuotaReadings({ claude: 42 });
 
-    expect(sessionsStore.weeklyQuotaUsedBySessionId["q-b"]).toBe(0);
+    expect(sessionsStore.weeklyQuotaUsedByAgentId["claude"]).toBe(0);
+  });
+
+  it("fills only what is missing (hydrate_fills_only_the_keys_it_does_not_already_have)", () => {
+    sessionsStore.setAgentQuota("a", 70);
+
+    sessionsStore.hydrateAgentQuotaReadings({ a: 1, b: 2 });
+
+    expect(sessionsStore.weeklyQuotaUsedByAgentId["a"]).toBe(70);
+    expect(sessionsStore.weeklyQuotaUsedByAgentId["b"]).toBe(2);
   });
 
   it("survives a wholesale replace (a_sessions_list_replacement_leaves_the_quota_sidecar_intact)", () => {
-    sessionsStore.setSessionAgentQuota("q-c", 28);
+    sessionsStore.setAgentQuota("claude", 28);
 
-    sessionsStore.setSessions([session({ id: "q-c" })]);
+    sessionsStore.setSessions([session({ id: "q-c", agentId: "claude" })]);
 
-    expect(sessionsStore.weeklyQuotaUsedBySessionId["q-c"]).toBe(28);
+    expect(sessionsStore.weeklyQuotaUsedByAgentId["claude"]).toBe(28);
   });
 
   it("empties the sidecar (reset_quota_readings_for_tests_empties_the_sidecar)", () => {
-    sessionsStore.setSessionAgentQuota("q-d1", 28);
-    sessionsStore.setSessionAgentQuota("q-d2", null);
+    sessionsStore.setAgentQuota("claude", 28);
+    sessionsStore.setAgentQuota("codex", null);
 
     sessionsStore.resetQuotaReadingsForTests();
 
-    expect(Object.keys(sessionsStore.weeklyQuotaUsedBySessionId)).toEqual([]);
+    expect(Object.keys(sessionsStore.weeklyQuotaUsedByAgentId)).toEqual([]);
   });
 });

@@ -143,12 +143,13 @@ export interface SessionContextPayload {
   percent: number | null;
 }
 
-/** #2482 - the session's weekly (7-day) coding-agent quota reading.
+/** #2482/#2566 - an agent's weekly (7-day) coding-agent quota reading.
  *  `weeklyUsedPercent` is the USED percentage, 0..100, or null when unavailable.
  *  Mirrors `AgentQuotaPayload` (`pty/agent_quota/mod.rs`) field for field.
+ *  The value is shared by every agent whose command matches.
  *  null is the ONLY unknown: never 0, never 100, never an absent key. */
-export interface SessionAgentQuotaPayload {
-  sessionId: string;
+export interface AgentQuotaPayload {
+  agentId: string;
   weeklyUsedPercent: number | null;
 }
 
@@ -1186,6 +1187,17 @@ export interface ResourceSnapshot {
   networkSummary: string;
   groups: ResourceAgentGroupSnapshot[];
   warnings: string[];
+  /** #2581 - per-agent memory warnings. Optional for older producers. */
+  groupWarnings?: ResourceGroupWarning[];
+}
+
+export type ResourceGroupWarningLevel = "warn" | "kill";
+
+export interface ResourceGroupWarning {
+  sessionId: string;
+  level: ResourceGroupWarningLevel;
+  privateBytes: number;
+  limitBytes: number;
 }
 
 export interface ResourceKillRequest {
@@ -1442,7 +1454,7 @@ export interface SessionsState {
   coordSortByActivity: boolean;
   lastActivityBySessionId: Record<string, number>;
   contextPercentBySessionId: Record<string, number | null>;
-  weeklyQuotaUsedBySessionId: Record<string, number | null>;
+  weeklyQuotaUsedByAgentId: Record<string, number | null>;
   hydrated: boolean;
 }
 
@@ -1817,6 +1829,18 @@ export interface PreviewSelectionLockRemovalRequest {
   scope: ProfileAssignmentScope;
 }
 
+/** #2557 - why the scope walk could not count a replica or folder. */
+export type ScopeFaultCode =
+  | "configUnreadable" | "configNotJson" | "configNotObject"
+  | "identityMissing" | "identityMismatch" | "locationInvalid"
+  | "pathUnreadable" | "folderUnreadable";
+
+export interface ScopeFault {
+  code: ScopeFaultCode;
+  replicaName: string;
+  replicaPath: string;
+}
+
 export interface PreviewSelectionLockRemovalResult {
   scope: ProfileAssignmentScope;
   targetFingerprint: string;
@@ -1827,6 +1851,7 @@ export interface PreviewSelectionLockRemovalResult {
   invalidCount: number;
   targets: ProfileAssignmentTarget[];
   warnings: string[];
+  scopeFaults?: ScopeFault[];
 }
 
 export interface ApplySelectionLockRemovalRequest {
