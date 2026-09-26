@@ -121,11 +121,31 @@ coverage. Every matrix row uses
 ## 5. Verify GitHub, npm and installation
 
 Confirm the public immutable GitHub Release has exactly the expected assets.
-Query npm directly for the version and latest dist-tag, verify its tarball and
-provenance, and inspect the workflow's clean-install result. Complete the
+Query npm directly for the version and the `next` dist-tag, verify its tarball
+and provenance, and inspect the workflow's clean-install result. Complete the
 install/version smoke check on a supported platform before reporting success.
 
 A version visible on GitHub alone is not a completed release to npm.
+
+## 6. Promote `next` to `latest`
+
+CI publishes every release under the npm `next` dist-tag and does not mark the
+GitHub Release as latest. `npm install -g @mblua/agentscommander`, the in-app
+update check and the GitHub `releases/latest` link keep pointing at the previous
+version until a maintainer promotes the new one.
+
+Test it with `npm install -g @mblua/agentscommander@next`, then promote both
+together:
+
+```bash
+npm dist-tag ls @mblua/agentscommander
+npm dist-tag add @mblua/agentscommander@X.Y.Z latest
+gh release edit vX.Y.Z --repo mblua/AgentsCommander --latest
+```
+
+`npm dist-tag` needs a maintainer `npm login` with 2FA; Trusted Publishing only
+covers `npm publish`. Moving a tag publishes nothing. To roll back, point
+`latest` at the previous version and mark that GitHub Release latest again.
 
 ## Room-specific builds
 
