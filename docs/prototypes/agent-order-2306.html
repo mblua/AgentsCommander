@@ -1851,32 +1851,40 @@
     if (focus) focus.focus();
   });
 
+  function onColorDraftInput(el) {
+    var id = el.getAttribute("data-color-tool");
+    state.draftColor[id] = el.value;
+    var colorline = el.closest(".settings-agent-row-colorline");
+    var swatch = colorline ? colorline.querySelector(".settings-agent-swatch") : null;
+    if (swatch && /^#[0-9a-fA-F]{6}$/.test(el.value)) swatch.style.background = el.value;
+    // Show the unsaved chip immediately without re-rendering (a re-render
+    // would drop the caret while the reviewer is typing).
+    var chip = colorline ? colorline.querySelector(".draft-chip") : null;
+    if (colorline && el.value !== TOOLS[id].color && !chip) {
+      chip = document.createElement("span");
+      chip.className = "draft-chip";
+      chip.textContent = "Sin guardar";
+      colorline.appendChild(chip);
+    } else if (colorline && el.value === TOOLS[id].color && chip) {
+      chip.remove();
+    }
+    setStatus("Borrador de color sin guardar en Settings para " + labelFor(id) + " (" + el.value + "). Los movimientos guardan solo el orden, nunca este borrador.", "warn");
+  }
+
+  function onLabelDraftInput(el) {
+    state.draftLabel[el.getAttribute("data-label-tool")] = el.value;
+    setStatus("Borrador de etiqueta de perfil sin guardar. No se borra ninguna etiqueta guardada; el orden no se toca.", "warn");
+  }
+
   document.addEventListener("input", function (event) {
     var el = event.target;
     if (el.id === "picker-filter") { setFilter(el.value); return; }
     if (el.getAttribute && el.getAttribute("data-color-tool")) {
-      var id = el.getAttribute("data-color-tool");
-      state.draftColor[id] = el.value;
-      var colorline = el.closest(".settings-agent-row-colorline");
-      var swatch = colorline ? colorline.querySelector(".settings-agent-swatch") : null;
-      if (swatch && /^#[0-9a-fA-F]{6}$/.test(el.value)) swatch.style.background = el.value;
-      // Show the unsaved chip immediately without re-rendering (a re-render
-      // would drop the caret while the reviewer is typing).
-      var chip = colorline ? colorline.querySelector(".draft-chip") : null;
-      if (colorline && el.value !== TOOLS[id].color && !chip) {
-        chip = document.createElement("span");
-        chip.className = "draft-chip";
-        chip.textContent = "Sin guardar";
-        colorline.appendChild(chip);
-      } else if (colorline && el.value === TOOLS[id].color && chip) {
-        chip.remove();
-      }
-      setStatus("Borrador de color sin guardar en Settings para " + labelFor(id) + " (" + el.value + "). Los movimientos guardan solo el orden, nunca este borrador.", "warn");
+      onColorDraftInput(el);
       return;
     }
     if (el.getAttribute && el.getAttribute("data-label-tool")) {
-      state.draftLabel[el.getAttribute("data-label-tool")] = el.value;
-      setStatus("Borrador de etiqueta de perfil sin guardar. No se borra ninguna etiqueta guardada; el orden no se toca.", "warn");
+      onLabelDraftInput(el);
     }
   });
 
