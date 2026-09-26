@@ -170,6 +170,18 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
       !interfaces()!.some((i) => i.address === draft)
     );
   });
+  // Plain accessors (not memos): read lazily from JSX, exactly like the
+  // inline ternaries they replace.
+  const addrInputTone = () => {
+    if (addrDraft().trim() === "") return "";
+    return addrDraftValid() ? " valid" : " invalid";
+  };
+  const addrValidationText = () => {
+    if (!addrDraftValid()) return "Not a valid IPv4 address.";
+    return addrDraftUndetected()
+      ? "Not detected on this machine. The bind may fail."
+      : "Valid IPv4 address.";
+  };
   const showBindAlert = createMemo(
     () => bindFailure() !== null && !ownedActive() && status()?.externalListening !== true
   );
@@ -198,19 +210,14 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
     if (bindFailure()) return "Web server bind failed";
     return "Web server stopped";
   });
-  const buttonState = createMemo(() =>
-    statusUnavailable()
-      ? "unknown"
-      : starting() || stopping()
-        ? "ambiguous"
-        : ownedRunning()
-        ? "running"
-        : status()?.externalListening
-          ? "ambiguous"
-          : bindFailure()
-            ? "ambiguous"
-            : "stopped"
-  );
+  const buttonState = createMemo(() => {
+    if (statusUnavailable()) return "unknown";
+    if (starting() || stopping()) return "ambiguous";
+    if (ownedRunning()) return "running";
+    if (status()?.externalListening) return "ambiguous";
+    if (bindFailure()) return "ambiguous";
+    return "stopped";
+  });
   const statusLabel = createMemo(() => {
     if (starting()) return "Starting";
     if (stopping()) return "Stopping";
@@ -729,9 +736,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
               <div class="webserver-bind-group">Other address</div>
               <div class="webserver-bind-manual">
                 <input
-                  class={`webserver-port-input${
-                    addrDraft().trim() === "" ? "" : addrDraftValid() ? " valid" : " invalid"
-                  }`}
+                  class={`webserver-port-input${addrInputTone()}`}
                   value={addrDraft()}
                   onInput={(event) => setAddrDraft(event.currentTarget.value)}
                   data-ac-testid="titlebar.webserver.addrInput"
@@ -751,11 +756,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
                     addrDraftValid() && !addrDraftUndetected() ? " ok" : ""
                   }`}
                 >
-                  {!addrDraftValid()
-                    ? "Not a valid IPv4 address."
-                    : addrDraftUndetected()
-                      ? "Not detected on this machine. The bind may fail."
-                      : "Valid IPv4 address."}
+                  {addrValidationText()}
                 </div>
               </Show>
             </div>

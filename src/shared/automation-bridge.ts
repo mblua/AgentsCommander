@@ -116,6 +116,27 @@ async function executeAutomationRequestInner(
 
   const terminalOperation =
     request.action === "terminal" ? parseUiTerminalOperation(request.value) : null;
+  // Stage order is fixed (validate, resolve, interactable, dispatch) so the
+  // error that wins when several apply never changes.
+  const invalid = await validateRequestValue(windowLabel, request, diagnostics, terminalOperation);
+  if (invalid) return invalid;
+
+  const resolved = await resolveSingleTarget(windowLabel, request, diagnostics);
+  if ("response" in resolved) return resolved.response;
+  const { element } = resolved;
+
+  const blocked = checkTargetInteractable(windowLabel, request, element, diagnostics);
+  if (blocked) return blocked;
+
+  return dispatchAction(windowLabel, request, element, diagnostics, terminalOperation);
+}
+
+async function validateRequestValue(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  diagnostics: UiAutomationDiagnostics,
+  terminalOperation: UiTerminalOperation | null,
+): Promise<AnyUiAutomationResponse | null> {
   if (request.action === "terminal" && terminalOperation === null) {
     return errorResponse(
       windowLabel,
@@ -147,44 +168,66 @@ async function executeAutomationRequestInner(
     }
   }
 
+  return null;
+}
+
+async function resolveSingleTarget(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  diagnostics: UiAutomationDiagnostics,
+): Promise<{ element: HTMLElement } | { response: AnyUiAutomationResponse }> {
   const matches = await queryAutomationTargetsWithBriefRetry(request);
   const expiredAfterQuery = expiredRequestResponse(windowLabel, request, diagnostics);
-  if (expiredAfterQuery) return expiredAfterQuery;
+  if (expiredAfterQuery) return { response: expiredAfterQuery };
 
   if (matches.length === 0) {
-    return errorResponse(
-      windowLabel,
-      request,
-      "missing_selector",
-      `No automation target matched data-ac-testid="${request.selector}" in window "${windowLabel}".`,
-      availableTargets(),
-      diagnostics,
-    );
+    return {
+      response: errorResponse(
+        windowLabel,
+        request,
+        "missing_selector",
+        `No automation target matched data-ac-testid="${request.selector}" in window "${windowLabel}".`,
+        availableTargets(),
+        diagnostics,
+      ),
+    };
   }
 
   if (matches.length > 1) {
-    return errorResponse(
-      windowLabel,
-      request,
-      "duplicate_selector",
-      `Multiple automation targets matched data-ac-testid="${request.selector}" in window "${windowLabel}".`,
-      matches.map((element) => snapshotTarget(element)),
-      diagnostics,
-    );
+    return {
+      response: errorResponse(
+        windowLabel,
+        request,
+        "duplicate_selector",
+        `Multiple automation targets matched data-ac-testid="${request.selector}" in window "${windowLabel}".`,
+        matches.map((element) => snapshotTarget(element)),
+        diagnostics,
+      ),
+    };
   }
 
   const element = matches[0];
   if (!isElementVisible(element)) {
-    return errorResponse(
-      windowLabel,
-      request,
-      "target_hidden",
-      `Automation target "${request.selector}" is hidden in window "${windowLabel}".`,
-      availableTargets(),
-      diagnostics,
-    );
+    return {
+      response: errorResponse(
+        windowLabel,
+        request,
+        "target_hidden",
+        `Automation target "${request.selector}" is hidden in window "${windowLabel}".`,
+        availableTargets(),
+        diagnostics,
+      ),
+    };
   }
+  return { element };
+}
 
+function checkTargetInteractable(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  element: HTMLElement,
+  diagnostics: UiAutomationDiagnostics,
+): AnyUiAutomationResponse | null {
   if (request.action === "query") {
     return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
   }
@@ -212,101 +255,133 @@ async function executeAutomationRequestInner(
     );
   }
 
-  if (request.action === "terminal") {
-    const prefix = "terminal.session.";
-    const sessionId = request.selector.startsWith(prefix)
-      ? request.selector.slice(prefix.length)
-      : null;
-    if (
-      sessionId === null ||
-      !validUiTerminalSessionId(sessionId) ||
-      element.getAttribute("data-ac-testid") !== request.selector ||
-      element.getAttribute("data-ac-session-id") !== sessionId
-    ) {
+  return null;
+}
+
+async function dispatchAction(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  element: HTMLElement,
+  diagnostics: UiAutomationDiagnostics,
+  terminalOperation: UiTerminalOperation | null,
+): Promise<AnyUiAutomationResponse> {
+  switch (request.action) {
+    case "terminal":
+      return runTerminalAction(windowLabel, request, element, diagnostics, terminalOperation!);
+    case "hover":
+      return runHoverAction(windowLabel, request, element, diagnostics);
+    case "click":
+      return runFocusedAction(windowLabel, request, element, diagnostics, () => element.click());
+    case "contextClick":
+      return runFocusedAction(windowLabel, request, element, diagnostics, () => {
+        element.dispatchEvent(createContextMenuEvent(element, elementCenterPoint(element)));
+      });
+    case "setValue":
+    case "typeText":
+      return setElementValue(windowLabel, request, element, diagnostics);
+    default:
       return errorResponse(
         windowLabel,
         request,
-        "terminal_target_mismatch",
-        `Automation terminal target "${request.selector}" did not match its session metadata.`,
+        "unsupported_action",
+        `Unsupported automation action "${request.action as UiAutomationAction}".`,
         availableTargets(),
         diagnostics,
       );
-    }
+  }
+}
 
-    const expired = expiredMutationResponse(windowLabel, request, diagnostics);
-    if (expired) return expired;
-
-    const result = AutomationAPI.executeTerminalController({
-      element,
-      sessionId,
-      operation: terminalOperation!,
-    });
-    if (result === null) {
-      return errorResponse(
-        windowLabel,
-        request,
-        "terminal_controller_unavailable",
-        "No live terminal controller is registered in this WebView.",
-        availableTargets(),
-        diagnostics,
-      );
-    }
-    if (!result.ok) {
-      return errorResponse(
-        windowLabel,
-        request,
-        result.error,
-        result.message,
-        availableTargets(),
-        diagnostics,
-      );
-    }
-
-    return terminalSuccessResponse(windowLabel, request, result.target, diagnostics);
+function runTerminalAction(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  element: HTMLElement,
+  diagnostics: UiAutomationDiagnostics,
+  terminalOperation: UiTerminalOperation,
+): AnyUiAutomationResponse {
+  const prefix = "terminal.session.";
+  const sessionId = request.selector.startsWith(prefix)
+    ? request.selector.slice(prefix.length)
+    : null;
+  if (
+    sessionId === null ||
+    !validUiTerminalSessionId(sessionId) ||
+    element.getAttribute("data-ac-testid") !== request.selector ||
+    element.getAttribute("data-ac-session-id") !== sessionId
+  ) {
+    return errorResponse(
+      windowLabel,
+      request,
+      "terminal_target_mismatch",
+      `Automation terminal target "${request.selector}" did not match its session metadata.`,
+      availableTargets(),
+      diagnostics,
+    );
   }
 
-  if (request.action === "hover") {
-    const expired = expiredMutationResponse(windowLabel, request, diagnostics);
-    if (expired) return expired;
+  const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+  if (expired) return expired;
 
-    const hover = dispatchHoverEnter(element);
-    await settleAfterDomMutation();
-    return successResponse(windowLabel, request, snapshotTarget(element), {
-      ...diagnostics,
-      hover,
-    });
+  const result = AutomationAPI.executeTerminalController({
+    element,
+    sessionId,
+    operation: terminalOperation,
+  });
+  if (result === null) {
+    return errorResponse(
+      windowLabel,
+      request,
+      "terminal_controller_unavailable",
+      "No live terminal controller is registered in this WebView.",
+      availableTargets(),
+      diagnostics,
+    );
+  }
+  if (!result.ok) {
+    return errorResponse(
+      windowLabel,
+      request,
+      result.error,
+      result.message,
+      availableTargets(),
+      diagnostics,
+    );
   }
 
-  if (request.action === "click") {
-    const expired = expiredMutationResponse(windowLabel, request, diagnostics);
-    if (expired) return expired;
-    element.focus();
-    element.click();
-    await settleAfterDomMutation();
-    return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
-  }
+  return terminalSuccessResponse(windowLabel, request, result.target, diagnostics);
+}
 
-  if (request.action === "contextClick") {
-    const expired = expiredMutationResponse(windowLabel, request, diagnostics);
-    if (expired) return expired;
-    element.focus();
-    element.dispatchEvent(createContextMenuEvent(element, elementCenterPoint(element)));
-    await settleAfterDomMutation();
-    return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
-  }
+async function runHoverAction(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  element: HTMLElement,
+  diagnostics: UiAutomationDiagnostics,
+): Promise<AnyUiAutomationResponse> {
+  const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+  if (expired) return expired;
 
-  if (request.action === "setValue" || request.action === "typeText") {
-    return setElementValue(windowLabel, request, element, diagnostics);
-  }
+  const hover = dispatchHoverEnter(element);
+  await settleAfterDomMutation();
+  return successResponse(windowLabel, request, snapshotTarget(element), {
+    ...diagnostics,
+    hover,
+  });
+}
 
-  return errorResponse(
-    windowLabel,
-    request,
-    "unsupported_action",
-    `Unsupported automation action "${request.action as UiAutomationAction}".`,
-    availableTargets(),
-    diagnostics,
-  );
+// click and contextClick: expiry check, focus, the action's own dispatch,
+// settle, then snapshot.
+async function runFocusedAction(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  element: HTMLElement,
+  diagnostics: UiAutomationDiagnostics,
+  dispatch: () => void,
+): Promise<AnyUiAutomationResponse> {
+  const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+  if (expired) return expired;
+  element.focus();
+  dispatch();
+  await settleAfterDomMutation();
+  return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
 }
 
 async function setElementValue(
