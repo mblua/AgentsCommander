@@ -67,20 +67,25 @@ export function sweep(surface, rev) {
   const rows = [];
   for (const line of git(args).split("\n")) {
     if (!line) continue;
-    const bin = line.match(/^Binary file (?:[0-9a-f]{7,40}:)?(.*) matches$/);
-    if (bin) {
-      if (s.keep(bin[1])) rows.push({ surface, path: bin[1], lineno: 0, content: "<binary file>" });
-      continue;
-    }
-    const body = rev && line.startsWith(`${rev}:`) ? line.slice(rev.length + 1) : line;
-    const i1 = body.indexOf(":");
-    const i2 = body.indexOf(":", i1 + 1);
-    if (i1 < 0 || i2 < 0) continue;
-    const path = body.slice(0, i1);
-    if (!s.keep(path)) continue;
-    rows.push({ surface, path, lineno: Number(body.slice(i1 + 1, i2)), content: body.slice(i2 + 1).trim() });
+    const row = parseGrepLine(line, surface, s, rev);
+    if (row !== null) rows.push(row);
   }
   return rows;
+}
+
+// One `git grep -n` output line as a sweep row, or null when it is not kept.
+function parseGrepLine(line, surface, s, rev) {
+  const bin = line.match(/^Binary file (?:[0-9a-f]{7,40}:)?(.*) matches$/);
+  if (bin) {
+    return s.keep(bin[1]) ? { surface, path: bin[1], lineno: 0, content: "<binary file>" } : null;
+  }
+  const body = rev && line.startsWith(`${rev}:`) ? line.slice(rev.length + 1) : line;
+  const i1 = body.indexOf(":");
+  const i2 = body.indexOf(":", i1 + 1);
+  if (i1 < 0 || i2 < 0) return null;
+  const path = body.slice(0, i1);
+  if (!s.keep(path)) return null;
+  return { surface, path, lineno: Number(body.slice(i1 + 1, i2)), content: body.slice(i2 + 1).trim() };
 }
 
 export const key = (r) => `${r.path}\t${r.content}`;
@@ -269,6 +274,18 @@ function blob(rev, path) {
   return blobCache.get(k);
 }
 
+// Index of the closing `"` of the string whose opening quote is at i, or >= line.length
+// when the line ends first. A backslash skips the next character.
+function quoteEnd(line, i) {
+  let k = i + 1;
+  while (k < line.length) {
+    if (line[k] === "\\") { k += 2; continue; }
+    if (line[k] === '"') break;
+    k++;
+  }
+  return k;
+}
+
 function stripLiterals(line, st) {
   let out = "";
   let i = 0;
@@ -289,13 +306,7 @@ function stripLiterals(line, st) {
       continue;
     }
     if (line[i] === '"') {
-      let k = i + 1;
-      while (k < line.length) {
-        if (line[k] === "\\") { k += 2; continue; }
-        if (line[k] === '"') break;
-        k++;
-      }
-      i = k + 1;
+      i = quoteEnd(line, i) + 1;
       continue;
     }
     out += line[i++];
@@ -309,24 +320,40 @@ function analyze(text) {
   const lines = text.split("\n");
   const st = { raw: null };
   const code = lines.map((l) => stripLiterals(l, st));
+  return {
+    inTest: testItemLines(lines, code),
+    inString: stringInteriorLines(lines),
+    inLog: logInvocationLines(lines),
+  };
+}
 
+function testItemLines(lines, code) {
   const inTest = new Set();
   for (let i = 0; i < lines.length; i++) {
     if (!/^#\[cfg\(test\)\]/.test(lines[i])) continue;
     let j = i + 1;
     while (j < lines.length && /^\s*(#\[|\/\/)/.test(lines[j])) j++;
-    let depth = 0, started = false, k = j;
-    for (; k < lines.length; k++) {
-      for (const ch of code[k]) {
-        if (ch === "{") { depth++; started = true; }
-        else if (ch === "}") depth--;
-      }
-      if (started && depth <= 0) break;
-      if (!started && /;\s*$/.test(code[k].trimEnd())) break;
-    }
+    const k = testItemEnd(lines, code, j);
     for (let m = i; m <= Math.min(k, lines.length - 1); m++) inTest.add(m + 1);
   }
+  return inTest;
+}
 
+// Index of the line that ends the item starting at line j, or lines.length.
+function testItemEnd(lines, code, j) {
+  let depth = 0, started = false, k = j;
+  for (; k < lines.length; k++) {
+    for (const ch of code[k]) {
+      if (ch === "{") { depth++; started = true; }
+      else if (ch === "}") depth--;
+    }
+    if (started && depth <= 0) break;
+    if (!started && /;\s*$/.test(code[k].trimEnd())) break;
+  }
+  return k;
+}
+
+function stringInteriorLines(lines) {
   const inString = new Set();
   let raw = null, cont = false;
   for (let i = 0; i < lines.length; i++) {
@@ -338,55 +365,61 @@ function analyze(text) {
     }
     if (cont) {
       inString.add(n);
-      let j = 0, closed = false;
-      while (j < line.length) {
-        if (line[j] === "\\") { j += 2; continue; }
-        if (line[j] === '"') { closed = true; break; }
-        j++;
-      }
-      if (closed) cont = false;
+      if (quoteEnd(line, -1) < line.length) cont = false;
       continue;
     }
-    let j = 0;
-    while (j < line.length) {
-      if (line[j] === "/" && line[j + 1] === "/") break;
-      const rm = /^r(#*)"/.exec(line.slice(j));
-      if (rm) {
-        const close = '"' + "#".repeat(rm[1].length);
-        const at = line.indexOf(close, j + rm[0].length);
-        if (at === -1) { raw = rm[1].length; break; }
-        j = at + close.length;
-        continue;
-      }
-      if (line[j] === '"') {
-        let k = j + 1, closed = false;
-        while (k < line.length) {
-          if (line[k] === "\\") { k += 2; continue; }
-          if (line[k] === '"') { closed = true; break; }
-          k++;
-        }
-        if (!closed) { if (/\\\s*$/.test(line)) cont = true; break; }
-        j = k + 1;
-        continue;
-      }
-      j++;
-    }
+    const open = openLiteralAtEnd(line);
+    raw = open.raw;
+    cont = open.cont;
   }
+  return inString;
+}
 
+// The literal left open at the end of a line: { raw: <hash count> } for an unclosed raw
+// string, { cont: true } for an unclosed "..." ending in a backslash, otherwise neither.
+function openLiteralAtEnd(line) {
+  let j = 0;
+  while (j < line.length) {
+    if (line[j] === "/" && line[j + 1] === "/") break;
+    const rm = /^r(#*)"/.exec(line.slice(j));
+    if (rm) {
+      const close = '"' + "#".repeat(rm[1].length);
+      const at = line.indexOf(close, j + rm[0].length);
+      if (at === -1) return { raw: rm[1].length, cont: false };
+      j = at + close.length;
+      continue;
+    }
+    if (line[j] === '"') {
+      const k = quoteEnd(line, j);
+      if (k >= line.length) return { raw: null, cont: /\\\s*$/.test(line) };
+      j = k + 1;
+      continue;
+    }
+    j++;
+  }
+  return { raw: null, cont: false };
+}
+
+function logInvocationLines(lines) {
   const inLog = new Set();
   for (let i = 0; i < lines.length; i++) {
     if (!/\blog::(trace|debug|info|warn|error)!\s*\(/.test(lines[i])) continue;
-    let depth = 0, started = false;
-    for (let k = i; k < lines.length; k++) {
-      for (const ch of lines[k]) {
-        if (ch === "(") { depth++; started = true; }
-        else if (ch === ")") depth--;
-      }
-      inLog.add(k + 1);
-      if (started && depth <= 0) break;
-    }
+    addLogSpan(lines, i, inLog);
   }
-  return { inTest, inString, inLog };
+  return inLog;
+}
+
+// Add every line of the log:: invocation starting at line i, up to its closing paren.
+function addLogSpan(lines, i, inLog) {
+  let depth = 0, started = false;
+  for (let k = i; k < lines.length; k++) {
+    for (const ch of lines[k]) {
+      if (ch === "(") { depth++; started = true; }
+      else if (ch === ")") depth--;
+    }
+    inLog.add(k + 1);
+    if (started && depth <= 0) break;
+  }
 }
 
 const analysisCache = new Map();
@@ -428,12 +461,7 @@ function quotedSpans(line) {
       continue;
     }
     if (line[i] === '"') {
-      let k = i + 1;
-      while (k < line.length) {
-        if (line[k] === "\\") { k += 2; continue; }
-        if (line[k] === '"') break;
-        k++;
-      }
+      const k = quoteEnd(line, i);
       out.push(line.slice(i + 1, Math.min(k, line.length)));
       i = k + 1;
       continue;
