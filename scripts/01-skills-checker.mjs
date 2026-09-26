@@ -1776,6 +1776,7 @@ function applyKnownFlags(result, flags) {
   }
 }
 
+/** @returns {{help:boolean, selfTest:boolean, json:boolean, root:(string|null), error:(string|null)}} */
 function parseArgs(argv) {
   const result = { help: false, selfTest: false, json: false, root: null, error: null };
   const { flags, positionals } = splitArgs(argv);
