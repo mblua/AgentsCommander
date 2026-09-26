@@ -9,9 +9,11 @@ import {
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
+  session,
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
+import { sessionsStore } from "../stores/sessions";
 import { defaultGroupsConfig } from "../stores/workgroup-groups";
 import type { AcDiscoveryResult } from "../../shared/types";
 import { loopSummaryFixture as loop } from "./loop-summary-fixture";
@@ -295,6 +297,51 @@ describe("ProjectPanel collapse state", () => {
         expect(headerCollapsed(headerByName(rendered.root, "Orchestrators"))).toBe(true);
         expect(rendered.root.querySelector(quickRow)).toBeNull();
       });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #2657/#2658 - the collapsible headers toggle by keyboard through their row key proxy.
+  it("toggles each collapsible header with Enter, Space and mouse click", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve("discover_project", projectDiscovery("Stable task title"));
+    // An active orchestrator session makes the Selected Room header render.
+    sessionsStore.setSessions([
+      session({
+        id: "coord",
+        name: "wg-2-dev-team/dev-webpage-ui",
+        workingDirectory: `${workgroupPath}\\__agent_dev-webpage-ui`,
+        status: "running",
+      }),
+    ]);
+    sessionsStore.setVisibleActiveIdForTests("coord");
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    // #2658 - the team header uses its own class; every other header is .ac-wg-header.
+    const find = (name: string) =>
+      name === "frontend-team" ? teamHeaderByName(rendered.root, name) : headerByName(rendered.root, name);
+    const toggles = async (name: string, act: (header: HTMLElement) => void, expected: boolean) => {
+      act(find(name));
+      await waitFor(() => expect(headerCollapsed(find(name))).toBe(expected));
+    };
+    const press = (key: string) => (header: HTMLElement) => {
+      const proxy = header.firstElementChild!;
+      expect(proxy.classList.contains("ac-row-key-proxy")).toBe(true);
+      proxy.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    };
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => void headerByName(rendered.root, "Selected Room"));
+      const names = ["wg-2-dev-team", "Orchestrators", "Selected Room", "Rooms", "Loops", "Agents", "Teams", "frontend-team"];
+      for (const name of names) {
+        const start = headerCollapsed(find(name));
+        await toggles(name, press("Enter"), !start);
+        await toggles(name, press(" "), start);
+        await toggles(name, click, !start);
+        await toggles(name, click, start);
+      }
     } finally {
       rendered.cleanup();
     }

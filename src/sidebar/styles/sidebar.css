@@ -7270,6 +7270,7 @@ html.light-theme .ac-discovery-badge.running-peer {
 }
 
 .ac-loop-row {
+  position: relative;
   margin: 0 8px 2px 16px;
   padding: 7px 8px;
   border-radius: 6px;
@@ -7364,6 +7365,7 @@ html.light-theme .ac-discovery-badge.running-peer {
 }
 
 .ac-wg-header {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -7438,6 +7440,7 @@ html.light-theme .ac-discovery-badge.running-peer {
 }
 
 .ac-team-header {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -10050,6 +10053,22 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
 }
 
 .root-agent-banner-open:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: -3px;
+}
+
+/* #2655 - keyboard proxy for clickable rows; see RowKeyProxy.tsx. */
+.ac-row-key-proxy {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.ac-row-key-proxy:focus-visible {
   outline: 2px solid var(--sidebar-accent);
   outline-offset: -3px;
 }
