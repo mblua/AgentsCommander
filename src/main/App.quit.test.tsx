@@ -409,6 +409,7 @@ describe("MainApp quit handshake (#2297)", () => {
   it.each([
     ["Exiting ends the round", null, { outcome: "Exiting", epoch: 5 }, ""],
     ["Aborted shows its reason", null, { outcome: "Aborted", epoch: 5, reason: "refused" }, "refused"],
+    ["Stale ends the round quietly", null, { outcome: "Stale", epoch: 5 }, ""],
     ["an unknown outcome changes nothing", null, { outcome: "Bogus", epoch: 5 }, "Waiting to quit..."],
     ["a non-live epoch changes nothing", null, { outcome: "Exiting", epoch: -1 }, "Waiting to quit..."],
     ["a result for another epoch changes nothing", 7, { outcome: "Exiting", epoch: 8 }, "Waiting to quit..."],
