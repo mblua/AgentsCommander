@@ -574,62 +574,70 @@ function decodeEscape(text, i) {
 // 6.5.1a. A mapping entry is a key, then `:`, then end of line or at least one space or
 // TAB. YAML permits a tab as separation whitespace, so `name:<TAB>x` is an ordinary entry.
 function parseKeyValueLine(body) {
-  let key;
-  let rest;
-  if (body[0] === "'" || body[0] === '"') {
-    const quoted = readQuotedScalar(body, 0);
-    if (!quoted.ok) return { ok: false, reason: quoted.reason };
-    // Whitespace may sit between the key and the `:` here for the same reason it may in
-    // the unquoted branch below: YAML treats it as separation, not as part of the key.
-    let after = quoted.end;
-    while (body[after] === ' ' || body[after] === '\t') after += 1;
-    if (body[after] !== ':') {
-      return { ok: false, reason: 'a quoted scalar at column 0 that is not a mapping key' };
-    }
-    key = quoted.value;
-    rest = body.slice(after + 1);
-  } else {
-    let separator = -1;
-    for (let i = 0; i < body.length; i += 1) {
-      if (body[i] !== ':') continue;
-      const next = body[i + 1];
-      if (next === undefined || next === ' ' || next === '\t') {
-        separator = i;
-        break;
-      }
-    }
-    if (separator === -1) return { ok: false, reason: 'a line that is not a `key:` mapping entry' };
-    // YAML strips trailing white space from a plain scalar, so `name :` and `name<TAB>:`
-    // are both the key `name`. 6.5.4 defines key identity as the unquoted key text, and
-    // the unquoted key text of `name :` is `name`. Keeping the space here made the whole
-    // line look like an ordinary entry for a key nothing reads, so a plain typo produced
-    // a run with no finding at all, not even W-YAML-UNDECIDABLE. Leading whitespace is
-    // already routed to W-YAML-UNDECIDABLE by the `indent > 0` branch of parseMiniYaml.
-    key = body.slice(0, separator).replace(/[ \t]+$/, '');
-    rest = body.slice(separator + 1);
-  }
+  const split = body[0] === "'" || body[0] === '"' ? splitQuotedKey(body) : splitPlainKey(body);
+  if (!split.ok) return { ok: false, reason: split.reason };
+  const { key, rest } = split;
 
   const value = rest.replace(/^[ \t]+/, '');
-  const header = /^([|>])([0-9]*)([-+]?)([0-9]*)[ \t]*(?:#.*)?$/.exec(value);
-  if (header) {
-    const explicit = header[2] || header[4];
-    const blockIndent = explicit === '' ? null : Number(explicit);
-    // serde_yaml rejects a zero indentation indicator outright ("found an indentation
-    // indicator equal to 0"), so `|0` and `>0` are outside the subset rather than block
-    // scalars. Falling through leaves the value starting with `|` or `>`, which
-    // resolveScalar reports as W-YAML-UNDECIDABLE.
-    if (blockIndent !== 0) {
-      return {
-        ok: true,
-        key,
-        value,
-        blockScalar: true,
-        blockStyle: header[1],
-        blockIndent,
-      };
-    }
+  const header = blockScalarHeader(value);
+  if (header !== null) {
+    return {
+      ok: true,
+      key,
+      value,
+      blockScalar: true,
+      blockStyle: header.blockStyle,
+      blockIndent: header.blockIndent,
+    };
   }
   return { ok: true, key, value, blockScalar: false };
+}
+
+function splitQuotedKey(body) {
+  const quoted = readQuotedScalar(body, 0);
+  if (!quoted.ok) return { ok: false, reason: quoted.reason };
+  // Whitespace may sit between the key and the `:` here for the same reason it may in
+  // the unquoted branch below: YAML treats it as separation, not as part of the key.
+  let after = quoted.end;
+  while (body[after] === ' ' || body[after] === '\t') after += 1;
+  if (body[after] !== ':') {
+    return { ok: false, reason: 'a quoted scalar at column 0 that is not a mapping key' };
+  }
+  return { ok: true, key: quoted.value, rest: body.slice(after + 1) };
+}
+
+function splitPlainKey(body) {
+  let separator = -1;
+  for (let i = 0; i < body.length; i += 1) {
+    if (body[i] !== ':') continue;
+    const next = body[i + 1];
+    if (next === undefined || next === ' ' || next === '\t') {
+      separator = i;
+      break;
+    }
+  }
+  if (separator === -1) return { ok: false, reason: 'a line that is not a `key:` mapping entry' };
+  // YAML strips trailing white space from a plain scalar, so `name :` and `name<TAB>:`
+  // are both the key `name`. 6.5.4 defines key identity as the unquoted key text, and
+  // the unquoted key text of `name :` is `name`. Keeping the space here made the whole
+  // line look like an ordinary entry for a key nothing reads, so a plain typo produced
+  // a run with no finding at all, not even W-YAML-UNDECIDABLE. Leading whitespace is
+  // already routed to W-YAML-UNDECIDABLE by the `indent > 0` branch of parseMiniYaml.
+  return { ok: true, key: body.slice(0, separator).replace(/[ \t]+$/, ''), rest: body.slice(separator + 1) };
+}
+
+// The block-scalar header at the start of a value, or null when it is not one.
+function blockScalarHeader(value) {
+  const header = /^([|>])([0-9]*)([-+]?)([0-9]*)[ \t]*(?:#.*)?$/.exec(value);
+  if (!header) return null;
+  const explicit = header[2] || header[4];
+  const blockIndent = explicit === '' ? null : Number(explicit);
+  // serde_yaml rejects a zero indentation indicator outright ("found an indentation
+  // indicator equal to 0"), so `|0` and `>0` are outside the subset rather than block
+  // scalars. Falling through leaves the value starting with `|` or `>`, which
+  // resolveScalar reports as W-YAML-UNDECIDABLE.
+  if (blockIndent === 0) return null;
+  return { blockStyle: header[1], blockIndent };
 }
 
 // The block's indentation is the explicit indicator when given, otherwise the indentation
