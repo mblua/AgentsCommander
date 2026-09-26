@@ -29,6 +29,11 @@ export const createTerminalOptions = (useExternalLinkConfirmation: boolean): ITe
     brightMagenta: "#ff66dd",
     brightCyan: "#66ddff",
     brightWhite: "#ffffff",
+    // #2579: slider matches dark --sidebar-border (sidebar/styles/variables.css:9);
+    // xterm parses colors, not var().
+    scrollbarSliderBackground: "rgba(255, 255, 255, 0.06)",
+    scrollbarSliderHoverBackground: "rgba(255, 255, 255, 0.12)",
+    scrollbarSliderActiveBackground: "rgba(255, 255, 255, 0.18)",
   },
   allowTransparency: false,
   linkHandler: useExternalLinkConfirmation
