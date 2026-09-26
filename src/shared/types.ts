@@ -65,6 +65,10 @@ export interface Session {
   profileFallbackChain: string[];
   profileFallbackApplied: boolean;
   profileOutdated?: boolean;
+  /** #2434 - tier that matched the profile reference; absent and null are equal. */
+  matchTier?: "hash" | "labelAndLetter" | "commandAndLetter" | null;
+  /** #2434 - source letter when known and different. Not rendered by the UI. */
+  originalProfileLetter?: string | null;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };

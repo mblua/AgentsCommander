@@ -800,3 +800,90 @@ describe("SessionItem identity chip (#1730)", () => {
     }
   });
 });
+
+describe("SessionItem tier badge (#2435)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  const tierSettings = () => baseSettings({ agents: TWO_AGENTS, codingAgentProfiles: profiles({}) });
+
+  it("renders the label-tier badge text and title", async () => {
+    const rendered = await renderRow(
+      { id: "tier-1", agentId: "codex", agentLabel: "Codex", requestedProfile: "B", effectiveProfile: "B", profileFallbackApplied: false, matchTier: "labelAndLetter" },
+      tierSettings(),
+    );
+    try {
+      await waitFor(() =>
+        expect(rendered.root.querySelector('[data-ac-testid="session.tier-1.tierBadge"]')).not.toBeNull(),
+      );
+      const tier = rendered.root.querySelector<HTMLElement>('[data-ac-testid="session.tier-1.tierBadge"]')!;
+      expect(tier.textContent).toBe("B·nombre");
+      expect(tier.getAttribute("title")).toBe(
+        "Matched by coding-agent name, not by configuration. Effective profile: B.",
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // No onClick and no stopPropagation (plan rule), so a click bubbles to the row
+  // exactly as a click on the arrow badge does: the tier badge adds no action.
+  it("is a plain span, not a control, and a click on it acts like a click on the arrow badge", async () => {
+    const rendered = await renderRow(
+      { id: "tier-2", agentId: "codex", agentLabel: "Codex", requestedProfile: "B", effectiveProfile: "B", profileFallbackApplied: false, matchTier: "commandAndLetter" },
+      tierSettings(),
+    );
+    rendered.fake.resolve("switch_session", undefined);
+    try {
+      await waitFor(() =>
+        expect(rendered.root.querySelector('[data-ac-testid="session.tier-2.tierBadge"]')).not.toBeNull(),
+      );
+      const tier = rendered.root.querySelector<HTMLElement>('[data-ac-testid="session.tier-2.tierBadge"]')!;
+      expect(tier.tagName).toBe("SPAN");
+      expect(tier.hasAttribute("role")).toBe(false);
+      expect(tier.hasAttribute("tabindex")).toBe(false);
+      const arrow = rendered.root.querySelectorAll<HTMLElement>(".profile-badge")[0];
+      expect(arrow).not.toBe(tier);
+      rendered.fake.clearCalls();
+      click(arrow);
+      await Promise.resolve();
+      const viaArrow = rendered.fake.calls.map((call) => call.cmd);
+      rendered.fake.clearCalls();
+      click(tier);
+      await Promise.resolve();
+      expect(rendered.fake.calls.map((call) => call.cmd)).toEqual(viaArrow);
+      expect(viaArrow).toEqual(["switch_session"]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("renders both badges, the arrow badge first, when fallback and a weak tier both apply", async () => {
+    const rendered = await renderRow(
+      { id: "tier-3", agentId: "codex", agentLabel: "Codex", requestedProfile: "A", effectiveProfile: "B", profileFallbackApplied: true, matchTier: "labelAndLetter" },
+      tierSettings(),
+    );
+    try {
+      await waitFor(() =>
+        expect(rendered.root.querySelectorAll(".profile-badge")).toHaveLength(2),
+      );
+      const badges = rendered.root.querySelectorAll<HTMLElement>(".profile-badge");
+      expect(badges[0].textContent).toBe("A->B");
+      expect(badges[1].textContent).toBe("B·nombre");
+      expect(badges[1].getAttribute("data-ac-testid")).toBe("session.tier-3.tierBadge");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});

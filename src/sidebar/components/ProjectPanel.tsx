@@ -47,7 +47,7 @@ import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { toastStore } from "../../shared/stores/toasts";
 import { voiceRecorder } from "../../shared/voice-recorder";
-import { isWgReplicaPath, profileDisplayLabel, sessionProfileBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
+import { isWgReplicaPath, profileDisplayLabel, sessionProfileBadge, sessionTierBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
 import { clockStore } from "../stores/clock";
 import { coordinatorIdleBadge } from "../../shared/coordinator-badge";
 import { COORD_IDLE_CLASS } from "./coordinator-badge-class";
@@ -2786,6 +2786,8 @@ const ProjectPanel: Component = () => {
             `replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const repoBadgeTestId = (label: string, index: number) =>
             `replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
+          const tierBadgeTestId = () =>
+            `replica.tierBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const lockChipTestId = () =>
             `replica.lockChip.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           // #2030 - the chip is icon-only, so its tooltip and its accessible name
@@ -2793,6 +2795,11 @@ const ProjectPanel: Component = () => {
           const lockChipLabel = () => selectionLockChipTitle(replica, settingsStore.current);
           const liveAgentLabel = () => resolveReplicaAgentLabel(session(), replica);
           const profileBadge = () => resolveReplicaProfileBadge(session(), replica);
+          // #2435 - a dormant row has no session, so it can never carry a tier.
+          const tierBadge = () => {
+            const s = session();
+            return s ? sessionTierBadge(s) : null;
+          };
           const ctxVisible = () =>
             contextBadgeConfigured(settingsStore.current?.agents, session()?.agentId);
           const ctxPercent = () => {
@@ -2962,6 +2969,15 @@ const ProjectPanel: Component = () => {
                   </Show>
                   <Show when={profileBadge()}>
                     {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
+                  </Show>
+                  <Show when={tierBadge()}>
+                    {(tier) => (
+                      <span
+                        class="profile-badge profile-badge--tier"
+                        title={tier().title}
+                        data-ac-testid={tierBadgeTestId()}
+                      >{tier().text}</span>
+                    )}
                   </Show>
                   {/* #1943 - lock chip for a locked replica; icon-only since #2030.
                       Only an established `locked` state renders it, so an unknown
