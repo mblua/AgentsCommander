@@ -408,6 +408,13 @@ const AgentPickerModal: Component<{
     );
   };
   const visibleAgentCount = createMemo(() => orderedAgents().filter(matchesFilter).length);
+  // The filter status line under the agent list: the total, a no-match hint, or the match count.
+  const agentFilterStatusText = () =>
+    filterQuery() === ""
+      ? `${orderedAgents().length} agents`
+      : visibleAgentCount() === 0
+      ? `No coding agent matches "${agentFilter().trim()}". Clear the filter to see all ${orderedAgents().length}.`
+      : `${visibleAgentCount()} of ${orderedAgents().length} agents match "${agentFilter().trim()}".`;
   const comparisonSummary = createMemo(() => ({
     direct: comparisonRows().filter((row) => row.status === "direct").length,
     fallback: comparisonRows().filter((row) => row.status === "fallback").length,
@@ -1401,11 +1408,7 @@ const AgentPickerModal: Component<{
                   aria-live="polite"
                   data-ac-testid="agentPicker.agentFilterStatus"
                 >
-                  {filterQuery() === ""
-                    ? `${orderedAgents().length} agents`
-                    : visibleAgentCount() === 0
-                    ? `No coding agent matches "${agentFilter().trim()}". Clear the filter to see all ${orderedAgents().length}.`
-                    : `${visibleAgentCount()} of ${orderedAgents().length} agents match "${agentFilter().trim()}".`}
+                  {agentFilterStatusText()}
                 </div>
               </div>
             </Show>

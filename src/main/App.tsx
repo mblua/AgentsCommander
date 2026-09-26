@@ -589,6 +589,60 @@ const MainApp: Component = () => {
       wait.frame = requestAnimationFrame(poll);
     });
 
+  // Inward by SIDEBAR_PULSE_DELTA_PX when the clamp allows it exactly, else outward;
+  // null when neither direction can move by the full delta.
+  const choosePulseDirection = (
+    originalWidth: number,
+  ): { direction: SidebarPulseDirection; nudgedWidth: number } | null => {
+    const inwardCandidate = seams.clampPulseWidth(
+      originalWidth - SIDEBAR_PULSE_DELTA_PX,
+    );
+    if (inwardCandidate === originalWidth - SIDEBAR_PULSE_DELTA_PX) {
+      return { direction: "inward", nudgedWidth: inwardCandidate };
+    }
+    const outwardCandidate = seams.clampPulseWidth(
+      originalWidth + SIDEBAR_PULSE_DELTA_PX,
+    );
+    if (outwardCandidate !== originalWidth + SIDEBAR_PULSE_DELTA_PX) {
+      return null;
+    }
+    return { direction: "outward", nudgedWidth: outwardCandidate };
+  };
+
+  // After a leg's wait: true when runPulse must stop (stale owner, timeout, or no match).
+  const pulseLegStopped = (
+    owner: SidebarPulseOwner,
+    outcome: SidebarPulseWaitOutcome,
+    timeoutReason: MainTerminalLayoutPulseReason,
+  ): boolean => {
+    if (owner.completed || pulseOwner !== owner) {
+      return true;
+    }
+    if (outcome === "timeout") {
+      finishPulse(owner, "failed", timeoutReason);
+      return true;
+    }
+    return outcome !== "matched";
+  };
+
+  // The live sample before restoring, or null after the pulse was stopped.
+  const readRestoreBoundary = (
+    owner: SidebarPulseOwner,
+    nudgedWidth: number,
+    expandedGeometry: MainTerminalLayoutGeometry,
+  ): MainTerminalLayoutPulseSample | null => {
+    const restoreBoundary = readLivePulseSample(owner, nudgedWidth);
+    if (restoreBoundary.kind === "stop") {
+      stopFromLiveSample(owner, restoreBoundary);
+      return null;
+    }
+    if (!sameLayoutGeometry(restoreBoundary.sample, expandedGeometry)) {
+      finishPulse(owner, "cancelled", "width_changed");
+      return null;
+    }
+    return restoreBoundary.sample;
+  };
+
   const runPulse = async (owner: SidebarPulseOwner): Promise<void> => {
     if (owner.completed || pulseOwner !== owner || disposed) {
       return;
@@ -615,25 +669,12 @@ const MainApp: Component = () => {
         originalLive.sample.completedObserverAck,
       );
 
-      const inwardCandidate = seams.clampPulseWidth(
-        originalWidth - SIDEBAR_PULSE_DELTA_PX,
-      );
-      let direction: SidebarPulseDirection;
-      let nudgedWidth: number;
-      if (inwardCandidate === originalWidth - SIDEBAR_PULSE_DELTA_PX) {
-        direction = "inward";
-        nudgedWidth = inwardCandidate;
-      } else {
-        const outwardCandidate = seams.clampPulseWidth(
-          originalWidth + SIDEBAR_PULSE_DELTA_PX,
-        );
-        if (outwardCandidate !== originalWidth + SIDEBAR_PULSE_DELTA_PX) {
-          finishPulse(owner, "skipped", "clamped");
-          return;
-        }
-        direction = "outward";
-        nudgedWidth = outwardCandidate;
+      const choice = choosePulseDirection(originalWidth);
+      if (choice === null) {
+        finishPulse(owner, "skipped", "clamped");
+        return;
       }
+      const { direction, nudgedWidth } = choice;
       owner.nudgedWidth = nudgedWidth;
 
       const expansionBoundary = readLivePulseSample(owner, originalWidth);
@@ -685,14 +726,7 @@ const MainApp: Component = () => {
           );
         },
       );
-      if (owner.completed || pulseOwner !== owner) {
-        return;
-      }
-      if (expandedOutcome === "timeout") {
-        finishPulse(owner, "failed", "expanded_timeout");
-        return;
-      }
-      if (expandedOutcome !== "matched") {
+      if (pulseLegStopped(owner, expandedOutcome, "expanded_timeout")) {
         return;
       }
 
@@ -714,16 +748,11 @@ const MainApp: Component = () => {
         return;
       }
 
-      const restoreBoundary = readLivePulseSample(owner, nudgedWidth);
-      if (restoreBoundary.kind === "stop") {
-        stopFromLiveSample(owner, restoreBoundary);
+      const restoreSample = readRestoreBoundary(owner, nudgedWidth, expandedGeometry);
+      if (restoreSample === null) {
         return;
       }
-      if (!sameLayoutGeometry(restoreBoundary.sample, expandedGeometry)) {
-        finishPulse(owner, "cancelled", "width_changed");
-        return;
-      }
-      const restoreBaselineObservedEpoch = restoreBoundary.sample.observedObserverEpoch;
+      const restoreBaselineObservedEpoch = restoreSample.observedObserverEpoch;
 
       seams.writePulseWidth(originalWidth);
       owner.ownsTemporaryWidth = false;
@@ -750,14 +779,7 @@ const MainApp: Component = () => {
           );
         },
       );
-      if (owner.completed || pulseOwner !== owner) {
-        return;
-      }
-      if (restoredOutcome === "timeout") {
-        finishPulse(owner, "failed", "restore_timeout");
-        return;
-      }
-      if (restoredOutcome !== "matched") {
+      if (pulseLegStopped(owner, restoredOutcome, "restore_timeout")) {
         return;
       }
 

@@ -992,4 +992,182 @@ describe("MainApp sidebar layout pulse (#1532)", () => {
       rendered.cleanup();
     }
   });
+
+  // #2635 — branches of runPulse that the tests above do not reach.
+  type Trap = MainTerminalLayoutPulseSample | null | "throw";
+  function trappedSampler(initial: MainTerminalLayoutPulseSample) {
+    const state = { current: initial, calls: 0, trapAt: -1, trap: null as Trap };
+    const read = (): MainTerminalLayoutPulseSample | null => {
+      state.calls += 1;
+      if (state.calls === state.trapAt) {
+        if (state.trap === "throw") throw new Error("trapped sample");
+        return state.trap;
+      }
+      return state.current;
+    };
+    // Trap the second read of the next frame: the first is the leg/dwell poll,
+    // the second is runPulse's own boundary read right after that wait resolves.
+    const armSecondReadOfNextFrame = (trap: Trap) => {
+      state.trapAt = state.calls + 2;
+      state.trap = trap;
+    };
+    return { state, read, armSecondReadOfNextFrame };
+  }
+
+  async function runToLastDwellFrame(
+    pulseSampler: ReturnType<typeof trappedSampler>,
+  ): Promise<void> {
+    pulseSampler.state.current = sample(816, 82, 3, ack(3, 816, 82));
+    await frames.flushFrame();
+    for (let frame = 0; frame < 13; frame += 1) {
+      await frames.flushFrame();
+    }
+  }
+
+  it("fails closed with null phases when the live sidebar width is not a usable number", async () => {
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      signalControl.setSidebarWidth!(Number.NaN);
+      const pulse = dispatchPulse(() => sample(800, 80, 1, ack(1, 800, 80)));
+      expect(pulse.complete.mock.calls[0][0]).toMatchObject({
+        status: "failed",
+        reason: "exception",
+        trace: { original: { sidebarWidth: null }, dwellMs: 0 },
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("stops on a stale sample at the expansion boundary without nudging", async () => {
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      let calls = 0;
+      const pulse = dispatchPulse(() => {
+        calls += 1;
+        return calls === 1 ? sample(800, 80, 1, ack(1, 800, 80)) : null;
+      });
+      expect(pulse.complete.mock.calls[0][0]).toMatchObject({
+        status: "cancelled",
+        reason: "stale",
+      });
+      expect(sidebarWidth(rendered.root)).toBe("440px");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("fails and restores when the restore-boundary sample throws", async () => {
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      const sampler = trappedSampler(sample(800, 80, 2, ack(2, 800, 80)));
+      const pulse = dispatchPulse(sampler.read);
+      await runToLastDwellFrame(sampler);
+      expect(pulse.complete).not.toHaveBeenCalled();
+      sampler.armSecondReadOfNextFrame("throw");
+      await frames.flushFrame();
+      expect(pulse.complete.mock.calls[0][0]).toMatchObject({
+        status: "failed",
+        reason: "exception",
+      });
+      expect(sidebarWidth(rendered.root)).toBe("440px");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("cancels with width_changed when the restore-boundary geometry moved", async () => {
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      const sampler = trappedSampler(sample(800, 80, 2, ack(2, 800, 80)));
+      const pulse = dispatchPulse(sampler.read);
+      await runToLastDwellFrame(sampler);
+      sampler.armSecondReadOfNextFrame(sample(817, 82, 3, ack(3, 817, 82)));
+      await frames.flushFrame();
+      expect(pulse.complete.mock.calls[0][0]).toMatchObject({
+        status: "cancelled",
+        reason: "width_changed",
+      });
+      expect(sidebarWidth(rendered.root)).toBe("440px");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("ends the restore leg quietly when the width is stolen while restoring", async () => {
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      const sampler = trappedSampler(sample(800, 80, 2, ack(2, 800, 80)));
+      const pulse = dispatchPulse(sampler.read);
+      await runToLastDwellFrame(sampler);
+      await frames.flushFrame();
+      expect(sidebarWidth(rendered.root)).toBe("440px");
+      expect(pulse.complete).not.toHaveBeenCalled();
+
+      signalControl.setSidebarWidth!(430);
+      await frames.flushFrame();
+      expect(pulse.complete).toHaveBeenCalledTimes(1);
+      expect(pulse.complete.mock.calls[0][0]).toMatchObject({
+        status: "cancelled",
+        reason: "width_changed",
+      });
+      expect(sidebarWidth(rendered.root)).toBe("430px");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it.each([
+    ["a stale final sample", null, "cancelled", "stale"],
+    ["moved final geometry", sample(801, 80, 4, ack(4, 801, 80)), "cancelled", "width_changed"],
+  ] as const)("stops after the restore leg on %s", async (_label, trap, status, reason) => {
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      const sampler = trappedSampler(sample(800, 80, 2, ack(2, 800, 80)));
+      const pulse = dispatchPulse(sampler.read);
+      await runToLastDwellFrame(sampler);
+      await frames.flushFrame();
+      expect(sidebarWidth(rendered.root)).toBe("440px");
+
+      sampler.state.current = sample(800, 80, 4, ack(4, 800, 80));
+      sampler.armSecondReadOfNextFrame(trap);
+      await frames.flushFrame();
+      expect(pulse.complete).toHaveBeenCalledTimes(1);
+      expect(pulse.complete.mock.calls[0][0]).toMatchObject({ status, reason });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("fails with exception when the pulse body throws", async () => {
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        get: () => {
+          throw new Error("innerWidth unavailable");
+        },
+      });
+      const pulse = dispatchPulse(() => sample(800, 80, 1, ack(1, 800, 80)));
+      await flushPromises();
+      expect(pulse.complete.mock.calls[0][0]).toMatchObject({
+        status: "failed",
+        reason: "exception",
+      });
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        writable: true,
+        value: 1400,
+      });
+      rendered.cleanup();
+    }
+  });
 });
