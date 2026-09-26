@@ -39,6 +39,13 @@ interface TerminalAppProps {
 
 const HYDRATION_RETRY_DELAYS = [50, 100, 250, 500, 1000] as const;
 
+function normalizePathForCompare(path: string): string {
+  let normalized = path;
+  if (normalized.startsWith("\\\\?\\")) normalized = normalized.slice(4);
+  else if (normalized.startsWith("//?/")) normalized = normalized.slice(4);
+  return normalized.replace(/\\/g, "/").toLowerCase();
+}
+
 const TerminalApp: Component<TerminalAppProps> = (props) => {
   const unlisteners: UnlistenFn[] = [];
   let disposed = false;
@@ -236,133 +243,134 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
     }
   };
 
+  const handleSessionDestroyed = ({ id }: Parameters<Parameters<typeof onSessionDestroyed>[0]>[0]) => {
+    voiceRecorder.revokeSession(id);
+    if (props.lockedSessionId && id === props.lockedSessionId) {
+      if (isTauri) {
+        void import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
+          getCurrentWindow().destroy(),
+        ).catch((error: unknown) => {
+          console.error("[detached] Failed to close destroyed session window:", error);
+        });
+      }
+      return;
+    }
+    if (isCentral()) terminalStore.safetySuspendDestroyed(id);
+  };
+
+  const handleWorkgroupTaskUpdated = (data: Parameters<Parameters<typeof onWorkgroupTaskUpdated>[0]>[0]) => {
+    if (data.source === "poll") {
+      const targetId = props.lockedSessionId ?? terminalStore.activeSessionId;
+      if (!targetId || !data.sessionIds.includes(targetId)) return;
+      terminalStore.setActiveWorkgroupTask(data.task);
+    } else if (data.source === "manual") {
+      const workgroupRoot = data.workgroupRoot;
+      const cwd = terminalStore.activeWorkingDirectory;
+      if (!cwd || !workgroupRoot) return;
+      const cwdNormalized = normalizePathForCompare(cwd);
+      const rootNormalized = normalizePathForCompare(workgroupRoot);
+      if (
+        cwdNormalized === rootNormalized ||
+        cwdNormalized.startsWith(`${rootNormalized}/`)
+      ) {
+        terminalStore.setActiveWorkgroupTask(data.task);
+      }
+    }
+  };
+
+  // The mount steps below return false where onMount must stop (the window was disposed).
+  const registerCentralListeners = async (): Promise<boolean> => {
+    await register(
+      onSessionSwitched((selection, deliveryGeneration) => {
+        void reconcileSelection(selection, deliveryGeneration, false);
+      }),
+    );
+    if (disposed) return false;
+    await register(onTransportConnectionState(applyConnectionState));
+    return !disposed;
+  };
+
+  const attachDetachedCloseHandler = async (): Promise<boolean> => {
+    if (!(isTauri && props.detached && props.lockedSessionId)) return true;
+    const sessionId = props.lockedSessionId;
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    if (disposed) return false;
+    const win = getCurrentWindow();
+    addUnlistener(
+      await win.onCloseRequested(async (event) => {
+        event.preventDefault();
+        try {
+          await WindowAPI.attach(sessionId);
+        } catch (error) {
+          console.error("[detached] attach failed during close; destroying window:", error);
+          try {
+            await win.destroy();
+          } catch (destroyError) {
+            console.error("[detached] fallback window destroy failed:", destroyError);
+          }
+        }
+      }),
+    );
+    return !disposed;
+  };
+
+  const initWindowChrome = async (): Promise<boolean> => {
+    if (props.embedded) return true;
+    cleanupZoom = await initZoom(props.detached ? "detached" : "terminal");
+    if (disposed) {
+      cleanupZoom();
+      cleanupZoom = null;
+      return false;
+    }
+    cleanupGeometry = props.detached && props.lockedSessionId
+      ? await initDetachedWindowGeometry(props.lockedSessionId)
+      : await initWindowGeometry("terminal");
+    if (disposed) {
+      cleanupGeometry();
+      cleanupGeometry = null;
+      return false;
+    }
+    return true;
+  };
+
   onMount(async () => {
     try {
-    shortcutHandler = registerShortcuts();
+      shortcutHandler = registerShortcuts();
+      if (isCentral() && !(await registerCentralListeners())) return;
 
-    if (isCentral()) {
-      await register(
-        onSessionSwitched((selection, deliveryGeneration) => {
-          void reconcileSelection(selection, deliveryGeneration, false);
-        }),
-      );
+      await register(onSessionDestroyed(handleSessionDestroyed));
       if (disposed) return;
-      await register(onTransportConnectionState(applyConnectionState));
-      if (disposed) return;
-    }
 
-    await register(
-      onSessionDestroyed(({ id }) => {
-        voiceRecorder.revokeSession(id);
-        if (props.lockedSessionId && id === props.lockedSessionId) {
-          if (isTauri) {
-            void import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
-              getCurrentWindow().destroy(),
-            ).catch((error: unknown) => {
-              console.error("[detached] Failed to close destroyed session window:", error);
-            });
-          }
-          return;
-        }
-        if (isCentral()) terminalStore.safetySuspendDestroyed(id);
-      }),
-    );
-    if (disposed) return;
-
-    if (isCentral()) {
-      applyConnectionState(getTransportConnectionState());
-    } else {
-      await loadLockedSession();
-    }
-
-    if (isTauri && props.detached && props.lockedSessionId) {
-      const sessionId = props.lockedSessionId;
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      if (disposed) return;
-      const win = getCurrentWindow();
-      addUnlistener(
-        await win.onCloseRequested(async (event) => {
-          event.preventDefault();
-          try {
-            await WindowAPI.attach(sessionId);
-          } catch (error) {
-            console.error("[detached] attach failed during close; destroying window:", error);
-            try {
-              await win.destroy();
-            } catch (destroyError) {
-              console.error("[detached] fallback window destroy failed:", destroyError);
-            }
-          }
-        }),
-      );
-      if (disposed) return;
-    }
-
-    if (!props.embedded) {
-      cleanupZoom = await initZoom(props.detached ? "detached" : "terminal");
-      if (disposed) {
-        cleanupZoom();
-        cleanupZoom = null;
-        return;
+      if (isCentral()) {
+        applyConnectionState(getTransportConnectionState());
+      } else {
+        await loadLockedSession();
       }
-      cleanupGeometry = props.detached && props.lockedSessionId
-        ? await initDetachedWindowGeometry(props.lockedSessionId)
-        : await initWindowGeometry("terminal");
-      if (disposed) {
-        cleanupGeometry();
-        cleanupGeometry = null;
-        return;
+
+      if (!(await attachDetachedCloseHandler())) return;
+      if (!(await initWindowChrome())) return;
+
+      await settingsStore.load();
+      if (disposed) return;
+      if (!props.embedded) {
+        document.documentElement.classList.toggle(
+          "light-theme",
+          !!settingsStore.current?.themeLight,
+        );
       }
-    }
 
-    await settingsStore.load();
-    if (disposed) return;
-    if (!props.embedded) {
-      document.documentElement.classList.toggle(
-        "light-theme",
-        !!settingsStore.current?.themeLight,
-      );
-    }
-
-    await register(
-      onSessionRenamed(({ id, name }) => terminalStore.renameBoundSession(id, name)),
-    );
-
-    const normalizePathForCompare = (path: string): string => {
-      let normalized = path;
-      if (normalized.startsWith("\\\\?\\")) normalized = normalized.slice(4);
-      else if (normalized.startsWith("//?/")) normalized = normalized.slice(4);
-      return normalized.replace(/\\/g, "/").toLowerCase();
-    };
-    await register(
-      onWorkgroupTaskUpdated((data) => {
-        if (data.source === "poll") {
-          const targetId = props.lockedSessionId ?? terminalStore.activeSessionId;
-          if (!targetId || !data.sessionIds.includes(targetId)) return;
-          terminalStore.setActiveWorkgroupTask(data.task);
-        } else if (data.source === "manual") {
-          const workgroupRoot = data.workgroupRoot;
-          const cwd = terminalStore.activeWorkingDirectory;
-          if (!cwd || !workgroupRoot) return;
-          const cwdNormalized = normalizePathForCompare(cwd);
-          const rootNormalized = normalizePathForCompare(workgroupRoot);
-          if (
-            cwdNormalized === rootNormalized ||
-            cwdNormalized.startsWith(`${rootNormalized}/`)
-          ) {
-            terminalStore.setActiveWorkgroupTask(data.task);
-          }
-        }
-      }),
-    );
-
-    if (!props.embedded) {
       await register(
-        onThemeChanged(({ light }) =>
-          document.documentElement.classList.toggle("light-theme", light),
-        ),
+        onSessionRenamed(({ id, name }) => terminalStore.renameBoundSession(id, name)),
       );
-    }
+      await register(onWorkgroupTaskUpdated(handleWorkgroupTaskUpdated));
+
+      if (!props.embedded) {
+        await register(
+          onThemeChanged(({ light }) =>
+            document.documentElement.classList.toggle("light-theme", light),
+          ),
+        );
+      }
     } catch (error) {
       if (error !== mountDisposed) throw error;
     }
