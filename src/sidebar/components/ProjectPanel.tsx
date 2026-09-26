@@ -1,4 +1,4 @@
-import { Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
+import { Accessor, Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport, AppSettings, UnresolvedLoopTarget, CoManagedState, OffReason } from "../../shared/types";
 import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, CoManagedAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, onRemoteActivityUpdated } from "../../shared/ipc";
@@ -1839,6 +1839,31 @@ const ProjectPanel: Component = () => {
           if (!currentSession || !isSessionLive(currentSession)) return;
           await TelegramAPI.attach(targetSessionId, targetBotId);
         };
+
+        const renderReplicaTelegramBotChoice = (
+          choices: Accessor<{ epoch: number; sessionId: string }>,
+          bot: TelegramBotConfig,
+        ) => (
+          <button
+            class="session-context-option"
+            onClick={(event) =>
+              void handleReplicaTelegramBotSelect(
+                event,
+                choices().sessionId,
+                bot.id,
+                choices().epoch,
+              )
+            }
+          >
+            <span class="session-context-option-icon" aria-hidden="true">
+              <span
+                class="settings-color-dot"
+                style={{ background: bot.color }}
+              />
+            </span>{" "}
+            {bot.label}
+          </button>
+        );
 
         const handleReplicaContextClose = (event: MouseEvent, sessionId: string) => {
           event.stopPropagation();
@@ -4200,27 +4225,7 @@ const ProjectPanel: Component = () => {
                         <Show when={telegramChoices()}>
                           {(choices) => (
                             <For each={choices().bots}>
-                              {(bot) => (
-                                <button
-                                  class="session-context-option"
-                                  onClick={(event) =>
-                                    void handleReplicaTelegramBotSelect(
-                                      event,
-                                      choices().sessionId,
-                                      bot.id,
-                                      choices().epoch,
-                                    )
-                                  }
-                                >
-                                  <span class="session-context-option-icon" aria-hidden="true">
-                                    <span
-                                      class="settings-color-dot"
-                                      style={{ background: bot.color }}
-                                    />
-                                  </span>{" "}
-                                  {bot.label}
-                                </button>
-                              )}
+                              {(bot) => renderReplicaTelegramBotChoice(choices, bot)}
                             </For>
                           )}
                         </Show>
