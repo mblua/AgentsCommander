@@ -326,6 +326,7 @@ const AcDiscoveryPanel: Component = () => {
         <Portal>
           <div
             class="session-context-menu"
+            role="presentation"
             style={{ left: `${ctxMenuPos().x}px`, top: `${ctxMenuPos().y}px` }}
             onClick={(e) => e.stopPropagation()}
           >
