@@ -1,0 +1,28 @@
+@import "../../sidebar/styles/variables.css";
+
+/* #2579 - Noir thin scrollbar for every scroller in every window (one bundle,
+   one global rule). Only the pseudo-element rules are used: on Chromium 121+
+   the two standard scrollbar properties win over them and bring back the
+   native bar, so those properties are banned (scrollbars-css.test.ts). */
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--sidebar-border);
+  border-radius: 2px;
+}
