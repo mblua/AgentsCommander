@@ -89,7 +89,7 @@ const Titlebar: Component<TitlebarProps> = (props) => {
         <div class="titlebar-controls">
           <Show when={props.detached && props.lockedSessionId}>
             <button
-              class="titlebar-btn titlebar-btn-attach"
+              class="titlebar-btn"
               onClick={handleReattach}
               title="Re-attach session"
               data-ac-testid="terminal.titlebar.reattach"

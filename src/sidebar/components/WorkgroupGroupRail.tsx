@@ -301,7 +301,7 @@ const RailButton: Component<{
         {props.button.name}
       </span>
     </span>
-    <span class="workgroup-group-rail-counter-line">
+    <span>
       <Show when={props.button.working}>
         <span
           class="session-item-status running workgroup-group-rail-dot"

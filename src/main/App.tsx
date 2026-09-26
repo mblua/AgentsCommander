@@ -1636,7 +1636,6 @@ const MainApp: Component = () => {
       </Show>
       <Show when={quitForceOfferVisible()}>
         <div
-          class="quit-force-offer"
           style={{
             position: "fixed",
             right: "24px",

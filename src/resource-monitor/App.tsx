@@ -1361,7 +1361,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
             </Show>
 
             <div
-              class="rm-filter-group rm-filter-pid"
+              class="rm-filter-group"
               data-ac-testid="resourceMonitor.filter.pid"
               data-ac-role="group"
             >
@@ -1424,7 +1424,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                       pidPresentInSnapshot(pid) ? "matched" : "unmatched"
                     }
                   >
-                    <span class="rm-pid-chip-pid">{pid}</span>
+                    <span>{pid}</span>
                     {/* 11.1: PID reuse is real and untestable from here. Naming
                         the process is what exposes the confusion to the user. */}
                     <Show when={pidProcessName(pid)}>
@@ -1448,7 +1448,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
             </div>
 
             <div
-              class="rm-filter-group rm-filter-search"
+              class="rm-filter-group"
               data-ac-testid="resourceMonitor.filter.search"
               data-ac-role="group"
             >

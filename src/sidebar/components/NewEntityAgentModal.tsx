@@ -202,7 +202,7 @@ const NewEntityAgentModal: Component<{
 
   return (
     <div class="modal-overlay" onKeyDown={handleKeyDown}>
-      <div class="agent-modal new-agent-modal">
+      <div class="agent-modal">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Agent</span>
         </div>
@@ -310,7 +310,6 @@ const NewEntityAgentModal: Component<{
                       <span
                         class="tpl-picker-item-src"
                         classList={{
-                          "src-agency": t.source === "agency",
                           "src-local": t.source === "local",
                         }}
                         title={sourceLabel(t)}

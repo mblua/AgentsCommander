@@ -272,7 +272,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // user-agent `[hidden] { display: none }` rule. While hidden it is not a
     // flex item, so the strip's `gap` does not show either.
     const agentMessageStatus = document.createElement("div");
-    agentMessageStatus.className = "terminal-agent-message-status";
     agentMessageStatus.setAttribute("data-testid", `terminal-agent-message-${sessionId}`);
     agentMessageStatus.setAttribute("aria-label", "Last coding agent message time");
     agentMessageStatus.style.color = "var(--statusbar-fg)";

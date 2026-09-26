@@ -124,8 +124,8 @@ const ErrorModal: Component = () => {
               </Show>
             </div>
             <div class="error-modal-meta">
-              <span class="error-modal-meta-time">{currentEntry()?.timestamp}</span>
-              <span class="error-modal-meta-target">{currentEntry()?.target}</span>
+              <span>{currentEntry()?.timestamp}</span>
+              <span>{currentEntry()?.target}</span>
             </div>
             <div
               id="error-modal-message"

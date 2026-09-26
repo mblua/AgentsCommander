@@ -3592,7 +3592,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </div>
           </div>
           <div
-            class="settings-agent-row-action-cluster"
             style={{ display: "flex", "align-items": "center", gap: "4px", "flex": "0 0 auto" }}
           >
           <div class="settings-agent-row-actions">
@@ -4736,7 +4735,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       >
         <aside class="settings-agents-panel">
           <div class="settings-agents-panel-header">
-            <div class="settings-agents-panel-heading">
+            <div>
               <div class="settings-agents-panel-title">Coding Agents</div>
               <div class="settings-agents-panel-kicker">Colors and selected comparison pair</div>
             </div>
